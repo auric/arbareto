@@ -1,25 +1,4 @@
-<!--
-Sync Impact Report
-Version change: Unratified scaffold → 1.0.0 (initial ratification).
-Modified principles:
-- Template principle 1 → I. Preserve User Data.
-- Template principle 2 → II. TypeScript/Bun and Minimal Native Code.
-- Template principle 3 → III. Validated Operation Boundaries.
-- Template principle 4 → IV. Real Git State Verification.
-- Template principle 5 → V. Untrusted Repositories and Credential Protection.
-Added sections:
-- VI. Platform-Specific Evidence.
-- VII. Accessible and Measured Interface.
-- VIII. Pinned Dependencies and Qualified Shell Selection.
-- IX. One Upstream Planning Process.
-- Architecture Constraints.
-- Delivery Gates.
-Governance: Replaced placeholders with amendment, versioning, and compliance rules.
-Removed sections: None.
-Follow-up TODOs: None.
-Remove this temporary report before committing.
--->
-# Rozvio Constitution
+# Arbareto Constitution
 
 ## Core Principles
 
@@ -95,7 +74,7 @@ Remove this temporary report before committing.
 
 ## Architecture Constraints
 
-- Rozvio MUST remain cross-platform and local-first. Ordinary Git work MUST NOT require cloud accounts or AI.
+- Arbareto MUST remain cross-platform and local-first. Ordinary Git work MUST NOT require cloud accounts or AI.
 - The first qualification feature MUST use Tauri 2 with a compiled TypeScript/Bun Git service.
 - Frontend, shared operation contracts, and Git service MUST remain separate. The native shell MUST remain thin.
 - Shared code MUST remain portable. Platform-specific behavior MUST stay at boundaries with documented platform requirements.
@@ -119,4 +98,4 @@ Remove this temporary report before committing.
 - Plans and reviews MUST identify compliance evidence or unresolved blockers for each applicable principle.
 - Unresolved violations MUST block affected merges or releases. Conflicting changes MUST wait for an approved constitutional amendment.
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-09-28
+**Version**: 1.0.1 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-09-29

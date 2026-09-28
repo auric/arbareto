@@ -1,4 +1,4 @@
-# Rozvio — Windows-first, cross-platform Git client project brief
+# Arbareto — Windows-first, cross-platform Git client project brief
 
 Research reviewed: 28 September 2026.
 Status: planning input. Spec Kit v1.0.12 is initialized; no application code exists. Use Tauri 2 with a compiled TypeScript/Bun Git service for the first qualification feature. No packaged Windows, performance, or installer tests have run. Validate the selected architecture through packaged Windows tests.
@@ -9,8 +9,8 @@ Build a cross-platform, local-first Git client. Deliver and qualify Windows firs
 
 Windows-first sets delivery order, not a permanent platform restriction. Keep shared frontend, contracts, and Git service logic portable. Isolate unavoidable platform-specific behavior within the selected Tauri/Bun architecture. Qualify packaged builds separately before claiming support for macOS or Linux.
 
-Working name: **Rozvio** (ROZ-vee-oh); local repository/executable name `rozvio`.
-Naming status: exact-name web searches did not surface an obvious existing software product. Live registrar checks did not return usable results. Domain registration, GitHub organization/username availability, package-name reservation, confusingly similar brands and trademark clearance remain unverified. This is a development name, not a claim of exclusive ownership or registration availability.
+Working name: **Arbareto** (ar-buh-RET-oh); executable name `arbareto`.
+Naming status: on 2026-09-28, `arbareto` was free on GitHub, npm, crates.io, winget, and the .com, .app and .dev domains. A registered-trademark check is still open. This is a development name, not a claim of exclusive ownership.
 
 ## Selected architecture and deferred alternatives
 
@@ -128,7 +128,7 @@ First local exploration tool: the existing CodeGraph installation, after verifyi
 
 CodeGraph bundles a Node runtime; it is not Bun-native. Its documentation describes default-on telemetry, which can be disabled. Its own residual-context benchmark warns that fewer processed tokens can still leave more context resident; there is no independent Serena-versus-CodeGraph result established here. Disable telemetry for this setup and do not add blanket tool permissions. [S34–S36]
 
-Serena remains an optional semantic-editing/LSP tool, not a default second indexer. Its TypeScript backend explicitly requires Node and npm on PATH. Prefer normal editor/compiler capabilities unless there is a demonstrated unmet refactoring need. Neither development tool ships with Rozvio. A strict prohibition on all development-time Node runtimes would exclude CodeGraph as well as this Serena backend. [S37]
+Serena remains an optional semantic-editing/LSP tool, not a default second indexer. Its TypeScript backend explicitly requires Node and npm on PATH. Prefer normal editor/compiler capabilities unless there is a demonstrated unmet refactoring need. Neither development tool ships with Arbareto. A strict prohibition on all development-time Node runtimes would exclude CodeGraph as well as this Serena backend. [S37]
 
 On demand: DeepWiki for source-repository orientation, shadcn skills for UI assembly, and the existing context-mode installation for genuinely large logs. Check retrieved claims against pinned source. Do not add a second memory ledger or always-loaded repository summary. [S24–S27]
 
@@ -145,8 +145,8 @@ Playwright CLI plus skills is a useful optional browser-inspection tool, but its
 The repository already has Spec Kit v1.0.12. The commands below are reference instructions for a new repository; do not rerun initialization here. Python/uv and Rust/MSVC are development dependencies. No Node runtime is proposed for the distributed app.
 
 ```powershell
-uvx --from git+https://github.com/github/spec-kit.git@v1.0.12 specify init rozvio --integration claude --script ps --non-interactive
-cd rozvio
+uvx --from git+https://github.com/github/spec-kit.git@v1.0.12 specify init arbareto --integration claude --script ps --non-interactive
+cd arbareto
 ```
 
 The guide pins Spec Kit to v1.0.12. Claude uses `/speckit-...` skills; Codex uses `$speckit-...`. Its active feature is recorded in `.specify/feature.json`; changing Git branches alone does not change it. Branches are managed explicitly in the guide, without an additional Git extension. Preserve the upstream specify/clarify/plan/checklist/tasks/analyze/implement/converge flow. [S16, S38]

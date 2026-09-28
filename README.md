@@ -1,6 +1,8 @@
-# Rozvio
+# Arbareto
 
 Cross-platform, local-first Git client. Deliver and qualify Windows first; target macOS and Linux later. See [the project brief](docs/project-brief.md) for scope and architecture.
+
+Name: see [docs/name.md](docs/name.md).
 
 ## Tooling
 

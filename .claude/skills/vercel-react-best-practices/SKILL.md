@@ -1,6 +1,6 @@
 ---
 name: vercel-react-best-practices
-description: Client-side React performance guidance for Rozvio. Use when writing, reviewing, or refactoring React components, browser data fetching, bundles, or rendering. Excludes Next.js, server rendering, React Server Components, and server actions.
+description: Client-side React performance guidance for Arbareto. Use when writing, reviewing, or refactoring React components, browser data fetching, bundles, or rendering. Excludes Next.js, server rendering, React Server Components, and server actions.
 license: MIT
 metadata:
   author: vercel
@@ -9,9 +9,9 @@ metadata:
 
 # Vercel React Best Practices
 
-## Rozvio scope
+## Arbareto scope
 
-Apply only client-side React and JavaScript guidance. Rozvio uses Vite and Tauri, not Next.js. Skip server rendering, hydration, React Server Components, server actions, API routes, and deployment guidance. Do not copy `next/*` imports or Next.js configuration. Use React and Vite equivalents for applicable browser patterns. Keep all upstream references, but read only applicable rules. Do not add dependencies just to follow examples.
+Apply only client-side React and JavaScript guidance. Arbareto uses Vite and Tauri, not Next.js. Skip server rendering, hydration, React Server Components, server actions, API routes, and deployment guidance. Do not copy `next/*` imports or Next.js configuration. Use React and Vite equivalents for applicable browser patterns. Keep all upstream references, but read only applicable rules. Do not add dependencies just to follow examples.
 
 ## Upstream guide
 

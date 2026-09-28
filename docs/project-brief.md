@@ -1,11 +1,13 @@
-# Rozvio — Windows Git client project brief
+# Rozvio — Windows-first, cross-platform Git client project brief
 
 Research reviewed: 28 September 2026.
 Status: planning input. Spec Kit v1.0.12 is initialized; no application code exists. Use Tauri 2 with a compiled TypeScript/Bun Git service for the first qualification feature. No packaged Windows, performance, or installer tests have run. Validate the selected architecture through packaged Windows tests.
 
 ## Product
 
-Build a Windows-first, local-first Git client with broad Git Extensions functional coverage and a calm, compact developer interface inspired by T3 Code. Prefer TypeScript and Bun. Do not use Electron. Use an upstream development workflow, not a new orchestration framework. No mandatory cloud account or AI dependency for ordinary Git work.
+Build a cross-platform, local-first Git client. Deliver and qualify Windows first, then extend support to macOS and Linux. Target broad Git Extensions functional coverage and a calm, compact developer interface inspired by T3 Code. Prefer TypeScript and Bun. Do not use Electron. Use an upstream development workflow, not a new orchestration framework. No mandatory cloud account or AI dependency for ordinary Git work.
+
+Windows-first sets delivery order, not a permanent platform restriction. Keep shared frontend, contracts, and Git service logic portable. Isolate unavoidable platform-specific behavior within the selected Tauri/Bun architecture. Qualify packaged builds separately before claiming support for macOS or Linux.
 
 Working name: **Rozvio** (ROZ-vee-oh); local repository/executable name `rozvio`.
 Naming status: exact-name web searches did not surface an obvious existing software product. Live registrar checks did not return usable results. Domain registration, GitHub organization/username availability, package-name reservation, confusingly similar brands and trademark clearance remain unverified. This is a development name, not a claim of exclusive ownership or registration availability.
@@ -14,11 +16,11 @@ Naming status: exact-name web searches did not surface an obvious existing softw
 
 | Area | Decision or proposal | Reason and qualification |
 | --- | --- | --- |
-| Desktop shell | Tauri 2 with a compiled TypeScript/Bun Git service | Selected for the first qualification feature. Supports sidecar packaging, scoped frontend permissions, and signature-enforcing updates. Requires Rust and MSVC. [S1–S3] |
+| Desktop shell | Tauri 2 with a compiled TypeScript/Bun Git service | Selected for the first qualification feature. Supports sidecar packaging, scoped frontend permissions, and signature-enforcing updates. Requires Rust and platform-specific build tools. Initial Windows builds require MSVC. [S1–S3] |
 | Deferred shell research | Electrobun | Not selected for implementation. Do not prototype it during the first qualification feature. References remain for deferred research only. [S4–S6] |
 | Rejected for present implementation | bunvjs/bunv | The inspected main entry point is a hello-world script and its manifest does not implement the advertised desktop build workflow. Reconsider only after concrete implementation and packaged Windows evidence exist. [S7] |
 | Other evaluated candidates | webview-bun, Tronbun, BunDesk | Respectively: a low-level binding requiring additional product infrastructure; an explicitly alpha framework; and a real framework whose own production-parity work remains incomplete. These are alternatives, not equivalent production-ready choices. [S8–S10] |
-| Git engine | Installed Git for Windows, called through bounded typed operations | Use existing Git semantics rather than build a Git implementation. Record the chosen executable and its version; do not silently replace the user's Git configuration. |
+| Git engine | Installed native Git, initially Git for Windows, called through bounded typed operations | Use existing Git semantics rather than build a Git implementation. Record the chosen executable and its version; do not silently replace the user's Git configuration. |
 | UI | React, TypeScript, Tailwind, one Base UI-based shadcn component system | Reuse the applicable direction from T3 Code without copying its Electron shell, Node server, or agent orchestration. [S11] |
 | Development | Bun package management and scripts; Vite explicitly run under Bun | Avoid accidental Node execution through a CLI's shebang. The documented invocation is `bunx --bun vite`. [S12] |
 | Diff display | Evaluate @pierre/diffs first; keep editable merge tooling separately qualified | A visual diff component is not an authoritative patch/staging engine. Its editing mode is currently described as beta. [S13] |
@@ -104,6 +106,8 @@ Use one repository with three source boundaries: frontend, TypeScript/Bun Git se
 
 The UI must not receive arbitrary shell access. Expose explicit operations against registered repository IDs. Validate parameters in the service. Use argument-array process spawning, literal-path handling, bounded output, cancellation, and a trusted Git executable. Escaping a command string is not the security design.
 
+Keep shared code portable. Do not assume Windows path syntax, filesystem case rules, shell names, or Git locations in shared code. Limit platform-specific behavior to the boundaries that need it.
+
 Git remains authoritative. Use NUL-delimited machine-readable status, not localized human output. Background status reads should avoid optional index locks. Cache immutable object data and invalidate mutable status/ref views after both application operations and external changes. Watchers are hints, not a complete transaction log. [S19]
 
 Linked worktrees share some state while keeping other state, such as their indexes, separate. Determine repository and common-directory identity using Git. Do not assume `.git` is always a directory. Start conservatively with app-initiated mutation serialization across a shared repository, while acknowledging that external Git processes are not controlled by that queue. [S20]
@@ -149,11 +153,11 @@ The guide pins Spec Kit to v1.0.12. Claude uses `/speckit-...` skills; Codex use
 
 ### Constitution input
 
-Protect user changes. Treat Git as authoritative. Do not use Electron. Use Tauri 2 with a compiled TypeScript/Bun Git service for the first qualification feature. Justify native code by a concrete platform requirement. Verify risky Git behavior with real temporary repositories. Preserve keyboard accessibility. Validate the selected architecture through packaged Windows tests. Record concrete failures and their causes. Measure packaged Windows performance. Use only upstream Spec Kit artifacts for planning. Do not add custom orchestration files, automatic multi-agent review loops, or duplicate plan trees. Never mark a Windows behavior verified from a browser-only test.
+Protect user changes. Treat Git as authoritative. Do not use Electron. Deliver Windows first while preserving portability for later macOS and Linux support. Use Tauri 2 with a compiled TypeScript/Bun Git service for the first qualification feature. Justify native code by a concrete platform requirement. Verify risky Git behavior with real temporary repositories. Preserve keyboard accessibility. Validate the selected architecture through packaged Windows tests. Record concrete failures and their causes. Measure packaged Windows performance. Use only upstream Spec Kit artifacts for planning. Do not add custom orchestration files, automatic multi-agent review loops, or duplicate plan trees. Never mark a Windows behavior verified from a browser-only test.
 
 ### Feature input for the specification step
 
-> Build a packaged Windows qualification slice for a local-first Git client. Use Tauri 2 with a compiled TypeScript/Bun Git service. Open ordinary repositories and linked worktrees. Show status, a bounded history page, and a selected file diff. Support staging and unstaging one selected hunk. Create a commit in a disposable test repository. Keep the UI interactive while Git is busy, and reconcile external changes. Do not implement Electrobun, multiple shell adapters, or a framework-independent desktop abstraction. Do not implement the full application or a new development framework. Validate the selected architecture through packaged Windows tests. Record concrete failures and their causes. Consider another shell only when a blocking requirement cannot reasonably be satisfied by the current architecture. Do not claim Tauri is faster than Electrobun without measurements.
+> Build a packaged Windows qualification slice for a cross-platform, local-first Git client. Preserve portability for later macOS and Linux qualification. Use Tauri 2 with a compiled TypeScript/Bun Git service. Open ordinary repositories and linked worktrees. Show status, a bounded history page, and a selected file diff. Support staging and unstaging one selected hunk. Create a commit in a disposable test repository. Keep the UI interactive while Git is busy, and reconcile external changes. Do not implement Electrobun, multiple shell adapters, or a framework-independent desktop abstraction. Do not implement the full application or a new development framework. Validate the selected architecture through packaged Windows tests. Record concrete failures and their causes. Consider another shell only when a blocking requirement cannot reasonably be satisfied by the current architecture. Do not claim Tauri is faster than Electrobun without measurements.
 
 Keep architecture qualification evidence, failures, causes, and attempted remedies in the native Spec Kit plan/research artifacts. Do not create separate qualification documents.
 
@@ -171,7 +175,7 @@ Keep architecture qualification evidence, failures, causes, and attempted remedi
 | Architecture qualification | Test the packaged Tauri 2 application and compiled Git service on Windows. Record concrete failures, their causes, and attempted remedies. |
 | Performance | Measure the packaged Tauri 2 application on agreed repositories and hardware. Record cold/warm behavior, UI stalls, CPU, and complete process-tree memory. Use Git Extensions as a baseline under matching conditions. Do not claim Tauri is faster than Electrobun without measurements. |
 
-Use Windows 11 x64 as the initial proposed qualification environment, not an assertion about the user's installed OS. Decide Windows 10 and ARM support explicitly before promising them. Include Defender-enabled runs, a moderate development repository and a large-history fixture. A shell passing on Linux is not Windows qualification.
+Use Windows 11 x64 as the initial proposed qualification environment, not an assertion about the user's installed OS. Decide Windows 10 and ARM support explicitly before promising them. Include Defender-enabled runs, a moderate development repository and a large-history fixture. This initial scope does not remove macOS or Linux from the product targets. Define their supported versions and architectures before qualification. Passing on one operating system does not qualify another.
 
 Proposed starting budgets, not measurements: visible input acknowledgement within 100 ms; cached repository switching within 500 ms; cold usable workspace around 1.5 seconds on agreed hardware; no long main-thread stalls while loading history. Report misses honestly and revise targets only with an explicit product trade-off, not to make a test green.
 

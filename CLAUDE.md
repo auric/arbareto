@@ -2,13 +2,14 @@
 
 ## Project constraints
 
-- Read `docs/project-brief.md` for scope, selected architecture, and Windows qualification criteria.
-- Build a Windows-first, local-first Git client. Do not use Electron.
+- Read `docs/project-brief.md` for scope, selected architecture, and initial Windows qualification criteria.
+- Build a cross-platform, local-first Git client. Deliver and qualify Windows first; target macOS and Linux later. Do not use Electron.
+- Keep shared frontend, contracts, and Git service logic portable. Isolate platform-specific behavior without adding a desktop abstraction framework.
 - Prefer TypeScript and Bun. Ordinary Git work must not require cloud accounts or AI.
 - Use Tauri 2 with a compiled TypeScript/Bun Git service for the first qualification feature.
 - Do not implement Electrobun, multiple shell adapters, or a framework-independent desktop abstraction.
 - Keep the shell thin. Separate the frontend, Bun Git service, and shared operation contracts.
-- Validate the selected architecture through packaged Windows tests. Record concrete failures and their causes.
+- Validate the selected architecture through packaged Windows tests first. Record concrete failures and their causes.
 - Consider another shell only when a blocking requirement cannot reasonably be satisfied by the current architecture.
 - Do not claim Tauri is faster than Electrobun without measurements.
 - Do not scaffold or implement the application during repository preparation.
@@ -27,7 +28,7 @@
 - Do not add memory ledgers, duplicate plan hierarchies, or automatic multi-agent review loops.
 - Preserve the upstream skills, scripts, and templates unless an approved requirement needs a change.
 
-## Git and Windows safety
+## Git and platform safety
 
 - Protect user changes. Treat Git as authoritative.
 - Use the selected Git executable without silently changing user configuration.
@@ -38,7 +39,7 @@
 - Resolve linked-worktree identities through Git. Do not assume `.git` is a directory.
 - Reject stale staging selections. Verify index contents and unchanged working-file bytes in real temporary repositories.
 - Test failure, cancellation, external changes, keyboard access, and destructive-operation safeguards.
-- Verify native behavior and performance with packaged Windows builds, not browser-only tests.
+- Verify native behavior and performance with packaged builds on each supported platform, not browser-only tests.
 
 ## Tool boundaries
 

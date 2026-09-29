@@ -1,3 +1,13 @@
+<!--
+Sync Impact Report
+- Version change: 1.0.1 -> 2.0.0 (MAJOR). The amendment removes the exact-version obligation for dependencies and build tools and redefines it as minimum versions plus frozen lockfile installs.
+- Modified principles: VIII. Pinned Dependencies and Qualified Shell Selection -> VIII. Locked Dependencies and Qualified Shell Selection. The dependency rules changed. The shell-selection rules and the dependency-update rule are unchanged.
+- Added sections: none.
+- Removed sections: none.
+- Templates: .specify/templates/plan-template.md, spec-template.md, tasks-template.md, and checklist-template.md state no exact-pin rule. They stay unchanged (upstream).
+- Dependent artifacts: specs/001-desktop-qualification/ is updated to the minimum-version policy and to version 2.0.0.
+- Follow-up TODOs: none.
+-->
 # Arbareto Constitution
 
 ## Core Principles
@@ -56,9 +66,12 @@
 - Measurements MUST include input latency, UI stalls, cold/warm timings, CPU, and complete process-tree memory.
 - Missed budgets MUST remain failures unless an explicit product trade-off approves changed targets.
 
-### VIII. Pinned Dependencies and Qualified Shell Selection
+### VIII. Locked Dependencies and Qualified Shell Selection
 
-- Project dependencies and build tools MUST use exact versions or immutable revisions. Supported lockfiles MUST be committed.
+- Manifests MUST state minimum versions: a compatible range with a lower bound, such as a caret range. No exact manifest pin is required.
+- Supported lockfiles MUST be committed. They record the exact resolved versions. Builds and CI MUST install from them unchanged, for example with `bun install --frozen-lockfile` and Cargo `--locked`.
+- Exception: the Bun runtime that the service executable embeds MUST use an exact version. Its source defines the startup controls that the shell removes.
+- Build tools MUST state a minimum version. Evidence MUST record the version that ran.
 - Dependency updates MUST record review results and repeat affected qualification checks.
 - Shell selection MUST rely on packaged qualification evidence, not vendor claims or unmeasured comparisons.
 - A shell change MUST address a blocking requirement that the current architecture cannot reasonably satisfy. The decision MUST record concrete failures, causes, and attempted remedies.
@@ -98,4 +111,4 @@
 - Plans and reviews MUST identify compliance evidence or unresolved blockers for each applicable principle.
 - Unresolved violations MUST block affected merges or releases. Conflicting changes MUST wait for an approved constitutional amendment.
 
-**Version**: 1.0.1 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-09-29
+**Version**: 2.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-09-29

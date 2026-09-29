@@ -21,9 +21,14 @@ Installed with the existing `npx skills` v1.5.18 cache, using `add <local-source
 
 - The reused frontend copy came from the existing `claude-plugins-official/frontend-design/1dd995193ba2` cache. Both files matched the recorded `anthropics/skills` snapshot byte-for-byte.
 - Preserved Anthropic's Apache-2.0 license and shadcn's MIT license. Vercel's root README declares MIT but supplies no separate license text. Each Vercel skill includes that declaration in `NOTICE.md`.
+- Spec Kit v1.0.12 generated the `.specify/` scripts, templates, and workflows and the `.claude/skills/speckit-*` skills. [GitHub licenses Spec Kit under MIT](https://github.com/github/spec-kit/blob/main/LICENSE). [NOTICE.md](NOTICE.md) reproduces the Spec Kit MIT license text. The project-owned `.specify/memory/constitution.md` is not third-party material.
 - Restored React's unchanged `metadata.json`, which the installer excludes. Removed the generated lock file because it referenced temporary and machine-specific paths. The table records the upstream revisions.
 - Audited pre-execution snippets before installation. The only snippet is `bunx --bun shadcn@latest info --json`. It runs on skill activation and can download the current CLI. No snippet ran during installation.
 - Web design reviews fetch upstream guidelines from a moving `main` URL. That external content is not pinned by this snapshot.
 - Apply React guidance only to the client. Exclude Next.js, server rendering, hydration, React Server Components, server actions, API routes, and deployment guidance. Keep all upstream references for completeness.
 
 No shadcn initialization, application scaffolding, deployment skills, or additional specification process was added.
+
+## License
+
+Arbareto is free software under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`). See [LICENSE](LICENSE). [NOTICE.md](NOTICE.md) states the copyright and the section 7 additional terms. These terms require attribution and marked, renamed modified versions. They grant no trademark rights to the name "Arbareto". Third-party material listed above keeps its own license.

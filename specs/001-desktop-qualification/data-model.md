@@ -15,11 +15,11 @@ This document defines planned state, not implemented types. Git remains authorit
 | `admission` | `admitted` or `unsupported`, according to the local qualification package's minimum version: `2.55.0.windows.3` or later. |
 | `qualification` | `unverified`, `passed`, or `failed`. A pass requires recorded qualification evidence, not admission or installation presence. The source is a build-time list of version sets with recorded passing evidence. A version set is the Git version, the WebView2 version, and the OS build of one recorded passing packaged run. `passed` requires an exact match. This slice ships the list empty, so the value stays `unverified`. |
 
-Persist the selected Git path in application-owned settings. Revalidate it after restart. Never silently select another executable.
+Persist the selected Git path and its approved version text in application-owned settings. Revalidate the path after restart. Never silently select another executable. After `GIT_CHANGED` at the same path, the Git selection confirmation shows both versions (contract §3 `chooseGit`).
 
-Native settings retain the last explicitly opened repository and window bounds. Native storage also holds recovery markers (contract §6). A marker holds no message, patch, configuration, environment value, or credential. Revalidate that repository before restoring its workspace. Unknown or invalid native settings use documented defaults. This slice has no settings migration.
+Native settings retain the last explicitly opened repository and window bounds. Native storage also holds recovery markers (contract §6) and trust approval records (contract §7 "Trust approval store"). A marker holds no message, patch, configuration, environment value, or credential. A trust record holds no configuration value, command text, or credential. Revalidate that repository before restoring its workspace. Unknown or invalid native settings use documented defaults. This slice has no settings migration.
 
-Application-owned webview storage retains theme, density, and pane proportions as bounded scalar preferences. Invalid values use documented defaults. Keep drafts and per-mode selection/scroll hints in renderer memory. They survive a service restart, because the page does not reload (contract §2). Operation approvals belong to the service session, and a service restart invalidates them. UI preferences never grant Git permissions.
+Application-owned webview storage retains theme, density, and pane proportions as bounded scalar preferences. Invalid values use documented defaults. Keep drafts and per-mode selection/scroll hints in renderer memory. They survive a service restart, because the page does not reload (contract §2). Hunk approvals and commit review tokens belong to the service session, and a service restart invalidates them. Trust approvals persist in native storage (§3). UI preferences never grant Git permissions.
 
 Native-owned bootstrap contexts permit bounded probing before permanent IDs exist. Git registration follows a successful executable probe. Repository registration follows successful Git discovery. See the protocol's registration bootstrap.
 
@@ -27,7 +27,7 @@ Native-owned bootstrap contexts permit bounded probing before permanent IDs exis
 
 | Field | Meaning and validation |
 | --- | --- |
-| `repositoryId` | Random session identifier issued after registration. Not a path or Git revision expression. |
+| `repositoryId` | Random session identifier issued after registration. Not a path or Git revision expression. A registration of the same worktree identity returns the existing identifier. A registration of another common directory releases the previous one (contract §6 "Registration reuse and release"). |
 | `gitInstallationId` | Selected Git installation. |
 | `worktreeRoot` | Absolute working-tree path returned through Git discovery. |
 | `gitDirectory` | Git-resolved worktree administration directory. |
@@ -37,9 +37,10 @@ Native-owned bootstrap contexts permit bounded probing before permanent IDs exis
 | `commonIdentity` | Resolved common-directory identity. This identifies the application mutation exclusion group. |
 | `head` | Symbolic target plus object ID, detached object ID, or a validated unborn branch. |
 | `objectFormat` | Git-reported object format. Validate object IDs against that format. |
+| `refFormat` | Git-reported ref format from `--show-ref-format`: `files` or `reftable`. It selects the change-check files (contract §8 "Change check"). |
 | `operationState` | Normal, conflicted, merging, rebasing, cherry-picking, reverting, sequencer-active, or unknown. |
 | `generation` | Monotonic service counter for accepted state changes. Not proof that external state stayed unchanged. |
-| `recoveryState` | `ready`, `refreshing`, `reconciling`, `unknown`, or `unavailable`. |
+| `recoveryState` | `ready`, `refreshing`, `reconciling`, `unknown`, or `unavailable`. `unknown` takes precedence over every other value. `reconciling`: a mutation of this workspace is in operation state `reconciling`. `unavailable`: the last read got `REPOSITORY_UNAVAILABLE` for this registered workspace. `refreshing`: a `readWorkspace` with `refresh: true` runs for this workspace. `ready`: none of these holds after a complete read. |
 | `hunkEligibility` | Eligible or a bounded reason for unsupported index, registered index-change hook, executable monitor, or repository state. The built-in monitor (`core.fsmonitor=true`) is an unqualified monitor profile. |
 
 Different linked worktrees have different worktree identities and indexes. They can share one common identity.
@@ -48,21 +49,27 @@ Resolve paths through Git before filesystem canonicalization. Never derive paths
 
 On Windows, the shell supplies every volume and file identity (contract §6). An identity is the 64-bit volume serial number plus the 128-bit file ID. Keep this platform behavior outside shared Git semantics.
 
-Refuse bare repositories and Git administration folders with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is "Open a worktree of it, or clone it". For a Git administration folder, the remedy is "Open the working folder that contains it". Refuse a repository that Git reports with dubious ownership with `DUBIOUS_OWNERSHIP`. Other discovery failures use `REPOSITORY_UNAVAILABLE` with the remedy "Run `git status` in this folder". These failures include inaccessible targets and a missing `.git` file target. Opening a repository never creates a worktree or changes Git configuration.
+Refuse bare repositories and Git administration folders with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is "Open a worktree of it, or clone it". For a Git administration folder, the remedy is "Open the working folder that contains it". Refuse a repository that Git reports with dubious ownership with `DUBIOUS_OWNERSHIP`. Refuse a folder outside every repository with `NOT_A_REPOSITORY` and the remedy "Open a folder inside a Git repository." Other discovery failures use `REPOSITORY_UNAVAILABLE` with the remedy "Run `git status` in this folder". These failures include inaccessible targets and a missing `.git` file target. Opening a repository never creates a worktree or changes Git configuration.
 
 ## 3. Trust approval
 
 | Field | Meaning and validation |
 | --- | --- |
-| `trustId` | Session-scoped approval identifier. |
+| `trustId` | Identifier of the approval in this service session. The stored record persists across launches. |
 | `repositoryId` | Approved workspace. |
-| `configurationFingerprint` | Relevant effective configuration, include origins, attribute policy, and executable integration locations. |
+| `commonIdentity` | Common-directory identity and Git-resolved path that the stored record binds. |
+| `worktreeIdentity` | Worktree identity (§2) and Git-resolved worktree root and administration-directory paths that the stored record binds. The store keeps one record per worktree. Approving one linked worktree never changes the record of another. |
+| `gitInstallationDigest` | Executable identity digest of the selected Git installation that the stored record binds (§1). |
+| `configurationFingerprint` | Digest of relevant effective configuration, include origins, attribute policy, and executable integration locations. It also covers the SHA-256 digest of each program or hook file that a repository-controlled integration names. Only files inside the worktree root, the Git directory, or the common directory count. A bare-name program that relative `PATH` entries resolve to a repository file counts too. The bounds are 64 files, 1 MiB per file, and 8 MiB in total (contract §7 "Program file digests"). A file beyond a bound enters as `unchecked`. `readTrust` returns the fingerprint, and a stored record binds it. |
+| `persistence` | `stored` or `session`. It is `session` when a digest bound is reached. A session approval lasts until the service session ends and writes no record. |
 | `approvedExecution` | Explicit approval for repository-controlled hooks, filters, and configured tools. |
 | `approvalRequired` | Two flags from contract §7 "Mutation trust": one for reads and one for `commit`. |
-| `approvedAt` | Local timestamp for display and qualification records. |
-| `state` | `untrusted`, `approved`, `changed`, or `revoked`. |
+| `approvedAt` | Local timestamp for display and qualification records. The stored record keeps it. |
+| `state` | `untrusted`, `approved`, `changed`, or `revoked`. Contract §7 "Trust approval store" derives it from the stored records. |
 
 Approval permits code execution; it does not make repository code harmless. Explain that consequence before approval.
+
+Approval persists across launches in native storage. A native confirmation precedes each approval (contract §7). Over a digest bound, the approval stays in the service session only, and the confirmation states why. The next session then reports `untrusted`. A change of the common or worktree identity, the Git installation digest, or the fingerprint gives state `changed` and `TRUST_CHANGED`. An edit of a repository-controlled hook or program file changes the fingerprint. Only a renewed explicit approval clears it. Without required approval, `changed` is informational and blocks nothing (contract §7 "Mutation trust"). Revoke trust deletes the stored records of every worktree of that common directory.
 
 Configuration changes invalidate approval and dependent selections. Missing approval blocks each operation that can run a repository-controlled integration (contract §7). It never authorizes bypassing required hooks.
 
@@ -75,7 +82,7 @@ Custom filters remain outside hunk support even after trust approval. Do not per
 | `snapshotId` | Opaque identifier for one validated observation. |
 | `repositoryId`, `generation` | Workspace and service generation that produced the observation. |
 | `head` | Symbolic target and resolved object ID, including the unborn distinction. |
-| `indexFingerprint` | Full-index content digest and Git-derived entries. Include referenced split-index state when applicable. |
+| `indexFingerprint` | Full-index content digest and Git-derived entries. Include referenced split-index state when applicable. Split-index state comes from the raw index `link` extension, which names the shared index file (contract §4). |
 | `indexEntries` | Literal path identity, stage, mode, object ID, and the intent-to-add, assume-unchanged, and skip-worktree flags. |
 | `workingVersions` | Selected-path existence, type, mode, raw-byte digest, and normalized content identity. |
 | `policyFingerprint` | Relevant attributes, trust approval, configuration, and Git installation identity. |
@@ -93,7 +100,7 @@ Index validation covers the whole index, not only the displayed path. Incomplete
 
 | Field | Meaning and validation |
 | --- | --- |
-| Repository/snapshot | Registered workspace and captured snapshot; never an arbitrary renderer revision. |
+| Repository/generation | Registered workspace and the request `repositoryGeneration`; never an arbitrary renderer revision. The page does not wait for a status snapshot (contract §3 `readHistory`). |
 | Captured checkout | Full HEAD OID and symbolic target, including detached or unborn state. |
 | Scope | `current-checkout`; at most 100 reachable commit rows. |
 | Commit row | Full OID, ordered effective parent OIDs, subject, author, date, and the commit's `encoding` header value or none. |
@@ -105,13 +112,13 @@ Resolve shallow metadata through Git and include its bounded fingerprint in read
 
 Renderer state owns `selectedOid`, scroll anchor, and derived lane geometry. At most 24 lanes and 4,096 segments can render. Layout overflow retains rows and parent text; it does not change Git eligibility or data completeness.
 
-Graph positions are not Git identities or mutation approvals. Current HEAD/branch badges reflect the captured checkout only. No graph action changes a reference or fetches missing history.
+Graph positions are not Git identities or mutation approvals. Current HEAD/branch labels reflect the captured checkout only. They sit at the start of the subject cell, not in the graph cell. No graph action changes a reference or fetches missing history.
 
 ## 5. Change entry and file comparison
 
 | Entity | Fields and rules |
 | --- | --- |
-| Change entry | `entryId`, literal path bytes, display path, category, source path, modes, object IDs, conflict stages, and limitation. |
+| Change entry | `entryId`, literal path bytes, display path, category, source path, modes, object IDs, conflict stages, limitation, and limitation remedy. The remedy is a copyable whole-file command or none (contract §4 "Limitation remedies"). |
 | Comparison | `comparisonId`, snapshot, entry, scope, canonical service diff, hunk identifiers, completeness, and support decision. |
 | Hunk | `hunkId`, ordinal, old/new ranges, exact canonical hunk digest, and service-owned application data. |
 | Support decision | `supported` or an explicit reason: binary, encoding, size, rename, mode, type, symlink, submodule, LFS, filter, state, `line-endings`, `index-flag`, or `path`. |
@@ -138,7 +145,7 @@ The service retains the authoritative hunk data. The renderer receives display d
 | Commit review | Repository, snapshot, complete staged scope, retained reviewed index, HEAD target/OID, execution-policy disclosure, trust, and review token. |
 | Commit request | Review token, message, and explicit confirmation of the complete staged scope. The service issues the operation identifier in its accepted response. |
 
-Tokens expire on refresh, relevant state change, service restart, or successful consumption. Contract §8 "Token invalidation" defines refresh and relevant state change. A consumed token stays bound to its operation for the rest of the service session. A repeated request with that token returns the operation's state and `operationId` (contract §2). Other expired tokens require a new review or selection.
+Tokens expire on refresh, relevant state change, service restart, or successful consumption. Contract §8 "Token invalidation" defines refresh and relevant state change. After a hunk approval expires, the renderer requests the comparison again. It keeps a hunk whose canonical digest stays unchanged (contract §8). A consumed token stays bound to its operation for the rest of the service session. A repeated request with that token returns the operation's state and `operationId` (contract §2). Other expired tokens require a new review or selection.
 
 Reject duplicate submissions while an operation is active. Never retry a mutation automatically after a lost response or service restart.
 
@@ -168,7 +175,7 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `phase` | Bounded operation phase, including preflight, candidate verification, publication, commit handoff, and reconciliation where applicable. |
 | `ownedProcesses` | Native process handles and operation Job identity. Never process-name matching. |
 | `limits` | Output, duration, concurrency, and framing limits from the protocol. |
-| `result` | Typed success, refusal, failure, limit, interruption, or unknown-state result. An `unknown` result names its attribution reason: `ambiguous`, `evidence-limit`, or `no-retained-request`. Contract §9 maps each terminal state to its result code. |
+| `result` | Typed success, refusal, failure, limit, interruption, or unknown-state result. An `unknown` result names its attribution reason: `ambiguous`, `evidence-limit`, or `no-retained-request`. A hunk recovery names its index match: `published`, `not-published`, or `neither` (contract §8). Contract §9 maps each terminal state to its result code. |
 | `effects` | Reconciled HEAD, index, working-file, and operation-state differences. |
 | `diagnostic` | Bounded error code and safe explanation. No raw environment, repository content, or credentials. |
 
@@ -193,13 +200,14 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `reconciling` | State or commit attribution cannot be determined | `unknown`; keep mutations blocked and keep the recovery marker. |
 | `unknown` | Explicit recovery refresh completes recovery reconciliation (contract §8) | Workspace becomes `ready`. The refresh result states the prior outcome, also an `unknown` attribution. The recovery marker is resolved. Prior tokens remain invalid. |
 | `unknown` | A status-only read succeeds, or recovery reconciliation fails (contract §8) | Remain blocked. A status-only read cannot release this gate. |
-| none | Registration or restore matches a recovery marker from an earlier session | Workspace starts `unknown`. Its recovery refresh reports attribution reason `no-retained-request`. |
+| none | Registration or restore matches an unresolved recovery marker | Workspace starts `unknown`. Without a retained request, its recovery refresh reports reason `no-retained-request`. |
+| none | Registration or restore in a session after Restart service | Workspace starts `unknown` (FR-023). Only a `refresh: true` read in that session releases it (contract §8 "Service restart"). |
 
 Keep required verification data while recovery remains blocked. Apply the contract's aggregate reference/reflog byte and record limits to each reconciliation attempt.
 
 A process exit code does not determine mutation success. Inspect Git state and working-file bytes before reporting the result.
 
-On closure during mutation, offer staying open or interrupting and closing. After restart, obtain fresh Git state before accepting mutations. A recovery marker keeps an unresolved outcome across restart (contract §6).
+On closure during mutation, offer staying open or interrupting and closing. After restart, obtain fresh Git state before accepting mutations. A recovery marker keeps an unresolved outcome across restart (contract §6). After Restart service, every workspace stays `unknown` until an explicit refresh in the new session (FR-023). The renderer runs `restoreWorkspace` again, because old identifiers stay invalid.
 
 ## 8. Qualification record
 
@@ -215,4 +223,4 @@ Each record contains:
 - Failure cause, attempted remedy, retest result, remaining blocker, and decision impact.
 - Raw evidence location and digest where applicable. Redact secrets before retaining evidence.
 
-Source inspection records use a separate `source-inspected` label. They cannot pass packaged Windows scenarios.
+A scenario record result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence column names `source-inspected`. The research.md R10 evidence-group table may use that label as a status. Source inspection never passes a packaged Windows scenario.

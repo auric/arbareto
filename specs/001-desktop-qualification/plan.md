@@ -20,13 +20,15 @@ See [research.md](research.md) for the resolved design decisions, source citatio
 
 ## Technical Context
 
-**Language/Version**: TypeScript `7.0.2`, Bun `1.4.2`, Rust/Cargo `1.98.0`. Versions are minimum versions, verified on 2026-09-29, except Bun. Bun `1.4.2` is exact, because the service executable embeds it and its source defines the startup controls that the shell removes. Native code serves IPC, Windows lifecycle, native machine detection, and WebView2 control requirements only. Native build tools: MSVC toolset `14.51.36231` and Windows SDK `10.0.26100.0`, as minimum versions. NSIS `3.11` is the version that the pinned Tauri bundler downloads and checks by hash (research.md R7). Each is the lowest verified version. On 2026-09-29, a Rust `x86_64-pc-windows-msvc` probe link on the reference host selected them (research.md R6).
+**Language/Version**: TypeScript `7.0.2`, Bun `1.4.2`, Rust/Cargo `1.98.0`. Versions are minimum versions, verified on 2026-09-29, except Bun. Bun `1.4.2` is exact, because the service executable embeds it and its source defines the startup controls that the shell removes. Native code serves IPC, Windows lifecycle, native machine detection, and WebView2 control requirements only. Native build tools: MSVC toolset `14.51.36231` and Windows SDK `10.0.26100.0`, as minimum versions. NSIS `3.11` is the version that the pinned Tauri bundler downloads and checks by hash (research.md R7). Each is the version that the reference host used on 2026-09-29. A Rust `x86_64-pc-windows-msvc` probe link on the reference host selected them (research.md R6).
+
+**Development tools that declare Node** (Constitution II): the npm registry `engines` fields on 2026-09-30 declare these Node ranges. `typescript` `7.0.2` and its native package `@typescript/typescript-win32-x64` `7.0.2`: `>=16.20.0`. `vite` `8.3.1`, `@vitejs/plugin-react` `6.1.1`, and the transitive `rolldown` `1.2.9`: `^20.19.0 || >=22.12.0`. `shadcn` `4.21.0`: `>=20.18.1`. The transitive `@tailwindcss/oxide` `4.3.3`: `>= 20`. The transitive `lightningcss` `1.32.0` and `1.33.0`: `>= 12.0.0`. `tailwindcss` `4.3.3`, `@tailwindcss/vite` `4.3.3`, `@types/react`, `@types/react-dom`, and `@types/bun` declare no `engines` field. Mitigation: every tool runs under Bun through `bunx --bun` or `bun run` (T003, T065, T123, T149). The `--bun` flag makes Bun run a package binary that has a Node shebang. No build under Bun has run yet, so Bun compatibility stays unverified until T065. None of these tools enters the product runtime. T154 confirms that the bundle holds no Node executable (research.md R9).
 
 **Primary Dependencies**: Minimum versions, verified on 2026-09-29: React/DOM `19.3.0`; Vite `8.3.1`; React plugin `6.1.1`; Tailwind/Vite plugin `4.3.3`. UI libraries: Base UI `1.8.0`, Pierre Diffs `1.5.1`, and TanStack React Virtual `3.14.13`. Use shadcn `4.21.0` for selected Base UI components, not a second component system.
 
 **Desktop Dependencies**: Minimum versions, verified on 2026-09-29: Tauri/API/CLI `2.12.0`; `tauri-build` `2.7.0`; native dialog `2.8.0`; Win32 bindings `windows` `0.62.0`. Declare WebView2 COM bindings `webview2-com` `0.39.1` as a direct dependency. Declare `serde` `1.0.228` and `serde_json` `1.0.145`. Tauri's lock selects these versions at the pinned revision. Wry `0.57.0` requires `^0.39`, and Tauri's lock selects `0.39.1`. Typed Rust commands own dialogs; omit the dialog JS package. Use native `cargo-tauri`, not an unverified Node-wrapper substitution.
 
-**Storage**: Git repositories remain authoritative. Store selected Git, last repository, and window bounds in application-owned native settings. Persist theme, density, and pane proportions as bounded webview preferences. Keep snapshots and approvals in the service session. Keep drafts and view hints in renderer memory; they survive a service restart. No database, event store, or durable operation queue.
+**Storage**: Git repositories remain authoritative. Store selected Git, last repository, and window bounds in application-owned native settings. Store recovery markers and trust approval records in application-owned native storage (contract §6 and §7). Persist theme, density, and pane proportions as bounded webview preferences. Keep snapshots, hunk approvals, and commit review tokens in the service session. Keep drafts and view hints in renderer memory; they survive a service restart. No database, event store, or durable operation queue.
 
 **Testing**: Bun contract/parser tests and real disposable Git repositories. Add Rust tests for native ownership and framing. Qualify installed release builds through Windows interactions and process measurements. Browser tests cannot pass native gates.
 
@@ -42,12 +44,12 @@ See [research.md](research.md) for the resolved design decisions, source citatio
 
 ### Provisional prerequisite admission
 
-Admit Git and WebView2 from a minimum version in local qualification packages. Each minimum is the lowest verified version. The lowest verified version is the lowest version with a recorded passing packaged run on the reference host. T065 and T154 record the versions that ran. A lower minimum needs its own recorded passing run. Neither minimum is an upstream requirement or a forward-compatibility claim.
+Admit Git and WebView2 from a minimum version in local qualification packages. Each minimum is the version on the reference host on 2026-09-29. No packaged run has passed yet. So each minimum stays provisional until T065 and T154 record a passing run with it. A failed run changes no minimum. It records `fail` with its cause in research.md R10, and the affected gate stays blocked. Raising a minimum to a version with a passing run needs a recorded review and repeated affected qualification. A lower minimum needs its own recorded passing run. Neither minimum is an upstream requirement or a forward-compatibility claim.
 
 | Prerequisite | Admitted versions | Rejection |
 | --- | --- | --- |
-| Git | Git for Windows x64 `2.55.0.windows.3` or later. This value is the lowest verified version, not an upstream requirement. Compare `major.minor.patch` numerically, then the `windows.N` number. | Missing: `GIT_UNAVAILABLE`. A lower or unparseable version, another architecture, or an unrecognized implementation: `GIT_UNSUPPORTED`. |
-| WebView2 | Windows x64 runtime `154.0.4258.37` or later. This value is the lowest verified version, not an upstream requirement. Compare the four numeric parts numerically. | Missing: `WEBVIEW_UNAVAILABLE`. A lower or unparseable version: `WEBVIEW_UNSUPPORTED`. |
+| Git | Git for Windows x64 `2.55.0.windows.3` or later. This value is the provisional reference-host version, not an upstream requirement. Compare `major.minor.patch` numerically, then the `windows.N` number. | Missing: `GIT_UNAVAILABLE`. A lower or unparseable version, another architecture, or an unrecognized implementation: `GIT_UNSUPPORTED`. |
+| WebView2 | Windows x64 runtime `154.0.4258.37` or later. This value is the provisional reference-host version, not an upstream requirement. Compare the four numeric parts numerically. | Missing: `WEBVIEW_UNAVAILABLE`. A lower or unparseable version: `WEBVIEW_UNSUPPORTED`. |
 | Platform | Windows 11 x64 on a native AMD64 machine: `getEnvironment` reports platform scope `qualification-target`. Windows 11 needs OS build 22000 or later and product type `VER_NT_WORKSTATION` from `RtlGetVersion`. Windows Server 2025 also reports build 26100, so the product type separates it. | Not rejected. Other builds or machines report `other` and run with the "Unqualified platform" label. No error code applies. |
 
 “Admitted” permits qualification testing. “Qualified” requires recorded passing evidence. No admitted version of either prerequisite is tested yet. The runtime `qualification` status comes from a build-time list of version sets with recorded passing evidence (data-model §1). This slice ships that list empty, so `qualification` stays `unverified`.
@@ -63,7 +65,7 @@ Keep the clean-install environment offline after prerequisite installation. On t
 ### Tool and runtime boundaries
 
 - Run Vite explicitly under Bun. Do not rely on its Node shebang.
-- Disclose Node-engine requirements in development tools. Do not ship those tools or Node with the product.
+- Disclose Node-engine requirements in development tools (Technical Context lists each range). Do not ship those tools or Node with the product.
 - Compile the Bun service for Windows x64. Disable runtime configuration autoload using the verified Bun flags.
 - Launch the service from an application-owned directory. Never use a checked-out repository as its startup directory.
 - Use the installed Git executable selected by the user. Do not bundle Git or alter global configuration.
@@ -81,10 +83,10 @@ Keep the clean-install environment offline after prerequisite installation. On t
 | Principle | Planning evidence | Post-design status |
 | --- | --- | --- |
 | I. Preserve User Data | Exact hunk effects, canonical Git commits, no bypasses, no rollback, explicit late effects. | Design conforms to the approved policy; runtime tests remain unverified. |
-| II. TypeScript/Bun and Minimal Native Code | Shared TypeScript logic; Rust only for shell, IPC, Windows process ownership, and bounded platform calls. `IsWow64Process2` reads the native machine, which the x64 service cannot observe. The WebView2 `ProcessFailed` subscription covers renderer failure, which wry does not handle. The `with_webview` accelerator setting has no Tauri configuration key. Contract §6 adds `FileIdInfo` identity requests and recovery marker files. T140 calls `TaskDialogIndirect` for a safe close prompt (research R7). | Design conforms. Packaged runtime evidence remains unverified. |
+| II. TypeScript/Bun and Minimal Native Code | Shared TypeScript logic; Rust only for shell, IPC, Windows process ownership, and bounded platform calls. `IsWow64Process2` reads the native machine, which the x64 service cannot observe. The WebView2 `ProcessFailed` subscription covers renderer failure, which wry does not handle. The WebView2 `AcceleratorKeyPressed` and `ContextMenuRequested` handlers block browser keys and page menu items, and Tauri exposes neither (research R7). Contract §6 adds `FileIdInfo` identity requests and recovery marker files. T140 calls `TaskDialogIndirect` for a safe close prompt (research R7). T060 uses the same call for the Git selection, trust approval, and marker dismissal confirmations. | Design conforms. Packaged runtime evidence remains unverified. |
 | III. Validated Operation Boundaries | Typed operations, fresh checkpoints, owned index lock, bounds, and explicit handoff. | Design defined; no repository-wide atomicity claim. |
 | IV. Real Git State Verification | Exact ordinary fixtures and separate controlled-writer assertions. | Test design defined; no tests run. |
-| V. Untrusted Repositories | Fingerprint-bound trust; conditional mutation trust (contract §7); unsafe hunk profiles refused; approved commit hooks preserved. | No hook bypass or configuration change; runtime qualification remains unverified. |
+| V. Untrusted Repositories | Fingerprint-bound persistent trust with a native confirmation; conditional mutation trust (contract §7); unsafe hunk profiles refused; approved commit hooks preserved. | No hook bypass or configuration change; runtime qualification remains unverified. |
 | VI. Platform-Specific Evidence | Installed Windows checks and explicit unsupported platforms. | Unverified. No browser result counts as Windows evidence. |
 | VII. Accessible and Measured Interface | Keyboard, contrast, focus, density, DPI, IME, and fixed measurements, including SC-015 matched-condition targets. | Validation defined; unverified. |
 | VIII. Locked Dependencies and Shell Selection | Minimum-version manifests, committed lockfiles, frozen installs, an exact embedded Bun runtime, and immutable research citations. Matched-condition comparison methods and dependency reviews (research R10). | Tauri retained without superiority claims. Runtime qualification remains unverified. |
@@ -113,7 +115,7 @@ specs/001-desktop-qualification/
     └── qualification.md
 ```
 
-`/speckit-tasks` created `tasks.md`. It holds T001 to T187. The spec records graph requirements and the approved commit clarification. Its quality checklist remains separate from implementation qualification.
+`/speckit-tasks` created `tasks.md`. It holds T001 to T193. The spec records graph requirements and the approved commit clarification. Its quality checklist remains separate from implementation qualification.
 
 ### Proposed source layout: not created
 
@@ -144,7 +146,9 @@ The frontend owns presentation and interaction. The service owns Git semantics a
 
 Make the diff the main work surface. Lists identify scope; the bottom tray prepares the complete commit. Use flat panes and useful separators, not decorative cards.
 
-Keep native Windows caption, resize, snap, and system-menu behavior. Use one persistent repository header with View and Help menus, and a Changes/History mode bar. History includes the bounded read-only graph. Do not add AI, remote-operation, search, or future-feature controls.
+Keep native Windows caption, resize, snap, and system-menu behavior. Use one persistent repository header with a menu bar (repository, View, and Help menus), and a Changes/History mode bar. History includes the bounded read-only graph. Do not add AI, remote-operation, search, or future-feature controls.
+
+Application context menus are deferred in this slice (spec Clarifications, 2026-09-30). This defers the "keyboard and context-menu equivalents" item of `docs/project-brief.md` line 101 for context menus only. Every action stays reachable by a visible control and by keyboard. The built-in page menu keeps only Cut, Copy, Paste, and Select all for editable and selected text (research R7).
 
 This section plans the interface only. Mutation eligibility follows the explicit profile, checkpoint, and outcome rules below. Show actionable refusal reasons, not internal design-blocker identifiers.
 
@@ -242,7 +246,7 @@ All sizes below are client-area DIPs/CSS pixels, excluding the native caption. T
 | --- | --- |
 | Wide: width at least 1120, height at least 640 | Changes lane defaults to 280 DIPs. Diff fills remaining width. Commit tray spans the bottom. |
 | Narrow: width 960–1119, height at least 640 | Working changes and Staged sections share a horizontal file band above the full-width diff. Commit tray remains below. |
-| Constrained: width 720–959 or height 480–639 | Use the same sections in one vertically scrolling work area. History stacks the list and the inspector; the list keeps its own bounded scroll region, at least 220 DIPs high. Keep header, mode navigation, and operation status reachable. The comparison keeps its own bounded scroll region, at least 220 DIPs high. The work area never grows to the full diff height. Wheel and keyboard scrolling must not trap focus. F6 reaches every section. |
+| Constrained: width 720–959 or height 480–639 | Use the same sections in one vertically scrolling work area. History stacks the list and the inspector; the list keeps its own bounded scroll region, at least 220 DIPs high. Keep header, mode navigation, and operation status reachable. The comparison keeps its own bounded scroll region, at least 220 DIPs high. The work area never grows to the full diff height. Wheel and keyboard scrolling must not trap focus. F6 reaches every visible section ("Keyboard and focus"). |
 | Native minimum | 720×480 DIPs. Qualify snap regions only when their client area meets this minimum. |
 | Full-workbench floor | 960×640 DIPs. Smaller supported windows use the constrained profile rather than clipped panes. |
 
@@ -252,6 +256,16 @@ The tray minimum is 144 DIPs compact or 160 DIPs comfortable. Limit expansion to
 
 In narrow mode, the file band defaults to 128 DIPs and permits 96–160 DIPs. Keep at least 220 DIPs for the comparison pane. Pane minima include their headers and toolbars.
 
+Height budget. The fixed rows are the header, the mode bar, and the status bar (density table). Each horizontal splitter takes 8 DIPs. At the smallest size of a profile, fixed rows, splitters, and section minima must fit the client height:
+
+| Profile at its minimum size | Compact | Comfortable |
+| --- | ---: | ---: |
+| Narrow, 960×640: fixed rows, 2 splitters, file band 96, comparison 220, tray minimum | 40+32+32+16+96+220+144 = 580 | 44+36+36+16+96+220+160 = 608 |
+| Wide, 1120×640: fixed rows, 1 splitter, comparison 240, tray minimum | 40+32+32+8+240+144 = 496 | 44+36+36+8+240+160 = 524 |
+| Wide History, 1120×640: fixed rows, 1 splitter, list 240, inspector minimum | 496 | 524 |
+
+Default sizes do not always fit. At 960×640 comfortable, the 128 DIP band and the 192 DIP tray leave 188 DIPs for the comparison. Layout then clamps the band and the tray toward their minima until the comparison has 220 DIPs. Only when minima cannot fit does the constrained profile apply.
+
 Clamp default sizes to available space before layout. Shrink resizable sections to their minima before using the constrained scrolling profile. Font or control measurements can require that profile even above the nominal full-workbench floor.
 
 Working changes contains distinct Unstaged and Untracked subgroups with labelled counts. Show a separate Conflicted subgroup first when present. Staged remains a separate section. A path appears in every applicable category, including staged deletion with an untracked replacement.
@@ -260,7 +274,7 @@ Working changes and Staged have labelled headers and independent scroll position
 
 Use an 8 DIP splitter hit area with a thin visible rule. Add accessible separator names, orientation, bounds, and current values. Pointer capture must release after cancellation or lost capture.
 
-History uses a full-width, row-aligned ancestry graph and a compact selected-commit inspector below. Show commit ID, subject, author, date, and parent relationships. Hide the commit composer without clearing its draft.
+History uses a full-width, row-aligned ancestry graph and a compact selected-commit inspector below. Show commit ID, subject, author, date, and parent relationships. The inspector also shows the static line "Changed files are not shown in this version." It holds no control for that line. Hide the commit composer without clearing its draft.
 
 The commit tray (Changes) and the selected-commit inspector (History) share one bottom region and one remembered height. That region uses the tray bounds: 168/192 DIP default, 144/160 DIP minimum, and 35% maximum. The list above keeps its height when the mode changes. Keep at least 240 DIPs for the History list, as for the wide comparison pane.
 
@@ -291,8 +305,13 @@ Use eight base roles per theme. These values are proposals for rendered qualific
 | Removed/error | `#F0A4AB` / `#38232B` | `#9F2636` / `#FCECEE` | Minus marker or error icon, with explicit text. |
 | Warning/stale | `#E6C479` / `#332D1E` | `#765500` / `#FFF4D4` | Warning icon and actionable explanation. |
 | Selected row | Text / `#2B3C54` | Text / `#DCE8FA` | Selection marker, scope label, and accessible selected state. |
+| Selected hunk | Accent bar on Surface | Accent bar on Surface | A 3 DIP left bar beside the hunk lines and the visible label "Selected hunk" in the hunk header. |
 
 Keep action blue distinct from added/removed semantics. Do not color entire panes to indicate status. The primary accent button uses Surface as its text color.
+
+The selected hunk shape differs from the focus outline. The focus outline surrounds the focused element on all four sides. The selected-hunk bar marks only the left edge, and its label names the state in text. Both can appear together.
+
+Controls on a Selected row fill draw no Control border. Control border on the dark Selected row is 2.36:1, below the 3:1 non-text threshold. Such a control keeps its text label and the focus outline.
 
 Use a two-DIP focus outline with a two-DIP offset. Reserve enough space to prevent clipping. Do not remove outlines inside Pierre's shadow root.
 
@@ -300,13 +319,13 @@ Hover never selects, focuses, or activates, and it never carries the only copy o
 
 Disabled controls use Muted text and a Divider border, with no Accent; they are exempt from the 3:1 control threshold. Every disabled mutation control keeps its visible reason text. Use Base UI `focusableWhenDisabled` for these controls.
 
-The numeric sRGB check passed 30 selected token pairs, including text on the Selected row and Hover fill. Minimum normal-text contrast was 5.06:1 (muted text on the light Selected row); control-border contrast was at least 3.36:1. The focus/accent contrast on selected fills was at least 5.18:1.
+The numeric sRGB check passed 30 selected token pairs, including text on the Selected row and Hover fill. Minimum normal-text contrast was 5.06:1 (muted text on the light Selected row); control-border contrast was at least 3.36:1. The focus/accent contrast on selected fills was at least 5.18:1. Control border on the Selected row fill is outside that set, because the rule above forbids it. The selected-hunk bar (Accent on Surface) is 7.57:1 dark and 6.42:1 light, from the 2026-09-30 numeric check.
 
 Dividers are decorative and need no 3:1 contrast. For information, divider contrast is 1.49:1 on Canvas and 1.34:1 on Surface (dark), and 1.21:1 and 1.32:1 (light). A keyboard-focused splitter shows the focus ring. Qualify splitter discoverability in the rendered accessibility review.
 
 These calculations do not qualify syntax palettes, composited overlays, or rendered focus. T158 measures them and every token pair in installed-build captures with `tests/windows/contrast.ts` (T179). Text needs 4.5:1, and non-text parts need 3:1. Respect forced colors and reduced motion.
 
-The CSS Color Adjust Level 1 forced-colors list includes `fill` and `stroke`. Chromium's user-agent sheet sets `forced-color-adjust: preserve-parent-color` on `svg`, so explicit SVG fills and strokes keep their author colors. Under `@media (forced-colors: active)`, draw lanes and nodes with system colors or `currentColor`. Selection uses Highlight and HighlightText, and the focus outline uses Highlight. The selected hunk uses a Highlight border, diff lines keep plus/minus glyphs, and disabled controls use GrayText. Sources: [spec §3.1–3.2](https://www.w3.org/TR/2025/CR-css-color-adjust-1-20251216/#forced-colors-properties), [Chromium svg.css](https://github.com/chromium/chromium/blob/f77ee1168aca5bac8a0a24ab92867858321f5c12/third_party/blink/renderer/core/css/svg.css#L92-L104); source inspection only, not a WebView2 run.
+The CSS Color Adjust Level 1 forced-colors list includes `fill` and `stroke`. Chromium's user-agent sheet sets `forced-color-adjust: preserve-parent-color` on `svg`, so explicit SVG fills and strokes keep their author colors. Under `@media (forced-colors: active)`, draw lanes and nodes with system colors or `currentColor`. Selection uses Highlight and HighlightText, and the focus outline uses Highlight. The selected-hunk bar uses Highlight, and its label uses CanvasText. Diff lines keep plus/minus glyphs, and disabled controls use GrayText. Sources: [spec §3.1–3.2](https://www.w3.org/TR/2025/CR-css-color-adjust-1-20251216/#forced-colors-properties), [Chromium svg.css](https://github.com/chromium/chromium/blob/f77ee1168aca5bac8a0a24ab92867858321f5c12/third_party/blink/renderer/core/css/svg.css#L92-L104); source inspection only, not a WebView2 run.
 
 Use Segoe UI Variable, Segoe UI, then system sans-serif. Use Cascadia Code, Consolas, then system monospace for diffs and object IDs. Do not download fonts or copy T3's tiny metadata scale.
 
@@ -316,15 +335,22 @@ Use Segoe UI Variable, Segoe UI, then system sans-serif. Use Cascadia Code, Cons
 | Code/message text | 12 / 18 DIP line height | 13 / 20 DIP line height |
 | File/history row | 26 DIPs | 34 DIPs |
 | Standard button | 28 DIPs high | 36 DIPs high |
-| Pane heading | 28 DIPs high | 34 DIPs high |
+| Row button (pane headings, toolbars, status bar, mode tabs) | 24 DIPs high | 28 DIPs high |
+| Pane heading | 32 DIPs high | 36 DIPs high |
+| Header row (standard buttons and menu bar) | 40 DIPs high | 44 DIPs high |
+| Mode bar | 32 DIPs high | 36 DIPs high |
+| Hunk toolbar | 32 DIPs high | 36 DIPs high |
+| Status bar | 32 DIPs high | 36 DIPs high |
+
+A row that holds a control is at least 8 DIPs taller than that control. This leaves room for the 2 DIP focus outline and its 2 DIP offset on both sides. Pane headings, toolbars, the mode bar, and the status bar use the row button. The header, the commit tray, and dialogs use the standard button. The 24 DIP row button meets the 24×24 minimum target size of WCAG 2.2 (2.5.8).
 
 Use 4/8/12/16 DIP spacing, 4 DIP control corners, and square pane boundaries. Avoid all-caps labels and decorative monospace metadata. Keep helper prose below 80 characters where practical.
 
-Soft-wrap the message without inserting line breaks into its value. Use unified diffs in this slice, preserving code lines with horizontal scrolling. Disable code ligatures where they obscure literal operators.
+Soft-wrap the message without inserting line breaks into its value. Use unified diffs in this slice, preserving code lines with horizontal scrolling. Turn code ligatures off (`font-variant-ligatures: none`) in diffs and object IDs, so literal operators stay visible.
 
 Default Theme to System, with explicit Light and Dark choices. Default density to Compact, with Comfortable as the option (constitution VII). Put theme, density, and Reset pane sizes in a small View menu. Use no animated page entrances or shimmering placeholders.
 
-The repository menu exposes the selected Git path/version and Select Git. It shows the "Unqualified platform" label when it applies. It also provides Review repository trust and Revoke trust. Approval uses the issued fingerprint and explicit Approve for this session or Cancel actions. Never preselect approval; revocation does not silently cancel running work.
+The repository menu exposes the selected Git path/version and Select Git. Select Git first proposes a found `git.exe` in the native Git selection confirmation (contract §3 "Git proposal"). Its buttons are Use this Git, Choose another Git, and Cancel, the default. After a Git update at the same path (`GIT_CHANGED`), that confirmation shows the old and new versions. Nothing is selected without explicit approval (FR-003). It shows the "Unqualified platform" label when it applies. It also provides Review repository trust and Revoke trust. Approval uses the issued fingerprint and explicit Approve or Cancel actions. A native confirmation then names the repository and the fingerprint, and Cancel is its default (contract §7). Approval persists across launches until Revoke trust deletes it. Never preselect approval; revocation does not silently cancel running work.
 
 A small Help menu holds one item, About Arbareto. It opens the About window below. The View and repository menus stay unchanged.
 
@@ -332,12 +358,12 @@ A small Help menu holds one item, About Arbareto. It opens the About window belo
 
 | Task | Required interaction |
 | --- | --- |
-| Review a diff | Select a category entry. The sticky header names path, scope, and comparison sides. |
-| Select a hunk | Use an explicit hunk control or keyboard navigation. Mark the selected hunk without relying on its fill color. |
-| Stage or unstage | Show Stage selected hunk for Unstaged or Untracked text, and Unstage selected hunk only for Staged. |
+| Review a diff | Select a category entry. The sticky header names path, scope, and comparison sides. On open, no entry is selected (spec Clarifications, 2026-09-30). |
+| Select a hunk | Next hunk and Previous hunk select a hunk, as do Alt+Down and Alt+Up. Mark the selected hunk with its bar and label, not its fill color. |
+| Stage or unstage | Show Stage selected hunk for Unstaged or Untracked text, and Unstage selected hunk only for Staged. The Unstaged heading carries one line of help: "Stage changes one hunk at a time: select a file, then a hunk." |
 | Inspect the index | Select the staged entry, even when the same path also appears unstaged. Never infer scope from filename alone. |
 | Compose a commit | Keep the plain multiline message and complete staged-file count visible in the bottom tray. |
-| Review and commit | Review commit opens a bounded scope dialog containing repository, HEAD, full staged list, and message preview. |
+| Review and commit | Review commit opens a bounded scope dialog containing repository, HEAD, full staged list, and message preview. The button label shows its key: "Review commit (Ctrl+Enter)". The Refresh button reads "Refresh (F5)". Key hints are visible text, not tooltips, and add no control. |
 | Confirm | Commit staged changes requires a separate explicit activation after review. It is never the message field's Enter behavior. |
 | Switch modes | Change the content region, not the repository or checkout. Restore valid per-mode context without replaying operations. |
 
@@ -350,7 +376,7 @@ Use explicit comparison labels:
 
 Hunk controls live outside deprecated Pierre separator callbacks. Map them to service-issued hunk IDs. Keep them disabled for unsupported, conflicted, incomplete, stale, expired, busy, or safety-blocked state. Also keep them disabled when reads need trust approval, or the trust fingerprint changed.
 
-A successful hunk action refreshes both categories and the comparison. Clear the old hunk selection. Do not automatically select another hunk or change comparison scope.
+A successful hunk action refreshes both categories and the comparison. Clear the old hunk selection. Do not automatically select another hunk or change comparison scope. Anchor the viewport to the surviving hunk with the same ordinal, or to the last hunk when fewer remain. Anchoring does not select that hunk and shows no notice. The status region shows "Hunk staged" or "Hunk unstaged" ("Required visible states", Succeeded).
 
 Commit review includes externally staged binary or otherwise unsupported files as explicit metadata. Do not imply that an unpreviewed file is absent from the commit.
 
@@ -358,7 +384,9 @@ Review states: “Git will run approved hooks. They or other Git tools can chang
 
 Commit failure retains the message and shows the actual outcome. Bind each submission to its worktree, draft revision, and submitted text in renderer state.
 
-A reconciled `succeeded` outcome clears only that unchanged submitted draft. Preserve later edits and other worktrees' drafts, including completion while History is visible. These UI fields do not change the public commit payload. Explicit user clearing remains available; cancellation never claims rollback.
+A reconciled `succeeded` outcome clears only that unchanged submitted draft. Preserve later edits and other worktrees' drafts, including completion while History is visible. These UI fields do not change the public commit payload. Explicit user clearing remains available through Clear message, also beside a `completed-with-effects` result. Cancellation never claims rollback.
+
+Hook output never reaches the interface (contract §7). So `HOOK_FAILED` and a commit `GIT_FAILED` show the contract §9 remedy command with Copy command. The command reruns the commit in a terminal, where the hook output appears.
 
 Do not display Discard, Reset, force operations, or automatic repair in this slice. Future destructive actions belong in a separate labelled menu with explicit scope confirmation.
 
@@ -368,13 +396,13 @@ About Arbareto opens an in-app modal dialog, not a second native window. Use Bas
 
 | Tab | Content |
 | --- | --- |
-| Overview | Product name, version, build identity, and the "Unsigned local test package" and "Unqualified platform" labels when they apply. The copyright notice and the attribution "Arbareto by Ihor Lifanov". The no-warranty sentence and the permission to convey under the license. The licence name, AGPL-3.0-or-later, with a pointer to the License tab. The Corresponding Source location: the repository `https://github.com/auric/arbareto` and the commit of this build. A build from a dirty tree shows the `-dirty` marker. |
+| Overview | Product name, version, build identity, and the "Unsigned local test package" and "Unqualified platform" labels when they apply. The static line "This test build covers opening repositories, status, diffs, hunk staging, local commits, and one history page." The copyright notice and the attribution "Arbareto by Ihor Lifanov". The no-warranty sentence and the permission to convey under the license. The licence name, AGPL-3.0-or-later, with a pointer to the License tab. The Corresponding Source location: the repository `https://github.com/auric/arbareto` and the commit of this build. A build from a dirty tree shows the `-dirty` marker. |
 | License | The full AGPL text and the NOTICE.md additional terms. Show them in a read-only, selectable, scrollable region with the code font. |
 | Third-party notices | Packages grouped by licence name, with full licence text from the bundled inventory. |
 
-The build embeds the notice texts, the source repository location, and the build identity. The source location is `package.json` `repository.url`, `https://github.com/auric/arbareto`. The repository stays private until version 1 (research.md R7). Anonymous access to the build commit is a B-RELEASE condition. The build identity is the full commit ID from `git rev-parse HEAD`. It gets the suffix `-dirty` when `git --no-optional-locks status --porcelain` prints any line. This follows the style of `git describe --always --dirty`, but it also counts untracked files. The About window and the boot view show the `-dirty` marker. The qualification package build (T154) refuses a dirty tree. So does each batch verification that builds a package. Initial focus goes to the dialog heading. Escape closes the dialog, and focus returns to the Help menu button.
+The build embeds the notice texts, the source repository location, and the build identity. The source location is `package.json` `repository.url`, `https://github.com/auric/arbareto`. The repository stays private until version 1 (research.md R7). Anonymous access to the build commit is a B-RELEASE condition. The build identity is the full commit ID from `git rev-parse HEAD`. It gets the suffix `-dirty` when `git --no-optional-locks status --porcelain --untracked-files=all` prints any line. This follows the style of `git describe --always --dirty`, but it also counts untracked files. The explicit option overrides a user `status.showUntrackedFiles` value. The About window and the boot view show the `-dirty` marker. The qualification package build (T154) refuses a dirty tree. So does each batch verification that builds a package. The one exception is the T171 control build. It is dirty by design, shows `-dirty`, and never counts as evidence. Initial focus goes to the dialog heading. Escape closes the dialog, and focus returns to the Help menu button.
 
-The default size is about 560×480 DIPs, clamped to the work area. The constrained profile keeps every tab and its content reachable. Opening the dialog starts no network request, update check, or Git operation. Use no logo art or splash screen; text comes first.
+The default size is about 560×480 DIPs, clamped to the work area. The constrained profile keeps every tab and its content reachable. Opening the dialog starts no network request, update check, or Git operation. Use no logo art or splash screen; text comes first. The executable resource icon is exempt from this rule. The pinned `tauri-build` needs it (T008), and it is a solid-color placeholder without logo art.
 
 #### Keyboard and focus
 
@@ -382,19 +410,23 @@ The default size is about 560×480 DIPs, clamped to the work area. The constrain
 | --- | --- |
 | General controls | Tab/Shift+Tab reaches every action; Enter/Space activates the focused button. |
 | Mode tabs | Base UI tab semantics; arrows and Home/End navigate Changes/History. Ctrl+1/Ctrl+2 selects a mode outside editable input. |
-| Pane navigation | F6/Shift+F6 moves among the active list, comparison/inspector, and composer; restore each pane's last valid focus target. |
+| Pane navigation | F6 moves forward and Shift+F6 backward through the visible sections, then wraps. Changes stops: header, mode tabs, Working changes, Staged, comparison, composer, status region. History stops: header, mode tabs, History list, inspector, status region. The narrow and constrained profiles keep the same order. F6 skips a hidden or collapsed section. Restore each section's last valid focus target. |
 | File/history list | Arrows, Home/End, and Page keys navigate; Enter selects the focused entry. Reveal only deliberate navigation, not every refresh. |
-| Comparison | Previous/Next hunk buttons; Alt+Up/Alt+Down while focus is within the comparison. No global single-letter mutation shortcuts. |
+| Comparison | Previous hunk and Next hunk buttons select a hunk. Alt+Up and Alt+Down do the same anywhere in the comparison pane, its header and hunk toolbar included. No global single-letter mutation shortcuts. |
 | Splitter | Arrow keys resize by 8 DIPs; Shift+Arrow uses 32 DIPs. Home/End selects documented bounds. |
 | Message | Enter inserts a newline. Ctrl+Enter opens Review commit only when valid; it never commits directly. Other action shortcuts stay ignored in this field. |
 | Dialog | Trap focus with Base UI semantics. Escape cancels; return focus to the opener or the nearest surviving logical control. |
-| Refresh | The labelled Refresh button and F5 request a bounded workspace refresh, never a webview reload. |
-| Help menu | Tab reaches the Help menu button. Enter, Space, or Down Arrow opens the menu; arrows move and Escape closes it. No global shortcut exists. |
+| Review dialog | Tab order: heading, staged list, message preview, Cancel, Commit staged changes. The dialog has no default button, so Enter activates only the focused button. Ctrl+Enter inside the dialog does nothing. |
+| Refresh | The labelled Refresh button and F5 request a bounded workspace refresh, never a webview reload. In History, F5 requests `readWorkspace` with `refresh: true` and `readHistory` together. |
+| Menu bar | The header menus form one WAI-ARIA menubar: repository, View, and Help. Tab reaches the menu bar once. F10, or Alt pressed and released alone, focuses its first menu. Left and Right move between menus, and Down or Enter opens one. Escape closes an open menu, then returns focus to the control that had it before the menu bar. Alt with AltGraph state or with another key never moves focus. |
+| Right-click and Shift+F10 | No application context menu exists in this slice. Editable and selected text keep the built-in Cut, Copy, Paste, and Select all items. Elsewhere, nothing opens. |
 | Unavailable control | Stage selected hunk, Unstage selected hunk, Review commit, and Commit staged changes stay focusable when disabled. Activation does nothing. The visible reason is the accessible description. |
 
 Mode selection keeps focus on the active mode tab. Restore the remembered pane target when the user enters that pane. Hidden panes must not receive focus.
 
-Suppress action shortcuts during IME composition and repeated activation. Preserve native clipboard, text selection, undo, AltGraph, system-menu, and window-close behavior. Disable WebView2 browser accelerator keys through the Tauri `with_webview` controller. Keep Tauri's default `zoomHotkeysEnabled: false`, so page zoom stays at 100%. Release builds omit developer tools.
+Suppress action shortcuts during IME composition and repeated activation. Preserve native clipboard, text selection, undo, AltGraph, system-menu, and window-close behavior. The shell creates the main window hidden. One `with_webview` call attaches the WebView2 `AcceleratorKeyPressed` and `ContextMenuRequested` handlers. Its closure shows the window after both handlers exist, because the call only queues the closure (research R7). The accelerator handler sets `IsBrowserAcceleratorKeyEnabled` to false for every key. It never sets `Handled`, so F5 and Escape reach the page. Reload, find, print, zoom, history navigation, caret browsing, downloads, and developer tools then do nothing. A setting change after the first navigation would not protect the loaded page, so the handler is the protection. Keep Tauri's default `zoomHotkeysEnabled: false`, so page zoom stays at 100%. Release builds omit developer tools.
+
+Roles. Each file category (Conflicted, Unstaged, Untracked, Staged) is one WAI-ARIA listbox of options, named by its heading and count. Each listbox is one Tab stop with roving focus. Arrow keys move focus, and Enter selects. The History list is one listbox. Each option's accessible name holds the full row text: subject, short ID, author, date, parent count, and boundary label. History rows hold no interactive child; parent actions live in the inspector. `aria-selected="true"` marks only the selected option, never the focused one. Focus shows through the focus outline.
 
 Initially focus the commit review heading, not its confirmation button. Opening the dialog must not also activate confirmation. After rejection, return to the message field or offending review state without deleting text. After a reconciled `succeeded` outcome in Changes, focus the message field. In History, keep focus unchanged.
 
@@ -414,11 +446,13 @@ On mode return, restore context only if its identity and snapshot remain valid. 
 
 Keep list scroll anchors by stable entry/commit ID plus offset. If an anchor disappears, use a nearby surviving row and announce the change. This slice does not verify the announcement. Do not repeatedly auto-scroll background refreshes to selection.
 
-Preserve diff scroll only while its canonical comparison remains unchanged. When content changes, clear hunk selection and reset the comparison viewport with an explicit notice.
+Preserve diff scroll only while its canonical comparison remains unchanged. When an external change alters the content, clear hunk selection and reset the comparison viewport with an explicit notice. After the application's own successful hunk action, anchor to the nearest surviving hunk ordinal instead ("Task flow and command placement"). That anchor selects nothing and shows no notice.
+
+When a hunk approval expires or becomes invalid, request the comparison again automatically. Keep the hunk selection only when the new comparison has a hunk with the same canonical digest (contract §8). A stat-only index rewrite by another Git tool still invalidates the approval, and this request restores it.
 
 Theme, density, and pane changes must preserve the valid selection and editor caret. Recalculate scroll geometry without inventing a new staging selection.
 
-Persist scalar theme, density, and pane preferences in application-owned webview storage. Keep native window bounds and selected Git in native settings. Keep drafts and view hints in renderer memory; they survive a service restart. Keep all Git approvals in the service session.
+Persist scalar theme, density, and pane preferences in application-owned webview storage. Keep native window bounds and selected Git in native settings. Keep drafts and view hints in renderer memory; they survive a service restart. Keep hunk approvals and commit review tokens in the service session. Trust approvals persist in native storage (contract §7).
 
 #### History graph design
 
@@ -469,18 +503,18 @@ Do not fork a package, add a general graph editor, or reconstruct fictional bran
 - Bound layout to 24 concurrent lanes and 4,096 path segments. On overflow, keep rows and parent metadata with Graph layout limited.
 - A graph-only layout limit does not invalidate an otherwise complete status or commit review.
 
-Use 12 DIP lane spacing compact and 14 DIPs comfortable, with 12 DIP side padding. Use two-DIP paths and restrained round joins. Draw normal nodes at three-DIP radius with an explicit HEAD badge. A merge node is hollow at the same radius: a lane-colored stroke with a Canvas or Surface fill. Selection adds a separate Accent outer ring 3 DIPs outside any selected node; a selected merge node shows both.
+Use 12 DIP lane spacing compact and 14 DIPs comfortable, with 12 DIP side padding. Use two-DIP paths and restrained round joins. Draw normal nodes at three-DIP radius. The graph cell holds no label. A merge node is hollow at the same radius: a lane-colored stroke with a Canvas or Surface fill. Selection adds a separate Accent outer ring 3 DIPs outside any selected node; a selected merge node shows both.
 
 Give each new lane a color that differs from its left neighbor, right neighbor, and originating lane. Four colors always satisfy this rule. Git Extensions uses the same behavior.
 
 | Lane role | Dark | Light |
 | --- | --- | --- |
-| Teal | `#60CCC5` | `#06726E` |
-| Sky | `#7ACBE9` | `#0F6E89` |
-| Violet | `#C2A7F4` | `#724AAB` |
-| Magenta | `#E999D2` | `#993582` |
+| Teal | `#4BB9B2` | `#06726E` |
+| Sky | `#80D2F0` | `#00516B` |
+| Violet | `#B59AE7` | `#724AAB` |
+| Magenta | `#F7A6DF` | `#993582` |
 
-These decorative lane colors stay at least 30° in OKLCH hue from Accent, Added, Removed/error, and Warning. Lane colors are supplementary; lane position and accessible parent text carry identity. All 24 stroke/background pairs, against Canvas, Surface, and Selected row, exceed 3:1 numerically; the minimum is 4.66:1. Rendered contrast remains unverified.
+These decorative lane colors stay at least 30° in OKLCH hue from Accent, Added, Removed/error, and Warning. The smallest gap is 31.3° (light Sky to Accent). Every lane pair in one theme has an OKLab distance of at least 0.10. The near pairs teal/sky and violet/magenta differ in lightness to meet it. The minimum distance is 0.101 (light Violet to Magenta). Lane colors are supplementary; lane position and accessible parent text carry identity. All 24 stroke/background pairs, against Canvas, Surface, and Selected row, exceed 3:1 numerically; the minimum is 4.66:1. The 2026-09-30 numeric check computed these values. Rendered contrast remains unverified.
 
 **Interaction and responsive behavior:**
 
@@ -489,7 +523,7 @@ These decorative lane colors stay at least 30° in OKLCH hue from Accent, Added,
 - SVG nodes have no separate tab stops. Expose commit identity, merge-parent count, and ordered parent relationships through accessible text.
 - An inspector parent action selects that OID only when it exists in the loaded page. Otherwise show Outside loaded page without navigation.
 - Use the existing focus ring, not lane color, for keyboard focus. Keep selection distinct from current HEAD.
-- Show HEAD and its current branch only from the captured checkout identity. Do not imply other branch labels were discovered.
+- Show HEAD and its current branch only from the captured checkout identity. Do not imply other branch labels were discovered. Put the labels at the start of the subject cell, as Git Extensions places ref labels. Draw them as Accent text, "HEAD" and the branch name, without a border. They never widen the graph column, and the width formula above excludes them.
 - Keep subjects on one row. Move author/date columns into the inspector at narrow widths; retain accessible metadata for each row.
 - At 720 DIPs, 24 comfortable lanes leave room for the subject and short ID. Clamp pane sizes without clipping actions.
 - Preserve selected OID and scroll anchor across refresh when still loaded. Otherwise explain that the prior selection left the page.
@@ -501,28 +535,30 @@ These decorative lane colors stay at least 30° in OKLCH hue from Accent, Added,
 
 | State | Presentation and behavior |
 | --- | --- |
-| No repository | Plain Open an existing repository action; no dashboard, clone button, or invented sample changes. |
-| Repository refused | Name the refusal reason and show a copyable remedy. Keep the current workspace unchanged. Offer Open repository, and never offer repair, configuration changes, or lock removal. |
+| No repository | Plain Open repository action; no dashboard, clone button, or invented sample changes. One static line: "This test build covers opening repositories, status, diffs, hunk staging, local commits, and one history page." |
+| Repository refused | Name the refusal reason and show a copyable remedy. Keep the current workspace unchanged. Offer Open repository, and never offer repair, configuration changes, or lock removal. `NOT_A_REPOSITORY` shows "Open a folder inside a Git repository." |
 | Empty/clean | Say Working tree clean when confirmed. Unborn History says No commits yet. Empty stages disable review with an explanation. |
-| Loading | Keep the frame stable. New repositories show labelled placeholders; refresh retains prior content marked Refreshing. No fabricated progress percentage. |
+| Loading | Keep the frame stable. New repositories show labelled placeholders. A user Refresh action (F5, Refresh, or the State unknown Refresh) retains prior content marked Refreshing. Polls and focus-return reads update in place and show no marker. No fabricated progress percentage. |
+| No selection | On open, and when the selected entry leaves, no file is selected. Changes shows the status lists with counts and HEAD. The comparison pane shows the hint "Select a file to view its changes". Hunk controls are absent. In History without a selected commit, the inspector says "Select a commit to see its details". |
 | Normal | Show path, staged/unstaged scope, one selected comparison, explicit hunk control, and staged count. |
+| Succeeded | After a reconciled `succeeded` commit, the status region says "Committed <short ID> to <branch>". On a detached HEAD, it says "Committed <short ID> on detached HEAD". After a hunk action, it says "Hunk staged" or "Hunk unstaged". The live region announces the text once. The text stays until the next operation starts or another repository opens. No timer removes it. |
 | Staged plus unstaged | Show the path in both categories with independent state. Headers make the current comparison direction explicit. |
 | Untracked | Label the category explicitly and show an empty comparison baseline. Keep any same-path staged deletion separate. |
 | Conflicted/unfinished operation | Name the conflict or merge/rebase/cherry-pick/revert state. Block mutations; offer Refresh after external resolution, never repair. |
-| Unsupported/binary | Retain metadata and the specific limitation. Disable hunk actions. Do not show an empty text diff or execute a preview. |
-| Trust required/changed | Show a safe policy summary and explicit session approval. Explain hook/tool execution; changed fingerprints require renewed approval. Also show this state before the first status read when repository configuration defines read-time commands. Commit review shows this state only when the commit can run repository-controlled code (contract §7 "Mutation trust"). |
+| Unsupported/binary | Retain metadata and the specific limitation. Disable hunk actions. Do not show an empty text diff or execute a preview. Beside the limitation, show the service's copyable whole-file remedy command with Copy command (contract §4 "Limitation remedies"). Add no stage action. |
+| Trust required/changed | Show a safe policy summary and explicit approval, followed by a native confirmation. Approval persists across launches. Over a program-file digest bound, the approval lasts for this session only (contract §7). The dialog and the native confirmation both say why. Explain hook/tool execution; a changed repository, Git installation, or fingerprint requires renewed approval. Also show this state before the first status read when repository configuration defines read-time commands. Commit review shows this state only when the commit can run repository-controlled code (contract §7 "Mutation trust"). |
 | Busy | Keep typing, scrolling, mode changes, and cancellation available. Identify operation and repository; disable conflicting mutations only. |
-| Error | Put a safe explanation and recovery action beside the affected pane. Preserve message and selection where valid. Never offer forced unlock or repair. For `LOCKED`, show the Git-resolved lock path with Copy path and Refresh. Show the contract §9 `LOCKED` remedy text. |
+| Error | Put a safe explanation and recovery action beside the affected pane. Preserve message and selection where valid. Never offer forced unlock or repair. For `LOCKED`, show the Git-resolved lock path with Copy path and Refresh. Show the contract §9 `LOCKED` remedy text. For `HOOK_FAILED` and a commit `GIT_FAILED`, show the contract §9 remedy command with Copy command. |
 | Stale selection | State that the comparison or staged scope changed. Invalidate approval immediately; refresh and require reselection or renewed review. |
 | Large history | Graph only the first 100 checkout-reachable commits. Show page/shallow boundaries and the scope limit, without pagination or implied complete-history counts. |
-| Completed with effects | Show any identified commit and the observed difference. Preserve the draft; offer review, never automatic retry, undo, or ordinary-success styling. |
+| Completed with effects | Show any identified commit and the observed difference. Preserve the draft; offer review and Clear message, never automatic retry, undo, or ordinary-success styling. |
 | Graph layout limited | Keep commit rows and accessible parents. Explain lane/segment limits without invented edges or disabling unrelated Git workflows. |
 | Limited output | Identify the exceeded limit. Do not present truncation as complete or allow dependent mutations. |
 | Cancel requested | Keep the label until Git or the process tree confirms the end (FR-021). Conflicting controls stay disabled. |
-| Canceled | Show the reconciled state and never claim rollback (FR-021). If reconciliation fails, show Unknown after interruption. |
+| Canceled | Show the reconciled state and never claim rollback (FR-021). If reconciliation fails, show State unknown. |
 | Close during mutation | The native close prompt names the running operation and explains rollback limits (FR-024). Its buttons are Stay open and Interrupt and close. Stay open is the default button. Enter, Escape, Alt+F4, the title-bar close button, and a dialog failure all mean Stay open. Only an explicit activation of Interrupt and close interrupts. A renderer request never confirms interruption. Stay open returns focus to the last logical focus target. |
-| Unknown after interruption | Show State unknown and Refresh. Block mutations until reconciliation succeeds; do not claim cancellation reversed changes. |
-| Component stopped | A service exit shows the native Service stopped dialog (T142) with Restart service and Close Arbareto. Restart delivers the new session to the page without a reload, so drafts survive. A renderer exit shows a native dialog with Reload window and Close Arbareto. A browser process exit offers Restart Arbareto, which relaunches the application, and Close Arbareto. An unresponsive renderer causes no automatic action. |
+| State unknown | Show State unknown and Refresh. This one name covers an interrupted or unreported operation outcome and a restarted service session. Block mutations until reconciliation succeeds; do not claim cancellation reversed changes. Each recovery marker offers Dismiss. It succeeds only for a gone repository and after a native confirmation (contract §6). The outcome stays unknown. |
+| Component stopped | A service exit shows the native Git service stopped dialog (T142) with Restart service and Close Arbareto. Restart signals the new session to the page without a reload, so drafts survive. The page runs `restoreWorkspace` again and shows State unknown until Refresh (FR-023). A renderer exit shows a native dialog with Reload window and Close Arbareto. A browser process exit offers Restart Arbareto, which relaunches the application, and Close Arbareto. An unresponsive renderer causes no automatic action. |
 
 Use complete Git observations for state labels. A failed read cannot produce Working tree clean. Error and warning text must remain understandable without color.
 
@@ -536,17 +572,17 @@ Record build, fixture, theme, density, client size, OS/runtime, and scale for ea
 | --- | --- | --- |
 | UI-01 | No repository; folder dialog accepted and canceled; focus returns to Open repository. | 1280×800, dark/compact, 100%. |
 | UI-02 | F01 empty/unborn Changes and History; explicit empty scope and disabled review. | 960×640, light/comfortable, 100%. |
-| UI-03 | Controlled initial loading and refresh with retained prior content and visible focus. | 1280×800, dark/comfortable, 100%. |
-| UI-04 | F02 normal diff with a selected hunk, visible path/scope, and keyboard focus. | Matching dark/light captures, compact, 1280×800, 100%. |
-| UI-05 | F02 same path in Staged/Unstaged; F06 staged deletion plus untracked replacement with an empty baseline. Capture qualified hunk outcomes. | 1280×800, comfortable, 150%. |
-| UI-06 | Draft, complete review, F11 trust approval, and hook rejection with retained message and restored focus. | 1280×800, light/comfortable, 100%; mutation gates must already pass. |
-| UI-07 | F05 binary/unsupported and F16 oversized comparison with specific disabled reasons. | 960×640, dark/compact, 150%. |
-| UI-08 | F13/F14 busy work, cancel requested, canceled, close during mutation, unknown recovery, and typing during a delayed successful commit. Preserve newer edits when completion arrives in History. The native Service stopped dialog with Restart service, a draft that survives the restart, and the native renderer-failure dialog. | 1280×800, dark/comfortable, 100%; never fake enabled mutation controls. |
+| UI-03 | Controlled initial loading and refresh with retained prior content and visible focus. The loaded frame shows the No selection state with counts, HEAD, and its hint. | 1280×800, dark/comfortable, 100%. |
+| UI-04 | F02 normal diff with a selected hunk, its bar and label, visible path/scope, and keyboard focus on another control. | Matching dark/light captures, compact, 1280×800, 100%. |
+| UI-05 | F02 same path in Staged/Unstaged; F06 staged deletion plus untracked replacement with an empty baseline. Capture qualified hunk outcomes, with "Hunk staged" in the status region and the anchored viewport. | 1280×800, comfortable, 150%. |
+| UI-06 | Draft, complete review, F11 trust approval with its native confirmation, and hook rejection with retained message and restored focus. The rejection shows the remedy command. The F11 copy holds URL user-information key canaries; the capture shows `<redacted>` and no canary token. | 1280×800, light/comfortable, 100%; mutation gates must already pass. |
+| UI-07 | F05 binary/unsupported and F16 oversized comparison with specific disabled reasons and the copyable whole-file remedy command. | 960×640, dark/compact, 150%. |
+| UI-08 | F13/F14 busy work, cancel requested, canceled, close during mutation, unknown recovery, and typing during a delayed successful commit. Preserve newer edits when completion arrives in History. The native Git service stopped dialog with Restart service, a draft that survives the restart, and the native renderer-failure dialog. | 1280×800, dark/comfortable, 100%; never fake enabled mutation controls. |
 | UI-09 | F09 stale selected hunk and staged-scope change; refreshed content cannot restore the old approval. | 960×640, light/compact, 150%. |
-| UI-10 | F10 conflicts, unfinished operations, and locks; F15 unavailable repository. Show explicit mutation blockers and no repair action. Refused bare repository, dubious ownership, and missing `.git` target, each with its copyable remedy. | 960×640, light/comfortable, 100%. |
-| UI-11 | F19/L graph with linear, merge, and octopus ancestry, page/shallow boundaries, and long subjects. Return to Changes without losing valid context. | 1280×800, dark/compact, 150%; matching light/comfortable capture. |
+| UI-10 | F10 conflicts, unfinished operations, and locks; F15 unavailable repository. Show explicit mutation blockers and no repair action. Refused bare repository, dubious ownership, missing `.git` target, and a folder outside every repository, each with its copyable remedy. | 960×640, light/comfortable, 100%. |
+| UI-11 | F19/L graph with linear, merge, and octopus ancestry, page/shallow boundaries, long subjects, and HEAD labels in the subject cell. First show History with no selected commit. Return to Changes without losing valid context. | 1280×800, dark/compact, 150%; matching light/comfortable capture. |
 | UI-12 | Pointer/keyboard splitters, both densities, graph-row alignment, constrained layouts, and cross-display focus/IME behavior. Include graph limits and keyboard parent inspection. | 1440×900 at 100%; 960×640 at 150%/200%; 720×480 at 200%, both themes. |
-| UI-13 | F11/F20 hook refusal for hunks, standard commit disclosure, and a commit created with unexpected effects. Show the actual result and retained draft. | 1280×800, both themes, comfortable, 100%; real mutation evidence required. |
+| UI-13 | F11/F20 hook refusal for hunks, standard commit disclosure, and a commit created with unexpected effects. Show the actual result and retained draft. Also capture a reconciled `succeeded` commit with "Committed <short ID> to <branch>" in the status region. | 1280×800, both themes, comfortable, 100%; real mutation evidence required. |
 | UI-14 | Windows contrast theme (forced colors) in the installed build. Graph lanes and nodes, focus ring, row selection, diff plus/minus markers, and disabled reasons remain visible. | 1280×800, 100%; one dark and one light contrast theme. |
 | UI-15 | About window Overview, License, and Third-party notices tabs with keyboard focus, offline. Focus returns to the Help menu button on close. | 1280×800, dark/compact, 100%; 720×480, light/comfortable, 200%. |
 
@@ -568,7 +604,7 @@ Use private inherited pipes between the shell and compiled service. No localhost
 
 The renderer sends only contract operations. The shell checks command origin, framing, operation kind, and message bounds. The service validates full operation semantics.
 
-Native dialogs provide repository and executable selection. Service registration returns opaque identifiers. Renderer input cannot become a filesystem or executable capability directly.
+Native dialogs provide repository and executable selection. Native confirmations with a Cancel default guard Git selection, trust approval, and marker dismissal. The Git selection confirmation can propose a found `git.exe` (contract §3 "Git proposal"). Service registration returns opaque identifiers. Renderer input cannot become a filesystem or executable capability directly.
 
 The shell supervises the service and Git operations with separate Windows Jobs. Start each child suspended, assign its Job, then resume it.
 
@@ -576,17 +612,31 @@ Only the private service channel can request bounded Git process execution. The 
 
 Use one active application service per instance. Allow more than one application instance. Each instance treats the others as external writers. Write native settings by whole-file replacement, and the last writer wins.
 
-On unexpected service exit, show the native Service stopped dialog with a Restart service action. A restart starts a new session and invalidates old identifiers. The shell then sends the page a `service-session` event with the new `sessionId` (contract §2). The page does not reload, so drafts survive. For each recovery marker, and for each request without a terminal response, show Previous outcome unknown (contract §6). Never restart the service or reload the window automatically.
+At startup, the shell starts the service and completes the handshake before it creates the main window. The page gets each `sessionId` from the shell-only `currentSession` operation (contract §2). Pinned Tauri sets initialization scripts only on builders. So a script cannot carry a new session to a reloaded page (research R7).
 
-wry does not handle WebView2 `ProcessFailed`. The shell subscribes to that event and shows the Component stopped state. research.md R7 cites the wry and Tauri source for this fact and for the accelerator setting.
+Cold-start critical path. These steps run in order, and the listed overlaps are permitted:
+
+1. The shell starts the service process. While the Bun runtime starts, the shell reads the platform facts, the WebView2 version, and the native settings.
+2. The shell sends the handshake frame and waits for the reply. The main window waits for that reply (contract §2).
+3. The shell creates the main window hidden, attaches the WebView2 handlers, and shows it (research R7). The service runs its startup Git probe during this step.
+4. The page loads, calls `currentSession`, and calls `restoreWorkspace`. That call waits for the Git probe and runs discovery.
+5. The page sends `readWorkspace` with `check: "full"`. It paints the done state defined in "Measurements and budgets".
+
+Step 5 needs no `readHistory`. The page requests the History page after the done frame, within the read caps, so History opens with data. T193 records the step times in batch 1, and T192 records read times in batch 2. Both are observations, not budget results.
+
+On unexpected service exit, show the native Git service stopped dialog with a Restart service action. A restart starts a new session and invalidates old identifiers. The shell then sends the page a `service-session` event, and the page calls `currentSession` (contract §2). The page does not reload, so drafts survive. It runs `restoreWorkspace` again and blocks every mutation until a `refresh: true` read in the new session (FR-023, contract §8). For each recovery marker, and for each request without a terminal response, show State unknown (contract §6). Never restart the service or reload the window automatically.
+
+wry does not handle WebView2 `ProcessFailed`. The shell subscribes to that event and shows the Component stopped state. The research.md R7 section cites the wry and Tauri source for this fact and for both handlers.
 
 ### Freshness and reconciliation
 
 Serialize application mutations by resolved common-directory identity. Reject overlapping submissions rather than queueing approvals that can become stale.
 
-Observe worktree, worktree-administration, and common-directory changes. Debounce hints for 100 ms. Poll relevant foreground state every second. Each poll is one full `readWorkspace` read (T088), with or without a hint. A poll starts no read while an earlier read of that workspace is pending. This bound follows the contract §5 read concurrency caps. The poll cost counts in the idle CPU budget, and T169 measures it.
+Observe worktree, worktree-administration, and common-directory changes. Debounce hints for 100 ms. Poll relevant foreground state every second. Each poll is one `readWorkspace` with `check: "changes"` (contract §8 "Change check"). It runs a full read only after a watcher hint or a changed stat tuple. Otherwise it starts no Git process and returns the last snapshot. A poll starts no read while an earlier read of that workspace is pending. This bound follows the contract §5 read concurrency caps. Polls show no Refreshing marker. The poll cost counts in the idle CPU budget. T192 records the CPU time of each read kind on M and L in batch 2. T169 measures packaged idle CPU.
 
-Refresh on focus return and manual request. Invalidate approvals immediately after relevant changes. Generation and selection identifiers suppress obsolete read results.
+SC-007 stays reachable. The watcher hint is the primary path. An external file, index, or ref change gives a hint within the 100 ms debounce. The next poll tick, at most 1 second later, then runs a full read. The stat tuple backs up missed hints for the index, HEAD, the current branch ref, and `packed-refs`. In a reftable repository, the `reftable/tables.list` files replace HEAD, the branch ref, and `packed-refs` (contract §8 "Change check"). It also covers the configuration and program files and the selected working file. A missed hint for another working file recovers on focus return or manual refresh, as SC-007 permits. The 2-second budget therefore holds when a full read on M takes at most about 0.9 seconds. T192 records that read time, and T168 measures the packaged result.
+
+Refresh on focus return and manual request. Focus return sends `check: "full"`. Invalidate approvals immediately after relevant changes. Generation and selection identifiers suppress obsolete read results.
 
 Every mutation still needs direct state validation. Watchers, polling, and generations do not create an atomic snapshot.
 
@@ -598,15 +648,15 @@ The former design blockers are resolved by the approved checkpoint contract. Qua
 
 **Hunk publication:** acquire the Git-resolved canonical index lock, revalidate, and prepare one private candidate index. Apply the service-selected patch through Git and verify the independently calculated exact result. Recheck relevant state before one same-volume publication through the owned lock. Reconcile afterward.
 
-Support ordinary full indexes first. Refuse sparse indexes (`index.sparse=true`) and split indexes. Also refuse registered `post-index-change` hooks, executable fsmonitor, the built-in fsmonitor daemon, custom conversions, and existing unsupported file/state cases. Registered disabled index-change hooks also cause refusal until their interpretation receives separate qualification.
+Support ordinary full indexes first. Refuse sparse indexes (`index.sparse=true`) and split indexes. A split index carries a `link` extension in its raw bytes; the service reads it without starting Git. Also refuse registered `post-index-change` hooks, executable fsmonitor, the built-in fsmonitor daemon, custom conversions, and existing unsupported file/state cases. Registered disabled index-change hooks also cause refusal until their interpretation receives separate qualification.
 
 Do not disable hooks or monitors to make a hunk operation pass. Ordinary commit hooks remain supported. Preserve external writers' bytes and report changes observed after publication without undo or retry.
 
 **Commit review:** capture the complete staged scope and a bounded retained index snapshot through read-only Git inspection. Do not call `write-tree` or run a trial commit during review. Keep expected scope as captured index data rather than requiring a preview tree write.
 
-**Commit handoff:** lock for final preflight, compare reviewed index/checkout/trust, consume the token, then release that lock. Start one selected-Git `commit --file=-` against the canonical index, with the bounded message on stdin.
+**Commit handoff:** enter the mutation exclusion and wait for the recovery marker. Lock for final preflight, compare reviewed index/checkout/trust, consume the token, then release that lock. Start one selected-Git `commit --file=-` against the canonical index, with the bounded message on stdin.
 
-The lock release starts the execution window. Git runs existing approved hooks and signing. Do not use a private commit index, inject guards, reconstruct commits, or override user identity/signing configuration. After it updates HEAD, `git commit` runs automatic maintenance in the foreground on Windows. Then it runs the `post-commit` hook (research R4). The 120-second commit deadline covers both, and reconciliation classifies an interrupted result from observed state.
+The lock release starts the execution window. Git runs existing approved hooks and signing. Do not use a private commit index, inject guards, reconstruct commits, or override user identity/signing configuration. After it updates HEAD, `git commit` runs automatic maintenance and then the `post-commit` hook. Source reasoning says that maintenance runs in the foreground on Git for Windows (research R4); T100 verifies it. Then the 120-second commit deadline covers both, and reconciliation classifies an interrupted result from observed state. If maintenance detaches, the operation Job closes after reconciliation and ends it (contract §4).
 
 **Reconciliation:** compare the actual commit tree against the retained reviewed index using bounded read-only Git inspection. A retained verification copy is not the index used for committing. Check parent, destination, index, relevant working bytes, and operation markers.
 
@@ -633,7 +683,7 @@ This sequence is planning guidance, not a generated task list or permission to i
 
 ## Real-repository fixture matrix
 
-Use disposable repositories under an explicitly owned temporary root. Never target developer repositories. Isolate fixture identity, signing, hooks, and configuration from the user's environment. Fixture runs of the installed app on the reference host (T153, T160 to T163) start through the T151 launcher. T149 is a smoke run before T151 exists. It changes only its F02 fixture and records the current user's Git configuration origin. The T155 clean environment and the T165 measurement account are isolated by design and do not use the launcher.
+Use disposable repositories under an explicitly owned temporary root. Never target developer repositories. Isolate fixture identity, signing, hooks, and configuration from the user's environment. Fixture runs of the installed app on the reference host (T149, T153, T160 to T163) start through the T151 launcher. T151 therefore belongs to batch 4. The T155 clean environment and the T165 measurement account are isolated by design and do not use the launcher.
 
 | ID | Fixture | Required evidence |
 | --- | --- | --- |
@@ -651,10 +701,10 @@ Use disposable repositories under an explicitly owned temporary root. Never targ
 | F12 | Missing identity, signing failure, blank message, empty index, repeated submission, and non-UTF-8 `i18n.commitEncoding`. A commit that triggers automatic maintenance through local `gc.auto=1`. | No bypass or configuration change; no duplicate commit. Record whether the commit process waits for maintenance and how long it runs. |
 | F13 | Cancellation before/during/after publication; delayed completion; failed reconciliation. | Exact resulting state; no false rollback or automatic retry. |
 | F14 | Slow real Git work, descendant-spawning hooks, service crash, shell crash, and shutdown. A hook grandchild that holds no inherited pipe and outlives its parent. A read with local `core.fsmonitor=true` and no running daemon. | Owned process cleanup within five seconds; unrelated Git and agents survive. The orphaned grandchild and any daemon that a read started also end. Record whether WebView2 processes exit after a shell crash. |
-| F15 | Removed/inaccessible repositories, sharing violations, and full disposable volume. A repository that another account owns. | Actionable failure and preserved data. Never fill or alter the developer's volume. Record whether Git for Windows honors the fixed C locale for the ownership message. |
+| F15 | Removed/inaccessible repositories, sharing violations, and full disposable volume. A repository that another account owns. A plain folder outside every repository. | Actionable failure and preserved data. Never fill or alter the developer's volume. Record whether Git for Windows honors the fixed C locale for the ownership message. |
 | F16 | Exact 1 MiB/20,000-line boundaries and values above them; oversized status/history; malformed records. | Complete framing or explicit limits; no mutation from incomplete data. |
-| F17 | Malicious markup, diagnostic credential canaries, hostile runtime variables, `.env`, and `bunfig.toml`. Repository-scope `filter.<driver>.clean`, `filter.<driver>.process`, and command-valued `core.fsmonitor` with an execution canary. | No active content, runtime injection, arbitrary commands, or credential-bearing logs. No canary runs before trust approval. |
-| F18 | Missed watcher notifications and externally completed changes. | Foreground update within two seconds; focus/manual refresh recovery. |
+| F17 | Malicious markup, diagnostic credential canaries, hostile runtime variables, `.env`, and `bunfig.toml`. Repository-scope `filter.<driver>.clean`, `filter.<driver>.process`, and command-valued `core.fsmonitor` with an execution canary. The clean-filter program lives inside the worktree at `tools/clean.sh`. | No active content, runtime injection, arbitrary commands, or credential-bearing logs. No canary runs before trust approval. |
+| F18 | Missed watcher notifications and externally completed changes. | Foreground update within two seconds after a watcher hint. The change check covers a missed hint for the index, HEAD, the current branch ref, and the selected working file. In a reftable repository, it reads the `reftable/tables.list` files for HEAD and refs. Those also update within two seconds. A missed hint for another working file recovers on focus return or manual refresh. |
 | F19 | Linear, merge, octopus, skewed-date, root, shallow, cutoff, SHA-256, and wide-lane history. A commit with a legacy `encoding` header. | Exact Git parent relationships; explicit boundaries/limits; no fetched objects or invented branches; keyboard and density alignment. Invalid UTF-8 subjects and authors show replacement characters and an encoding label. |
 | F20 | Changes after final hunk validation or commit handoff; competing commits, ambiguous attribution, and reference/reflog evidence overflow. | Preserve external bytes; report completed/failed-with-effects or unknown; retain drafts and never retry or undo automatically. Exercise 4 MiB and 10,000-record limits independently. Status-only success cannot unblock unknown attribution; require successful recovery reconciliation. Recovery reconciliation with unknown attribution states that outcome and then enables mutations. |
 
@@ -713,7 +763,7 @@ Create deterministic history with native Git fixture tooling. Use independent id
 
 | Metric | Boundary and repetitions | Qualification budget |
 | --- | --- | --- |
-| Cold usable workspace | Process creation to painted, fresh status/history/selected diff and enabled inspection. Five runs per fixture; reboot before each run. | Every M run at most 1.5 seconds. Report L without inventing an existing target. |
+| Cold usable workspace | Process creation to the done frame defined below. Five runs per fixture; reboot before each run. | Every M run at most 1.5 seconds. Report L without inventing an existing target. |
 | Warm reopen | Confirmed repository selection to the same fresh usable state. Twenty runs per fixture in a warm application. | Every M run at most 500 ms. |
 | Input acknowledgement | Input injection to first presented visible response during slow Git activity. 100 counted actions each for typing, navigation, resize, and cancellation. Use a copy of fixture L with the foreground poll active. A commit runs with an approved `pre-commit` hook that outlives the commit deadline. Each cancellation action cancels one such commit. An action counts only when the WPR trace shows an owned `git.exe` alive at injection. | p95 at most 100 ms for each action class. |
 | UI stalls | Presented-frame/interaction trace during all workloads. Include loading and cancellation. | No unresponsive interval above 500 ms. |
@@ -728,11 +778,21 @@ Create deterministic history with native Git fixture tooling. Use independent id
 
 The memory and idle-CPU ceilings are additional proposed engineering limits fixed by this plan. Changing any budget needs an explicit recorded trade-off.
 
+**Usable-workspace done frame (SC-006, SC-015 C1 and C2).** The done frame is the first presented frame that shows the Changes mode in this state:
+
+- Every status list (Conflicted when present, Unstaged, Untracked, and Staged) is complete, with its count. The read reports `completeness` `complete` and `recoveryState` `ready`.
+- The header shows HEAD. The comparison pane shows the No selection hint "Select a file to view its changes".
+- Inspection controls are enabled. The Changes and History mode tabs, Refresh, Open repository, the menu bar, and all visible status rows accept activation. None is disabled, none shows a placeholder, and no Refreshing marker shows.
+
+Mutation controls are outside this definition. No file is selected, so no diff and no hunk control shows. The first History paint has no mark and no budget.
+
+Marker and frame source. The renderer calls `performance.mark("arbareto:usable-workspace")` in the first `requestAnimationFrame` callback after React commits the done state (T132). The boot view calls `performance.mark("arbareto:boot-view")` once when it first shows the environment facts (T064). T193 records whether that mark appears; it has no budget. WPR records the built-in `GPU` profile together with `tests/windows/arbareto.wprp` (T193). That owned profile enables the WebView2 ETW provider `E16EC3D2-BB0F-4E8F-BDB8-DE0BEA82DC3D` with keyword `0x10000` (`blink.user_timing`), which carries the mark (research R6). The present-event provider is `Microsoft-Windows-DXGI` from the `GPU` profile. The done frame is the first DXGI Present event of the app's WebView2 GPU process after the mark. Warm reopen uses the same marker and frame source. T193 authors the profile, and T165 only confirms that the trace holds both events. When T165 cannot confirm them, the affected rows stay `unverified`; the definition does not change.
+
 Cold timing excludes first-use prerequisite installation and manual repository selection. Retain the previously selected repository setting. Stop all owned processes before reboot.
 
 Report every run, median, nearest-rank p95, maximum, and measurement uncertainty. Do not discard failed runs silently or replace maximum budgets with averages.
 
-Use WPR/WPA and process accounting for CPU, lifetime, and stalls. Correlate visible responses with presented frames or timestamped video. JavaScript handler timestamps alone do not prove visible acknowledgement. Inject input with the test-only script `tests/windows/inject.ts` (T165). It calls `SendInput` through `bun:ffi` and records the QueryPerformanceCounter value of each input. Take presented-frame timing from the WPR trace with GPU and DXGI present events (research.md R6). Before measurement, T165 confirms the frame source and records the usable-workspace marker.
+Use WPR/WPA and process accounting for CPU, lifetime, and stalls. Correlate visible responses with presented frames or timestamped video. JavaScript handler timestamps alone do not prove visible acknowledgement. Inject input with the test-only script `tests/windows/inject.ts` (T165). It calls `SendInput` through `bun:ffi` and records the QueryPerformanceCounter value of each input. Take presented-frame timing from the WPR trace with GPU and DXGI present events (research.md R6). The done frame, marker, profile, and present-event provider are fixed above. Before measurement, T165 confirms them without change.
 
 Sum private bytes without calling summed working sets unique physical memory. Include exited children in CPU totals. Use an application-specific WebView2 user-data directory for attribution.
 
@@ -760,7 +820,7 @@ Record the settings file SHA-256 before and after each series. Confirm in the WP
 
 | ID | Workflow and fixture | Start event | Arbareto done | Git Extensions done | Runs per application |
 | --- | --- | --- | --- | --- | --- |
-| C1 | Cold launch, M | Process creation after reboot. Git Extensions starts with `browse <M path>`. Arbareto uses its retained repository setting. | The T166 usable-workspace frame. | The first frame with the first 100 grid rows, the graph, and counts on the Workspace and Index rows. | 5 |
+| C1 | Cold launch, M | Process creation after reboot. Git Extensions starts with `browse <M path>`. Arbareto uses its retained repository setting. | The usable-workspace done frame (§Measurements and budgets). | The first frame with the first 100 grid rows, the graph, and counts on the Workspace and Index rows. | 5 |
 | C2 | Warm reopen, M | The input that confirms M in the open control. The same other repository is open before each run. | Same as C1. | Same as C1. | 20 |
 | C3 | History refresh, M | The refresh input in the history view (F5 in Git Extensions). | The first frame with the refreshed first page and graph. | The first frame with the refreshed first 100 grid rows. | 20 |
 | C4 | External file change, M | Completion of one external file write. Both applications stay idle in the foreground for 60 seconds before it. | The first frame with the changed status. | The first frame with the changed Workspace row or Commit button count. | 20 |
@@ -768,7 +828,7 @@ Record the settings file SHA-256 before and after each series. Confirm in the WP
 | C6 | Stage one hunk, M | The stage input. Git Extensions uses Stage selected lines with exactly that hunk's lines selected. | The first frame with the file in Staged and the refreshed diff. | The same frame in the commit dialog. | 20 |
 | C7 | Local commit, M | The commit input. Arbareto time adds Ctrl+Enter to the ready review and confirm to done. | The first frame with the created commit identity and an empty Staged section. | The first browse-grid frame with the new commit as the top row. | 20 |
 
-Record these differences as confounders. In C1, Git Extensions starts with a `browse` argument, and Arbareto uses its retained repository setting. In C1 and C2, the Arbareto done frame also shows a selected diff. In C4, Git Extensions waits 1 second after a file event and 30 seconds after its previous status read (GitStatusMonitor.cs:23, :28, :560). Do not compare a repeated change inside 30 seconds. In C6 and C7, Arbareto adds validation, candidate verification, and reconciliation (§Selected mutation protocols).
+Record these differences as confounders. In C1, Git Extensions starts with a `browse` argument, and Arbareto uses its retained repository setting. In C1 and C2, the Arbareto done frame shows Changes status with counts and no history list. The Git Extensions done frame shows the revision grid. In C4, Git Extensions waits 1 second after a file event and 30 seconds after its previous status read (GitStatusMonitor.cs:23, :28, :560). Do not compare a repeated change inside 30 seconds. In C6 and C7, Arbareto adds validation, candidate verification, and reconciliation (§Selected mutation protocols).
 
 Do not compare input acknowledgement, stalls, cancellation, shutdown, memory, CPU, package size, installation, first run, or fixture L. Their own budgets and reports above stay unchanged.
 

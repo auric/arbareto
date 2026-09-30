@@ -35,7 +35,7 @@ Before building, verify:
 - Frontend build compatibility under Bun, without an accidental Node shebang fallback.
 - An owned temporary fixture root and isolated fixture configuration.
 
-For fixture runs on the reference host (T153, T160 to T163), start the installed application only with `bun tests/windows/installed-app.ts --launch <root>`. The launcher points `HOME`, `XDG_CONFIG_HOME`, and `GIT_CONFIG_GLOBAL` into the owned root. It removes Git identity and configuration-injection variables. The developer's global hooks, signing, and identity then never apply to fixtures. System configuration stays active; record its origin and digest. T149 is a smoke run before T151 exists. It changes only its F02 fixture and records the current user's Git configuration origin. The T155 clean environment and the T165 measurement account are isolated by design and do not use the launcher.
+Fixture runs on the reference host (T149, T153, T160 to T163) start the app only with `bun tests/windows/installed-app.ts --launch <root>`. The launcher points `HOME`, `XDG_CONFIG_HOME`, and `GIT_CONFIG_GLOBAL` into the owned root. It removes Git identity and configuration-injection variables. The developer's global hooks, signing, and identity then never apply to fixtures. System configuration stays active; record its origin and digest. T151 belongs to batch 4, so the T149 smoke run uses the launcher too. The T155 clean environment and the T165 measurement account are isolated by design and do not use the launcher.
 
 Do not install duplicate tools automatically. A missing toolchain component is a prerequisite, not a passing build result.
 
@@ -43,18 +43,28 @@ Do not install duplicate tools automatically. A missing toolchain component is a
 
 Run these commands only after implementation adds their required files. They describe standard tool invocations, not existing project scripts.
 
+Run them in this order, as T149 does:
+
 ```powershell
 bun install --frozen-lockfile
+bun run build:notices
 bunx --bun tsc --noEmit
 bun test tests/contracts tests/git
-cargo test --locked --manifest-path src-tauri/Cargo.toml
-bunx --bun vite build
-bun -e "if (Bun.version !== '1.4.2') { console.error('Bun 1.4.2 required, found ' + Bun.version); process.exit(1) }"
-bun build src/git-service/main.ts --compile --target=bun-windows-x64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json --outfile src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe
+bun run build
+cargo test --locked --manifest-path src-tauri/Cargo.toml -- --show-output
 cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked
 ```
 
-The implementation must create the output directory and configure that exact sidecar path. Build configuration must package local frontend, worker, theme, grammar, and WASM assets. Build a qualification package only when `git --no-optional-locks status --porcelain` prints nothing. A dirty build shows the `-dirty` marker and never counts as evidence.
+`build:notices` runs before `tsc`, because the About window imports the generated `notices.json`. `bun run build` runs before `cargo test`, because Tauri reads `frontendDist` and `externalBin` at compile time (T065). Before T130 exists, skip `build:notices`. T065 runs `bun run build` before the tests, because `tests/windows` needs the sidecar.
+
+`bun run build` runs `build:notices`, then `bunx --bun vite build`, then these two service steps:
+
+```powershell
+bun -e "if (Bun.version !== '1.4.2') { console.error('Bun 1.4.2 required, found ' + Bun.version); process.exit(1) }"
+bun build src/git-service/main.ts --compile --target=bun-windows-x64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json --outfile src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe
+```
+
+The implementation must create the output directory and configure that exact sidecar path. Build configuration must package local frontend, worker, theme, grammar, and WASM assets. Build a qualification package only when `git --no-optional-locks status --porcelain --untracked-files=all` prints nothing. The explicit option overrides a user `status.showUntrackedFiles` value. A dirty build shows the `-dirty` marker and never counts as evidence.
 
 Do not use a Vite development server for release qualification. Do not add the Tauri shell plugin or Node runtime to make an unverified path appear successful.
 
@@ -123,7 +133,7 @@ Use F01, F11–F13, and F20 with the approved standard Git handoff design.
 3. Enter a nonblank Unicode message and start one ordinary canonical Git commit.
 4. Verify parent, destination, tree, message, index, and working bytes against the retained review and fixture expectations.
 5. Repeat for the first commit in an unborn repository.
-6. Test blank messages, empty scope, missing identity, rejected hooks, denied trust, and signing failure. Start the missing-identity case with `--no-identity`.
+6. Test blank messages, empty scope, missing identity, rejected hooks, denied trust, and signing failure. Start the missing-identity case with `--no-identity`. For a rejected hook, run the displayed remedy command in PowerShell, and confirm that the hook output appears there.
 7. Change index/checkout state before handoff, including same-OID branch changes. Require refusal and renewed review.
 8. Change state after handoff or through approved hooks. Preserve canonical hook effects and report `completed-with-effects` results without ordinary-success styling.
 9. Interrupt before and after publication. Identify actual effects or explicit uncertainty; preserve the draft and never retry automatically.
@@ -146,7 +156,10 @@ Use F13–F18 and F20. Controlled barriers may delay real Git execution; they mu
 - Close during idle, read, mutation, and reconciliation states.
 - Verify the choice to stay open and the explicit interruption warning.
 - Crash the service and shell separately.
-- Interrupt and close during a commit, then start again. Confirm Previous outcome unknown and blocked mutations until an explicit refresh.
+- Interrupt and close during a commit, then start again. Confirm State unknown and blocked mutations until an explicit refresh.
+- Use Restart service with no running operation. Confirm State unknown and blocked mutations until Refresh in the new session. End the WebView2 renderer and use Reload window. Confirm that the page joins the current session.
+- Dismiss the recovery marker of a deleted repository through its native confirmation. Confirm that Escape keeps the marker.
+- Approve trust through the native confirmation, then restart the application. Confirm that no new approval appears. Change the trust policy, and confirm Trust changed. Revoke trust, and confirm Trust required after a restart. Approve trust in a repository above a program-file digest bound. Confirm that the native confirmation limits the approval to this session. After a restart, confirm Trust required.
 - Run descendant-spawning fixture hooks and an unrelated Git process with the same executable name. Include a hook grandchild that holds no inherited pipe and outlives its parent.
 - Verify no unintended owned process remains after five seconds. Verify unrelated processes and existing agents survive.
 - Suppress a watcher notification, then regain focus or request manual refresh.
@@ -178,7 +191,11 @@ Verify:
 - Every state in the `plan.md` "Required visible states" table.
 - Offline worker/highlighting behavior and a bounded readable fallback after worker failure.
 - About Arbareto opens offline from the Help menu by keyboard. Every legal notice and third-party notice is reachable, and focus returns to the Help menu button.
-- Verify that Ctrl+R, Ctrl+F, Ctrl+P, Ctrl+plus, Ctrl+wheel, Alt+Left, and F12 do nothing. Verify that F5 and Escape still reach the page. Record when `AreBrowserAcceleratorKeysEnabled` takes effect relative to first navigation. Record whether pinch zoom stays off.
+- Verify that these reload, find, and print keys start no browser action: Ctrl+R, Shift+F5, Ctrl+F5, Ctrl+Shift+R, Ctrl+F, F3, Ctrl+G, and Ctrl+P. Verify the same for these zoom, navigation, and tool keys: Ctrl+plus, Ctrl+minus, Ctrl+0, Ctrl+wheel, Alt+Left, Alt+Right, F7, Ctrl+J, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C, and F12. Verify that F5 and Escape still reach the page, and that no draft is lost. Record when `AreBrowserAcceleratorKeysEnabled` takes effect relative to first navigation. Record whether pinch zoom stays off.
+- Right-click and Shift+F10 on the page open nothing. In editable text and on selected text, the menu shows only Cut, Copy, Paste, and Select all as applicable.
+- F10, and Alt pressed alone, focus the first header menu. Arrow keys move, and Escape returns focus. AltGraph text entry never moves focus.
+- F6 and Shift+F6 reach every visible section in the plan.md order, in each window profile.
+- The first loaded frame after opening a repository shows the No selection state. Background polls show no Refreshing marker.
 
 Use the content sizes and UI-01–UI-15 capture cases in `plan.md`. Capture the installed application with actual fixture states. A browser screenshot cannot pass these native scenarios.
 

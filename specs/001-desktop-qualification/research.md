@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-28 | **Feature**: [spec.md](spec.md) | **Plan**: [plan.md](plan.md)
 
-**Evidence level**: Source inspection and read-only host inventory. It also includes a Git-behavior probe in throwaway repositories (R5) and a Rust link probe outside the repository (R6). No application build, installer test, mutation test, or performance measurement has run.
+**Evidence level**: Source inspection and read-only host inventory. It also includes Git-behavior probes in throwaway repositories (R2, R4, R5) and a Rust link probe outside the repository (R6). No application build, installer test, mutation test, or performance measurement has run.
 
 ## R1. Scope decision
 
@@ -44,11 +44,23 @@ Sources: [status format and optional locks](https://github.com/git-for-windows/g
 
 ### Repository identity
 
-Resolve the working root, worktree Git directory, common directory, actual index, shared index, and operation markers through Git.
+Resolve the working root, worktree Git directory, common directory, actual index, and operation markers through Git.
 
-Use `--show-toplevel`, `--absolute-git-dir`, `--git-common-dir`, `--git-path index`, and `--shared-index-path`. Request absolute paths where supported.
+Use `--show-toplevel`, `--absolute-git-dir`, `--git-common-dir`, and `--git-path index`. Request absolute paths where supported.
+
+**Decision**: Discovery never runs `rev-parse --shared-index-path`. That option calls `repo_read_index` (rev-parse.c:1097-1106). An index load can run a command-valued `core.fsmonitor`, and `restoreWorkspace` runs discovery at launch before trust approval. The service derives split-index state from the raw index bytes instead. The `link` extension holds the shared-index hash, and the file is `$GIT_DIR/sharedindex.<hash>` (gitformat-index.adoc:249-261). `read_index_from` builds that path from the worktree Git directory (read-cache.c:2384).
+
+A Git-behavior probe on 2026-09-30 used Git `2.55.0.windows.3` in a throwaway repository. It used an owned global configuration and `GIT_CONFIG_NOSYSTEM=1`. Local canaries covered command-valued `core.fsmonitor` and clean, smudge, and process filters on a stat-dirty file. They also covered `diff.<driver>.textconv`, `core.pager`, `core.editor`, `core.askPass`, `core.sshCommand`, and `credential.helper`. They also covered the four signing keys, one configured hook, and 28 traditional hook names. No canary ran for these `rev-parse` queries: `--is-bare-repository --is-inside-git-dir`, `--show-toplevel`, `--absolute-git-dir`, and `--git-common-dir`. The same held for `--git-path index`, `--show-object-format`, `--show-ref-format`, and `--git-path hooks`. No canary ran for `symbolic-ref -q HEAD` or `show-ref --head --verify HEAD`. None ran for `config list --show-scope --show-origin -z` or `hook list -z --show-scope`. `rev-parse --shared-index-path` ran the monitor canary twice, also with `--no-optional-locks`. `ls-files -z` did the same.
+
+A second probe ran `update-index --split-index` in a repository and in its linked worktree. Each index then held a `link` extension. Its hash named `sharedindex.<hash>` in the Git directory of that worktree. That path equals the `--shared-index-path` output. These probes are not qualification evidence, and no Arbareto build ran.
+
+Split-index sources: [rev-parse index load](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/rev-parse.c#L1097-L1106), [link extension](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/gitformat-index.adoc#L249-L261), [shared index path](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/read-cache.c#L2384).
 
 Use `--is-bare-repository` and `--is-inside-git-dir` before registration. Either true result refuses the folder with `UNSUPPORTED_REPOSITORY`.
+
+A folder outside every repository fails that first query. Discovery stops at the file system root or at a mount point. Then `setup.c` dies with one of two messages (setup.c:2004-2015). The first is "not a git repository (or any of the parent directories)". The second is "not a git repository (or any parent up to mount point". `die` prints the prefix `fatal: ` and exits with status 128 (usage.c:74, :87). A `.git` file with a missing target dies with "not a git repository: <path>" instead (setup.c:940). So the prefix `fatal: not a git repository (or any` under the fixed C locale separates `NOT_A_REPOSITORY` from the missing-target case, which stays `REPOSITORY_UNAVAILABLE`. No probe ran this case; T068 verifies it.
+
+Refusal sources: [discovery refusal](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/setup.c#L2004-L2015), [gitfile refusal](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/setup.c#L940), [die prefix and status](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/usage.c#L74-L87).
 
 Keep worktree identity separate from common-directory identity. Resolve physical directory identity after Git discovery. Windows junctions must not create separate mutation exclusion groups.
 
@@ -80,7 +92,7 @@ Sources: [path and format discovery](https://github.com/git-for-windows/git/blob
 
 ### Supported profile
 
-Support ordinary full indexes and the specified UTF-8 LF/CRLF text cases. Refuse sparse/split indexes until separately qualified.
+Support ordinary full indexes and the specified UTF-8 LF/CRLF text cases. Refuse sparse/split indexes until separately qualified. The raw `link` extension identifies a split index (R2).
 
 Refuse any registered `post-index-change` hook and any executable filesystem-monitor integration for hunk mutations. Refuse custom filters, LFS, encoding conversion, unsupported entry types, conflicts, unfinished operations, and incomplete observations.
 
@@ -110,6 +122,8 @@ Monitor sources: [built-in daemon setting](https://github.com/git-for-windows/gi
 14. Reconcile actual Git state and release only owned transaction resources before reporting the outcome.
 
 The lock excludes cooperating canonical index writers. It does not freeze working files, configuration, hooks, or references.
+
+Another tool's `git status` can rewrite the index with new stat data only. The raw digest then changes, and the hunk approval becomes invalid. The renderer then issues `readComparison` again and keeps a hunk whose canonical digest is unchanged (contract §8). Poll-time invalidation keeps the raw digest on purpose. Steps 5 and 11 compare raw canonical index bytes with the captured state (FR-014). A logical-entry check at poll time would only move the same `STALE_SELECTION` refusal to publication.
 
 A change detected before publication prevents publication. An observed change afterward produces a changed-result outcome, preserving external bytes without automatic undo or retry.
 
@@ -183,9 +197,17 @@ Never describe an identified commit as nothing committed. Never retry, reset, am
 
 Git trace2 `child_start` events set `child_class` to `hook` and add `hook_name` for hook children. Signing children set no class, so their events show `child_class` `?`. Their `argv` starts with the configured signing program. `GIT_TRACE2_EVENT` overrides a configured `trace2.eventTarget`.
 
-Open question: can these events classify `HOOK_FAILED` and `SIGNING_FAILED` without a heuristic? T091 probes this on Git `2.55.0.windows.3` and records the result here. The `mutation` policy adds a trace2 target only if the probe supports it. Without structured evidence, T112 returns `GIT_FAILED` with a recorded reason. The requirement stays.
+Open question: can these events classify `HOOK_FAILED` and `SIGNING_FAILED` without a heuristic? T091 probes this on Git `2.55.0.windows.3` and records the result here. A trace2 target comes only from a supporting probe result, through the `mutation-trace2` policy. That target would replace a user's own event target. So the service selects it only when no service variable or configuration key names an event target (contract §7). Without structured evidence, T112 returns `GIT_FAILED` with a recorded reason. The requirement stays.
 
-`git commit` updates HEAD and then runs `git maintenance run --auto`, with `--detach` by default. After that, it runs the `post-commit` hook. Git for Windows builds with `NO_POSIX_GOODIES`, so `daemonize()` fails. Maintenance then continues in the foreground. The commit process waits for it, and the 120-second commit deadline covers it. An interruption there leaves a created commit. Reconciliation classifies that result from observed state.
+Hook output never reaches the interface (R5). So `HOOK_FAILED` and a commit `GIT_FAILED` carry a remedy command that reruns the commit in a terminal (contract §9). The command uses the selected Git executable and the worktree root, and never the message.
+
+A Git-behavior probe on 2026-09-30 ran `git commit --file=-` in throwaway repositories with canary programs. A plain commit ran `pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-index-change`, and `post-commit`. It ran `reference-transaction` with `preparing`, `prepared`, `committed`, and `aborted`. It also ran a command-valued `core.fsmonitor`. With `gpg.format=ssh`, `commit.gpgsign=true`, and no `user.signingKey`, Git ran `gpg.ssh.defaultKeyCommand`. With a `key::` signing key, it ran `gpg.ssh.program`. With `gpg.format=x509`, it ran `gpg.x509.program` and not `gpg.program`. `gpg.openpgp.program` took precedence over `gpg.program`. `gpg.program` ran when it was the only signing key. Each signing program ran after the `commit-msg` hook. `gpg.adoc` lists no other command-valued key. `gpg.ssh.allowedSignersFile` and `gpg.ssh.revocationFile` name files for verification only. This probe is not qualification evidence.
+
+Signing sources: [gpg configuration keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/gpg.adoc#L1-L47).
+
+`git commit` updates HEAD and then runs `git maintenance run --auto`, with `--detach` by default. After that, it runs the `post-commit` hook. Git for Windows builds with `NO_POSIX_GOODIES`, so `daemonize()` fails. Maintenance then continues in the foreground. The commit process waits for it, and the 120-second commit deadline covers it. An interruption there leaves a created commit. Reconciliation classifies that result from observed state. This paragraph is source reasoning from the cited lines, not an observed run. T100 verifies it.
+
+If T100 observes a detached maintenance process, the operation Job still contains it, because the Job forbids breakaway. Reconciliation reports the created commit and names observed maintenance files as foreign. The operation Job closes when the operation ends, and that ends the detached process (contract §4).
 
 Open question: the maintenance duration on fixture L and the files that an interruption leaves are unverified. T100 probes them with local `gc.auto=1`.
 
@@ -223,7 +245,17 @@ A second probe on 2026-09-29 used an owned global configuration and a throwaway 
 
 Limit: the classification covers the program that Git starts. A protected command such as `sh ./x.sh` can still run repository files through its arguments. Whether `sh` searches an empty `PATH` entry on Git for Windows is unverified.
 
-Sources: [relative core.hooksPath](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/core.adoc#L512-L521), [hook working directory](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/githooks.adoc#L24-L28), [Windows program lookup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L1993-L2021).
+**Decision**: Trust approval persists across launches (spec Clarifications, 2026-09-30). The shell stores one record for each worktree, because the fingerprint is per worktree. The record binds the common-directory identity, the worktree identity, the Git installation digest, and the fingerprint. A change of any of them gives `TRUST_CHANGED` and needs renewed approval. The record holds no configuration value or credential. A native confirmation with a Cancel default precedes each stored approval (R7). Revoke trust deletes the records of every worktree of that common directory. Over a digest bound, approval lasts for the service session only (contract §7).
+
+Closed question, 2026-09-30: the fingerprint covered integration locations, not the contents of program files. A stored approval would survive an edit of a repository hook file. The fingerprint now adds the SHA-256 digest of each repository-controlled program or hook file with a resolved path. Only files inside the worktree root, the Git directory, or the common directory get a digest. So the service never opens an attacker-named UNC or device path. Contract §7 "Program file digests" defines the rule. The bounds are 64 files, 1 MiB per file, and 8 MiB in total. Closed question, 2026-09-30: overflow first blocked approval, so an over-bound repository could never get approval. Now an over-bound repository can get an explicit approval for the service session only. The shell writes no record, and the native confirmation says why (contract §7). Files beyond a bound enter the fingerprint as `unchecked`. The next session reports `untrusted`. T071 and T098 edit an approved hook file and expect `TRUST_CHANGED`. T071 also covers the session-only approval.
+
+Closed question, 2026-09-30: a bare-name program had no digest. Git for Windows looks up a bare name in each non-empty `PATH` entry in order. It tries `<entry>\<name>.exe` first, then `<entry>\<name>` when that is not a directory (`lookup_prog`, mingw.c:1908-1928; `path_lookup`, mingw.c:1993-2021). It skips empty entries (`if (dirlen)`). A relative entry resolves against the directory where Git runs. For hooks, filters, and monitors, that is the worktree root (second probe above). So the service repeats that lookup for each relative entry and digests the first regular file. Without one, the fingerprint records `absent`, so a new file gives `TRUST_CHANGED`. An earlier absolute entry can win the lookup. The digest then covers a file that Git does not start, which errs toward `TRUST_CHANGED`. The contract still treats an empty entry as relative, which is conservative.
+
+A probe on 2026-09-30 set four keys with a token in the subsection. They were `url.<URL>.insteadOf`, `http.<URL>.extraheader`, `credential.<URL>.helper`, and `includeIf.hasconfig:remote.*.url:<URL>/**.path`. Each URL had the form `https://u:TOKEN@host.example`. `config list --show-scope --show-origin -z` printed each token unchanged in the key. So contract §7 redacts URL user information in key subsections, origins, and displayed values. Git's `transport_anonymize_url` also removes the user information of a URL for display (transport.c:1695-1734). That function expects a whole URL. So the contract applies the rule to each `://` authority inside a longer text.
+
+Redaction source: [transport_anonymize_url](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/transport.c#L1695-L1734).
+
+Sources: [relative core.hooksPath](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/core.adoc#L512-L521), [hook working directory](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/githooks.adoc#L24-L28), [Windows program lookup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L1993-L2021), [per-entry lookup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L1908-L1928).
 
 Preserve Git ownership checks. Never set `safe.directory=*`. Process-local safety flags must not rewrite user configuration or bypass required hooks.
 
@@ -280,7 +312,11 @@ Give each application a separate WebView2 user-data directory. Include its brows
 
 Report summed private bytes separately from summed working sets. Shared pages can appear in multiple working sets. Include exited child-process CPU time, not only surviving processes.
 
-Open question: the 1-second foreground poll re-reads full status (plan.md, Freshness and reconciliation). Its cost on fixture L against the 1% idle CPU budget is unmeasured. T169 measures the poll count and the CPU time per poll. A missed budget stays `fail`. A cheaper poll design needs a recorded plan change.
+Closed question, 2026-09-30: the 1-second foreground poll re-read full status, trust, and the index digest on every tick. On fixture L, polls could run back to back against the 1% idle CPU budget. The poll now runs a stat change check first (contract §8 "Change check"). Without a hint or a change, it starts no Git process. Focus return, manual refresh, and watcher hints still run full reads. T192 records full-read and change-check CPU time on M and L in batch 2. T169 measures the packaged idle CPU. A missed budget stays `fail`.
+
+**Usable-workspace marker (SC-006, SC-015 C1 and C2).** The renderer calls `performance.mark("arbareto:usable-workspace")` when the plan.md done state commits. Chromium exports user timing marks to ETW under the category `blink.user_timing`, keyword `0x10000` (etw_interceptor_win.cc:106, revision `f77ee1168aca5bac8a0a24ab92867858321f5c12`). Microsoft's `WebView2.wprp` enables the WebView2 provider `E16EC3D2-BB0F-4E8F-BDB8-DE0BEA82DC3D` with keyword `0x3F0000054404`, which includes that bit. Its stable Edge provider keyword `0x10000000202F` does not. The owned profile `tests/windows/arbareto.wprp` (T193) enables only that WebView2 provider with keyword `0x10000`. WPR runs it together with the built-in `GPU` profile. Whether the installed runtime emits the mark through that provider is unverified until T193 and T165 confirm it. Profile source: WebView2Feedback commit `874307a3f444dec048f9cfead987ea263d78086e`, `diagnostics/resources/WebView2.wprp`.
+
+Marker sources: [Chromium ETW keywords](https://github.com/chromium/chromium/blob/f77ee1168aca5bac8a0a24ab92867858321f5c12/base/trace_event/etw_interceptor_win.cc#L106), [WebView2 profile](https://github.com/MicrosoftEdge/WebView2Feedback/blob/874307a3f444dec048f9cfead987ea263d78086e/diagnostics/resources/WebView2.wprp), [WebView2 ETW guidance](https://learn.microsoft.com/microsoft-edge/webview2/concepts/performance#telemetry-and-profiling-tools).
 
 **Input injection and frame timing (SC-005, SC-006, SC-015).** Input injection uses the test-only script `tests/windows/inject.ts` (T165). It calls the Windows `SendInput` API through `bun:ffi`. R2 allows `bun:ffi` in tests, not in production. The script needs no installation. It records the QueryPerformanceCounter value at each injection. Presented-frame timing comes from the WPR trace with GPU and DXGI present events. On 2026-09-29, `wpr -profiles` on the reference host lists the built-in `GPU` profile (WPR `10.0.26100`). `wpr -profiledetails GPU` lists the `Microsoft-Windows-DXGI` and `Microsoft-Windows-DxgKrnl` providers. The `DesktopComposition` profile lists `Microsoft-Windows-Dwm-Core`. Present-event coverage for WebView2 frames stays unverified until T165 confirms it. Any tool installation needs explicit maintainer approval, recorded in this section.
 
@@ -320,6 +356,27 @@ Tauri's lock selects Wry `0.57.0`, Tao `0.37.0`, WebView2 COM `0.39.1`, and Wind
 Use the native dialog through typed Rust commands. Omit the dialog JS package, shell plugin, and clipboard plugin. Native text copy/paste covers this slice.
 
 The `windows` Git tag metadata did not match the published package. The published crate identifies the revision above. Its registry checksum is `9579d0e6970fd5250aa29aba5994052385ff55cf7b28a059e484bb79ea842e42`.
+
+### Win32 binding features
+
+On 2026-09-30, a source inspection read the published `windows-0.62.0.crate`, whose SHA-256 equals the checksum above. Each call in the tasks lives in one feature module. Some calls need a second feature for a parameter type. T006 enables exactly this list.
+
+| Feature | Calls and types in the tasks | Evidence in the crate |
+| --- | --- | --- |
+| `Win32_Foundation` | `HANDLE`, `CloseHandle`, `SetHandleInformation`, `DuplicateHandle`. | `Win32/Foundation/mod.rs`. Every other Win32 feature also enables it. |
+| `Win32_Security` | `SECURITY_ATTRIBUTES`. It gates `CreateProcessW`, `CreateJobObjectW`, `CreatePipe`, and `CreateFileW`. | Each function carries `#[cfg(feature = "Win32_Security")]`: Threading `mod.rs:358`, JobObjects `mod.rs:16`, Pipes `mod.rs:42`, FileSystem `mod.rs:359`. |
+| `Win32_System_Threading` | `CreateProcessW`, `STARTUPINFOEXW`, `InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`, `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, `ResumeThread`, `TerminateProcess`, `WaitForSingleObject`, `GetExitCodeProcess`, `GetCurrentProcess`, `IsWow64Process2`. It also gates `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`. | `Win32/System/Threading/mod.rs`; JobObjects `mod.rs:190`. |
+| `Win32_System_JobObjects` | `CreateJobObjectW`, `SetInformationJobObject`, `QueryInformationJobObject`, `AssignProcessToJobObject`, `TerminateJobObject`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. | `Win32/System/JobObjects/mod.rs`. |
+| `Win32_System_Pipes` | `CreatePipe`. | `Win32/System/Pipes/mod.rs:44`. |
+| `Win32_System_IO` | `OVERLAPPED`. It gates `ReadFile` and `WriteFile`. | FileSystem `mod.rs:2112`. |
+| `Win32_Storage_FileSystem` | `SearchPathW` (T060, mod.rs:2353), `CreateFileW`, `ReadFile`, `WriteFile`, `FlushFileBuffers`, `DeleteFileW`, `MoveFileExW`, `ReplaceFileW`, `GetFileInformationByHandleEx`, `FILE_ID_INFO`, `FileIdInfo`, `FILE_SHARE_READ`, `FILE_SHARE_WRITE`, `FILE_SHARE_DELETE`, `FILE_FLAG_BACKUP_SEMANTICS`, `FILE_READ_ATTRIBUTES`. | `Win32/Storage/FileSystem/mod.rs`; `FileIdInfo` is class 18 at `mod.rs:4767`. |
+| `Win32_System_SystemInformation` | `OSVERSIONINFOEXW`, `OSVERSIONINFOW`, `IMAGE_FILE_MACHINE`, `IMAGE_FILE_MACHINE_AMD64`. It gates `IsWow64Process2` and `RtlGetVersion`. | Threading `mod.rs:1130`; Wdk SystemServices `mod.rs:5328`. |
+| `Win32_System_SystemServices` | `VER_NT_WORKSTATION`, `VER_NT_DOMAIN_CONTROLLER`, `VER_NT_SERVER`. | `Win32/System/SystemServices/mod.rs:5294-5296`. |
+| `Wdk_System_SystemServices` | `RtlGetVersion`. | `Wdk/System/SystemServices/mod.rs:5330`. It takes `*mut OSVERSIONINFOW`. The crate has no `RTL_OSVERSIONINFOEXW` name, so T057 passes a cast `OSVERSIONINFOEXW`. |
+| `Win32_UI_Controls` | `TaskDialogIndirect`, `TASKDIALOGCONFIG`, `TASKDIALOG_BUTTON`. | `Win32/UI/Controls/mod.rs:1267`, `:9116`. |
+| `Win32_UI_WindowsAndMessaging` | It gates `TaskDialogIndirect` and `TASKDIALOGCONFIG`. | Controls `mod.rs:1265`, `:9114`. |
+
+WebView2 calls go through `webview2-com` `0.39.1`, not through these features. No project build ran, so the list is unverified until T065 compiles it. A missing feature fails that compile; it cannot pass silently.
 
 Sources: [Tauri versions and MSRV](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/Cargo.toml#L40-L58), [runtime dependencies](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-runtime-wry/Cargo.toml#L15-L35), [API revision](https://github.com/tauri-apps/tauri/tree/4f46cfc10da37f5deba2326569f86b0700d97835), [dialog manifest](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/dialog/Cargo.toml#L35-L57), [published Windows manifest](https://github.com/microsoft/windows-rs/blob/983720fec75dea714cca37d29679eb9369ec7ef7/crates/libs/windows/Cargo.toml#L1-L9), [NSIS pin](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs#L36-L43).
 
@@ -370,6 +427,12 @@ Do not grant `shell:*`, broad filesystem access, or remote capabilities. Tauri c
 
 Sources: [authorization condition](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri/src/webview/mod.rs#L2049-L2088), [application ACL manifest](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-build/src/acl.rs#L85-L116), [custom-protocol IPC](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri/src/ipc/protocol.rs#L32-L63).
 
+### Session delivery
+
+On 2026-09-30, a scan of the pinned `tauri`, `tauri-runtime`, and `tauri-runtime-wry` sources listed every initialization-script setter. Only builder types set one: `tauri::Builder` (app.rs:1810), `WebviewAttributes` (tauri-runtime webview.rs:592, :618), `WebviewBuilder` (webview/mod.rs:943, :1002), and `WebviewWindowBuilder` (webview_window.rs:1008, :1053). Plugins supply theirs when they are built (plugin.rs:69-76). The manager applies the scripts when it creates a webview (manager/webview.rs:398). A live `Webview` or `WebviewWindow` offers `eval` and `reload`, but no script setter. So a script cannot deliver a session that starts after window creation. The shell answers the shell-only `currentSession` operation instead (contract §2). It starts the service before the window, so the first page load finds a session.
+
+Sources: [builder script setter](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri/src/webview/mod.rs#L943), [window builder script setter](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri/src/webview/webview_window.rs#L1008), [attribute setter](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-runtime/src/webview.rs#L592), [manager script collection](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri/src/manager/webview.rs#L398), [live window API](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri/src/webview/webview_window.rs#L2521-L2589).
+
 ### Windows distribution decision
 
 Select NSIS `installMode: currentUser`. Its source requests user execution and selects a LocalAppData destination.
@@ -400,7 +463,15 @@ Sources: [hook include](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe7
 
 ### WebView2 failure and accelerator control
 
-wry `v0.57.0` has no `ProcessFailed` handler in `src/webview2/mod.rs`. It disables browser accelerator keys only through its `browser_accelerator_keys` platform attribute (mod.rs:649-651). `tauri-runtime-wry` never sets that attribute. Tauri configuration has no accelerator key. So the shell subscribes to `ProcessFailed` and sets `AreBrowserAcceleratorKeysEnabled` through `with_webview`.
+wry `v0.57.0` has no `ProcessFailed` handler in `src/webview2/mod.rs`. It disables browser accelerator keys only through its `browser_accelerator_keys` platform attribute (mod.rs:649-651). Its `default_context_menus` attribute sets `AreDefaultContextMenusEnabled` (mod.rs:638). Both default to true (lib.rs:1752-1769), and the builder exposes them (lib.rs:1802-1810, :1883-1890). `set_webview_settings` applies them before `Navigate` (mod.rs:597). A 2026-09-30 scan of `tauri-runtime-wry` `src/lib.rs` at the pinned revision found neither attribute name. The wry crate registers no `AcceleratorKeyPressed` or `ContextMenuRequested` handler. Tauri configuration has no accelerator key. So the shell subscribes to `ProcessFailed` through `with_webview`.
+
+**Accelerator keys and page menu (AC1, D2).** `with_webview` runs after wry has created the webview and started the first navigation (`WebviewMessage::WithWebview`, tauri-runtime-wry lib.rs:3907-3947). Setting changes after `NavigationStarting` apply only at the next top-level navigation (`CoreWebView2Settings`). This app never navigates again, because F5 is a bounded refresh. So `AreBrowserAcceleratorKeysEnabled` set through `with_webview` never protects the first document. The load-bearing mechanism is the controller event `AcceleratorKeyPressed`. It fires for every accelerator key, whatever the setting. Setting `IsBrowserAcceleratorKeyEnabled` to false on its arguments skips the browser action, and the key still reaches the page. `Handled` stays false, so F5 and Escape reach the page. The setting does not cover movement and text-editing keys, such as Ctrl+C, Ctrl+V, Ctrl+A, and Ctrl+Z. The arguments need `ICoreWebView2AcceleratorKeyPressedEventArgs2`. Win32 SDK `1.0.2210.55` introduced it and needs runtime `120.0.2210.55` or later (Microsoft Learn release notes). Admission requires runtime `154.0.4258.37` or later, so every admitted runtime provides it. The handler therefore has no `Handled` fallback. A failed cast is an admission defect; the handler logs it and T157 records it. That `webview2-com` `0.39.1` exposes the interface stays unverified until T065 compiles it. A missing binding fails that compile.
+
+`ContextMenuRequested` on `ICoreWebView2_11` fires only while `AreDefaultContextMenusEnabled` is true, so the shell keeps default menus on and filters items. Item `Name` is the English label in lower camel case, such as `saveAs`, `cut`, `copy`, and `paste`. The filter keeps `cut`, `copy`, `paste`, and `selectAll` for an editable target, and `copy` and `selectAll` for selected text. For every other target, it sets `Handled` to true and shows no menu. Shift+F10 and the Menu key raise the same event. The `selectAll` name follows the documented naming rule but is unverified until T157.
+
+The shell creates the main window hidden and attaches both handlers in one `with_webview` call. That call only queues its closure (tauri-runtime-wry lib.rs:1568-1572). So the closure itself shows the window after both handlers are attached. A hidden window receives no keyboard input, so no key reaches the page before the handlers exist. Tauri keeps `WindowBuilder::visible` for the tao window (tauri-runtime-wry lib.rs:1047-1048). webview2-com `0.39.1` supplies both handler types (callback.rs:162, :490; crate SHA-256 `3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6`). The shell also sets `AreBrowserAcceleratorKeysEnabled` to false in that call; T157 records when it takes effect. No WebView2 run has checked this design (unverified).
+
+Sources: [wry settings](https://github.com/tauri-apps/wry/blob/wry-v0.57.0/src/webview2/mod.rs#L630-L660), [wry attributes](https://github.com/tauri-apps/wry/blob/wry-v0.57.0/src/lib.rs#L1750-L1890), [Tauri with_webview dispatch](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-runtime-wry/src/lib.rs#L3907-L3947), [settings timing](https://learn.microsoft.com/microsoft-edge/webview2/reference/winrt/microsoft_web_webview2_core/corewebview2settings), [IsBrowserAcceleratorKeyEnabled](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2acceleratorkeypressedeventargs2), [AreBrowserAcceleratorKeysEnabled](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2settings3), [browser keys list](https://learn.microsoft.com/microsoft-edge/webview2/concepts/browser-features#additional-keyboard-shortcuts-information), [context menus](https://learn.microsoft.com/microsoft-edge/webview2/how-to/context-menus), [menu item names](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2contextmenuitem), [SDK 1.0.2210.55 release notes](https://learn.microsoft.com/microsoft-edge/webview2/release-notes/sdk/1-0-2210-55).
 
 The `ProcessFailed` kind decides the shell action (T142, T184). `BrowserProcessExited` closes the WebView, and the app must recreate it. `RenderProcessExited` puts an error page in the main frame, and `Reload` can recover it. `RenderProcessUnresponsive` repeats every few seconds, so the shell takes no automatic action. WebView2 recreates utility and GPU processes. Sandbox helper and PPAPI exits are not fatal. A frame-only renderer exit leaves the top-level document. So only the browser and main-frame renderer exits show a dialog. `UnknownProcessExited` has no documented effect, so it shows no dialog and is only logged. A browser-process exit raises `BrowserProcessExited` separately.
 
@@ -408,7 +479,7 @@ Source: [ProcessFailedKind](https://learn.microsoft.com/dotnet/api/microsoft.web
 
 Sources: [wry accelerator setting](https://github.com/tauri-apps/wry/blob/wry-v0.57.0/src/webview2/mod.rs#L649-L651), [tauri-runtime-wry](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-runtime-wry/src/lib.rs), [Tauri configuration](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-utils/src/config.rs).
 
-The dialog plugin cannot build a safe close prompt. `tauri-plugin-dialog` `2.8.0` maps `OkCancelCustom` to rfd `0.16` with Common Controls v6. rfd calls `TaskDialogIndirect` with `nDefaultButton` `0`, so the first button is the default. It sets `TDF_ALLOW_DIALOG_CANCELLATION`, so Escape, Alt+F4, and the close button return `IDCANCEL`. The plugin maps `IDCANCEL` and a failed call to the text of the second button. So Enter or Escape selects Interrupt and close, whatever the order. T140 therefore calls `TaskDialogIndirect` directly with a Stay open default. The tauri-build default manifest already requests Common Controls v6.
+The dialog plugin cannot build a safe close prompt. `tauri-plugin-dialog` `2.8.0` maps `OkCancelCustom` to rfd `0.16` with Common Controls v6. rfd calls `TaskDialogIndirect` with `nDefaultButton` `0`, so the first button is the default. It sets `TDF_ALLOW_DIALOG_CANCELLATION`, so Escape, Alt+F4, and the close button return `IDCANCEL`. The plugin maps `IDCANCEL` and a failed call to the text of the second button. So Enter or Escape selects Interrupt and close, whatever the order. T140 therefore calls `TaskDialogIndirect` directly with a Stay open default. The Git selection, trust approval, and marker dismissal confirmations have the same risk with the plugin. So T060 calls `TaskDialogIndirect` directly with a Cancel default for all three. The file and folder pickers still use the plugin, because a picker has no accept-by-Escape hazard. The tauri-build default manifest already requests Common Controls v6.
 
 Sources: [plugin button mapping](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/dialog/src/desktop.rs#L110-L140), [plugin result mapping](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/dialog/src/desktop.rs#L215-L258), [rfd task dialog](https://github.com/PolyMeilex/rfd/blob/0.16.0/src/backend/win_cid/message_dialog.rs#L100-L200), [TASKDIALOGCONFIG](https://learn.microsoft.com/windows/win32/api/commctrl/ns-commctrl-taskdialogconfig), [TaskDialogIndirect](https://learn.microsoft.com/windows/win32/api/commctrl/nf-commctrl-taskdialogindirect), [tauri-build manifest](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-build/src/windows-app-manifest.xml).
 
@@ -545,6 +616,21 @@ TypeScript 7 uses platform-native compiler packages, including `@typescript/type
 Vite uses Rolldown `1.2.9` with an MSVC native binding. Tailwind uses Oxide `4.3.3`. Lightning CSS appears at `1.32.0` and `1.33.0` with MPL-2.0 licensing.
 
 These are build dependencies, not product runtime libraries. Vite declares Node `^20.19.0 || >=22.12.0`. Explicit Bun execution needs a real build test; the declaration does not prove Bun compatibility.
+
+Node disclosure (Constitution II), from the npm registry `engines` fields read on 2026-09-30:
+
+| Package | Declared Node range | How it runs |
+| --- | --- | --- |
+| `typescript` `7.0.2`, `@typescript/typescript-win32-x64` `7.0.2` | `>=16.20.0` | `bunx --bun tsc --noEmit` (T065, T149). |
+| `vite` `8.3.1`, `@vitejs/plugin-react` `6.1.1`, `rolldown` `1.2.9` | `^20.19.0 \|\| >=22.12.0` | `bunx --bun vite build` in `build:frontend` (T003). |
+| `shadcn` `4.21.0` | `>=20.18.1` | `bunx --bun shadcn@4.21.0` (T123). Only its CSS enters the bundle. |
+| `@tailwindcss/oxide` `4.3.3` | `>= 20` | Inside the Vite process under Bun. |
+| `lightningcss` `1.32.0`, `1.33.0` | `>= 12.0.0` | Inside the Vite process under Bun. |
+| `tailwindcss` `4.3.3`, `@tailwindcss/vite` `4.3.3`, `@types/react`, `@types/react-dom`, `@types/bun` | No `engines` field | Build input or type declarations only. |
+
+The mitigation is `bunx --bun` or `bun run` for every tool. None of these packages enters the product runtime, and T154 confirms that the bundle holds no Node executable. Bun compatibility of each tool stays unverified until T065 runs the build.
+
+Source: `engines` fields at `https://registry.npmjs.org/<package>/<version>` for each row.
 
 Use `bunx --bun vite build`. Bare `bunx vite` can honor the Node shebang. Qualify type checking and bundling under Bun 1.4.2 without relying on a Node executable.
 
@@ -713,7 +799,7 @@ The user answered one clarification and selected standard Git commit behavior. T
 
 The spec-quality checklist is re-validated after the 2026-09-29 decisions. That step records the result in `checklists/requirements.md`. These checks assess specification quality, not implementation readiness or runtime qualification.
 
-Mechanical checks covered six design documents, including table-cell sentences. Local links, code fences, sentence lengths, and placeholder checks passed. A re-run after the About window update found FR-001–FR-037, SC-001–SC-014, F01–F20, and UI-01–UI-15 unique, consecutive, and validly referenced.
+Mechanical checks covered six design documents, including table-cell sentences. Local links, code fences, sentence lengths, and placeholder checks passed. A re-run after the About window update found FR-001–FR-037, SC-001–SC-014, F01–F20, and UI-01–UI-15 unique, consecutive, and validly referenced. Note, 2026-09-30: the spec now also holds SC-015, so the current range is SC-001–SC-015.
 
 All 54 checked color pairs pass their applicable numerical contrast thresholds: 30 token pairs and 24 lane pairs. The graph's 24 stroke/background pairs have a minimum ratio of 4.66:1. Divider pairs are informational and have no threshold. Rendered accessibility and Windows behavior remain untested.
 
@@ -727,6 +813,65 @@ One independent review of this update found two material contract gaps. Both rec
 | A successful status refresh could clear an unresolved-attribution block. The model and operation contract had different recovery conditions. | Recovery refresh now performs required reconciliation before enabling mutations. Status success alone cannot release the gate. F20 tests the distinction. |
 
 These corrections have not received runtime verification. Hunk publication, commit effects, attribution, cleanup, and cancellation remain untested. Graph correctness, rendered accessibility, screenshots, installation, performance, signing, and authenticated updates also remain unverified.
+
+### Safety and lifecycle remediation, 2026-09-30
+
+A `/speckit-analyze` pass found safety and lifecycle gaps. The maintainer also decided that trust approval persists across launches. Document corrections follow; the R2, R4, and R5 probes and the R7 source scan support them.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| Discovery ran `rev-parse --shared-index-path`, which loads the index. A probe ran a local `core.fsmonitor` canary before trust approval. | Discovery drops the option. Split-index state comes from the raw `link` extension. T068 adds a discovery canary case. |
+| `gpg.ssh.defaultKeyCommand` ran during a commit, but the signing list omitted it. | Contract §7 adds it to the signing programs and the value allowlist. T071 and T098 expect `TRUST_REQUIRED`. |
+| Key subsections and origins carried URL credentials into displays. | The service redacts URL user information before display or logging. T014, T071, T073, and UI-06 check canaries. |
+| The commit task skipped the mutation exclusion and the recovery marker. | T112 enters the T106 exclusion and waits for `started`. T098 adds commit `BUSY`, `LOCKED`, and marker-order cases. |
+| `TRUST_CHANGED` had no clearing rule. | Contract §7 defines refresh plus reselection, or renewed approval. T071 and T096 test both paths. |
+| Only a renderer dialog confirmed trust approval. | The shell shows a native confirmation with a Cancel default before it stores an approval (T060). |
+| Markers of deleted repositories never resolved. A failed marker write gave `SERVICE_UNAVAILABLE`. | Explicit dismissal with a native confirmation, and the code `RECOVERY_MARKER_FAILED`. T052 and T100 test the limit above 64. |
+| After Restart service, the page kept invalid repository IDs. | The page runs `restoreWorkspace` again. Mutations stay blocked until a refresh in the new session. T188 tests the bridge. |
+| An initialization script cannot carry a session that starts later. | The shell starts the service first and answers `currentSession`. |
+| Each open registered a new workspace until `WORKSPACE_LIMIT`. | Registration reuses the same worktree and releases another repository. A contract check opens 20 times. |
+| Stat-only index rewrites and the 60-second lifetime expired hunk approvals. | The renderer requests the comparison again and keeps a hunk with an unchanged digest. Poll-time invalidation stays raw. |
+| A hook rejection showed no reason, because hook output stays hidden. | `HOOK_FAILED` and a commit `GIT_FAILED` carry a remedy command. Clear message sits beside `completed-with-effects`. |
+| Minor gaps: running state after a service crash, trace2 override, hunk recovery rule, T149 isolation, and the T171 dirty build. | Contract, plan, and task corrections. T151 moves to batch 4, before T149. |
+
+These corrections have not received runtime verification.
+
+### Build, coverage, and ordering remediation, 2026-09-30
+
+A second `/speckit-analyze` pass found build, implementability, coverage, and ordering gaps. Document corrections follow; npm registry reads, the `windows` crate source, and the pinned Tauri and Cargo sources support them.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| Only Vite disclosed its Node range (Constitution II). | plan.md Technical Context and R9 list every declared range and the `bunx --bun` mitigation. |
+| `cargo test` needed `dist/` and the sidecar before any service build. | T189 builds both from a stub before the Rust tests. |
+| Hunk eligibility had no batch 2 test, and the built-in monitor had no refusal test. | T190 tests eligibility, and T096 adds `core.fsmonitor=true`. |
+| A stored trust approval survived edits of repository hook files. | Contract §7 adds program file digests. T071 and T098 edit a hook file. |
+| The Git selection confirmation used the dialog plugin. | T060 uses `TaskDialogIndirect` with a Cancel default. |
+| No task created the startup contexts for the saved Git path and the last repository. | Contract §6 "Startup contexts"; T060, T063, and T183. |
+| The notice generator and the native suites had no failing-first check or control mutation. | T191 tests the generator. T065 and T149 add native control mutations. |
+| Other gaps: `windows` features, maintenance detach, minimum-version wording, stale-code sequence, F14 builders, packaged triggers, and build identity reruns. | Contract, plan, quickstart, and task corrections. |
+
+These corrections have not received runtime verification.
+
+### UX, speed, and journey remediation, 2026-09-30
+
+A third `/speckit-analyze` pass found UX, speed, and user-journey gaps. The maintainer decided the launch view and the right-click scope (spec Clarifications, 2026-09-30). Sources in R2, R5, R6, and R7 and Microsoft Learn support the corrections.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| The cold done frame needed a selected diff and History, but nothing selected a diff. | plan.md defines the done frame, the marker, the `GPU` profile, and the DXGI present provider. T193 authors `tests/windows/arbareto.wprp`; T165 only confirms. |
+| Every poll ran a full read, and poll cost was first measured in batch 5. | Contract §8 adds a stat change check. T192 records read and poll CPU on M and L in batch 2, so T164 moves to batch 2. |
+| `readHistory` waited for a status snapshot. | It binds the generation and the captured HEAD and runs beside `readWorkspace`. T070 and T072 test it. |
+| The cold path was serial and first timed in batch 5. | plan.md lists the critical path and the permitted overlaps. T193 and T192 record observations. |
+| A setting set after creation cannot protect the first document, and Tauri exposes neither wry attribute. | The hidden window gets `AcceleratorKeyPressed` and `ContextMenuRequested` handlers before it shows (R7). T051, T058, and T157 cover them. |
+| Unsupported entries showed no way forward. | Contract §4 adds copyable whole-file remedies. T093 runs each remedy in a copy. |
+| An over-bound repository could never get trust approval. | A session-only approval stores no record (contract §7). T071 covers it. |
+| A bare-name program in a relative `PATH` entry had no digest. | The service repeats the Git for Windows lookup and digests the repository file (R5). T071 covers it. |
+| Density rows left no room for the focus ring, and the narrow comparison fell below 220 DIPs. | plan.md adds row heights, a row button, and a height budget. T122 checks each profile. |
+| Near lane pairs were hard to tell apart. | Lightness changes give an OKLab pair distance of at least 0.101. The minimum lane contrast stays 4.66:1. T118 checks the palette. |
+| Other gaps: success copy, No selection, F6 stops, menu bar access, roles, and review Tab order. Others are key hints, HEAD labels, selected-hunk shape, Git proposal, scope text, `NOT_A_REPOSITORY`, and state names. | Contract, data-model, plan, quickstart, checklist, and task corrections. |
+
+These corrections have not received runtime verification.
 
 ## R12. History graph component and data decision
 

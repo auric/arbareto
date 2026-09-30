@@ -8,95 +8,95 @@
 **Review Ownership**: This checklist is a reviewer-owned requirements-quality review artifact. Mark an item `[x]` only when the reviewer determines the requirements-quality criterion is satisfied.
 **Marker Semantics**: `[x]` means the criterion has been reviewed and satisfied for requirements quality. It does not mean implementation work is complete.
 
-Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09-29 after the gap fixes. Each note cites the evidence.
+Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09-29 after the gap fixes. Each note cites the evidence by section name or requirement ID. On 2026-09-30, line-number citations became section citations, and the marks stayed unchanged.
 
 ## Layout and Pane Sizing
 
-- [x] CHK001 Are pane sizes for the chosen layout quantified with defaults, minima, and maxima for the file lane, diff, and commit tray? [Completeness, Spec §FR-035] — plan.md:247-251.
-- [x] CHK002 Is the History bottom region sized consistently with the commit tray, including a remembered height and a minimum list height? [Consistency, Spec §FR-034] — plan.md:263.
-- [x] CHK003 Are splitter hit area, accessible separator semantics, and keyboard step sizes specified? [Completeness, Spec §FR-035] — plan.md:259, plan.md:386.
-- [x] CHK004 Is the constrained profile free of conflicting scroll rules between the work area and the comparison? [Consistency] — plan.md:243.
-- [x] CHK005 Are History-mode pane rules defined for the constrained profile, including where the inspector goes? [Gap] — plan.md:243 stacks the History list and inspector; the list keeps a bounded region of at least 220 DIPs.
+- [x] CHK001 Are pane sizes for the chosen layout quantified with defaults, minima, and maxima for the file lane, diff, and commit tray? [Completeness, Spec §FR-035] — plan.md "Chosen layout, sizes, and DPI" profile table, file-lane, tray, and narrow-band paragraphs.
+- [x] CHK002 Is the History bottom region sized consistently with the commit tray, including a remembered height and a minimum list height? [Consistency, Spec §FR-034] — plan.md "Chosen layout, sizes, and DPI", shared bottom region paragraph (remembered height, 240 DIP History list minimum).
+- [x] CHK003 Are splitter hit area, accessible separator semantics, and keyboard step sizes specified? [Completeness, Spec §FR-035] — plan.md "Chosen layout, sizes, and DPI" splitter paragraph; plan.md "Keyboard and focus" Splitter row.
+- [x] CHK004 Is the constrained profile free of conflicting scroll rules between the work area and the comparison? [Consistency] — plan.md "Chosen layout, sizes, and DPI" Constrained row.
+- [x] CHK005 Are History-mode pane rules defined for the constrained profile, including where the inspector goes? [Gap] — plan.md "Chosen layout, sizes, and DPI" Constrained row stacks the History list and inspector. The list keeps a bounded region of at least 220 DIPs.
 
 ## Window-Size and DPI Profiles
 
-- [x] CHK006 Are wide, narrow, constrained, and minimum window profiles defined with numeric thresholds? [Clarity, Spec §FR-035] — plan.md:239-245.
-- [x] CHK007 Are DPI, density, and font-change requirements defined for remeasurement, scroll anchors, and editor state? [Completeness, Spec §SC-009] — plan.md:269.
-- [x] CHK008 Is per-monitor scaling stated as the qualification target, distinct from system-aware DPI? [Clarity] — plan.md:177, spec.md:280 mixed-scale transitions.
+- [x] CHK006 Are wide, narrow, constrained, and minimum window profiles defined with numeric thresholds? [Clarity, Spec §FR-035] — plan.md "Chosen layout, sizes, and DPI" profile table.
+- [x] CHK007 Are DPI, density, and font-change requirements defined for remeasurement, scroll anchors, and editor state? [Completeness, Spec §SC-009] — plan.md "Chosen layout, sizes, and DPI" remeasurement paragraph.
+- [x] CHK008 Is per-monitor scaling stated as the qualification target, distinct from system-aware DPI? [Clarity] — plan.md "Git Extensions reference" (`HighDpiMode.SystemAware`, issue #6409); spec SC-009 mixed-scale transitions.
 
 ## Density
 
-- [x] CHK009 Are compact and comfortable metrics quantified for text, rows, buttons, and headings? [Measurability, Spec §FR-005] — plan.md:311-317.
-- [x] CHK010 Is graph geometry tied to the density tokens (row height, lane spacing, node radius, column width)? [Consistency, Spec §FR-036] — plan.md:458-460, plan.md:470.
+- [x] CHK009 Are compact and comfortable metrics quantified for text, rows, buttons, and headings? [Measurability, Spec §FR-005] — plan.md "Compact token system" density table and row-height rule; plan.md "Chosen layout, sizes, and DPI" height budget.
+- [x] CHK010 Is graph geometry tied to the density tokens (row height, lane spacing, node radius, column width)? [Consistency, Spec §FR-036] — plan.md "History graph design" data and rendering rules and geometry paragraph.
 
 ## Theming, Forced Colors, and Contrast
 
-- [x] CHK011 Are theme roles defined for both themes with explicit values and uses, including Divider versus Control border? [Completeness, Spec §FR-005] — plan.md:273-284.
-- [x] CHK012 Are numeric contrast thresholds stated per pair class (text, control border, focus/accent, lane strokes)? [Measurability] — plan.md:301, plan.md:481.
-- [x] CHK013 Do the checked contrast pairs cover every text/background pair the layout uses, such as muted text on the Selected row? [Coverage, Gap] — plan.md:301 records 30 token pairs, including muted text on the Selected row (5.06:1 light, 5.15:1 dark) and the Hover fill.
-- [x] CHK014 Are disabled-control appearance requirements specified beyond disabled-reason text? [Gap] — plan.md:299 defines Muted text, Divider border, no Accent, the 3:1 exemption, and kept reason text.
-- [x] CHK015 Are lane colors kept distinct from Accent and semantic Added, Removed, and Warning roles by a stated metric? [Clarity] — plan.md:481 (OKLCH ≥30°).
-- [x] CHK016 Are forced-colors requirements defined for every custom-colored element, not only graph lanes and nodes? [Completeness, Gap] — plan.md:307 maps lanes, nodes, selection, focus, selected hunk, diff glyphs, and disabled controls to system colors; UI-14 at plan.md:548.
-- [x] CHK017 Does the spec state forced-colors or Windows contrast-theme support as a requirement? [Consistency, Spec §FR-005] — spec.md:200 (FR-005) and spec.md:280 (SC-009) now name Windows contrast themes.
-- [x] CHK018 Is reduced-motion behavior specified? [Completeness] — plan.md:305, plan.md:323.
+- [x] CHK011 Are theme roles defined for both themes with explicit values and uses, including Divider versus Control border? [Completeness, Spec §FR-005] — plan.md "Compact token system" base-role and semantic-role tables.
+- [x] CHK012 Are numeric contrast thresholds stated per pair class (text, control border, focus/accent, lane strokes)? [Measurability] — plan.md "Compact token system" contrast statement; plan.md "History graph design" lane color paragraph.
+- [x] CHK013 Do the checked contrast pairs cover every text/background pair the layout uses, such as muted text on the Selected row? [Coverage, Gap] — plan.md "Compact token system" contrast statement records 30 token pairs. They include muted text on the Selected row and the Hover fill.
+- [x] CHK014 Are disabled-control appearance requirements specified beyond disabled-reason text? [Gap] — plan.md "Compact token system" disabled-control paragraph: Muted text, Divider border, no Accent, the 3:1 exemption, and kept reason text.
+- [x] CHK015 Are lane colors kept distinct from Accent and semantic Added, Removed, and Warning roles by a stated metric? [Clarity] — plan.md "History graph design" lane color paragraph. It sets an OKLCH hue gap of at least 30° and an OKLab pair distance of at least 0.10.
+- [x] CHK016 Are forced-colors requirements defined for every custom-colored element, not only graph lanes and nodes? [Completeness, Gap] — plan.md "Compact token system" forced-colors paragraph. It maps lanes, nodes, selection, focus, the selected-hunk bar, diff glyphs, and disabled controls to system colors. See UI-14.
+- [x] CHK017 Does the spec state forced-colors or Windows contrast-theme support as a requirement? [Consistency, Spec §FR-005] — spec FR-005 and SC-009 name Windows contrast themes.
+- [x] CHK018 Is reduced-motion behavior specified? [Completeness] — plan.md "Compact token system" reduced-motion and no-animated-entrance rules.
 
 ## Keyboard and Focus
 
-- [x] CHK019 Are keyboard bindings defined for every workbench context, including mode switching, panes, lists, comparison, splitter, message, dialog, and refresh? [Coverage, Spec §FR-004] — plan.md:379-391.
-- [x] CHK020 Are pane names in the keyboard rules consistent with the layout terms? [Consistency] — plan.md:383.
-- [x] CHK021 Are focus-restoration rules defined for dialog close, mode return, and removal of the selected entry? [Completeness, Spec §FR-034] — plan.md:388, plan.md:393, plan.md:403.
-- [x] CHK022 Are deliberate keyboard differences from Git Extensions documented with a safety reason? [Clarity] — plan.md:179.
-- [x] CHK023 Are hover-state requirements defined for rows, buttons, and graph cells? [Gap] — plan.md:284, plan.md:297 define the Hover fill and hover limits; graph cells follow their row.
+- [x] CHK019 Are keyboard bindings defined for every workbench context, including mode switching, panes, lists, comparison, splitter, message, dialog, and refresh? [Coverage, Spec §FR-004] — plan.md "Keyboard and focus" table.
+- [x] CHK020 Are pane names in the keyboard rules consistent with the layout terms? [Consistency] — plan.md "Keyboard and focus" Pane navigation row uses the layout section names.
+- [x] CHK021 Are focus-restoration rules defined for dialog close, mode return, and removal of the selected entry? [Completeness, Spec §FR-034] — plan.md "Keyboard and focus" Dialog row and focus paragraphs; plan.md "Selection, scroll, and stored context".
+- [x] CHK022 Are deliberate keyboard differences from Git Extensions documented with a safety reason? [Clarity] — plan.md "Git Extensions reference" keyboard-difference paragraph.
+- [x] CHK023 Are hover-state requirements defined for rows, buttons, and graph cells? [Gap] — plan.md "Compact token system" Hover fill role and hover rule; graph cells follow their row.
 
 ## Selection, Scroll, and Context Restoration
 
-- [x] CHK024 Are per-mode selection, scroll anchor, draft, and focus restoration rules defined, including stale-approval invalidation? [Completeness, Spec §FR-034, §SC-012] — plan.md:405-419.
-- [x] CHK025 Is behavior defined when a selected commit leaves the loaded page after refresh? [Edge Case, Spec §FR-022] — plan.md:493.
+- [x] CHK024 Are per-mode selection, scroll anchor, draft, and focus restoration rules defined, including stale-approval invalidation? [Completeness, Spec §FR-034, §SC-012] — plan.md "Selection, scroll, and stored context"; spec FR-034 and SC-012.
+- [x] CHK025 Is behavior defined when a selected commit leaves the loaded page after refresh? [Edge Case, Spec §FR-022] — plan.md "History graph design" interaction bullets (selection that leaves the page).
 
 ## Required Visible States
 
-- [x] CHK026 Does every required state have presentation and behavior requirements that do not rely on color? [Completeness, Spec §FR-005] — plan.md:498-523.
-- [x] CHK027 Are cancellation-requested and canceled outcomes given explicit presentation requirements? [Gap, Spec §FR-021] — plan.md:519-520 (FR-021).
-- [x] CHK028 Is the close-during-mutation warning (stay open or interrupt and close, with rollback limits) specified as a visible state or capture? [Gap, Spec §FR-024] — plan.md:521 (FR-024), captured in UI-08 at plan.md:542.
-- [x] CHK029 Are prerequisite-failure states defined with detected and required versions? [Completeness, Spec §FR-002] — plan.md:49-55.
+- [x] CHK026 Does every required state have presentation and behavior requirements that do not rely on color? [Completeness, Spec §FR-005] — plan.md "Required visible states".
+- [x] CHK027 Are cancellation-requested and canceled outcomes given explicit presentation requirements? [Gap, Spec §FR-021] — plan.md "Required visible states" Cancel requested and Canceled rows (FR-021).
+- [x] CHK028 Is the close-during-mutation warning (stay open or interrupt and close, with rollback limits) specified as a visible state or capture? [Gap, Spec §FR-024] — plan.md "Required visible states" Close during mutation row (FR-024), captured in UI-08.
+- [x] CHK029 Are prerequisite-failure states defined with detected and required versions? [Completeness, Spec §FR-002] — plan.md "Provisional prerequisite admission".
 
 ## Destructive-Action Separation
 
-- [x] CHK030 Are destructive actions excluded from this slice, with a rule for their future separation and scope confirmation? [Clarity, Spec §FR-027] — plan.md:361, plan.md:175.
+- [x] CHK030 Are destructive actions excluded from this slice, with a rule for their future separation and scope confirmation? [Clarity, Spec §FR-027] — plan.md "Task flow and command placement" destructive-action paragraph; plan.md "Git Extensions reference" (`FormResetChanges`).
 
 ## Graph Data and Rendering Rules
 
-- [x] CHK031 Are graph data bounds quantified (rows, output bytes, parents per commit, parent references, lanes, segments)? [Measurability, Spec §FR-008, §FR-036] — research.md:711-713, plan.md:467.
-- [x] CHK032 Are outside-page parents and shallow boundaries distinguished from roots in the requirements? [Clarity, Spec §FR-036] — plan.md:464-465.
-- [x] CHK033 Is the visual treatment of a true root commit (lane end) specified? [Gap, Spec §SC-013] — plan.md:466 ends the lane at the node with Root commit text, distinct from plan.md:464-465.
-- [x] CHK034 Are the selected-node ring and the merge-node ring specified so that they cannot be confused? [Ambiguity] — plan.md:470: hollow lane-stroked merge node; separate Accent outer ring 3 DIPs out; a selected merge node shows both.
-- [x] CHK035 Are lane assignment, lane color assignment, and column width rules defined deterministically? [Clarity] — plan.md:460-463, plan.md:472.
-- [x] CHK036 Is equivalent non-color, non-pointer parent information required? [Coverage, Spec §FR-036] — plan.md:481, plan.md:486-487.
+- [x] CHK031 Are graph data bounds quantified (rows, output bytes, parents per commit, parent references, lanes, segments)? [Measurability, Spec §FR-008, §FR-036] — contracts/operations.md §5 history and graph bounds; research.md R12 "History protocol"; plan.md "History graph design" layout bound.
+- [x] CHK032 Are outside-page parents and shallow boundaries distinguished from roots in the requirements? [Clarity, Spec §FR-036] — plan.md "History graph design" outside-page and shallow-boundary rules.
+- [x] CHK033 Is the visual treatment of a true root commit (lane end) specified? [Gap, Spec §SC-013] — plan.md "History graph design" root-commit rule ends the lane at the node with Root commit text.
+- [x] CHK034 Are the selected-node ring and the merge-node ring specified so that they cannot be confused? [Ambiguity] — plan.md "History graph design" geometry paragraph. A merge node is hollow and lane-stroked. A separate Accent outer ring sits 3 DIPs out. A selected merge node shows both.
+- [x] CHK035 Are lane assignment, lane color assignment, and column width rules defined deterministically? [Clarity] — plan.md "History graph design" lane assignment rules and lane color paragraph.
+- [x] CHK036 Is equivalent non-color, non-pointer parent information required? [Coverage, Spec §FR-036] — plan.md "History graph design" interaction bullets; spec FR-036.
 
 ## Graph Component Decision
 
-- [x] CHK037 Is the graph component decision traceable to pinned candidates, licences, and rejection reasons, including mermaid? [Traceability] — research.md:663-689, plan.md:449-451.
-- [x] CHK038 Are licence obligations stated for code copied from references? [Completeness] — research.md:580, research.md:588, plan.md:181.
-- [x] CHK039 Is the 100-row page reconciled with the brief's virtualized-graph direction? [Consistency] — research.md:671.
+- [x] CHK037 Is the graph component decision traceable to pinned candidates, licences, and rejection reasons, including mermaid? [Traceability] — research.md R12 candidate table; plan.md "History graph design" component choice.
+- [x] CHK038 Are licence obligations stated for code copied from references? [Completeness] — research.md R9 "Frontend licence obligations"; plan.md "Git Extensions reference" licence paragraph.
+- [x] CHK039 Is the 100-row page reconciled with the brief's virtualized-graph direction? [Consistency] — research.md R12 decision paragraph on the virtualized-graph direction.
 
 ## Screenshot Captures
 
-- [x] CHK040 Does every required visible state map to at least one capture with a fixed configuration? [Coverage] — plan.md:533-549 cover all 22 states in plan.md:502-523.
-- [x] CHK041 Are capture metadata and pass conditions defined, including clipped-capture rejection? [Measurability] — plan.md:531, plan.md:551.
+- [x] CHK040 Does every required visible state map to at least one capture with a fixed configuration? [Coverage] — plan.md "Screenshot review during implementation" covers all 24 states in plan.md "Required visible states". No selection maps to UI-03 and UI-11, and Succeeded to UI-05 and UI-13.
+- [x] CHK041 Are capture metadata and pass conditions defined, including clipped-capture rejection? [Measurability] — plan.md "Screenshot review during implementation" metadata paragraph and clipped-capture rule.
 
 ## Cross-Artifact Consistency
 
-- [x] CHK042 Do quickstart.md capture and state references match plan.md? [Consistency] — quickstart.md:175, quickstart.md:180 (UI-01–UI-15).
-- [x] CHK043 Is Git Extensions consistently the primary UX reference and T3 Code the visual-style reference across spec.md, plan.md, and research.md? [Consistency] — spec.md:28, plan.md:151, plan.md:169-183, plan.md:559, research.md:684.
-- [x] CHK044 Are the History scope and ordering rules consistent between spec.md and research.md? [Consistency, Spec §FR-008] — spec.md:206 (FR-008), research.md:703.
-- [x] CHK045 Are requirement and capture IDs unique, consecutive, and validly referenced? [Traceability] — research.md:648.
+- [x] CHK042 Do quickstart.md capture and state references match plan.md? [Consistency] — quickstart.md §7 cites plan.md content sizes and UI-01–UI-15.
+- [x] CHK043 Is Git Extensions consistently the primary UX reference and T3 Code the visual-style reference across spec.md, plan.md, and research.md? [Consistency] — spec Clarifications 2026-09-29; plan.md "UI direction and scope", "Git Extensions reference", and "Design check against the brief"; research.md R12.
+- [x] CHK044 Are the History scope and ordering rules consistent between spec.md and research.md? [Consistency, Spec §FR-008] — spec FR-008; research.md R12 "History protocol".
+- [x] CHK045 Are requirement and capture IDs unique, consecutive, and validly referenced? [Traceability] — research.md R11 ID checks.
 
 ## Legal Notices and About Window
 
-- [x] CHK046 Does the About window content cover every AGPL Appropriate Legal Notice (copyright, no warranty, conveyance permission, license access), the section 7(b) attribution, and the Corresponding Source location? [Completeness, Spec §FR-037] — spec.md:253, plan.md:369-370.
-- [x] CHK047 Are About window keyboard access, initial focus, Escape behavior, focus return, and constrained-profile reachability specified? [Coverage, Spec §FR-037, §SC-014] — plan.md:373, plan.md:375, plan.md:390, spec.md:285.
-- [x] CHK048 Are offline notice display, the build-time notice inventory, and the packaging failure rule for missing licence text specified? [Completeness, Spec §FR-037, §SC-014] — plan.md:71, plan.md:373, plan.md:375, spec.md:285, plan.md:757 (B-RELEASE).
-- [x] CHK049 Does a screenshot capture cover every About window tab, keyboard focus, and offline use with fixed configurations? [Coverage] — plan.md:549 (UI-15), quickstart.md:177, quickstart.md:180.
+- [x] CHK046 Does the About window content cover every AGPL Appropriate Legal Notice (copyright, no warranty, conveyance permission, license access), the section 7(b) attribution, and the Corresponding Source location? [Completeness, Spec §FR-037] — spec FR-037; plan.md "About window".
+- [x] CHK047 Are About window keyboard access, initial focus, Escape behavior, focus return, and constrained-profile reachability specified? [Coverage, Spec §FR-037, §SC-014] — plan.md "About window"; plan.md "Keyboard and focus" Menu bar row; spec SC-014.
+- [x] CHK048 Are offline notice display, the build-time notice inventory, and the packaging failure rule for missing licence text specified? [Completeness, Spec §FR-037, §SC-014] — plan.md "Tool and runtime boundaries" notice inventory; plan.md "About window"; spec SC-014; plan.md B-RELEASE gate.
+- [x] CHK049 Does a screenshot capture cover every About window tab, keyboard focus, and offline use with fixed configurations? [Coverage] — plan.md UI-15; quickstart.md §7.
 
 ## Notes
 

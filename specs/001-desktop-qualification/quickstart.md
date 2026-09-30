@@ -161,6 +161,7 @@ Use F13–F18 and F20. Controlled barriers may delay real Git execution; they mu
 - Dismiss the recovery marker of a deleted repository through its native confirmation. Confirm that Escape keeps the marker.
 - Approve trust through the native confirmation, then restart the application. Confirm that no new approval appears. Change the trust policy, and confirm Trust changed. Revoke trust, and confirm Trust required after a restart. Approve trust in a repository above a program-file digest bound. Confirm that the native confirmation limits the approval to this session. After a restart, confirm Trust required.
 - Run descendant-spawning fixture hooks and an unrelated Git process with the same executable name. Include a hook grandchild that holds no inherited pipe and outlives its parent.
+- Commit with a `post-commit` hook that starts a sleeping background child. Confirm that the child still runs after the commit and that a refresh succeeds. Close the application. Confirm that no prompt appears and that the child ends within five seconds.
 - Verify no unintended owned process remains after five seconds. Verify unrelated processes and existing agents survive.
 - Suppress a watcher notification, then regain focus or request manual refresh.
 - Complete external file, index, and reference changes in the foreground. Require visible reconciliation within two seconds.

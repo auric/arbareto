@@ -173,7 +173,8 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `kind` | One operation from the protocol allowlist. |
 | `state` | State from the transition table below. |
 | `phase` | Bounded operation phase, including preflight, candidate verification, publication, commit handoff, and reconciliation where applicable. |
-| `ownedProcesses` | Native process handles and operation Job identity. Never process-name matching. |
+| `ownedProcesses` | Native process handles and operation Job identity. Never process-name matching. After a mutation ends, a Job with remaining processes becomes a lingering Job (contract §6 "Lingering Jobs"). It closes when it is empty or the application closes. |
+| `lingeringDescendants` | Mutation outcomes only. The count of owned processes that still ran when the last execution process exited. It comes from the shell's `activeDescendants` exit reply. No process name, PID, or argument. |
 | `limits` | Output, duration, concurrency, and framing limits from the protocol. |
 | `result` | Typed success, refusal, failure, limit, interruption, or unknown-state result. An `unknown` result names its attribution reason: `ambiguous`, `evidence-limit`, or `no-retained-request`. A hunk recovery names its index match: `published`, `not-published`, or `neither` (contract §8). Contract §9 maps each terminal state to its result code. |
 | `effects` | Reconciled HEAD, index, working-file, and operation-state differences. |
@@ -207,7 +208,7 @@ Keep required verification data while recovery remains blocked. Apply the contra
 
 A process exit code does not determine mutation success. Inspect Git state and working-file bytes before reporting the result.
 
-On closure during mutation, offer staying open or interrupting and closing. After restart, obtain fresh Git state before accepting mutations. A recovery marker keeps an unresolved outcome across restart (contract §6). After Restart service, every workspace stays `unknown` until an explicit refresh in the new session (FR-023). The renderer runs `restoreWorkspace` again, because old identifiers stay invalid.
+On closure during mutation, offer staying open or interrupting and closing. Lingering Jobs alone cause no prompt, and closure ends their processes. After restart, obtain fresh Git state before accepting mutations. A recovery marker keeps an unresolved outcome across restart (contract §6). After Restart service, every workspace stays `unknown` until an explicit refresh in the new session (FR-023). The renderer runs `restoreWorkspace` again, because old identifiers stay invalid.
 
 ## 8. Qualification record
 

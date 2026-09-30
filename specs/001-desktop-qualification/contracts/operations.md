@@ -176,7 +176,7 @@ Git can reread its index after hooks and captures its own HEAD. Changes after ha
 
 After Git updates HEAD, `git commit` runs automatic maintenance and then the `post-commit` hook. Source reasoning says that maintenance runs in the foreground inside the commit process on Git for Windows (research R4). T100 verifies this; until then it is unverified. In that case, the 120-second commit deadline covers maintenance. A deadline interruption at that point leaves a created commit. Reconciliation classifies the outcome from observed state (§8). A lock or temporary file that the interrupted process left is foreign (§8).
 
-If maintenance detaches, its process stays in the operation Job, because the Job forbids breakaway (§6). Reconciliation classifies the commit from observed state while that process can still run. It names each maintenance lock or temporary file that it observes as foreign (§8). The operation Job closes when the operation ends, after reconciliation. That close ends the detached maintenance and every other remaining descendant, such as a `post-commit` hook child.
+If maintenance detaches, its process stays in the operation Job, because the Job forbids breakaway (§6). The same holds for a `post-commit` hook child and for a built-in fsmonitor daemon that the commit starts. These processes can keep running after the commit process exits, as with command-line Git. The commit completes when its Git process exits and reconciliation finishes. Reconciliation classifies the commit from observed state while these processes can still run. It names each maintenance lock or temporary file that it observes as foreign (§8). The outcome records the `lingeringDescendants` count (§6 "Lingering Jobs"). The shell keeps the Job as a lingering Job until it becomes empty or the application closes (§6). A lock that such a process holds makes the next mutation give `LOCKED` (§9). The app never removes that lock.
 
 Compare the resulting tree against the retained reviewed index using bounded read-only Git inspection. A verification copy never becomes the commit index. Check actual parent, destination, index, relevant working bytes, and operation state before classifying the result.
 
@@ -302,9 +302,27 @@ Use only intended inherited pipe handles. Create the child suspended and assign 
 
 Each operation has its own Job. The service has a separate Job. Each operation Job and the service Job use kill-on-close and no breakaway. Their handles stay non-inheritable. A shell crash closes these handles and ends every owned descendant. Canceling one operation must not stop unrelated reads.
 
-Drain stdout and stderr independently. Enforce caps before forwarding chunks to Bun. Close all outstanding operation Jobs after service failure.
+Drain stdout and stderr independently. Enforce caps before forwarding chunks to Bun. After service failure, close every operation Job outside the lingering set. Lingering Jobs stay (below).
 
 These controls manage normal owned process trees. They do not sandbox arbitrary trusted hooks or external service launches.
+
+### Lingering Jobs
+
+Processes that Git or a hook starts during a mutation can outlive the mutation's Git process, as with command-line Git. Examples are detached maintenance, a `post-commit` hook child, and a built-in fsmonitor daemon (§4). The shell keeps them owned and ends them at application close (SC-008).
+
+- The shell associates one completion port with each operation Job before it assigns the first process. Microsoft advises association while the Job is inactive, so no state change goes unreported (research R5).
+- When an owned child exits by itself, the shell reads the active process count of its Job through `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`. The exit reply carries that count as `activeDescendants`. It carries no process name, PID, or argument.
+- The service records `lingeringDescendants` in the mutation outcome. The value is the `activeDescendants` count of the last execution process before reconciliation. For `commit`, that process is `commit --file=-`. The count alone never changes the outcome classification.
+- At `ended`, the shell reads the active process count again. A zero count closes the Job handle. Otherwise the Job moves to the lingering set, and the shell reads the count once more. A zero count then closes the handle.
+- A lingering Job belongs to no running operation. It closes when the port reports `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` for it, or when the application closes.
+- Port message delivery is not guaranteed (research R5). At each `ended` frame, the shell also reads the count of each lingering Job and closes each empty one. A missed message therefore keeps only an empty handle, never a process.
+- One shell thread reads the port with `GetQueuedCompletionStatus` and a 1-second timeout. It stops at application close.
+- Cancellation, deadline expiry, and Interrupt and close close the operation Job at once, with every descendant. They never create a lingering Job.
+- Read operation Jobs never linger. A read Job closes when the read ends.
+- A service exit or Restart service keeps every lingering Job. The shell owns these Jobs, and they belong to no running operation. They close at application close.
+- Application close closes every lingering Job, after the operation Jobs and before the service Job. Kill-on-close ends every remaining process. This holds for `closeIfIdle`, Interrupt and close, and Restart Arbareto. A shell crash closes the handles as well.
+- Lingering Jobs alone never make a mutation count as running, so `requestClose` shows no prompt for them (research R7).
+- A lingering process can hold a Git lock file. The next mutation then gives `LOCKED` with the §9 remedy. The app never removes the lock. Reconciliation names an observed lock as foreign (§8).
 
 ### Recovery markers
 
@@ -315,7 +333,7 @@ A marker holds its ID, the operation kind, and the start time. It also holds the
 The service sends three `mutation` frames:
 
 - `started` with `operationId`, `repositoryId`, `kind`, and the Git-resolved worktree and common-directory paths. The service sends it before it creates the canonical index lock. That lock is the first side effect of both protocols (research R3 step 4, R4 step 2). The shell reads the common-directory identity itself through `FileIdInfo`. It writes and flushes the file, then replies with the marker ID. When the write or flush fails, it replies with the failure class: `disk-full`, `access-denied`, or `other`. Without a marker ID, the service creates no lock and starts no Git process. A failure reply refuses the mutation with `RECOVERY_MARKER_FAILED` (§9).
-- `ended` with `operationId`, after the terminal response. From `started` to `ended`, the shell treats the mutation as running for `requestClose`. After a service exit, `ended` never arrives. The shell then closes every operation Job, and afterwards no mutation counts as running. The marker file stays.
+- `ended` with `operationId`, after the terminal response. From `started` to `ended`, the shell treats the mutation as running for `requestClose`. After a service exit, `ended` never arrives. The shell then closes every operation Job outside the lingering set, and afterwards no mutation counts as running. Lingering Jobs stay until application close ("Lingering Jobs"). The marker file stays.
 - `resolved` with the marker ID. The service sends it after a known outcome, or after a recovery refresh states an `unknown` outcome (§8). The shell then deletes the file.
 
 The owning shell keeps each marker file open without delete sharing. At startup, the shell opens each marker file with no sharing. A sharing violation means that a running instance owns the file, so the shell skips it. Otherwise the owner stopped, and this shell takes ownership. The OS closes the handles of a stopped process. So a crash leaves a file that the next start can open. Each startup handshake, also after Restart service, carries every marker that the shell owns. The shell rescans the `recovery` folder for each handshake.
@@ -359,7 +377,7 @@ The blocking class is any repository-controlled key that names a command a read 
 
 - `filter.<driver>.clean` and `filter.<driver>.process` can fire. `status` and `diff-files` run the clean conversion on stat-dirty working files.
 - Command-valued `core.fsmonitor` can fire. Every command that loads the index can run it, including `status`, `diff-files`, `diff-index`, and `ls-files`. `rev-parse --shared-index-path` also loads the index. It ran the monitor in a research R2 probe, so no read or discovery step uses it.
-- `core.fsmonitor=true` names Git's built-in daemon, not a repository-defined command. It does not block reads from any scope. When no daemon runs, a command that loads the index can start `git fsmonitor--daemon` (research R3). That daemon is an owned descendant of the read's operation Job, and Job close ends it (unverified). A daemon that runs outside the app is unrelated and keeps running. Hunk actions still refuse this profile (§4).
+- `core.fsmonitor=true` names Git's built-in daemon, not a repository-defined command. It does not block reads from any scope. When no daemon runs, a command that loads the index can start `git fsmonitor--daemon` (research R3). That daemon is an owned descendant of the read's operation Job, and Job close ends it (unverified). A daemon that a `commit` starts stays in a lingering Job until application close (§6 "Lingering Jobs"). A daemon that runs outside the app is unrelated and keeps running. Hunk actions still refuse this profile (§4).
 - `filter.<driver>.smudge` cannot fire. Git runs it only when it writes working files.
 - `filter.<driver>.required` names no command. It makes a clean failure fatal.
 - `diff.<driver>.textconv`, `diff.<driver>.command`, and `diff.external` cannot fire. Plumbing diffs run them only with explicit `--textconv` or `--ext-diff`. Porcelain `diff` and `log -p` can run them, and supported inspection disables them.
@@ -453,7 +471,7 @@ Use bounded reference/reflog evidence for uncertain commit attribution. Apply th
 
 From `unknown`, only `readWorkspace` with `refresh: true` performs recovery reconciliation. It succeeds when all of these hold:
 
-- No process of the prior operation runs, and its operation Job is closed.
+- No process that the service requested for the prior operation runs. Its operation Job is closed or lingering (§6 "Lingering Jobs"). A lingering descendant does not block recovery.
 - A complete snapshot exists: HEAD target and OID, complete index, operation markers, and relevant working bytes.
 - Owned lock and candidate files are released, or the result names them as foreign.
 - For `commit`, one attribution attempt ran within the §5 caps. Its result is an identified commit, no commit, or `unknown`. An `unknown` result names its reason: `ambiguous`, `evidence-limit`, or `no-retained-request`.
@@ -540,4 +558,5 @@ Do not classify repository state by parsing localized human status output. Use b
 - Verify status-only refresh cannot unblock unknown attribution. Required recovery reconciliation must succeed first.
 - Verify that recovery reconciliation enables mutations when attribution stays `unknown`, and that its result states that outcome.
 - Verify that a recovery marker survives a service restart, application close, and shell crash, and blocks the matching workspace.
+- Verify that a `post-commit` hook child outlives its commit, and that the outcome records one lingering descendant. A later read succeeds. A lock that the child holds gives `LOCKED` and stays. Application close ends the child within 5 seconds. Cancellation still ends the whole tree.
 - Verify real parent DAGs, shallow/page boundaries, data limits, controlled graph selection, and row alignment.

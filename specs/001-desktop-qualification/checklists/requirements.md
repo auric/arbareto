@@ -35,6 +35,7 @@
 ## Notes
 
 - Validation result: 16/16 quality criteria pass after the 2026-09-29 decisions and spec fixes.
+- Scope after the 2026-09-30 decisions: FR-001–FR-054, SC-001–SC-017, and user stories US1–US7. The submodule update requirements (FR-047–FR-054, SC-017, US7) name no implementation commands.
 - No unresolved clarification markers remain. This checklist does not block `/speckit-tasks`.
 - Named runtimes describe installation prerequisites, not implementation choices. Technical comparison methods remain planning work.
 - FR-028 restricts mutation tests to disposable repositories and worktrees. Real work repositories and global Git configuration remain protected.

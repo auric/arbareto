@@ -17,9 +17,22 @@ This document defines planned state, not implemented types. Git remains authorit
 
 Persist the selected Git path and its approved version text in application-owned settings. Revalidate the path after restart. Never silently select another executable. After `GIT_CHANGED` at the same path, the Git selection confirmation shows both versions (contract §3 `chooseGit`).
 
+A WSL Git installation is one Linux Git per distro (contract §11 "Git per distro"). It adds these fields:
+
+| Field | Meaning and validation |
+| --- | --- |
+| `location` | `windows` or `wsl`. |
+| `distro` | Listed distro name and registration GUID. A new GUID is a new installation. |
+| `executablePath` | Absolute Linux path from `command -v git` and `readlink -f`. Never under `/mnt/`. |
+| `executableIdentity` | Device, inode, size, and modification time from `stat`, plus the version text. A change gives `GIT_CHANGED`. |
+| `version` | Linux Git version. `admission` is `admitted` from `2.55.0`. A lower, unparseable, or `.windows.` version is `unsupported`. |
+| `helpers` | Absolute Linux paths of `systemd-run` and `systemctl`, and a passed scope test. Without them, the distro gives `WSL_UNAVAILABLE`. The absolute path of `setsid`. Without it, the distro gives `WSL_UNAVAILABLE` with reason `no-setsid`, because every wrapper mode needs it (contract §11 "Git per distro"). |
+
+Native settings keep one approved WSL Git for each distro GUID, beside the Windows Git selection.
+
 Native settings retain the last explicitly opened repository and window bounds. Native storage also holds recovery markers (contract §6) and trust approval records (contract §7 "Trust approval store"). A marker holds no message, patch, configuration, environment value, or credential. A trust record holds no configuration value, command text, or credential. Revalidate that repository before restoring its workspace. Unknown or invalid native settings use documented defaults. This slice has no settings migration.
 
-Application-owned webview storage retains theme, density, and pane proportions as bounded scalar preferences. Invalid values use documented defaults. Keep drafts and per-mode selection/scroll hints in renderer memory. They survive a service restart, because the page does not reload (contract §2). Hunk approvals and commit review tokens belong to the service session, and a service restart invalidates them. Trust approvals persist in native storage (§3). UI preferences never grant Git permissions.
+Application-owned webview storage retains theme, density, and pane proportions as bounded scalar preferences. Invalid values use documented defaults. No mode preference exists, because a repository always opens in History (spec FR-034). The same storage keeps one stored draft per worktree (§2 "Stored draft"). Keep drafts and per-mode selection/scroll hints in renderer memory. They survive a service restart, because the page does not reload (contract §2). Hunk approvals, file approvals, and commit review tokens belong to the service session, and a service restart invalidates them. Trust approvals persist in native storage (§3). UI preferences never grant Git permissions.
 
 Native-owned bootstrap contexts permit bounded probing before permanent IDs exist. Git registration follows a successful executable probe. Repository registration follows successful Git discovery. See the protocol's registration bootstrap.
 
@@ -34,14 +47,20 @@ Native-owned bootstrap contexts permit bounded probing before permanent IDs exis
 | `commonDirectory` | Git-resolved shared administration directory. |
 | `indexPath` | Git-resolved index path for this worktree. |
 | `worktreeIdentity` | Resolved directory identity for this checkout and its administration directory. |
-| `commonIdentity` | Resolved common-directory identity. This identifies the application mutation exclusion group. |
+| `worktreeKey` | SHA-256 of the worktree root identity, as 64 lowercase hex digits (contract §3 "Worktree key"). It stays equal across sessions and for both WSL prefixes. It names the stored draft and grants no access. |
+| `commonIdentity` | Resolved common-directory identity. This identifies the application mutation exclusion group, in one instance and across instances (contract §6 "Cross-instance exclusion"). |
 | `head` | Symbolic target plus object ID, detached object ID, or a validated unborn branch. |
 | `objectFormat` | Git-reported object format. Validate object IDs against that format. |
 | `refFormat` | Git-reported ref format from `--show-ref-format`: `files` or `reftable`. It selects the change-check files (contract §8 "Change check"). |
 | `operationState` | Normal, conflicted, merging, rebasing, cherry-picking, reverting, sequencer-active, or unknown. |
 | `generation` | Monotonic service counter for accepted state changes. Not proof that external state stayed unchanged. |
 | `recoveryState` | `ready`, `refreshing`, `reconciling`, `unknown`, or `unavailable`. `unknown` takes precedence over every other value. `reconciling`: a mutation of this workspace is in operation state `reconciling`. `unavailable`: the last read got `REPOSITORY_UNAVAILABLE` for this registered workspace. `refreshing`: a `readWorkspace` with `refresh: true` runs for this workspace. `ready`: none of these holds after a complete read. |
-| `hunkEligibility` | Eligible or a bounded reason for unsupported index, registered index-change hook, executable monitor, or repository state. The built-in monitor (`core.fsmonitor=true`) is an unqualified monitor profile. |
+| `hunkEligibility` | Eligible or a bounded reason for unsupported index, registered index-change hook, executable monitor, or repository state. The built-in monitor (`core.fsmonitor=true`) is an unqualified monitor profile. A `link` extension or an effective `core.splitIndex=true` gives reason `split-index` (contract §4 "Split index"). It gates file staging too (contract §4 "File staging"). |
+| `location` | `windows`, or `wsl` with the distro name and GUID (contract §11). The header and the repository menu show "WSL: <distro>" for `wsl`. |
+| `linuxPaths` | For `wsl` only: the Linux worktree root, Git directory, and common directory that Linux Git reported. The UNC forms above stay the identity paths. |
+| `distroState` | For `wsl` only: `running` or `starting`, from the running list at registration (transitions below). |
+| `pollState` | For `wsl` only: `waiting`, `polling`, or `paused` (transitions below). |
+| `submoduleNotice` | Count and paths of gitlinks that are not initialized or not at their recorded commit (contract §12 "Discovery notice"). Superproject data only. Empty without gitlinks. |
 
 Different linked worktrees have different worktree identities and indexes. They can share one common identity.
 
@@ -49,7 +68,37 @@ Resolve paths through Git before filesystem canonicalization. Never derive paths
 
 On Windows, the shell supplies every volume and file identity (contract §6). An identity is the 64-bit volume serial number plus the 128-bit file ID. Keep this platform behavior outside shared Git semantics.
 
-Refuse bare repositories and Git administration folders with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is "Open a worktree of it, or clone it". For a Git administration folder, the remedy is "Open the working folder that contains it". Refuse a repository that Git reports with dubious ownership with `DUBIOUS_OWNERSHIP`. Refuse a folder outside every repository with `NOT_A_REPOSITORY` and the remedy "Open a folder inside a Git repository." Other discovery failures use `REPOSITORY_UNAVAILABLE` with the remedy "Run `git status` in this folder". These failures include inaccessible targets and a missing `.git` file target. Opening a repository never creates a worktree or changes Git configuration.
+A WSL identity is the distro GUID plus the Linux device and inode numbers from `stat` (contract §11). `FileIdInfo` fails on WSL paths. Both prefixes of one folder give one normalized UNC identity, so they give one `repositoryId`. A worktree, Git directory, or common directory on the other side gives `UNSUPPORTED_REPOSITORY` with reason `mixed-location`.
+
+WSL start and poll transitions:
+
+| Current state | Event | Next state and required behavior |
+| --- | --- | --- |
+| none | Registration or restore of a WSL path; the running list names the distro | `running`. The Git probe runs with the §5 probe deadline. |
+| none | Registration or restore; the running list does not name the distro | `starting`. The renderer shows "Starting WSL distro <name>" with Cancel. The Git probe runs with the 60-second start deadline. |
+| `starting` | Git probe succeeds | `running`. Registration continues. |
+| `starting` | Cancel through `cancel` with the registration `operationId` | Registration ends `canceled`. The current workspace stays unchanged. The app never stops the distro. |
+| `starting` | Deadline or `wsl.exe` failure | Registration ends `failed` with `DEADLINE` or `WSL_UNAVAILABLE` reason `start-failed`. |
+| `waiting` | 1 second after the previous poll ends, window focused, and no other read of the workspace runs | `polling`. One `readWorkspace` with `check: "full"`. A poll that falls due during another read starts when that read ends. |
+| `polling` | The poll ends | `waiting`. |
+| `polling` | A user read needs its read slot | The poll ends `canceled`, then `waiting`. |
+| `waiting` or `polling` | Window loses focus | `paused`. A running poll finishes. |
+| `paused` | Window gains focus | The focus-return full read runs, then `waiting`. |
+
+Refuse bare repositories and Git administration folders with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is "Open a worktree of it, or clone it". For a Git administration folder, the remedy is "Open the working folder that contains it". Refuse a repository that Git reports with dubious ownership with `DUBIOUS_OWNERSHIP`. Refuse a folder outside every repository with `NOT_A_REPOSITORY` and the remedy "Open a folder inside a Git repository." A discovery probe past its deadline gives `DEADLINE` (contract §5). Other discovery failures use `REPOSITORY_UNAVAILABLE` with the remedy "Run `git status` in this folder". These failures include inaccessible targets and a missing `.git` file target. Opening a repository never creates a worktree or changes Git configuration.
+
+### Stored draft
+
+The renderer owns this record in application-owned webview storage (plan.md "Stored drafts", spec FR-034).
+
+| Field | Meaning and validation |
+| --- | --- |
+| `worktreeKey` | Record key (above). One record per worktree. |
+| `message` | Draft text: at most 64 KiB of UTF-8, no NUL (contract §5 commit message bound). Blank text deletes the record. |
+| `draftRevision` | Renderer draft revision of the stored text. A reconciled `succeeded` commit deletes the record only when this revision equals the submitted one. |
+| `writtenAt` | Local write time. It selects the record to delete when a new key passes 256 records. |
+
+Each write is one atomic `readwrite` transaction with the durability hint `strict`, so a record is whole or absent. No log, diagnostic, trace, or telemetry holds a message. Clear message deletes the record. The record never grants a Git permission, and a service restart leaves it unchanged.
 
 ## 3. Trust approval
 
@@ -61,7 +110,7 @@ Refuse bare repositories and Git administration folders with `UNSUPPORTED_REPOSI
 | `worktreeIdentity` | Worktree identity (§2) and Git-resolved worktree root and administration-directory paths that the stored record binds. The store keeps one record per worktree. Approving one linked worktree never changes the record of another. |
 | `gitInstallationDigest` | Executable identity digest of the selected Git installation that the stored record binds (§1). |
 | `configurationFingerprint` | Digest of relevant effective configuration, include origins, attribute policy, and executable integration locations. It also covers the SHA-256 digest of each program or hook file that a repository-controlled integration names. Only files inside the worktree root, the Git directory, or the common directory count. A bare-name program that relative `PATH` entries resolve to a repository file counts too. The bounds are 64 files, 1 MiB per file, and 8 MiB in total (contract §7 "Program file digests"). A file beyond a bound enters as `unchecked`. `readTrust` returns the fingerprint, and a stored record binds it. |
-| `persistence` | `stored` or `session`. It is `session` when a digest bound is reached. A session approval lasts until the service session ends and writes no record. |
+| `persistence` | `stored` or `session`. It is `session` when a digest bound is reached. A session approval lasts until the service session ends: Arbareto closes, or Restart service starts a new session. It writes no record. |
 | `approvedExecution` | Explicit approval for repository-controlled hooks, filters, and configured tools. |
 | `approvalRequired` | Two flags from contract §7 "Mutation trust": one for reads and one for `commit`. |
 | `approvedAt` | Local timestamp for display and qualification records. The stored record keeps it. |
@@ -69,11 +118,13 @@ Refuse bare repositories and Git administration folders with `UNSUPPORTED_REPOSI
 
 Approval permits code execution; it does not make repository code harmless. Explain that consequence before approval.
 
-Approval persists across launches in native storage. A native confirmation precedes each approval (contract §7). Over a digest bound, the approval stays in the service session only, and the confirmation states why. The next session then reports `untrusted`. A change of the common or worktree identity, the Git installation digest, or the fingerprint gives state `changed` and `TRUST_CHANGED`. An edit of a repository-controlled hook or program file changes the fingerprint. Only a renewed explicit approval clears it. Without required approval, `changed` is informational and blocks nothing (contract §7 "Mutation trust"). Revoke trust deletes the stored records of every worktree of that common directory.
+Approval persists across launches in native storage. A native confirmation precedes each approval (contract §7). Over a digest bound, the approval stays in the service session only, and the confirmation states why. The confirmation names both ends: Arbareto closes, or its Git service restarts. The next session then reports `untrusted`. A change of the common or worktree identity, the Git installation digest, or the fingerprint gives state `changed` and `TRUST_CHANGED`. An edit of a repository-controlled hook or program file changes the fingerprint. Only a renewed explicit approval clears it. Without required approval, `changed` is informational and blocks nothing (contract §7 "Mutation trust"). Revoke trust deletes the stored records of every worktree of that common directory. It also closes the lingering Jobs of that common directory and states how many processes ended (contract §6 "Lingering Jobs").
 
 Configuration changes invalidate approval and dependent selections. Missing approval blocks each operation that can run a repository-controlled integration (contract §7). It never authorizes bypassing required hooks.
 
-Custom filters remain outside hunk support even after trust approval. Do not persist configuration values, hook output, or credentials in logs.
+The fingerprint omits the submodule registration keys that Git's submodule initialization writes (contract §7 "Submodule registration keys"). So Update submodules keeps a stored approval valid. Programs inside submodules get no stored approval. Each Update submodules run lists them and needs its own native confirmation (contract §12 "Trust").
+
+Custom filters remain outside hunk support and file staging even after trust approval. File unstaging runs no filter, so it stays available for such a path. Do not persist configuration values, hook output, or credentials in logs.
 
 ## 4. Change snapshot
 
@@ -84,10 +135,10 @@ Custom filters remain outside hunk support even after trust approval. Do not per
 | `head` | Symbolic target and resolved object ID, including the unborn distinction. |
 | `indexFingerprint` | Full-index content digest and Git-derived entries. Include referenced split-index state when applicable. Split-index state comes from the raw index `link` extension, which names the shared index file (contract §4). |
 | `indexEntries` | Literal path identity, stage, mode, object ID, and the intent-to-add, assume-unchanged, and skip-worktree flags. |
-| `workingVersions` | Selected-path existence, type, mode, raw-byte digest, and normalized content identity. |
+| `workingVersions` | Selected-path existence, type, mode, raw-byte digest, and normalized content identity. For a file approval in direction `stage`, the digest covers the whole working file within the contract §5 whole-file bound. |
 | `policyFingerprint` | Relevant attributes, trust approval, configuration, and Git installation identity. |
 | `operationState` | Freshly observed mutation blockers. |
-| `completeness` | `complete`, `limited`, or `failed`, with a specific reason. |
+| `completeness` | `complete`, `limited`, or `failed`, with a specific reason. A missing object in a partial clone gives `limited` with `OBJECT_MISSING`; the app never fetches it (contract §7 "Missing objects"). |
 | `observedAt` | Observation time. It is not a transaction timestamp. |
 
 Git reads can span external changes. Admit a mutation token only after consistency checks complete.
@@ -119,15 +170,16 @@ Graph positions are not Git identities or mutation approvals. Current HEAD/branc
 | Entity | Fields and rules |
 | --- | --- |
 | Change entry | `entryId`, literal path bytes, display path, category, source path, modes, object IDs, conflict stages, limitation, and limitation remedy. The remedy is a copyable whole-file command or none (contract §4 "Limitation remedies"). |
-| Comparison | `comparisonId`, snapshot, entry, scope, canonical service diff, hunk identifiers, completeness, and support decision. |
+| Comparison | `comparisonId`, snapshot, entry, scope, canonical service diff, hunk identifiers, completeness, support decision, and file-action decision. |
 | Hunk | `hunkId`, ordinal, old/new ranges, exact canonical hunk digest, and service-owned application data. |
 | Support decision | `supported` or an explicit reason: binary, encoding, size, rename, mode, type, symlink, submodule, LFS, filter, state, `line-endings`, `index-flag`, or `path`. |
+| File-action decision | `stage`, `unstage`, or a refusal reason from the support-decision list. Contract §4 "File staging" defines the accepted entries and each reason. It is independent of the support decision, so a binary entry can carry `stage`. An `applyFile` result can also carry reason `blob-proof`, which only step 6 gives (contract §4 "Blob proof"). |
 
 An entry identifier distinguishes staged and unstaged entries for the same path. A staged deletion and untracked replacement remain separate entries.
 
-Store Git paths as bytes internally. Display valid Unicode without changing identity. Reject unsupported filesystem encodings without guessing another path. Show invalid UTF-8 path bytes as `\xNN` escapes. Keep the raw bytes as the identity. Such entries get no hunk action, with reason `path`.
+Store Git paths as bytes internally. Display valid Unicode without changing identity. Reject unsupported filesystem encodings without guessing another path. Show invalid UTF-8 path bytes as `\xNN` escapes. Keep the raw bytes as the identity. Such entries get no hunk or file action, with reason `path`.
 
-Compare the working file's on-disk name with the index path bytes. Any difference, such as letter case, refuses hunk actions with reason `path`. An entry that the service cannot read, such as a path beyond the Windows limit, also gets reason `path`. Run this comparison only for changed entries or at hunk-request time, never for every tracked entry on each refresh.
+Compare the working file's on-disk name with the index path bytes. Any difference, such as letter case, refuses hunk and file actions with reason `path`. An entry that the service cannot read, such as a path beyond the Windows limit, also gets reason `path`. In a WSL repository, so does a path with a character that Windows names cannot hold (contract §11). Run this comparison only for changed entries or at request time, never for every tracked entry on each refresh.
 
 Reason `line-endings` applies when `ls-files --eol` reports `mixed` for the index or working side. Reason `index-flag` applies to intent-to-add, assume-unchanged, and skip-worktree entries.
 
@@ -142,10 +194,12 @@ The service retains the authoritative hunk data. The renderer receives display d
 | Entity | Fields and rules |
 | --- | --- |
 | Hunk approval | Repository, snapshot, comparison, hunk, direction, exact content bindings, and one-use token. |
+| File approval | Repository, snapshot, comparison, entry, direction, and one-use token. It binds the index entry and the HEAD entry of each changed path. For `stage`, it also binds the existence, type, size, and raw SHA-256 of the whole working file. `unstage` binds no working bytes (contract §4 "File staging"). |
 | Commit review | Repository, snapshot, complete staged scope, retained reviewed index, HEAD target/OID, execution-policy disclosure, trust, and review token. |
 | Commit request | Review token, message, and explicit confirmation of the complete staged scope. The service issues the operation identifier in its accepted response. |
+| Submodule review | Repository, snapshot, superproject HEAD, index gitlinks, `.gitmodules` digest, and relevant configuration. The plan rows (§9), each submodule HEAD and `.git` entry, and the refusals. The submodule program list digest, trust, and one-use token. |
 
-Tokens expire on refresh, relevant state change, service restart, or successful consumption. Contract §8 "Token invalidation" defines refresh and relevant state change. After a hunk approval expires, the renderer requests the comparison again. It keeps a hunk whose canonical digest stays unchanged (contract §8). A consumed token stays bound to its operation for the rest of the service session. A repeated request with that token returns the operation's state and `operationId` (contract §2). Other expired tokens require a new review or selection.
+Tokens expire on refresh, relevant state change, service restart, or successful consumption. Contract §8 "Token invalidation" defines refresh and relevant state change. After a hunk or file approval expires, the renderer requests the comparison again. It keeps a hunk whose canonical digest stays unchanged, and a file whose entry keeps its category (contract §8). After a submodule review token expires, the renderer requests the review again and keeps the review dialog open. A changed plan shows a notice. A consumed token stays bound to its operation for the rest of the service session. A repeated request with that token returns the operation's state and `operationId` (contract §2). Other expired tokens require a new review or selection.
 
 Reject duplicate submissions while an operation is active. Never retry a mutation automatically after a lost response or service restart.
 
@@ -157,7 +211,9 @@ Reject blank messages, NUL characters, unsupported encodings, and messages above
 
 Unsupported diff content can remain in a commit review. Its path, type, and staged identity must remain visible and complete.
 
-A hunk approval requires initial and pre-publication validation. The canonical lock protects cooperating index writers, not independent working-file or reference changes.
+A hunk or file approval requires initial and pre-publication validation. The canonical lock protects cooperating index writers, not independent working-file or reference changes.
+
+A file approval stages Git's conversion of the working file, not retained bytes. The service cannot recompute that blob, because Git's conversion can depend on the index. Working-file digests before and after the Git step bind the bytes. Step 6 proves that the staged blob matches those bytes, or the request refuses (contract §4 "Blob proof").
 
 Commit approval authorizes ordinary Git execution after preflight. It is not an immutable future tree, parent, or destination. Retain reviewed index data until reconciliation, even after token consumption or expiry.
 
@@ -172,13 +228,15 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `repositoryId`, `commonIdentity` | Registered target and mutation exclusion group, when applicable. Pre-registration operations use a native bootstrap context. |
 | `kind` | One operation from the protocol allowlist. |
 | `state` | State from the transition table below. |
-| `phase` | Bounded operation phase, including preflight, candidate verification, publication, commit handoff, and reconciliation where applicable. |
-| `ownedProcesses` | Native process handles and operation Job identity. Never process-name matching. After a mutation ends, a Job with remaining processes becomes a lingering Job (contract §6 "Lingering Jobs"). It closes when it is empty or the application closes. |
-| `lingeringDescendants` | Mutation outcomes only. The count of owned processes that still ran when the last execution process exited. It comes from the shell's `activeDescendants` exit reply. No process name, PID, or argument. |
+| `phase` | Bounded operation phase, including preflight, candidate verification, publication, commit handoff, submodule confirmation, submodule update, and reconciliation where applicable. |
+| `ownedProcesses` | Native process handles and operation Job identity. Never process-name matching. After a mutation ends, a Job with remaining processes becomes a lingering Job (contract §6 "Lingering Jobs"). It closes when it is empty or the application closes. A WSL operation also owns its systemd user scopes `arbareto-<operationId>-<n>.scope`, which every Job close ends (contract §11). |
+| `lingeringDescendants` | Mutation outcomes only. The count of owned processes that still ran when the last execution process exited. It comes from the shell's `activeDescendants` exit reply. For a WSL mutation, the anchor count supplies it (contract §11). It is 0 when a cancellation during `reconciling` or a revoke ends them (contract §6). No process name, PID, or argument. |
 | `limits` | Output, duration, concurrency, and framing limits from the protocol. |
-| `result` | Typed success, refusal, failure, limit, interruption, or unknown-state result. An `unknown` result names its attribution reason: `ambiguous`, `evidence-limit`, or `no-retained-request`. A hunk recovery names its index match: `published`, `not-published`, or `neither` (contract §8). Contract §9 maps each terminal state to its result code. |
+| `result` | Typed success, refusal, failure, limit, interruption, or unknown-state result. An `unknown` result names its attribution reason: `ambiguous`, `evidence-limit`, or `no-retained-request`. A hunk or file recovery names its index match: `published`, `not-published`, or `neither` (contract §8). Contract §9 maps each terminal state to its result code. |
 | `effects` | Reconciled HEAD, index, working-file, and operation-state differences. |
 | `diagnostic` | Bounded error code and safe explanation. No raw environment, repository content, or credentials. |
+| `outputTail` | Three carriers only. A commit that ends `failed`, `failed-with-effects`, or `unknown` carries it (contract §9). So does a failed `applyFile` `stage` step, and each row of a failed Update submodules process. The sanitized, redacted end of the commit process stderr, with hook output. It holds at most 16 KiB and 100 lines (contract §9 "Commit failure output"). A failed `stage` step takes it from the stderr of its `update-index` process. Plain text for display. Never logged or persisted. A failed Update submodules process gives its row its own tail by the same rules (contract §12 "Output tail"). |
+| `submoduleResults` | Update submodules only. One result per plan row: row ID, path, state, and old and new commit. A failed process adds its `outputTail` and remedy (§9). |
 
 ### State transitions
 
@@ -191,6 +249,9 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `running` | Read completes | `succeeded`, `limited`, or `failed`; check generation before display. |
 | `running` | Mutation finishes or fails | `reconciling`; keep further mutations blocked. |
 | `running` (read) | Read deadline expires | Close the operation Job, refresh relevant state, then `failed` with `DEADLINE`. |
+| `running` (Update submodules) | The submodule program confirmation is declined | `canceled`. No update process starts, and the recovery marker is resolved. |
+| `running` (Update submodules) | An update process passes its inactivity deadline or ceiling | Close the operation Job at once, with every descendant. Start no later update process. Then `reconciling`, with `DEADLINE` and reason `inactivity` or `ceiling` (contract §12). |
+| `running` (mutation) | A Git step, preflight read, or commit process deadline expires | Close the operation Job at once, with every descendant. Then `reconciling`, with `DEADLINE` as the recorded cause. Reconciliation classifies the outcome from observed state (contract §4, §5 "Deadline outcomes"). |
 | `cancel-requested` (mutation) | Processes stop or deadline expires | `reconciling`. |
 | `cancel-requested` (read) | Owned processes stop | Refresh relevant state, then `canceled`. |
 | `cancel-requested` (read) | The read deadline expires first | Close the operation Job, refresh relevant state, then `failed` with `DEADLINE`. |
@@ -199,6 +260,11 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `reconciling` | Execution completed with differing observed effects | `completed-with-effects`; identify grounded results, preserve the draft, and require fresh review. |
 | `reconciling` | Failed/interrupted execution left effects | `failed-with-effects`; report actual state without rollback or retry. |
 | `reconciling` | State or commit attribution cannot be determined | `unknown`; keep mutations blocked and keep the recovery marker. |
+| `reconciling` | Cancellation request | Stay `reconciling`. Reconciliation reads continue under their own deadline. `ended` carries `endProcesses`, so every process that Git or a hook started ends, and `lingeringDescendants` is 0 (contract §8). |
+| `reconciling` | A reconciliation read deadline expires | Close the operation Job with every descendant. `unknown`; keep mutations blocked and keep the recovery marker. |
+| `reconciling` | Interrupt and close | Close the operation Job at once, then follow application close (contract §6). No terminal response follows, and the recovery marker stays. The next start shows the workspace `unknown`. |
+| Terminal mutation state, Job lingering | `revokeTrust` for its common directory | The shell closes that lingering Job. The `revokeTrust` result states how many processes ended. |
+| `running`, `cancel-requested`, or `reconciling` (mutation) | `revokeTrust` for its common directory | The operation continues; revocation cancels nothing. `ended` carries `endProcesses`, so its Job never lingers. |
 | `unknown` | Explicit recovery refresh completes recovery reconciliation (contract §8) | Workspace becomes `ready`. The refresh result states the prior outcome, also an `unknown` attribution. The recovery marker is resolved. Prior tokens remain invalid. |
 | `unknown` | A status-only read succeeds, or recovery reconciliation fails (contract §8) | Remain blocked. A status-only read cannot release this gate. |
 | none | Registration or restore matches an unresolved recovery marker | Workspace starts `unknown`. Without a retained request, its recovery refresh reports reason `no-retained-request`. |
@@ -225,3 +291,20 @@ Each record contains:
 - Raw evidence location and digest where applicable. Redact secrets before retaining evidence.
 
 A scenario record result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence column names `source-inspected`. The research.md R10 evidence-group table may use that label as a status. Source inspection never passes a packaged Windows scenario.
+
+## 9. Submodule plan and outcome
+
+Update submodules binds a reviewed plan (contract §12). The plan lives in the service session. A service restart invalidates its token, as §6 states.
+
+| Entity | Fields and rules |
+| --- | --- |
+| Plan row | Opaque row ID, literal path bytes, display path, name, depth, and parent row. Redacted URL, current HEAD or none, and target commit or unknown. A `reuse` or `fetch-checkout` row adds each redacted remote URL of the submodule. It marks the default remote (contract §12 "Plan"). Action, notes, and refusal reason or none. |
+| Action | `clone`, `reuse`, `checkout`, `fetch-checkout`, `none`, or `skip` (contract §12 "Plan"). Nested rows of a parent whose target commit is missing locally carry target unknown. |
+| Refusal reason | `unsaved-commits`, `update-mode`, `clone-interrupted`, `no-url`, `path`, `gitdir-config`, or `limit`, with the code `UNSUPPORTED_SUBMODULE` (contract §12 "Refusals"). One refusal blocks the whole update. |
+| Submodule program | Row ID or kept Git directory, key, scope, origin, and program path or hook file. Each has its digest, `absent`, or `unchecked`. Kept Git directories count (contract §12 "Review reads"). Values show only for the contract §7 value display allowlist. URL user information is redacted. |
+| Row result | Row ID, state, old and new commit, and for a failed process its `outputTail` and remedy. The states are `cloned`, `moved`, `unchanged`, `failed`, `clone-interrupted`, `changed-elsewhere`, and `discovered` (contract §12 "Reconciliation and outcome"). |
+| Progress | Process index, process count, row ID, and percentage or none. No Git text (contract §12 "Progress"). |
+
+The plan never authorizes a change that Git would not make. It names what Git does for the reviewed state. Git remains authoritative, and reconciliation reports the observed result of each row.
+
+The service keeps the retained plan until reconciliation succeeds (contract §5). A refresh during recovery compares each row with it (contract §8).

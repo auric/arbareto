@@ -17,7 +17,7 @@ Audience: spec reviewer. The reviewer re-evaluated all items on 2026-09-29 after
 - [x] CHK002 Is repository state defined after a failed or interrupted hunk publication or commit, without an index rollback claim? [Coverage, Recovery, Spec §FR-015, §FR-020, §FR-023]
   - Finding: Satisfied — contract §4 "Hunk eligibility and publication" keeps the canonical index unpublished on a mismatch or unexpected candidate effect. research R4 "Outcome contract" and data-model §7 "State transitions" define commit outcomes and reconciliation. contract §8 defines the state after a restart.
 - [x] CHK003 Is verification in real temporary repositories a stated requirement with a fixed assertion set, not only a test idea? [Measurability, Spec §FR-028, Constitution IV]
-  - Finding: Implementation task — decided in FR-028 and plan §Real-repository fixture matrix (F01–F20, owned temporary root, full assertion set); belongs in /speckit-tasks.
+  - Finding: Implementation task — decided in FR-028 and plan §Real-repository fixture matrix (F01–F32, owned temporary root, full assertion set). It belongs in /speckit-tasks.
 - [x] CHK004 Are stale-selection rejection criteria stated as a closed list of bound values and expiry events? [Completeness, Spec §FR-014]
   - Finding: Satisfied — contract §4 lists every value that a comparison binds. data-model §6 lists token expiry events. The contract §5 "Approval lifetime" row sets 60 seconds.
 - [x] CHK005 Are the "ordinary Git EOL policies" enumerated (`core.autocrlf` values, `core.eol`, `text`/`eol` attributes, `core.safecrlf`)? Is hunk identity defined for mixed-EOL files and normalization-only differences? [Ambiguity, Spec §FR-010, Assumptions]
@@ -70,7 +70,7 @@ Audience: spec reviewer. The reviewer re-evaluated all items on 2026-09-29 after
 - [x] CHK024 Is orphan prevention after a shell crash stated for the service Job? Is recovery defined for an owned index lock or candidate file that a crash leaves behind? [Completeness, Spec §SC-008, plan F14]
   - Finding: Satisfied — contract §6 "Process fields" gives the service Job and each operation Job kill-on-close and no breakaway. contract §8 treats leftover locks and candidate files as foreign and names candidates with `arbareto-candidate-`. FR-016 and the plan "Error" state row give the lock guidance. F14 tests the shell crash.
 - [x] CHK025 Is single-instance behavior decided? [Gap, plan §Service and native shell]
-  - Finding: Satisfied — plan §Service and native shell allows more than one instance. Each instance treats the others as external writers. Native settings use whole-file replacement, and the last writer wins. quickstart §6 tests two instances on one repository.
+  - Finding: Satisfied — plan §Service and native shell allows more than one instance. Each instance treats the others as external writers. Native settings use whole-file replacement, and the last writer wins. A named mutex per common directory excludes mutations across instances (FR-015, contract §6, 2026-10-01). The quickstart §6 scenario tests two instances on one repository and on linked worktrees. Scope: the `Local\` mutex covers one logon session, and FR-015 states this scope. Instances in two sessions rely on `index.lock` only (contract §6 "Cross-instance exclusion").
 - [x] CHK026 Are upgrade-in-place, uninstall, and reinstall defined, including which data stays: native settings, the WebView2 user-data directory, and any persisted logs? [Gap, plan §Windows installation and native checks, quickstart §3]
   - Finding: Satisfied — plan §Windows installation and native checks keeps native settings and webview data on upgrade and uninstall. The Delete app data option removes both folders. The plan section and contract §7 write no log files and keep logs in memory. data-model §1 uses documented defaults for unknown settings, with no migration. quickstart §3 step 8 tests each case.
 - [x] CHK027 Is code signing deferred with a reason? Is the SmartScreen and Mark-of-the-Web behavior for the unsigned local installer addressed? [Completeness, Spec §FR-033, §SC-011]
@@ -81,13 +81,13 @@ Audience: spec reviewer. The reviewer re-evaluated all items on 2026-09-29 after
 - [x] CHK028 Is the comparison target stated, given that Electrobun implementation is out of scope? [Clarity, Spec §FR-031, research R1, R8]
   - Finding: Satisfied — plan §Matched-condition comparisons makes Git Extensions `7.2.1.7` a matched product baseline. The same section gives Electrobun no packaged measurement and scopes "both candidates" to a future approved comparison.
 - [x] CHK029 Are hardware, fixtures, build configuration, cold and warm state, run counts, and statistics fixed before measurement? [Measurability, Spec §FR-030, §SC-006, Constitution VII]
-  - Finding: Implementation task — decided in plan §Fixed release-build measurement protocol (hardware, M/L fixtures, seed, reboots, run counts, p95); belongs in /speckit-tasks.
+  - Finding: Implementation task — decided in plan §Fixed release-build measurement protocol; belongs in /speckit-tasks. It fixes hardware, M, L, and W-M fixtures, seed, reboots, run counts, warm-up runs, p95, capture source, and bootstrap interval.
 - [x] CHK030 Are budgets and pass/fail rules stated per metric, with a rule for metrics that have no budget? [Acceptance Criteria, Spec §SC-005–SC-008]
   - Finding: Satisfied — plan §Measurements and budgets sets a statistic and a budget per metric and marks report-only metrics. FR-032 keeps a missed budget a failure unless a trade-off approves a new target.
 - [x] CHK031 Is the decision role of the Git Extensions baseline stated? [Ambiguity, Spec §SC-010, §FR-031]
-  - Finding: Satisfied — FR-032 limits Git Extensions results to the SC-015 comparison targets. plan §Matched-condition comparisons defines the workflows, run counts, the ratio rule, and the attribution path for misses.
+  - Finding: Satisfied — FR-032 limits Git Extensions results to the SC-015 comparison targets. The plan §Matched-condition comparisons section defines the conditions, end-frame content, run counts, ratio and interval rule, and miss attribution.
 - [x] CHK032 Is the evidence location stated, with a record format for failures, causes, and attempted remedies? [Traceability, Spec §FR-032]
-  - Finding: Satisfied — FR-032, plan §Hard blockers and evidence rules, data-model §8, and quickstart §9 keep records in research.md with the required fields.
+  - Finding: Satisfied — FR-032, plan §Hard blockers and evidence rules, data-model §8, and quickstart §11 keep records in research.md. The records hold the required fields.
 - [x] CHK033 Are the trigger conditions for considering another shell defined, including which gate failures count as shell-attributable? [Clarity, Spec §FR-032, Constitution VIII]
   - Finding: Satisfied — plan §Hard blockers and evidence rules defines a shell-attributable failure by three tests. Only a shell-attributable B-WINDOWS or B-PERFORMANCE failure triggers a shell review. The same section defines a reasonable remedy and the remedy kinds to record. FR-032 requires the attribution rule.
 
@@ -109,7 +109,7 @@ Audience: spec reviewer. The reviewer re-evaluated all items on 2026-09-29 after
 ## Cross-area consistency
 
 - [x] CHK040 Is the prerequisite minimum-version admission consistent with self-updating prerequisites, such as Evergreen WebView2 and Git for Windows updates? [Conflict, plan §Provisional prerequisite admission, research R7]
-  - Finding: Satisfied — plan §Provisional prerequisite admission keeps the clean-install environment offline after prerequisite installation. The reference host records Git and WebView2 versions before and after each series. A version change voids the series until the series repeats with the new recorded version. quickstart §8 stops the series on a change.
+  - Finding: Satisfied — plan §Provisional prerequisite admission keeps the clean-install environment offline after prerequisite installation. The reference host records Git and WebView2 versions before and after each series. A version change voids the series until the series repeats with the new recorded version. The quickstart §10 procedure stops the series on a change.
 
 ## Notes
 

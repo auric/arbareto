@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-28 | **Feature**: [spec.md](spec.md) | **Plan**: [plan.md](plan.md)
 
-**Evidence level**: Source inspection and read-only host inventory. It also includes Git-behavior probes in throwaway repositories (R2, R4, R5) and a Rust link probe outside the repository (R6). No application build, installer test, mutation test, or performance measurement has run.
+**Evidence level**: Source inspection and read-only host inventory. It also includes Git-behavior probes in throwaway repositories (R2, R4, R5, R13, R14). A Rust link probe ran outside the repository (R6). No application build, installer test, mutation test, or performance measurement has run.
 
 ## R1. Scope decision
 
@@ -35,7 +35,7 @@ The observed executable is `C:/Git/cmd/git.exe`. This machine observation is not
 - Treat incomplete records, overflow, and process failure as incomplete results, never empty success.
 - Anchor history to a captured full commit OID. Use `rev-list --parents --max-count=100 --date-order` without path filters.
 - Use Git's effective parent relationships and child-before-parent order. Never parse ASCII graph artwork or infer branches from dates.
-- Apply `--no-lazy-fetch` and `--no-optional-locks` to history/object reads. Missing objects do not authorize network access.
+- Apply `--no-lazy-fetch` to every Git command, and `--no-optional-locks` to every read (R5 partial-clone probe). Missing objects do not authorize network access. The two version probes are the exception, because Git before 2.45.0 rejects the option (contract §7 "Missing objects").
 - Read commit objects through `cat-file --batch-command -Z`, using object type and byte length framing.
 - Uppercase `-Z` terminates input and output. Lowercase `-z` is not an equivalent output protocol.
 - Bound commit objects before reading their content. Render author and subject text without interpreting markup.
@@ -88,11 +88,11 @@ Sources: [path and format discovery](https://github.com/git-for-windows/git/blob
 
 **Rationale**: Git applies the patch; the service verifies the exact candidate before canonical index publication. Supported operations do not write working-file content.
 
-**Alternatives considered**: Renderer patches, whole-file staging, direct live-index patching, and three-way fallback. None provides the selected-hunk publication guarantee.
+**Alternatives considered**: Renderer patches, whole-file staging as a hunk fallback, direct live-index patching, and three-way fallback. None provides the selected-hunk publication guarantee. Whole-file staging is a separate explicit action ("Whole-file staging" below).
 
 ### Supported profile
 
-Support ordinary full indexes and the specified UTF-8 LF/CRLF text cases. Refuse sparse/split indexes until separately qualified. The raw `link` extension identifies a split index (R2).
+Support ordinary full indexes and the specified UTF-8 LF/CRLF text cases. Refuse sparse/split indexes until separately qualified. The raw `link` extension identifies a split index (R2). An effective `core.splitIndex=true` also refuses, because a candidate write then splits the candidate ("Whole-file staging" probe 9).
 
 Refuse any registered `post-index-change` hook and any executable filesystem-monitor integration for hunk mutations. Refuse custom filters, LFS, encoding conversion, unsupported entry types, conflicts, unfinished operations, and incomplete observations.
 
@@ -111,7 +111,7 @@ Monitor sources: [built-in daemon setting](https://github.com/git-for-windows/gi
 3. Enter application mutation exclusion for the resolved common directory.
 4. Exclusively create the canonical index's Git-resolved lock. Refuse existing locks; retain ownership and file identity.
 5. Revalidate the complete approval and supported profile while holding that lock.
-6. Copy the index into an owned private index beside it. Create an absent empty candidate through Git without creating a canonical index.
+6. Copy the index into an owned private index beside it. Set its last-write time 100 ns before the canonical index time ("Whole-file staging" probe 8). Create an absent empty candidate through Git without creating a canonical index.
 7. Apply one service-selected hunk with `git apply --cached` and the private `GIT_INDEX_FILE`.
 8. Reverse the selected HEAD-to-index hunk for unstaging. Never reconstruct working files from normalized text.
 9. Verify the candidate against independently calculated selected-hunk bytes from captured line intervals, not another applicability test.
@@ -148,9 +148,63 @@ Additional sources: [hook registrations include disabled entries](https://github
 
 Sources: [lock protocol](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/lockfile.h#L5-L31), [Windows replacement behavior](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L3003-L3150), [apply modes](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-apply.adoc#L60-L95), [apply locking](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/apply.c#L4945-L4963), [hunk relocation](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/apply.c#L3138-L3202), [index-write hook](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/read-cache.c#L3149-L3160), [reference transactions](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-update-ref.adoc).
 
+### Whole-file staging
+
+**Decision (2026-09-30)**: Add `applyFile` with a direction on the hunk candidate protocol (contract §4 "File staging"). The user chose Stage file and Unstage file for this slice. Git Extensions offers both for any file, including binary files.
+
+**Rationale**: `update-index --add --remove` on the private candidate gives the index of `git add`. `update-index --index-info` with the HEAD entries gives the index of `git restore --staged`. Both keep the lock, candidate, checkpoint, and reconciliation rules above.
+
+**Alternatives considered**: `git add`, `git restore --staged`, `git rm --cached`, and `git reset -- <path>` write the canonical index without a verified candidate. `reset` also ran the clean filter of another stat-dirty file (probe 1). `hash-object -w --stdin --path` plus `--index-info` would hash exactly the checked bytes. It loads no index, so its blob differed from `git add` in two cases (probe 5).
+
+Git-behavior probes on 2026-09-30 used Git `2.55.0.windows.3` in throwaway repositories. Each command started with `--no-lazy-fetch`. `GIT_CONFIG_GLOBAL` named an owned file, and `GIT_CONFIG_NOSYSTEM=1` was set. These probes are not qualification evidence.
+
+1. Canaries: a local clean filter, a command-valued `core.fsmonitor`, and a `post-index-change` hook. `hash-object --stdin --path` ran the clean filter only for a path with a `filter` attribute. It ran neither the monitor nor the hook. `update-index --index-info` on a private index ran the monitor and the hook. `ls-files` on that index ran the monitor, and `read-tree --empty` ran the hook. `add`, `update-index --add`, `restore --staged`, `rm --cached`, and `reset -q -- <path>` each ran the monitor and the hook. `reset` also ran the clean filter for another stat-dirty file, and `reset --no-refresh` did not. `add` ran the clean filter for a filtered path.
+2. Oracle equality: the candidate form equaled `git add` for CRLF under `core.autocrlf=true`, `ident`, `working-tree-encoding=UTF-16LE-BOM`, `eol=crlf`, binary, and new files. It also equaled `git add` for a deleted file and for a tracked `100755` entry under `core.filemode=false`. It equaled `git add` for new files under `core.filemode=true` too. Without an index file, `read-tree --empty` and then the candidate form equaled `git add`. `--index-info` from porcelain v2 `mH` and `hH` equaled `git restore --staged` for modified, added, deleted, mode-change, and renamed entries. A rename restored the source and removed the destination. In an unborn repository, mode 0 equaled `git rm --cached`. Working bytes stayed unchanged.
+3. `core.safecrlf=true` with `core.autocrlf=true` and a mixed file: `update-index --add`, `hash-object -w`, and `git add` each exited 128 with the same message. `hash-object` without `-w` exited 0, because Git applies safecrlf only when it writes an object (object-file.c `get_conv_flags`).
+4. Partial clone: HEAD moved by `reset --soft` to a fetched commit whose blob the `blob:none` clone lacked. `update-index --index-info` restored that HEAD entry on a private index and exited 0. No uploadpack canary ran.
+5. Index-dependent conversion: with a CRLF blob in the index under `core.autocrlf=true`, `git add` and the candidate form kept CRLF. `hash-object --stdin --path` converted it to LF. With an attribute file that only the index held, again only `hash-object` differed. Git's conversion checks the index blob for CR (convert.c `has_crlf_in_index`), and `hash-object` never loads the index.
+6. Size: a 512 MiB incompressible file took 17.7 seconds through `hash-object -w --stdin` and 20.5 seconds through `git add` on the developer host. Git's peak working set was 547 MB for the first. Git reads a file up to `core.bigFileThreshold` into memory, and the default is 512 MiB (object-file.c `index_fd`).
+
+A second probe series on 2026-09-30 used the same Git, setup, and rules. Its scripts live in the session scratch folder, not in the repository. These probes are not qualification evidence either.
+
+7. Blob proofs: each case staged through the candidate form. Proof A compared `cat-file --filters --path=<p> <oid>` with the working bytes by SHA-256. Proof B compared `hash-object --stdin --path=<p>` of the working bytes with the staged object ID. The oracle was `git add` in a copy.
+
+   | Case | Candidate equals `git add` | Proof A | Proof B |
+   | --- | --- | --- | --- |
+   | `core.autocrlf=true`, LF blob, CRLF working file | yes | pass | pass |
+   | `core.autocrlf=true`, CRLF blob in the index | yes | pass | fail |
+   | `eol=crlf` in an attribute file that only the index holds | yes | fail | fail |
+   | `ident` in an attribute file that only the index holds | yes | pass | pass |
+   | `core.autocrlf=true`, LF blob, mixed working file | yes | fail | pass |
+   | `core.autocrlf=true`, CRLF blob, mixed working file | yes | pass | fail |
+   | `text eol=crlf`, mixed working file | yes | fail | pass |
+   | `ident`, unexpanded or expanded keyword | yes | fail | pass |
+   | `working-tree-encoding=UTF-16LE-BOM`; `text eol=crlf`; binary; untracked text; `text=auto` with `core.eol=crlf` | yes | pass | pass |
+   | CRLF blob, `ident`, and `core.autocrlf=true` | yes | fail | fail |
+   | Writer: Git read other content, then the verified bytes returned | no | fail | fail |
+   | Writer: Git read only other line endings under `core.autocrlf=true` | yes | pass | pass |
+   | Writer in a binary file | no | fail | fail |
+
+   Running proof A with `GIT_INDEX_FILE` set to the candidate gave the same results. Canaries: a local clean and smudge filter on another path, `diff.<driver>.textconv`, and `diff.external` ran for neither proof. A command-valued `core.fsmonitor` also ran for neither proof, while `update-index` on the candidate ran it and `post-index-change`. `cat-file --filters` ran the smudge filter of a path with a `filter` attribute.
+8. Candidate time: the first proof run gave a candidate that differed from `git add` once. `update-index --add` ran on a `cp` copy of the index. It kept the old blob of a same-size change in 2 of 20 runs. A `cp -p` copy, which keeps the time, gave 0 of 20. In a second test, a changed file was racy against the index. A published `apply --cached` candidate from a `cp` copy hid that change from later `status` in 10 of 30 runs. A `cp -p` copy gave 0 of 30. Git checks the content of an entry whose mtime is not older than the index file time. A copy with a new time removes that check (racy-git.adoc).
+9. Split index: with `core.splitIndex=true` and an unsplit index, `update-index --add` and `apply --cached` on a private candidate each split the candidate. Each wrote a new `sharedindex.<hash>` into the Git directory. A global `core.splitIndex=true` did the same. `read-tree --empty` did not. With an already split index and the setting unset, `apply --cached` wrote a second shared index. `GIT_TEST_SPLIT_INDEX=1` split the candidate without the setting. `update-index --no-split-index` wrote an unsplit candidate with a warning. With `splitIndex.sharedIndexExpire=now` and `splitIndex.maxPercentChange=0`, one candidate write deleted the shared index of the canonical index. `git ls-files` then failed on the canonical index.
+
+Consequences:
+
+- The stage bound is 512 MiB per working file (contract §5). It equals Git's default `core.bigFileThreshold`, and the measured 20.5 seconds fits the 30-second Git step deadline. A larger file gets reason `size` and keeps its `add` remedy. T203 measures the packaged time on the reference host. A miss stays a recorded failure.
+- Git sets the mode of a new file. `ce_mode_from_stat` gives `100644` unless `core.filemode` is true and the file has an execute bit (read-cache.h). Git for Windows reports no execute bit (compat/mingw.c `file_attr_to_st_mode`). So the candidate check accepts a regular-file mode for an untracked entry, and the oracle tests fix the value.
+- Git reads the working file during the stage step, and its conversion can depend on the index (probe 5). So the service cannot compute the staged blob independently, unlike step 9 of the publication protocol. Step 6 proves the blob instead (contract §4 "Blob proof"). Either proof suffices, because each accepts cases that the other refuses (probe 7). When both fail, the service cannot tell a writer from an unprovable conversion. It refuses with reason `blob-proof` and keeps the `add` remedy. Two conversions that equal `git add` meet this refusal. They are an index-only attribute file with `eol`, and a CR index blob with `ident`. The refusal is fail-closed and stays a recorded limit.
+- A candidate copy keeps a last-write time at most the canonical index time (probe 8, contract §4 "Candidate time"). This rule covers hunks and files.
+- A split index or `core.splitIndex=true` refuses both operations with reason `split-index` (probe 9). A refused candidate could otherwise have deleted the shared index of the canonical index. The Git child environment drops every `GIT_TEST_*` variable.
+- `update-index --index-info` skips a path that fails `verify_path` and still exits 0 (builtin/update-index.c `read_index_info`). So the candidate check compares entries and never trusts the exit status.
+
+Sources: [piped input](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/object-file.c#L1053-L1066), [index_fd threshold](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/object-file.c#L1358-L1377), [conversion flags](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/object-file.c#L33-L41), [CR in index](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/convert.c#L224-L240), [safe autocrlf](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/convert.c#L526-L538), [hash-object](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/hash-object.c#L23-L34), [ce_mode_from_stat](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/read-cache.h#L8-L21), [Windows st_mode](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L4544-L4569), [index-info](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/update-index.c#L573-L592), [bigFileThreshold](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/core.adoc#L460-L465).
+
+Additional sources for probes 7 to 9: [racy Git](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/technical/racy-git.adoc), [split index settings](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/splitindex.adoc), [cat-file filters](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-cat-file.adoc), [test variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/t/README). The installed Git `2.55.0.windows.3` documentation holds the same racy-git text (lines 80 to 91) and the `splitIndex.sharedIndexExpire` entry.
+
 ## R4. Selected commit design: standard Git handoff
 
-**Decision**: Use ordinary canonical `git commit --file=-` after immediate full preflight. The user explicitly selected Standard Git through `/speckit-clarify` on 2026-09-28.
+**Decision**: Use ordinary canonical `git commit --quiet --file=-` after immediate full preflight. The user explicitly selected Standard Git through `/speckit-clarify` on 2026-09-28.
 
 **Rationale**: Approval authorizes normal Git execution against the freshly reviewed scope, not an immutable-tree transaction. Approved hooks and late external changes can affect execution.
 
@@ -165,7 +219,7 @@ Review stays read-only. Retain complete staged scope and a bounded index snapsho
 3. Compare the complete reviewed index, checkout target/OID, operation state, configuration, trust, and complete staged scope.
 4. Validate the message and consume its one-use review token only after successful checks.
 5. Refuse every detected mismatch and require renewed review.
-6. Release the preflight lock, then start exactly one ordinary `git commit --file=-` against the canonical index.
+6. Release the preflight lock, then start exactly one ordinary `git --no-lazy-fetch commit --quiet --file=-` against the canonical index (R5 partial-clone probes). `--quiet` removes only the summary that Git prints after `post-commit`.
 7. Supply the bounded message through stdin. Use no path arguments, `--all`, `--amend`, hook bypass, or signing override.
 8. Reconcile relevant Git state before permitting another mutation.
 
@@ -199,7 +253,11 @@ Git trace2 `child_start` events set `child_class` to `hook` and add `hook_name` 
 
 Open question: can these events classify `HOOK_FAILED` and `SIGNING_FAILED` without a heuristic? T091 probes this on Git `2.55.0.windows.3` and records the result here. A trace2 target comes only from a supporting probe result, through the `mutation-trace2` policy. That target would replace a user's own event target. So the service selects it only when no service variable or configuration key names an event target (contract §7). Without structured evidence, T112 returns `GIT_FAILED` with a recorded reason. The requirement stays.
 
-Hook output never reaches the interface (R5). So `HOOK_FAILED` and a commit `GIT_FAILED` carry a remedy command that reruns the commit in a terminal (contract §9). The command uses the selected Git executable and the worktree root, and never the message.
+A failed commit shows a bounded, sanitized, and redacted tail of Git stderr (contract §9 "Commit failure output"). `HOOK_FAILED` and a commit `GIT_FAILED` also carry a remedy command. It runs `hook run --ignore-missing pre-commit` in a terminal (contract §9). The command uses the selected Git executable and the worktree root, and never the message. An earlier remedy ran `git commit` itself. After a passing hook, Git would open an editor (`git-commit` without `-m` or `-F`). It would then create a commit outside the review. So that command is withdrawn.
+
+A Git-behavior probe on 2026-09-30 used Git `2.55.0.windows.3` in a throwaway repository. It had a rejecting `pre-commit` hook and a configured `hook.<name>.command` for `pre-commit`. `git --no-lazy-fetch hook run --ignore-missing pre-commit` ran both hooks and exited 1. Its output equaled the output of the rejected `git commit --file=-`. The refs, HEAD, and the index digest stayed unchanged, so no commit was created. With stderr discarded, neither command wrote hook stdout to stdout, so Git sends hook stdout to stderr. `hook run --ignore-missing commit-msg` exited 0 without its message-file argument. So only `pre-commit` has a remedy command. This probe is not qualification evidence.
+
+A second probe on 2026-09-30 held `refs/heads/main.lock`, and then `HEAD.lock`, during `git commit --file=-`. Each commit exited 128 with `cannot lock ref 'HEAD'`. HEAD did not move, no `index.lock` remained, and the staged change stayed. Hooks that run before the ref update can still change the index. So such a failure is `GIT_FAILED`, or `failed-with-effects` when reconciliation observes changes (contract §9 "Other locks"). This probe is not qualification evidence.
 
 A Git-behavior probe on 2026-09-30 ran `git commit --file=-` in throwaway repositories with canary programs. A plain commit ran `pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-index-change`, and `post-commit`. It ran `reference-transaction` with `preparing`, `prepared`, `committed`, and `aborted`. It also ran a command-valued `core.fsmonitor`. With `gpg.format=ssh`, `commit.gpgsign=true`, and no `user.signingKey`, Git ran `gpg.ssh.defaultKeyCommand`. With a `key::` signing key, it ran `gpg.ssh.program`. With `gpg.format=x509`, it ran `gpg.x509.program` and not `gpg.program`. `gpg.openpgp.program` took precedence over `gpg.program`. `gpg.program` ran when it was the only signing key. Each signing program ran after the `commit-msg` hook. `gpg.adoc` lists no other command-valued key. `gpg.ssh.allowedSignersFile` and `gpg.ssh.revocationFile` name files for verification only. This probe is not qualification evidence.
 
@@ -207,7 +265,7 @@ Signing sources: [gpg configuration keys](https://github.com/git-for-windows/git
 
 `git commit` updates HEAD and then runs `git maintenance run --auto`, with `--detach` by default. After that, it runs the `post-commit` hook. Git for Windows builds with `NO_POSIX_GOODIES`, so `daemonize()` fails. Maintenance then continues in the foreground. The commit process waits for it, and the 120-second commit deadline covers it. An interruption there leaves a created commit. Reconciliation classifies that result from observed state. This paragraph is source reasoning from the cited lines, not an observed run. T100 verifies it.
 
-If T100 observes a detached maintenance process, the operation Job still contains it, because the Job forbids breakaway. Reconciliation reports the created commit and names observed maintenance files as foreign. The maintenance process keeps running after the commit, as with command-line Git. The Job then becomes a lingering Job (contract §6 "Lingering Jobs"). It closes when it is empty or the application closes. A `post-commit` hook child and a built-in fsmonitor daemon that the commit starts follow the same rule. A lock that such a process holds gives `LOCKED` on the next mutation, and the app never removes it.
+If T100 observes a detached maintenance process, the operation Job still contains it, because the Job forbids breakaway. Reconciliation reports the created commit and names observed maintenance files as foreign. The maintenance process keeps running after the commit, as with command-line Git. The Job then becomes a lingering Job (contract §6 "Lingering Jobs"). It closes when it is empty or the application closes. A `post-commit` hook child and a built-in fsmonitor daemon that the commit starts follow the same rule. An `index.lock` that such a process holds gives `LOCKED` on the next mutation. Another held lock makes Git fail (probe above). The app never removes a lock.
 
 Open question: the maintenance duration on fixture L and the files that an interruption leaves are unverified. T100 probes them with local `gc.auto=1`.
 
@@ -245,7 +303,7 @@ A second probe on 2026-09-29 used an owned global configuration and a throwaway 
 
 Limit: the classification covers the program that Git starts. A protected command such as `sh ./x.sh` can still run repository files through its arguments. Whether `sh` searches an empty `PATH` entry on Git for Windows is unverified.
 
-**Decision**: Trust approval persists across launches (spec Clarifications, 2026-09-30). The shell stores one record for each worktree, because the fingerprint is per worktree. The record binds the common-directory identity, the worktree identity, the Git installation digest, and the fingerprint. A change of any of them gives `TRUST_CHANGED` and needs renewed approval. The record holds no configuration value or credential. A native confirmation with a Cancel default precedes each stored approval (R7). Revoke trust deletes the records of every worktree of that common directory. Over a digest bound, approval lasts for the service session only (contract §7).
+**Decision**: Trust approval persists across launches (spec Clarifications, 2026-09-30). The shell stores one record for each worktree, because the fingerprint is per worktree. The record binds the common-directory identity, the worktree identity, the Git installation digest, and the fingerprint. A change of any of them gives `TRUST_CHANGED` and needs renewed approval. The record holds no configuration value or credential. A native confirmation with a Cancel default precedes each stored approval (R7). Revoke trust deletes the records of every worktree of that common directory. Over a digest bound, approval lasts for the service session only (contract §7). That session ends when Arbareto closes or at Restart service, and the native confirmation names both.
 
 Closed question, 2026-09-30: the fingerprint covered integration locations, not the contents of program files. A stored approval would survive an edit of a repository hook file. The fingerprint now adds the SHA-256 digest of each repository-controlled program or hook file with a resolved path. Only files inside the worktree root, the Git directory, or the common directory get a digest. So the service never opens an attacker-named UNC or device path. Contract §7 "Program file digests" defines the rule. The bounds are 64 files, 1 MiB per file, and 8 MiB in total. Closed question, 2026-09-30: overflow first blocked approval, so an over-bound repository could never get approval. Now an over-bound repository can get an explicit approval for the service session only. The shell writes no record, and the native confirmation says why (contract §7). Files beyond a bound enter the fingerprint as `unchecked`. The next session reports `untrusted`. T071 and T098 edit an approved hook file and expect `TRUST_CHANGED`. T071 also covers the session-only approval.
 
@@ -254,6 +312,20 @@ Closed question, 2026-09-30: a bare-name program had no digest. Git for Windows 
 A probe on 2026-09-30 set four keys with a token in the subsection. They were `url.<URL>.insteadOf`, `http.<URL>.extraheader`, `credential.<URL>.helper`, and `includeIf.hasconfig:remote.*.url:<URL>/**.path`. Each URL had the form `https://u:TOKEN@host.example`. `config list --show-scope --show-origin -z` printed each token unchanged in the key. So contract §7 redacts URL user information in key subsections, origins, and displayed values. Git's `transport_anonymize_url` also removes the user information of a URL for display (transport.c:1695-1734). That function expects a whole URL. So the contract applies the rule to each `://` authority inside a longer text.
 
 Redaction source: [transport_anonymize_url](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/transport.c#L1695-L1734).
+
+A partial-clone probe on 2026-09-30 used Git `2.55.0.windows.3`. It cloned a local repository with `--filter=blob:none` and set a local `remote.origin.uploadpack` to a canary program. Each command then needed a blob that the clone lacked. Without `--no-lazy-fetch`, the canary ran for `status --porcelain=v2 --find-renames`, `diff-index --cached -p`, `diff-files -p`, `ls-files --eol`, and `commit --file=-`. The commit ran it for its rename summary. With `--no-lazy-fetch`, no canary ran. `status`, `diff-index`, and `diff-files` exited 128. `ls-files --eol` exited 0 and printed `i/none` for the missing blob. The commit moved HEAD, ran `post-commit`, and then exited 128 in its summary. A `pre-commit` hook saw `GIT_NO_LAZY_FETCH=1`, and its own `git cat-file` of a missing blob failed without a canary. Without the option, the hook saw no such variable, and its read ran the canary. `cat-file --batch-check` with `--no-lazy-fetch` printed `<oid> missing` and ran no canary. The listing showed `remote.origin.promisor` at local scope, and `git backfill` exists in this version. This probe is not qualification evidence.
+
+A follow-up probe on 2026-09-30 moved HEAD with `reset --soft` to a fetched commit whose blob the `blob:none` clone lacked. It had `pre-commit`, `commit-msg`, and `post-commit` canaries and the uploadpack canary. `--no-lazy-fetch commit --file=-` ran the three hooks and moved HEAD. It then exited 128 in its summary, because the summary needed the missing blob. `--no-lazy-fetch commit --quiet --file=-` in a fresh copy ran the three hooks and moved HEAD with the right parent. It exited 0 and printed nothing, and its tree equaled the index. No uploadpack canary ran in either case. Git prints the summary after `post-commit` and only without `--quiet` (builtin/commit.c:1967-1982). Automatic maintenance still runs with `--quiet`. This probe is not qualification evidence.
+
+Consequence: every app Git command passes `--no-lazy-fetch` (contract §7 "Missing objects"). The option propagates through the environment. So an approved hook cannot fetch objects during an app operation, although command-line Git would fetch them. A hook that needs a missing object then fails, and its message appears in the commit failure output. This is the stricter reading: a fetch can run a program from repository configuration without approval. `ls-files --eol` hides a missing blob, so only the `cat-file --batch-check` object check detects it. The app's commit passes `--quiet`, so the summary step never runs. Reconciliation still classifies every commit from observed state, and the exit status alone decides nothing.
+
+An untracked-read probe on 2026-09-30 ran `git diff --no-index -- /dev/null u.txt`. The repository had local canaries for `diff.external`, `diff.<driver>.textconv`, `filter.<driver>.clean`, and `core.fsmonitor`. Its attribute file selected the driver and the filter for `u.txt`. Without flags, the clean filter and `diff.external` ran. With `--no-ext-diff` only, the clean filter and `textconv` ran. With `--no-textconv` only, the clean filter and `diff.external` ran. With both flags, only the clean filter ran. The `core.fsmonitor` canary never ran. `nul` in place of `/dev/null` behaved the same. So a `diff` form needs both flags, and a `filter` attribute refuses before the command (contract §4). This probe is not qualification evidence.
+
+A read-command probe on 2026-10-01 used Git `2.55.0.windows.3` in a scratch repository. It had local canaries for command-valued `core.fsmonitor` and for clean and smudge filters, with a `filter` attribute. A tracked file was stat-dirty. `check-attr -z --stdin filter` ran the monitor canary once and no filter. `hash-object -t tree --stdin` and `config --file .gitmodules --null --list` ran no canary. `hash-object --stdin --path=<path>` ran the clean filter. Contract §7 lists these results.
+
+A quoting probe on 2026-09-30 used PowerShell `7.6.6` and Windows PowerShell `5.1.26100.9444`, each with `-NoProfile -EncodedCommand`. It built the contract §4 `add` remedy for a file name or a worktree root. The value held U+0027, U+2018, U+2019, U+201A, or U+201B, followed by `; ni <marker>`. The root payload ended with `#`, so the rest of the command parsed as a comment. With only U+0027 doubled, each of the other four ended the string, and the marker file appeared. This happened in both shells, in the file name and in the root. With all five doubled, no marker appeared in the 20 cases, and `git ls-files` listed the staged file. So the contract doubles all five. This probe is not qualification evidence.
+
+The commit failure output shows the output of hooks that the user configured or approved, as a terminal run does. The rule below stays for logs: regex redaction cannot make hook output safe to log. So the output tail never enters a log, a `diagnostic`, or a progress event. On screen, the service removes control sequences and redacts URL user information (contract §9). A secret in another form can remain, as in a terminal.
 
 Sources: [relative core.hooksPath](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/core.adoc#L512-L521), [hook working directory](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/githooks.adoc#L24-L28), [Windows program lookup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L1993-L2021), [per-entry lookup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L1908-L1928).
 
@@ -264,6 +336,8 @@ Use argument arrays and literal path handling. `--` stops option parsing, but do
 Use shell-owned Windows Jobs for the service and individual Git operations. Start processes suspended, assign ownership, then resume them. Keep handles non-inheritable and disable breakaway.
 
 **Lingering Jobs (2026-09-30 decision).** Git or hook processes from a mutation can outlive its Git process, as with command-line Git. The shell keeps such a Job in a lingering set (contract §6). It closes the Job when the Job becomes empty or the application closes. Cancellation, deadline expiry, and Interrupt and close still close the Job at once. Read Jobs never linger. The shell associates the completion port before it assigns the first process. Microsoft advises association while the Job is inactive, because messages for state changes during association can go missing. `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` reports a Job whose active process count reached zero. Delivery of that message is not guaranteed; a missing message does not prove that the event did not occur. So the shell also reads `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION` for each lingering Job at each `ended` frame. The count read after a child's exit wait is taken to exclude that child (unverified; T023 verifies). A missed message keeps only an empty Job handle until application close, never a process. Kill-on-close at application close keeps SC-008.
+
+Addition, 2026-09-30: a completion probe used PowerShell `7.6.6` and `System.Diagnostics.Process` with redirected pipes. A `post-commit` hook started `(sleep 8; echo late >&2) &` and exited. `git commit --file=-` exited after 253 ms, and stderr reached EOF after 8,339 ms. The late line arrived after the exit. So a process ends at its handle signal, and the shell discards later pipe bytes (contract §6 "Completion signal"). A completion at EOF would reach the 120-second deadline for a longer child and kill it. This probe is not qualification evidence. The shell also tags each mutation Job with its common-directory identity. Revoke trust closes the lingering Jobs with that tag. A cancellation during `reconciling`, or a revoke during a mutation, sets `endProcesses` on `ended`, so that Job never lingers.
 
 Sources: [job limits and notifications](https://learn.microsoft.com/windows/win32/procthread/job-objects#job-limits-and-notifications), [completion port messages](https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-jobobject_associate_completion_port#remarks), [kill-on-close](https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-jobobject_basic_limit_information#members).
 
@@ -318,11 +392,26 @@ Report summed private bytes separately from summed working sets. Shared pages ca
 
 Closed question, 2026-09-30: the 1-second foreground poll re-read full status, trust, and the index digest on every tick. On fixture L, polls could run back to back against the 1% idle CPU budget. The poll now runs a stat change check first (contract §8 "Change check"). Without a hint or a change, it starts no Git process. Focus return, manual refresh, and watcher hints still run full reads. T192 records full-read and change-check CPU time on M and L in batch 2. T169 measures the packaged idle CPU. A missed budget stays `fail`.
 
-**Usable-workspace marker (SC-006, SC-015 C1 and C2).** The renderer calls `performance.mark("arbareto:usable-workspace")` when the plan.md done state commits. Chromium exports user timing marks to ETW under the category `blink.user_timing`, keyword `0x10000` (etw_interceptor_win.cc:106, revision `f77ee1168aca5bac8a0a24ab92867858321f5c12`). Microsoft's `WebView2.wprp` enables the WebView2 provider `E16EC3D2-BB0F-4E8F-BDB8-DE0BEA82DC3D` with keyword `0x3F0000054404`, which includes that bit. Its stable Edge provider keyword `0x10000000202F` does not. The owned profile `tests/windows/arbareto.wprp` (T193) enables only that WebView2 provider with keyword `0x10000`. WPR runs it together with the built-in `GPU` profile. Whether the installed runtime emits the mark through that provider is unverified until T193 and T165 confirm it. Profile source: WebView2Feedback commit `874307a3f444dec048f9cfead987ea263d78086e`, `diagnostics/resources/WebView2.wprp`.
+**History-ready and Changes-ready markers (SC-006 and the switch rows).** The renderer calls `performance.mark("arbareto:history-painted")` when the plan.md History-ready state commits. Every open ends there (spec FR-034). It calls `performance.mark("arbareto:changes-ready")` when the Changes-ready state commits after a switch. Chromium exports user timing marks to ETW under the category `blink.user_timing`, keyword `0x10000` (etw_interceptor_win.cc:106, revision `f77ee1168aca5bac8a0a24ab92867858321f5c12`). Microsoft's `WebView2.wprp` enables the WebView2 provider `E16EC3D2-BB0F-4E8F-BDB8-DE0BEA82DC3D` with keyword `0x3F0000054404`, which includes that bit. Its stable Edge provider keyword `0x10000000202F` does not. The owned profile `tests/windows/arbareto.wprp` (T193) enables only that WebView2 provider. Its `Arbareto.Light` level uses keyword `0x10000` for the timing series, and its `Arbareto.Verbose` level uses `0x10200` for the stall workloads. WPR selects a level with `<file>.wprp!<Name>.light` or `.verbose` (Microsoft Learn "WPR Command-Line Options"). WPR runs it together with the built-in `GPU` profile. The same table maps `toplevel` to bit `0x200` (etw_interceptor_win.cc:99). That category carries Chromium's task events, which plan.md "Responsiveness metrics" uses for long tasks. The `arbareto:history-painted` mark uses the same `blink.user_timing` path. T193 and T165 confirm whether the installed runtime emits the marks and the task events through that provider. The task event name and its begin and end fields are unverified until T193 reports them. Profile source: WebView2Feedback commit `874307a3f444dec048f9cfead987ea263d78086e`, `diagnostics/resources/WebView2.wprp`.
 
-Marker sources: [Chromium ETW keywords](https://github.com/chromium/chromium/blob/f77ee1168aca5bac8a0a24ab92867858321f5c12/base/trace_event/etw_interceptor_win.cc#L106), [WebView2 profile](https://github.com/MicrosoftEdge/WebView2Feedback/blob/874307a3f444dec048f9cfead987ea263d78086e/diagnostics/resources/WebView2.wprp), [WebView2 ETW guidance](https://learn.microsoft.com/microsoft-edge/webview2/concepts/performance#telemetry-and-profiling-tools).
+Marker sources: [Chromium ETW keywords](https://github.com/chromium/chromium/blob/f77ee1168aca5bac8a0a24ab92867858321f5c12/base/trace_event/etw_interceptor_win.cc#L99-L106), [WebView2 profile](https://github.com/MicrosoftEdge/WebView2Feedback/blob/874307a3f444dec048f9cfead987ea263d78086e/diagnostics/resources/WebView2.wprp), [WebView2 ETW guidance](https://learn.microsoft.com/microsoft-edge/webview2/concepts/performance#telemetry-and-profiling-tools).
 
-**Input injection and frame timing (SC-005, SC-006, SC-015).** Input injection uses the test-only script `tests/windows/inject.ts` (T165). It calls the Windows `SendInput` API through `bun:ffi`. R2 allows `bun:ffi` in tests, not in production. The script needs no installation. It records the QueryPerformanceCounter value at each injection. Presented-frame timing comes from the WPR trace with GPU and DXGI present events. On 2026-09-29, `wpr -profiles` on the reference host lists the built-in `GPU` profile (WPR `10.0.26100`). `wpr -profiledetails GPU` lists the `Microsoft-Windows-DXGI` and `Microsoft-Windows-DxgKrnl` providers. The `DesktopComposition` profile lists `Microsoft-Windows-Dwm-Core`. Present-event coverage for WebView2 frames stays unverified until T165 confirms it. Any tool installation needs explicit maintainer approval, recorded in this section.
+**Input injection and frame timing (SC-005, SC-006, SC-015).** Input injection uses the test-only script `tests/windows/inject.ts` (T165). It calls the Windows `SendInput` API through `bun:ffi`. R2 allows `bun:ffi` in tests, not in production. The script needs no installation. It records the QueryPerformanceCounter value at each injection. Arbareto's absolute budgets take presented-frame timing from the WPR trace with GPU and DXGI present events. SC-005, SC-007, and SC-015 take it from the capture source below. On 2026-09-29, `wpr -profiles` on the reference host lists the built-in `GPU` profile (WPR `10.0.26100`). `wpr -profiledetails GPU` lists the `Microsoft-Windows-DXGI` and `Microsoft-Windows-DxgKrnl` providers. The `DesktopComposition` profile lists `Microsoft-Windows-Dwm-Core`. Present-event coverage for WebView2 frames stays unverified until T165 confirms it. Any tool installation needs explicit maintainer approval, recorded in this section.
+
+**Capture source for both applications (SC-015, SC-005, SC-007).** Git Extensions is a WinForms application, so a WebView2 DXGI Present event cannot time it. Both applications therefore use DXGI Desktop Duplication through the test-only script `tests/windows/capture.ts` (T242). Microsoft Learn states these facts, read on 2026-10-01:
+
+- `IDXGIOutput1::DuplicateOutput` creates the duplication from a device on the adapter of the output. By default, only four processes in one session can duplicate outputs; a fifth call gives `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`. The secure desktop needs `LOCAL_SYSTEM` and gives `E_ACCESSDENIED` otherwise.
+- `IDXGIOutputDuplication::AcquireNextFrame` takes a time-out in milliseconds. It returns `DXGI_ERROR_WAIT_TIMEOUT` without a new frame and `DXGI_ERROR_ACCESS_LOST` after a desktop switch or a mode change.
+- `DXGI_OUTDUPL_FRAME_INFO.LastPresentTime` is the time of the last desktop image update, which the OS takes from QueryPerformanceCounter. A value of zero means no image update since the previous acquisition. A pointer-only update sets it to zero.
+- `AccumulatedFrames` of one means that the caller processed the previous image before a new one arrived. A larger value means that the OS merged several updates.
+
+So the capture time base equals the `inject.ts` time base. The plan.md "Capture source" section derives Δ, the end frame, and the run uncertainty from these facts. No capture has run yet.
+
+Capture sources: [DuplicateOutput](https://learn.microsoft.com/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput), [AcquireNextFrame](https://learn.microsoft.com/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-acquirenextframe), [DXGI_OUTDUPL_FRAME_INFO](https://learn.microsoft.com/windows/win32/api/dxgi1_2/ns-dxgi1_2-dxgi_outdupl_frame_info), [DuplicateOutput1](https://learn.microsoft.com/windows/win32/api/dxgi1_5/nf-dxgi1_5-idxgioutput5-duplicateoutput1).
+
+**UI Automation driver (T153, T240, T241).** `tauri-driver` and `msedgedriver` are absent (inventory above). The test-only driver `tests/windows/uia.ts` uses UI Automation instead. Microsoft Learn states that a Win32 app shows WebView2 in the accessibility tree as a child of its parent window. It states that Microsoft Edge exposes ARIA roles, states, and properties through UI Automation. It also states that UI Automation does not connect processes that different users start. So the driver runs under the measurement account. T241 confirms each control name on the reference host with the driver and `inspect.exe`.
+
+Driver sources: [WebView2 accessibility tree](https://learn.microsoft.com/microsoft-edge/webview2/concepts/overview-features-apis#rendering-webview2-using-composition), [ARIA and UI Automation in Microsoft Edge](https://learn.microsoft.com/microsoft-edge/accessibility/build/aria-and-ui-automation), [UI Automation overview](https://learn.microsoft.com/windows/win32/winauto/uiauto-uiautomationoverview).
 
 Use the same capture method for baseline and candidate. An elevated trace collector does not qualify elevated application behavior. Run the application and installer as a standard user.
 
@@ -488,6 +577,32 @@ The dialog plugin cannot build a safe close prompt. `tauri-plugin-dialog` `2.8.0
 Sources: [plugin button mapping](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/dialog/src/desktop.rs#L110-L140), [plugin result mapping](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/dialog/src/desktop.rs#L215-L258), [rfd task dialog](https://github.com/PolyMeilex/rfd/blob/0.16.0/src/backend/win_cid/message_dialog.rs#L100-L200), [TASKDIALOGCONFIG](https://learn.microsoft.com/windows/win32/api/commctrl/ns-commctrl-taskdialogconfig), [TaskDialogIndirect](https://learn.microsoft.com/windows/win32/api/commctrl/nf-commctrl-taskdialogindirect), [tauri-build manifest](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-build/src/windows-app-manifest.xml).
 
 **Close with only lingering processes.** Closing with lingering processes and no running mutation shows no prompt. The FR-024 prompt exists because interrupting a running mutation has rollback limits. A lingering process belongs to no running operation, and its mutation already stated its reconciled outcome. Ending it at close therefore leaves no unreconciled mutation. Kill-on-close ends it, so no application-owned process remains after closure (SC-008). A prompt would ask a question with no rollback consequence. Decision: `closeIfIdle` closes, and the close ends every lingering Job (contract §6 "Lingering Jobs").
+
+### Windows text size
+
+Question (2026-10-01): does WebView2 follow the Windows Text size setting (WCAG 2.2 success criterion 1.4.4)? Page zoom stays locked at 100% (plan.md "Keyboard and focus").
+
+- Windows scales only text there, from 100% to 225%. Microsoft Learn contrasts it with display scaling, "which resizes everything". WinUI text controls follow it by default. GDI and DirectWrite do not, and Win32 support covers only menus, icons, and toolbars ("Text scaling").
+- `UISettings.TextScaleFactor` returns the setting as a double from 1 to 2.25. `TextScaleFactorChanged` fires on each change ("UISettings.TextScaleFactor Property").
+- WebView2 `RasterizationScale` "is the combination of the monitor DPI scale and text scaling set by the user". The host should update it when the text scale factor changes. Microsoft's Win32 sample reads `UISettings.TextScaleFactorChanged` for that purpose ("ICoreWebView2Controller3").
+- With `ShouldDetectMonitorScaleChanges` true, WebView2 tracks monitor DPI changes only. Text scale stays the host's task (same page).
+- Pinned wry `v0.57.0` never sets `RasterizationScale`, `ShouldDetectMonitorScaleChanges`, or `BoundsMode` in `src/webview2/mod.rs`. It has no text-scale code. It sets only the zoom-control settings and a `zoom()` call (mod.rs:639, :660, :1462-1463; 2026-10-01 scan).
+- Edge 138 shipped the CSS variable `env(preferred-text-scale)`, and Edge 145 shipped `<meta name="text-scale" content="scale">` (Microsoft Edge web platform release notes). CSS Fonts 5 §2.3 defines the meta: `medium` then follows OS and UA text preferences.
+- The CSSWG explainer for `env(preferred-text-scale)` covers this setting. It states that Chrome, Edge, and Firefox on Windows 11 apply a full browser zoom for it. No source states that WebView2 does so without host code.
+
+Decision: Arbareto scales only text, as Windows defines the setting (plan.md "Windows text size"). The shell reads `UISettings.TextScaleFactor` and gives the factor to the page. The page scales font sizes, line heights, and text-holding heights. The rasterization scale stays the monitor scale.
+
+Rejected:
+
+| Alternative | Reason |
+| --- | --- |
+| Set `RasterizationScale` to DPI scale × text factor, as the Microsoft sample does. | It zooms the whole page. At 225% text and 100% display scale, the 720×480 minimum then needs 1620×1080 physical pixels. At 150% display scale, a 1920×1080 display cannot fit it, and the insufficient-work-area rule would block the user. |
+| Rely on the `text-scale` meta element alone. | Whether WebView2 feeds the Windows factor into it is unverified. The fixed DIP metrics would also clip rows unless heights grow with text. |
+| Keep text at 100%. | It fails WCAG 1.4.4, because page zoom is locked. |
+
+Unverified: whether WebView2 applies any text zoom by itself. T160 records `devicePixelRatio` at text size 225% in its DevTools run. A value above the display scale means double scaling, and SC-009 then fails. The `windows` crate feature for `UISettings` is a dependency change under the test harness rules (T247).
+
+Sources: [Text scaling](https://learn.microsoft.com/windows/apps/develop/input/text-scaling), [Accessible text requirements](https://learn.microsoft.com/windows/apps/design/accessibility/accessible-text-requirements#text-font-size-and-scale), [UISettings.TextScaleFactor](https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uisettings.textscalefactor), [ICoreWebView2Controller3](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller3), [ShouldDetectMonitorScaleChanges](https://learn.microsoft.com/dotnet/api/microsoft.web.webview2.core.corewebview2controller.shoulddetectmonitorscalechanges), [wry webview2 module](https://github.com/tauri-apps/wry/blob/wry-v0.57.0/src/webview2/mod.rs), [Edge 138 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/138#web-platform-features), [Edge 145 notes](https://learn.microsoft.com/microsoft-edge/web-platform/release-notes/145#web-apis), [CSS Fonts 5 text-scale meta](https://drafts.csswg.org/css-fonts-5/#text-scale-meta), [preferred-text-scale explainer](https://github.com/w3c/csswg-drafts/blob/main/css-env-1/explainers/env-preferred-text-scale.md#windows-11). Document review and a source scan only; no WebView2 run.
 
 ### Signing and deferred authenticated updates
 
@@ -688,6 +803,18 @@ Keep focused virtual rows mounted, or use a persistent focus container. Preserve
 
 Sources: [Pierre Virtualizer](https://github.com/pierrecomputer/pierre/blob/8f360ae1b39fcbbdaccacbcd8dbbf94fb10a3c38/packages/diffs/src/react/Virtualizer.tsx#L18-L65), [virtualized component selection](https://github.com/pierrecomputer/pierre/blob/8f360ae1b39fcbbdaccacbcd8dbbf94fb10a3c38/packages/diffs/src/react/utils/useFileDiffInstance.ts#L185-L209), [worker options](https://github.com/pierrecomputer/pierre/blob/8f360ae1b39fcbbdaccacbcd8dbbf94fb10a3c38/packages/diffs/src/worker/types.ts#L148-L172), [worker engine loading](https://github.com/pierrecomputer/pierre/blob/8f360ae1b39fcbbdaccacbcd8dbbf94fb10a3c38/packages/diffs/src/worker/worker.ts#L186-L198), [published tarball](https://registry.npmjs.org/@pierre/diffs/-/diffs-1.5.1.tgz), [shadow root](https://github.com/pierrecomputer/pierre/blob/8f360ae1b39fcbbdaccacbcd8dbbf94fb10a3c38/packages/diffs/src/components/File.ts#L1359-L1366), [unsafe CSS insertion](https://github.com/pierrecomputer/pierre/blob/8f360ae1b39fcbbdaccacbcd8dbbf94fb10a3c38/packages/diffs/src/components/File.ts#L1536-L1543), [Base UI focus management](https://github.com/mui/base-ui/blob/47b40521eab921c2756bf9bdb0b0f07fbfdb8c8c/packages/react/src/dialog/popup/DialogPopup.tsx#L97-L142).
 
+### Stored drafts
+
+Decision (user, 2026-09-30): the page stores each worktree's draft in IndexedDB of its origin (plan.md "Stored drafts").
+
+- IndexedDB 3.0 §2.7: "A transaction represents an atomic and durable set of data access and data mutation operations." So a record is whole or absent.
+- The durability hint `strict` "is a hint to the user agent to flush any operating system I/O buffers before a `complete` event is fired". The draft store asks for it on every write. It stays a hint, so T163 checks the restore after Restart Arbareto.
+- The store lives in the application-specific WebView2 user-data folder. Upgrade keeps it, and Delete app data at uninstall removes it (plan.md "Windows installation and native checks").
+- Rejected: `localStorage`. It offers no transaction and no durability hint. Rejected: a shell-owned file per worktree. It would add two shell operations and a new frame path for the same result.
+- Bun has no IndexedDB, so T249 tests the store logic against a double. Only the installed build (T153, T163) tests the real engine.
+
+Source: [Indexed Database API 3.0, §2.7 Transactions](https://w3c.github.io/IndexedDB/#transaction-construct). Document review only; no WebView2 run.
+
 ### Content Security Policy
 
 T008 sets this directive map in `app.security.csp`. No WebView2 run has checked it yet (unverified).
@@ -761,6 +888,8 @@ The initial constitutional scope conflict and former mutation design blockers ar
 | Standard-user installer | Unverified | Build and test preinstalled, missing, and unsupported prerequisite states. |
 | Native UI and accessibility | Unverified | Test installed builds, keyboard, DPI, focus, clipboard, and IME. Narrator tests: Deferred to a later feature; not a qualification check in this slice. |
 | Release performance | Unverified | Run the fixed protocol in `plan.md`; retain every result. |
+| WSL repositories | Probed on the host; unverified | Install Git 2.55.0 or later in a WSL2 distro. Then run the T207 to T209 and T213 suites, and T219 in the installed build (R13). |
+| Submodule update | Probed with Git 2.55.0.windows.3; unverified | Run the T221 to T225 and T232 suites, then T237 and T238 in the installed build (R14). The SSH prompt failure needs a test SSH server. Every WSL row needs distro Git 2.55.0 or later. |
 | Electrobun packaged comparison | Not in scope | Source comparison only; no comparative performance result exists. |
 | Package signing and authenticated updates | Public release blocked | Deferred implementation and required verification remain incomplete. |
 
@@ -780,7 +909,7 @@ Mechanical checks on 2026-09-28 found no broken local document links or unresolv
 
 The active feature and branch remain `001-desktop-qualification`. No tracked files changed. Only new artifacts inside the selected feature were written.
 
-No application package or source tree was created. `/speckit-tasks` later created `tasks.md` (T001 to T187). No application build, mutation test, installer test, or benchmark ran.
+No application package or source tree was created. `/speckit-tasks` later created `tasks.md` (T001 to T187 at that time). No application build, mutation test, installer test, or benchmark ran.
 
 The extension configuration was absent before planning and during the post-plan check. No extension hooks required execution.
 
@@ -805,7 +934,7 @@ The user answered one clarification and selected standard Git commit behavior. T
 
 The spec-quality checklist is re-validated after the 2026-09-29 decisions. That step records the result in `checklists/requirements.md`. These checks assess specification quality, not implementation readiness or runtime qualification.
 
-Mechanical checks covered six design documents, including table-cell sentences. Local links, code fences, sentence lengths, and placeholder checks passed. A re-run after the About window update found FR-001–FR-037, SC-001–SC-014, F01–F20, and UI-01–UI-15 unique, consecutive, and validly referenced. Note, 2026-09-30: the spec now also holds SC-015, so the current range is SC-001–SC-015.
+Mechanical checks covered six design documents, including table-cell sentences. Local links, code fences, sentence lengths, and placeholder checks passed. A re-run after the About window update checked FR-001–FR-037, SC-001–SC-014, F01–F20, and UI-01–UI-15. It found them unique, consecutive, and validly referenced. Note, 2026-10-01: the whole-file staging, WSL, and submodule updates changed the ranges. At that time, they were FR-001–FR-054 and SC-001–SC-017. They were also F01–F31, UI-01–UI-16, and T001–T245. The speed remediation of 2026-10-01 adds SC-015 conditions C1–C20. The UX remediation of 2026-10-01 extends the ranges to F01–F32, UI-01–UI-19, and T001–T251.
 
 All 54 checked color pairs pass their applicable numerical contrast thresholds: 30 token pairs and 24 lane pairs. The graph's 24 stroke/background pairs have a minimum ratio of 4.66:1. Divider pairs are informational and have no threshold. Rendered accessibility and Windows behavior remain untested.
 
@@ -879,6 +1008,125 @@ A third `/speckit-analyze` pass found UX, speed, and user-journey gaps. The main
 
 These corrections have not received runtime verification.
 
+### Safety remediation, fourth pass, 2026-09-30
+
+A fourth `/speckit-analyze` pass found safety gaps. Document corrections follow; the R4 and R5 probes support them. The probes used Git `2.55.0.windows.3`, PowerShell `7.6.6`, and Windows PowerShell `5.1.26100.9444`.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| Only history and object reads passed `--no-lazy-fetch`. In a partial clone, other reads and `commit` ran a repository `remote.origin.uploadpack` canary without approval. | Every app Git command passes `--no-lazy-fetch`. A missing object gives `OBJECT_MISSING` through a `cat-file --batch-check` object check. FR-025 covers every operation. F17, T066, T071, and T098 add a partial-clone canary. |
+| Remedies doubled only U+0027. PowerShell also ends a single-quoted string at U+2018, U+2019, U+201A, and U+201B. | Contract §4 doubles all five. T093 and T098 test each character in a file name and in a worktree root. |
+| Completion named no exit signal. A `post-commit` child held Git's stderr for 8 seconds after Git exited. | Completion is the process handle signal, and the shell discards later pipe bytes. T023, T027, T045, T153, and T163 cover it. |
+| The untracked read `diff --no-index` ran `diff.external`, `textconv`, and the clean filter. Contract §7 did not list it. | A `diff` form carries `--no-ext-diff --no-textconv`, and a `filter` attribute refuses first. Contract §7, T067, T071, and T101 list it. |
+| Only reads and commit had deadlines. The state table lacked rows for a mutation deadline, cancellation or close during reconciliation, and revoke with lingering processes. | Contract §5 adds a 30-second deadline for each other Git process. data-model §7 adds the rows. T013 and T100 test them. |
+| `LOCKED` was promised for any lock that a lingering process holds. Only a failed creation of the app's own `index.lock` gives `LOCKED`. | Other locks give `GIT_FAILED` or `failed-with-effects` with the observed lock paths and the lingering count. T098, T100, and T153 add a ref-lock child. |
+| The session-only approval text said "until Arbareto closes", but Restart service also ends the session. | The confirmation names both ends. The spec, plan, data model, and contract agree. T071 and T163 check Restart service. |
+| A hook rejection hid the hook output, and the remedy ran `git commit`. After a passing hook, that command would create a commit outside the review. | The failure shows a bounded, sanitized, redacted output tail. The remedy runs `hook run --ignore-missing pre-commit`. T098 proves that it creates no commit. |
+
+These corrections have not received runtime verification.
+
+### Whole-file staging and commit summary, 2026-09-30
+
+The user added Stage file and Unstage file to this slice. The safety pass also found a commit exit status that reconciliation had to override. The R3 and R5 probes support the corrections.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| Binary files, renames, and other whole-file changes needed a terminal. | FR-038 and the operation `applyFile` on the hunk candidate protocol (contract §4 "File staging"). The operation count became 19 at that time, and the submodule update later raised it to 21. T194 to T203 add fixtures, contract types, real-Git tests, the service, the renderer control, and a packaged step. |
+| `hash-object --stdin --path` differed from `git add` for a CRLF index blob and for an index-only attribute file. | Stage runs `update-index --add --remove` on the candidate. Working-file digests bind the bytes. The residual gap for identical rewrites is stated in R3. |
+| In a partial clone, `commit --file=-` exited 128 in its summary after HEAD moved. | The commit passes `--quiet`. T098 expects exit 0, all three hooks, and `succeeded` for F17. |
+
+These corrections have not received runtime verification.
+
+### Staging proofs and WSL repositories, 2026-09-30
+
+A safety package closed two staging gaps and found a third. The user added WSL2 repositories to this slice (spec Clarifications, 2026-09-30). The R3 probes 7 to 9 and the R13 probes P1 to P5 support the corrections.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| Stage file could not detect a writer that changed and restored the working file during the Git step. | Step 6 proves the staged blob by `cat-file --filters` or `hash-object --stdin --path`. Without a proof, it refuses with `STALE_SELECTION` or reason `blob-proof`. T196 and T197 cover each branch. |
+| A candidate copy got a new file time, so Git lost its racy-entry check. A published hunk candidate hid a working change in 10 of 30 runs. | The candidate time stays at most the canonical index time, for hunks and files. T094 and T196 repeat a racy fixture 20 times. |
+| `core.splitIndex=true` split a private candidate and wrote into the Git directory. One write deleted the shared index of the canonical index. | Refuse it from any scope with reason `split-index`, and drop `GIT_TEST_*` variables. F10, T190, T096, and T197 cover both operations. |
+| Windows Git cannot serve a WSL repository, and a Windows Job does not own Linux processes. | Contract §11: distro Git 2.55.0 or later, a systemd user scope per process, and an anchor for lingering processes. FR-039 to FR-046, SC-016, F21 to F26, and T204 to T219. |
+| `FileIdInfo` fails on WSL paths, and `--cd` with a missing directory runs in `/`. | WSL identity comes from Linux `stat`. Git gets the directory through `-C`. |
+
+These corrections have not received runtime verification.
+
+### Submodule update and probe fixes, 2026-10-01
+
+The user added submodule initialization and recursive update to this slice (spec Clarifications, 2026-09-30). The R13 P3 and R14 probes support the corrections.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| The Windows Git probe passed `--no-lazy-fetch`. Git before 2.45.0 rejects it, so `GIT_UNSUPPORTED` could not name the found version. | Both version probes run without it, outside any repository. Contract §7 states the exception once. T053 and T067 test it. |
+| A WSL distro without a systemd user session had an open choice between a refusal and an ownership limit. | The user chose the refusal. The remedy names `systemd=true` under `[boot]` in `/etc/wsl.conf` and a distro restart. |
+| Submodules were read-only. | FR-047 to FR-054, SC-017, and US7 add Update submodules. Contract §12 defines `reviewSubmodules` and `updateSubmodules`, so the operation count becomes 21. F27 to F31 and T220 to T238 add fixtures and tests. |
+| The update runs submodule programs that the superproject trust listing cannot see (S3, S6). | A per-run native confirmation lists them. The stored fingerprint omits the registration keys, so no approval loop starts. |
+| A plain submodule pathspec matched another submodule (S8). | Each update process passes `:(literal)<path>`. T223 uses a `sub[1]` fixture. |
+| `wsl.exe` relays no output without a console, and a hidden console gives the Linux command a terminal (S10). | Contract §11 names `CREATE_NO_WINDOW`. WSL `network` mode runs Git through `setsid --wait`, so SSH prompts fail. Replaced on 2026-10-01: every wrapper mode uses `setsid --wait` ("UX, start mode, and WSL terminal remediation" below). |
+
+These corrections have not received runtime verification.
+
+### Speed measurement and test driver remediation, 2026-10-01
+
+A cross-artifact analysis found these gaps in the speed measurement and the packaged test driver. The user decided two items on 2026-09-30 (spec Clarifications).
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| Only update processes had a console rule. A commit hook that runs `ssh` could wait on a hidden console until its deadline. | Contract §6 "Console and input": `DETACHED_PROCESS` for every Git process, `GIT_TERMINAL_PROMPT=0` in every policy, and closed stdin. T024, T026, and T027 test it, and T162 repeats the hook case. WSL outside `network` mode stays an open limit. Closed later on 2026-10-01: every wrapper mode uses `setsid --wait`. |
+| C1 and C2 ended Arbareto in Changes and Git Extensions on its grid (constitution VIII). The first History paint had no mark and no budget. | The History-ready frame, the `arbareto:history-painted` mark, and three First History paint budgets. C1 and C2 end both applications at history rows with graph and counts. Arbareto opens in its last mode (FR-034). Superseded on 2026-10-01: every open shows History (FR-034; next table). |
+| One frame source (WebView2 DXGI Present) could not time Git Extensions, and Δ had no meaning for it. | DXGI Desktop Duplication for both applications (T242), Δ as one refresh interval, visible-content end frames, warm-up runs, and bootstrap intervals (T243). |
+| Fixture L had no comparison target, and SC-007 named no fixture. | C13 to C16 on L with ratio at most 1.0 (user decision). SC-007, C4, and T168 name M. |
+| The review dialog had no default button, and C7 had no key sequence. | Commit staged changes is the default (user decision). C7 sends Ctrl+Enter, then Enter, and reports one time. T239 tests the dialog. |
+| T153 had no UI driver, and the lingering count was shown nowhere. | T240 and T241 add a UI Automation driver with an `inject.ts` fallback. T138 shows the count in the status text. |
+| SC-005 stalls had no metric or workload list. | plan.md "Responsiveness metrics" defines input response, renderer long tasks, 250 ms probes, and nine workloads. These were the values at that time. Since the third verification remediation, probes run every 100 ms over ten workloads. |
+| Frequent actions, the open path, and the external-change start lacked conditions or tools. | C8 to C12, one folder-picker path for C2, and the T244 change helper. Shutdown gains the lingering-child class. |
+| WSL speed had only a hand-off line. | WSL budgets and C17 to C20 (T245). They stay `unverified` until distro Git 2.55.0 or later exists. |
+
+These corrections have not received runtime verification.
+
+### UX, start mode, and WSL terminal remediation, 2026-10-01
+
+The user decided four items on 2026-10-01 and one on 2026-09-30 (spec Clarifications). A UX review found the other gaps. The rows below replace the earlier "last mode" row and the WSL open-limit note of the previous table.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| A repository opened in the last chosen mode, Changes by default. Git Extensions opens on its history grid. | User decision: every open shows History. FR-034, SC-006, the History-ready frame, the Changes-ready frame, and the `arbareto:changes-ready` mark. The First History paint cold and warm rows merged into SC-006 with unchanged budgets. A Changes switch row joined the History switch row. T132, T160, T166, T181. |
+| Cold comparisons used 10 runs per application on every fixture. | User decision: 10 on M, 5 on L and W-M, with blocks of 3, 3, 2, and 2. The cold series needs 52 reboots, and SC-006 reuses those runs. A straddling interval is `inconclusive`, never a pass, and SC-015 then records `fail`. |
+| The added read conditions had ratio 1.0. | User decision: C8, C11, and C12 need at most 0.5; C9 and C10 keep 1.0. |
+| A WSL hook outside `network` mode could wait on the hidden terminal until its deadline. | User decision: `setsid --wait` in every wrapper mode. Plain children now linger and count, as on Windows. A distro without `setsid` gets reason `no-setsid`, and the submodule reason `wsl-setsid` is gone. R13 records the needed re-probe; T209 runs it. |
+| Drafts lived only in renderer memory, so reload, restart, and Interrupt and close lost them (FR-020). | User decision of 2026-09-30: stored drafts in IndexedDB, keyed by the new `worktreeKey`. T121, T139, T249, T250, T153, T163. |
+| The selected row differed from Canvas only by fill (1.13:1 light, 1.59:1 dark). | A 2 DIP selection marker at 5.18:1 or more (T124, T133, T144, T158). |
+| HEAD and branch labels differed from the subject only by Accent color. | Outline badges with a forced-colors mapping, in UI-14 and in the row's accessible name (T144). |
+| Keys in the message field were unclassified. | The plan.md Message row lists the working and the ignored keys; T186 tests each. |
+| Page zoom was locked, and nothing followed the Windows Text size setting (WCAG 1.4.4). | R7 "Windows text size": text-only scaling from `UISettings.TextScaleFactor`, SC-009, T246 to T248, T157, T160, and UI-17. |
+| Only About had sizing rules. | plan.md "Dialog sizes" for Review commit, Trust, and Update submodules; UI-18. |
+| Shallow and outside-page ends had no shape, and their strings drifted. The overflow drawing was undefined. | A dashed continuation with "Outside loaded page", and a two-bar stub with "Shallow history boundary". Node-only cells and the scope-line limit text (T118, T135, T144). |
+| No artifact defined the SC-012 mode-switch fixture. | F32, T251, and the T160 step. |
+| FR-015 did not say whether it covered one instance or all. | All instances. A named mutex per common-directory identity gives `BUSY` (contract §6). T052, T059, T106, and the T163 overlap cases. A later decision narrowed the scope to one logon session (third remediation table below). |
+| A failed Stage file showed only a command. The toolbar had no narrow layout. | `outputTail` for a failed `stage` (contract §9) and the plan.md "Hunk toolbar layout" wrap rule. |
+| WSL states had no capture, and the state count was stale. | UI-19 and the plan.md "State coverage" map of 29 states. |
+
+Register rows grow from 64 to 68: F32 and UI-17 to UI-19. These corrections have not received runtime verification.
+
+### Third verification remediation, 2026-10-01
+
+Three read-only verification passes found these gaps. Probes R14 S11 and S12 and the R5 read-command probe of 2026-10-01 back the safety rows.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| The submodule program list covered only initialized submodules. Kept Git directories of deinitialized submodules ran their programs without `confirmRun` (S11). | Contract §12 walks `modules` recursively and lists every kept Git directory. FR-050, SC-017, F29 variants, T222, and T223. |
+| §6 closed every stdin pipe, but the WSL anchor needs stdin until `ended`. | A named §6 exception. T205 and T209 test that the anchor lives across a whole mutation. |
+| A fetching row showed the parent URL, but Git fetches from the submodule remotes (S12). | The row lists every remote URL and marks the default remote. FR-048, an F27 variant, and T222. |
+| The lingering remedy offered Revoke trust without a trust ID. | Revoke trust appears only with a current trust ID (contract §3, §9; plan.md). |
+| The quoting rule named only three values. | It covers every interpolated remedy value. T223 adds quote characters in a submodule path and branch. |
+| `Local\` names cover one logon session, but FR-015 covers every instance. | Closed, 2026-10-01, by a design decision: keep `Local\`. FR-015 now covers every instance in the same Windows logon session. `index.lock` still guards each index across sessions. Windows client editions run one interactive session per user, so this covers the normal case. Contract §6, plan.md, and the qualification checklist state the scope. |
+| Speed conditions had a 30-second run limit, an ambiguous diff input, a free animation setting, and no restore procedure. | Per-condition run limits, the "Diff selection" input, Animation effects Off, and "Restore start state" with the T244 `--restore-state` mode. |
+| WSL freshness had no margin, and 250 ms probes missed some stalls. | WSL full read at most 0.4 seconds, 100 ms probes, ten workloads, and named probe targets. |
+| The C11 target can fall below one refresh interval after the uncertainty shift. | T180 takes one Git Extensions sample first and stops for a product decision when needed. |
+| Three `[P]` pairs edited one file or depended on each other. | T035, T235, and T246 lose `[P]` and name their dependencies. |
+
+The register keeps 68 rows. The two switch budgets stay plan budgets, and the SC-005 row cites them. These corrections have not received runtime verification.
+
 ## R12. History graph component and data decision
 
 **Decision**: No inspected package fits the contract. Build the workbench's own History rows with Base UI controls and theme tokens. Implement Arbareto's own lane function, modeled on VS Code's per-row swimlane model.
@@ -936,4 +1184,249 @@ No additional virtualization library is needed for 100 rows. Each History row re
 Sources: [parent output and date ordering](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/rev-list-options.adoc), [no implicit object fetch](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc).
 
 All graph findings are source inspection. No package installation, application run, screenshot, or rendered accessibility test occurred.
+
+## R13. WSL repositories
+
+**Decision (2026-09-30)**: Open WSL2 repositories under `\\wsl$\` and `\\wsl.localhost\` with Git inside their distro (contract §11). The user decided the scope, the Git 2.55 floor, the start on demand, and the poll schedule (spec Clarifications, 2026-09-30). Each Linux process runs in a systemd user scope, so the app owns the processes that Git and hooks start. On 2026-10-01, the user also chose `setsid --wait` for every Linux process ("Consequences and open items").
+
+**Rationale**: Git for Windows on a WSL path is slower and refuses the repository for dubious ownership. Linux Git reads its own file system. `wsl.exe --exec` passes each argument without a Linux shell. A systemd scope was the only probed boundary that held detached Linux processes (P1).
+
+**Alternatives considered**:
+
+| Alternative | Finding | Decision |
+| --- | --- | --- |
+| Git for Windows on the UNC path | Status on 5,000 files took 379 ms median, against 165 ms through Linux Git. Without an override, Git refused the repository with "detected dubious ownership". | Reject. An override such as `safe.directory=*` changes Git behavior (FR-003). |
+| A login shell, such as `bash -lc` | A shell expands arguments. Git Extensions moved to `--exec` after a login shell expanded `refs/sessions/**` (issue #13156, PR #13271). | Reject. |
+| `setsid` sessions, ended through `wsl.exe` | A detaching child calls `setsid()` again, as Git `daemonize()` does. A session kill misses it. | Reject. |
+| A PID namespace through `unshare --user --pid --fork` | It worked for the user in P1. Its init ends every namespace process when Git exits (pid_namespaces(7)). A user namespace also changes the rules that hooks run under. | Reject. |
+| A stated limit: the app cannot own Linux processes | P1 proves an ownership mechanism, so a limit claim is not needed. | Reject. |
+| A watcher inside Linux | Out of scope by user decision. | Polls instead (contract §11 "Change polling"). |
+
+### Other clients
+
+The earlier research dispatch of 2026-09-30 reported these facts. This pass re-read only the Git Extensions source clone.
+
+| Client | WSL behavior |
+| --- | --- |
+| Git Extensions 4.0 and later | PR #9702 added WSL support. It detects the `\\wsl$\` and `\\wsl.localhost\` prefixes (PathUtil.cs:13-14) and takes the distro from the first segment. It runs `wsl -d {distro} --cd "{UNC path}" --exec {git} …` (GitExecutor.cs:26-35). It polls WSL status every 60 seconds, because FileSystemWatcher misses changes there (GitStatusMonitor.cs:36-39, microsoft/WSL#4581). GPL-3.0: Arbareto borrows behavior only, never code. |
+| GitKraken | No support across the two file systems. |
+| Fork, Sublime Merge | A `wslgit` shim. |
+| SourceTree | No WSL support. |
+
+### Platform facts
+
+- Host: WSL `2.7.12.0`, kernel `6.18.33.2-2`, Windows `10.0.26200.9457`. Distros: `Ubuntu-24.04` (default, running, WSL2, Linux Git `2.43.0`) and `Ubuntu` (stopped, WSL2). Git for Windows `2.55.0.windows.3`.
+- Each `wsl.exe` start cost about 150 to 260 ms. Linux Git status on 5,000 files took 165 ms median.
+- `fs.watch` in Node and Bun threw `EISDIR` on `\\wsl.localhost\` paths.
+- Killing `wsl.exe`, or closing a kill-on-close Job that held it, ended the Linux command while it ran.
+- The distro's Git configuration applies. An SSH agent that `.bashrc` starts does not load under `--exec` (Git Extensions #11839).
+- WSL keeps a background Linux process alive after its console closes ([background task support](https://devblogs.microsoft.com/commandline/background-task-support-in-wsl/)). The systemd manager runs only on WSL 2, and `[boot] systemd=true` in `/etc/wsl.conf` enables it ([systemd in WSL](https://learn.microsoft.com/windows/wsl/systemd)).
+
+### Probes P1 to P5
+
+The probes ran on 2026-09-30 on the host above. They used only session scratch folders, the distro's `/tmp`, and systemd user scopes named `arbareto-probe-*`. The probes removed all three afterwards, and `pgrep` then found no probe process. They changed no WSL or distro configuration. They started no stopped distro and ran no `--shutdown`, `--terminate`, `--unregister`, or `--install`. These probes are not qualification evidence.
+
+**P1. Process lifetime.**
+
+- After `wsl.exe --exec sh -c "sleep … & …"` returned, a plain background child ended. So did one with its standard streams on `/dev/null`. A child under `nohup`, `setsid`, `setsid -f`, or `trap "" HUP` survived. Each survivor was a child of the invocation's `Relay` process, which PID 1 adopted. The pattern matches a `SIGHUP` to the command's session.
+- A kill-on-close Job that held `wsl.exe` did not help after `wsl.exe` exited: detached children survived its close. During a run, a Job close ended the main command, but detached and `nohup` children survived.
+- `taskkill /F` of `wsl.exe` delivered `SIGHUP` to the command, and its trap ran.
+- A POSIX `sh` defers a trap while a foreground child runs. So a wrapper that waited in the foreground left its children alive after a Job close (S4). A wrapper that starts the program in the background and calls `wait` ran its trap at once (S4b).
+- `systemd-run --user --scope --quiet --collect --unit=<u>` passed stdin, stdout, and the exit status (S3: 5; S5b: 6, with 7 bytes of stdin). The arguments `a b`, `$HOME`, and `*` stayed literal. A detached child stayed in the scope, and `systemctl --user kill --signal=SIGKILL <u>` ended it. systemd then removed the scope. Starts took 213 to 257 ms with and without a scope.
+- The read wrapper ended the scope after the program exited, and no detached child survived (S3).
+- An anchor in the Job ended a lingering detached child at the Job close (S1). With its stdin closed, the anchor exited 4 seconds after a 4-second child ended (S2).
+- Ten cancellation runs closed the Job during a run with a detached, a `nohup`, and a foreground child. Ten lingering runs closed the Job after Git exited. All twenty runs left no Linux process 1 second after the close.
+- In `mutation` mode, a plain background child with its streams on `/dev/null` ended when the wrapper exited (S6).
+- `unshare --user --map-current-user --pid --fork` ran a shell as PID 1 in a new namespace. The kernel allowed 62,587 user namespaces.
+- Outcome: the scope, wrapper, and anchor mechanism of contract §11. The app owns Linux processes that detach or ignore `SIGHUP`. In these probes, other children ended at Git's exit. The 2026-10-01 design change below replaces that behavior.
+
+**P2. Git resolution.**
+
+- The `PATH` of an `--exec` process held 81 entries under `/mnt/`, because `appendWindowsPath` defaults to true ([wsl.conf](https://learn.microsoft.com/windows/wsl/wsl-config#wslconf)).
+- `command -v git` gave `/usr/bin/git`, an ELF file (first bytes `\177E`), version `2.43.0`. `command -v git.exe` gave `/mnt/c/Git/mingw64/bin/git.exe`. It ran Git `2.55.0.windows.3` through interop, and its first bytes were `MZ`. The `WSLInterop` binary-format entry existed.
+- `systemd-run` and `systemctl` resolved to `/usr/bin`. An empty `systemd-run --user --scope` call exited 0.
+- Rule: resolve once per distro with `command -v` and `readlink -f`. Refuse a path under `/mnt/`, a file that starts with `MZ`, and a version with `.windows.`.
+
+**P3. Command line, working directory, and distro names.**
+
+- `--exec` passed each argument literally, also from PowerShell 7: `a b$c é`, `it's`, `-lead`, `*`, `--x=**`, and `;echo pwned`.
+- `--cd <Linux path>` worked with spaces, `$`, `é`, a leading `-`, and a `\` in a Linux name. `--cd <UNC path>` worked for both prefixes, an upper-case prefix, and a lower-case distro name, when the path used only `\`. A UNC path that mixed `\` and `/` gave `Wsl/E_INVALIDARG`. `--cd` with a missing directory ran the command in `/` and exited 0.
+- `git --no-lazy-fetch rev-parse …` failed on Git `2.43.0` with "unknown option: --no-lazy-fetch".
+- `wsl.exe -d ubuntu-24.04` worked for the distro `Ubuntu-24.04`. A missing distro printed `Wsl/Service/WSL_E_DISTRO_NOT_FOUND` and exited nonzero.
+- `wsl.exe --list --quiet` printed UTF-16LE. With `WSL_UTF8=1`, it printed UTF-8. `--list --verbose` printed localized headers and state words. `--list --running --quiet` lists only running distros ([basic commands](https://learn.microsoft.com/windows/wsl/basic-commands#list-installed-linux-distributions)).
+- The key `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` held one GUID subkey for each distro, with `DistributionName` and `Version` 2. Its `DefaultDistribution` named the default GUID.
+- `wslpath -u` of the UNC path equaled the string conversion. `wslpath -w` gave the `\\wsl.localhost\` form.
+- Outcome: `--cd /`, then `git --no-lazy-fetch -C <Linux path>`. `--no-lazy-fetch` stays the first Git argument, and a missing directory fails in Git.
+
+**P4. Environment.**
+
+- An `--exec` process held `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `HOME`, `HOSTTYPE`, `LANG=C.UTF-8`, `LOGNAME`, `NAME`, `PATH`, and `PULSE_SERVER`. It also held `SHELL`, `TERM`, `USER`, `WAYLAND_DISPLAY`, `WSL2_GUI_APPS_ENABLED`, `WSLENV`, `WSL_DISTRO_NAME`, `WSL_INTEROP`, `WT_PROFILE_ID`, `WT_SESSION`, and `XDG_RUNTIME_DIR`. It held no `GIT_*` variable.
+- Windows values of `GIT_TRACE`, `GIT_DIR`, and `GIT_CONFIG_GLOBAL` did not reach Linux. The inherited `WSLENV` was `WT_SESSION:WT_PROFILE_ID:`. With `WSLENV=GIT_TRACE/u`, `GIT_TRACE` reached Linux. `WSLENV` names the variables that WSL shares ([WSLENV](https://learn.microsoft.com/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl-with-wslenv)). So a user's `WSLENV` can forward any `GIT_*` variable, and the shell clears it.
+- systemd ran as PID 1 (`[boot] systemd=true`). The user manager reported `running`, and `XDG_RUNTIME_DIR` and the bus address were set under `--exec`. Processes outside a scope ran in `0::/init.scope`.
+
+**P5. File primitives on `\\wsl.localhost`.**
+
+- `GetFileInformationByHandleEx` with `FileIdInfo` failed with error 50 for files and directories under both prefixes.
+- Linux `stat` gave one device number and distinct inode numbers. Bun `fs.stat` on the UNC path gave the size, the time, and an inode number, but device 0.
+- `CreateFileW` with `CREATE_NEW` created `index.lock`, and a second call failed with error 80. `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` replaced `index` with a copy, and Linux `git status` read it.
+- Windows showed the Linux time `.175527414` as `.1755275`. Setting that time made the Linux time `.175527500`, 86 ns later than the original. `File.Copy` gave the same rounded time.
+- `stat --file-system` reported `v9fs` for `/mnt/c` and `ext2/ext3` for `/`, `/tmp`, and `/home`.
+- WSL showed a Linux name with `\` as U+F05C in the UNC listing.
+
+### Consequences and open items
+
+- The route runs before any `FileIdInfo` request, and WSL identity comes from Linux `stat` plus the distro GUID (contract §11).
+- The candidate time rule of contract §4 steps 100 ns back. So a rounded UNC time cannot fall after the Linux time.
+- A distro without a systemd user manager is refused with reason `no-user-manager`. Closed question, 2026-09-30: the user chose this refusal over an ownership limit (spec Clarifications, 2026-09-30). The remedy tells the user to set `systemd=true` under `[boot]` in `/etc/wsl.conf` and restart the distro (contract §11).
+- WSL rows stay `unverified` until a WSL2 distro with Git 2.55.0 or later exists. The reference distro has Git 2.43.0. The user must install a newer Git; the app and its tests never install it. The Git floor refusal can run on the reference distro now.
+- P1 proved ownership: a single-scope `cgroup.procs` count, a glob kill, the anchor exit after stdin closes, and the Job-close kill. The anchor count protocol is a design, not a probe result: one count for each stdin line, summed over `arbareto-<operationId>-*.scope`. T205 and T209 test it.
+- Unverified: a stopped-distro start time (the probes started no distro), a WSL1 distro, and a distro without systemd. Also unverified: `virtiofs` drive mounts, the atomicity of a replace over the WSL file share, and packaged behavior.
+- Design change, 2026-10-01 (spec Clarifications): every wrapper mode now runs its program through `setsid --wait`, not only `network` mode. Reason: a WSL hook in `mutation` mode could open `/dev/tty` on the hidden console and wait until the commit deadline. R14 probe S10 showed that `setsid --wait` under `CREATE_NO_WINDOW` blocks the `/dev/tty` open and passes the exit status. Consequence: Git's children get no `SIGHUP` at the wrapper exit, so the P1 S6 result no longer describes the product. A plain background child now lingers in its scope, as on Windows. The anchor counts it, and the Job close ends it. A distro without `setsid` is refused with reason `no-setsid`.
+- Re-probe needed for that change, before T209 can pass. The probe must show this under `setsid --wait` inside a scope in `mutation` mode. A plain, a `nohup`, and a `setsid` child each survive Git's exit. The anchor counts all three, and a Job close ends them within 1 second. A hook that opens `/dev/tty` fails at once. Git's own `daemonize()` still detaches maintenance inside the scope. T209 runs these cases and reports them here. No probe has run them yet.
+
+Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-commands), [WSLENV](https://learn.microsoft.com/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl-with-wslenv), [wsl.conf](https://learn.microsoft.com/windows/wsl/wsl-config#wslconf), [systemd in WSL](https://learn.microsoft.com/windows/wsl/systemd), [background tasks](https://devblogs.microsoft.com/commandline/background-task-support-in-wsl/), Git Extensions source clone (PathUtil.cs, GitExecutor.cs, GitStatusMonitor.cs), git-config(1) `maintenance.autoDetach`, pid_namespaces(7).
+
+## R14. Submodule initialization and update
+
+**Decision (2026-09-30)**: Add Update submodules to this slice. The user decided the scope: initialize and update every submodule recursively (spec Clarifications, 2026-09-30). The operations are `reviewSubmodules` and `updateSubmodules` (contract §12). They raise the operation count from 19 to 21.
+
+**Rationale**: `docs/project-brief.md` line 53 placed submodule management in a later release. The user moved initialization and recursive update into this slice. Git Extensions runs `git submodule update --init --recursive` for all submodules by default, through a process dialog (`SubmoduleUpdateCommand`). Arbareto borrows that behavior, not its GPL-3.0 code.
+
+**Decisions and reasons**:
+
+| Decision | Reason |
+| --- | --- |
+| Two operations: a read-only review with a one-use token, then the update. | This mirrors `reviewCommit` and `commit`. The token binds the reviewed plan, and a changed plan refuses the start. |
+| One Git process for each top-level submodule, with `-- :(literal)<path>`. | The app then knows "i of n" and each exit status without parsing translated text. A plain pathspec matched the wrong submodule (S8). |
+| The review runs nine fixed commands inside initialized submodules. | These commands load no index and ran no canary (S3). They narrow the rule that reads never start Git inside a submodule. Reads keep that rule. Since 2026-10-01, they also run in each kept Git directory, with `--work-tree` set to that directory (S11). |
+| Refuse commits that no ref holds. | Git detaches HEAD without a warning, and only the reflog keeps such commits until expiry (S4). This slice offers no action that can drop commits (FR-027). |
+| Refuse update modes `merge`, `rebase`, and `!command` for existing submodules. | Merge and rebase can leave an unfinished operation. A local `!command` ran a repository command (S5). |
+| Refuse an interrupted clone, with the `.git` file path as remedy. | Git cannot recover it alone, and deleting that one file let Git recover (S9). The app never repairs state. |
+| Report Git's refusal to overwrite local changes as a failed row. | Git kept the changes and continued with the other submodules (S7). |
+| A native confirmation for each run when submodules hold programs. | An update ran submodule monitors, filters, hooks, and transport programs (S3, S6). Their configuration lies inside the Git directory, so it is repository-controlled. |
+| The stored fingerprint omits the submodule registration keys. | Git's initialization writes only URL, active, and copied update keys (S1, S5), and none names a program. So the update keeps a stored approval, and no approval loop starts. |
+| Keep Git's protocol defaults, and never set a protocol key. | Git blocked `ext` and `file` in submodule clones by default (S6). |
+| `GIT_TERMINAL_PROMPT=0`, and no console for the update process. | Git then never prompts on a terminal. Git starts `ssh` detached when it has no console (compat/mingw.c:2251-2261). |
+| `setsid --wait` in WSL `network` mode. Replaced on 2026-10-01: every wrapper mode uses it (R11 "UX, start mode, and WSL terminal remediation"). | `wsl.exe` needs a console, and with a hidden console the Linux command could open `/dev/tty` (S10). |
+| Keep `--no-lazy-fetch`. | It did not block explicit submodule clones or fetches (S1, S6). |
+| A 300-second inactivity deadline and a 4-hour ceiling for each update process. | A fixed 30-second deadline kills large clones. Git prints progress while a transfer advances. The window leaves time for a credential helper sign-in. |
+| Progress from the untranslated `NN% (a/b)` counter only. | Git translates every other progress text (progress.c:134). |
+
+**Alternatives considered**:
+
+| Alternative | Finding | Decision |
+| --- | --- | --- |
+| One `git submodule update --init --recursive` process without a pathspec | "i of n" then needs translated messages or a fixed C locale for hooks. Git printed "aborting" after a failed clone (S6). | Reject. |
+| Pass `--checkout` to override configured update modes | It changes the configured behavior silently for one run. | Reject; refuse those modes instead. |
+| Persist submodule program approval in the trust record | It changes the record format, and submodule Git directories appear and change with each update. | Reject; confirm each run. |
+| Detect dirty submodules before the start | Status inside a submodule loads its index and can run its monitor and filters before confirmation. | Reject; Git's own refusal becomes a failed row. |
+| Delete an interrupted clone automatically | FR-016 forbids automatic repair. | Reject; show the file path. |
+
+### Probes S1 to S12
+
+The probes ran on 2026-09-30 and 2026-10-01 with Git `2.55.0.windows.3` on the R13 host. They used only session scratch folders and the distro's `/tmp`. Each used an owned `GIT_CONFIG_GLOBAL` with `protocol.file.allow=always` and `GIT_CONFIG_NOSYSTEM=1`. The remotes were local bare repositories: a superproject with two submodules, one of which held a nested submodule. No probe fetched from the internet. These probes are not qualification evidence.
+
+**S1. Initialization, index, output, and `--no-lazy-fetch`.**
+
+- `git --no-lazy-fetch submodule update --init --recursive --progress` exited 0. It cloned both submodules and the nested one.
+- Initialization added `submodule.<name>.active=true` and `submodule.<name>.url` to the superproject `.git/config`. The raw index SHA-256 stayed equal.
+- Stdout held one "Submodule path '<path>': checked out '<OID>'" line for each submodule, nested included.
+- Stderr held the registration lines, "Cloning into '<absolute path>'...", `remote:` counters, and "Receiving objects: NN% (a/b)" segments ended by CR.
+- Before the update, status reported nothing for the uninitialized submodules, and their folders were empty.
+
+**S2. Keys in a cloned submodule Git directory.** `config list --show-scope --show-origin` in each cloned submodule showed only local keys that Git wrote. They were `core.repositoryformatversion`, `core.filemode`, `core.bare`, `core.logallrefupdates`, `core.symlinks`, `core.ignorecase`, and `core.worktree`. Also `remote.origin.url`, `remote.origin.fetch`, `branch.main.remote`, `branch.main.merge`, and, in the parent of the nested one, `submodule.leaf.active` and `submodule.leaf.url`. The hooks folders held only `*.sample` files, and `git hook list post-checkout` found no hook. The worktree `.git` files held relative `gitdir:` paths into `.git/modules/<name>`.
+
+**S3. Canaries during review reads and during the update.**
+
+- Canaries sat in the superproject, in a submodule, and in its nested submodule. They covered command-valued `core.fsmonitor`, clean and smudge filters with a `* filter=f` attribute, 28 hook names, `core.sshCommand`, `core.askPass`, and `credential.helper`.
+- Inside the submodule, none ran for these commands, each with `--no-lazy-fetch --no-optional-locks -C <submodule>`:
+  - `rev-parse --verify -q HEAD`, `rev-parse --absolute-git-dir`, `rev-parse --git-path hooks`, and `symbolic-ref -q HEAD`.
+  - `config list --show-scope --show-origin -z` and `hook list -z --show-scope post-checkout`.
+  - `for-each-ref --contains=HEAD --count=1 --format=%(refname)`, `cat-file -e`, and `cat-file --batch-check`.
+  - `ls-tree -z` and `ls-tree -r -z --full-tree`, `config --blob <OID>:.gitmodules --null --list`, and `rev-list --count HEAD --not --glob=*`.
+- In the superproject, `config --file .gitmodules --null --list` ran no canary. `ls-files -z --stage` and `diff-files -p --ignore-submodules=dirty` ran only the superproject monitor, which the read gate covers.
+- `diff-files -p --ignore-submodules=dirty` printed "Subproject commit <OID>" for the moved HEAD of a submodule. It ran no submodule canary.
+- The update ran the superproject monitor and the submodule monitor, smudge filter, `post-checkout`, `post-index-change`, and `reference-transaction`. It also ran the nested monitor.
+
+**S4. A commit that no ref holds.** A local commit on the detached HEAD of a submodule gave an empty `for-each-ref --contains=HEAD`. `rev-list --count HEAD --not --glob=*` printed 1. Porcelain v2 status showed `SC..` with the recorded OIDs only. The update checked out the recorded commit and printed no warning. The local commit stayed only in the submodule reflog.
+
+**S5. Update modes and the active set.**
+
+- A `.gitmodules` value `update = !<canary>` made initialization fail with "fatal: invalid value for 'submodule.leaf2.update'" and exit 128. No canary ran, and no local key appeared.
+- A local `submodule.leaf2.update=!<canary>` ran the canary with the target OID.
+- Initialization copied a `.gitmodules` value `update = rebase` into the local configuration.
+- A just-cloned submodule with `update = rebase` got a checkout on a detached HEAD. The source forces a checkout for `merge`, `rebase`, and `none` after a clone (builtin/submodule--helper.c:2143-2147).
+- An uninitialized submodule with `.gitmodules` `update = none` got registered with a copied `update none` key. Git printed "Skipping submodule 'leaf2'" and cloned nothing (builtin/submodule--helper.c:2298). So `none` never reaches the forced checkout.
+- With `submodule.active` unset, `update --init` changed an explicit `submodule.leaf2.active=false` to `true`, with and without a pathspec. Initialization sets the key when the submodule is not active (builtin/submodule--helper.c:596-597).
+- With `submodule.active=mid`, `update --init` without a pathspec initialized only `mid`. It wrote only `submodule.mid.url`.
+
+**S6. Transports, fetch, and environment.**
+
+- An `ext::` URL gave "fatal: transport 'ext' not allowed" twice and exit 1. Git printed "Failed to clone 'leaf2' a second time, aborting". No canary ran.
+- With an owned global file without `protocol.file.allow`, a `file://` URL gave "transport 'file' not allowed". Git's submodule command sets `GIT_PROTOCOL_FROM_USER=0` (git-submodule.sh:29-30). Git's `file` default is `user` (git-config(1) `protocol.allow`).
+- A recorded commit that the submodule lacked made the update fetch it. The submodule's local `remote.origin.uploadpack` canary ran, and the update exited 0.
+- A submodule `post-checkout` hook saw `GIT_NO_LAZY_FETCH=1`, and `GIT_TERMINAL_PROMPT=0` when the caller set it.
+
+**S7. Local changes that block a checkout.** One submodule held a local edit to a file that its target commit changes. Another submodule needed a move. The update printed "Your local changes to the following files would be overwritten by checkout". It then printed "Unable to checkout '<OID>' in submodule path 'leaf2'" and exited 1. The other submodule moved. The blocked submodule kept its HEAD and its edit.
+
+**S8. Pathspec magic.** A superproject held the submodules `sub[1]` and `sub1`. `update --init -- 'sub[1]'` initialized `sub1` only, because Git read `[1]` as a glob. `update --init -- ':(literal)sub[1]'` initialized `sub[1]` only.
+
+**S9. A killed clone.**
+
+- PowerShell started the update of a 300 MB submodule remote and ended the process tree with `taskkill /T /F` after 1.2 seconds.
+- The kill left `.git/modules/big` with `config`, `HEAD`, empty `refs`, and one `objects/pack/tmp_pack_*` file. It also left the `big/.git` file and the registered `submodule.big.url` and `active`. No lock file remained.
+- The next `update --init --recursive` failed with "fatal: Unable to find current revision in submodule path 'big'" and exit 128.
+- After only `big/.git` was deleted, the next update fetched into the kept Git directory and checked out the recorded commit. After both were deleted, it cloned again. Both exited 0.
+- A separate case: `git submodule deinit` removed the whole `submodule.leaf2` section and kept `.git/modules/leaf2`. The next `update --init` reused that Git directory without a clone.
+- A kept Git directory can hold a commit that no ref holds. `--git-dir=.git/modules/leaf2` with `rev-parse`, `for-each-ref --contains=HEAD`, and `config list` found it and ran no canary. The reuse update then left that commit, which stayed only in the reflog.
+
+**S10. Consoles, terminals, and distro Git.**
+
+- Python `subprocess` started `wsl.exe --exec /bin/sh -c <script>` with three creation flags. With `DETACHED_PROCESS`, the script ran and wrote a marker file, but `wsl.exe` relayed no stdout or stderr. With `CREATE_NO_WINDOW` or no flag, the output arrived. The script printed "not a tty" for stdin, but it opened `/dev/tty`.
+- Under `CREATE_NO_WINDOW`, `setsid --wait /bin/sh -c <script>` could not open `/dev/tty`, and the exit status 7 passed through.
+- Git for Windows under `DETACHED_PROCESS` printed its version normally.
+- Distro Git 2.43.0 rejected `git --no-lazy-fetch version` with "unknown option: --no-lazy-fetch". Its `version --build-options` worked. Git added the option in 2.45.0 (RelNotes/2.45.0.adoc).
+- Distro Git 2.43.0 without `--no-lazy-fetch` printed the same checked-out line and `NN% (a/b)` segments. It blocked `ext` and `file` the same way. The §11 floor refuses this Git, so these lines only confirm that the formats match.
+
+**S11. Kept Git directories, nested reuse, and review reads (2026-10-01).**
+
+- A superproject held submodule `s1`, and `s1` held the nested submodule `s2`. All three were initialized. Canaries sat in `.git/modules/s1` and `.git/modules/s1/modules/s2`. They covered command-valued `core.fsmonitor`, `post-checkout`, `post-index-change`, and `reference-transaction`.
+- `git submodule deinit -f s1` emptied the `s1` folder and removed the `submodule.s1` keys. Both Git directories stayed.
+- `git --no-lazy-fetch submodule update --init --recursive -- ':(literal)s1'` reconnected both Git directories in one process. Every canary in both directories ran. Neither submodule had a `.git` entry before the update.
+- `--git-dir=.git/modules/s1/modules/s2` failed with "cannot chdir" to its `core.worktree`, because the `s1` folder was empty. With `--work-tree=<same directory>` added, every contract §12 review read ran there, and no canary ran. The `unsaved-commits` remedy `branch` with both options created its branch and ran the `reference-transaction` hook, as a terminal run does.
+- `rev-parse --absolute-git-dir` failed with "not a git repository" for `.git/modules` and `.git/modules/s1/modules`. `config list` there printed only the global entries.
+- `ls-remote --get-url` in `.git/modules/s1` ran no canary, also with `remote.origin.uploadpack`, `core.sshCommand`, and `credential.helper` canaries. The contract does not use it (S12).
+
+**S12. Fetch remote of a reused submodule (2026-10-01).**
+
+- The kept `.git/modules/s1` lacked the recorded commit. Its `remote.origin.url` named a missing folder, and the `.gitmodules` URL was valid.
+- The update registered the `.gitmodules` URL in the superproject configuration. Its fetch then failed with "'<missing folder>' does not appear to be a git repository" and exit 128.
+- After the kept `remote.origin.url` named the valid remote, the same update exited 0 at the recorded commit.
+- A second case kept the missing `origin` and added a remote `good` with the `.gitmodules` URL. The `origin` fetch failed. Git printed "Unable to fetch in submodule path 's1'; trying to directly fetch <OID>". The fetch by commit ID from `good` succeeded, and the update exited 0.
+- Source, Git v2.55.0: the first fetch is `git fetch` without a remote (builtin/submodule--helper.c:2644-2665). It uses the remote of the checked-out branch, else the only remote, else `origin` (remote.c:666-680). With `fetch.all` true, it fetches every remote (builtin/fetch.c:2700-2720). A fetch by commit ID prefers the remote whose URL equals the `.gitmodules` URL (builtin/submodule--helper.c:77-115).
+- A scratch repository confirmed the default rule. A single remote named `upstream` received the fetch. With two remotes and no `origin`, `ls-remote --get-url` failed with "No remote configured".
+- So the review lists every remote URL of a fetching row and marks the default remote (contract §12 "Plan").
+
+### Security notes
+
+- CVE-2024-32002: recursive clones on case-insensitive file systems with symbolic links could run code. The advisory GHSA-8h77-4q3w-gfgv lists fixed versions 2.45.1, 2.44.1, 2.43.4, 2.42.2, 2.41.1, 2.40.2, and 2.39.4. Git for Windows `2.55.0.windows.3` and the distro floor 2.55.0 both contain the fix.
+- CVE-2025-48384: broken configuration quoting of a submodule path could run code. The advisory GHSA-vwqx-4fm8-6qc9 lists fixed versions 2.43.7, 2.44.4, 2.45.4, 2.46.4, 2.47.3, 2.48.2, 2.49.1, and 2.50.1. Both admitted Git floors contain the fix.
+- A distro package can backport fixes without a version change. The floor compares versions only, so a backport never admits an older Git.
+- Defense in depth: the run confirmation lists submodule programs before any runs. Git's protocol defaults block `ext` and unrequested `file` transports.
+
+### Credential helpers
+
+- `GIT_TERMINAL_PROMPT=0` makes Git fail instead of prompting on a terminal (Git `Documentation/git.adoc`).
+- Git Credential Manager reads `GIT_TERMINAL_PROMPT` for its terminal prompts only. Its GUI prompts follow `GCM_GUI_PROMPT` or `credential.guiPrompt`, and `GCM_INTERACTIVE` turns off all interaction (GCM `docs/environment.md`; DeepWiki answer on `IsTerminalPromptsEnabled`). So its sign-in window can still appear. The app sets none of these GCM values.
+- Unverified: the SSH prompt failure without a console. No SSH server was available. T224 and T237 run it when a test SSH server exists, and record `unverified` otherwise.
+
+### Consequences and open items
+
+- Contract §12 holds the protocol, and FR-047 to FR-054 and SC-017 hold the requirements. F27 to F31 and T220 to T238 hold the tests.
+- Speed: network time has no Git Extensions comparison and no budget. The SC-005 input and stall budgets still apply while the update runs. T237 samples them during an F30 clone.
+- Closed item, 2026-10-01: contract §6 "Console and input" now starts every Git for Windows process without a console. Git without a console starts each child with `DETACHED_PROCESS` (compat/mingw.c:2247-2263). Every policy sets `GIT_TERMINAL_PROMPT=0`, and each stdin pipe closes after its input. T027 and T162 test a hook that waits for terminal input. Open at that time: a WSL hook outside `network` mode kept the hidden terminal. Closed later on 2026-10-01: every wrapper mode uses `setsid --wait` (contract §11 "Process launch").
+- Closed item, 2026-10-01, by a design decision: Git 2.55 offers `extensions.submodulePathConfig`. It places each submodule Git directory by `submodule.<name>.gitdir`, not under `modules/<name>` (git-config(1)). Contract §12 assumes the default layout for `reuse` rows and the kept-directory walk. Under the extension, the review can miss the programs of a kept Git directory. Decision: `reviewSubmodules` refuses with `UNSUPPORTED_SUBMODULE` reason `gitdir-config`. The refusal applies when the extension is enabled or any `submodule.<name>.gitdir` is set. The remedy runs the update in a terminal. FR-049, contract §9 and §12, data-model §9, an F29 variant, and T223 carry the rule. No real-Git run has verified the refusal yet.
+- Unverified: every WSL row, because the reference distro has Git 2.43.0. Also the SSH prompt failure, a real credential helper window, and packaged behavior.
+
+Sources: [submodule--helper update strategy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2107-L2147), [initialization active key](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L596-L597), [current revision failure](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2834-L2838), [GIT_PROTOCOL_FROM_USER](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/git-submodule.sh#L29-L30), [detached ssh](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L2251-L2261), [progress counter](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/progress.c#L134), [protocol policy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/protocol.adoc), [environment variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc), [RelNotes 2.45.0](https://github.com/git/git/blob/master/Documentation/RelNotes/2.45.0.adoc), [GHSA-8h77-4q3w-gfgv](https://github.com/git/git/security/advisories/GHSA-8h77-4q3w-gfgv), [GHSA-vwqx-4fm8-6qc9](https://github.com/git/git/security/advisories/GHSA-vwqx-4fm8-6qc9), [GCM environment](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/environment.md), [submodule fetch](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L2644-L2665), [submodule default remote](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L77-L115), [default remote](https://github.com/git/git/blob/v2.55.0/remote.c#L666-L680), [fetch.all](https://github.com/git/git/blob/v2.55.0/builtin/fetch.c#L2700-L2720), [nested Git directory refusal](https://github.com/git/git/blob/v2.55.0/submodule.c#L2402-L2442).
 

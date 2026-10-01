@@ -21,7 +21,7 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 ## Window-Size and DPI Profiles
 
 - [x] CHK006 Are wide, narrow, constrained, and minimum window profiles defined with numeric thresholds? [Clarity, Spec §FR-035] — plan.md "Chosen layout, sizes, and DPI" profile table.
-- [x] CHK007 Are DPI, density, and font-change requirements defined for remeasurement, scroll anchors, and editor state? [Completeness, Spec §SC-009] — plan.md "Chosen layout, sizes, and DPI" remeasurement paragraph.
+- [x] CHK007 Are DPI, density, and font-change requirements defined for remeasurement, scroll anchors, and editor state? [Completeness, Spec §SC-009] — plan.md "Chosen layout, sizes, and DPI" remeasurement paragraph and "Windows text size" (2026-10-01).
 - [x] CHK008 Is per-monitor scaling stated as the qualification target, distinct from system-aware DPI? [Clarity] — plan.md "Git Extensions reference" (`HighDpiMode.SystemAware`, issue #6409); spec SC-009 mixed-scale transitions.
 
 ## Density
@@ -36,7 +36,7 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 - [x] CHK013 Do the checked contrast pairs cover every text/background pair the layout uses, such as muted text on the Selected row? [Coverage, Gap] — plan.md "Compact token system" contrast statement records 30 token pairs. They include muted text on the Selected row and the Hover fill.
 - [x] CHK014 Are disabled-control appearance requirements specified beyond disabled-reason text? [Gap] — plan.md "Compact token system" disabled-control paragraph: Muted text, Divider border, no Accent, the 3:1 exemption, and kept reason text.
 - [x] CHK015 Are lane colors kept distinct from Accent and semantic Added, Removed, and Warning roles by a stated metric? [Clarity] — plan.md "History graph design" lane color paragraph. It sets an OKLCH hue gap of at least 30° and an OKLab pair distance of at least 0.10.
-- [x] CHK016 Are forced-colors requirements defined for every custom-colored element, not only graph lanes and nodes? [Completeness, Gap] — plan.md "Compact token system" forced-colors paragraph. It maps lanes, nodes, selection, focus, the selected-hunk bar, diff glyphs, and disabled controls to system colors. See UI-14.
+- [x] CHK016 Are forced-colors requirements defined for every custom-colored element, not only graph lanes and nodes? [Completeness, Gap] — plan.md "Compact token system" forced-colors paragraph. It maps lanes, nodes, selection, the selection marker, focus, and the selected-hunk bar to system colors. It also maps badges, boundary marks, diff glyphs, and disabled controls. See UI-14.
 - [x] CHK017 Does the spec state forced-colors or Windows contrast-theme support as a requirement? [Consistency, Spec §FR-005] — spec FR-005 and SC-009 name Windows contrast themes.
 - [x] CHK018 Is reduced-motion behavior specified? [Completeness] — plan.md "Compact token system" reduced-motion and no-animated-entrance rules.
 
@@ -62,12 +62,12 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 
 ## Destructive-Action Separation
 
-- [x] CHK030 Are destructive actions excluded from this slice, with a rule for their future separation and scope confirmation? [Clarity, Spec §FR-027] — plan.md "Task flow and command placement" destructive-action paragraph; plan.md "Git Extensions reference" (`FormResetChanges`).
+- [x] CHK030 Are destructive actions excluded from this slice, with a rule for their future separation and scope confirmation? [Clarity, Spec §FR-027] — plan.md "Task flow and command placement" destructive-action paragraph; plan.md "Git Extensions reference" (`FormResetChanges`). The review dialog default, Commit staged changes, is not destructive (plan.md "Keyboard and focus", spec Clarifications 2026-09-30).
 
 ## Graph Data and Rendering Rules
 
 - [x] CHK031 Are graph data bounds quantified (rows, output bytes, parents per commit, parent references, lanes, segments)? [Measurability, Spec §FR-008, §FR-036] — contracts/operations.md §5 history and graph bounds; research.md R12 "History protocol"; plan.md "History graph design" layout bound.
-- [x] CHK032 Are outside-page parents and shallow boundaries distinguished from roots in the requirements? [Clarity, Spec §FR-036] — plan.md "History graph design" outside-page and shallow-boundary rules.
+- [x] CHK032 Are outside-page parents and shallow boundaries distinguished from roots in the requirements? [Clarity, Spec §FR-036] — plan.md "History graph design" outside-page and shallow-boundary rules. Each end has its own shape and text (2026-10-01).
 - [x] CHK033 Is the visual treatment of a true root commit (lane end) specified? [Gap, Spec §SC-013] — plan.md "History graph design" root-commit rule ends the lane at the node with Root commit text.
 - [x] CHK034 Are the selected-node ring and the merge-node ring specified so that they cannot be confused? [Ambiguity] — plan.md "History graph design" geometry paragraph. A merge node is hollow and lane-stroked. A separate Accent outer ring sits 3 DIPs out. A selected merge node shows both.
 - [x] CHK035 Are lane assignment, lane color assignment, and column width rules defined deterministically? [Clarity] — plan.md "History graph design" lane assignment rules and lane color paragraph.
@@ -81,12 +81,12 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 
 ## Screenshot Captures
 
-- [x] CHK040 Does every required visible state map to at least one capture with a fixed configuration? [Coverage] — plan.md "Screenshot review during implementation" covers all 24 states in plan.md "Required visible states". No selection maps to UI-03 and UI-11, and Succeeded to UI-05 and UI-13.
+- [x] CHK040 Does every required visible state map to at least one capture with a fixed configuration? [Coverage] — plan.md "State coverage" maps all 29 rows of "Required visible states" to captures. WSL location and Starting WSL distro map to UI-19 (added 2026-10-01). No selection maps to UI-03, UI-05, and UI-11, and Succeeded to UI-05 and UI-13.
 - [x] CHK041 Are capture metadata and pass conditions defined, including clipped-capture rejection? [Measurability] — plan.md "Screenshot review during implementation" metadata paragraph and clipped-capture rule.
 
 ## Cross-Artifact Consistency
 
-- [x] CHK042 Do quickstart.md capture and state references match plan.md? [Consistency] — quickstart.md §7 cites plan.md content sizes and UI-01–UI-15.
+- [x] CHK042 Do quickstart.md capture and state references match plan.md? [Consistency] — quickstart.md §7 cites plan.md content sizes and UI-01–UI-19.
 - [x] CHK043 Is Git Extensions consistently the primary UX reference and T3 Code the visual-style reference across spec.md, plan.md, and research.md? [Consistency] — spec Clarifications 2026-09-29; plan.md "UI direction and scope", "Git Extensions reference", and "Design check against the brief"; research.md R12.
 - [x] CHK044 Are the History scope and ordering rules consistent between spec.md and research.md? [Consistency, Spec §FR-008] — spec FR-008; research.md R12 "History protocol".
 - [x] CHK045 Are requirement and capture IDs unique, consecutive, and validly referenced? [Traceability] — research.md R11 ID checks.

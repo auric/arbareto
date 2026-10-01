@@ -8,11 +8,11 @@
 **Review Ownership**: This checklist is a reviewer-owned requirements-quality review artifact. Mark an item `[x]` only when the reviewer determines the requirements-quality criterion is satisfied.
 **Marker Semantics**: `[x]` means the criterion has been reviewed and satisfied for requirements quality. It does not mean implementation work is complete.
 
-Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09-29 after the gap fixes. Each note cites the evidence by section name or requirement ID. On 2026-09-30, line-number citations became section citations, and the marks stayed unchanged.
+Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09-29 after the gap fixes. Each note cites the evidence by section name or requirement ID. On 2026-09-30, line-number citations became section citations, and the marks stayed unchanged. The marks of CHK001 to CHK049 do not cover five later additions. They are the notice band, the status area, the Space key, the header and long-text rules, and the text size. CHK050 to CHK054 cover them and stay unchecked until a reviewer evaluates them. On 2026-10-01, the H2 remediation rechecked CHK001, CHK009, and CHK018 against the new section minima, density rows, and motion rule.
 
 ## Layout and Pane Sizing
 
-- [x] CHK001 Are pane sizes for the chosen layout quantified with defaults, minima, and maxima for the file lane, diff, and commit tray? [Completeness, Spec §FR-035] — plan.md "Chosen layout, sizes, and DPI" profile table, file-lane, tray, and narrow-band paragraphs.
+- [x] CHK001 Are pane sizes for the chosen layout quantified with defaults, minima, and maxima for the file lane, diff, and commit tray? [Completeness, Spec §FR-035] — plan.md "Chosen layout, sizes, and DPI" profile table, file-lane, tray, and narrow-band paragraphs. Rechecked 2026-10-01: "Section minima" and the "Height budget" floors add the Working changes, Staged, and lane minima.
 - [x] CHK002 Is the History bottom region sized consistently with the commit tray, including a remembered height and a minimum list height? [Consistency, Spec §FR-034] — plan.md "Chosen layout, sizes, and DPI", shared bottom region paragraph (remembered height, 240 DIP History list minimum).
 - [x] CHK003 Are splitter hit area, accessible separator semantics, and keyboard step sizes specified? [Completeness, Spec §FR-035] — plan.md "Chosen layout, sizes, and DPI" splitter paragraph; plan.md "Keyboard and focus" Splitter row.
 - [x] CHK004 Is the constrained profile free of conflicting scroll rules between the work area and the comparison? [Consistency] — plan.md "Chosen layout, sizes, and DPI" Constrained row.
@@ -26,7 +26,7 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 
 ## Density
 
-- [x] CHK009 Are compact and comfortable metrics quantified for text, rows, buttons, and headings? [Measurability, Spec §FR-005] — plan.md "Compact token system" density table and row-height rule; plan.md "Chosen layout, sizes, and DPI" height budget.
+- [x] CHK009 Are compact and comfortable metrics quantified for text, rows, buttons, and headings? [Measurability, Spec §FR-005] — plan.md "Compact token system" density table and row-height rule; plan.md "Chosen layout, sizes, and DPI" height budget. Rechecked 2026-10-01: the density table adds the subgroup heading (26/28 DIPs) and the help line (18/20 DIPs).
 - [x] CHK010 Is graph geometry tied to the density tokens (row height, lane spacing, node radius, column width)? [Consistency, Spec §FR-036] — plan.md "History graph design" data and rendering rules and geometry paragraph.
 
 ## Theming, Forced Colors, and Contrast
@@ -38,7 +38,7 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 - [x] CHK015 Are lane colors kept distinct from Accent and semantic Added, Removed, and Warning roles by a stated metric? [Clarity] — plan.md "History graph design" lane color paragraph. It sets an OKLCH hue gap of at least 30° and an OKLab pair distance of at least 0.10.
 - [x] CHK016 Are forced-colors requirements defined for every custom-colored element, not only graph lanes and nodes? [Completeness, Gap] — plan.md "Compact token system" forced-colors paragraph. It maps lanes, nodes, selection, the selection marker, focus, and the selected-hunk bar to system colors. It also maps badges, boundary marks, diff glyphs, and disabled controls. See UI-14.
 - [x] CHK017 Does the spec state forced-colors or Windows contrast-theme support as a requirement? [Consistency, Spec §FR-005] — spec FR-005 and SC-009 name Windows contrast themes.
-- [x] CHK018 Is reduced-motion behavior specified? [Completeness] — plan.md "Compact token system" reduced-motion and no-animated-entrance rules.
+- [x] CHK018 Is reduced-motion behavior specified? [Completeness] — plan.md "Compact token system" reduced-motion and no-animated-entrance rules. Rechecked 2026-10-01: the "Motion" paragraph lists the four animated parts and their reduced state.
 
 ## Keyboard and Focus
 
@@ -97,6 +97,14 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 - [x] CHK047 Are About window keyboard access, initial focus, Escape behavior, focus return, and constrained-profile reachability specified? [Coverage, Spec §FR-037, §SC-014] — plan.md "About window"; plan.md "Keyboard and focus" Menu bar row; spec SC-014.
 - [x] CHK048 Are offline notice display, the build-time notice inventory, and the packaging failure rule for missing licence text specified? [Completeness, Spec §FR-037, §SC-014] — plan.md "Tool and runtime boundaries" notice inventory; plan.md "About window"; spec SC-014; plan.md B-RELEASE gate.
 - [x] CHK049 Does a screenshot capture cover every About window tab, keyboard focus, and offline use with fixed configurations? [Coverage] — plan.md UI-15; quickstart.md §7.
+
+## Workbench Additions, 2026-10-01
+
+- [ ] CHK050 Do the notice band rules define its rows, heading, F6 stop, focus fallback, and reserved height? [Completeness, Spec §FR-016, §FR-053] — plan.md "Notice band" and "Height budget".
+- [ ] CHK051 Is the status area specified with its content, opening rules, live text rules, focus rules, and reserved minimum? [Completeness, Spec §FR-052] — plan.md "Status area".
+- [ ] CHK052 Does the Space key rule cover pending comparisons, running file actions, refusals, focus moves, and visible reasons? [Clarity, Spec §FR-038] — plan.md "Keyboard and focus", Stage key row.
+- [ ] CHK053 Do the header wrap and long-text rules cover every single-line text, with the full text reachable without a tooltip? [Coverage, Spec §FR-035] — plan.md "Header layout" and "Long text".
+- [ ] CHK054 Are the Windows text-size rules quantified for every text-holding height, each profile floor, and the 225% cases? [Measurability, Spec §FR-035, §SC-009] — plan.md "Windows text size" and "Height budget".
 
 ## Notes
 

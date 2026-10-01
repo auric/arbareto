@@ -948,7 +948,7 @@ The user answered one clarification and selected standard Git commit behavior. T
 
 The spec-quality checklist is re-validated after the 2026-09-29 decisions. That step records the result in `checklists/requirements.md`. These checks assess specification quality, not implementation readiness or runtime qualification.
 
-Mechanical checks covered six design documents, including table-cell sentences. Local links, code fences, sentence lengths, and placeholder checks passed. A re-run after the About window update checked FR-001–FR-037, SC-001–SC-014, F01–F20, and UI-01–UI-15. It found them unique, consecutive, and validly referenced. Note, 2026-10-01: the whole-file staging, WSL, and submodule updates changed the ranges. At that time, they were FR-001–FR-054 and SC-001–SC-017. They were also F01–F31, UI-01–UI-16, and T001–T245. The speed remediation of 2026-10-01 adds SC-015 conditions C1–C20. The UX remediation of 2026-10-01 extends the ranges to F01–F32, UI-01–UI-19, and T001–T251. The fourth safety remediation of 2026-10-01 extends the task range to T001–T252. The fetch-order and stall decisions extend it to T001–T257, and the fifth analysis remediation to T001–T260. The verification remediation of 2026-10-01 adds no task.
+Mechanical checks covered six design documents, including table-cell sentences. Local links, code fences, sentence lengths, and placeholder checks passed. A re-run after the About window update checked FR-001–FR-037, SC-001–SC-014, F01–F20, and UI-01–UI-15. It found them unique, consecutive, and validly referenced. Note, 2026-10-01: the whole-file staging, WSL, and submodule updates changed the ranges. At that time, they were FR-001–FR-054 and SC-001–SC-017. They were also F01–F31, UI-01–UI-16, and T001–T245. The speed remediation of 2026-10-01 adds SC-015 conditions C1–C20. The UX remediation of 2026-10-01 extends the ranges to F01–F32, UI-01–UI-19, and T001–T251. The fourth safety remediation of 2026-10-01 extends the task range to T001–T252. The fetch-order and stall decisions extend it to T001–T257, and the fifth analysis remediation to T001–T260. The verification remediation of 2026-10-01 adds no task. The H1 safety remediation of 2026-10-01 extends the task range to T001–T262. The H2 UX and speed remediation of 2026-10-01 extends it to T001–T264.
 
 All 54 checked color pairs pass their applicable numerical contrast thresholds: 30 token pairs and 24 lane pairs. The graph's 24 stroke/background pairs have a minimum ratio of 4.66:1. Divider pairs are informational and have no threshold. Rendered accessibility and Windows behavior remain untested.
 
@@ -1147,7 +1147,7 @@ The fourth `/speckit-analyze` pass found these safety and test gaps. The R5 dubi
 
 | Finding and cause | Correction and required proof |
 | --- | --- |
-| S1: a `reuse` row ran `checkout -q -f` and overwrote a changed tracked file. The `clone-interrupted` remedy could create that row (R14 S13). | Reason `folder-not-empty` for a folder with any entry. The `clone-interrupted` remedy moves the folder out. FR-049 now has eight cases. Contract §12, data-model §9, F28 variants, T222 to T224, and quickstart §9. |
+| S1: a `reuse` row ran `checkout -q -f` and overwrote a changed tracked file. The `clone-interrupted` remedy could create that row (R14 S13). | Reason `folder-not-empty` for a folder with any entry. The `clone-interrupted` remedy moves the folder out. FR-049 now has eight cases (nine after H1 S02). Contract §12, data-model §9, F28 variants, T222 to T224, and quickstart §9. |
 | S2: the program list left out `clone` rows. A global relative `core.hooksPath` ran cloned hooks without a confirmation. `checkout` and `fetch-checkout` rows ran target-tree hooks (R14 S14). | Each relative value from any scope gives an `unchecked` entry for every row whose worktree the update writes. FR-050, contract §7 and §12, the F29 relative-hooks variant, T222, and T223. |
 | S3: a remote-tracking ref passed the `unsaved-commits` check, and a pruning fetch removed it (R14 S15). | Replaced by a user decision on 2026-10-01: the update fetches first and checks every ref again before each checkout. See "User decisions on fetch order and stall notice" below. |
 | S4: the `DUBIOUS_OWNERSHIP` state offered Git's command for a POSIX shell. PowerShell parsed `$(calc)` in it (R5). | The service builds the command with the §4 rule. Contract §6, data-model §2, the spec edge case, F15, and T068. |
@@ -1216,6 +1216,76 @@ Two read-only verification passes found these gaps. R13 P7 and the Git Extension
 | V2-05 and V2-08: the stall notice could remove a focused control, and two F6 rules differed. | A focused notice stays until focus leaves it. One F6 rule. plan.md and T260. |
 | V2-13: count texts had no singular form. | plan.md "Long text", contract §9 and §12, T259, and T260. |
 | V2-06, V2-07, and V2-17: stale task ranges and the order of the clarifications. | plan.md, this file, and spec Clarifications. |
+
+The register keeps 68 rows. These corrections have not received runtime verification.
+
+### Safety remediation H1, 2026-10-01
+
+A further `/speckit-analyze` pass found these safety gaps. R14 S26 to S33 back the rows. Answers that start with "Reviewer default" record analysis decisions (spec Clarifications). No probe is qualification evidence.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| S01: the clone step re-checked nothing. Another tool initialized the path after the review, and the step ran an unlisted hook. A local commit lost its last ref (S26). | Reviewer default: a clone check before each clone step. A changed row ends `refused` with `unsaved-commits` or the run reason `changed-after-review`. FR-049, contract §10 and §12, data-model §7 and §9, T223, and T230. |
+| S02: the fallback fetch passed the remote name with no `--`. A remote named `--upload-pack=<program>` ran that program (S31). | `--` before every remote name. Reviewer default: the review refuses a `-`-led remote name with `remote-name`, so FR-049 has nine cases. Contract §9, §10, and §12, data-model §9, F28, T221 to T223, and T227. |
+| S03: the §4 rule named only some values. Windows PowerShell 5.1 merged a `"`-led value with the next argument into one Git option (S28). | Reviewer default: no command for a value with a double quote, a control character, or invalid UTF-8. The rule names every value kind. One shared builder (T261, T262). Contract §4, §6, and §10, T093, T098, and T223. |
+| S04: the `update-mode`, `gitdir-config`, and `limit` remedies run Git's own recursive update without the app's checks. | Their text states the skipped checks, the forced checkout, and a configured update command. The review lists them last, and `gitdir-config` names its path when it can. FR-049, contract §12, T221, and T222. |
+| S05: no rule covered a failed check, level, `remote get-url`, or `rev-list` read, or a folder read error. | Exit statuses decide. A failed read ends its row `failed` and never counts as absent. `rev-list` follows Git's `is_tip_reachable`. Contract §12, data-model §7 and §9, and T223. |
+| S06: Git's own update registers an active, uninitialized `update = none` submodule, and the app did not. | Reviewer default: a register step with `submodule init` for that path (S33). FR-047, contract §12, data-model §9, F27, T223, T227, and T230. |
+| S07: `--init` could write a registration, and then Git refused the checkout. The outcome said that no row changed. | A fourth row flag, `registered`, from a comparison of the `submodule.*` keys with the preflight. It counts as an effect. Contract §12, data-model §7 and §9, plan.md, F28, T221, T223, and T234. |
+| S08/T1: the pasted fetch remedy allowed the `file` transport that the app's fetch blocks (S21). | Reviewer default: the remedy sets `GIT_PROTOCOL_FROM_USER=0` for that one command (S30). WSL uses `/usr/bin/env`. FR-051, contract §11 and §12, T221, and T223. |
+| S09: programs were re-checked before each nested level only. | A row program re-check before the first step of every row, with reason `programs`. Contract §12, F29, and T223. |
+| S10, T8, T9, T10: wording gaps. | "After the step 3 decision", the recorded differences, one text per hook-command context, and the plan.md step names. |
+| S11: the save-branch remedy lacked `--no-lazy-fetch`. | It is the first Git argument. Contract §12 and T221. |
+| T2: the anchor pipe exchange changed the Job `IO_COUNTERS` each second (S29). | A WSL Job uses only output and the anchor I/O sum. Contract §6 and §12, plan.md, T225, and T228. |
+| T3: no channel carried the stall command while a step ran. | The field `stallRemedy`, read through `getOperation`. Contract §6, data-model §7, plan.md, T223, T224, T234, and T255 to T257. |
+| T4: Git resolves a relative `.gitmodules` URL from the raw parent remote URL, with a current-folder fallback (S32). | Contract §12, T253, and T254. |
+| T5: a clone step of a headless `reuse` row let Git's fetch run a nested kept hook (S27). | `-c fetch.recurseSubmodules=no` on every clone step. A connect step failed there (S27). Contract §12, F27, T223, and T227. |
+| T6: contract §12 and data-model §7 disagreed for a run with only refused rows. | Both now give `completed-with-effects`. |
+| C1: no reason covered a distro without the program that identifies folders. | `WSL_UNAVAILABLE` reason `no-coreutils`. Contract §9 and §11, data-model §1, F23, T207, T212, T225, and T228. |
+| C4: the 5-second bound after the inactivity limit was never timed. | T224 asserts it, and T237 measures it with quickstart §9 step 9. |
+
+The register keeps 68 rows. These corrections have not received runtime verification.
+
+### UX and speed remediation H2, 2026-10-01
+
+The fifth `/speckit-analyze` pass found these UX and speed gaps. R13 P8 and three DeepWiki answers on the Git Extensions source back four rows. Answers that start with "Reviewer default" record analysis decisions (spec Clarifications). No probe is qualification evidence.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| J1: WSL fixtures lived in `/tmp`, which each distro start empties (P8). | The `<home>/arbareto-fixtures-<random>` folder, and an inode check with `fixture-lost` after each restart. F22 and W-M in plan.md, the harness rule, T206, T219, T232, T238, T245, T252, and quickstart §8 and §9. |
+| J2: the Git Extensions commit dialog selects the first file and loads its diff, and Arbareto selects none. | Reviewer default: the C12 region holds only the list panes of each application. "Product differences" names the diff load. T180 confirms the selection, and T242 takes the region. |
+| J3: warm-up runs were discarded, so absolute bounds could skip slow cold runs. | Reviewer default: warm-up runs count toward every absolute budget and never enter a median or ratio. See plan.md "Warm-up rule", T166, T168, T181, T245, and quickstart §10. |
+| J4: a run without a region change could add runs without limit, or make the condition `unverified`. | Reviewer default: one-off and repeatable kinds, at most 3 added runs per block, then `unverified`. See plan.md "Invalid capture", T242, and quickstart §10. |
+| J5, J10: C6, C9, and C10 named a button but no key or focus. C3 lacked the Git Extensions counts. | The plan.md "Mutation inputs" table sets the keys. Arbareto uses Enter on the focused hunk button, and Space on the focused entry for C10. Git Extensions uses S, U, and Enter. T180 confirms each key. The C3 end content names the counts. |
+| J9: relative date text could change during a series. | Fixed fixture timestamps from 2020-01-01, the 365-day rule of `GetRelativeDateString`, and a 7-day margin. T164 and T180. |
+| U1: band rows, results, and stall notices switched the layout profile, so a notice could sit off-screen. | User decision, 2026-10-01 (first a reviewer default): the client size, text size, and density alone choose the profile. The wide and narrow floors reserve two band rows and the area minimum. A 960×640 window, and a 1280×800 window at 225% text, are now constrained in both densities. See plan.md "Height budget", T122, T126, T128, and UI-16. |
+| U2, U3: percentages repeated the announcement, the band had no name, and focus could land on an empty stop. | Live text rules, a second live element for refusals, the "Notices" heading, the empty-stop skip, and the focus fallback. See plan.md, T137, T138, T186, T259, and T260. |
+| U4/J6, U5: no rule covered Space on a loading entry or during a file action. The hunk keys at the ends had none either. | Reviewer defaults: wait for the pending comparison, a visible busy reason, and disabled ends with reasons. See T145, T258, and T264. |
+| U6: the help line wrapped to two lines at 100% text and to five at 225%. Subgroup headings had no height. | One line with an end ellipsis. The full text is the description and shows in the No selection hint. Density rows of 26/28 and 18/20 DIPs. See plan.md, T122, T133, T137, and checklists/ux.md CHK001 and CHK009. |
+| J8, U7, U12: commit focus, hook failure place, modal shortcuts, and motion had no rule. | Reviewer defaults: focus to Cancel, then the "Commit details" area. Shortcuts stop during a modal state. No motion under reduced motion. T124, T138, T147, T157, T186, T239, and T260. |
+| C2, C3, C5, C7 to C11: test and task gaps. | T263 tests a runtime theme and density change. T241 covers T242, and T119 adds a focus-return case. T167 owns workload 9, and quickstart §8 adds three refusals. T235 depends on T236, and T202 on T145. T041 dispatches 19 service operations. |
+| U11: checklists/ux.md had no items for the workbench additions. | Unchecked CHK050 to CHK054 and a corrected note. |
+
+The register keeps 68 rows. These corrections have not received runtime verification.
+
+### Verification remediation, 2026-10-01
+
+Two verification passes over H1 and H2 found these gaps. R14 S34 backs the V1-01 row. Answers that start with "Reviewer default" record analysis decisions (spec Clarifications). No probe is qualification evidence.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| V1-01: Windows PowerShell 5.1 quotes an argument with white space. A trailing `\` then escaped the closing quote, or two became one (S34). | Reviewer default: no command for a value that ends in `\`, except a drive root. No built Windows path ends in a separator, except a drive root. The §11 escaping sentence is corrected. Contract §4 and §11, T261, and T262. T261 runs each command in both shells through `rev-parse --sq-quote`. |
+| V1-02: programs were re-checked only before the first step of a row. A fetch can run 4 hours before the checkout, the register step, and a nested active-set read. | A program re-check before each process that can start a program. FR-050, contract §10 and §12, data-model §7, and T223. |
+| V1-03: nested rows had no `registered` baseline. | The level read is the baseline when no preflight value exists. An absent key counts as a difference. Contract §12, data-model §9, and T223. |
+| V1-04, V1-05: no F29 copy set the gitdir key in a submodule folder, and two task assertions were incomplete. | F29, T222, and T223. |
+| V1-06: the clone-check remedy ran `git branch` in an unreviewed Git folder, so its hook could run in the terminal. | Reviewer default: no command for that case. FR-049, contract §12, data-model §9, T221, and T223. |
+| V1-07: `env` reads an argument with `=` as an assignment. | No WSL fetch remedy for a Git path with `=`. Contract §11 and §12, and T221. |
+| D1: the user approved the stable layout profile. | Spec Clarifications U1 is now a user answer. |
+| D2: an Arbareto run without a region change could hide a defect as `unverified`. | Reviewer default: that block gives `missed`, and its absolute row fails. Git Extensions stays `unverified`. plan.md "Invalid capture", T181, T242, T243, and quickstart §10. |
+| V2-01, V2-10, V2-11: warm-up counts, the inode check, and invalid warm-up runs had gaps. | Two Arbareto warm-up runs per fixture, an inode check before each C17 run, and "Invalid captures and absolute rows". |
+| V2-02, V2-07: commit focus at the outcome named only some states. | Every terminal state. Focus on Cancel moves to the message field in Changes and to the area heading in History. See plan.md Confirm row, UI-06, T147, T162, and T260. |
+| V2-05: the WSL badge grew with the distro name. | Reviewer default: a fixed 160 DIP width times the text factor, with an end ellipsis. See plan.md "Header layout", T216, and UI-19. |
+| V2-03, V2-04, V2-06, V2-08, V2-12, V2-14 to V2-16, D3: steps, keys, captures, names, and figures. | quickstart §4 steps 17 and 18, T167, T180, T203, T241, T242, T264, UI-16, plan.md "Roles", and spec Clarifications. |
 
 The register keeps 68 rows. These corrections have not received runtime verification.
 
@@ -1384,7 +1454,17 @@ The probes ran on 2026-09-30 on the host above. They used only session scratch f
 - `statfs` reads the mounted superblock, so it needs no udev data. `blkid -p /dev/sdd` failed with "Permission denied" for the user. `udevadm info` held `ID_FS_UUID`, so `findmnt` took its UUID from udev data.
 - `systemd-udev-trigger` became active at 3.95 seconds of monotonic time, and user space started at 3.23 seconds. A `findmnt` read before then could give an empty UUID.
 - `/mnt/c` gave `1021997:100000000` (`v9fs`). `/dev/shm` and `/run/user/1000` gave type `1021994` (tmpfs) with different IDs for the two mounts. Linux `fs/xfs/xfs_super.c` derives the XFS ID from the device number.
-- Consequence: the identity uses the `statfs` ID for type `ef53` only, and `findmnt` leaves the design (contract §11). Other types give `no-fs-uuid`. So XFS and btrfs folders are refused, although `findmnt` covered them. WSL tests skip with `wsl-fixture-fs-id` when `/tmp` is not ext4.
+- Consequence: the identity uses the `statfs` ID for type `ef53` only, and `findmnt` leaves the design (contract §11). Other types give `no-fs-uuid`. So XFS and btrfs folders are refused, although `findmnt` covered them. WSL tests skip with `wsl-fixture-fs-id` when `/tmp` is not ext4. Superseded by P8: the fixture folder moved to the home folder, and the skip now checks that folder.
+
+**P8. Fixture folder lifetime (2026-10-01).**
+
+- The read-only check ran in the running `Ubuntu-24.04` as the default user. It started and stopped no distro and changed no configuration. The second distro `Ubuntu` stayed stopped.
+- `/usr/lib/tmpfiles.d/tmp.conf` holds `D /tmp 1777 root root 30d`. `/etc/tmpfiles.d/` is empty, so nothing overrides it.
+- `systemd-tmpfiles-setup.service` runs `systemd-tmpfiles --create --remove --boot --exclude-prefix=/dev`. With `--remove`, a `D` line empties its folder. So each distro start empties `/tmp` (tmpfiles.d(5)).
+- `systemd-tmpfiles-clean.timer` runs daily. With the `30d` age, it also removes `/tmp` entries older than 30 days.
+- The only rule for `/home` is `Q /home 0755 - - -`, which creates the folder and sets no age. No user tmpfiles folder exists. So nothing cleans the home folder.
+- `stat --file-system --format=%t:%i` gave `ef53:fedc9aa3bd65bc57` for `/home/<user>` and `/tmp`. The home folder therefore lies on the same ext4 disk and keeps the `statfs` identity of P7.
+- Consequence: WSL fixtures live in `<home>/arbareto-fixtures-<random>`, never in `/tmp`. The harness takes `<home>` from `/usr/bin/printenv HOME` through `wsl.exe --exec`. Before C17, F22, and T252, a step records the folder inode and checks it after the restart. A lost folder stops the step with `fixture-lost` (tasks.md test harness rules).
 
 ### Consequences and open items
 
@@ -1434,6 +1514,14 @@ Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-comm
 | A stall notice after 15 seconds without activity, for commit and submodule steps (user decision, 2026-10-01). | A blocked console read changed no Job I/O counter (S24). The deadlines stay as the backstop. |
 | Activity for the inactivity limit is output or a changed Job I/O sum (2026-10-01). | Fetch and checkout print nothing, and the Job counters showed the silent transfer (S16). |
 | The review reads run again after an approved `confirmRun` (2026-10-01). | The dialog has no time limit. Without a re-check, step 4 would start on unchecked state. |
+| A clone check before each clone step (H1, 2026-10-01). | A clone step after a foreign initialization ran an unlisted hook and dropped the last ref of a commit (S26). |
+| `--` before every remote name, and the `remote-name` refusal (H1). | A `-`-led remote name became a fetch option and ran a program (S31). `remote.<name>.url` is a Git-written key, so the program list cannot show it. |
+| No copyable command for a value with a double quote, a control character, or invalid UTF-8 (H1). | Windows PowerShell 5.1 changed such arguments (S28). |
+| `-c fetch.recurseSubmodules=no` on every clone step (H1). | The fetch inside a clone step ran a nested kept hook before its level check (S27). Hooks then see the value, a recorded difference. |
+| A register step for an active, unregistered `update = none` row (H1). | Git's own update writes those keys (S5), and `submodule init` for the path wrote the same keys (S33). |
+| The fetch remedy sets `GIT_PROTOCOL_FROM_USER=0` for one command (H1). | A pasted plain fetch allowed `file` (S21). The script block form worked in both shells (S30). |
+| A WSL Job ignores its `IO_COUNTERS` (H1). | The anchor pipe exchange changes them each second (S29). |
+| Read failures end the row `failed` (H1). | A read error taken as an absent state could reach a forced checkout. Exit statuses decide, because Git translates messages. |
 
 **Alternatives considered**:
 
@@ -1449,8 +1537,11 @@ Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-comm
 | Ask a new `confirmRun` for a nested level | The review never listed those programs (FR-048). | Reject; stop that level with `programs`. |
 | A pseudoconsole whose input the shell closes, for shell-run prompts | No probe tested it, and it changes the console rule. | Not chosen; the user chose the stall notice (2026-10-01). |
 | `submodule--helper get-default-remote` for the fallback remote | It is internal Git plumbing. | Reject for the product; T253 uses it as a test oracle. |
+| A connect step before the fetch of a `reuse` row without a kept HEAD (H1) | The `--no-fetch` checkout after it failed with "Unable to find current revision" (S27). | Reject; the clone step passes `-c fetch.recurseSubmodules=no`. |
+| Only the `remote-name` refusal, without `--` (H1) | A nested level can add a remote after the review. One guard then remains. | Reject; use both. |
+| A `& { $env:... }` block without `finally` for the fetch remedy (H1) | `$env:` changes the whole process, not the script block scope. | Reject; `finally` restores the value. |
 
-### Probes S1 to S25
+### Probes S1 to S34
 
 The probes ran on 2026-09-30 and 2026-10-01 with Git `2.55.0.windows.3` on the R13 host. They used only session scratch folders and the distro's `/tmp`. Each used an owned `GIT_CONFIG_GLOBAL` with `protocol.file.allow=always` and `GIT_CONFIG_NOSYSTEM=1`. The remotes were local bare repositories: a superproject with two submodules, one of which held a nested submodule. No probe fetched from the internet. These probes are not qualification evidence.
 
@@ -1645,6 +1736,82 @@ The probes S19 to S24 ran on 2026-10-01 with the same Git and setup. The remotes
 - With the new `inner` commit already present, the default fetch did not recurse. With `-c fetch.recurseSubmodules=true`, it recursed again.
 - Consequence: both §12 fetch steps pass `--no-recurse-submodules`. The update visits each nested level itself, after the level read and check. With the default configuration, the result equals Git's own update. With `fetch.recurseSubmodules=true`, nested remote-tracking refs can differ (contract §12 "Update protocol").
 
+The probes S26 to S33 ran on 2026-10-01 for the H1 safety remediation. They used Git `2.55.0.windows.3`, PowerShell `7.6.6`, Windows PowerShell `5.1.26100.9444`, and Python `3.12.9`. Each used an owned `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM=1` in a session scratch folder. Scripts and traces stay in that folder.
+
+**S26. A clone step after a foreign initialization.**
+
+- The review state of `solo` was a `clone` row: no `.git` entry and no `modules/solo`.
+- Another Git process then ran `submodule update --init -- solo`, committed on the detached HEAD, and added a `post-checkout` canary to `modules/solo/hooks`. No ref held that commit.
+- The reviewed clone step `submodule update --init --progress -- ':(literal)solo'` exited 0. It checked out the recorded commit, and the unlisted canary ran.
+- Afterwards no ref contained the local commit. Only the reflog kept it.
+
+**S27. Nested recursion of a clone step.**
+
+- `mid` held a nested `inner`. Both were deinitialized, so `modules/mid` and `modules/mid/modules/inner` stayed. Upstream, `mid` recorded a new `inner` commit, and the superproject recorded a new `mid` commit. A `reference-transaction` canary sat in the kept `inner` Git directory.
+- Case A: the kept `mid` HEAD was a detached commit, and the target was missing. Case D: `modules/mid/HEAD` named a missing branch, so `rev-parse --verify -q HEAD` found no commit.
+- In both cases, the clone step ran `git fetch` in `mid`. That fetch ran `git fetch --recurse-submodules-default on-demand --submodule-prefix=inner/` in the kept `inner` Git directory. The canary ran 4 times, before any nested level check.
+- Case E, without a kept HEAD: the connect step exited 128, and `fetch --no-recurse-submodules` ran no nested fetch. The `--no-fetch` checkout then exited 128 with "Unable to find current revision". So a connect step cannot replace the clone step there.
+- Case G: the clone step with `-c fetch.recurseSubmodules=no` exited 0, and no canary ran. After the app's nested steps, the HEADs, both `submodule.*` key sets, and the nested refs equaled Git's own `--recursive` update.
+- Case H: the same with `submodule.inner.fetchRecurseSubmodules=on-demand` in the kept `mid` configuration. No canary ran. builtin/fetch.c:2819 skips `fetch_submodules` when the value resolves to `no`.
+- A `post-checkout` hook printed `GIT_CONFIG_PARAMETERS='fetch.recurseSubmodules'='no'` and `GIT_NO_LAZY_FETCH=1`. So hooks see the option.
+
+**S28. PowerShell argument passing to Git.**
+
+- A UTF-8 script with a BOM ran `git rev-parse --sq-quote` with single-quoted values. `GIT_TRACE` wrote the argument list that Git received to a file.
+- PowerShell 7.6.6 passed every value literally.
+- Windows PowerShell 5.1 passed `'"--upload-pack=MARK' 0123abcd` as one argument: `--upload-pack=MARK 0123abcd`.
+- It passed `'a" --recurse-submodules=yes "b'` as `a --recurse-submodules=yes b`. A `-C` value with `"` and spaces also lost its quotes.
+- Both shells passed U+201C, U+201D, and U+201E literally, also as the first character. They passed TAB, CR LF, `$(x)`, and a backtick literally. Doubled U+0027 and U+2019 stayed literal.
+
+**S29. Job I/O counters with a pipe partner.**
+
+- A Python `ctypes` harness assigned an idle child and a pipe partner to one Job. It read `JobObjectBasicAndIoAccountingInformation` once per second.
+- Without an exchange, no `IO_COUNTERS` field changed in 4 seconds.
+- With one line each second, each second added one read operation and one write operation. Read bytes rose by 2 and write bytes by 5. `OtherTransferCount` stayed unchanged.
+- So a WSL Job, whose anchor exchanges one line each second, never shows an unchanged sum.
+
+**S30. One-command `GIT_PROTOCOL_FROM_USER` in the fetch remedy.**
+
+- The form `& { $p = $env:GIT_PROTOCOL_FROM_USER; $env:GIT_PROTOCOL_FROM_USER = '0'; try { & '<git>' ... fetch --no-recurse-submodules } finally { $env:GIT_PROTOCOL_FROM_USER = $p } }` ran in both shells.
+- The remote was a local folder, and the owned global file had no `protocol.file.allow`. Each run printed "transport 'file' not allowed" and exited 128.
+- With the variable unset before, it stayed unset. With `x` before, it was `x` again. `$p` did not exist after the block.
+- The same fetch without the variable exited 0.
+- In the running `Ubuntu-24.04` distro, `wsl.exe --exec /usr/bin/env GIT_PROTOCOL_FROM_USER=0 /usr/bin/git ... fetch` refused a `file` remote. Without the variable, it fetched. The distro Git was 2.43.0, so the run omitted `--no-lazy-fetch`.
+
+**S31. A remote name that starts with `-`.**
+
+- A repository held the remote `--upload-pack=m.sh`, and `m.sh` wrote a marker.
+- `fetch --progress --no-recurse-submodules '--upload-pack=m.sh' <ID>` exited 128, and the marker held `RAN <ID>`.
+- With `--` before the name, Git fetched the commit from that remote, and no marker appeared.
+- `remote get-url --all` without `--` exited 129 with "unknown option". With `--`, it printed the URL.
+
+**S32. Relative URL resolution and `insteadOf`.**
+
+- The owned global file set `url.<folder>/real/.insteadOf=fake:`. The superproject came from `fake:super.git`, and `.gitmodules` held `../sub.git`.
+- `submodule init` wrote `fake:sub.git`, from the raw `remote.origin.url`. `remote get-url origin` showed the rewritten path.
+- Without `remote.origin.url`, Git warned and resolved the URL against the superproject worktree folder.
+- In the cloned submodule, `remote get-url --all -- origin` showed the rewritten path, so it differed from the resolved URL. `get-default-remote` printed `origin`, the only remote.
+
+**S33. Registration of an `update = none` submodule.**
+
+- `.gitmodules` set `update = none` for the uninitialized `leaf2`. A second submodule, `solo`, had no mode.
+- Copy A ran `submodule update --init --recursive`. Copy B ran `submodule init -- ':(literal)leaf2'`.
+- Variants: no activation keys, an explicit `submodule.leaf2.active=false`, and `submodule.active=leaf2`.
+- In each variant, the `submodule.leaf2.*` keys of both copies were equal. They were `url`, `update none`, and `active true` where Git sets it. Neither copy cloned `leaf2`.
+
+The probe S34 ran on 2026-10-01 for the verification remediation. It used Git `2.55.0.windows.3`, PowerShell `7.6.6`, Windows PowerShell `5.1.26100.9444`, and Python `3.12.9`. It used an owned `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM=1` in a session scratch folder. Scripts stay in that folder.
+
+**S34. Trailing backslashes in PowerShell arguments.**
+
+- A Python script wrote UTF-8 scripts with a BOM. Each line ran `& '<git>' rev-parse --sq-quote` with single-quoted values by the contract §4 rule. Git echoed the arguments that it received. Each script ran through `-NoProfile -File` in both shells. It ran with `C:\Git\cmd\git.exe` and with `C:\Git\mingw64\bin\git.exe`, and both gave the same results.
+- Windows PowerShell 5.1 changed each value that held white space and ended in `\`. `'x \' ' --upload-pack=evil'` arrived as `x " ` and `--upload-pack=evil`. `'x \\' 'next'` arrived as `x \` and `next`. `'a b\\\' 'next'` arrived as one argument, `a b\" next`.
+- `--git-dir='D:\my repo\m\sub\' --work-tree='D:\my repo\m\sub\'` arrived as two other arguments, split at the space of the second value. `':(literal)a b\'` merged with the next argument.
+- U+00A0, U+2002, and U+3000 before a trailing `\` caused the same merge. So 5.1 treats them as white space.
+- 5.1 passed each of these literally: `x\` and `x\\` without white space, `-C 'D:\'`, `-C 'D:\.'`, and `'a \ b'`. It also passed `'x /'` and a `\` before a doubled U+0027 or U+2019. It passed each path without a trailing `\` literally.
+- PowerShell 7.6 passed every value literally. With `$PSNativeCommandArgumentPassing = 'Legacy'`, 7.6 still passed each trailing `\` literally. That mode still dropped a U+0022, as 5.1 did in S28.
+- A second script built commands by the final rule. It removed trailing separators except at a drive root. It built no command for a value that ends in `\`. Every accepted command gave Git the intended arguments in both shells, with both Git paths. This included the forward-slash forms `D:/my repo` and `D:/`. The rule refused the remote names `x \` and `x\`.
+- No probe ran Git with a UNC share root or passed `\` through `wsl.exe`.
+
 ### Security notes
 
 - CVE-2024-32002: recursive clones on case-insensitive file systems with symbolic links could run code. The advisory GHSA-8h77-4q3w-gfgv lists fixed versions 2.45.1, 2.44.1, 2.43.4, 2.42.2, 2.41.1, 2.40.2, and 2.39.4. Git for Windows `2.55.0.windows.3` and the distro floor 2.55.0 both contain the fix.
@@ -1660,8 +1827,8 @@ The probes S19 to S24 ran on 2026-10-01 with the same Git and setup. The remotes
 
 ### Consequences and open items
 
-- Contract §12 holds the protocol, and FR-047 to FR-054 and SC-017 hold the requirements. F27 to F31, T220 to T238, and T253 to T257 hold the tests.
-- Speed: network time has no Git Extensions comparison and no budget. The SC-005 input and stall budgets still apply while the update runs. T237 samples them during an F30 clone.
+- Contract §12 holds the protocol, and FR-047 to FR-054 and SC-017 hold the requirements. F27 to F31, T220 to T238, T253 to T257, T261, and T262 hold the tests.
+- Speed: network time has no Git Extensions comparison and no budget. The SC-005 input and stall budgets still apply while the update runs. T167 measures them as stall workload 9 during F30 clones, with 100 counted typing and navigation actions.
 - Closed item, 2026-10-01: contract §6 "Console and input" now starts every Git for Windows process without a console. Git without a console starts each child with `DETACHED_PROCESS` (compat/mingw.c:2247-2263). Every policy sets `GIT_TERMINAL_PROMPT=0`, and each stdin pipe closes after its input. T027 and T162 test a hook that waits for terminal input. Open at that time: a WSL hook outside `network` mode kept the hidden terminal. Closed later on 2026-10-01: every wrapper mode uses `setsid --wait` (contract §11 "Process launch"). Reopened later on 2026-10-01 by S17 (below).
 - Closed item, 2026-10-01, by a design decision: Git 2.55 offers `extensions.submodulePathConfig`. It places each submodule Git directory by `submodule.<name>.gitdir`, not under `modules/<name>` (git-config(1)). Contract §12 assumes the default layout for `reuse` rows and the kept-directory walk. Under the extension, the review can miss the programs of a kept Git directory. Decision: `reviewSubmodules` refuses with `UNSUPPORTED_SUBMODULE` reason `gitdir-config`. The refusal applies when the extension is enabled or any `submodule.<name>.gitdir` is set. The remedy runs the update in a terminal. FR-049, contract §9 and §12, data-model §9, an F29 variant, and T223 carry the rule. No real-Git run has verified the refusal yet.
 - Unverified: every WSL row, because the reference distro has Git 2.43.0. Also the SSH prompt failure, a real credential helper window, and packaged behavior.
@@ -1672,6 +1839,10 @@ The probes S19 to S24 ran on 2026-10-01 with the same Git and setup. The remotes
 - Design limit: a `reuse` row can skip the fetch of Git's own update. This happens when its kept Git directory holds the target without a ref. Its connect step checks out at once. A skipped fetch cannot remove a ref.
 - Unverified: the Job I/O signal in the packaged shell, and the WSL I/O sum during a real fetch (T225, T232).
 - Closed item, 2026-10-01: the first fetch of a row recursed into nested submodules on demand (S25). Both fetch steps now pass `--no-recurse-submodules`. Contract §12, plan.md, T223, and T227 carry it.
+- Closed item, H1, 2026-10-01: the fetch inside a clone step recursed into a nested kept Git directory (S27). Every clone step now passes `-c fetch.recurseSubmodules=no`. Recorded difference: hooks see that value through `GIT_CONFIG_PARAMETERS`, so a hook's own fetch does not recurse.
+- Closed item, H1, 2026-10-01: a WSL Job ignores its `IO_COUNTERS`, because the anchor exchange changes them (S29). Unverified: the anchor I/O sum during a real WSL fetch (T225, T232).
+- Unverified, H1: PowerShell versions other than 7.6.6 and 5.1.26100.9444 (S28). The quoting rule refuses U+201C to U+201E and control characters by the stricter reading. S28 kept them literal.
+- Unverified, verification remediation: PowerShell versions other than 7.6.6 and 5.1.26100.9444 for trailing `\` (S34). Also a UNC share root as a command path, and `\` through `wsl.exe`. The rule refuses a trailing `\` without white space by the stricter reading, and S34 kept it literal.
 
 Sources: [submodule--helper update strategy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2107-L2147), [initialization active key](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L596-L597), [current revision failure](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2834-L2838), [GIT_PROTOCOL_FROM_USER](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/git-submodule.sh#L29-L30), [detached ssh](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L2251-L2261), [progress counter](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/progress.c#L134), [protocol policy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/protocol.adoc), [environment variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc), [RelNotes 2.45.0](https://github.com/git/git/blob/master/Documentation/RelNotes/2.45.0.adoc), [GHSA-8h77-4q3w-gfgv](https://github.com/git/git/security/advisories/GHSA-8h77-4q3w-gfgv), [GHSA-vwqx-4fm8-6qc9](https://github.com/git/git/security/advisories/GHSA-vwqx-4fm8-6qc9), [GCM environment](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/environment.md), [submodule fetch](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L2644-L2665), [submodule default remote](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L77-L115), [default remote](https://github.com/git/git/blob/v2.55.0/remote.c#L666-L680), [fetch.all](https://github.com/git/git/blob/v2.55.0/builtin/fetch.c#L2700-L2720), [nested Git directory refusal](https://github.com/git/git/blob/v2.55.0/submodule.c#L2402-L2442).
 

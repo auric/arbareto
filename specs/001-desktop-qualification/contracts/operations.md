@@ -12,7 +12,7 @@ Grant only the operations below to the main local window. Deny remote webviews, 
 
 Rust and the compiled service use private inherited pipes. Frames contain a four-byte unsigned little-endian payload length followed by UTF-8 JSON.
 
-Each pipe frame has a top-level `kind` field with the value `public`, `process`, `mutation`, or `trust`. A `public` frame holds one §2 request, its response, or a progress event. A `process` frame holds one §6 process request, one §6 identity request, one §6 lingering count request, or their output. A `mutation` frame holds one §6 recovery-marker message. A `trust` frame holds one §7 trust-store message. The shell never forwards a `process`, `mutation`, or `trust` frame to the renderer. The renderer envelope in §2 has no `kind` field.
+Each pipe frame has a top-level `kind` field with the value `public`, `process`, `mutation`, or `trust`. A `public` frame holds one §2 request, its response, or a progress event. A `process` frame holds one §6 process, identity, or lingering count request, their output, or one §6 activity event. A `mutation` frame holds one §6 recovery-marker message. A `trust` frame holds one §7 trust-store message. The shell never forwards a `process`, `mutation`, or `trust` frame to the renderer. The renderer envelope in §2 has no `kind` field.
 
 Reject oversized lengths before allocation. Reject invalid UTF-8, malformed JSON, duplicate object keys, excessive nesting, unknown fields, and unsupported protocol versions.
 
@@ -47,7 +47,7 @@ Responses contain `requestId`, `operationId`, repository generation where applic
 
 The service issues `operationId` in the accepted response. No request supplies a new `operationId`. Only `cancel` and `getOperation` name an issued one.
 
-Progress events contain operation identity, phase, and bounded counters. They contain no raw commands, configuration, environment, patch content, or credentials.
+Progress events contain operation identity, phase, bounded counters, and the stall flag (§6 "Activity and stall notice"). They contain no raw commands, configuration, environment, patch content, or credentials.
 
 The repeat key of a mutation is its one-use approval. For `commit`, the key is the review token. For `applyHunk`, the key is the hunk approval: comparison ID, hunk ID, and direction. For `applyFile`, the key is the file approval: comparison ID and direction. For `updateSubmodules`, the key is the submodule review token (§12). A repeated request with an approval that an accepted operation consumed returns that operation's state and `operationId`. It starts no Git process and no other execution. A new service session invalidates all old identifiers.
 
@@ -76,9 +76,9 @@ The shell sends three events to the main window. `service-stopped` reports a ser
 | `applyHunk` | Comparison ID, hunk ID, snapshot ID, and direction `stage` or `unstage`. | Profile check, fresh validation, exact candidate publication, and reconciled outcome. No renderer patch or whole-file fallback. |
 | `applyFile` | Comparison ID, snapshot ID, and direction `stage` or `unstage`. | Whole-file staging of the compared entry (§4 "File staging"). Profile check, fresh validation, verified candidate publication, and reconciled outcome. No renderer path, patch, or content. |
 | `reviewCommit` | Current snapshot ID. | Complete staged scope, reviewed index/checkout, execution-policy disclosure, limitations, and one-use review token. Read-only inspection only. |
-| `commit` | Review token, message, and explicit full-scope confirmation. | Fresh preflight, one ordinary canonical Git commit invocation, and a reconciled outcome: `succeeded`, `completed-with-effects`, `failed`, `failed-with-effects`, `canceled`, or `unknown`. A repeated `commit` with a consumed review token returns the existing operation state and `operationId`, and starts no Git process. |
+| `commit` | Review token, message, and explicit full-scope confirmation. | Fresh preflight, one ordinary canonical Git commit invocation, progress events with the §6 stall flag, and a reconciled outcome: `succeeded`, `completed-with-effects`, `failed`, `failed-with-effects`, `canceled`, or `unknown`. A repeated `commit` with a consumed review token returns the existing operation state and `operationId`, and starts no Git process. |
 | `reviewSubmodules` | Current snapshot ID. | Read-only submodule plan (§12 "Plan"), each refusal, the submodule program list, and a one-use submodule review token. Trust gating follows the read rule in §7. |
-| `updateSubmodules` | Submodule review token and explicit start. | Fresh preflight, and a native confirmation when §12 lists submodule programs. One Git update process for each top-level plan row, with progress events. A reconciled outcome with one result per submodule (§12). A repeated request with a consumed token returns the existing operation state and `operationId`, and starts no Git process. |
+| `updateSubmodules` | Submodule review token and explicit start. | Fresh preflight, and a native confirmation when §12 lists submodule programs. Fetch, check, and checkout steps for each row, level by level, with progress events (§12 "Update protocol"). A reconciled outcome with one result per submodule (§12). A repeated request with a consumed token returns the existing operation state and `operationId`, and starts no Git process. |
 | `cancel` | Issued operation ID. | Cancellation-requested acknowledgement followed by the actual terminal outcome. |
 | `getOperation` | Issued operation ID. | Current or retained terminal state. Never retries an operation. |
 | `requestClose` | `stay`, `closeIfIdle`, or `interruptAndClose`. | The shell decides natively and never forwards this operation to the service. A running mutation always shows the native prompt, whose default is Stay open. Only its Interrupt and close button confirms interruption. |
@@ -91,7 +91,7 @@ The shell runs the native step of `chooseGit`, `chooseRepository`, and `restoreW
 
 **Git proposal.** The native step of `chooseGit` first looks for a candidate `git.exe`. With a saved path, the candidate is that path. Without one, the shell searches its own `PATH` for `git.exe`, then tries `%ProgramFiles%\Git\cmd\git.exe`. The shell creates a `gitProbe` context for the candidate, and the service probes it. The native Git selection confirmation then shows the probed path and version. After `GIT_CHANGED` at the saved path, it also shows the stored version (data-model §1). Its buttons are Use this Git, Choose another Git, and Cancel, and Cancel is the default. Choose another Git opens the executable picker. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Without a candidate, the picker opens directly. No candidate is ever selected without Use this Git (FR-003).
 
-**Worktree key.** `worktreeKey` is 64 lowercase hex digits: the SHA-256 of the worktree root identity. For a Windows worktree, that identity is the volume serial number and the 128-bit file ID (§6). For a WSL worktree, it is the distro GUID, the device number, and the inode number (§11). So both WSL prefixes of one folder give one key, and the key stays equal across sessions. The key grants no access; it only names the stored draft of that worktree (plan.md "Stored drafts"). No log or diagnostic receives it.
+**Worktree key.** `worktreeKey` is 64 lowercase hex digits: the SHA-256 of the worktree root identity. For a Windows worktree, that identity is the volume serial number and the 128-bit file ID (§6). For a WSL worktree, it is the distro GUID, the UUID-derived file-system ID, and the inode number (§11). So both WSL prefixes of one folder give one key, and the key stays equal across sessions. The key grants no access; it only names the stored draft of that worktree (plan.md "Stored drafts"). No log or diagnostic receives it.
 
 For `dismissRecoveryMarker`, the renderer payload holds only a marker ID that the shell owns. The shell binds a `repositoryDiscovery` context to the stored worktree path of that marker. It forwards the marker ID with the `bootstrapId`. The native confirmation comes after the service result (§6 "Dismissal").
 
@@ -299,15 +299,16 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | Concurrent reads | 2 per workspace, 4 globally |
 | Pending reads | 8 globally; superseded selection reads are canceled |
 | Mutations | 1 per common repository; reject overlap without queueing old approvals |
-| Ordinary read deadline | 30 seconds. `reviewSubmodules` and the `updateSubmodules` preflight have no total read deadline. Each of their Git commands has the 30-second deadline below, and the submodule review bound limits the command count. |
+| Ordinary read deadline | 30 seconds. `reviewSubmodules`, the `updateSubmodules` preflight, and its level reads have no total read deadline. Each of their Git commands has the 30-second deadline below, and the submodule review bound limits the command count. |
 | Commit process deadline | 120 seconds, followed by interruption and reconciliation |
-| Other Git process deadline | 30 seconds for each bootstrap probe, and for each `applyHunk` or `applyFile` Git step. The same deadline applies to each commit preflight read, `reviewSubmodules` read, `updateSubmodules` preflight read, and mutation reconciliation read. "Deadline outcomes" below states the result. |
-| Submodule update process | An inactivity deadline of 300 seconds without an output byte. A ceiling of 4 hours for each process (§12 "Deadlines and Cancel"). |
+| Other Git process deadline | 30 seconds for each bootstrap probe, and for each `applyHunk` or `applyFile` Git step. The same deadline applies to each commit preflight read, `reviewSubmodules` read, and mutation reconciliation read. It also applies to each `updateSubmodules` preflight read, level read, and check read (§12). "Deadline outcomes" below states the result. |
+| Submodule update process | Inactivity deadline: each clone, connect, fetch, and checkout process ends after 300 seconds without output or an I/O sum change. Each has a ceiling of 4 hours (§12 "Deadlines and Cancel"). |
+| Stall notice | 15 seconds without an output byte and without a change of the I/O sum. It applies to the commit process and to each submodule update process. It shows a notice and ends nothing (§6 "Activity and stall notice"). |
 | Submodule review | 256 submodules at all depths, 8 nesting levels below the superproject, and 1 MiB for each `.gitmodules` source. Each folder of the §12 kept-directory walk counts as one submodule. A larger set gives `UNSUPPORTED_SUBMODULE` with reason `limit` (§12). |
 | Submodule progress events | 4 per second for each operation (§12 "Progress"). |
 | WSL distro start | 60 seconds for the Git probe of a distro that the running list does not name (§11 "Distro start"). A deadline gives `DEADLINE`. |
 | WSL poll gap | 1 second after the previous poll of that workspace ends, only while the main window has focus (§11 "Change polling"). |
-| WSL anchor count | One count line for each stdin line, then one line each second after stdin closes (§11 "Process ownership"). |
+| WSL anchor count | One line with the count and the I/O sum for each stdin line. After stdin closes, one line each second (§11 "Process ownership"). While a commit or submodule update process runs, the shell writes one stdin line each second (§6). |
 | Commit failure output tail | Last 16 KiB and at most 100 lines of commit stderr (§9 "Commit failure output") |
 | Cancellation/reconciliation target | 5 seconds; report unknown if state cannot be confirmed |
 | Recovery markers | 4 KiB per marker and 64 markers per handshake. Above 64, the shell loads the 64 oldest markers. `getEnvironment` reports the limit and the count of files that the shell did not load. Every mutation stays blocked with `STATE_UNKNOWN`. Dismissal (§6) stays available. The block ends at the next handshake that finds at most 64 marker files. |
@@ -319,7 +320,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 - A deadline of an `applyHunk` or `applyFile` Git step moves the mutation to `reconciling` (data-model §7). So does a commit preflight read deadline. Neither publication nor Git execution has started. Without observed effects, the result is `failed` with `DEADLINE`. The service releases its owned lock only after the Job closes.
 - A mutation reconciliation read deadline fails reconciliation. The outcome is `unknown`, and the recovery marker stays (§8).
 - The commit process deadline follows §4.
-- A `reviewSubmodules` read deadline ends the read `failed` with `DEADLINE`. An `updateSubmodules` preflight read deadline moves the mutation to `reconciling`, and no update process has started.
+- A `reviewSubmodules` read deadline ends the read `failed` with `DEADLINE`. An `updateSubmodules` preflight read deadline moves the mutation to `reconciling`, and no update process has started. A level read or check read deadline also moves it to `reconciling`, and no later process starts.
 - An `updateSubmodules` process deadline moves the mutation to `reconciling` with `DEADLINE` and reason `inactivity` or `ceiling` (§12). No later update process starts.
 
 Count canonical patch lines once, including file and hunk headers. Ignore only the empty segment after a final newline. Split view and virtualized rows do not change this count.
@@ -330,7 +331,7 @@ Render limited status/history with a visible explanation. Block mutations that d
 
 Use streaming decoders and counters. Do not collect unbounded `text()` or `arrayBuffer()` results. Cache eviction invalidates associated approvals.
 
-Retain an accepted operation's reviewed index snapshot until required reconciliation succeeds, including while unknown state blocks recovery. An accepted `applyHunk` or `applyFile` retains the raw digests of its verified candidate and of the canonical index before publication. An accepted `updateSubmodules` retains its reviewed plan (§12). Approval expiry must not delete required verification data. Use bounded owned files when retaining index bytes would exceed memory budgets.
+Retain an accepted operation's reviewed index snapshot until required reconciliation succeeds, including while unknown state blocks recovery. An accepted `applyHunk` or `applyFile` retains the raw digests of its verified candidate and of the canonical index before publication. An accepted `updateSubmodules` retains its reviewed plan and the rows that its run adds (§12). Approval expiry must not delete required verification data. Use bounded owned files when retaining index bytes would exceed memory budgets.
 
 ## 6. Private native process requests
 
@@ -352,7 +353,7 @@ The renderer cannot supply or replace those paths. Restoration uses only the app
 | Context | Permitted execution | Completion |
 | --- | --- | --- |
 | `gitProbe` | Selected executable with fixed `version --build-options` arguments and no `--no-lazy-fetch` (§7 "Missing objects"), from the application-owned launch directory. | Validate executable identity, version, architecture, and admission policy before issuing `gitInstallationId`. |
-| `repositoryDiscovery` | Admitted Git in the selected directory. Only fixed discovery profiles using `rev-parse`, `symbolic-ref`, and `show-ref`. | Resolve and validate repository paths, formats, HEAD state, and physical identities before issuing `repositoryId`. Refuse registration when `--is-bare-repository` or `--is-inside-git-dir` reports true, with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is: open a worktree of it, or clone it. For a Git administration folder, the remedy is: open the working folder that contains it. Classify Git's ownership refusal as `DUBIOUS_OWNERSHIP` by exit status and message prefix. Show the path and Git's suggested command as copyable text, and never run that command. Classify a folder outside every repository as `NOT_A_REPOSITORY`: exit status 128 and a stderr prefix `fatal: not a git repository (or any` (research R2). The remedy is: "Open a folder inside a Git repository." A probe past its §5 deadline gives `DEADLINE`. Other discovery failures use `REPOSITORY_UNAVAILABLE`. |
+| `repositoryDiscovery` | Admitted Git in the selected directory. Only fixed discovery profiles using `rev-parse`, `symbolic-ref`, and `show-ref`. | Resolve and validate repository paths, formats, HEAD state, and physical identities before issuing `repositoryId`. Refuse registration when `--is-bare-repository` or `--is-inside-git-dir` reports true, with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is: open a worktree of it, or clone it. For a Git administration folder, the remedy is: open the working folder that contains it. Classify Git's ownership refusal as `DUBIOUS_OWNERSHIP` by exit status and message prefix. Show the path and a remedy command that the service builds, and never run that command. Never offer Git's suggested command, because Git quotes it for a POSIX shell. PowerShell parsed `$(calc)` in that text as a subexpression (research R5). Under the fixed C locale, one stderr line starts with `fatal: detected dubious ownership in repository at '`. The path runs from that prefix to the last `'` of that line. The command is `& '<selected Git path>' config --global --add safe.directory '<path>'` with the §4 quoting rule. A WSL repository gets the §11 "Remedy commands" form. A message without that prefix gets no command. So does a path with a control character or invalid UTF-8, but the path still shows. Classify a folder outside every repository as `NOT_A_REPOSITORY`: exit status 128 and a stderr prefix `fatal: not a git repository (or any` (research R2). The remedy is: "Open a folder inside a Git repository." A probe past its §5 deadline gives `DEADLINE`. Other discovery failures use `REPOSITORY_UNAVAILABLE`. |
 | `registeredOperation` | Service-constructed Git operation against registered Git and repository IDs. | Normal operation and reconciliation rules apply. |
 
 Discovery profiles use only the documented identity queries in `research.md`. They accept no renderer-provided arguments, refs, paths, or environment overrides.
@@ -392,7 +393,7 @@ Every private process frame carries `kind` `process` (§1).
 | `input` | Bounded input bytes or bounded streaming input. |
 | `environmentPolicy` | Internal fixed policy identifier, not caller-defined key/value pairs. |
 | `transactionId` | Service-owned candidate-index context where an approved design requires it. |
-| `limits` | Cannot exceed contract caps. |
+| `limits` | Cannot exceed contract caps. A `network` request carries the §12 inactivity limit and ceiling, and the shell enforces both. A commit request and each `network` request carry the 15-second stall threshold ("Activity and stall notice"). |
 
 An identity request is a `process` frame with `operationId`, `contextKind`, and the bootstrap or repository ID. It carries at most 8 absolute paths. Each path has at most 32,767 UTF-16 units and no NUL. The shell opens each path with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`. It follows junctions and reads no file data. It returns only each identity or an error code. A path can lie outside the selected directory, because a linked worktree's common directory can live elsewhere.
 
@@ -400,13 +401,16 @@ Supply the executable through `CreateProcessW.lpApplicationName`. Preserve struc
 
 **Console and input.** One rule covers every process that the shell starts:
 
-- No console. The shell starts the compiled service and every Git for Windows process with `DETACHED_PROCESS`. It never passes `CREATE_NO_WINDOW` or `CREATE_NEW_CONSOLE` to them. A Git process without a console starts each child with `DETACHED_PROCESS`, hooks and `ssh` included (compat/mingw.c:2247-2263). So no process of an operation can wait for input on a hidden console. With `CREATE_NO_WINDOW`, Git would own a hidden console, and its children would inherit it.
+- No console. The shell starts the compiled service and every Git for Windows process with `DETACHED_PROCESS`. It never passes `CREATE_NO_WINDOW` or `CREATE_NEW_CONSOLE` to them. A Git process without a console starts each child with `DETACHED_PROCESS`, hooks and `ssh` included (compat/mingw.c:2247-2263). So Git and each program that Git starts directly cannot read a hidden console. A direct native `ssh-keygen -y` with a passphrase key failed at once (research R14 S17). With `CREATE_NO_WINDOW`, Git would own a hidden console, and its children would inherit it. The same `ssh-keygen` call then waited.
+- Limit: a hook, and a `core.sshCommand` with arguments, run under the MSYS2 `sh.exe` of Git for Windows. Without a console, that runtime gave each native console program an invisible console (research R14 S17). A program that reads the console directly then waits. `Read-Host -AsSecureString` and a Windows OpenSSH passphrase prompt waited until the probe killed them. A NUL stdin did not end the wait. Plain `Read-Host`, `pause`, and a `/dev/tty` read ended at once.
+- So the real bound for such a read is the deadline of the operation. It is 120 seconds for a commit and 300 seconds of inactivity for a submodule update. A read that runs an approved filter has the 30-second read deadline. The deadline closes the Job with every descendant. A native child that a hook starts can keep waiting after the hook exits. If Git then completes, that child lingers until Revoke trust or application close ("Lingering Jobs").
+- Before that deadline, the commit and each submodule update process show the stall notice after 15 seconds without activity. "Activity and stall notice" states the rule. The user decided this on 2026-10-01 (spec FR-051).
 - One exception: `wsl.exe` gets `CREATE_NO_WINDOW`, because a detached `wsl.exe` relayed no output (§11 "Process launch", research R14 probe S10). The §11 wrapper then runs each program that it wraps through `setsid --wait`. So no Git process or hook gets the hidden console as its terminal. The §11 bootstrap probe and the anchor run without the wrapper and without `setsid`. Neither opens a repository or runs a repository program.
 - No terminal prompt. Every §7 environment policy sets `GIT_TERMINAL_PROMPT=0`, and the §11 wrapper sets it in every mode. Git then fails instead of asking for a user name or password on a terminal (Git `Documentation/git.adoc`).
 - Stdin. Every child gets a stdin pipe. The shell writes the bounded `input`, then closes its end of the pipe. Without `input`, it closes that end at once. So a child that reads stdin gets end-of-file, never a wait.
-- Exception: the §11 anchor of a WSL mutation. Its stdin stays open from its start until `ended`. The shell writes one line after each execution process exits, and closes the pipe at `ended`. A closed pipe would end the anchor at count 0 before Git starts. Then no process of the mutation would stay in the Job. Close and Revoke trust could then not end lingering scopes (§11 "Process ownership"). The anchor runs no repository program.
+- Exception: the §11 anchor of a WSL mutation. Its stdin stays open from its start until `ended`. The shell writes one line after each execution process exits. It also writes one line each second while a tracked process runs ("Activity and stall notice"). It closes the pipe at `ended`. A closed pipe would end the anchor at count 0 before Git starts. Then no process of the mutation would stay in the Job. Close and Revoke trust could then not end lingering scopes (§11 "Process ownership"). The anchor runs no repository program.
 - The rule changes no user configuration. The app never sets `core.sshCommand`, `GIT_SSH_COMMAND`, `core.askPass`, `credential.*`, or a `GCM_*` variable. A credential helper can still show its own window (§12 "Environment and console").
-- Evidence: T027 runs a real `pre-commit` hook that waits for terminal input, and T162 repeats it in the installed build. Until they pass, the hook behavior without a console stays unverified.
+- Evidence: T027 runs a real `pre-commit` hook that waits for terminal input, and T162 repeats it in the installed build. Both also run the research R14 S17 console variants, which must end at the deadline. T225 checks their stall events, and T162 checks the stall notice. Until they pass, the hook behavior without a console stays unverified.
 
 Enforce Windows' command-line length limit before starting a child. Prefer Git's NUL-delimited stdin facilities for literal path collections.
 
@@ -418,6 +422,20 @@ Drain stdout and stderr independently. Enforce caps before forwarding chunks to 
 
 **Completion signal.** A process ends when its process handle signals, never at pipe EOF. A descendant can inherit a pipe and keep it open after the process exits. A research R5 probe saw Git exit after 0.25 seconds while a `post-commit` child held stderr for 8.3 seconds. At the signal, the shell forwards the bytes that each pipe already holds, within the caps. Then it keeps draining each pipe into a discard sink until EOF or Job close. So a writing descendant never blocks or fails on the pipe, and memory does not grow. Discarded bytes count toward no cap. The app never forwards, shows, retains, or logs them. The exit reply follows the forwarded bytes.
 
+**Activity and stall notice.** The shell tracks the activity of two process kinds: the `commit --quiet --file=-` process and each §12 update process.
+
+- Activity is a forwarded output byte or a changed I/O sum of the operation Job.
+- Windows I/O sum: the shell calls `QueryInformationJobObject` with `JobObjectBasicAndIoAccountingInformation` (class 8) once per second. The port reader thread ("Lingering Jobs") makes the call. The sum adds the six `IO_COUNTERS` fields. They cover every process that was ever in the Job (Microsoft Learn `IO_COUNTERS`). In probe S16, socket bytes counted in `OtherTransferCount`, and an idle process changed no field.
+- WSL I/O sum: the Job holds only `wsl.exe` and the anchor (§11 "Process ownership"). While a tracked process runs, the shell writes one stdin line to the anchor each second. The anchor answers with its count and the I/O sum of the operation scopes. The sum can drop when a child exits before its parent reaps it. So any change counts as activity.
+- Each tracked request carries the stall threshold of 15 seconds in `limits` ("Process fields"). After that time without activity, the shell sends the activity event `stalled` for that process. At the next activity, it sends `active`. It sends an event only when the state changes. An event carries no output, process name, PID, or argument.
+- The service sets the stall flag of the operation from these events (data-model §7). The renderer then shows the stall notice in the status region (plan.md "Required visible states"). The notice text is: "Git may be waiting for a prompt that Arbareto cannot show, or for a sign-in window. To answer a hidden prompt, select Cancel and run this command in a terminal."
+- The notice shows one copyable command with Copy command:
+  - Commit: the §9 `hook run --ignore-missing pre-commit` command. Its text is: "This command runs only the pre-commit hook and does not commit. It cannot repeat a prompt from another hook or from signing." The app offers no command that creates a commit, because its own commit can still run.
+  - Submodule update: the §12 "Remedies" command of the running step.
+- The notice changes no operation state and no deadline. The commit keeps its 120-second deadline. An update process keeps its 300-second inactivity limit and its 4-hour ceiling.
+- Reason: a native console read under `sh.exe` waits on an invisible console ("Console and input"). In probe S24, such waits changed no I/O counter for 19 to 29 seconds. So a 15-second threshold detects them.
+- Limit: a credential helper window does no I/O while it waits, so the notice appears then too. Its text names a sign-in window for that reason. A wait that keeps doing I/O shows no notice.
+
 These controls manage normal owned process trees. They do not sandbox arbitrary trusted hooks or external service launches.
 
 ### Lingering Jobs
@@ -426,7 +444,7 @@ Processes that Git or a hook starts during a mutation can outlive the mutation's
 
 - The shell associates one completion port with each operation Job before it assigns the first process. Microsoft advises association while the Job is inactive, so no state change goes unreported (research R5).
 - When an owned child exits by itself, the shell reads the active process count of its Job through `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`. The exit reply carries that count as `activeDescendants`. It carries no process name, PID, or argument.
-- The service records `lingeringDescendants` in the mutation outcome. The value is the `activeDescendants` count of the last execution process before reconciliation. For `commit`, that process is `commit --quiet --file=-`. For `updateSubmodules`, it is the last update process that ran (§12). When the service sets `endProcesses` (below) before the terminal response, the value is 0. The count alone never changes the outcome classification. A nonzero count adds the plan.md lingering sentence to every mutation outcome text, success included (plan.md "Required visible states").
+- The service records `lingeringDescendants` in the mutation outcome. The value is the `activeDescendants` count of the last execution process before reconciliation. For `commit`, that process is `commit --quiet --file=-`. For `updateSubmodules`, it is the last clone, connect, fetch, or checkout process that ran (§12). When the service sets `endProcesses` (below) before the terminal response, the value is 0. The count alone never changes the outcome classification. A nonzero count adds the plan.md lingering sentence to every mutation outcome text, success included (plan.md "Required visible states").
 - At `ended`, the shell reads the active process count again. A zero count closes the Job handle. Otherwise the Job moves to the lingering set, and the shell reads the count once more. A zero count then closes the handle.
 - An `ended` frame with `endProcesses: true` closes the Job at once, with every descendant, and it never lingers. The service sets it after a cancellation during `reconciling` (§8). It also sets it when `revokeTrust` for that common directory came after `started`.
 - The shell tags each mutation Job with the common-directory identity that it reads for the `started` frame. The tag survives a service restart.
@@ -494,7 +512,7 @@ Every policy (`probe`, `read`, `mutation`, and `network`) preserves `GIT_CONFIG_
 
 Every policy also preserves `GIT_CONFIG_COUNT`, each `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, and `GIT_CONFIG_PARAMETERS`. Git reads them as `command` scope, which is protected configuration (Git `Documentation/git-config.adoc`). Every policy also preserves `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_AUTHOR_DATE`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`, `GIT_COMMITTER_DATE`, and `EMAIL`. They override configured identity, so their removal would change identity (FR-003). The `probe` and `read` policies remove `GIT_CONFIG`. It redirects only `git config`, so it would hide local keys from the trust listing (research R7). The `mutation` and `network` policies preserve it for hooks.
 
-Every policy (`probe`, `read`, `mutation`, `mutation-trace2`, and `network`) sets `GIT_TERMINAL_PROMPT=0`. Git then never prompts on a terminal (Git `Documentation/git.adoc` `GIT_TERMINAL_PROMPT`). §6 "Console and input" states the full rule. The `network` policy serves only the `updateSubmodules` update processes (§12). It equals `mutation` without `GIT_INDEX_FILE`. No policy sets or removes `GIT_SSH_COMMAND`, `GIT_ALLOW_PROTOCOL`, or `GIT_PROTOCOL_FROM_USER`.
+Every policy (`probe`, `read`, `mutation`, `mutation-trace2`, and `network`) sets `GIT_TERMINAL_PROMPT=0`. Git then never prompts on a terminal (Git `Documentation/git.adoc` `GIT_TERMINAL_PROMPT`). §6 "Console and input" states the full rule. The `network` policy serves only the `updateSubmodules` clone, connect, fetch, and checkout processes (§12). It equals `mutation` without `GIT_INDEX_FILE`, plus `GIT_PROTOCOL_FROM_USER=0`. Git's submodule command sets that value for its own children (git-submodule.sh:29-30). The app's own fetch step needs it to keep Git's transport policy (§12 "Environment and console"). No policy sets or removes `GIT_SSH_COMMAND` or `GIT_ALLOW_PROTOCOL`. No other policy sets or removes `GIT_PROTOCOL_FROM_USER`.
 
 A trace2 event target comes only from the T091 probe result (research R4). The probe checks whether trace2 events identify hook and signing children. Without that probe result, no policy adds a trace2 variable. With it, `git-environment.json` adds the fixed policy `mutation-trace2`, which is `mutation` plus a trace2 event target. `GIT_TRACE2_EVENT` overrides a user's `trace2.eventTarget` (Git `Documentation/config/trace2.adoc`). So the service selects `mutation-trace2` only in one case. The service environment has no `GIT_TRACE2_EVENT`, and the effective configuration has no `trace2.eventTarget`. Otherwise it selects `mutation`, and hook and signing failures stay `GIT_FAILED` with a recorded reason.
 
@@ -530,7 +548,7 @@ The blocking class is any repository-controlled key that names a command a read 
 - `hash-object -t tree --stdin` and `config --file .gitmodules --null --list` load no index and run no filter. Neither ran a canary in that probe.
 - `hash-object --stdin --path=<path>` is no read. Only the `stage` blob proof runs it (§4 "Blob proof"). It ran the clean filter of its path in that probe. So `stage` refuses a path with a `filter` attribute before any proof runs.
 
-Status and diff reads pass `--ignore-submodules=dirty`. Superproject reads never start Git inside a submodule. The scoped listing above cannot see a submodule's local configuration, so the gate cannot cover it. The superproject view shows a changed submodule commit, not changes inside the submodule. One exception exists: `reviewSubmodules`, and the preflight and reconciliation of `updateSubmodules`, run fixed commands inside submodules. They cover initialized submodules and kept submodule Git directories (§12 "Review reads"). None of them loads an index or runs a repository program. The §12 submodule program list covers submodule configuration and hooks.
+Status and diff reads pass `--ignore-submodules=dirty`. Superproject reads never start Git inside a submodule. The scoped listing above cannot see a submodule's local configuration, so the gate cannot cover it. The superproject view shows a changed submodule commit, not changes inside the submodule. One exception exists: `reviewSubmodules`, and the preflight, level reads, checks, and reconciliation of `updateSubmodules`, run fixed commands inside submodules. They cover initialized submodules and kept submodule Git directories (§12 "Review reads"). None of them loads an index or runs a repository program, with one exception. The nested active-set read of §12 "Plan" loads the index of a parent submodule. It runs only after `confirmRun`, which covers the `core.fsmonitor` that it can start. The §12 submodule program list covers submodule configuration and hooks. It also covers relative values from every scope that resolve inside a submodule worktree.
 
 Keys that cannot fire for these reads do not block reads. Ordinary trust discovery still covers them before any operation that can run them.
 
@@ -561,7 +579,7 @@ The rule classifies the program that Git starts. A protected command can still r
 - `commit` needs approval when the fingerprint lists such an integration that `git commit` can run. These are hooks for `pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit`, `post-index-change`, `reference-transaction`, and `pre-auto-gc`. They also include signing programs, clean filters, and command-valued `core.fsmonitor`. The signing programs are `gpg.program`, `gpg.<format>.program`, and `gpg.ssh.defaultKeyCommand`. Git runs `gpg.ssh.defaultKeyCommand` when SSH signing has no `user.signingKey`, and a research R4 probe observed it during `commit`.
 - `applyHunk` runs `apply --cached`, `hash-object --no-filters`, `read-tree`, and `ls-files` on a private index, each with `--no-lazy-fetch`. Its supported profile refuses index-change hooks, executable monitors, and custom filters (§4). So `applyHunk` runs no repository-controlled program. It needs approval only when its reads need it.
 - `applyFile` runs `update-index`, `read-tree --empty`, `ls-files`, and `cat-file --batch-check` on a private index, each with `--no-lazy-fetch`. The §4 "Blob proof" adds `cat-file --filters --path` and `hash-object --stdin --path` without `-w`. On a private index, `update-index` still ran a command-valued `core.fsmonitor` and a `post-index-change` hook (research R3). The profile refuses both, and `stage` refuses a path with a `filter` attribute (§4 "File staging"). So `applyFile` runs no repository-controlled program. It needs approval only when its reads need it.
-- `updateSubmodules` needs the superproject approval only when its reads need it. Its update process loads the superproject index, so a command-valued `core.fsmonitor` runs (research R14 probe S3). The read gate already covers that key. It refuses a `submodule.<name>.update` value that starts with `!` (§12 "Refusals"). Programs inside submodules need the §12 run confirmation instead, which stores nothing.
+- `updateSubmodules` needs the superproject approval only when its reads need it. Its clone, connect, and checkout processes load the superproject index, so a command-valued `core.fsmonitor` runs (research R14 probe S3). The read gate already covers that key. It refuses a `submodule.<name>.update` value that starts with `!` (§12 "Refusals"). Programs inside submodules need the §12 run confirmation instead, which stores nothing.
 - A changed fingerprint gives `TRUST_CHANGED` at every checkpoint, also without required approval.
 - Without required approval, the next `readWorkspace` observes the new fingerprint. A new selection or review then clears `TRUST_CHANGED`.
 - With required approval, trust `state` becomes `changed`. Only an approval of the new fingerprint clears it. A new selection or review follows.
@@ -574,7 +592,7 @@ Missing approval never disables a hook. A mutation that needs approval refuses w
 
 - `confirm` with the worktree path, the worktree administration-directory path, the common-directory path, the Git installation digest, the fingerprint, and `persist`. The service computes the digest from the executable identity (data-model §1). The shell reads the common-directory identity and the worktree identity itself. It shows a native confirmation that names the worktree path and the fingerprint. With `persist: false`, it also shows the reached bound and the session-only text from "Program file digests". Its buttons are Approve and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. On Approve with `persist: true`, the shell writes and flushes the record. It replaces every record of the same worktree. A record is of the same worktree when both its common-directory identity and its worktree identity match. It is also of the same worktree when both its common-directory path and its worktree root path match. Records of other worktrees of that common directory stay unchanged. With `persist: false`, it writes no record and deletes every record of the same worktree, because none matches the new fingerprint. Then it replies `approved`. Otherwise it replies `declined`, and `approveTrust` ends `canceled`.
 - `revoke` with the common-directory path. The shell reads the identity of that path. It deletes every record whose common-directory identity or path matches, for every worktree of that common directory. It also closes every lingering Job with that identity tag (§6 "Lingering Jobs"). Then it replies with the count of processes that the close ended. `revokeTrust` then invalidates the trust ID and returns that count.
-- `confirmRun` with the worktree path, the submodule paths, and the count of listed submodule programs (§12 "Trust"). The shell shows a native confirmation with the §12 text. Its buttons are Run and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Run replies `approved`, and any other result replies `declined`. The shell writes, replaces, and deletes no record.
+- `confirmRun` with the worktree path, the submodule paths, and the count of listed submodule programs. It also carries the count of `unchecked` entries (§12 "Trust"). The shell shows a native confirmation with the §12 text. Its buttons are Run and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Run replies `approved`, and any other result replies `declined`. The shell writes, replaces, and deletes no record.
 
 The service derives trust `state` from the records and from its session approvals. A record matches when its common-directory identity and its worktree identity equal those of the workspace. `approved` needs a matching record, or a session approval, with the same Git installation digest and fingerprint. A matching record with another digest or fingerprint gives `changed`. So does a record with the same common-directory path and worktree root path but another identity. No record gives `untrusted`. A revoked trust ID gives `revoked`.
 
@@ -637,7 +655,7 @@ From `unknown`, only `readWorkspace` with `refresh: true` performs recovery reco
 - Owned lock and candidate files are released, or the result names them as foreign.
 - For `commit`, one attribution attempt ran within the §5 caps. Its result is an identified commit, no commit, or `unknown`. An `unknown` result names its reason: `ambiguous`, `evidence-limit`, or `no-retained-request`.
 - For `applyHunk` and `applyFile`, no attribution step runs. The observed canonical index is compared with two retained digests: the verified candidate and the index before publication. The result names the match: `published`, `not-published`, or `neither`. Without a retained request, the result is `unknown` with reason `no-retained-request`.
-- For `updateSubmodules`, no attribution step runs. The refresh re-reads every row of the retained plan with the §12 review reads and states each row state. Without a retained request, it reports attribution `unknown` with reason `no-retained-request`, and the next review shows the observed submodule states.
+- For `updateSubmodules`, no attribution step runs. The refresh re-reads every row of the retained plan with the §12 review reads and states each row state. The retained plan holds the rows that the run added. Without a retained request, it reports attribution `unknown` with reason `no-retained-request`, and the next review shows the observed submodule states.
 
 An attribution result of `unknown` does not fail reconciliation. It stays the prior operation's terminal outcome (FR-020). A failed, limited, or unavailable observation fails reconciliation, and the workspace stays `unknown`. A status-only read performs no reconciliation, so it cannot release the gate. The refresh result states the prior outcome and the attribution result. It never replaces the prior terminal response. After success, the service sends `resolved` for the marker, and the workspace becomes `ready`.
 
@@ -691,12 +709,12 @@ Map these cases to codes:
   - `distro-missing`: "No registered WSL distro has the name <name>. Open the folder through a listed distro."
   - `not-wsl2`: "Distro <name> is not a WSL2 distro. Arbareto opens repositories only in WSL2 distros."
   - `no-user-manager`: the §11 "Process ownership" text.
-  - `no-setsid`: "Arbareto needs the setsid program in <distro> to run Git without a terminal. Install the util-linux package in the distro, then open the folder again."
+  - `no-setsid`: "Arbareto needs the setsid program in <distro>. Install the util-linux package in the distro, then open the folder again."
   - `start-failed`: "WSL could not start distro <name>. Start it in a terminal, then open the folder again."
-- For a WSL Git, `GIT_UNSUPPORTED` carries reason `version` or reason `windows-git` (§11 "Git per distro"). Reason `version` carries the found and required versions. The `windows-git` text is: "The git command in <distro> is Git for Windows. Install Linux Git 2.55.0 or later in the distro."
-- `UNSUPPORTED_REPOSITORY` carries reason `wsl-path` or `mixed-location` for the §11 path rules. The `wsl-path` text is: "This path holds a name that Windows cannot show. Open another folder." The `mixed-location` text is: "The worktree and its Git directories must all lie inside one WSL distro, or all on Windows."
-- `UNSUPPORTED_SUBMODULE` carries one reason and the submodule path: `unsaved-commits`, `update-mode`, `clone-interrupted`, `no-url`, `path`, `gitdir-config`, or `limit` (§12 "Refusals"). §12 gives each text and remedy.
-- A submodule preflight that detects a changed plan, submodule HEAD, `.git` entry, or program list gives `STALE_REVIEW` (§12 "Update protocol").
+- For a WSL Git, `GIT_UNSUPPORTED` carries reason `version`, `windows-git`, or `no-fs-uuid` (§11 "Git per distro"). Reason `version` carries the found and required versions. The `windows-git` text is: "The git command in <distro> is Git for Windows. Install Linux Git 2.55.0 or later in the distro."
+- `UNSUPPORTED_REPOSITORY` carries reason `wsl-path`, `mixed-location`, or `no-fs-uuid` for the §11 path rules. The `wsl-path` text is: "This path holds a name that Windows cannot show. Open another folder." The `mixed-location` text is: "The worktree and its Git directories must all lie inside one WSL distro, or all on Windows." The `no-fs-uuid` text is: "Arbareto cannot read a file-system UUID for this folder. Open a folder on the distro's own disk."
+- `UNSUPPORTED_SUBMODULE` carries one reason and the submodule path: `unsaved-commits`, `update-mode`, `clone-interrupted`, `folder-not-empty`, `no-url`, `path`, `gitdir-config`, or `limit` (§12 "Refusals"). §12 gives each text and remedy. A refusal during the run gives no code. Its row ends `refused` with its reason, which can also be `programs` (§12 "Refusals during the run").
+- A submodule preflight gives `STALE_REVIEW` when it detects a change (§12 "Update protocol"). The change can be in the plan, a submodule HEAD, a `.git` entry, a folder state, or the program list. So does the re-check after an approved `confirmRun`. That re-check consumed the token, so the operation ends `failed` with the code (§12 "Update protocol" step 3).
 - An `updateSubmodules` process deadline gives `DEADLINE` with reason `inactivity` or `ceiling`. Other `DEADLINE` results carry no reason.
 - A registration beyond 8 workspaces registered at one time gives `WORKSPACE_LIMIT`. The result names the limit. Only linked worktrees of one common directory can reach it (§6 "Registration reuse and release").
 - A registration that would release a workspace with an unfinished mutation gives `BUSY`.
@@ -718,7 +736,7 @@ Map these cases to codes:
 
 **Other locks.** Return `LOCKED` only when the app's own exclusive `index.lock` creation fails. A lingering process can hold another lock, such as a ref lock or `HEAD.lock`. Git then fails after handoff, and the commit ends `GIT_FAILED`, or `failed-with-effects` when reconciliation observes hook effects. The outcome names each observed lock (§8 "Observed locks") with its path. Its remedy text is: "Git could not take a lock. Another Git process, or a process that Git or a hook started, can hold it. Use Refresh after that process ends."
 
-**Lingering count.** Before a `LOCKED` result, a commit failure, or a failed `updateSubmodules` outcome, the service sends the §6 lingering count request. The request names the common directory. A nonzero count adds this sentence to the remedy: "Arbareto still runs <count> processes that Git or a hook started in this repository. Closing Arbareto ends them." When the workspace holds a current trust ID, the remedy adds: "Revoke trust also ends them." `revokeTrust` needs that ID (§3), and an untrusted repository has none.
+**Lingering count.** Before a `LOCKED` result, a commit failure, or a failed `updateSubmodules` outcome, the service sends the §6 lingering count request. The request names the common directory. A nonzero count adds this sentence to the remedy: "Arbareto still runs <count> processes that Git or a hook started in this repository. Closing Arbareto ends them." A count of 1 uses "1 process" in place of "<count> processes" (plan.md "Long text"). When the workspace holds a current trust ID, the remedy adds: "Revoke trust also ends them." `revokeTrust` needs that ID (§3), and an untrusted repository has none.
 
 A `LOCKED` result carries the Git-resolved lock path and this remedy: "Another Git process or a crash left this lock. Remove it only after all Git tools stop, including other Arbareto windows." The app never removes a lock. Git-reported lock failures stay `GIT_FAILED` with the "Other locks" guidance. A remaining `index.lock` gives `LOCKED` with its path on the next mutation attempt. Another remaining lock makes Git fail again with `GIT_FAILED`.
 
@@ -769,6 +787,8 @@ Do not classify repository state by parsing localized human status output. Use b
 - Verify that a failed `applyFile` `stage` carries a bounded, sanitized, redacted `outputTail` and the `add` remedy.
 - Verify that a WSL poll runs 1 second after the previous poll ends and only while the window has focus. It never runs beside another read of that workspace.
 - Verify that `updateSubmodules` gives the submodule HEADs, Git directories, and configuration keys of `git submodule update --init --recursive` in a copy, two levels deep. Verify the `:(literal)` pathspec with a `[1]` path.
+- Verify the §12 steps for each row kind. A fetching row runs `fetch --progress --no-recurse-submodules`, the fallback fetch only when the target stays unreachable, the check, and then `submodule update --init --no-fetch`. No step passes `--recursive`. Each fetch carries `GIT_PROTOCOL_FROM_USER=0` and `--no-recurse-submodules`.
+- Verify that a target present without a ref makes the row fetch, as Git's own update does. A `reuse` row that fetches runs the connect step first.
 - Verify that `reviewSubmodules` runs no submodule canary: `core.fsmonitor`, filters, hooks, `core.sshCommand`, `credential.helper`, and `remote.origin.uploadpack`. Verify that no submodule program runs before an approved `confirmRun`, and that a declined one starts no update process.
 - Verify the same for canaries in the kept Git directory of a deinitialized submodule and of its nested submodule. The program list holds each of them.
 - Verify that a fetching row lists the remotes of the submodule and marks the default remote. A kept `remote.origin.url` that differs from the parent URL gets the note.
@@ -778,6 +798,18 @@ Do not classify repository state by parsing localized human status output. Use b
 - Verify Cancel during a clone, the inactivity deadline, and the ceiling. Reconciliation reports every changed row and each interrupted clone, and removes no file.
 - Verify that a submodule blocked by local changes keeps its HEAD and changes. The outcome is `failed-with-effects` when another row changed.
 - Verify that each failed row carries a redacted `outputTail` and its remedy command, and that no log holds the output.
+- Verify that a `reuse` row whose folder holds a modified tracked file refuses with `folder-not-empty`. The file keeps its bytes. Verify that the moved-folder remedy of `clone-interrupted` lets the next update succeed.
+- Verify that a relative global `core.hooksPath` lists an `unchecked` entry for each `clone`, `reuse`, `checkout`, and `fetch-checkout` row. No such hook runs before an approved `confirmRun`.
+- Verify that a row whose HEAD only a remote-tracking ref holds passes the review. With `fetch.prune` set and the remote branch deleted, the fetch removes that ref. The row then ends `refused` with `unsaved-commits`, HEAD unchanged, and no checkout process. The other rows still update.
+- Verify that the review reads run again after an approved `confirmRun`. A change gives `STALE_REVIEW` before any update process starts. The operation ends `failed`, and its recovery marker resolves.
+- Verify the folder check before the first step of each `reuse` row. A file added after the preflight gives `folder-not-empty`, and the file keeps its bytes. The check reads of a `reuse` row use `--git-dir` and `--work-tree`.
+- Verify that Cancel after a connect step gives `failed-with-effects` with the `connected` flag. Verify that a failed first fetch whose row reaches its target gives `succeeded`.
+- Verify that a silent update process with a changing I/O sum passes the inactivity limit. An idle one reaches it.
+- Verify that the `DUBIOUS_OWNERSHIP` remedy stays literal in PowerShell for a folder with `$(…)` and for each quote character.
+- Verify that a WSL identity holds the UUID-derived file-system ID and the inode, not the device number. Verify that a type other than `ef53` gives `no-fs-uuid`.
+- Verify that a hook whose native child reads an invisible console ends at the deadline (§6 "Console and input"). Every descendant ends too.
+- Verify the stall notice for a commit hook and for a submodule step that block without I/O. The notice appears 15 to 17 seconds after the last activity, with Cancel and the §6 command. Cancel ends the Job, and no log holds output. Activity hides the notice.
+- Verify that a nested level whose configuration gained a program after the confirmation refuses with `programs`. Its program never runs, and the other rows continue.
 
 ## 11. WSL repositories
 
@@ -802,7 +834,7 @@ WSL2 repositories are in this slice (spec FR-039 to FR-046). Git inside the dist
 
 ### Distro start
 
-- When the running list does not name the distro, registration or restore enters phase `wsl-starting`. The renderer shows "Starting WSL distro <name>" with Cancel.
+- When the running list does not name the distro, registration or restore enters phase `wsl-starting`. The renderer shows "Starting WSL distro <name>…" with Cancel.
 - The first WSL process starts the distro, as `wsl.exe` does for any command. That process is the Git probe ("Git per distro" below). Its deadline is the §5 WSL start deadline.
 - The renderer sends Cancel as `cancel` with the `operationId` of the accepted registration request. Cancel closes the probe Job. Registration ends `canceled`, and the current workspace stays unchanged. The distro can keep starting after Cancel, and the app does not stop it.
 - A deadline gives `DEADLINE`. A `wsl.exe` failure gives `WSL_UNAVAILABLE` with reason `start-failed`. The result carries the bounded `wsl.exe` error text as plain text, such as `Wsl/Service/WSL_E_DISTRO_NOT_FOUND` (P3).
@@ -810,11 +842,12 @@ WSL2 repositories are in this slice (spec FR-039 to FR-046). Git inside the dist
 
 ### Git per distro
 
-- One bootstrap probe per distro runs a fixed `/bin/sh -c` script with `LC_ALL=C`. It takes no repository argument. It runs before the helper paths exist, so it runs without the wrapper. It starts only `command -v`, `readlink`, `head`, `stat`, `git --version`, and the empty scope test below. It resolves `git`, `systemd-run`, `systemctl`, and `setsid` with `command -v` and `readlink -f`. It prints each absolute path, the first two bytes of each file, and the `git --version` text. It prints `stat --dereference --format=%d:%i:%s:%Y` of the Git file as its identity. It tests one empty `systemd-run --user --scope` call.
+- One bootstrap probe per distro runs a fixed `/bin/sh -c` script with `LC_ALL=C`. It takes no repository argument. It runs before the helper paths exist, so it runs without the wrapper. It starts only `command -v`, `readlink`, `head`, `stat`, `git --version`, and the empty scope test below. It resolves `git`, `systemd-run`, `systemctl`, and `setsid` with `command -v` and `readlink -f`. It prints each absolute path, the first two bytes of each file, and the `git --version` text. As the identity of the Git file, it prints `stat --dereference --file-system --format=%t:%i <Git file>` and `stat --dereference --format=%i:%s:%Y <Git file>`. It tests one empty `systemd-run --user --scope` call.
 - `--version` runs without `--no-lazy-fetch`. Linux Git 2.43.0 rejected that option with "unknown option" (P3). With it, the floor refusal could not name the found version. `--version` opens no repository and fetches nothing. Every other Git command keeps `--no-lazy-fetch` first (§7 "Missing objects" states this exception once).
 - Three cases give `GIT_UNSUPPORTED` with reason `windows-git`. They are a resolved path under `/mnt/` and a file that starts with the bytes `MZ`. The third is a version text with `.windows.`. The `PATH` of an `--exec` process holds Windows directories, and interop runs Windows programs (P2).
 - A resolved `systemd-run` or `systemctl` that fails the same rule gives `WSL_UNAVAILABLE` with reason `no-user-manager`. So does a failed scope test ("Process ownership" below).
-- A missing `setsid`, or one that fails the same rule, gives `WSL_UNAVAILABLE` with reason `no-setsid`. Every wrapper mode needs it ("Process launch" below). The util-linux package provides it.
+- A missing `setsid`, or one that fails the same rule, gives `WSL_UNAVAILABLE` with reason `no-setsid`. Every wrapper mode needs it ("Process launch" below). The util-linux package provides it. The identity rule uses `stat` from coreutils, not `findmnt` (research R13 P7).
+- A Git file without a stable file-system ID ("Paths and file access" below) gives `GIT_UNSUPPORTED` with reason `no-fs-uuid`. The text is: "Arbareto cannot read a file-system UUID for Git in <distro>. Install Git on the distro's own disk."
 - No `git` gives `GIT_UNAVAILABLE` with the remedy "Install Git 2.55.0 or later in <distro>."
 - A version below 2.55.0 gives `GIT_UNSUPPORTED` with reason `version`. Compare `major.minor.patch` numerically. An unparseable version gives the same result. The text names both versions: "Git <found> in <distro> is older than 2.55.0. Install Git 2.55.0 or later in the distro."
 - The native Git selection confirmation (§3 "Git proposal") then shows the distro, the Git path, and the version. Its buttons are Use this Git and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Only Use this Git issues the `gitInstallationId` of that distro.
@@ -827,19 +860,19 @@ Every WSL process is a `wsl.exe` process in an operation Job. The shell creates 
 
 `--distribution <distro> --cd / --exec /bin/sh -c <wrapper> sh <unit> <mode> <index file or empty> <systemd-run> <systemctl> <setsid> <program> <program arguments>`
 
-- For Git, `<program>` is the approved Git path, and the program arguments are `--no-lazy-fetch -C <Linux worktree root> <Git arguments>`. `--no-lazy-fetch` stays the first Git argument.
+- For Git, `<program>` is the approved Git path, and the program arguments are `--no-lazy-fetch -C <Linux directory> <Git arguments>`. The directory is the worktree root, or for a §12 step the parent or submodule worktree. `--no-lazy-fetch` stays the first Git argument.
 - `--exec` passes each argument to the program without a Linux shell (P3; Git Extensions PR #13271). The wrapper is a constant text and passes its arguments only as `"$@"`. So no argument reaches shell parsing.
 - `--cd /` fixes the Linux working directory. `--cd` with a missing directory ran the command in `/` with exit status 0 (P3). So the repository directory reaches Git as `-C`, and Git fails on a missing directory.
 - `<unit>` is `arbareto-<operationId>-<n>.scope`. `<n>` counts the processes of the operation.
 - `<mode>` is `probe`, `read`, `mutation`, or `network`. In `probe` mode, the wrapper sets `LC_ALL=C` for the program (§6 fixed C locale). A non-empty index file sets `GIT_INDEX_FILE`. Only `mutation` passes one.
-- `network` mode serves only the `updateSubmodules` update processes (§12). Inside the distro it behaves as `mutation` mode. Only the service side differs: the process uses the §7 `network` policy and the §12 deadlines.
+- `network` mode serves only the `updateSubmodules` clone, connect, fetch, and checkout processes (§12). Inside the distro it behaves as `mutation` mode, and it also sets `GIT_PROTOCOL_FROM_USER=0`. The §7 policies cannot set it there, because no Windows variable reaches Linux Git. The service side uses the §12 deadlines.
 - Every mode passes the approved `setsid` path (spec Clarifications, 2026-10-01).
 - `src/contracts/wsl-process.json` holds the wrapper and anchor texts. The shell embeds that file at build time. The service and the test double read the same file.
 
 The wrapper does four things:
 
 1. It traps `SIGHUP`. The trap ends the scope with `systemctl --user kill --signal=SIGKILL -- <unit>` and exits. The command gets `SIGHUP` when its `wsl.exe` ends (P1).
-2. It sets `GIT_TERMINAL_PROMPT=0` in every mode (§6 "Console and input"). It starts `systemd-run --user --scope --quiet --collect --unit=<unit> -- <setsid> --wait <program>` in the background, with the original stdin, and waits for it. A trapped signal interrupts `wait` at once. A foreground child delays the trap until the child ends (P1 S4 and S4b). This holds in every mode.
+2. It sets `GIT_TERMINAL_PROMPT=0` in every mode (§6 "Console and input"), and `GIT_PROTOCOL_FROM_USER=0` in `network` mode. It starts `systemd-run --user --scope --quiet --collect --unit=<unit> -- <setsid> --wait <program>` in the background, with the original stdin, and waits for it. A trapped signal interrupts `wait` at once. A foreground child delays the trap until the child ends (P1 S4 and S4b). This holds in every mode.
 3. In `probe` and `read` mode, it ends the scope after the program exits. So read processes never linger (§6).
 4. It exits with the exit status of the program.
 
@@ -856,8 +889,9 @@ A Windows Job holds `wsl.exe`, not the Linux processes. A Linux process that det
 - Every WSL process runs in its own scope. A process cannot leave the control group of its scope. A child that starts its own unit through `systemd-run` or `systemctl` leaves app ownership. An external service launch on Windows does the same (§6).
 - The distro must run a systemd user manager. Without it, the Git probe gives `WSL_UNAVAILABLE` with reason `no-user-manager`. The remedy text is: "Arbareto needs the systemd user manager in this distro to end the processes that Git starts. Set systemd=true under [boot] in /etc/wsl.conf, then restart the distro." The user decided this refusal on 2026-09-30 (spec Clarifications). The app changes no distro configuration and offers no mode with a process ownership limit.
 - A mutation starts an anchor in its operation Job before its first Git process: `wsl.exe --distribution <distro> --cd / --exec /bin/sh -c <anchor> sh <systemctl> <operationId>`.
-- The anchor traps `SIGHUP`, and the trap ends every `arbareto-<operationId>-*.scope`. For each stdin line, the anchor prints the process count of those scopes, read from their `cgroup.procs` files. After stdin closes, it prints the count once per second and exits at count 0.
-- For a WSL mutation, `activeDescendants` is the count that the anchor prints after the last execution process exits. At `ended`, the shell closes the stdin of the anchor. When the anchor exits, the Job empties, and the §6 port rules close it.
+- The anchor traps `SIGHUP`, and the trap ends every `arbareto-<operationId>-*.scope`. For each stdin line, the anchor prints one line with two numbers. The first is the process count of those scopes, read from their `cgroup.procs` files. The second is the I/O sum: the `rchar` and `wchar` values of `/proc/<pid>/io` for each of those processes. After stdin closes, it prints the line once per second and exits at count 0.
+- I/O sum reasons (research R13 P6): the user scope has no `io` controller, so no `io.stat` file exists. `/proc/<pid>/io` of a same-user process was readable. After a child exited and its parent reaped it, the parent's `rchar` included the child's reads. A process that leaves between the two reads adds nothing. The §12 inactivity deadline and the §6 stall notice use the sum (§6 "Activity and stall notice").
+- For a WSL mutation, `activeDescendants` is the count that the anchor prints after the last execution process exits. The lines that the shell requests each second for activity do not replace that count. At `ended`, the shell closes the stdin of the anchor. When the anchor exits, the Job empties, and the §6 port rules close it.
 - Every Job close ends the scopes of its operation. A Job closes at cancellation, a deadline, Interrupt and close, or `endProcesses`. It also closes at Revoke trust, a service failure, application close, or a shell crash. `wsl.exe` ends, the command gets `SIGHUP`, and the trap ends the scopes. In P1, ten cancellation runs and ten lingering runs left no Linux process 1 second after the Job close.
 - The §6 lingering count of a WSL Job is the last anchor count. That count is at most 1 second old. Revoke trust reports it.
 - Git runs in its own session without a controlling terminal, in every mode ("Process launch"). So the wrapper exit sends no `SIGHUP` to its children. Every child that keeps running after Git exits lingers in its scope and counts, as on Windows. Before 2026-10-01, a plain child ended at the wrapper exit (P1 S6); that result no longer describes this design.
@@ -866,9 +900,12 @@ A Windows Job holds `wsl.exe`, not the Linux processes. A Linux process that det
 ### Paths and file access
 
 - The service converts paths only at the Git argument boundary: the `-C` directory and the candidate index file. Entry paths stay Git path bytes, as on Windows.
-- Linux Git reports Linux paths. The service converts each Git-resolved directory back to the UNC identity. The worktree root, the Git directory, and the common directory must lie in the Linux file system of one distro. The identity request reports the file system type. Type `v9fs` means a Windows drive (P5: `/mnt/c` reported `v9fs`, and `/` reported `ext2/ext3`). Such a directory gives `UNSUPPORTED_REPOSITORY` with reason `mixed-location`.
+- Linux Git reports Linux paths. The service converts each Git-resolved directory back to the UNC identity. The worktree root, the Git directory, and the common directory must lie in the Linux file system of one distro. The identity request reports the file system type. Type `v9fs`, magic `1021997`, means a Windows drive (P5: `/mnt/c` reported `v9fs`, and `/` reported `ext2/ext3`). Such a directory gives `UNSUPPORTED_REPOSITORY` with reason `mixed-location`.
 - A Windows repository whose Git-resolved directories lie under a WSL prefix also gives reason `mixed-location`.
-- The shell answers a WSL identity request with a fixed `/usr/bin/stat --dereference --format=%d:%i:%T` probe in the distro. It runs through the wrapper in `probe` mode. The identity is the distro GUID, the device number, and the inode number. The probe reads no file data. A failed probe refuses registration with `UNSUPPORTED_REPOSITORY`, as a failed `FileIdInfo` call does (§6). Registration reuse, the mutation exclusion, recovery markers, lingering Job tags, and trust records use this identity. This applies where §6 and §7 name `FileIdInfo`.
+- The shell answers a WSL identity request with two fixed probes in the distro. They are `/usr/bin/stat --dereference --format=%i <path>` and `/usr/bin/stat --dereference --file-system --format=%t:%i <path>`. Each runs through the wrapper in `probe` mode. The first gives the inode number. The second gives the file system type magic and the file-system ID (`statfs` `f_fsid`). The identity is the distro GUID, the file-system ID, and the inode number. The probes read no file data. A failed probe refuses registration with `UNSUPPORTED_REPOSITORY`, as a failed `FileIdInfo` call does (§6).
+- Only type `ef53` (ext2, ext3, and ext4) gives a stable file-system ID. Every other type except `v9fs` gives reason `no-fs-uuid`, as an all-zero `FileIdInfo` does. So does an ID of 0.
+- Reason: the device number can change. WSL2 attaches each distro disk as a SCSI disk, and `lsblk` listed `sda` to `sde`. The attach order probably selects the device; T252 checks this. The reference distro's root reported `stat %d` 2096, which is device 8:48 (`/dev/sdd`). A UUID stays with the file system. Registration reuse, the mutation exclusion, recovery markers, lingering Job tags, and trust records use this identity. This applies where §6 and §7 name `FileIdInfo`.
+- ID source (research R13 P7): ext4 derives `f_fsid` from its superblock UUID (Linux `fs/ext4/super.c`, `uuid_to_fsid`). The reference root reported ID `fedc9aa3bd65bc57`, which equals that value for its `findmnt` UUID. `statfs` reads the mounted superblock and needs no udev data. `findmnt` took the UUID from udev data, because the user cannot read the disk device. The udev trigger finished 0.7 seconds after user space started, so an earlier UUID read could be empty. XFS derives its ID from the device number (Linux `fs/xfs/xfs_super.c`). Two tmpfs mounts gave different IDs. So only type `ef53` counts.
 - An entry path with a character that Windows names cannot hold gets reason `path` (data-model §5). The service reads each working file through its UNC path and cannot map such a name.
 - The service reads and writes repository files through the UNC path. These are raw index bytes, working-file and program-file digests, the stat tuple, the index lock, the candidate copy, and publication. In P5, a second exclusive create of `index.lock` failed with error 80. A replace over `index` succeeded, and Linux Git read the result. Bun `fs.stat` returned the size and the time. The atomicity of the replace over the WSL file share is unverified (T213).
 - The candidate lies in the Linux Git directory beside the index. Git gets it as a Linux path through the index file argument of the wrapper.
@@ -900,12 +937,13 @@ A WSL remedy is a PowerShell command that calls `wsl.exe`. Each value uses the �
 
 ## 12. Submodules
 
-Submodule initialization and update are in this slice (spec FR-047 to FR-054). They form the first network operation of the slice. Research R14 holds the probes S1 to S12 and their sources. Every other rule of this contract applies unless this section states otherwise.
+Submodule initialization and update are in this slice (spec FR-047 to FR-054). They form the first network operation of the slice. Research R14 holds the probes S1 to S25 and their sources. Every other rule of this contract applies unless this section states otherwise.
 
 ### Scope
 
-- `updateSubmodules` initializes and updates every submodule recursively to the commit that its parent records. Git's own `submodule update --init --recursive` does the work.
-- It never selects single submodules, never adds, removes, or syncs one, and never runs a command in each. It passes no `--remote`, `--force`, `--merge`, `--rebase`, or `--checkout`.
+- `updateSubmodules` initializes and updates every submodule recursively to the commit that its parent records. The result equals Git's own `submodule update --init --recursive` (probe S20).
+- The app runs that work in phases for each submodule ("Update protocol"). It fetches first and checks the refs of the submodule again. Then Git checks out without a fetch. The user decided this order on 2026-10-01 (spec Clarifications).
+- It never selects single submodules, never adds, removes, or syncs one, and never runs a command in each. It passes no `--remote`, `--force`, `--merge`, `--rebase`, `--checkout`, or `--recursive`.
 - Other operations keep their submodule rules. Reads pass `--ignore-submodules=dirty` and start no Git process inside a submodule. Hunk and file staging refuse submodules with reason `submodule`.
 
 ### Discovery notice
@@ -926,14 +964,17 @@ Submodule initialization and update are in this slice (spec FR-047 to FR-054). T
 - Inside each initialized submodule, the review runs only these fixed commands. Each starts with `--no-lazy-fetch --no-optional-locks -C <submodule worktree>`.
   - `rev-parse --verify -q HEAD`, `rev-parse --absolute-git-dir`, `rev-parse --git-path hooks`, and `symbolic-ref -q HEAD`.
   - `config list --show-scope --show-origin -z`.
-  - `for-each-ref --contains=HEAD --count=1 --format=%(refname)`.
+  - `for-each-ref --contains=HEAD --count=1 --format=%(refname)`. Every ref counts ("Refusals").
   - `cat-file --batch-check` with the needed object IDs on stdin.
+  - `rev-list -n 1 <target> --not --all`. Git's own update runs this read before each fetch decision (`is_tip_reachable`, builtin/submodule--helper.c:2493-2514). Exit status 0 with no output means that a ref or HEAD reaches the target. Output or a failure means that none reaches it (probe S23).
   - `ls-tree -r -z --full-tree <commit>` and `config --blob <commit>:.gitmodules --null --list`.
 - A `reuse` row has no `.git` entry. For it, the same commands run with `--git-dir=<parent Git directory>/modules/<name> --work-tree=<same directory>` in place of `-C` (probes S9 and S11). `--work-tree` replaces a `core.worktree` path that can be missing before the update. None of these commands reads the worktree.
-- None of these commands loads an index. Probe S3 ran each one with submodule canaries. The canaries covered `core.fsmonitor`, clean and smudge filters, every traditional hook, `core.sshCommand`, `core.askPass`, and `credential.helper`. No canary ran.
-- These commands are the only exception to the §7 rule that superproject reads never start Git inside a submodule. The `updateSubmodules` preflight and reconciliation run the same commands.
-- Nested submodules: the review takes the gitlinks of an initialized submodule from the tree of its target commit. This needs a local target commit. Otherwise it takes them from its HEAD tree. It recurses into each nested gitlink with a `.git` entry. Without a local target commit, the plan states that Git finds the nested submodules after its fetch.
-- Kept Git directories: a recursive update reuses each kept `modules/<name>` directory of a submodule without a `.git` entry. This holds at every depth, and Git then runs the programs of that directory (probe S11). So the review recursively walks the `modules` folder below the superproject common directory and below each Git directory it reads.
+- Folder check: for each `reuse` row, the service reads the type of its worktree path and lists its entries. It reads no file data and starts no process. The `folder-not-empty` refusal uses the result ("Refusals").
+- None of these commands loads an index. Probe S3 ran each one with submodule canaries. The canaries covered `core.fsmonitor`, clean and smudge filters, every traditional hook, `core.sshCommand`, `core.askPass`, and `credential.helper`. No canary ran. Probe S23 ran the `rev-list` read with the same canaries, and none ran.
+- These commands are the only exception to the §7 rule that superproject reads never start Git inside a submodule. The `updateSubmodules` preflight, its level reads, and its reconciliation run the same commands.
+- The update adds two commands that run only after `confirmRun`. `remote get-url --all <name>` serves the fallback fetch ("Update protocol"), and it ran no canary (probe S23). The nested active-set read ("Plan") loads an index and can run the `core.fsmonitor` of that submodule.
+- Nested submodules: the review takes the gitlinks of an initialized submodule from the tree of its target commit. This needs a local target commit. Otherwise it takes them from its HEAD tree. It recurses into each nested gitlink with a `.git` entry. Without a local target commit, the plan states that the update finds the nested submodules after its fetch. The update reads each nested level again after its parent checkout ("Update protocol").
+- Kept Git directories: the update reuses each kept `modules/<name>` directory of a submodule without a `.git` entry. This holds at every depth, and Git then runs the programs of that directory (probe S11). So the review recursively walks the `modules` folder below the superproject common directory and below each Git directory it reads.
 - A submodule name can hold `/`, so the walk enters every subfolder. For each folder, it runs `rev-parse --absolute-git-dir` with `--git-dir=<folder> --work-tree=<folder>`. A folder that Git accepts is a kept Git directory. In it, the walk continues only in its own `modules` folder. Git refuses a submodule Git directory inside another one (Git v2.55.0 submodule.c:2402-2442).
 - In each kept Git directory, the review runs the commands above with `--git-dir=<directory> --work-tree=<directory>`. Each directory then enters the program list ("Trust") and the `unsaved-commits` check ("Refusals") once.
 - Each folder that the walk visits counts as one submodule toward the §5 submodule review bound. A larger walk gives reason `limit`.
@@ -950,32 +991,44 @@ Each plan row holds an opaque row ID, the path, the name, and the depth. It also
   - A note applies when no remote URL equals the parent URL. It reads: "Git fetches from the submodule remotes, not from this URL."
   - A submodule without a remote gets the note: "This submodule has no remote. Git cannot fetch a missing commit."
 - Actions:
-  - `clone`: no `.git` entry, and no `<parent Git directory>/modules/<name>`. Git clones the URL and checks out the recorded commit.
-  - `reuse`: no `.git` entry, but `<parent Git directory>/modules/<name>` exists. Git connects it and fetches a missing commit (probe S9).
-  - `checkout`: the HEAD differs from the recorded commit, and that commit exists locally. No network step runs.
-  - `fetch-checkout`: the HEAD differs, and the recorded commit is missing locally. Git fetches, then checks out.
-  - `none`: the HEAD equals the recorded commit. Git still visits its nested submodules.
+  - `clone`: no `.git` entry, and no `<parent Git directory>/modules/<name>`. Git clones the URL and checks out the recorded commit. Git can fetch that commit inside the same process (probe S19). A new clone has no earlier HEAD to lose.
+  - `reuse`: no `.git` entry, but `<parent Git directory>/modules/<name>` exists. Git connects it and fetches a missing commit (probe S9). Then it runs `checkout -q -f`, which overwrites tracked files in the folder (probe S13). So the folder must be absent or empty (`folder-not-empty` under "Refusals").
+    - A kept Git directory whose HEAD is no commit, as after an interrupted clone, has no earlier HEAD to lose. The update runs the clone step for that row. The `folder-not-empty` rule and the step 5 folder check still apply to it ("Update protocol").
+    - For every other `reuse` row, the `rev-list` read in the kept Git directory decides whether the row fetches, as for the two actions below.
+  - `checkout`: the HEAD differs from the recorded commit, and a ref or HEAD of the submodule reaches that commit. No fetch runs.
+  - `fetch-checkout`: the HEAD differs, and no ref reaches the recorded commit. The commit is missing or present without a ref. Git's own update fetches in both cases (probe S19). The update fetches first ("Update protocol").
+  - `none`: the HEAD equals the recorded commit. The update still visits its nested submodules.
   - `skip`: a submodule with update mode `none`, or a submodule outside the active set. Git leaves it and its nested submodules unchanged. An uninitialized submodule with `update = none` in `.gitmodules` gets registered, but Git skips its clone (builtin/submodule--helper.c:2298, probe S5).
 - Notes name each configuration write and each HEAD change:
   - "Git registers the URL in the repository settings." Git writes `submodule.<name>.url` and, when the submodule is not yet active, `submodule.<name>.active` (probe S1). It also copies an update mode from `.gitmodules` (probe S5).
   - "Git marks this submodule active." This note applies to an explicit `submodule.<name>.active=false` when `submodule.active` is unset (probe S5).
   - "Git detaches HEAD from branch <branch>." This note applies when the submodule HEAD is a branch.
   - "Git moves HEAD from <old short ID> to <new short ID>."
+  - "Git fetches in this submodule before the checkout." This note applies to each row that fetches.
 - Active set, from Git's `module_init` and `is_submodule_active` (research R14):
   - With `submodule.active` unset, Git initializes every gitlink. An explicit `false` becomes `true` (probe S5).
   - With `submodule.active` set, an explicit `submodule.<name>.active` wins. Otherwise the gitlink must match the `submodule.active` pathspecs. The service asks Git through `ls-files -z --stage -- <pathspecs>`, which uses Git's own matcher. Every other gitlink gets `skip`.
-  - Nested levels: the plan lists existing nested submodules and computes no active set for them. Git applies the configuration of each parent.
+  - Nested levels: the review lists existing nested submodules and computes no active set for them. After each parent checkout, the update computes the active set of the nested level. It uses the same rules and the configuration of the parent submodule.
+  - When that parent sets `submodule.active`, the update runs `ls-files -z --stage -- <pathspecs>` inside it. That read loads the index of the parent submodule, so its `core.fsmonitor` can run. The run confirmation covers that program. Git's own recursive update loads the same index (builtin/submodule--helper.c `module_list_compute`).
+  - A nested row below such a parent gets the note: "Git applies the active submodules of <parent path>." A pathspec would activate an inactive submodule (builtin/submodule--helper.c:596-597). So the update starts no process for a nested row outside the active set.
 
 ### Refusals
 
 `reviewSubmodules` returns each refusal, and `updateSubmodules` refuses while one holds. The code is `UNSUPPORTED_SUBMODULE` with one reason:
 
-- `unsaved-commits`: an initialized submodule, or a kept Git directory ("Review reads"), has a HEAD that no ref of it contains. The review also cannot prove that this HEAD equals the target commit. Git detaches HEAD without a warning. Only the submodule reflog then keeps those commits, until reflog expiry (probe S4). Text: "Submodule <path> is at commit <short ID>, which no branch, tag, or other ref holds. Save it with the command, then use Refresh." The remedy is `& '<selected Git path>' -C '<submodule worktree>' branch 'arbareto-saved-<short ID>' <full ID>`. A kept Git directory uses `--git-dir='<Git directory>' --work-tree='<Git directory>'` in place of `-C`. Each value uses the §4 quoting rule. The short ID has 12 hex digits.
+- `unsaved-commits`: an initialized submodule, or a kept Git directory ("Review reads"), has a HEAD that no ref of it contains. The review also cannot prove that this HEAD equals the target commit. Git detaches HEAD without a warning. Only the submodule reflog then keeps those commits, until reflog expiry (probe S4).
+  - Every ref counts, `refs/remotes` included. A fetch can still remove or move the ref that holds HEAD. With `fetch.prune`, a fetch deleted the only remote-tracking ref that held HEAD (probe S15).
+  - So the update checks HEAD and its refs again after each fetch and before each checkout ("Update protocol"). A row that fails this check gets no checkout. It ends `refused` with this reason, its text, and its remedy (probe S20).
+  - Text: "Submodule <path> is at commit <short ID>, which the update can leave without a branch, tag, or other ref. Save it with the command, then use Refresh." The remedy is `& '<selected Git path>' -C '<submodule worktree>' branch 'arbareto-saved-<short ID>' <full ID>`. A kept Git directory uses `--git-dir='<Git directory>' --work-tree='<Git directory>'` in place of `-C`. Each value uses the §4 quoting rule. The short ID has 12 hex digits.
 - `update-mode`: an existing submodule has update mode `merge`, `rebase`, or `!command`. The mode comes from the effective configuration of the parent, or else from `.gitmodules`. Text: "Submodule <path> uses the update mode <mode>. Arbareto updates only submodules that Git checks out. Use the command in a terminal." The remedy is the update command under "Remedies".
   - A `.gitmodules` value `!command` also refuses. Git itself rejects it with "invalid value" (probe S5).
   - A just-cloned submodule gets a checkout for `merge` and `rebase` (builtin/submodule--helper.c:2143-2147, probe S5). So a `clone` row never refuses for its mode. With `none`, Git skips the clone, so the row is `skip`.
   - Reason: `merge` and `rebase` can stop in an unfinished operation, which this slice blocks. `!command` runs a repository command.
-- `clone-interrupted`: a `.git` entry exists, but `rev-parse --verify -q HEAD` fails in it. A killed clone leaves this state, and Git then fails with "Unable to find current revision" (probe S9). Text: "Git stopped while it cloned submodule <path>. Delete the file <path>\.git after all Git tools stop. Then use Update submodules again." The state shows the path with Copy path. Probe S9 recovered after only that file was deleted. The app never deletes it.
+- `clone-interrupted`: a `.git` entry exists, but `rev-parse --verify -q HEAD` fails in it. A killed clone leaves this state, and Git then fails with "Unable to find current revision" (probe S9). Text: "Git stopped while it cloned submodule <path>. Move the folder <path> out of the repository after all Git tools stop. Then use Update submodules again." The state shows the path with Copy path. The app never moves or deletes it.
+  - Reason: Git then sees a `reuse` row with an absent folder. It recreates the folder, fetches into the kept Git directory, and checks out the recorded commit. The moved folder keeps every byte (probe S13).
+  - The earlier remedy deleted only `<path>\.git`. A folder with other files then became a `reuse` row, and `checkout -q -f` overwrote them (probe S13). The `folder-not-empty` refusal now blocks that state.
+- `folder-not-empty`: a `reuse` row has a worktree path that is not an empty folder. The path holds a file, a link, a junction, or a folder with any entry, hidden entries included. Git's update would run `checkout -q -f` there and overwrite tracked files without a warning (probe S13). An absent path and an empty folder pass. Text: "Submodule <path> has no Git link, but its folder is not empty. Git would overwrite those files. Move the folder out of the repository, then use Refresh." The state shows the path with Copy path. The app never moves or deletes it.
+  - A `clone` row needs no such rule. Git refused to clone into a folder that was not empty, and the file kept its bytes (probe S13). The row then fails ("Reconciliation and outcome").
 - `no-url`: a gitlink has no `.gitmodules` entry. Text: "The .gitmodules file has no entry for submodule <path>. Git cannot update it."
 - `path`: a submodule path fails the data-model §5 path rule. Text: "Arbareto cannot pass the path of submodule <path> to Git literally."
 - `gitdir-config`: the `config list` output of the superproject, or of a submodule Git directory that the review reads, enables `extensions.submodulePathConfig`. Any `submodule.<name>.gitdir` key in that output also refuses. Git can then place submodule Git directories outside `modules/<name>` (git-config(1)). The kept-directory walk cannot find them, so the program list can miss their programs. The refusal carries the path of the submodule whose configuration holds the setting. A superproject setting carries the worktree root. Text: "This repository sets custom locations for submodule Git folders. Arbareto reads only the default location. Update the submodules in a terminal." The remedy is the update command without a path.
@@ -985,11 +1038,20 @@ A WSL distro without `setsid` never reaches the review, because registration ref
 
 Git's own refusal to overwrite local changes is no refusal here. It is a failed row ("Reconciliation and outcome").
 
+**Refusals during the run.** The update reads each nested level, and it checks each row again before its checkout ("Update protocol"). A refusal found then stops only that row and its nested rows. The row ends `refused` with its reason, text, and remedy, and the other rows continue. The step 5 checks can give `unsaved-commits` and `folder-not-empty` then. One reason exists only during the run:
+
+- `programs`: a nested level needs a program that the run confirmation did not cover ("Trust"). Text: "Submodule <path> needs programs that the run confirmation did not cover. Use Update submodules again to review them." It has no command.
+- Reason for a stop instead of a new confirmation: FR-048 requires that the review lists every program before the start. A new dialog during the run would show programs that no review listed.
+
 ### Trust
 
 - Superproject: §7 "Mutation trust" applies. The superproject approval is needed only when reads need it.
 - Submodule programs: the review lists each program of every submodule Git directory that the update can use. These are each initialized submodule, each `reuse` and `fetch-checkout` row, and each kept Git directory, at every depth ("Review reads"). For each submodule, it applies the §7 repository-controlled resolution rule to the `config list` output. The submodule worktree root and its Git directory act as the repository directories. A submodule Git directory lies inside the Git directory of its parent, so every local and worktree entry is repository-controlled.
-- For a submodule without a `.git` entry, Git runs the programs from the worktree that it connects. That worktree is the parent worktree root plus the submodule path. Relative program paths and a relative `core.hooksPath` resolve against that path. A missing file there enters the list as `absent`. A kept Git directory without a plan row has no known path. Its relative program paths and a relative `core.hooksPath` then enter the list as `unchecked`.
+- For a submodule without a `.git` entry, Git runs the programs from the worktree that it connects. That worktree is the parent worktree root plus the submodule path. Relative program paths and a relative `core.hooksPath` resolve against that path. A kept Git directory without a plan row has no known path. Its relative program paths and a relative `core.hooksPath` then enter the list as `unchecked`.
+- Relative values from every scope: §7 classes a relative `core.hooksPath` and a relative program path from any scope as repository-controlled. So is a bare-name program when the child `PATH` holds a relative entry. In a submodule, each such value resolves inside the submodule worktree. Git applies the system, global, and command entries in every submodule. So the review applies this rule to those entries of the superproject listing too.
+- An update writes the worktree files of each `clone`, `reuse`, `checkout`, and `fetch-checkout` row. Git then runs the hook and program files of the target tree, which the review cannot digest first (probe S14). So each relative value enters the list once for each of these rows, as `unchecked`, at every depth. A relative `core.hooksPath` enters as its hooks directory. A `none` or `skip` row keeps its digested entries.
+- Some rows have nested submodules that stay unknown until the update fetches ("Review reads"). Such a row lists each relative value once more for them, as `unchecked`.
+- Reason for the two rules above: with a global `core.hooksPath=.githooks`, a `clone` row ran the cloned `post-checkout` and `reference-transaction` hooks. No confirmation went out, because the list was empty. A `checkout` row and a `fetch-checkout` row ran the target-tree versions of those hooks (probe S14).
 - The list holds three kinds of entries:
   - Each repository-controlled integration that §7 names.
   - Each local or worktree entry outside the Git-written keys below.
@@ -997,76 +1059,126 @@ Git's own refusal to overwrite local changes is no refusal here. It is a failed 
 - The service digests each listed program file by the §7 "Program file digests" rules and bounds. A file beyond a bound enters the list as `unchecked`.
 - Git-written keys: `core.repositoryformatversion`, `core.filemode`, `core.bare`, `core.logallrefupdates`, `core.symlinks`, `core.ignorecase`, `core.precomposeunicode`, and `core.worktree`. Also `extensions.objectformat`, `extensions.refstorage`, `remote.<name>.url`, `remote.<name>.fetch`, `branch.<name>.remote`, and `branch.<name>.merge`. Also `submodule.<name>.url`, `submodule.<name>.active`, and each `submodule.<name>.update` value that does not start with `!`. A clone and a submodule initialization wrote only such keys (probes S2 and S5). None names a program. An `update` value that starts with `!` stays in the list.
 - Reason: an update ran the `core.fsmonitor`, smudge filter, `post-checkout`, `post-index-change`, and `reference-transaction` hooks of a submodule (probe S3). A fetch ran its `remote.origin.uploadpack` (probe S6). An update also ran those programs in the kept Git directory of a deinitialized submodule. It ran them in the kept Git directory of its nested submodule too (probe S11).
-- When the list is not empty, `updateSubmodules` sends the `trust` frame `confirmRun` after its preflight (§7 "Trust approval store"). The text is: "Update submodules runs <count> programs from submodule settings and hooks in <paths>. They can run any code on this computer." `<paths>` names at most 10 paths and then the count of the others. A kept Git directory without a plan row appears by its Git directory path. A decline ends the operation `canceled`, and no update process starts. The shell stores nothing, so the approval covers this operation only.
+- The fetch step of a row runs the same transport programs and hooks as the fetch inside Git's own update. Each fetch also starts `git maintenance run --auto --detach` (probe S19). So the list needs no extra entry for the fetch step.
+- Nested levels: before each nested level, the service builds the program list of that level by these rules. Each entry must match a confirmed entry: the same row or Git directory, key or hook file, origin, and digest.
+  - A confirmed `unchecked` entry covers the same relative value for the same row.
+  - A row with unknown nested submodules has extra `unchecked` entries. They cover the same values for each nested row below that row.
+  - Any other entry refuses the rows of that level with reason `programs` ("Refusals during the run"). No process starts for them.
+  - In the normal case, a level adds no entry. The kept-directory walk found every kept Git directory. A new clone writes only Git-written keys (probe S2). An approved hook or an outside change can add one.
+- When the list is not empty, `updateSubmodules` sends the `trust` frame `confirmRun` after its preflight (§7 "Trust approval store"). The text is: "Update submodules runs <count> programs from submodule settings and hooks in <paths>. They can run any code on this computer." `<paths>` names at most 10 paths and then the count of the others. A kept Git directory without a plan row appears by its Git directory path. When the list holds `unchecked` entries, the text adds: "Arbareto cannot check <n> of them before the run." `<count>` counts each `unchecked` hooks directory as one program. A count of 1 reads "1 program". A decline ends the operation `canceled`, and no update process starts. The shell stores nothing, so the approval covers this operation only.
 - The review token binds the digest of the list. A preflight that finds another list gives `STALE_REVIEW`.
 - §7 "Submodule registration keys" keeps a stored superproject approval valid after the update. A submodule Git directory that an update creates enters only the list of a later review, never the stored fingerprint.
 
 ### Update protocol
 
 1. Enter the mutation exclusion and wait for the recovery marker ID (§6).
-2. Revalidate the review token with the review reads. Check the superproject HEAD, the index gitlinks, the `.gitmodules` digest, and the relevant configuration. Check each submodule HEAD and `.git` entry, each refusal, the program list digest, and trust. A changed value gives `STALE_REVIEW`, and a changed fingerprint gives `TRUST_CHANGED`. Consume the token only after validation.
-3. Send `confirmRun` when the program list is not empty.
-4. For each top-level plan row except `skip`, in index order, start one Git process: `--no-lazy-fetch -C <worktree root> submodule update --init --recursive --progress -- :(literal)<path>`.
-   - Git handles the nested submodules of that row inside that process.
-   - `:(literal)` keeps the path literal. A plain `sub[1]` pathspec matched `sub1` (probe S8).
-   - `--progress` makes Git report progress on stderr without a terminal.
-   - Each process starts after the previous one exits, also after a failure. Git's own update also continued after a submodule failed (probe S7). A failed clone in one process never stops the next process.
-5. Honor Cancel at any time. Cancel closes the Job of the running process with every descendant, and no later process starts.
-6. Reconcile after the last process, a Cancel, or a deadline.
+2. Revalidate the review token with the review reads. Check the superproject HEAD, the index gitlinks, the `.gitmodules` digest, and the relevant configuration. Check each submodule HEAD and `.git` entry, the reachability of each target, each refusal, the program list digest, and trust. A changed value gives `STALE_REVIEW`, and a changed fingerprint gives `TRUST_CHANGED`. Consume the token only after validation.
+3. Send `confirmRun` when the program list is not empty. The dialog has no time limit, and repository state can change while it is open.
+   - After an `approved` reply, run the step 2 review reads again before step 4. Compare the same values with the consumed review. A changed value gives `STALE_REVIEW`, and a changed fingerprint gives `TRUST_CHANGED`.
+   - The operation then ends `failed` with that code. No update process starts, and no reconciliation runs, because nothing changed. The recovery marker is resolved, so later mutations are not blocked.
+   - The token stays consumed. A repeated request with it returns this operation (§2). A new review is needed.
+   - Without `confirmRun`, step 4 follows step 2 at once, so no re-check runs.
+4. Visit the rows. Top-level rows except `skip` go in index order. After the last step of a row, the update visits the nested level of that row (step 6). Then the next row follows. This depth-first order follows Git's own recursion (probe S19).
+5. Each row runs the steps of its kind. `<parent worktree>` is the superproject worktree root for a top-level row. For a nested row, it is the worktree of its parent submodule.
+   - Clone step, for a `clone` row and a `reuse` row without a kept HEAD commit: `--no-lazy-fetch -C <parent worktree> submodule update --init --progress -- :(literal)<path>`. Git clones or connects, fetches when it needs to, and checks out. The row has no earlier HEAD to lose. A `reuse` row still runs the folder check below first.
+   - A `checkout` row runs the check and the checkout step below. So does a `reuse` row whose kept Git directory reaches the target.
+   - A `fetch-checkout` row runs the steps below in order. So does a `reuse` row whose kept Git directory does not reach the target.
+     1. Connect step, `reuse` only, after the folder check and the check below: `--no-lazy-fetch -C <parent worktree> submodule update --init --no-fetch --progress -- :(literal)<path>`. Git registers the row, creates and connects the folder, and removes the kept index. Its `checkout -q -f` then fails, because the target is missing (probe S22). Git's own update also connects before its fetch (probe S19).
+        - The service checks that result with structured reads. A `.git` entry must exist, HEAD must equal the kept HEAD, and the target must stay unreachable. The row then continues with the first fetch.
+        - Exit status 0 means that Git checked out a present target, and the row is done. A target that is present without a ref takes this path. Such a row skips the fetch of Git's own update, and a skipped fetch cannot remove a ref.
+        - Any other result ends the row `failed`.
+     2. First fetch: `--no-lazy-fetch -C <submodule worktree> fetch --progress --no-recurse-submodules`. Git's own update runs `fetch` with no remote and no refspec (builtin/submodule--helper.c:2516-2546, probe S19). `--progress` adds only progress output. A failed first fetch does not end the row, as in Git's own update. It counts as exit 0 when its row then reaches its target commit ("Reconciliation and outcome").
+        - `--no-recurse-submodules` stops the fetch in nested submodules. Without it, the fetch recursed into a populated nested submodule whose new commit was missing (probe S25). With `fetch.recurseSubmodules=true`, it recursed into every populated nested submodule. That recursion runs nested programs and changes nested refs before the nested level read and check.
+        - The update visits each nested level itself (step 6), and a nested row that needs a fetch runs its own first fetch there. So with the default `fetch.recurseSubmodules`, the nested commits and refs equal those of Git's own update.
+        - Difference: with `fetch.recurseSubmodules=true`, Git's own update also fetches nested submodules that need no fetch. The app does not, so their remote-tracking refs can stay older. HEADs, the folder layout, and settings stay equal. This is a deliberate difference, like `--no-lazy-fetch`.
+     3. Fallback fetch: the service runs the `rev-list` read again. When the target stays unreachable, it runs `--no-lazy-fetch -C <submodule worktree> fetch --progress --no-recurse-submodules <remote> <target>`. A fetch by commit ID also recursed without that option (probe S25). Git's own update runs the same fetch by commit ID (builtin/submodule--helper.c:2640-2668). A failed fallback fetch ends the row `failed` without a checkout, as in Git's own update (probe S21).
+        - `<remote>` follows Git's `get_default_remote_submodule` (builtin/submodule--helper.c:77-115). It is the first remote whose URL equals the resolved `.gitmodules` URL. Otherwise it is the default remote ("Plan").
+        - A relative `.gitmodules` URL resolves against the URL of the default remote of the parent repository. Git's `relative_url` defines that rule (remote.c:2933-3003).
+        - The remote URLs come from `remote get-url --all <name>`, which applies `url.<base>.insteadOf` as Git does (probe S23).
+     4. The check and the checkout step below.
+   - Folder check, for every `reuse` row, with or without a kept HEAD. The "Review reads" folder check runs again right before the first step of the row. That step is its clone, connect, or checkout step. The check starts no process.
+     - A path that is neither absent nor an empty folder ends the row `refused` with reason `folder-not-empty`. No process starts for the row, and the files keep their bytes.
+     - Before the checkout step that follows a connect step, the folder must hold only its `.git` entry. Otherwise the row also ends `refused` with that reason.
+     - Reason: a writer can add files after the review or after the step 3 re-check. Git's `checkout -q -f` would overwrite them (probe S13).
+   - Check, before each connect step and each checkout step: `rev-parse --verify -q HEAD` and `for-each-ref --contains=HEAD --count=1 --format=%(refname)`. A `reuse` row runs them in its kept Git directory before its connect step. Without a connect step, it runs them there before its checkout step.
+     - In the kept Git directory, they use `--git-dir=<kept Git directory> --work-tree=<kept Git directory>`, as "Review reads" states. So an absent or empty folder never resolves to the superproject.
+     - HEAD must equal its value at the review or at the level read (step 6). A ref must contain it, and every ref counts.
+     - A missing ref ends the row `refused` with reason `unsaved-commits`, and no checkout runs (probe S20).
+     - A changed HEAD ends the row without a checkout. Reconciliation states the row.
+   - Checkout step: `--no-lazy-fetch -C <parent worktree> submodule update --init --no-fetch --progress -- :(literal)<path>`. `--no-fetch` stops the fetch of Git's own update. Without `--recursive`, Git visits no nested submodule (probe S20). With a missing target, Git fails with "Unable to checkout" and keeps HEAD (probe S20).
+   - `:(literal)` keeps the path literal. A plain `sub[1]` pathspec matched `sub1` (probe S8). `--progress` makes Git report progress on stderr without a terminal.
+   - Each process starts after the previous one exits, also after a failure (probe S7). A failed or refused row never stops the next row. The update visits no nested level of a failed or refused row, as Git's own update does (builtin/submodule--helper.c:2879-2885).
+6. Nested level: after the last step of a row, the service reads the nested level of that row. A `none` row gets the same read.
+   - It runs the review reads inside the worktree of that submodule. The gitlinks come from its HEAD tree. It also reads its `.gitmodules`, its active set ("Plan"), each nested submodule, and each kept Git directory below it.
+   - Each read keeps the 30-second deadline (§5). The §5 submodule review bound covers every row that the update visits. A row above that bound ends `refused` with reason `limit`.
+   - It applies the refusals and the nested-level program rule ("Trust"). A row with a refusal ends `refused`, and the update visits no level below it. Every other row of the level runs step 5.
+7. Honor Cancel at any time. Cancel closes the Job of the running process with every descendant. No later process or level starts.
+8. Reconcile after the last row, a Cancel, a deadline, or a failure.
 
-The update process writes no superproject index. The superproject index digest stayed equal in probe S1. So the protocol takes no canonical index lock. Git takes its own `config.lock` and submodule locks.
+The update processes write no superproject index. The superproject index digest stayed equal in probe S1. So the protocol takes no canonical index lock. Git takes its own `config.lock` and submodule locks.
 
 ### Environment and console
 
 - Update processes use the §7 `network` policy. Git then never prompts on a terminal.
-- The app never sets or removes a `protocol.*`, `core.sshCommand`, or `credential.*` key, and never sets `GIT_SSH_COMMAND`. Git's submodule command sets `GIT_PROTOCOL_FROM_USER=0` itself (git-submodule.sh:29-30).
-- Like every Git process, each `network` process starts with `DETACHED_PROCESS`, so Git has no console (§6 "Console and input"). Git then starts `ssh` with `DETACHED_PROCESS` "to make ssh recognize that it has no console" (compat/mingw.c:2247-2263). So an SSH passphrase or unknown-host prompt fails, and its message enters the output tail. No SSH server was available for a probe, so this failure stays unverified until T224 or T237 runs one.
-- A configured credential helper can show its own window, such as the Git Credential Manager sign-in. `GIT_TERMINAL_PROMPT=0` turns off only its terminal prompts (research R14).
+- The `network` policy sets `GIT_PROTOCOL_FROM_USER=0`. Git's submodule command sets the same value for its children (git-submodule.sh:29-30). Without it, the fetch step allowed a `file` remote that Git's own update refused (probe S21). The value restricts transports and enables none.
+- The app never sets or removes a `protocol.*`, `core.sshCommand`, or `credential.*` key, and never sets `GIT_SSH_COMMAND`.
+- Like every Git process, each `network` process starts with `DETACHED_PROCESS`, so Git has no console (§6 "Console and input"). Git then starts `ssh` with `DETACHED_PROCESS` "to make ssh recognize that it has no console" (compat/mingw.c:2247-2263). So an SSH passphrase or unknown-host prompt fails, and its message enters the output tail. A direct native `ssh-keygen -y` with a passphrase key failed at once under `DETACHED_PROCESS` (research R14 S17). No SSH server was available for a probe, so the SSH failure stays unverified until T224 or T237 runs one.
+- Limit: a `core.sshCommand` or `GIT_SSH_COMMAND` with arguments runs through `sh`. A native Windows OpenSSH program started that way gets an invisible console (§6 "Console and input"). Its passphrase prompt then waits, as `ssh-keygen -y` did under a hook (research R14 S17).
+- Such a wait changed no I/O counter (probe S24). So after 15 seconds, the status shows the §6 stall notice. It offers Cancel and the remedy command of the running step. The 300-second inactivity deadline still ends the process. The user decided this on 2026-10-01 (spec Clarifications, FR-051).
+- A configured credential helper can show its own window, such as the Git Credential Manager sign-in. `GIT_TERMINAL_PROMPT=0` turns off only its terminal prompts (research R14). Such a window does no I/O either, so the stall notice can appear while it waits. The notice text names that case.
 - WSL repositories use wrapper mode `network` (§11 "Process launch"). Like every wrapper mode, it sets `GIT_TERMINAL_PROMPT=0` inside the distro and removes the controlling terminal.
 
 ### Network policy
 
 - Git's `protocol.allow` defaults apply unchanged: `ext` is `never`, and `file` is `user` (git-config(1) `protocol.allow`).
-- With `GIT_PROTOCOL_FROM_USER=0`, a `file` submodule URL fails unless configuration allows it (probe S6). An `ext::` URL failed and ran no program (probe S6).
+- With `GIT_PROTOCOL_FROM_USER=0`, a `file` submodule URL fails unless configuration allows it (probes S6 and S21). An `ext::` URL failed and ran no program (probe S6).
 - Tests enable local transport only through their owned global configuration: `protocol.file.allow=always`. The app never does.
-- `--no-lazy-fetch` stays first. It did not block the explicit clone or fetch of a submodule. Hooks saw `GIT_NO_LAZY_FETCH=1` (probes S1 and S6).
+- `--no-lazy-fetch` stays first, also in the fetch steps. It did not block the explicit clone or fetch of a submodule. Hooks saw `GIT_NO_LAZY_FETCH=1` (probes S1, S6, and S20).
 
 ### Progress
 
-- The operation reports "Updating submodule <path> (<i> of <n>)". `<n>` counts the processes of step 4, and `<i>` names the running one.
-- The service splits stderr into segments at CR and LF. It takes the last `NN% (a/b)` match of the newest segment as the percentage. Git prints that counter with the untranslated format `"%3u%% (%"PRIuMAX"/%"PRIuMAX")%s"` (progress.c:134). The service parses no other text, because Git translates it.
+- The operation reports "Fetching submodule <path> (<i> of <n>)…" during a fetch step. It reports "Updating submodule <path> (<i> of <n>)…" during a clone, connect, or checkout step.
+- `<n>` counts the rows that the update plans to visit, except `skip` rows. A nested level adds its new rows to `<n>` when the update reads it. The nested rows of a failed or refused row leave `<n>`. `<i>` names the row in progress.
+- The service splits stderr into segments at CR and LF. It takes the last `NN% (a/b)` match of the newest segment as the percentage. Git prints that counter with the untranslated format `"%3u%% (%"PRIuMAX"/%"PRIuMAX")%s"` (progress.c:134). The service parses no other text, because Git translates it. A fetch with `--progress` printed such segments (probe S20).
 - A segment without a match keeps the last percentage. A new process starts without a percentage.
-- Progress events carry only the index, the count, the row ID, and the percentage. They carry no Git text. At most 4 events per second go out (§5).
-- Nested submodules report inside the progress of their top-level row.
+- Progress events carry only the index, the count, the row ID, the phase, the percentage, and the stall flag. The phase is `fetch` or `update`, and §6 "Activity and stall notice" defines the flag. They carry no Git text. At most 4 events per second go out (§5).
 
 ### Deadlines and Cancel
 
-- Inactivity deadline: an update process that writes no byte to stdout or stderr for 300 seconds ends. Git prints progress while a transfer advances, so a stalled connection stops the output. The window leaves time for a credential helper sign-in.
+- Inactivity deadline: each update process ends after 300 seconds without activity (§6 "Activity and stall notice"). This covers each clone, connect, fetch, and checkout step. The window leaves time for a credential helper sign-in.
+- Reason: output alone is no activity signal. Git's own fetch runs without a progress option, and the checkout runs `checkout -q` (probe S16 trace). A silent local fetch read 120 MB and wrote 160 MB without an output byte (probe S16).
+- Stall notice: after 15 seconds without activity, the status shows the §6 stall notice. It offers Cancel and the "Remedies" command of the running step. The notice ends no process.
+- The shell enforces both limits from the request `limits` (§6 "Process fields"). At expiry it closes the Job, and the exit reply names `inactivity` or `ceiling`.
+- Limits of the signal: a process that waits for console input or for a credential helper window does no I/O. It shows the stall notice and ends after 300 seconds. A helper that keeps doing I/O while it waits keeps the process alive until the ceiling. A lingering child of an earlier step stays in the same Job, so its I/O also counts.
 - Ceiling: each update process ends after 4 hours, so every Git step has a finite limit.
-- A deadline closes the Job at once, with every descendant. The operation moves to `reconciling` with `DEADLINE` and reason `inactivity` or `ceiling`. No later process starts.
-- Review, preflight, and reconciliation commands keep the 30-second deadline (§5).
+- A deadline closes the Job at once, with every descendant. The operation moves to `reconciling` with `DEADLINE` and reason `inactivity` or `ceiling`. No later process or level starts.
+- Review, preflight, level, check, and reconciliation commands keep the 30-second deadline (§5).
 - Cancel, the deadlines, Interrupt and close, and the lingering rules follow §6 and §8. Cancellation never undoes a finished row.
 - Each update process counts its own 4 MiB toward the §5 diagnostic cap, because its stderr carries progress.
 
 ### Reconciliation and outcome
 
-Reconciliation re-reads every plan row with the review reads, and the superproject configuration. It runs after the last process, a Cancel, a deadline, or a failure. Each row gets one state:
+Reconciliation re-reads every plan row and every row that the run visited, with the review reads, and the superproject configuration. It runs after the last row, a Cancel, a deadline, or a failure. Each row gets one state:
 
 - `cloned`, `moved` with the old and the new commit, `unchanged`, or `failed`.
-- `clone-interrupted`, with the path of the `.git` file. A killed clone left `<parent Git directory>/modules/<name>` with no refs, a `tmp_pack_*` file, the `.git` file, and the registered URL (probe S9). The service removes no file.
+- `clone-interrupted`, with the submodule folder path and the `clone-interrupted` remedy ("Refusals"). A killed clone left `<parent Git directory>/modules/<name>` with no refs, a `tmp_pack_*` file, the `.git` file, and the registered URL (probe S9). The service moves and removes no file.
 - `changed-elsewhere`, for a HEAD that equals neither the old nor the target commit.
-- `discovered`, for a nested submodule that the review did not list, with its HEAD.
+- `refused`, for a refusal during the run, with its reason, text, and remedy ("Refusals during the run"). HEAD keeps its commit.
+
+Each row result also carries three flags from the phase record of the service. `fetched` is true when a fetch step of the row started. `connected` is true when a step started that can create the `.git` entry of the row. These steps are the clone step, the connect step, and the checkout step of a `reuse` row. `found` is true when the review did not list the row. Reconciliation reads HEAD only, so it cannot see a fetch or a connection.
 
 The §8 "Observed locks" set applies, with the submodule locks.
 
 Classification (data-model §7):
 
-- `succeeded`: every process exited 0, and every row reached its planned state.
-- `completed-with-effects`: every process exited 0, but a row differs from its plan.
-- `failed`: a process failed or a deadline fired, and no row changed.
-- `failed-with-effects`: a process failed, or a Cancel or a deadline stopped work, and a row changed.
-- `canceled`: a Cancel or a declined `confirmRun` stopped work before any row changed.
+- `succeeded`: every process exited 0, and every row reached its planned state. A connect step that ends as "Update protocol" step 5 expects counts as exit 0. A failed first fetch counts as exit 0 when its row then reaches its target commit. A failed first fetch of a row that ends `refused` or `failed` counts as a failed process. A row that the review did not list reaches its planned state as `cloned`, `moved`, or `unchanged`.
+- `completed-with-effects`: every process exited 0, but a row differs from its plan. A `refused` row is such a row.
+- `failed`: a process failed or a deadline fired, no row changed, and no row has the `fetched` or `connected` flag. A failed step 3 re-check also ends `failed`, with `STALE_REVIEW` or `TRUST_CHANGED` and no process.
+- `failed-with-effects`: a process failed, or a Cancel or a deadline stopped work. A row changed, or a row has the `fetched` or `connected` flag.
+- `canceled`: a Cancel or a declined `confirmRun` stopped work before any row changed. No row has the `fetched` or `connected` flag.
 - `unknown`: a reconciliation read failed or passed its deadline. The recovery marker stays (§8).
+
+A fetch step counts as an effect, because it can write refs and objects, prune refs, and run hooks. A step that sets `connected` counts as an effect too. It writes the registration, the `.git` file, and `core.worktree`, and a connect step removes the kept index (probe S22).
 
 Git refused to overwrite local changes in probe S7. That submodule kept its old HEAD and its changes, and the other rows still updated. Its row states `failed`, and the outcome is `failed-with-effects` when another row changed.
 
@@ -1076,13 +1188,19 @@ A failed update process carries its own `outputTail` by the §9 "Commit failure 
 
 ### Remedies
 
-- A failed row gets a copyable PowerShell command by the §4 quoting rule: `& '<selected Git path>' --no-lazy-fetch -C '<worktree root>' submodule update --init --recursive -- ':(literal)<path>'`.
-- Its text is: "This command updates this submodule in a terminal, where Git and SSH can ask for input."
+A failed row, and a row whose step shows the stall notice, get a copyable PowerShell command for that step. Each value uses the §4 quoting rule.
+
+- Fetch step: `& '<selected Git path>' --no-lazy-fetch -C '<submodule worktree>' fetch --no-recurse-submodules`. After a fallback fetch, the command ends with `fetch --no-recurse-submodules '<remote>' <full target ID>`. The text is: "This command fetches this submodule in a terminal, where Git and SSH can ask for input. Then use Update submodules again."
+- Connect or checkout step: `& '<selected Git path>' --no-lazy-fetch -C '<parent worktree>' submodule update --init --no-fetch -- ':(literal)<path>'`. The text is: "This command checks out this submodule in a terminal, where Git can ask for input. Then use Update submodules again."
+- Clone step: `& '<selected Git path>' --no-lazy-fetch -C '<parent worktree>' submodule update --init -- ':(literal)<path>'`. The text is: "This command clones this submodule in a terminal, where Git and SSH can ask for input. Then use Update submodules again."
+- None of these commands passes `--recursive`. The next Update submodules run reviews the nested submodules first.
+- The update command of the `update-mode`, `gitdir-config`, and `limit` refusals runs Git's own update in a terminal: `& '<selected Git path>' --no-lazy-fetch -C '<worktree root>' submodule update --init --recursive -- ':(literal)<path>'`. The form without a path ends before `--`.
 - WSL rows use the §11 "Remedy commands" form.
 - A path with bytes that are not valid UTF-8 gets no command (§4).
 
 ### WSL repositories
 
 - The same protocol runs through §11 with wrapper mode `network`. Clones and fetches run inside the distro with the distro's configuration and credentials.
-- `setsid --wait` removes the controlling terminal of the update process, as it does for every WSL process (§11 "Process launch"). So a child that keeps running after Git lingers and counts, as on Windows.
+- `setsid --wait` removes the controlling terminal of the update process, as it does for every WSL process (§11 "Process launch"). So a child that keeps running after Git lingers and counts, as on Windows. An SSH prompt in the distro fails at once, because it has no terminal.
+- The inactivity deadline and the stall notice use the anchor I/O sum (§6 "Activity and stall notice"). No WSL update ran with Git 2.55.0, so this signal is unverified for a real fetch (T232).
 - The reference distro has Git 2.43.0, which the §11 floor refuses. So no WSL update ran with Git 2.55.0, and the WSL rows stay unverified.

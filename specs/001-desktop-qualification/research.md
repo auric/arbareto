@@ -325,6 +325,12 @@ A read-command probe on 2026-10-01 used Git `2.55.0.windows.3` in a scratch repo
 
 A quoting probe on 2026-09-30 used PowerShell `7.6.6` and Windows PowerShell `5.1.26100.9444`, each with `-NoProfile -EncodedCommand`. It built the contract §4 `add` remedy for a file name or a worktree root. The value held U+0027, U+2018, U+2019, U+201A, or U+201B, followed by `; ni <marker>`. The root payload ended with `#`, so the rest of the command parsed as a comment. With only U+0027 doubled, each of the other four ended the string, and the marker file appeared. This happened in both shells, in the file name and in the root. With all five doubled, no marker appeared in the 20 cases, and `git ls-files` listed the staged file. So the contract doubles all five. This probe is not qualification evidence.
 
+A dubious-ownership probe on 2026-10-01 used Git `2.55.0.windows.3` with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` and `LC_ALL=C`. The scratch folder was named `x'$(calc)'`. `rev-parse --show-toplevel` exited 128. The first stderr line named the raw path between `in repository at '` and a final `'`. The suggested command quoted the path for a POSIX shell: `'` became `'\''`, and `!` became `'\!'`. U+2019 stayed raw, although PowerShell ends a single-quoted string there.
+
+- The PowerShell 7 parser found one subexpression in the suggested command. Its last argument was an expandable string, not the path.
+- The contract §4 doubling gave one string constant, and its value equaled the path.
+- So the service builds the `safe.directory` command itself (contract §6 "Registration bootstrap"). Every policy removes `GIT_TEST_*`, so the knob reaches Git only in a test harness that runs Git directly (T068).
+
 The commit failure output shows the output of hooks that the user configured or approved, as a terminal run does. The rule below stays for logs: regex redaction cannot make hook output safe to log. So the output tail never enters a log, a `diagnostic`, or a progress event. On screen, the service removes control sequences and redacts URL user information (contract §9). A secret in another form can remain, as in a terminal.
 
 Sources: [relative core.hooksPath](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/core.adoc#L512-L521), [hook working directory](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/githooks.adoc#L24-L28), [Windows program lookup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L1993-L2021), [per-entry lookup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L1908-L1928).
@@ -409,7 +415,15 @@ So the capture time base equals the `inject.ts` time base. The plan.md "Capture 
 
 Capture sources: [DuplicateOutput](https://learn.microsoft.com/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput), [AcquireNextFrame](https://learn.microsoft.com/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-acquirenextframe), [DXGI_OUTDUPL_FRAME_INFO](https://learn.microsoft.com/windows/win32/api/dxgi1_2/ns-dxgi1_2-dxgi_outdupl_frame_info), [DuplicateOutput1](https://learn.microsoft.com/windows/win32/api/dxgi1_5/nf-dxgi1_5-idxgioutput5-duplicateoutput1).
 
-**UI Automation driver (T153, T240, T241).** `tauri-driver` and `msedgedriver` are absent (inventory above). The test-only driver `tests/windows/uia.ts` uses UI Automation instead. Microsoft Learn states that a Win32 app shows WebView2 in the accessibility tree as a child of its parent window. It states that Microsoft Edge exposes ARIA roles, states, and properties through UI Automation. It also states that UI Automation does not connect processes that different users start. So the driver runs under the measurement account. T241 confirms each control name on the reference host with the driver and `inspect.exe`.
+**Diff context and C8 (T164, T180, T181).** These facts fix the C8 content for both applications:
+
+- A probe on 2026-10-01 with Git `2.55.0.windows.3` changed lines 20 and 28 of a 40-line file. `diff-files -p` printed two hunks with 3 context lines, with and without `-c diff.context=10`.
+- `-c diff.interHunkContext=10` also left two hunks. Porcelain `git diff` honored both keys and merged the changes into one hunk. So Arbareto's plumbing reads always show 3 context lines, whatever the user's configuration.
+- Git Extensions (DeepWiki answer, 2026-10-01): `AppSettings.NumberOfContextLines` defaults to 3. The viewer passes it as `--unified=<n>` while `ShowEntireFile` is false. `ShowSyntaxHighlightingInDiff` defaults to true.
+- The answer did not settle which header lines the viewer shows. So T180 counts its visible diff rows below any header lines.
+- plan.md "C8 rows" derives 25 compact and 20 comfortable Arbareto diff rows at 1280×800. The C8 diff holds 18 rows. No application ran for these figures.
+
+**UI Automation driver (T153, T240, T241).** `tauri-driver` and `msedgedriver` are absent (inventory above). The test-only driver `tests/windows/uia.ts` uses UI Automation instead. Microsoft Learn states that a Win32 app shows WebView2 in the accessibility tree as a child of its parent window. It states that Microsoft Edge exposes ARIA roles, states, and properties through UI Automation. It also states that UI Automation does not connect processes that different users start. So the driver runs under the measurement account. T241 confirms each control name on the reference host with the driver and `inspect.exe`. When a name does not resolve, the T241 keyboard fallback covers T153, T167, T181, and T245. C7 then stays `unverified`.
 
 Driver sources: [WebView2 accessibility tree](https://learn.microsoft.com/microsoft-edge/webview2/concepts/overview-features-apis#rendering-webview2-using-composition), [ARIA and UI Automation in Microsoft Edge](https://learn.microsoft.com/microsoft-edge/accessibility/build/aria-and-ui-automation), [UI Automation overview](https://learn.microsoft.com/windows/win32/winauto/uiauto-uiautomationoverview).
 
@@ -934,7 +948,7 @@ The user answered one clarification and selected standard Git commit behavior. T
 
 The spec-quality checklist is re-validated after the 2026-09-29 decisions. That step records the result in `checklists/requirements.md`. These checks assess specification quality, not implementation readiness or runtime qualification.
 
-Mechanical checks covered six design documents, including table-cell sentences. Local links, code fences, sentence lengths, and placeholder checks passed. A re-run after the About window update checked FR-001–FR-037, SC-001–SC-014, F01–F20, and UI-01–UI-15. It found them unique, consecutive, and validly referenced. Note, 2026-10-01: the whole-file staging, WSL, and submodule updates changed the ranges. At that time, they were FR-001–FR-054 and SC-001–SC-017. They were also F01–F31, UI-01–UI-16, and T001–T245. The speed remediation of 2026-10-01 adds SC-015 conditions C1–C20. The UX remediation of 2026-10-01 extends the ranges to F01–F32, UI-01–UI-19, and T001–T251.
+Mechanical checks covered six design documents, including table-cell sentences. Local links, code fences, sentence lengths, and placeholder checks passed. A re-run after the About window update checked FR-001–FR-037, SC-001–SC-014, F01–F20, and UI-01–UI-15. It found them unique, consecutive, and validly referenced. Note, 2026-10-01: the whole-file staging, WSL, and submodule updates changed the ranges. At that time, they were FR-001–FR-054 and SC-001–SC-017. They were also F01–F31, UI-01–UI-16, and T001–T245. The speed remediation of 2026-10-01 adds SC-015 conditions C1–C20. The UX remediation of 2026-10-01 extends the ranges to F01–F32, UI-01–UI-19, and T001–T251. The fourth safety remediation of 2026-10-01 extends the task range to T001–T252. The fetch-order and stall decisions extend it to T001–T257, and the fifth analysis remediation to T001–T260. The verification remediation of 2026-10-01 adds no task.
 
 All 54 checked color pairs pass their applicable numerical contrast thresholds: 30 token pairs and 24 lane pairs. The graph's 24 stroke/background pairs have a minimum ratio of 4.66:1. Divider pairs are informational and have no threshold. Rendered accessibility and Windows behavior remain untested.
 
@@ -1127,6 +1141,84 @@ Three read-only verification passes found these gaps. Probes R14 S11 and S12 and
 
 The register keeps 68 rows. The two switch budgets stay plan budgets, and the SC-005 row cites them. These corrections have not received runtime verification.
 
+### Safety and test remediation, fourth analysis, 2026-10-01
+
+The fourth `/speckit-analyze` pass found these safety and test gaps. The R5 dubious-ownership probe, R13 P6, and R14 S13 to S18 back the rows. No probe is qualification evidence.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| S1: a `reuse` row ran `checkout -q -f` and overwrote a changed tracked file. The `clone-interrupted` remedy could create that row (R14 S13). | Reason `folder-not-empty` for a folder with any entry. The `clone-interrupted` remedy moves the folder out. FR-049 now has eight cases. Contract §12, data-model §9, F28 variants, T222 to T224, and quickstart §9. |
+| S2: the program list left out `clone` rows. A global relative `core.hooksPath` ran cloned hooks without a confirmation. `checkout` and `fetch-checkout` rows ran target-tree hooks (R14 S14). | Each relative value from any scope gives an `unchecked` entry for every row whose worktree the update writes. FR-050, contract §7 and §12, the F29 relative-hooks variant, T222, and T223. |
+| S3: a remote-tracking ref passed the `unsaved-commits` check, and a pruning fetch removed it (R14 S15). | Replaced by a user decision on 2026-10-01: the update fetches first and checks every ref again before each checkout. See "User decisions on fetch order and stall notice" below. |
+| S4: the `DUBIOUS_OWNERSHIP` state offered Git's command for a POSIX shell. PowerShell parsed `$(calc)` in it (R5). | The service builds the command with the §4 rule. Contract §6, data-model §2, the spec edge case, F15, and T068. |
+| S5: the inactivity limit counted only output, but fetch and checkout print nothing (R14 S16). | A changed Job I/O sum, or the anchor I/O sum in WSL, also counts. FR-052, contract §5, §6, §11, and §12, the F30 silent-fetch variant, T205, T224, T225, T228, and T232. |
+| T1: WSL identities used the Linux device number, which can follow the disk attach order (R13 P6). | Identity is the distro GUID, the `findmnt` UUID, and the inode, with reason `no-fs-uuid`. FR-043, contract §3 and §11, data-model §1 and §2, F22, T205, T206, and T252. |
+| T2: contract §6 claimed that no process can wait on a hidden console. A native console read under a hook waited (R14 S17). | Contract §6, plan.md, and R14 state the deadline bound. A user decision on 2026-10-01 added the stall notice. F11 console variants, T027, T162, and T224. |
+| T3: `confirmRun` had no time limit, and step 4 started without a re-check. | The review reads run again after `approved`. Contract §12, data-model §6, and T223. |
+| C1: no fixture covered the `path` refusal. | The F28 path variant, T222, and quickstart §9 step 5. |
+| C3: seam-only WSL cases sat behind the Git 2.55.0 gate. | They run first in T207 and T209, and the harness rule exempts them. |
+| C4: the FR-051 prompt rule had no runnable test on the update path (R14 S18). | A T224 loopback 401 case with `http` and `https` variants, and an SSH passphrase variant. |
+
+The register keeps 68 rows. These corrections have not received runtime verification.
+
+### User decisions on fetch order and stall notice, 2026-10-01
+
+The user made two decisions on 2026-10-01 (spec Clarifications). R14 S19 to S24 back the design. No probe is qualification evidence.
+
+| Decision and cause | Change and required proof |
+| --- | --- |
+| Fetch first, then check. The fourth-analysis rule ignored `refs/remotes` for fetching rows and refused the normal state of most submodules (R14 S15). | Every ref counts at the review. Each fetching row runs Git's own fetch and fallback fetch (S19). Then a check of HEAD and every ref and a checkout with `--no-fetch` follow (S20). A failed check ends the row `refused`, and the others continue. The app visits nested levels itself. FR-047, FR-049, FR-050, FR-052, contract §5, §7, §9, §11, and §12, and data-model §7 and §9. Also F27 to F31, T220 to T238, T253, and T254. |
+| The fetch step needs Git's transport policy. Without `GIT_PROTOCOL_FROM_USER=0`, it allowed a `file` remote that Git's own update refused (S21). | The `network` policy and the WSL wrapper set it. T223, T227, and T232. |
+| A `reuse` row fetched from the wrong folder. A relative hooks path then named the superproject's hooks (S22). | The connect step runs first through Git, then the fetch runs in the connected folder. T223 and T230. |
+| A nested level can need programs that the confirmation did not cover. | Such a level refuses with `programs`. The F29 nested-programs variant, T222, and T223. |
+| Show the stall. A shell-run passphrase prompt waited unseen until the 300-second limit (R14 S17). | After 15 seconds without output and without I/O, the status shows a notice with Cancel and a terminal command (S24). It applies to commit and to submodule steps. FR-019, FR-051, SC-004, SC-017, contract §5 and §6, F11, F30, and F31. Also T027, T162, T224, T225, T228, T234, T236, and T255 to T257. |
+
+The register keeps 68 rows. These changes have not received runtime verification.
+
+### UX decisions and fifth analysis remediation, 2026-10-01
+
+The user decided two items on 2026-10-01 (spec Clarifications). The fifth `/speckit-analyze` pass found the other gaps. Probe R14 S25 and the R6 diff-context probe back two rows. No probe is qualification evidence.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| No key staged a file from the lists, so the review loop needed the toolbar. | User decision: Space stages or unstages the focused entry, and focus moves to the next entry. FR-038, the plan.md Stage key row, T133, T201, T202, T258, and quickstart §4 step 17. T203 runs the keystroke check. |
+| The Update submodules outcome had no defined place, and its rows could not fit the status bar. | User decision: a bounded status area above the status bar, never a dialog. FR-052, plan.md "Status area" and "Height budget", T122, T126, T138, T234, T236, T260, UI-08, and UI-16. |
+| U1/J2: the submodule notice and the blocking state showed only above the Changes lists. Every open shows History, so US7 scenario 1 could not pass. | A notice band below the mode bar in both modes, with its own F6 stop. The scope line counts conflicts apart. FR-016, FR-053, US7 scenario 1, T137, T144, T235, T259, UI-10, UI-16, and quickstart §9 step 1. |
+| U2: the header had no wrap or truncation rule, and the cited ellipsis rule did not exist. | plan.md "Header layout" and "Long text", budget rows for 720×480 at 100% and 225% text, T128, T157, and UI-17. |
+| U4: no installed-build task checked keyboard-only submodule, WSL start, and stall-notice paths. | T162, T219, and T237 run them. They use quickstart §5 step 6, §8 step 6, and §9 steps 2, 3, and 7 to 9. |
+| U5: dialogs and the update had no first-focus or return-focus rules. | The heading takes first focus in the review and Trust dialogs. Focus goes to Cancel, the opener, or the area heading. T136 adds its test, and T234 adds the cases. |
+| J1: the C8 diff needed about 51 rows, but Arbareto shows about 25 at 1280×800 compact. | A two-hunk C8 file with 18 rows, the row arithmetic, Compact density, and pinned context and highlighting. T180 measures the Git Extensions rows, and C8 stays `unverified` when they fall short. T164, T165, and T181. |
+| J3: no rule combined C1 to C20, and T181 recorded SC-015 before T245. | plan.md "SC-015 roll-up". T181 records its conditions, and T245 writes the result. |
+| C2: the keyboard fallback covered only T153. | T241 extends it to T167, T181, and T245. Under it, C7 stays `unverified`. |
+| U11: progress strings had three forms. | "Starting WSL distro <name>…", "Loading…", and "Refreshing…" everywhere, as the "…" rule requires. |
+| The first fetch of a row recursed into nested submodules before their level check (S25). | `--no-recurse-submodules` on both fetch steps and the fetch remedy. Contract §12, plan.md, T223, and T227. |
+
+The register keeps 68 rows. These corrections have not received runtime verification.
+
+### Verification remediation, 2026-10-01
+
+Two read-only verification passes found these gaps. R13 P7 and the Git Extensions source back two rows. Answers that start with "Reviewer default" record analysis decisions (spec Clarifications). No probe is qualification evidence.
+
+| Finding and cause | Correction and required proof |
+| --- | --- |
+| V1-01: a tolerated failed first fetch counted as a failed process. A run that matched Git's own success ended `failed-with-effects`. | That fetch counts as exit 0 when its row reaches the target. Contract §12 and T223. |
+| V1-02: the connect step writes the Git link and removes the kept index, but reconciliation reads HEAD only. | The `connected` flag counts as an effect, like `fetched`. FR-052, contract §12, data-model §7 and §9, plan.md, T223, and T234. |
+| V1-03: the re-check after an approved `confirmRun` had no outcome and no marker rule. | It ends `failed` with `STALE_REVIEW` or `TRUST_CHANGED`, without a process, and resolves the marker. Contract §9 and §12, data-model §7, and T223. |
+| V1-04 to V1-06: the check before a `reuse` step read HEAD and refs, not the folder. In an empty folder, a check read could resolve to the superproject. | A folder check before the first step of every `reuse` row. The check reads use `--git-dir` and `--work-tree`. FR-049, contract §12, and T223. |
+| V1-07: the relative-hooks variant had no `reuse` row. | F29, T222, T223, and quickstart §9 step 7. |
+| V1-08 and V1-09: plan.md left out `no-fs-uuid` and `folder-not-empty` in two summaries. | The Repository refused row and the submodule summary. |
+| V1-10: FR-047 forbade the forced checkout that Git's own update runs. | FR-047 forbids a force option. The empty-folder rule protects that checkout. |
+| V1-11: the `findmnt` UUID came from udev data, which can be missing right after a start (P7). | The `statfs` ID of an ext4 file system. FR-043, contract §9 and §11, data-model §1 and §2, T205 to T207, T211, T252, and the harness rule. |
+| V1-12: contract §6 did not bound a native child that waits after its hook exits. | That child lingers until Revoke trust or close. |
+| R1 to R3, V2-02, V2-03, V2-12: Space and the file buttons left focus, bytes, pending reads, and refusals open. | Reviewer defaults. FR-038, FR-052, plan.md, C10, T133, T180, T201 to T203, T234, T258, and T260. |
+| V2-01 and V2-14: at 225% text, the comfortable status area minimum is 179 DIPs, above the 168 DIP cap. | The minimum wins, and the work area scrolls. plan.md "Status area", T122, and UI-17. |
+| V2-04, V2-10, V2-11, and V2-15: some captures and keyboard checks were missing. | UI-05, T203, quickstart §5 step 6, T237, and T160. |
+| V2-05 and V2-08: the stall notice could remove a focused control, and two F6 rules differed. | A focused notice stays until focus leaves it. One F6 rule. plan.md and T260. |
+| V2-13: count texts had no singular form. | plan.md "Long text", contract §9 and §12, T259, and T260. |
+| V2-06, V2-07, and V2-17: stale task ranges and the order of the clarifications. | plan.md, this file, and spec Clarifications. |
+
+The register keeps 68 rows. These corrections have not received runtime verification.
+
 ## R12. History graph component and data decision
 
 **Decision**: No inspected package fits the contract. Build the workbench's own History rows with Base UI controls and theme tokens. Implement Arbareto's own lane function, modeled on VS Code's per-row swimlane model.
@@ -1273,13 +1365,34 @@ The probes ran on 2026-09-30 on the host above. They used only session scratch f
 - `stat --file-system` reported `v9fs` for `/mnt/c` and `ext2/ext3` for `/`, `/tmp`, and `/home`.
 - WSL showed a Linux name with `\` as U+F05C in the UNC listing.
 
+**P6. Identity sources and I/O accounting (2026-10-01).**
+
+- The probe ran in the running `Ubuntu-24.04`, kernel `6.18.33.2-microsoft-standard-WSL2`, as the default user. It started no distro and changed no configuration.
+- `stat --format=%d` of a `/tmp` folder gave 2096, which is device 8:48 (`/dev/sdd`). `lsblk` listed the disks `sda` to `sde`. The second distro `Ubuntu` was stopped, so no start-order comparison ran (T252).
+- `findmnt -no UUID -T <folder>` gave `3255683f-53a2-4fdf-91cf-b4c1041e2a62` as the normal user. `blkid` as that user printed nothing, because `/dev/sdd` allows only `root` and `disk`. `/dev/disk/by-uuid` held the UUID, so the value came from udev data.
+- `stat -f --format=%i` gave `fedc9aa3bd65bc57`. That equals the XOR of the two little-endian 64-bit halves of the UUID, as ext4 derives its file-system ID.
+- `dpkg -S` showed that util-linux 2.39.3 provides both `/usr/bin/findmnt` and `/usr/bin/setsid`.
+- A user scope listed only the `cpu`, `memory`, and `pids` controllers, and it had no `io.stat` file. `/proc/<pid>/io` of a scope process was readable.
+- A shell ran `dd` for 50 MiB. After it reaped `dd`, its own `rchar` had grown by 52,460,986 bytes.
+
+**P7. File-system ID source (2026-10-01).**
+
+- The probe ran in the running `Ubuntu-24.04`, kernel `6.18.33.2-microsoft-standard-WSL2`, as the default user. It started and stopped no distro and changed no configuration. It removed its one folder in `/tmp`.
+- `stat --dereference --file-system --format=%t:%i` gave `ef53:fedc9aa3bd65bc57` for `/`, `/tmp`, the home folder, and the Git file. In this distro, `/tmp` lies on the root ext4 disk, not on tmpfs.
+- Linux `include/linux/statfs.h` `uuid_to_fsid` XORs the two little-endian 64-bit halves of a UUID. `fs/ext4/super.c` `ext4_statfs` sets `f_fsid` with it from the superblock UUID (Linux v6.18).
+- GNU `stat` prints the two 32-bit words of `f_fsid` in reverse order. For UUID `3255683f-53a2-4fdf-91cf-b4c1041e2a62`, that gives `fedc9aa3bd65bc57`, the probed value.
+- `statfs` reads the mounted superblock, so it needs no udev data. `blkid -p /dev/sdd` failed with "Permission denied" for the user. `udevadm info` held `ID_FS_UUID`, so `findmnt` took its UUID from udev data.
+- `systemd-udev-trigger` became active at 3.95 seconds of monotonic time, and user space started at 3.23 seconds. A `findmnt` read before then could give an empty UUID.
+- `/mnt/c` gave `1021997:100000000` (`v9fs`). `/dev/shm` and `/run/user/1000` gave type `1021994` (tmpfs) with different IDs for the two mounts. Linux `fs/xfs/xfs_super.c` derives the XFS ID from the device number.
+- Consequence: the identity uses the `statfs` ID for type `ef53` only, and `findmnt` leaves the design (contract §11). Other types give `no-fs-uuid`. So XFS and btrfs folders are refused, although `findmnt` covered them. WSL tests skip with `wsl-fixture-fs-id` when `/tmp` is not ext4.
+
 ### Consequences and open items
 
-- The route runs before any `FileIdInfo` request, and WSL identity comes from Linux `stat` plus the distro GUID (contract §11).
+- The route runs before any `FileIdInfo` request. WSL identity comes from the distro GUID, the UUID-derived `statfs` ID, and the `stat` inode (contract §11, P7). Design change, 2026-10-01: the device number left the identity, because it can follow the disk attach order (P6). A folder without that ID gives reason `no-fs-uuid`.
 - The candidate time rule of contract §4 steps 100 ns back. So a rounded UNC time cannot fall after the Linux time.
 - A distro without a systemd user manager is refused with reason `no-user-manager`. Closed question, 2026-09-30: the user chose this refusal over an ownership limit (spec Clarifications, 2026-09-30). The remedy tells the user to set `systemd=true` under `[boot]` in `/etc/wsl.conf` and restart the distro (contract §11).
 - WSL rows stay `unverified` until a WSL2 distro with Git 2.55.0 or later exists. The reference distro has Git 2.43.0. The user must install a newer Git; the app and its tests never install it. The Git floor refusal can run on the reference distro now.
-- P1 proved ownership: a single-scope `cgroup.procs` count, a glob kill, the anchor exit after stdin closes, and the Job-close kill. The anchor count protocol is a design, not a probe result: one count for each stdin line, summed over `arbareto-<operationId>-*.scope`. T205 and T209 test it.
+- P1 proved ownership: a single-scope `cgroup.procs` count, a glob kill, the anchor exit after stdin closes, and the Job-close kill. The anchor count protocol is a design, not a probe result: one count for each stdin line, summed over `arbareto-<operationId>-*.scope`. The I/O sum on the same line is a design too, based on P6. T205 and T209 test both.
 - Unverified: a stopped-distro start time (the probes started no distro), a WSL1 distro, and a distro without systemd. Also unverified: `virtiofs` drive mounts, the atomicity of a replace over the WSL file share, and packaged behavior.
 - Design change, 2026-10-01 (spec Clarifications): every wrapper mode now runs its program through `setsid --wait`, not only `network` mode. Reason: a WSL hook in `mutation` mode could open `/dev/tty` on the hidden console and wait until the commit deadline. R14 probe S10 showed that `setsid --wait` under `CREATE_NO_WINDOW` blocks the `/dev/tty` open and passes the exit status. Consequence: Git's children get no `SIGHUP` at the wrapper exit, so the P1 S6 result no longer describes the product. A plain background child now lingers in its scope, as on Windows. The anchor counts it, and the Job close ends it. A distro without `setsid` is refused with reason `no-setsid`.
 - Re-probe needed for that change, before T209 can pass. The probe must show this under `setsid --wait` inside a scope in `mutation` mode. A plain, a `nohup`, and a `setsid` child each survive Git's exit. The anchor counts all three, and a Job close ends them within 1 second. A hook that opens `/dev/tty` fails at once. Git's own `daemonize()` still detaches maintenance inside the scope. T209 runs these cases and reports them here. No probe has run them yet.
@@ -1297,20 +1410,30 @@ Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-comm
 | Decision | Reason |
 | --- | --- |
 | Two operations: a read-only review with a one-use token, then the update. | This mirrors `reviewCommit` and `commit`. The token binds the reviewed plan, and a changed plan refuses the start. |
-| One Git process for each top-level submodule, with `-- :(literal)<path>`. | The app then knows "i of n" and each exit status without parsing translated text. A plain pathspec matched the wrong submodule (S8). |
-| The review runs nine fixed commands inside initialized submodules. | These commands load no index and ran no canary (S3). They narrow the rule that reads never start Git inside a submodule. Reads keep that rule. Since 2026-10-01, they also run in each kept Git directory, with `--work-tree` set to that directory (S11). |
-| Refuse commits that no ref holds. | Git detaches HEAD without a warning, and only the reflog keeps such commits until expiry (S4). This slice offers no action that can drop commits (FR-027). |
+| Separate clone, connect, fetch, check, and checkout steps for each submodule (2026-10-01). The clone, connect, and checkout steps pass `-- :(literal)<path>`. | The app checks the refs between Git's fetch and its checkout (S20). It knows "i of n" and each exit status without parsing translated text. A plain pathspec matched the wrong submodule (S8). |
+| The review runs ten fixed commands inside initialized submodules. | These commands load no index and ran no canary (S3, S23). They narrow the rule that reads never start Git inside a submodule. Reads keep that rule. Since 2026-10-01, they also run in each kept Git directory, with `--work-tree` set to that directory (S11). The `rev-list` read decides whether a row fetches, as in Git's own update (S19). |
+| Refuse commits that no ref holds. Every ref counts. | Git detaches HEAD without a warning, and only the reflog keeps such commits until expiry (S4). This slice offers no action that can drop commits (FR-027). |
 | Refuse update modes `merge`, `rebase`, and `!command` for existing submodules. | Merge and rebase can leave an unfinished operation. A local `!command` ran a repository command (S5). |
-| Refuse an interrupted clone, with the `.git` file path as remedy. | Git cannot recover it alone, and deleting that one file let Git recover (S9). The app never repairs state. |
+| Refuse an interrupted clone, with the folder path as remedy. | Git cannot recover it alone. Deleting the `.git` file let Git recover (S9), and so did moving the folder out (S13). Since 2026-10-01 the remedy moves the folder, because a deleted `.git` file can expose changed files (S13). The app never repairs state. |
 | Report Git's refusal to overwrite local changes as a failed row. | Git kept the changes and continued with the other submodules (S7). |
 | A native confirmation for each run when submodules hold programs. | An update ran submodule monitors, filters, hooks, and transport programs (S3, S6). Their configuration lies inside the Git directory, so it is repository-controlled. |
 | The stored fingerprint omits the submodule registration keys. | Git's initialization writes only URL, active, and copied update keys (S1, S5), and none names a program. So the update keeps a stored approval, and no approval loop starts. |
 | Keep Git's protocol defaults, and never set a protocol key. | Git blocked `ext` and `file` in submodule clones by default (S6). |
 | `GIT_TERMINAL_PROMPT=0`, and no console for the update process. | Git then never prompts on a terminal. Git starts `ssh` detached when it has no console (compat/mingw.c:2251-2261). |
+| The `network` policy sets `GIT_PROTOCOL_FROM_USER=0` (2026-10-01). | Git's submodule command sets it for its children (git-submodule.sh:29-30). The app's own fetch allowed a `file` remote without it (S21). |
 | `setsid --wait` in WSL `network` mode. Replaced on 2026-10-01: every wrapper mode uses it (R11 "UX, start mode, and WSL terminal remediation"). | `wsl.exe` needs a console, and with a hidden console the Linux command could open `/dev/tty` (S10). |
 | Keep `--no-lazy-fetch`. | It did not block explicit submodule clones or fetches (S1, S6). |
 | A 300-second inactivity deadline and a 4-hour ceiling for each update process. | A fixed 30-second deadline kills large clones. Git prints progress while a transfer advances. The window leaves time for a credential helper sign-in. |
 | Progress from the untranslated `NN% (a/b)` counter only. | Git translates every other progress text (progress.c:134). |
+| A `reuse` row needs an absent or empty folder (2026-10-01). | Git's reuse checkout runs `checkout -q -f` and overwrote a changed tracked file (S13). |
+| The `clone-interrupted` remedy moves the folder out of the repository (2026-10-01). | After the move, Git recreated the folder and finished, and the moved folder kept every byte (S13). Deleting only `.git` exposed changed files to `checkout -q -f`. |
+| Relative values from every scope give `unchecked` entries for rows whose worktree the update writes (2026-10-01). | A global relative `core.hooksPath` ran cloned and target-tree hooks without a confirmation (S14). |
+| Fetch first, check HEAD and every ref again, then check out with `--no-fetch` (user decision, 2026-10-01). | A pruning fetch removed the only ref that held HEAD (S15). The check after the fetch refused that row and kept HEAD (S20). The replaced rule ignored `refs/remotes` and refused the normal state of most submodules. |
+| A `reuse` row that fetches connects first, through Git (2026-10-01). | A fetch run from another folder ran the superproject's relative hooks (S22). The connect step keeps Git's own order and folder. |
+| The app visits nested levels itself. A level that needs unconfirmed programs stops with reason `programs` (2026-10-01). | FR-048 requires that the review lists every program. A new dialog during the run would show unlisted programs. |
+| A stall notice after 15 seconds without activity, for commit and submodule steps (user decision, 2026-10-01). | A blocked console read changed no Job I/O counter (S24). The deadlines stay as the backstop. |
+| Activity for the inactivity limit is output or a changed Job I/O sum (2026-10-01). | Fetch and checkout print nothing, and the Job counters showed the silent transfer (S16). |
+| The review reads run again after an approved `confirmRun` (2026-10-01). | The dialog has no time limit. Without a re-check, step 4 would start on unchecked state. |
 
 **Alternatives considered**:
 
@@ -1321,8 +1444,13 @@ Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-comm
 | Persist submodule program approval in the trust record | It changes the record format, and submodule Git directories appear and change with each update. | Reject; confirm each run. |
 | Detect dirty submodules before the start | Status inside a submodule loads its index and can run its monitor and filters before confirmation. | Reject; Git's own refusal becomes a failed row. |
 | Delete an interrupted clone automatically | FR-016 forbids automatic repair. | Reject; show the file path. |
+| Ignore `refs/remotes` and refspec destinations for fetching rows (fourth analysis rule) | It refused the normal state of most submodules. | Reject; the user chose fetch first (2026-10-01). |
+| Run Git's own `update --init --recursive` for each top-level row | Fetch and checkout run in one process, so no check fits between them (S15). | Reject (2026-10-01). |
+| Ask a new `confirmRun` for a nested level | The review never listed those programs (FR-048). | Reject; stop that level with `programs`. |
+| A pseudoconsole whose input the shell closes, for shell-run prompts | No probe tested it, and it changes the console rule. | Not chosen; the user chose the stall notice (2026-10-01). |
+| `submodule--helper get-default-remote` for the fallback remote | It is internal Git plumbing. | Reject for the product; T253 uses it as a test oracle. |
 
-### Probes S1 to S12
+### Probes S1 to S25
 
 The probes ran on 2026-09-30 and 2026-10-01 with Git `2.55.0.windows.3` on the R13 host. They used only session scratch folders and the distro's `/tmp`. Each used an owned `GIT_CONFIG_GLOBAL` with `protocol.file.allow=always` and `GIT_CONFIG_NOSYSTEM=1`. The remotes were local bare repositories: a superproject with two submodules, one of which held a nested submodule. No probe fetched from the internet. These probes are not qualification evidence.
 
@@ -1407,6 +1535,116 @@ The probes ran on 2026-09-30 and 2026-10-01 with Git `2.55.0.windows.3` on the R
 - A scratch repository confirmed the default rule. A single remote named `upstream` received the fetch. With two remotes and no `origin`, `ls-remote --get-url` failed with "No remote configured".
 - So the review lists every remote URL of a fetching row and marks the default remote (contract §12 "Plan").
 
+**S13. Reuse rows and folder state (2026-10-01).**
+
+- A superproject held one initialized submodule. The probe changed a tracked file, added an untracked file, and deleted the `.git` file. The row became `reuse`.
+- `git --no-lazy-fetch submodule update --init --recursive -- ':(literal)sub'` exited 0. `GIT_TRACE` showed `git checkout -q -f <OID>` in the submodule. The tracked file held the committed bytes again, and the untracked file stayed.
+- After `deinit -f`, the folder was empty, and the update succeeded. After the folder was removed, Git recreated it and succeeded.
+- An emulated interrupted clone removed the refs of the kept Git directory, so `rev-parse --verify -q HEAD` failed. The update then failed with "Unable to find current revision". After the probe moved the whole folder out, the update exited 0 at the recorded commit. The moved folder kept `.git`, `f`, and `g`.
+- The same emulated state, with a changed tracked file and only `.git` deleted, ran `checkout -q -f`. The file lost its change.
+- A `clone` row into a folder with a file failed with "clone of ... failed", and the file kept its bytes.
+
+**S14. Relative hooks path in submodules (2026-10-01).**
+
+- An owned global file set `core.hooksPath=.githooks`. The submodule remote held `.githooks/post-checkout` and `.githooks/reference-transaction` canaries. Commits A and B each wrote their own tag.
+- `clone` row: the update ran `reference-transaction A` and `post-checkout A` from the cloned tree. Under the earlier rule, the program list of this row was empty, so no confirmation went out.
+- `fetch-checkout` row from A to B: the fetch ran `reference-transaction A` from the current tree. The checkout then ran `reference-transaction B` and `post-checkout B` from the target tree.
+- `checkout` row from A to a local B: the update ran `reference-transaction B` and `post-checkout B`.
+
+**S15. Remote-tracking refs and prune (2026-10-01).**
+
+- A submodule HEAD was detached at commit X, which only `refs/remotes/origin/feat` held. The submodule set `fetch.prune=true`. The remote deleted `feat`, and the superproject recorded a commit that needed a fetch.
+- `for-each-ref --contains=HEAD --count=1` printed `refs/remotes/origin/feat`, so the earlier rule passed. With `--exclude=refs/remotes`, it printed nothing.
+- The update exited 0, and its fetch removed `refs/remotes/origin/feat`. No ref contained X, and only the HEAD reflog kept it.
+- `--exclude=refs/remotes`, `--exclude=refs/remotes/`, and `--exclude=refs/remotes/origin` each excluded `refs/remotes/origin/a/b`. `--exclude=refs/remotes/origin/*` did not. `--exclude=refs/heads/feat-*` excluded `refs/heads/feat-1`.
+- Decision, 2026-10-01: the user chose fetch first and a check after the fetch (S20). The design uses no `--exclude` pattern.
+
+**S16. Silent transfers and Job I/O counters (2026-10-01).**
+
+- `GIT_TRACE` of a `fetch-checkout` row showed `git fetch` without a progress option, then `git checkout -q <OID>`.
+- A Python `ctypes` probe assigned processes to a Job and read `JobObjectBasicAndIoAccountingInformation`. A 20 MiB socket download to memory raised `OtherTransferCount` by about 21 MB. `ReadTransferCount` stayed almost unchanged.
+- An idle process changed no `IO_COUNTERS` field in 3 seconds.
+- A silent `git fetch -q` of a 40 MB blob from a local remote wrote no output byte. Its Job read 120,049,500 bytes and wrote 160,053,980 bytes.
+- Microsoft Learn states that the Job counters cover every process that was ever in the Job.
+
+**S17. Consoles of shell-run programs (2026-10-01).**
+
+- A Python harness started `git --no-lazy-fetch commit --quiet --file=-` with `DETACHED_PROCESS` and `GIT_TERMINAL_PROMPT=0`. It closed the stdin pipe after the message. Each `pre-commit` hook ran one variant, and the harness killed the tree after 15 seconds.
+- `read -r line < /dev/tty` failed at once with "No such device or address". Plain `Read-Host` returned at once, because its stdin was redirected. `cmd /c pause` also returned at once.
+- `powershell.exe -NoProfile -Command "Read-Host -AsSecureString x"` waited until the kill. So did Windows OpenSSH `ssh-keygen -y -f <key>` with a passphrase key, also with `< /dev/null`. A `sleep 20` control also reached the kill.
+- Started directly with `DETACHED_PROCESS`, the same `ssh-keygen -y` failed at once with "incorrect passphrase supplied". Started with `CREATE_NO_WINDOW`, it waited until the kill.
+- `GIT_TRACE` showed that a `core.sshCommand` without arguments started `ssh.exe` directly. With `-o BatchMode=no` added, Git started `sh.exe -c` instead.
+- The results match an MSYS2 runtime that gives a native console program an invisible console when the shell has none. This research did not read the runtime source.
+
+**S18. Loopback HTTP 401 (2026-10-01).**
+
+- A Python server on `127.0.0.1` answered every request with 401 and `WWW-Authenticate: Basic`. A superproject held one gitlink with the URL `http://127.0.0.1:<port>/x.git`.
+- With `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, and `DETACHED_PROCESS`, the update exited 1 after 1.9 seconds. Stderr held "could not read Username for 'http://127.0.0.1:<port>': terminal prompts disabled".
+- With `http://u@127.0.0.1:<port>/x.git`, stderr held "could not read Password for 'http://u@127.0.0.1:<port>'". So the output tail needs URL redaction there.
+- The probe used `http`, which needs no certificate. T224 adds an `https` variant with a test certificate authority.
+
+The probes S19 to S24 ran on 2026-10-01 with the same Git and setup. The remotes were `leaf`, `mid` with `leaf` nested, `solo`, and a superproject that held `mid` and `solo`. Scripts and traces stay in the session scratch folder.
+
+**S19. What Git's own update runs (`GIT_TRACE`).**
+
+- Clone rows: `submodule--helper clone` ran `git clone --no-checkout --progress --separate-git-dir <modules folder> <URL> <path>`. Git cloned both top-level submodules before the first checkout.
+- Each submodule then ran `rev-list -n 1 <target> --not --all` twice and `checkout -q -f <target>`. Then `submodule--helper update --recursive --super-prefix=<path>/ --jobs=1 --init --progress` ran inside it.
+- A `fetch-checkout` row ran `rev-list`, then `git fetch` with no option, remote, or refspec. The fetch started `git maintenance run --auto --no-quiet --detach`. Then `rev-list` and `checkout -q <target>` ran.
+- A target that existed locally without a ref made `rev-list` print it. Git ran `git fetch`, then `git fetch origin <target>`. The second fetch exited 0, because the object was local. Then `checkout -q <target>` ran.
+- A `reuse` row with a missing target: the clone helper connected the kept Git directory without a clone process. Then `rev-list`, `git fetch`, `rev-list`, and `checkout -q -f <target>` ran.
+- Each submodule child ran with `cd <path>` and `GIT_DIR=.git`.
+
+**S20. The update steps of contract §12.**
+
+- Prune case: HEAD at commit Y was held only by `refs/remotes/origin/feat`, with `fetch.prune=true`. The remote deleted `feat`, and the target needed a fetch.
+- The review read printed `refs/remotes/origin/feat`, so the row passed. `GIT_PROTOCOL_FROM_USER=0 git --no-lazy-fetch -C <submodule> fetch --progress` exited 0 and removed that ref. Its stderr held `NN% (a/b)` segments.
+- After the fetch, `rev-list` found the target reachable. HEAD still pointed to Y, and `for-each-ref --contains=HEAD` printed nothing. So the row refused, and no checkout process ran.
+- The same case without `fetch.prune` kept the ref. `submodule update --init --no-fetch --progress -- ':(literal)solo'` then ran only `checkout -q <target>`.
+- `--no-fetch` without `--recursive` moved `mid` and left its nested `leaf` at the old commit. A second step `-C mid submodule update --init --no-fetch -- ':(literal)leaf'` moved `leaf`.
+- HEADs, the `submodule.*` keys of both levels, and the `modules` folders equaled Git's own `--recursive` in a copy. Clone rows gave the same equality with the same two-step order.
+- `--no-fetch` with a missing target printed "fatal: unable to read tree" and "Unable to checkout". It exited 128 and kept HEAD.
+
+**S21. Transport policy of the fetch step.**
+
+- An owned global file without `protocol.file.allow` was in use, and the row needed a fetch.
+- Git's own update printed "transport 'file' not allowed" twice. It then printed that direct fetching of the commit failed, and it exited 128.
+- The app's `git -C <submodule> fetch` without `GIT_PROTOCOL_FROM_USER` exited 0. With `GIT_PROTOCOL_FROM_USER=0`, it printed "transport 'file' not allowed" and exited 128.
+
+**S22. Fetch folder of a `reuse` row.**
+
+- An owned global file set `core.hooksPath=.githooks`. `reference-transaction` canaries sat in the kept Git directory, in its `hooks` folder, and in the superproject root. The kept Git directory lacked the target.
+- Git's own update ran no canary.
+- `-C <superproject root> --git-dir=<kept> --work-tree=<kept> fetch` ran the superproject root canary four times. With an absent folder as `--work-tree`, the result was the same, and the fetch created no folder.
+- `-C <empty submodule folder> --git-dir=<kept> fetch` ran no canary. So a relative hooks path follows the start folder of the fetch.
+- The connect step `submodule update --init --no-fetch` registered the URL, wrote the `.git` file, and removed the kept index. It failed with "unable to read tree" and exit 128, and HEAD stayed.
+- Then `-C <folder> fetch` ran no canary, and the checkout step ran `checkout -q <target>`. HEAD reached the target, and status was empty. An unchanged second file was present and clean.
+
+**S23. The `rev-list` read and the remote inputs.**
+
+- Canaries covered `core.fsmonitor`, filters with an attribute, 28 hook names, `remote.origin.uploadpack`, `core.sshCommand`, `core.askPass`, and `credential.helper`.
+- `rev-list -n 1 <target> --not --all` ran none of them. A reachable target gave exit 0 and no output. A missing one gave exit 128 and "bad object".
+- A target present without a ref gave exit 0 and printed its ID. The kept-directory form gave the same results.
+- `remote get-url --all <name>` applied `url.<base>.insteadOf` and ran no canary.
+- `submodule--helper get-default-remote <path>` printed the remote whose rewritten URL equaled the `.gitmodules` URL. With one remote, it printed `origin`.
+
+**S24. Job I/O counters during hidden prompts.**
+
+- A Python `ctypes` harness started Git with `DETACHED_PROCESS` and `CREATE_SUSPENDED`. It assigned a kill-on-close Job and read `IO_COUNTERS` once per second for 30 seconds.
+- A `pre-commit` hook ran Windows OpenSSH `ssh-keygen -y -f <passphrase key> < /dev/null`. The counters changed only in the first second, and no output arrived.
+- A `pre-commit` hook ran `powershell.exe -NoProfile -Command "Read-Host -AsSecureString x"`. The last change came at second 11, during the PowerShell start.
+- A `sleep 40` control behaved like the `ssh-keygen` case.
+- `git fetch ssh://localhost/x.git` ran with `core.sshCommand` set to `ssh-keygen -y -f <key> #`. The arguments made Git start `sh`. The counters changed only in the first second.
+- The Job close ended every process, and no `ssh-keygen` or PowerShell process remained.
+
+**S25. Nested recursion of the submodule fetch.**
+
+- A superproject held `mid`, and `mid` held a populated nested `inner`. Upstream, `mid` recorded a new `inner` commit that the local `inner` lacked. No `fetch.recurseSubmodules` or `submodule.recurse` key was set.
+- `GIT_PROTOCOL_FROM_USER=0 git --no-lazy-fetch -C mid fetch --progress` printed "Fetching submodule inner". It fetched the new `inner` commit.
+- The fallback form `fetch --progress origin <mid commit ID>` also printed "Fetching submodule inner" and fetched that commit.
+- With `--no-recurse-submodules`, both forms fetched only `mid`, and `inner` still lacked the commit.
+- With the new `inner` commit already present, the default fetch did not recurse. With `-c fetch.recurseSubmodules=true`, it recursed again.
+- Consequence: both §12 fetch steps pass `--no-recurse-submodules`. The update visits each nested level itself, after the level read and check. With the default configuration, the result equals Git's own update. With `fetch.recurseSubmodules=true`, nested remote-tracking refs can differ (contract §12 "Update protocol").
+
 ### Security notes
 
 - CVE-2024-32002: recursive clones on case-insensitive file systems with symbolic links could run code. The advisory GHSA-8h77-4q3w-gfgv lists fixed versions 2.45.1, 2.44.1, 2.43.4, 2.42.2, 2.41.1, 2.40.2, and 2.39.4. Git for Windows `2.55.0.windows.3` and the distro floor 2.55.0 both contain the fix.
@@ -1418,15 +1656,22 @@ The probes ran on 2026-09-30 and 2026-10-01 with Git `2.55.0.windows.3` on the R
 
 - `GIT_TERMINAL_PROMPT=0` makes Git fail instead of prompting on a terminal (Git `Documentation/git.adoc`).
 - Git Credential Manager reads `GIT_TERMINAL_PROMPT` for its terminal prompts only. Its GUI prompts follow `GCM_GUI_PROMPT` or `credential.guiPrompt`, and `GCM_INTERACTIVE` turns off all interaction (GCM `docs/environment.md`; DeepWiki answer on `IsTerminalPromptsEnabled`). So its sign-in window can still appear. The app sets none of these GCM values.
-- Unverified: the SSH prompt failure without a console. No SSH server was available. T224 and T237 run it when a test SSH server exists, and record `unverified` otherwise.
+- Unverified: the SSH prompt failure without a console. No SSH server was available. T224 and T237 run it when a test SSH server exists, and record `unverified` otherwise. S17 showed that a direct native passphrase read fails at once, and that one under `sh` waits. S24 showed that such a wait does no I/O, so the stall notice detects it.
 
 ### Consequences and open items
 
-- Contract §12 holds the protocol, and FR-047 to FR-054 and SC-017 hold the requirements. F27 to F31 and T220 to T238 hold the tests.
+- Contract §12 holds the protocol, and FR-047 to FR-054 and SC-017 hold the requirements. F27 to F31, T220 to T238, and T253 to T257 hold the tests.
 - Speed: network time has no Git Extensions comparison and no budget. The SC-005 input and stall budgets still apply while the update runs. T237 samples them during an F30 clone.
-- Closed item, 2026-10-01: contract §6 "Console and input" now starts every Git for Windows process without a console. Git without a console starts each child with `DETACHED_PROCESS` (compat/mingw.c:2247-2263). Every policy sets `GIT_TERMINAL_PROMPT=0`, and each stdin pipe closes after its input. T027 and T162 test a hook that waits for terminal input. Open at that time: a WSL hook outside `network` mode kept the hidden terminal. Closed later on 2026-10-01: every wrapper mode uses `setsid --wait` (contract §11 "Process launch").
+- Closed item, 2026-10-01: contract §6 "Console and input" now starts every Git for Windows process without a console. Git without a console starts each child with `DETACHED_PROCESS` (compat/mingw.c:2247-2263). Every policy sets `GIT_TERMINAL_PROMPT=0`, and each stdin pipe closes after its input. T027 and T162 test a hook that waits for terminal input. Open at that time: a WSL hook outside `network` mode kept the hidden terminal. Closed later on 2026-10-01: every wrapper mode uses `setsid --wait` (contract §11 "Process launch"). Reopened later on 2026-10-01 by S17 (below).
 - Closed item, 2026-10-01, by a design decision: Git 2.55 offers `extensions.submodulePathConfig`. It places each submodule Git directory by `submodule.<name>.gitdir`, not under `modules/<name>` (git-config(1)). Contract §12 assumes the default layout for `reuse` rows and the kept-directory walk. Under the extension, the review can miss the programs of a kept Git directory. Decision: `reviewSubmodules` refuses with `UNSUPPORTED_SUBMODULE` reason `gitdir-config`. The refusal applies when the extension is enabled or any `submodule.<name>.gitdir` is set. The remedy runs the update in a terminal. FR-049, contract §9 and §12, data-model §9, an F29 variant, and T223 carry the rule. No real-Git run has verified the refusal yet.
 - Unverified: every WSL row, because the reference distro has Git 2.43.0. Also the SSH prompt failure, a real credential helper window, and packaged behavior.
+- Reopened item, 2026-10-01: the console rule holds only for programs that Git starts directly. Under a hook, a native console read waited until the kill (S17). Contract §6 now states the real bound: the deadline of the operation. The stall notice shows the wait before that deadline (S24).
+- Closed item, 2026-10-01, by a user decision: a `core.sshCommand` with arguments to Windows OpenSSH waits on an invisible console. After 15 seconds without activity, the status shows the stall notice with Cancel and a terminal command. The 300-second limit stays as the backstop. The same notice covers commit hooks. Contract §6 "Activity and stall notice", FR-019, FR-051, F11, F30, T027, T162, T224, T225, and T255 to T257 carry it.
+- Closed item, 2026-10-01, by a user decision: the S15 rule refused a common state. The update now fetches first, checks HEAD and every ref again, and checks out with `--no-fetch` (S20). Contract §12 "Update protocol", FR-047, FR-049, F28, T222, T223, and T230 carry it.
+- Unverified: the stall notice in the packaged shell, and the WSL wrapper value `GIT_PROTOCOL_FROM_USER=0`. Also the fallback remote rule for a relative `.gitmodules` URL (T253, T232).
+- Design limit: a `reuse` row can skip the fetch of Git's own update. This happens when its kept Git directory holds the target without a ref. Its connect step checks out at once. A skipped fetch cannot remove a ref.
+- Unverified: the Job I/O signal in the packaged shell, and the WSL I/O sum during a real fetch (T225, T232).
+- Closed item, 2026-10-01: the first fetch of a row recursed into nested submodules on demand (S25). Both fetch steps now pass `--no-recurse-submodules`. Contract §12, plan.md, T223, and T227 carry it.
 
 Sources: [submodule--helper update strategy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2107-L2147), [initialization active key](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L596-L597), [current revision failure](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2834-L2838), [GIT_PROTOCOL_FROM_USER](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/git-submodule.sh#L29-L30), [detached ssh](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L2251-L2261), [progress counter](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/progress.c#L134), [protocol policy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/protocol.adoc), [environment variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc), [RelNotes 2.45.0](https://github.com/git/git/blob/master/Documentation/RelNotes/2.45.0.adoc), [GHSA-8h77-4q3w-gfgv](https://github.com/git/git/security/advisories/GHSA-8h77-4q3w-gfgv), [GHSA-vwqx-4fm8-6qc9](https://github.com/git/git/security/advisories/GHSA-vwqx-4fm8-6qc9), [GCM environment](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/environment.md), [submodule fetch](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L2644-L2665), [submodule default remote](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L77-L115), [default remote](https://github.com/git/git/blob/v2.55.0/remote.c#L666-L680), [fetch.all](https://github.com/git/git/blob/v2.55.0/builtin/fetch.c#L2700-L2720), [nested Git directory refusal](https://github.com/git/git/blob/v2.55.0/submodule.c#L2402-L2442).
 

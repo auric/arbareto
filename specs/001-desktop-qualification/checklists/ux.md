@@ -81,7 +81,7 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 
 ## Screenshot Captures
 
-- [x] CHK040 Does every required visible state map to at least one capture with a fixed configuration? [Coverage] — plan.md "State coverage" maps all 29 rows of "Required visible states" to captures. WSL location and Starting WSL distro map to UI-19 (added 2026-10-01). No selection maps to UI-03, UI-05, and UI-11, and Succeeded to UI-05 and UI-13.
+- [x] CHK040 Does every required visible state map to at least one capture with a fixed configuration? [Coverage] — plan.md "State coverage" maps all 29 rows of "Required visible states" to captures. WSL location and Starting WSL distro map to UI-19 (added 2026-10-01). No selection maps to UI-03 and UI-11, and Succeeded to UI-05 and UI-13.
 - [x] CHK041 Are capture metadata and pass conditions defined, including clipped-capture rejection? [Measurability] — plan.md "Screenshot review during implementation" metadata paragraph and clipped-capture rule.
 
 ## Cross-Artifact Consistency

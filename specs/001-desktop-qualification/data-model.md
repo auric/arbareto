@@ -24,7 +24,7 @@ A WSL Git installation is one Linux Git per distro (contract §11 "Git per distr
 | `location` | `windows` or `wsl`. |
 | `distro` | Listed distro name and registration GUID. A new GUID is a new installation. |
 | `executablePath` | Absolute Linux path from `command -v git` and `readlink -f`. Never under `/mnt/`. |
-| `executableIdentity` | Device, inode, size, and modification time from `stat`, plus the version text. A change gives `GIT_CHANGED`. |
+| `executableIdentity` | UUID-derived file-system ID from `stat --file-system`, and inode, size, and modification time from `stat`, plus the version text. A change gives `GIT_CHANGED`. A file system without a stable ID gives `GIT_UNSUPPORTED` with reason `no-fs-uuid` (contract §11). |
 | `version` | Linux Git version. `admission` is `admitted` from `2.55.0`. A lower, unparseable, or `.windows.` version is `unsupported`. |
 | `helpers` | Absolute Linux paths of `systemd-run` and `systemctl`, and a passed scope test. Without them, the distro gives `WSL_UNAVAILABLE`. The absolute path of `setsid`. Without it, the distro gives `WSL_UNAVAILABLE` with reason `no-setsid`, because every wrapper mode needs it (contract §11 "Git per distro"). |
 
@@ -68,14 +68,14 @@ Resolve paths through Git before filesystem canonicalization. Never derive paths
 
 On Windows, the shell supplies every volume and file identity (contract §6). An identity is the 64-bit volume serial number plus the 128-bit file ID. Keep this platform behavior outside shared Git semantics.
 
-A WSL identity is the distro GUID plus the Linux device and inode numbers from `stat` (contract §11). `FileIdInfo` fails on WSL paths. Both prefixes of one folder give one normalized UNC identity, so they give one `repositoryId`. A worktree, Git directory, or common directory on the other side gives `UNSUPPORTED_REPOSITORY` with reason `mixed-location`.
+A WSL identity is the distro GUID, the UUID-derived file-system ID, and the inode number (contract §11). Both come from `stat`. The Linux device number is not part of it, because it can change between distro starts. A file system without a stable ID gives `UNSUPPORTED_REPOSITORY` with reason `no-fs-uuid`. Only ext2, ext3, and ext4 derive the ID from their UUID. `FileIdInfo` fails on WSL paths. Both prefixes of one folder give one normalized UNC identity, so they give one `repositoryId`. A worktree, Git directory, or common directory on the other side gives `UNSUPPORTED_REPOSITORY` with reason `mixed-location`.
 
 WSL start and poll transitions:
 
 | Current state | Event | Next state and required behavior |
 | --- | --- | --- |
 | none | Registration or restore of a WSL path; the running list names the distro | `running`. The Git probe runs with the §5 probe deadline. |
-| none | Registration or restore; the running list does not name the distro | `starting`. The renderer shows "Starting WSL distro <name>" with Cancel. The Git probe runs with the 60-second start deadline. |
+| none | Registration or restore; the running list does not name the distro | `starting`. The renderer shows "Starting WSL distro <name>…" with Cancel. The Git probe runs with the 60-second start deadline. |
 | `starting` | Git probe succeeds | `running`. Registration continues. |
 | `starting` | Cancel through `cancel` with the registration `operationId` | Registration ends `canceled`. The current workspace stays unchanged. The app never stops the distro. |
 | `starting` | Deadline or `wsl.exe` failure | Registration ends `failed` with `DEADLINE` or `WSL_UNAVAILABLE` reason `start-failed`. |
@@ -197,7 +197,7 @@ The service retains the authoritative hunk data. The renderer receives display d
 | File approval | Repository, snapshot, comparison, entry, direction, and one-use token. It binds the index entry and the HEAD entry of each changed path. For `stage`, it also binds the existence, type, size, and raw SHA-256 of the whole working file. `unstage` binds no working bytes (contract §4 "File staging"). |
 | Commit review | Repository, snapshot, complete staged scope, retained reviewed index, HEAD target/OID, execution-policy disclosure, trust, and review token. |
 | Commit request | Review token, message, and explicit confirmation of the complete staged scope. The service issues the operation identifier in its accepted response. |
-| Submodule review | Repository, snapshot, superproject HEAD, index gitlinks, `.gitmodules` digest, and relevant configuration. The plan rows (§9), each submodule HEAD and `.git` entry, and the refusals. The submodule program list digest, trust, and one-use token. |
+| Submodule review | Repository, snapshot, superproject HEAD, index gitlinks, `.gitmodules` digest, and relevant configuration. The plan rows (§9), each submodule HEAD and `.git` entry, and the reachability of each target. It also binds the folder state of each `reuse` row and the refusals. The submodule program list digest, trust, and one-use token. The update checks these values again after an approved run confirmation (contract §12 "Update protocol"). |
 
 Tokens expire on refresh, relevant state change, service restart, or successful consumption. Contract §8 "Token invalidation" defines refresh and relevant state change. After a hunk or file approval expires, the renderer requests the comparison again. It keeps a hunk whose canonical digest stays unchanged, and a file whose entry keeps its category (contract §8). After a submodule review token expires, the renderer requests the review again and keeps the review dialog open. A changed plan shows a notice. A consumed token stays bound to its operation for the rest of the service session. A repeated request with that token returns the operation's state and `operationId` (contract §2). Other expired tokens require a new review or selection.
 
@@ -228,7 +228,8 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `repositoryId`, `commonIdentity` | Registered target and mutation exclusion group, when applicable. Pre-registration operations use a native bootstrap context. |
 | `kind` | One operation from the protocol allowlist. |
 | `state` | State from the transition table below. |
-| `phase` | Bounded operation phase, including preflight, candidate verification, publication, commit handoff, submodule confirmation, submodule update, and reconciliation where applicable. |
+| `phase` | Bounded operation phase, including preflight, candidate verification, publication, commit handoff, submodule confirmation, submodule fetch, submodule update, and reconciliation where applicable. |
+| `stalled` | `commit` and Update submodules only. True while the running Git process has shown no output byte and no I/O change for 15 seconds. The next activity sets it false. Progress events carry it. The renderer then shows the stall notice with Cancel and one command (contract §6 "Activity and stall notice"). It changes no state and no deadline. |
 | `ownedProcesses` | Native process handles and operation Job identity. Never process-name matching. After a mutation ends, a Job with remaining processes becomes a lingering Job (contract §6 "Lingering Jobs"). It closes when it is empty or the application closes. A WSL operation also owns its systemd user scopes `arbareto-<operationId>-<n>.scope`, which every Job close ends (contract §11). |
 | `lingeringDescendants` | Mutation outcomes only. The count of owned processes that still ran when the last execution process exited. It comes from the shell's `activeDescendants` exit reply. For a WSL mutation, the anchor count supplies it (contract §11). It is 0 when a cancellation during `reconciling` or a revoke ends them (contract §6). No process name, PID, or argument. |
 | `limits` | Output, duration, concurrency, and framing limits from the protocol. |
@@ -236,7 +237,7 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `effects` | Reconciled HEAD, index, working-file, and operation-state differences. |
 | `diagnostic` | Bounded error code and safe explanation. No raw environment, repository content, or credentials. |
 | `outputTail` | Three carriers only. A commit that ends `failed`, `failed-with-effects`, or `unknown` carries it (contract §9). So does a failed `applyFile` `stage` step, and each row of a failed Update submodules process. The sanitized, redacted end of the commit process stderr, with hook output. It holds at most 16 KiB and 100 lines (contract §9 "Commit failure output"). A failed `stage` step takes it from the stderr of its `update-index` process. Plain text for display. Never logged or persisted. A failed Update submodules process gives its row its own tail by the same rules (contract §12 "Output tail"). |
-| `submoduleResults` | Update submodules only. One result per plan row: row ID, path, state, and old and new commit. A failed process adds its `outputTail` and remedy (§9). |
+| `submoduleResults` | Update submodules only. One result per plan row and per row that the run added. Each holds the row ID, path, state, old and new commit, and the flags `fetched`, `connected`, and `found`. A failed process adds its `outputTail` and remedy. A refused row adds its reason, text, and remedy (§9). |
 
 ### State transitions
 
@@ -250,6 +251,9 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `running` | Mutation finishes or fails | `reconciling`; keep further mutations blocked. |
 | `running` (read) | Read deadline expires | Close the operation Job, refresh relevant state, then `failed` with `DEADLINE`. |
 | `running` (Update submodules) | The submodule program confirmation is declined | `canceled`. No update process starts, and the recovery marker is resolved. |
+| `running` (Update submodules) | The re-check after an approved program confirmation finds a change | `failed` with `STALE_REVIEW` or `TRUST_CHANGED`. The review token stays consumed. No update process starts, no reconciliation runs, and the recovery marker is resolved (contract §12 "Update protocol" step 3). |
+| `running` (`commit` or Update submodules) | The running Git process shows no activity for 15 seconds | Stay `running`. Set `stalled`, and show the stall notice. The next activity clears it. No deadline changes (contract §6 "Activity and stall notice"). |
+| `running` (Update submodules) | A check or a level read finds a refusal | Stay `running`. That row ends `refused`, and no process starts for it or its nested rows. The other rows continue (contract §12 "Refusals during the run"). |
 | `running` (Update submodules) | An update process passes its inactivity deadline or ceiling | Close the operation Job at once, with every descendant. Start no later update process. Then `reconciling`, with `DEADLINE` and reason `inactivity` or `ceiling` (contract §12). |
 | `running` (mutation) | A Git step, preflight read, or commit process deadline expires | Close the operation Job at once, with every descendant. Then `reconciling`, with `DEADLINE` as the recorded cause. Reconciliation classifies the outcome from observed state (contract §4, §5 "Deadline outcomes"). |
 | `cancel-requested` (mutation) | Processes stop or deadline expires | `reconciling`. |
@@ -299,12 +303,12 @@ Update submodules binds a reviewed plan (contract §12). The plan lives in the s
 | Entity | Fields and rules |
 | --- | --- |
 | Plan row | Opaque row ID, literal path bytes, display path, name, depth, and parent row. Redacted URL, current HEAD or none, and target commit or unknown. A `reuse` or `fetch-checkout` row adds each redacted remote URL of the submodule. It marks the default remote (contract §12 "Plan"). Action, notes, and refusal reason or none. |
-| Action | `clone`, `reuse`, `checkout`, `fetch-checkout`, `none`, or `skip` (contract §12 "Plan"). Nested rows of a parent whose target commit is missing locally carry target unknown. |
-| Refusal reason | `unsaved-commits`, `update-mode`, `clone-interrupted`, `no-url`, `path`, `gitdir-config`, or `limit`, with the code `UNSUPPORTED_SUBMODULE` (contract §12 "Refusals"). One refusal blocks the whole update. |
-| Submodule program | Row ID or kept Git directory, key, scope, origin, and program path or hook file. Each has its digest, `absent`, or `unchecked`. Kept Git directories count (contract §12 "Review reads"). Values show only for the contract §7 value display allowlist. URL user information is redacted. |
-| Row result | Row ID, state, old and new commit, and for a failed process its `outputTail` and remedy. The states are `cloned`, `moved`, `unchanged`, `failed`, `clone-interrupted`, `changed-elsewhere`, and `discovered` (contract §12 "Reconciliation and outcome"). |
-| Progress | Process index, process count, row ID, and percentage or none. No Git text (contract §12 "Progress"). |
+| Action | `clone`, `reuse`, `checkout`, `fetch-checkout`, `none`, or `skip` (contract §12 "Plan"). A row fetches when no ref or HEAD of the submodule reaches its target, as in Git's own update. Nested rows of a parent whose target commit is missing locally carry target unknown. |
+| Refusal reason | `unsaved-commits`, `update-mode`, `clone-interrupted`, `folder-not-empty`, `no-url`, `path`, `gitdir-config`, or `limit`, with the code `UNSUPPORTED_SUBMODULE` (contract §12 "Refusals"). One refusal at the review blocks the whole update. Every ref counts. During the run, a refusal stops only its row and that row's nested rows. The reason `programs` exists only then (contract §12 "Refusals during the run"). |
+| Submodule program | Row ID or kept Git directory, key, scope, origin, and program path or hook file. Each has its digest, `absent`, or `unchecked`. Kept Git directories count (contract §12 "Review reads"). A relative value from any scope can name a file that the update writes. It then gives one `unchecked` entry per such row (contract §12 "Trust"). Values show only for the contract §7 value display allowlist. URL user information is redacted. |
+| Row result | Row ID, state, old and new commit, and for a failed process its `outputTail` and remedy. The states are `cloned`, `moved`, `unchanged`, `failed`, `clone-interrupted`, `changed-elsewhere`, and `refused` (contract §12 "Reconciliation and outcome"). A `clone-interrupted` row carries the folder path and the move-out remedy. A `refused` row carries its reason, text, and remedy. The flag `fetched` is true when a fetch step of the row started. The flag `connected` is true when a clone step, a connect step, or a `reuse` checkout step started. The flag `found` is true when the review did not list the row. Both `fetched` and `connected` count as effects (contract §12 "Reconciliation and outcome"). |
+| Progress | Row index, row count, row ID, phase `fetch` or `update`, percentage or none, and the `stalled` flag (§7). No Git text (contract §12 "Progress"). |
 
 The plan never authorizes a change that Git would not make. It names what Git does for the reviewed state. Git remains authoritative, and reconciliation reports the observed result of each row.
 
-The service keeps the retained plan until reconciliation succeeds (contract §5). A refresh during recovery compares each row with it (contract §8).
+The service keeps the retained plan, with the rows that the run adds, until reconciliation succeeds (contract §5). A refresh during recovery compares each row with it (contract §8).

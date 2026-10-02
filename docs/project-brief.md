@@ -228,3 +228,7 @@ All URLs below were inspected as research sources; moving main branches may chan
 - S36: CodeGraph author-run residual context benchmark — https://raw.githubusercontent.com/colbymchenry/codegraph/main/docs/benchmarks/residual-context-occupancy.md
 - S37: Serena semantic features and TypeScript backend — https://oraios.github.io/serena/01-about/025_features.html ; https://raw.githubusercontent.com/oraios/serena/main/src/solidlsp/language_servers/typescript_language_server.py
 - S38: Pinned Spec Kit docs — https://raw.githubusercontent.com/github/spec-kit/v1.0.12/docs/quickstart.md ; https://raw.githubusercontent.com/github/spec-kit/v1.0.12/docs/reference/integrations.md
+
+## Later features
+
+- PuTTY support for SSH: plan it with the feature that adds fetch, push, and pull. Let the user choose plink or OpenSSH. Start Pageant and load the remote key on request, and launch PuTTYgen. Set `GIT_SSH` only for processes that Arbareto starts, and never change the user Git configuration. A plink host-key prompt must fail fast and offer an accept step. This needs an amendment of feature 001 FR-051.

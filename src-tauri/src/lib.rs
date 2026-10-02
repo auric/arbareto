@@ -13,6 +13,12 @@ mod spawn;
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+                .title("Arbareto")
+                .build()?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("failed to run the Tauri application");
 }

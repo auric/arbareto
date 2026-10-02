@@ -13,7 +13,8 @@
     "build": "bun run build:frontend && bun run build:service",
     "typecheck": "bunx --bun tsc --noEmit",
     "test:contracts": "bun test tests/contracts",
-    "test:git": "bun test tests/git"
+    "test:git": "bun test tests/git",
+    "dev": "bun run build && cargo tauri dev"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

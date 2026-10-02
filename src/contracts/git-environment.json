@@ -1,0 +1,69 @@
+{
+  "policies": {
+    "probe": {
+      "remove": [
+        "GIT_INDEX_FILE",
+        "GIT_INDEX_VERSION",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_COMMON_DIR",
+        "GIT_DEFAULT_HASH",
+        "GIT_DEFAULT_REF_FORMAT",
+        "GIT_REFERENCE_BACKEND",
+        "GIT_CONFIG"
+      ],
+      "removePrefixes": ["GIT_TEST_"],
+      "set": { "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C" },
+      "indexFileVariable": null,
+      "preserve": ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]
+    },
+    "read": {
+      "remove": [
+        "GIT_INDEX_FILE",
+        "GIT_INDEX_VERSION",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_COMMON_DIR",
+        "GIT_DEFAULT_HASH",
+        "GIT_DEFAULT_REF_FORMAT",
+        "GIT_REFERENCE_BACKEND",
+        "GIT_CONFIG"
+      ],
+      "removePrefixes": ["GIT_TEST_"],
+      "set": { "GIT_TERMINAL_PROMPT": "0" },
+      "indexFileVariable": null,
+      "preserve": ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]
+    },
+    "mutation": {
+      "remove": [
+        "GIT_INDEX_FILE",
+        "GIT_INDEX_VERSION",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_COMMON_DIR",
+        "GIT_DEFAULT_HASH",
+        "GIT_DEFAULT_REF_FORMAT",
+        "GIT_REFERENCE_BACKEND"
+      ],
+      "removePrefixes": ["GIT_TEST_"],
+      "set": { "GIT_TERMINAL_PROMPT": "0" },
+      "indexFileVariable": "GIT_INDEX_FILE",
+      "preserve": ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]
+    }
+  }
+}

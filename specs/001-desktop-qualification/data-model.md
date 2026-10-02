@@ -113,7 +113,7 @@ Each write is one atomic `readwrite` transaction with the durability hint `stric
 | `persistence` | `stored` or `session`. It is `session` when a digest bound is reached. A session approval lasts until the service session ends: Arbareto closes, or Restart service starts a new session. It writes no record. |
 | `approvedExecution` | Explicit approval for repository-controlled hooks, filters, and configured tools. |
 | `approvalRequired` | Two flags from contract §7 "Mutation trust": one for reads and one for `commit`. |
-| `approvedAt` | Local timestamp for display and qualification records. The stored record keeps it. |
+| `approvedAt` | Approval time for display and qualification records. The stored record and the handshake keep it as UTC in RFC 3339 form. The UI shows it in local time. |
 | `state` | `untrusted`, `approved`, `changed`, or `revoked`. Contract §7 "Trust approval store" derives it from the stored records. |
 
 Approval permits code execution; it does not make repository code harmless. Explain that consequence before approval.

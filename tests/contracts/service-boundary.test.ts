@@ -46,7 +46,7 @@ const HANDSHAKE_FIELDS = {
 };
 const HANDSHAKE = { kind: "handshake", handshake: HANDSHAKE_FIELDS };
 
-// The contract does not define the identity reply form ("Process fields"). This identity shape is a test choice.
+// Contract §6 "Process fields": a Windows identity reply.
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
 const MARKER = {
   markerId: "00000000-0000-4000-8000-000000000000",
@@ -498,15 +498,38 @@ describe("service boundary", () => {
   );
 });
 
+const markerAt = (i: number) => ({ ...MARKER, markerId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}` });
+const markers = (count: number) => Array.from({ length: count }, (_, i) => markerAt(i));
+const trustRecords = (count: number) => Array.from({ length: count }, () => ({ ...TRUST_RECORD }));
+
+describe("startup handshake bounds", () => {
+  // Positive controls for the "65 markers" and "257 trust records" failures.
+  const atBound: Array<[string, Record<string, unknown>]> = [
+    ["64 markers", { markers: markers(64) }],
+    ["256 trust records", { trustRecords: trustRecords(256) }],
+  ];
+  for (const [name, fields] of atBound) {
+    test(
+      `${name} give a sessionId`,
+      async () => {
+        const service = start();
+        service.sendJson({ kind: "handshake", handshake: { ...HANDSHAKE_FIELDS, ...fields } });
+        expect(await service.next()).toEqual({ kind: "handshake", handshake: { sessionId: expect.stringMatching(UUID) } });
+        expect(service.running).toBe(true);
+      },
+      TEST_TIMEOUT_MS,
+    );
+  }
+});
+
 describe("startup handshake failures", () => {
-  const markerAt = (i: number) => ({ ...MARKER, markerId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}` });
   // A failed handshake ends the service, so each case starts its own service.
   const failures: Array<[string, unknown, string]> = [
     ...Object.keys(HANDSHAKE_FIELDS).map((field): [string, unknown, string] => [`missing ${field}`, withoutField(field), "INVALID_REQUEST"]),
     ["an unknown field", { ...HANDSHAKE_FIELDS, extra: 1 }, "INVALID_REQUEST"],
     ["a wrong type", { ...HANDSHAKE_FIELDS, restarted: "false" }, "INVALID_REQUEST"],
-    ["65 markers", { ...HANDSHAKE_FIELDS, markers: Array.from({ length: 65 }, (_, i) => markerAt(i)) }, "INVALID_REQUEST"],
-    ["257 trust records", { ...HANDSHAKE_FIELDS, trustRecords: Array.from({ length: 257 }, () => ({ ...TRUST_RECORD })) }, "INVALID_REQUEST"],
+    ["65 markers", { ...HANDSHAKE_FIELDS, markers: markers(65) }, "INVALID_REQUEST"],
+    ["257 trust records", { ...HANDSHAKE_FIELDS, trustRecords: trustRecords(257) }, "INVALID_REQUEST"],
     ["a malformed bootstrapId", { ...HANDSHAKE_FIELDS, bootstrapId: "not-a-uuid" }, "INVALID_REQUEST"],
     ["version 2", { ...HANDSHAKE_FIELDS, version: 2 }, "PROTOCOL_VERSION"],
   ];

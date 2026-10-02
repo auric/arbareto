@@ -388,6 +388,21 @@ These observations identify a proposed performance reference. They do not establ
 
 The Windows SDK is present. On 2026-09-29, the x64 `kernel32.Lib` exists for SDK 10.0.19041.0, 10.0.20348.0, 10.0.22000.0, 10.0.22621.0, and 10.0.26100.0. An example path is `C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64\kernel32.Lib`. Do not infer a complete build toolchain from Visual Studio registration. The probe linked `fn main(){}` in the scratch directory with `rustc --target x86_64-pc-windows-msvc -C link-arg=/VERBOSE:LIB`. The `Searching` lines named the MSVC and SDK library directories above. The probe wrote nothing into the repository.
 
+**T001 toolchain check, 2026-10-02.** The check installed nothing and changed no tool. Every version meets its plan.md Technical Context minimum. Bun equals the exact runtime `1.4.2`.
+
+| Tool | Command or source | Observed value | Minimum | Result |
+| --- | --- | --- | --- | --- |
+| Git | `git version --build-options` | `git version 2.55.0.windows.3`, `cpu: x86_64`, commit `52ca1113d651127f89477a8763f86ab20f645e1d` | `2.55.0.windows.3` | pass |
+| Bun | `bun --version` | `1.4.2` | exactly `1.4.2` | pass |
+| Rust | `rustc --version` | `rustc 1.98.0 (88d9e12ae 2026-08-18)` | `1.98.0` | pass |
+| Cargo | `cargo --version` | `cargo 1.98.0 (797e8a9bc 2026-08-05)` | `1.98.0` | pass |
+| Tauri CLI | `cargo tauri --version` | `tauri-cli 2.12.0` | `2.12.0` | pass |
+| MSVC toolset | probe `Searching` path | `C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Tools\MSVC\14.51.36231\lib\x64\msvcrt.lib` | `14.51.36231` | pass |
+| Windows SDK | probe `Searching` path | `C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\um\x64\kernel32.lib` and `...\10.0.26100.0\ucrt\x64\ucrt.lib` | `10.0.26100.0` | pass |
+| Linker | `link.exe` banner, Hostx64\x64 | `Microsoft (R) Incremental Linker Version 14.51.36260.0` | none | recorded |
+
+The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64\kernel32.Lib`. The probe linked `fn main(){}` with `rustc --target x86_64-pc-windows-msvc -C link-arg=/VERBOSE:LIB` in the session scratch directory, and the link exited with code 0. The probe wrote nothing into the repository.
+
 Git Extensions `v7.2.1` resolves to `0aea2d6df4c120806c46f1797ba6a45f5d14b345`. Its Windows release includes x64 MSI and portable artifacts. Its release notes require .NET Desktop `10.0.9` or later `10.x` and recommend Git `2.53.0` or later.
 
 Source: [Git Extensions release](https://github.com/gitextensions/gitextensions/releases/tag/v7.2.1).

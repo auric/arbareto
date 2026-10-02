@@ -14,6 +14,17 @@ export type BridgeResponse = {
   result?: unknown;
 };
 
+// Contract §2 progress event. The shell checks its fields.
+export type ProgressEvent = {
+  requestId: string;
+  operationId: string;
+  state: "accepted" | "running" | "cancel-requested" | "reconciling";
+  phase?: string;
+  counters: Record<string, number>;
+  stalled?: boolean;
+};
+export type OnProgress = (event: ProgressEvent) => void;
+
 export type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 export type Listen = (event: string, handler: (event: { payload: unknown }) => void) => Promise<unknown>;
 
@@ -24,13 +35,13 @@ type Target = Partial<Snapshot> & { selectionId?: string };
 type Direction = "stage" | "unstage";
 
 export function createBridge(invoke: Invoke, listen: Listen) {
-  const pending = new Map<string, (response: BridgeResponse) => void>();
+  const pending = new Map<string, { resolve: (response: BridgeResponse) => void; onProgress?: OnProgress; operationId?: string }>();
 
-  function send(operation: OperationName, envelope: Omit<RequestEnvelope, "version" | "requestId" | "operation">): Promise<BridgeResponse> {
+  function send(operation: OperationName, envelope: Omit<RequestEnvelope, "version" | "requestId" | "operation">, onProgress?: OnProgress): Promise<BridgeResponse> {
     const requestId = crypto.randomUUID();
     const request: RequestEnvelope = { version: 1, ...envelope, requestId, operation };
     return new Promise((resolve) => {
-      pending.set(requestId, resolve);
+      pending.set(requestId, { resolve, onProgress });
       // Contract §9: a shell that cannot take the request gives `SERVICE_UNAVAILABLE`, which is always `rejected`.
       invoke(command(operation), { request }).then(
         (response) => settle(requestId, response as BridgeResponse),
@@ -40,9 +51,11 @@ export function createBridge(invoke: Invoke, listen: Listen) {
   }
 
   function settle(requestId: string, response: BridgeResponse) {
-    const resolve = pending.get(requestId);
+    const waiting = pending.get(requestId);
     pending.delete(requestId);
-    resolve?.(response);
+    // Contract §2: a response carries the issued `operationId`. A shell or bridge response cannot know it.
+    const operationId = response.operationId ?? waiting?.operationId;
+    waiting?.resolve(operationId === undefined ? response : { ...response, operationId });
   }
 
   const readSession = () =>
@@ -53,10 +66,10 @@ export function createBridge(invoke: Invoke, listen: Listen) {
 
   let session = readSession();
 
-  async function call(operation: OperationName, target: Target, payload: Record<string, unknown>): Promise<BridgeResponse> {
+  async function call(operation: OperationName, target: Target, payload: Record<string, unknown>, onProgress?: OnProgress): Promise<BridgeResponse> {
     const sessionId = await session;
     if (sessionId === undefined) return { requestId: null, state: "rejected", code: "SERVICE_UNAVAILABLE" };
-    return send(operation, { sessionId, ...target, payload });
+    return send(operation, { sessionId, ...target, payload }, onProgress);
   }
 
   // Contract §2: the page calls `currentSession` at load and after each `service-session` event.
@@ -67,29 +80,42 @@ export function createBridge(invoke: Invoke, listen: Listen) {
   listen("service-stopped", () => {
     for (const requestId of [...pending.keys()]) settle(requestId, { requestId, state: "unknown", code: "STATE_UNKNOWN" });
   });
+  // Contract §2: the bridge routes each progress event by `requestId`. An event without a pending request is dropped.
+  listen("operation-progress", ({ payload }) => {
+    const event = payload as ProgressEvent | null;
+    const waiting = typeof event?.requestId === "string" ? pending.get(event.requestId) : undefined;
+    if (!event || !waiting) return;
+    waiting.operationId = event.operationId;
+    waiting.onProgress?.(event);
+  });
 
   return {
-    getEnvironment: () => call("getEnvironment", {}, {}),
-    chooseGit: () => call("chooseGit", {}, {}),
-    chooseRepository: () => call("chooseRepository", {}, {}),
-    restoreWorkspace: () => call("restoreWorkspace", {}, {}),
-    readWorkspace: (target: ReadTarget, payload: { refresh: boolean; check: "full" | "changes" }) => call("readWorkspace", target, payload),
-    readHistory: (target: Snapshot) => call("readHistory", target, {}),
-    readComparison: (target: Snapshot & { selectionId: string }, payload: { snapshotId: string; entryId: string }) => call("readComparison", target, payload),
-    readTrust: (target: Repository) => call("readTrust", target, {}),
-    approveTrust: (target: Snapshot, payload: { fingerprint: string; approve: true }) => call("approveTrust", target, payload),
-    revokeTrust: (target: Repository, payload: { trustId: string }) => call("revokeTrust", target, payload),
-    applyHunk: (target: Snapshot, payload: { comparisonId: string; hunkId: string; snapshotId: string; direction: Direction }) => call("applyHunk", target, payload),
-    applyFile: (target: Snapshot, payload: { comparisonId: string; snapshotId: string; direction: Direction }) => call("applyFile", target, payload),
-    reviewCommit: (target: Snapshot, payload: { snapshotId: string }) => call("reviewCommit", target, payload),
-    commit: (target: Snapshot, payload: { reviewToken: string; message: string; confirmFullScope: true }) => call("commit", target, payload),
-    reviewSubmodules: (target: Snapshot, payload: { snapshotId: string }) => call("reviewSubmodules", target, payload),
-    updateSubmodules: (target: Snapshot, payload: { submoduleReviewToken: string; start: true }) => call("updateSubmodules", target, payload),
-    cancel: (payload: { operationId: string }) => call("cancel", {}, payload),
-    getOperation: (payload: { operationId: string }) => call("getOperation", {}, payload),
-    requestClose: (payload: { choice: "stay" | "closeIfIdle" | "interruptAndClose" }) => call("requestClose", {}, payload),
-    currentSession: () => send("currentSession", { payload: {} }),
-    dismissRecoveryMarker: (payload: { markerId: string }) => call("dismissRecoveryMarker", {}, payload),
+    getEnvironment: (onProgress?: OnProgress) => call("getEnvironment", {}, {}, onProgress),
+    chooseGit: (onProgress?: OnProgress) => call("chooseGit", {}, {}, onProgress),
+    chooseRepository: (onProgress?: OnProgress) => call("chooseRepository", {}, {}, onProgress),
+    restoreWorkspace: (onProgress?: OnProgress) => call("restoreWorkspace", {}, {}, onProgress),
+    readWorkspace: (target: ReadTarget, payload: { refresh: boolean; check: "full" | "changes" }, onProgress?: OnProgress) => call("readWorkspace", target, payload, onProgress),
+    readHistory: (target: Snapshot, onProgress?: OnProgress) => call("readHistory", target, {}, onProgress),
+    readComparison: (target: Snapshot & { selectionId: string }, payload: { snapshotId: string; entryId: string }, onProgress?: OnProgress) =>
+      call("readComparison", target, payload, onProgress),
+    readTrust: (target: Repository, onProgress?: OnProgress) => call("readTrust", target, {}, onProgress),
+    approveTrust: (target: Snapshot, payload: { fingerprint: string; approve: true }, onProgress?: OnProgress) => call("approveTrust", target, payload, onProgress),
+    revokeTrust: (target: Repository, payload: { trustId: string }, onProgress?: OnProgress) => call("revokeTrust", target, payload, onProgress),
+    applyHunk: (target: Snapshot, payload: { comparisonId: string; hunkId: string; snapshotId: string; direction: Direction }, onProgress?: OnProgress) =>
+      call("applyHunk", target, payload, onProgress),
+    applyFile: (target: Snapshot, payload: { comparisonId: string; snapshotId: string; direction: Direction }, onProgress?: OnProgress) =>
+      call("applyFile", target, payload, onProgress),
+    reviewCommit: (target: Snapshot, payload: { snapshotId: string }, onProgress?: OnProgress) => call("reviewCommit", target, payload, onProgress),
+    commit: (target: Snapshot, payload: { reviewToken: string; message: string; confirmFullScope: true }, onProgress?: OnProgress) =>
+      call("commit", target, payload, onProgress),
+    reviewSubmodules: (target: Snapshot, payload: { snapshotId: string }, onProgress?: OnProgress) => call("reviewSubmodules", target, payload, onProgress),
+    updateSubmodules: (target: Snapshot, payload: { submoduleReviewToken: string; start: true }, onProgress?: OnProgress) =>
+      call("updateSubmodules", target, payload, onProgress),
+    cancel: (payload: { operationId: string }, onProgress?: OnProgress) => call("cancel", {}, payload, onProgress),
+    getOperation: (payload: { operationId: string }, onProgress?: OnProgress) => call("getOperation", {}, payload, onProgress),
+    requestClose: (payload: { choice: "stay" | "closeIfIdle" | "interruptAndClose" }, onProgress?: OnProgress) => call("requestClose", {}, payload, onProgress),
+    currentSession: (onProgress?: OnProgress) => send("currentSession", { payload: {} }, onProgress),
+    dismissRecoveryMarker: (payload: { markerId: string }, onProgress?: OnProgress) => call("dismissRecoveryMarker", {}, payload, onProgress),
   };
 }
 

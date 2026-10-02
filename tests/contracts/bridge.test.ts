@@ -184,12 +184,55 @@ describe("frontend bridge", () => {
     expect(denied.calls.at(-1)!.command).toBe("commit");
   });
 
+  test("an operation-progress event reaches the pending request with its requestId", async () => {
+    const h = harness({ answer: (command, request) => (command === "commit" ? undefined : { requestId: request.requestId, state: "succeeded", result: {} }) });
+    const events: unknown[] = [];
+    const pendingCommit = h.bridge.commit(gen(), { reviewToken: id(), message: "m", confirmFullScope: true }, (event) => events.push(event));
+    await settle();
+    const requestId = h.calls.at(-1)!.request.requestId as string;
+    const operationId = id();
+    const accepted = { requestId, operationId, state: "accepted", counters: {} };
+    h.emit("operation-progress", accepted);
+    expect(events).toEqual([accepted]);
+
+    await h.bridge.cancel({ operationId: (events[0] as { operationId: string }).operationId });
+    const cancel = h.calls.at(-1)!;
+    expect(cancel.command).toBe("cancel");
+    expect(cancel.request.payload).toEqual({ operationId });
+    expect(validateRequest(cancel.request, "renderer").ok).toBe(true);
+
+    // The bridge keeps the recorded operationId for a request that ends without a terminal response.
+    h.emit("service-stopped", { markers: [] });
+    expect(await pendingCommit).toEqual({ requestId, operationId, state: "unknown", code: "STATE_UNKNOWN" });
+  });
+
+  test("an operation-progress event for a settled or unknown requestId calls no handler", async () => {
+    const h = harness();
+    const events: unknown[] = [];
+    const response = (await h.bridge.readHistory(gen(), (event) => events.push(event))) as { state: string };
+    expect(response.state).toBe("succeeded");
+    const requestId = h.calls.at(-1)!.request.requestId as string;
+    h.emit("operation-progress", { requestId, operationId: id(), state: "running", counters: {} });
+    h.emit("operation-progress", { requestId: id(), operationId: id(), state: "accepted", counters: {} });
+    h.emit("operation-progress", null);
+    expect(events).toEqual([]);
+  });
+
+  test("a request rejected before admission resolves with no operationId", async () => {
+    const h = harness({ answer: (_command, request) => ({ requestId: request.requestId, state: "rejected", code: "INVALID_REQUEST" }) });
+    const events: unknown[] = [];
+    const response = (await h.bridge.applyFile(gen(), { comparisonId: id(), snapshotId: id(), direction: "stage" }, (event) => events.push(event))) as Record<string, unknown>;
+    expect(response.state).toBe("rejected");
+    expect(Object.hasOwn(response, "operationId")).toBe(false);
+    expect(events).toEqual([]);
+  });
+
   test("the bridge subscribes to each shell event once and never unlistens", async () => {
     const h = harness();
     await h.bridge.getEnvironment();
     h.emit("service-session");
     await h.bridge.getEnvironment();
-    expect(h.listens.toSorted()).toEqual(["service-session", "service-stopped"]);
+    expect(h.listens.toSorted()).toEqual(["operation-progress", "service-session", "service-stopped"]);
     expect(h.unlistens()).toBe(0);
   });
 

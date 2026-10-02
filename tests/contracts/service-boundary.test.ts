@@ -7,8 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { printOrigin } from "../origin";
+import { createSession, type SessionOptions } from "../../src/git-service/session";
 
 const SERVICE_PATH = printOrigin("../../src/git-service/main.ts", import.meta.dir);
+printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
 const READ_TIMEOUT_MS = 5_000;
 const QUIET_MS = 500;
@@ -71,6 +73,7 @@ type Frame = {
   kind?: unknown;
   handshake?: { sessionId?: unknown; code?: unknown };
   response?: { requestId?: unknown; operationId?: unknown; state?: unknown; code?: unknown };
+  progress?: { requestId?: unknown; operationId?: unknown; state?: unknown; counters?: unknown };
 };
 
 const encoder = new TextEncoder();
@@ -456,6 +459,39 @@ describe("service boundary", () => {
         );
         expect(terminal.length).toBe(1);
       }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "an admitted request gets one accepted event before its terminal response, and a forged request gets none",
+    async () => {
+      // No service handler admits a request yet, so this half drives the session registry in process.
+      const frames: Frame[] = [];
+      const session = createSession({
+        writer: { write: (frame) => void frames.push(frame as Frame), flush: async () => {} },
+        runner: { receive: () => false } as unknown as SessionOptions["runner"],
+        fail: () => {},
+      });
+      session.receive({ type: "frame", body: encoder.encode(JSON.stringify(HANDSHAKE)) });
+      const requestId = crypto.randomUUID();
+      const { operationId } = session.registry.start("getEnvironment", requestId);
+      session.registry.apply(operationId, { type: "valid-read" });
+      session.registry.apply(operationId, { type: "read-complete", result: "succeeded" });
+      const own = frames.filter((f) => f.progress?.requestId === requestId || f.response?.requestId === requestId);
+      expect(own.map((f) => (f.progress ? "progress" : "response"))).toEqual(["progress", "response"]);
+      expect(own[0]).toEqual({ kind: "public", progress: { requestId, operationId, state: "accepted", counters: {} } });
+      expect(own[1].response).toMatchObject({ requestId, operationId, state: "succeeded" });
+
+      const service = start();
+      const sessionId = await service.handshake();
+      const forged = [request(sessionId, "getOperation", { operationId: crypto.randomUUID() }), request(crypto.randomUUID(), "getEnvironment")];
+      for (const frame of forged) {
+        service.sendJson(frame);
+        await expectTypedError(service, frame.request.requestId as string, "UNKNOWN_TARGET");
+      }
+      await service.quietFrames();
+      expect(service.frames.filter((f) => f.progress !== undefined)).toEqual([]);
     },
     TEST_TIMEOUT_MS,
   );

@@ -229,9 +229,47 @@ pub fn renderer_message(frame_body: &str) -> Option<ToRenderer> {
     }
     match (frame.remove("response"), frame.remove("progress")) {
         (Some(response @ Value::Object(_)), None) => Some(ToRenderer::Response(response)),
-        (None, Some(progress @ Value::Object(_))) => Some(ToRenderer::Progress(progress)),
+        (None, Some(progress)) if is_progress(&progress) => Some(ToRenderer::Progress(progress)),
         _ => None,
     }
+}
+
+/// Contract §2: the fields of a progress event. The shell drops any other shape.
+const PROGRESS_FIELDS: [&str; 6] = [
+    "requestId",
+    "operationId",
+    "state",
+    "phase",
+    "counters",
+    "stalled",
+];
+const PROGRESS_STATES: [&str; 4] = ["accepted", "running", "cancel-requested", "reconciling"];
+
+fn is_progress(progress: &Value) -> bool {
+    let Value::Object(event) = progress else {
+        return false;
+    };
+    let identifier = |key| {
+        event
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(is_identifier)
+    };
+    identifier("requestId")
+        && identifier("operationId")
+        && event
+            .get("state")
+            .and_then(Value::as_str)
+            .is_some_and(|state| PROGRESS_STATES.contains(&state))
+        && event
+            .get("counters")
+            .and_then(Value::as_object)
+            .is_some_and(|counters| counters.values().all(|count| count.as_u64().is_some()))
+        && event.get("phase").is_none_or(Value::is_string)
+        && event.get("stalled").is_none_or(Value::is_boolean)
+        && event
+            .keys()
+            .all(|key| PROGRESS_FIELDS.contains(&key.as_str()))
 }
 
 const DENIED: &str = "denied";
@@ -462,6 +500,7 @@ mod tests {
     // Pinned Tauri serves the bundled frontend on Windows at this origin (manager/mod.rs:335-338, webview/mod.rs:1966-1974).
     const LOCAL: &str = "http://tauri.localhost/";
     const REQUEST_ID: &str = "0f0f0f0f-0000-4000-8000-000000000001";
+    const OPERATION_ID: &str = "0f0f0f0f-0000-4000-8000-000000000002";
 
     fn ipc() -> (Ipc, Arc<Mutex<Vec<String>>>) {
         let frames = Arc::new(Mutex::new(Vec::new()));
@@ -594,11 +633,59 @@ mod tests {
             renderer_message(&json!({ "kind": "public", "response": response }).to_string()),
             Some(ToRenderer::Response(response))
         );
-        let progress = json!({ "operationId": REQUEST_ID, "phase": "running", "stalled": false });
+        let progress = json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "running", "counters": {}, "stalled": false });
         assert_eq!(
             renderer_message(&json!({ "kind": "public", "progress": progress }).to_string()),
             Some(ToRenderer::Progress(progress))
         );
+    }
+
+    #[test]
+    fn a_progress_event_outside_the_contract_shape_never_reaches_the_renderer() {
+        let valid = json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "accepted", "phase": "fetch", "counters": { "index": 1 }, "stalled": true });
+        assert_eq!(
+            renderer_message(&json!({ "kind": "public", "progress": valid }).to_string()),
+            Some(ToRenderer::Progress(valid.clone())),
+            "the contract §2 shape"
+        );
+        let with = |key: &str, value: Value| {
+            let mut event = valid.clone();
+            event[key] = value;
+            event
+        };
+        let without = |key: &str| {
+            let mut event = valid.clone();
+            event.as_object_mut().expect("object").remove(key);
+            event
+        };
+        for (name, event) in [
+            ("an unknown key", with("command", json!("git fetch"))),
+            (
+                "a malformed operationId",
+                with("operationId", json!("op-1")),
+            ),
+            ("a missing requestId", without("requestId")),
+            ("a missing operationId", without("operationId")),
+            ("a missing state", without("state")),
+            ("a terminal state", with("state", json!("succeeded"))),
+            (
+                "a negative counter",
+                with("counters", json!({ "index": -1 })),
+            ),
+            (
+                "a fractional counter",
+                with("counters", json!({ "index": 1.5 })),
+            ),
+            ("a missing counters object", without("counters")),
+            ("a non-boolean stalled", with("stalled", json!("yes"))),
+            ("a non-string phase", with("phase", json!(1))),
+        ] {
+            assert_eq!(
+                renderer_message(&json!({ "kind": "public", "progress": event }).to_string()),
+                None,
+                "{name}"
+            );
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ Name: see [docs/name.md](docs/name.md).
 
 ## Tooling
 
-Spec Kit v1.0.12 remains the only feature-planning process. No application dependencies or shadcn project configuration exist yet.
+Spec Kit v1.0.12 remains the only feature-planning process. No shadcn project configuration exists yet.
 
 ### Claude Code helper skills
 

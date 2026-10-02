@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "strict": true,
+    "target": "esnext",
     "noEmit": true,
     "module": "esnext",
     "moduleResolution": "bundler",

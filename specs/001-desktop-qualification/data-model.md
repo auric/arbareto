@@ -247,6 +247,8 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `accepted` | Valid read | `running`. |
 | `accepted` | Mutation exclusion unavailable | `rejected`; do not queue an old approval. |
 | `accepted` | Invalid approval, trust, or state | `rejected`; no process starts. |
+| `accepted` (mutation) | The shell replies to `started` with the marker ID | `running`. The approval, trust, and state checks passed, and the mutation exclusion is held. The shell flushed the marker file before its reply. No lock and no Git process exist before this step. The rechecks under the canonical index lock run in `running` (contract §4, §6 "Recovery markers"). |
+| `accepted` (mutation) | The shell replies to `started` with `busy` or a failure class | `rejected` with `BUSY` or `RECOVERY_MARKER_FAILED`. Release the mutation exclusion. No lock and no Git process start (contract §6, §9). |
 | `running` | Cancellation request | `cancel-requested`; signal only owned processes. |
 | `running` | Read completes | `succeeded`, `limited`, or `failed`; check generation before display. |
 | `running` | Mutation finishes or fails | `reconciling`; keep further mutations blocked. |

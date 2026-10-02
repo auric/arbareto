@@ -27,6 +27,8 @@ export interface OperationSnapshot {
 
 export type OperationEvent =
   | { type: "valid-read" }
+  | { type: "marker-recorded" }
+  | { type: "marker-refused"; code: "BUSY" | "RECOVERY_MARKER_FAILED" }
   | { type: "exclusion-unavailable"; code: string }
   | { type: "invalid-approval"; code: string }
   | { type: "cancel" }
@@ -98,8 +100,12 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
   switch (snapshot.state) {
     case "accepted":
       if (event.type === "valid-read" && !mutation) return next("running");
+      if (event.type === "marker-recorded" && mutation) return next("running");
+      if (event.type === "marker-refused" && mutation && (event.code === "BUSY" || event.code === "RECOVERY_MARKER_FAILED")) {
+        return next("rejected", { code: event.code }, ["release-exclusion", "start-no-process"]);
+      }
       if (event.type === "exclusion-unavailable" && mutation) return next("rejected", { code: event.code }, ["no-queue", "start-no-process"]);
-      if (event.type === "invalid-approval") return next("rejected", { code: event.code }, ["start-no-process"]);
+      if (event.type === "invalid-approval" && event.code !== "RECOVERY_MARKER_FAILED") return next("rejected", { code: event.code }, ["start-no-process"]);
       break;
 
     case "running":

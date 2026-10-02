@@ -16,8 +16,13 @@ const HUNK = "applyHunk";
 const SUBMODULES = "updateSubmodules";
 const TERMINAL = ["succeeded", "limited", "failed", "canceled", "completed-with-effects", "failed-with-effects", "unknown", "rejected"];
 
+const ROLLBACK = /roll[\s_-]?back|undo|revert/i;
+
+// Constitution I: a result never reports cancellation, or any other outcome, as rollback.
 function step(snapshot: Snapshot, event: Event) {
-  return transition(snapshot, event);
+  const result = transition(snapshot, event);
+  for (const text of [result.state, result.reason, result.cause, ...result.actions]) expect(String(text ?? "")).not.toMatch(ROLLBACK);
+  return result;
 }
 
 function expectStep(snapshot: Snapshot, event: Event, expected: Record<string, unknown>, actions: string[] = []) {
@@ -54,6 +59,29 @@ describe("accepted", () => {
       ]);
     },
   );
+
+  test.each([[COMMIT], [HUNK], ["applyFile"], [SUBMODULES]])("%s starts running when the shell replies with the marker ID", (operation) => {
+    const result = expectStep({ operation, state: "accepted" }, { type: "marker-recorded" }, { state: "running" });
+    expectNoCode(result);
+  });
+
+  test("a mutation cannot enter running through the read row, and a read cannot through the marker row", () => {
+    expect(() => step({ operation: COMMIT, state: "accepted" }, { type: "valid-read" })).toThrow();
+    expect(() => step({ operation: READ, state: "accepted" }, { type: "marker-recorded" } as Event)).toThrow();
+  });
+
+  test.each([["BUSY"], ["RECOVERY_MARKER_FAILED"]])("a %s reply to started rejects, releases the exclusion, and starts no process", (code) => {
+    expectStep({ operation: COMMIT, state: "accepted" }, { type: "marker-refused", code } as Event, { state: "rejected", code }, [
+      "release-exclusion",
+      "start-no-process",
+    ]);
+  });
+
+  test("an accepted commit reaches succeeded through the table only", () => {
+    const running = step({ operation: COMMIT, state: "accepted" }, { type: "marker-recorded" } as Event);
+    const reconciling = step({ operation: COMMIT, ...running } as Snapshot, { type: "execution-ended", lingeringDescendants: 0 });
+    expect(step({ operation: COMMIT, ...reconciling } as Snapshot, { type: "intended-effects-confirmed" }).state).toBe("succeeded");
+  });
 });
 
 describe("running", () => {
@@ -321,6 +349,12 @@ describe("lingeringDescendants", () => {
       state: "succeeded",
       lingeringDescendants: 1,
     });
+  });
+
+  test("a canceled mutation never reports a rollback in any outcome", () => {
+    const canceled = step({ operation: COMMIT, state: "running" }, { type: "cancel" });
+    const stopped = step({ operation: COMMIT, ...canceled } as Snapshot, { type: "processes-stopped", lingeringDescendants: 0 });
+    for (const [, event] of outcomes) step({ operation: COMMIT, ...stopped } as Snapshot, event);
   });
 
   test.each([[-1], [1.5], [Number.NaN]])("a count of %p is refused", (count) => {

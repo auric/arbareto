@@ -47,4 +47,4 @@
 - Do not change provider, authentication, CLIProxyAPI configuration, or global permissions.
 - Verify CodeGraph's installed upstream identity before using product-specific instructions.
 - Create a CodeGraph index only after meaningful source exists and the user approves indexing.
-- No application build or test commands exist yet. Add commands only after the project defines and verifies them.
+- Use only the verified commands in README.md "Development". Add a command only after it runs green.

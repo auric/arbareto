@@ -78,7 +78,7 @@ export function isIdentifier(value: unknown): value is string {
 }
 
 // Contract §6: `configurationFingerprint` is 64 lowercase hex digits.
-const isFingerprint = (value: unknown) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+export const isFingerprint = (value: unknown) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 const isTrue = (value: unknown) => value === true;
 const isBoolean = (value: unknown) => typeof value === "boolean";
 const oneOf =

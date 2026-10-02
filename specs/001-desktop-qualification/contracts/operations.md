@@ -281,6 +281,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | Private/reply frame | 16 MiB encoded. It bounds the length header of every pipe frame (§1). |
 | JSON nesting | 16 levels |
 | Identifier | 64 ASCII bytes |
+| WebView2 version text | 64 ASCII bytes in the startup handshake (§6 "Startup handshake") |
 | Commit message | 64 KiB UTF-8; no NUL; nonblank |
 | Compared raw version | 1,048,576 bytes per side |
 | Compared normalized version | 1,048,576 bytes per side |

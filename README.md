@@ -29,6 +29,16 @@ Installed with the existing `npx skills` v1.5.18 cache, using `add <local-source
 
 No shadcn initialization, application scaffolding, deployment skills, or additional specification process was added.
 
+## Development
+
+Run these commands from the repository root. Run `bun run build` before `cargo check`, because the Tauri build needs the frontend and the service binary.
+
+- `bun install --frozen-lockfile`
+- `bun run build`
+- `bun run typecheck`
+- `bun run test:contracts`
+- `cargo check --locked --manifest-path src-tauri/Cargo.toml`
+
 ## License
 
 Arbareto is free software under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`). See [LICENSE](LICENSE). [NOTICE.md](NOTICE.md) states the copyright and the section 7 additional terms. These terms require attribution and marked, renamed modified versions. They grant no trademark rights to the name "Arbareto". Third-party material listed above keeps its own license.

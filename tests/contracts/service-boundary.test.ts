@@ -14,7 +14,7 @@ const READ_TIMEOUT_MS = 5_000;
 const QUIET_MS = 500;
 const TEST_TIMEOUT_MS = 30_000;
 const MIB = 1024 * 1024;
-const FRAME_KINDS = ["public", "process", "mutation", "trust"];
+const FRAME_KINDS = ["public", "process", "mutation", "trust", "handshake"];
 const TERMINAL = ["succeeded", "limited", "failed", "canceled", "completed-with-effects", "failed-with-effects", "unknown", "rejected"];
 // Contract §9 codes.
 const ERROR_CODES = new Set(
@@ -30,11 +30,46 @@ const ERROR_CODES = new Set(
   ).split(" "),
 );
 
-// The contract names the startup handshake but not its frame. These shapes are test choices.
-const HANDSHAKE = { kind: "public", handshake: { version: 1, restarted: false } };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Contract §6 "Startup handshake". A real bootstrapId needs the shell process channel, so the frame omits it.
+const HANDSHAKE_FIELDS = {
+  version: 1,
+  restarted: false,
+  platformScope: "other",
+  osBuild: 26200,
+  webView2Version: "140.0.0.0",
+  buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
+  markers: [] as unknown[],
+  unloadedMarkers: 0,
+  trustRecords: [] as unknown[],
+};
+const HANDSHAKE = { kind: "handshake", handshake: HANDSHAKE_FIELDS };
+
+// The contract does not define the identity reply form ("Process fields"). This identity shape is a test choice.
+const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
+const MARKER = {
+  markerId: "00000000-0000-4000-8000-000000000000",
+  kind: "commit",
+  startedAt: "2026-10-02T08:00:00Z",
+  worktreeRoot: "C:\\repo",
+  commonDirectory: "C:\\repo\\.git",
+  commonIdentity: IDENTITY,
+};
+const TRUST_RECORD = {
+  commonDirectory: "C:\\repo\\.git",
+  commonIdentity: IDENTITY,
+  worktreeRoot: "C:\\repo",
+  gitDirectory: "C:\\repo\\.git",
+  worktreeIdentity: [IDENTITY, IDENTITY],
+  configurationFingerprint: "a".repeat(64),
+  approvedAt: "2026-10-02T08:00:00Z",
+  gitInstallationDigest: "b".repeat(64),
+};
+
 type Frame = {
   kind?: unknown;
-  handshake?: { sessionId?: unknown };
+  handshake?: { sessionId?: unknown; code?: unknown };
   response?: { requestId?: unknown; operationId?: unknown; state?: unknown; code?: unknown };
 };
 
@@ -75,7 +110,8 @@ class Service {
   send(bytes: Uint8Array) {
     try {
       this.proc.stdin.write(bytes);
-      this.proc.stdin.flush();
+      // A flush or end to an exited service can reject later with EPIPE.
+      void Promise.resolve(this.proc.stdin.flush()).catch(() => {});
     } catch {
       // A closed pipe shows up as end of stream in the next read.
     }
@@ -155,15 +191,21 @@ class Service {
   async handshake(): Promise<string> {
     this.sendJson(HANDSHAKE);
     const reply = await this.next();
-    const sessionId = reply.handshake?.sessionId;
-    expect(typeof sessionId).toBe("string");
-    expect(sessionId as string).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-    return sessionId as string;
+    expect(reply.kind).toBe("handshake");
+    expect(reply).toEqual({ kind: "handshake", handshake: { sessionId: expect.stringMatching(UUID) } });
+    return reply.handshake?.sessionId as string;
+  }
+
+  async exited(timeoutMs = READ_TIMEOUT_MS): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([this.proc.exited, new Promise((r) => (timer = setTimeout(r, timeoutMs)))]);
+    clearTimeout(timer);
+    return !this.running;
   }
 
   async stop() {
     try {
-      this.proc.stdin.end();
+      void Promise.resolve(this.proc.stdin.end()).catch(() => {});
     } catch {
       // The pipe can already be closed.
     }
@@ -186,9 +228,16 @@ afterEach(async () => {
   await Promise.all(services.splice(0).map((s) => s.stop()));
 });
 
-const request = (sessionId: string | undefined, operation: string, payload: Record<string, unknown> = {}, requestId = crypto.randomUUID()) => {
+const request = (
+  sessionId: string | undefined,
+  operation: string,
+  payload: Record<string, unknown> = {},
+  requestId = crypto.randomUUID(),
+  repositoryId?: string,
+) => {
   const envelope: Record<string, unknown> = { version: 1, requestId, operation, payload };
   if (sessionId !== undefined) envelope.sessionId = sessionId;
+  if (repositoryId !== undefined) envelope.repositoryId = repositoryId;
   return { kind: "public", request: envelope };
 };
 
@@ -197,7 +246,21 @@ async function expectTypedError(service: Service, requestId: string | null | Arr
   expect(response.state).toBe("rejected");
   expect(ERROR_CODES.has(response.code as string)).toBe(true);
   if (code) expect(response.code).toBe(code);
+  return response;
 }
+
+async function expectHandshakeFailure(service: Service, handshake: unknown, code: string) {
+  service.sendJson({ kind: "handshake", handshake });
+  const reply = await service.next();
+  expect(reply).toEqual({ kind: "handshake", handshake: { code } });
+  expect(await service.exited()).toBe(true);
+}
+
+const withoutField = (field: string) => {
+  const fields: Record<string, unknown> = { ...HANDSHAKE_FIELDS };
+  delete fields[field];
+  return fields;
+};
 
 async function expectStillServing(service: Service, sessionId: string) {
   expect(service.running).toBe(true);
@@ -225,16 +288,18 @@ describe("service boundary", () => {
       const sessionId = await service.handshake();
       const noKind = request(sessionId, "getEnvironment");
       const badKind = request(sessionId, "getEnvironment");
-      const cases: Array<[string, Uint8Array, Array<string | null>, string | undefined]> = [
-        ["invalid JSON", frameBytes(encoder.encode('{"kind":"public",')), [null], "INVALID_REQUEST"],
-        ["invalid UTF-8", frameBytes(new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d])), [null], "INVALID_REQUEST"],
-        ["empty body", frameBytes(new Uint8Array(0)), [null], "INVALID_REQUEST"],
-        ["missing kind", jsonFrame({ request: noKind.request }), [null, noKind.request.requestId as string], undefined],
-        ["unknown kind", jsonFrame({ ...badKind, kind: "shell" }), [null, badKind.request.requestId as string], undefined],
+      // Contract §1: an undecodable frame gets requestId null. A frame with a valid requestId gets that ID.
+      const cases: Array<[string, Uint8Array, string | null]> = [
+        ["invalid JSON", frameBytes(encoder.encode('{"kind":"public",')), null],
+        ["invalid UTF-8", frameBytes(new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d])), null],
+        ["empty body", frameBytes(new Uint8Array(0)), null],
+        ["missing kind", jsonFrame({ request: noKind.request }), noKind.request.requestId as string],
+        ["unknown kind", jsonFrame({ ...badKind, kind: "shell" }), badKind.request.requestId as string],
       ];
-      for (const [, bytes, ids, code] of cases) {
+      for (const [, bytes, requestId] of cases) {
         service.send(bytes);
-        await expectTypedError(service, ids, code);
+        const response = await expectTypedError(service, requestId, "INVALID_REQUEST");
+        expect(response.requestId).toBe(requestId);
       }
       await expectStillServing(service, sessionId);
     },
@@ -297,13 +362,14 @@ describe("service boundary", () => {
       const sessionId = await service.handshake();
       const forgedSession = request(crypto.randomUUID(), "getEnvironment");
       service.sendJson(forgedSession);
-      await expectTypedError(service, forgedSession.request.requestId as string);
+      await expectTypedError(service, forgedSession.request.requestId as string, "UNKNOWN_TARGET");
       const forgedOperation = request(sessionId, "getOperation", { operationId: crypto.randomUUID() });
       service.sendJson(forgedOperation);
-      await expectTypedError(service, forgedOperation.request.requestId as string);
-      const forgedTrust = request(sessionId, "revokeTrust", { trustId: crypto.randomUUID() });
-      service.sendJson(forgedTrust);
-      await expectTypedError(service, forgedTrust.request.requestId as string);
+      await expectTypedError(service, forgedOperation.request.requestId as string, "UNKNOWN_TARGET");
+      // A forged trustId needs a registered workspace, which T015 cannot create. So this case forges repositoryId.
+      const forgedRepository = request(sessionId, "revokeTrust", { trustId: crypto.randomUUID() }, crypto.randomUUID(), crypto.randomUUID());
+      service.sendJson(forgedRepository);
+      await expectTypedError(service, forgedRepository.request.requestId as string, "UNKNOWN_TARGET");
       await expectStillServing(service, sessionId);
     },
     TEST_TIMEOUT_MS,
@@ -319,23 +385,53 @@ describe("service boundary", () => {
       expect(secondSession).not.toBe(firstSession);
       const foreign = request(secondSession, "getEnvironment");
       first.sendJson(foreign);
-      await expectTypedError(first, foreign.request.requestId as string);
+      await expectTypedError(first, foreign.request.requestId as string, "UNKNOWN_TARGET");
       await expectStillServing(first, firstSession);
     },
     TEST_TIMEOUT_MS,
   );
 
   test(
-    "an oversized public request gives FRAME_LIMIT",
+    "a public frame body above 1 MiB plus 28 bytes gives FRAME_LIMIT",
     async () => {
       const service = start();
       const sessionId = await service.handshake();
-      const frame = request(sessionId, "getEnvironment");
-      const body = JSON.stringify(frame);
-      service.send(frameBytes(encoder.encode(" ".repeat(MIB + 1 - body.length) + body)));
-      const response = await service.responseFor([null, frame.request.requestId as string]);
+      // Contract §5: the body is this 27-byte prefix, the envelope, and "}". Spaces pad the request value.
+      const body = (frame: ReturnType<typeof request>, size: number) => {
+        const envelope = JSON.stringify(frame.request);
+        const bytes = encoder.encode('{"kind":"public","request":' + " ".repeat(size - 28 - envelope.length) + envelope + "}");
+        expect(bytes.length).toBe(size);
+        return bytes;
+      };
+      const atLimit = request(sessionId, "getEnvironment");
+      service.send(frameBytes(body(atLimit, MIB + 28)));
+      const accepted = await service.responseFor(atLimit.request.requestId as string);
+      expect(accepted.code).not.toBe("FRAME_LIMIT");
+      const overLimit = request(sessionId, "getEnvironment");
+      service.send(frameBytes(body(overLimit, MIB + 29)));
+      const response = await service.responseFor([null, overLimit.request.requestId as string]);
       expect(response.state).toBe("rejected");
       expect(response.code).toBe("FRAME_LIMIT");
+      await expectStillServing(service, sessionId);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a length header above 16 MiB gives FRAME_LIMIT before any body byte",
+    async () => {
+      const service = start();
+      const sessionId = await service.handshake();
+      const length = 16 * MIB + 1;
+      const header = new Uint8Array(4);
+      new DataView(header.buffer).setUint32(0, length, true);
+      service.send(header);
+      const response = await expectTypedError(service, null, "FRAME_LIMIT");
+      expect(response.requestId).toBeNull();
+      const chunk = new Uint8Array(MIB);
+      for (let sent = 0; sent < length; sent += chunk.length) {
+        service.send(chunk.subarray(0, Math.min(chunk.length, length - sent)));
+      }
       await expectStillServing(service, sessionId);
     },
     TEST_TIMEOUT_MS,
@@ -372,7 +468,7 @@ describe("service boundary", () => {
       const first = request(sessionId, "getEnvironment");
       service.sendJson(first);
       const firstResponse = await service.responseFor(first.request.requestId as string);
-      expect(firstResponse.state).not.toBe("rejected");
+      expect(firstResponse.code).not.toBe("INVALID_REQUEST");
       const before = service.frames.length;
       service.sendJson(first);
       await expectTypedError(service, first.request.requestId as string, "INVALID_REQUEST");
@@ -397,6 +493,53 @@ describe("service boundary", () => {
       await service.quietFrames();
       expect(service.frames.length).toBeGreaterThan(0);
       for (const received of service.frames) expect(FRAME_KINDS).toContain(received.kind as string);
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
+describe("startup handshake failures", () => {
+  const markerAt = (i: number) => ({ ...MARKER, markerId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}` });
+  // A failed handshake ends the service, so each case starts its own service.
+  const failures: Array<[string, unknown, string]> = [
+    ...Object.keys(HANDSHAKE_FIELDS).map((field): [string, unknown, string] => [`missing ${field}`, withoutField(field), "INVALID_REQUEST"]),
+    ["an unknown field", { ...HANDSHAKE_FIELDS, extra: 1 }, "INVALID_REQUEST"],
+    ["a wrong type", { ...HANDSHAKE_FIELDS, restarted: "false" }, "INVALID_REQUEST"],
+    ["65 markers", { ...HANDSHAKE_FIELDS, markers: Array.from({ length: 65 }, (_, i) => markerAt(i)) }, "INVALID_REQUEST"],
+    ["257 trust records", { ...HANDSHAKE_FIELDS, trustRecords: Array.from({ length: 257 }, () => ({ ...TRUST_RECORD })) }, "INVALID_REQUEST"],
+    ["a malformed bootstrapId", { ...HANDSHAKE_FIELDS, bootstrapId: "not-a-uuid" }, "INVALID_REQUEST"],
+    ["version 2", { ...HANDSHAKE_FIELDS, version: 2 }, "PROTOCOL_VERSION"],
+  ];
+  for (const [name, handshake, code] of failures) {
+    test(
+      `${name} gives ${code}, and the service exits`,
+      async () => {
+        const service = start();
+        await expectHandshakeFailure(service, handshake, code);
+      },
+      TEST_TIMEOUT_MS,
+    );
+  }
+
+  test(
+    "a second handshake gives INVALID_REQUEST, and the session continues",
+    async () => {
+      const service = start();
+      const sessionId = await service.handshake();
+      service.sendJson(HANDSHAKE);
+      expect(await service.next()).toEqual({ kind: "handshake", handshake: { code: "INVALID_REQUEST" } });
+      await expectStillServing(service, sessionId);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a public request before the handshake gives SERVICE_UNAVAILABLE",
+    async () => {
+      const service = start();
+      const early = request(crypto.randomUUID(), "getEnvironment");
+      service.sendJson(early);
+      await expectTypedError(service, early.request.requestId as string, "SERVICE_UNAVAILABLE");
     },
     TEST_TIMEOUT_MS,
   );

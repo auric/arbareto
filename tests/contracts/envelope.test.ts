@@ -31,7 +31,7 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
     renderer: () => ({ snapshotId: id(), entryId: id() }),
     service: () => ({ snapshotId: id(), entryId: id() }),
   },
-  readTrust: { renderer: () => ({ repositoryId: id() }), service: () => ({ repositoryId: id() }) },
+  readTrust: { renderer: () => ({}), service: () => ({}) },
   approveTrust: {
     renderer: () => ({ fingerprint: FINGERPRINT, approve: true }),
     service: () => ({ fingerprint: FINGERPRINT, approve: true }),
@@ -106,6 +106,7 @@ function envelope(operation: string, side: Side = "renderer", payload?: Json): J
   if (operation !== "currentSession") request.sessionId = id();
   if (REPOSITORY_BOUND.includes(operation)) request.repositoryId = id();
   if (GENERATION_REQUIRED.includes(operation)) request.repositoryGeneration = 3;
+  if (operation === "readComparison") request.selectionId = id();
   return request;
 }
 
@@ -149,34 +150,34 @@ describe("version", () => {
   );
 });
 
-describe("identifiers", () => {
-  const bad = [
-    "not-a-uuid",
-    id().replaceAll("-", ""),
-    `{${id()}}`,
-    `${id()}-0`,
-    "0".repeat(65),
-    id().replace(/[0-9]/, "\uFF11"),
-    id().slice(0, 35) + "\u00e9",
-    "",
-    "C:\\Git\\cmd\\git.exe",
-    "..\\..\\Windows",
-    "../../etc/passwd",
-    "HEAD~1",
-    "refs/heads/main",
-    "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n",
-  ];
+const BAD_IDS = [
+  "not-a-uuid",
+  id().replaceAll("-", ""),
+  `{${id()}}`,
+  `${id()}-0`,
+  "0".repeat(65),
+  id().replace(/[0-9]/, "\uFF11"),
+  id().slice(0, 35) + "\u00e9",
+  "",
+  "C:\\Git\\cmd\\git.exe",
+  "..\\..\\Windows",
+  "../../etc/passwd",
+  "HEAD~1",
+  "refs/heads/main",
+  "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n",
+];
 
-  test.each(bad.map((v) => [v]))("requestId %j gives INVALID_REQUEST", (requestId) =>
+describe("identifiers", () => {
+  test.each(BAD_IDS.map((v) => [v]))("requestId %j gives INVALID_REQUEST", (requestId) =>
     expectCode({ ...envelope("getEnvironment"), requestId }, "INVALID_REQUEST"),
   );
-  test.each(bad.map((v) => [v]))("sessionId %j gives INVALID_REQUEST", (sessionId) =>
+  test.each(BAD_IDS.map((v) => [v]))("sessionId %j gives INVALID_REQUEST", (sessionId) =>
     expectCode({ ...envelope("getEnvironment"), sessionId }, "INVALID_REQUEST"),
   );
-  test.each(bad.map((v) => [v]))("snapshotId %j gives INVALID_REQUEST", (snapshotId) =>
+  test.each(BAD_IDS.map((v) => [v]))("snapshotId %j gives INVALID_REQUEST", (snapshotId) =>
     expectCode(envelope("reviewCommit", "renderer", { snapshotId }), "INVALID_REQUEST"),
   );
-  test.each(bad.map((v) => [v]))("operationId %j gives INVALID_REQUEST", (operationId) =>
+  test.each(BAD_IDS.map((v) => [v]))("operationId %j gives INVALID_REQUEST", (operationId) =>
     expectCode(envelope("getOperation", "renderer", { operationId }), "INVALID_REQUEST"),
   );
   test.each([[1], [null], [[id()]], [{ id: id() }]])("non-string requestId %j gives INVALID_REQUEST", (requestId) =>
@@ -247,6 +248,75 @@ describe("repositoryGeneration", () => {
     const result = decodeRequest(new TextEncoder().encode(text), "renderer");
     expect(result).toEqual({ ok: false, code: "INVALID_REQUEST" });
   });
+});
+
+describe("selectionId", () => {
+  test("readComparison without selectionId gives INVALID_REQUEST", () => {
+    const { selectionId: _omit, ...rest } = envelope("readComparison");
+    expectCode(rest, "INVALID_REQUEST");
+  });
+
+  for (const name of NAMES.filter((n) => n !== "readComparison")) {
+    for (const side of sidesOf(name)) {
+      test(`${name} with selectionId gives INVALID_REQUEST on the ${side} side`, () =>
+        expectCode({ ...envelope(name, side), selectionId: id() }, "INVALID_REQUEST", side));
+    }
+  }
+
+  test.each(BAD_IDS.map((v) => [v]))("selectionId %j gives INVALID_REQUEST", (selectionId) =>
+    expectCode({ ...envelope("readComparison"), selectionId }, "INVALID_REQUEST"),
+  );
+});
+
+describe("repositoryId", () => {
+  for (const name of REPOSITORY_BOUND) {
+    test(`${name} without repositoryId gives INVALID_REQUEST`, () => {
+      const { repositoryId: _omit, ...rest } = envelope(name);
+      expectCode(rest, "INVALID_REQUEST");
+    });
+  }
+
+  for (const name of NAMES.filter((n) => !REPOSITORY_BOUND.includes(n))) {
+    for (const side of sidesOf(name)) {
+      test(`${name} with repositoryId gives INVALID_REQUEST on the ${side} side`, () =>
+        expectCode({ ...envelope(name, side), repositoryId: id() }, "INVALID_REQUEST", side));
+    }
+  }
+
+  test("a readTrust payload with repositoryId gives INVALID_REQUEST", () =>
+    expectCode(envelope("readTrust", "renderer", { repositoryId: id() }), "INVALID_REQUEST"));
+});
+
+describe("approveTrust fingerprint", () => {
+  test.each([
+    ["a".repeat(63)],
+    ["a".repeat(65)],
+    ["A".repeat(64)],
+    ["g" + "a".repeat(63)],
+    [id()],
+  ])("fingerprint %j gives INVALID_REQUEST", (fingerprint) =>
+    expectCode(envelope("approveTrust", "renderer", { fingerprint, approve: true }), "INVALID_REQUEST"),
+  );
+});
+
+describe("explicit approval fields", () => {
+  const cases: Array<[string, string]> = [
+    ["approveTrust", "approve"],
+    ["commit", "confirmFullScope"],
+    ["updateSubmodules", "start"],
+  ];
+  for (const [name, field] of cases) {
+    test.each([[false], ["true"], [1], [null]])(`${name} ${field} %j gives INVALID_REQUEST`, (value) => {
+      const request = envelope(name);
+      expectCode({ ...request, payload: { ...(request.payload as Json), [field]: value } }, "INVALID_REQUEST");
+    });
+    test(`${name} without ${field} gives INVALID_REQUEST`, () => {
+      const request = envelope(name);
+      const payload = { ...(request.payload as Json) };
+      delete payload[field];
+      expectCode({ ...request, payload }, "INVALID_REQUEST");
+    });
+  }
 });
 
 describe("unknown and forbidden fields", () => {

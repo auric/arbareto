@@ -12,9 +12,9 @@ Grant only the operations below to the main local window. Deny remote webviews, 
 
 Rust and the compiled service use private inherited pipes. Frames contain a four-byte unsigned little-endian payload length followed by UTF-8 JSON.
 
-Each pipe frame has a top-level `kind` field with the value `public`, `process`, `mutation`, or `trust`. A `public` frame holds one §2 request, its response, or a progress event. A `process` frame holds one §6 process, identity, or lingering count request, their output, or one §6 activity event. A `mutation` frame holds one §6 recovery-marker message. A `trust` frame holds one §7 trust-store message. The shell never forwards a `process`, `mutation`, or `trust` frame to the renderer. The renderer envelope in §2 has no `kind` field.
+Each pipe frame has a top-level `kind` field with the value `public`, `process`, `mutation`, `trust`, or `handshake`. A `public` frame holds one §2 request, its response, or a progress event. Its body is `{"kind":"public","request":<envelope>}`, `{"kind":"public","response":<response>}`, or `{"kind":"public","progress":<event>}`. A `handshake` frame holds the §6 "Startup handshake" frame or its reply. A `process` frame holds one §6 process, identity, or lingering count request, their output, or one §6 activity event. A `mutation` frame holds one §6 recovery-marker message. A `trust` frame holds one §7 trust-store message. The shell never forwards a `process`, `mutation`, `trust`, or `handshake` frame to the renderer. The renderer envelope in §2 has no `kind` field.
 
-Reject oversized lengths before allocation. Reject invalid UTF-8, malformed JSON, duplicate object keys, excessive nesting, unknown fields, and unsupported protocol versions.
+Reject a length header above the §5 frame bound before reading or allocating the body. The service answers it with `FRAME_LIMIT` and `requestId` `null`. It then discards that many bytes without storing them. Reject invalid UTF-8, malformed JSON, duplicate object keys, excessive nesting, unknown fields, and unsupported protocol versions. Such a frame gets a `public` response with `rejected` and `INVALID_REQUEST`, or `PROTOCOL_VERSION` for an unsupported version. Its `requestId` is `null`, unless the frame holds a valid `requestId`.
 
 Use a strict bounded decoder. Do not rely on `JSON.parse` alone to reject duplicate keys.
 
@@ -30,14 +30,14 @@ The public bridge is not a generic message bus. Its operation discriminator is a
 | --- | --- |
 | `version` | Integer `1`. |
 | `sessionId` | Opaque service-session identifier. The service issues it in the shell-service startup handshake. The page receives it as the session paragraph below states. |
-| `requestId` | Bounded identifier for response correlation. It is unique in the service session. A repeated `requestId` gives `INVALID_REQUEST` and starts nothing. |
+| `requestId` | Bounded identifier for response correlation. It is unique in the service session. The service records each valid `requestId` of a decoded envelope, also when it rejects the request. A repeated `requestId` gives `INVALID_REQUEST` and starts nothing. |
 | `operation` | One exact operation name from the table below. |
-| `repositoryId` | Registered workspace identifier when required. |
+| `repositoryId` | Registered workspace identifier. Required for `readWorkspace`, `readHistory`, `readComparison`, `readTrust`, `approveTrust`, `revokeTrust`, `applyHunk`, `applyFile`, `reviewCommit`, `commit`, `reviewSubmodules`, and `updateSubmodules`. Other operations omit it. |
 | `repositoryGeneration` | Nonnegative safe integer for snapshot-bound operations. It must match the supplied snapshot, review, or trust fingerprint. For `readHistory`, it must equal the current workspace generation. |
-| `selectionId` | Renderer selection generation for selection-dependent reads. Never a mutation approval. |
+| `selectionId` | Renderer selection generation. `readComparison` requires it, and other operations omit it. The renderer issues it, so the service checks only its format. Never a mutation approval. |
 | `payload` | Exact operation-specific object. Reject unknown fields. |
 
-Identifiers are UUID-shaped ASCII strings issued by the owning boundary. Validate format and session membership. Format alone never grants access.
+Identifiers are UUID-shaped ASCII strings issued by the owning boundary. Validate format and session membership. Format alone never grants access. A malformed identifier gives `INVALID_REQUEST`. A well-formed identifier that this session did not issue gives `UNKNOWN_TARGET`. This includes a `sessionId` of another session, a released identifier, and an identifier of another workspace.
 
 Require `repositoryGeneration` for `readHistory`, `readComparison`, `applyHunk`, `applyFile`, `reviewCommit`, `commit`, `reviewSubmodules`, `updateSubmodules`, and `approveTrust`. Match trust approval against its issued fingerprint generation.
 
@@ -70,15 +70,15 @@ The shell sends three events to the main window. `service-stopped` reports a ser
 | `readWorkspace` | `refresh: boolean` and `check: "full"` or `"changes"`. `refresh: true` with `check: "changes"` gives `INVALID_REQUEST`. | Git-derived identity, HEAD, operation state, status completeness, hunk-profile eligibility, snapshot ID, and recovery state. Only a user Refresh action sends `refresh: true`, always with `check: "full"`. Focus return and the first read send `refresh: false` with `check: "full"`. The read after a mutation outcome and the read after a trust approval also send `refresh: false` with `check: "full"`. Polls send `refresh: false` with `check: "changes"` (§8 "Change check"). WSL polls send `check: "full"` instead (§11 "Change polling"). An explicit refresh of a blocked workspace performs recovery reconciliation (§8). |
 | `readHistory` | Empty object. The envelope carries `repositoryGeneration`. | Bounded HistoryPage: at most 100 checkout-reachable commits, ordered parents, boundary metadata, captured HEAD, and completeness. No arbitrary ref or pagination argument. The service captures HEAD itself and needs no status snapshot. It can run beside `readWorkspace` within the §5 read caps. Trust gating follows the read rule in §7. |
 | `readComparison` | Current snapshot ID and issued entry ID. | One supported canonical comparison with hunk IDs, or an explicit unsupported/limited result. Every result also carries the file-action decision of its entry (§4 "File staging"). |
-| `readTrust` | Current repository ID. | Safe execution-policy summary, approval fingerprint, trust `state`, and `persistence` (`stored` or `session`). Show configuration values only for the §7 value display allowlist. Redact URL user information first (§7). |
-| `approveTrust` | Issued fingerprint and explicit approval. | The service checks the fingerprint and its generation. The shell then shows a native confirmation (§7 "Trust approval store"). Approve returns the trust ID. It stores the approval, or keeps it for the service session only over a digest bound (§7). Cancel returns `canceled` and stores nothing. A changed policy requires new approval. |
+| `readTrust` | Empty object. The envelope carries `repositoryId`. | Safe execution-policy summary, approval fingerprint, trust `state`, and `persistence` (`stored` or `session`). Show configuration values only for the §7 value display allowlist. Redact URL user information first (§7). |
+| `approveTrust` | `fingerprint`: the issued fingerprint. `approve`: `true`. Any other `approve` value gives `INVALID_REQUEST`. | The service checks the fingerprint and its generation. The shell then shows a native confirmation (§7 "Trust approval store"). Approve returns the trust ID. It stores the approval, or keeps it for the service session only over a digest bound (§7). Cancel returns `canceled` and stores nothing. A changed policy requires new approval. |
 | `revokeTrust` | Current trust ID. | Delete the stored approval, revoke future executable operations, and invalidate dependent approvals. Running work needs explicit cancellation. The shell also closes every lingering Job of that common directory (§6 "Lingering Jobs"). The result states how many processes ended. An unfinished mutation of that common directory ends its processes at `ended` and never lingers (§6). Without a current trust ID, no remedy or outcome text offers Revoke trust (§9 "Lingering count"). |
 | `applyHunk` | Comparison ID, hunk ID, snapshot ID, and direction `stage` or `unstage`. | Profile check, fresh validation, exact candidate publication, and reconciled outcome. No renderer patch or whole-file fallback. |
 | `applyFile` | Comparison ID, snapshot ID, and direction `stage` or `unstage`. | Whole-file staging of the compared entry (§4 "File staging"). Profile check, fresh validation, verified candidate publication, and reconciled outcome. No renderer path, patch, or content. |
 | `reviewCommit` | Current snapshot ID. | Complete staged scope, reviewed index/checkout, execution-policy disclosure, limitations, and one-use review token. Read-only inspection only. |
-| `commit` | Review token, message, and explicit full-scope confirmation. | Fresh preflight, one ordinary canonical Git commit invocation, progress events with the §6 stall flag, and a reconciled outcome: `succeeded`, `completed-with-effects`, `failed`, `failed-with-effects`, `canceled`, or `unknown`. A repeated `commit` with a consumed review token returns the existing operation state and `operationId`, and starts no Git process. |
+| `commit` | `reviewToken`, `message`, and `confirmFullScope`: `true`. Any other `confirmFullScope` value gives `INVALID_REQUEST`. | Fresh preflight, one ordinary canonical Git commit invocation, progress events with the §6 stall flag, and a reconciled outcome: `succeeded`, `completed-with-effects`, `failed`, `failed-with-effects`, `canceled`, or `unknown`. A repeated `commit` with a consumed review token returns the existing operation state and `operationId`, and starts no Git process. |
 | `reviewSubmodules` | Current snapshot ID. | Read-only submodule plan (§12 "Plan"), each refusal, the submodule program list, and a one-use submodule review token. Trust gating follows the read rule in §7. |
-| `updateSubmodules` | Submodule review token and explicit start. | Fresh preflight, and a native confirmation when §12 lists submodule programs. Fetch, check, and checkout steps for each row, level by level, with progress events (§12 "Update protocol"). A reconciled outcome with one result per submodule (§12). A repeated request with a consumed token returns the existing operation state and `operationId`, and starts no Git process. |
+| `updateSubmodules` | `submoduleReviewToken` and `start`: `true`. Any other `start` value gives `INVALID_REQUEST`. | Fresh preflight, and a native confirmation when §12 lists submodule programs. Fetch, check, and checkout steps for each row, level by level, with progress events (§12 "Update protocol"). A reconciled outcome with one result per submodule (§12). A repeated request with a consumed token returns the existing operation state and `operationId`, and starts no Git process. |
 | `cancel` | Issued operation ID. | Cancellation-requested acknowledgement followed by the actual terminal outcome. |
 | `getOperation` | Issued operation ID. | Current or retained terminal state. Never retries an operation. |
 | `requestClose` | `stay`, `closeIfIdle`, or `interruptAndClose`. | The shell decides natively and never forwards this operation to the service. A running mutation always shows the native prompt, whose default is Stay open. Only its Interrupt and close button confirms interruption. |
@@ -277,8 +277,8 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 
 | Resource | Limit |
 | --- | ---: |
-| Incoming public request | 1 MiB encoded |
-| Private/reply frame | 16 MiB encoded |
+| Incoming public request | 1 MiB encoded envelope. The shell writes the frame body as `{"kind":"public","request":`, the envelope, and `}`. So a `public` frame body above 1 MiB plus 28 bytes gives `FRAME_LIMIT`. |
+| Private/reply frame | 16 MiB encoded. It bounds the length header of every pipe frame (§1). |
 | JSON nesting | 16 levels |
 | Identifier | 64 ASCII bytes |
 | Commit message | 64 KiB UTF-8; no NUL; nonblank |
@@ -345,6 +345,32 @@ Retain an accepted operation's reviewed index snapshot until required reconcilia
 ## 6. Private native process requests
 
 Only the compiled service can use this private channel. No public Tauri command exposes it.
+
+### Startup handshake
+
+The shell sends one `handshake` frame as the first frame of each service session. Its body is `{"kind":"handshake","handshake":{…}}`. Every field below is required, except `bootstrapId`.
+
+| Field | Value |
+| --- | --- |
+| `version` | Integer `1`. |
+| `restarted` | Boolean. It is `true` only after Restart service (§8 "Service restart"). |
+| `platformScope` | `qualification-target` or `other` (§3 `getEnvironment`). |
+| `osBuild` | Nonnegative safe integer: the OS build number from `RtlGetVersion`. |
+| `webView2Version` | The detected WebView2 runtime version text, at most 64 ASCII bytes. |
+| `buildIdentity` | Object with `version`, `commit`, and `signing`. `commit` is the full commit ID, with the suffix `-dirty` when it applies. `signing` is `unsigned` in this slice. |
+| `markers` | Array of at most 64 recovery markers (§5). Each holds `markerId`, `kind`, `startedAt`, `worktreeRoot`, `commonDirectory`, and `commonIdentity` ("Recovery markers"). Zero markers give an empty array. |
+| `unloadedMarkers` | Nonnegative safe integer: the count of marker files that the shell did not load (§5). |
+| `trustRecords` | Array of at most 256 trust records (§5). Each holds `commonDirectory`, `commonIdentity`, `worktreeRoot`, `gitDirectory`, `worktreeIdentity`, `configurationFingerprint`, `approvedAt`, and `gitInstallationDigest` (§7 "Trust approval store"). Zero records give an empty array. |
+| `bootstrapId` | The startup `gitProbe` context ("Startup contexts"). It is present only when the settings hold a Git path. |
+
+`startedAt` and `approvedAt` are UTC times in RFC 3339 form. `commonIdentity` uses the form of an identity reply ("Process fields"). `worktreeIdentity` holds the identity replies of `worktreeRoot` and `gitDirectory`, in that order. `configurationFingerprint` and `gitInstallationDigest` are 64 lowercase hex digits.
+
+The service validates the frame with the strict decoder (§1). It replies `{"kind":"handshake","handshake":{"sessionId":"<ID>"}}`. `getEnvironment` takes its facts and markers only from this frame.
+
+- A missing field, an unknown field, or a wrong type fails the handshake. So do more than 64 markers or more than 256 records.
+- A failed handshake gets `{"kind":"handshake","handshake":{"code":"<code>"}}`. The code is `PROTOCOL_VERSION` for another `version`, otherwise `INVALID_REQUEST`. The service then exits, and the shell treats this as a failed handshake (§2).
+- A second handshake in a session gets that failure reply with `INVALID_REQUEST`. The session continues unchanged.
+- A `public` frame before the handshake gets `rejected` with `SERVICE_UNAVAILABLE`.
 
 ### Registration bootstrap
 
@@ -611,7 +637,7 @@ The service derives trust `state` from the records and from its session approval
 
 Do not disable required hooks to obtain a successful result. Do not add an application-owned hook without approved scope changes.
 
-Logs stay in memory for the session; this slice writes no log files. Logs contain only allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries. Do not retain raw stderr, hook output, messages, patches, environment blocks, or configuration dumps. Two response fields carry Git or hook output: the commit failure output (§9) and each submodule output tail (§12). They never enter a log, a `diagnostic`, or a progress event.
+Logs stay in memory for the session; this slice writes no log files. Logs contain only allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries (data-model §7 `effects`). Do not retain raw stderr, hook output, messages, patches, environment blocks, or configuration dumps. Two response fields carry Git or hook output: the commit failure output (§9) and each submodule output tail (§12). They never enter a log, a `diagnostic`, or a progress event.
 
 Provide actionable safe explanations. Full repository-specific diagnostics remain available through the user's selected Git tools, not unrestricted automatic log export.
 
@@ -703,7 +729,7 @@ Each terminal state (data-model §7) carries one result code:
 - `completed-with-effects`: `COMPLETED_WITH_EFFECTS`.
 - `failed-with-effects`: `FAILED_WITH_EFFECTS`.
 - `unknown`: `STATE_UNKNOWN`, with its attribution reason.
-- `rejected`: the refusal code.
+- `rejected`: the refusal code. `SERVICE_UNAVAILABLE` is always a `rejected` result.
 
 A mutation request in a workspace whose recovery state is `unknown` is rejected with `STATE_UNKNOWN`. Above the recovery-marker limit (§5), every mutation is rejected with `STATE_UNKNOWN`. Unexpected diagnostic output above 4 MiB cancels the operation. A read then ends `failed` with `OUTPUT_LIMIT`. A mutation enters `reconciling`, and its diagnostic names `OUTPUT_LIMIT` as the cause.
 

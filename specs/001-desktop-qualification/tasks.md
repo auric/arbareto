@@ -106,13 +106,13 @@ Each story spans several batches: US1 (1, 4, 5), US2 (2, 3, 4, 5), US3 (3, 4, 5)
 
 ### Contract implementation
 
-- [ ] T016 [P] Create `src/contracts/limits.ts`. Define every contract §5 bound as a named constant with its exact value.
-- [ ] T017 [P] Create `src/contracts/errors.ts` with the contract §9 error codes, spelled exactly and grouped by category. Export the contract §9 map from each terminal state to its result code.
-- [ ] T018 Implement `src/contracts/strict-json.ts` as a bounded single-pass decoder. Do not rely on `JSON.parse` to reject duplicate keys. Make T011 pass.
-- [ ] T019 [P] Implement `src/contracts/outcome.ts` with the operation states and the data-model §7 transition function. `operationId` is a "Session-unique identifier that the service issues in the accepted response." `requestId` "Correlates a request with exactly one terminal response." Make T013 pass.
-- [ ] T020 [P] Implement `src/git-service/log.ts` as an in-memory session log. It accepts only "allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries" (contract §7). It writes no file. Make T014 pass.
-- [ ] T021 [P] Implement `src/contracts/envelope.ts` and `src/contracts/operations.ts` with the envelope fields and the closed list of 21 operations. Add one exact payload validator for each operation. `chooseGit`, `chooseRepository`, and `restoreWorkspace` get two validators: an empty renderer payload and a service payload with only `bootstrapId`. `dismissRecoveryMarker` gets a renderer validator for the marker ID and a service validator for the marker ID and `bootstrapId`. Make T012 pass.
-- [ ] T262 [P] Implement `src/contracts/remedy-command.ts`: the contract §4 quoting rule and path form as one shared builder. It reads no file and starts no process. The remedy builders of T082, T105, T112, T210, and T226 use it, so no other module quotes a value. Make T261 pass. Depends on T261.
+- [x] T016 [P] Create `src/contracts/limits.ts`. Define every contract §5 bound as a named constant with its exact value.
+- [x] T017 [P] Create `src/contracts/errors.ts` with the contract §9 error codes, spelled exactly and grouped by category. Export the contract §9 map from each terminal state to its result code.
+- [x] T018 Implement `src/contracts/strict-json.ts` as a bounded single-pass decoder. Do not rely on `JSON.parse` to reject duplicate keys. Make T011 pass.
+- [x] T019 [P] Implement `src/contracts/outcome.ts` with the operation states and the data-model §7 transition function. `operationId` is a "Session-unique identifier that the service issues in the accepted response." `requestId` "Correlates a request with exactly one terminal response." Make T013 pass.
+- [x] T020 [P] Implement `src/git-service/log.ts` as an in-memory session log. It accepts only "allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries" (contract §7). It writes no file. Make T014 pass.
+- [x] T021 [P] Implement `src/contracts/envelope.ts` and `src/contracts/operations.ts` with the envelope fields and the closed list of 21 operations. Add one exact payload validator for each operation. `chooseGit`, `chooseRepository`, and `restoreWorkspace` get two validators: an empty renderer payload and a service payload with only `bootstrapId`. `dismissRecoveryMarker` gets a renderer validator for the marker ID and a service validator for the marker ID and `bootstrapId`. Make T012 pass.
+- [x] T262 [P] Implement `src/contracts/remedy-command.ts`: the contract §4 quoting rule and path form as one shared builder. It reads no file and starts no process. The remedy builders of T082, T105, T112, T210, and T226 use it, so no other module quotes a value. Make T261 pass. Depends on T261.
 
 ### Native build inputs
 

@@ -28,7 +28,7 @@ const gitReported = (text: string): Value => ({ kind: "path", text, form: "git-r
 
 const T_ADD = "& {git} --literal-pathspecs -C {root} add -- {path}";
 const T_BRANCH = "& {git} --no-lazy-fetch -C {submodule} branch {branch} {commit}";
-const T_GITDIR = "& {git} --no-lazy-fetch --git-dir {gitDir} --work-tree {gitDir} fetch {remote}";
+const T_GITDIR = "& {git} --no-lazy-fetch --git-dir={gitDir} --work-tree={gitDir} fetch {remote}";
 const T_SAFE = "& {git} config --global --add safe.directory {safe}";
 const T_WSL = `& 'C:${BS}Windows${BS}System32${BS}wsl.exe' --distribution {distro} --cd / --exec {git} --literal-pathspecs -C {linuxRoot} add -- {path}`;
 
@@ -59,13 +59,17 @@ const textOf = (value: Value) => {
   return typeof text === "string" ? text : new TextDecoder().decode(text);
 };
 
-// The single-quoted constants of the template, in order, with each value as the parser must read it.
-function expectedConstants(template: string, values: Record<string, Value>): string[] {
-  const out: string[] = [];
-  for (const match of template.matchAll(/\{(\w+)\}|'([^']*)'/g)) {
-    out.push(match[1] !== undefined ? textOf(values[match[1]]) : match[2]);
-  }
-  return out;
+// The command elements after `&`, in order, each as the parser must read it. A lone value or quoted literal is "S" (single-quoted). Any other token is "B" (bare word). PowerShell parses `-C` and `--` as parameter tokens and passes their text to a native command, so the parser script reports them as "B".
+function templateElements(template: string, values: Record<string, Value>, formed: Record<string, string> = {}): Array<[string, string]> {
+  return template
+    .replace(/^& /, "")
+    .split(" ")
+    .map((token) => {
+      const quoted = /^'([^']*)'$/.exec(token);
+      if (quoted) return ["S", quoted[1]];
+      const text = token.replace(/\{(\w+)\}/g, (_m, name: string) => formed[name] ?? textOf(values[name]));
+      return [/^\{\w+\}$/.test(token) ? "S" : "B", text];
+    });
 }
 
 const owned: string[] = [];
@@ -137,6 +141,12 @@ describe("quoting", () => {
       }),
     ).toBe(`& 'C:${BS}Program Files${BS}Git${BS}cmd${BS}git.exe' --literal-pathspecs -C 'D:${BS}w' add -- 'a.txt'`);
   });
+
+  test("a value joined with = starts its quote right after =", () => {
+    expect(build("& x --git-dir={v} --work-tree={v}", { v: windows("gitDirectory", `C:${BS}r${BS}.git${BS}modules${BS}m'x`) })).toBe(
+      `& x --git-dir='C:${BS}r${BS}.git${BS}modules${BS}m''x' --work-tree='C:${BS}r${BS}.git${BS}modules${BS}m''x'`,
+    );
+  });
 });
 
 describe("trailing U+005C", () => {
@@ -207,8 +217,9 @@ const PARSE_SCRIPT = [
   "foreach ($c in $cmds) {",
   "$t = $null; $e = $null",
   "$ast = [System.Management.Automation.Language.Parser]::ParseInput($c, [ref]$t, [ref]$e)",
-  "$vals = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.StringConstantType -eq 'SingleQuoted' }, $true) | ForEach-Object { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Value)) })",
-  "[Console]::Out.WriteLine([string]$e.Count + '|' + ($vals -join ','))",
+  "$cmd = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))",
+  "$vals = @($cmd[0].CommandElements | ForEach-Object { if ($_ -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $_.StringConstantType -in 'SingleQuoted', 'BareWord') { $_.StringConstantType.ToString().Substring(0, 1) + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Value)) } elseif ($_ -is [System.Management.Automation.Language.CommandParameterAst]) { 'B' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Extent.Text)) } else { '!' + $_.GetType().Name } })",
+  "[Console]::Out.WriteLine([string]$e.Count + '|' + [string]$cmd.Count + '|' + ($vals -join ','))",
   "}",
 ].join(" ; ");
 
@@ -220,17 +231,17 @@ function shellVersion(shell: string): string {
   return shellText(r.stdout).trim();
 }
 
-function parseCases(): Array<{ command: string; expected: string[] }> {
+function parseCases(): Array<{ command: string; expected: Array<[string, string]> }> {
   const gitPath = `C:${BS}Program Files${BS}Git${BS}cmd${BS}git.exe`;
-  const cases: Array<{ command: string; expected: string[] }> = [];
+  const cases: Array<{ command: string; expected: Array<[string, string]> }> = [];
   for (const special of LITERAL_SPECIALS) {
     const values = valuesWith(special, special === "a b" ? gitPath : `C:${BS}Tools${BS}g${special}t${BS}git.exe`);
     for (const template of [T_ADD, T_BRANCH, T_GITDIR, T_SAFE, T_WSL]) {
-      cases.push({ command: build(template, values), expected: expectedConstants(template, values) });
+      cases.push({ command: build(template, values), expected: templateElements(template, values) });
     }
   }
   const driveRoot = { git: windows("gitPath", gitPath), root: windows("worktreeRoot", `D:${BS}`), path: windows("path", "a") };
-  cases.push({ command: build(T_ADD, driveRoot), expected: [gitPath, `D:${BS}`, "a"] });
+  cases.push({ command: build(T_ADD, driveRoot), expected: templateElements(T_ADD, driveRoot) });
   return cases;
 }
 
@@ -238,7 +249,7 @@ describe("PowerShell parser", () => {
   for (const [name, shell] of SHELLS) {
     if (!shell) console.log(`SKIP T261 parser check in ${name}: missing capability ${name}`);
     test.skipIf(!shell)(
-      `each value parses as one single-quoted constant in ${name}`,
+      `each value parses as one literal constant in ${name}`,
       () => {
         const cases = parseCases();
         for (let at = 0; at < cases.length; at += 20) {
@@ -253,12 +264,13 @@ describe("PowerShell parser", () => {
           const lines = shellText(run.stdout).split(/\r?\n/).filter((l) => l.length > 0);
           expect(lines.length).toBe(chunk.length);
           chunk.forEach((c, i) => {
-            const [errors, list] = lines[i].split("|");
-            expect({ command: c.command, errors }).toEqual({ command: c.command, errors: "0" });
-            const constants = list.length === 0 ? [] : list.split(",").map(decodeB64);
-            expect({ command: c.command, constants }).toEqual({ command: c.command, constants: c.expected });
+            const [errors, commands, list] = lines[i].split("|");
+            expect({ command: c.command, errors, commands }).toEqual({ command: c.command, errors: "0", commands: "1" });
+            const elements = list.split(",").map((e) => (e.startsWith("!") ? ["!", e] : [e[0], decodeB64(e.slice(1))]));
+            expect({ command: c.command, elements }).toEqual({ command: c.command, elements: c.expected });
           });
         }
+        console.log(`OBSERVATION T261: ${name} ${shellVersion(shell as string)} passed ${cases.length} parser checks`);
       },
       TEST_TIMEOUT_MS,
     );
@@ -295,19 +307,15 @@ function parseSqQuote(text: string): string[] {
   return out;
 }
 
-// Inserts `rev-parse --sq-quote` after the Git path, so Git only echoes the later arguments.
+// Replaces the command element with `{git} rev-parse --sq-quote`, so Git echoes every argument. For T_WSL, Git receives the wsl.exe arguments in place of wsl.exe.
 function echoTemplate(template: string): string {
-  const fromGit = template.slice(template.indexOf("{git}"));
-  return `& ${fromGit.replace("{git}", "{git} rev-parse --sq-quote")}`;
+  return template.replace(/^& \S+/, "& {git} rev-parse --sq-quote");
 }
 
 function intendedArguments(template: string, values: Record<string, Value>, formed: Record<string, string> = {}): string[] {
-  const after = template.slice(template.indexOf("{git}") + "{git}".length).trim();
-  return after.split(" ").map((token) => {
-    const name = /^\{(\w+)\}$/.exec(token)?.[1];
-    if (!name) return token;
-    return formed[name] ?? textOf(values[name]);
-  });
+  return templateElements(template, values, formed)
+    .slice(1)
+    .map(([, text]) => text);
 }
 
 function argumentCases(gitPath: string) {

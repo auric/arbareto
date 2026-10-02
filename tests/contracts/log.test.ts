@@ -66,6 +66,14 @@ describe("session log", () => {
     expect(log.entries()).toContainEqual(expect.objectContaining(SAFE_ENTRY));
   });
 
+  test("keeps a reconciled effect summary", () => {
+    // Data-model §7 `effects` names these four differences. The contract gives no value type. This test uses booleans.
+    const effects = { head: true, index: true, workingFiles: false, operationState: false };
+    const log = createSessionLog();
+    log.record({ ...SAFE_ENTRY, effects } as never);
+    expect(log.entries()).toContainEqual(expect.objectContaining({ ...SAFE_ENTRY, effects }));
+  });
+
   test.each(NOT_ALLOWLISTED.map((f) => [f]))("a canary in field %s never reaches the log", (field) => {
     const log = createSessionLog();
     tryRecord(log, { ...SAFE_ENTRY, [field]: CANARY });

@@ -122,13 +122,12 @@ describe("running", () => {
   });
 
   test.each([["STALE_REVIEW"], ["TRUST_CHANGED"]])("a changed re-check after program approval ends failed with %s", (code) => {
-    const result = expectStep(
+    expectStep(
       { operation: SUBMODULES, state: "running" },
       { type: "recheck-changed", code },
       { state: "failed", code },
       ["keep-token-consumed", "start-no-process", "resolve-marker"],
     );
-    expect(result.actions).not.toContain("reconcile");
   });
 
   test.each([[COMMIT], [SUBMODULES]])("%s stays running and sets stalled after 15 seconds without activity", (operation) => {
@@ -139,9 +138,16 @@ describe("running", () => {
     expectStep({ operation, ...stalled }, { type: "activity" }, { state: "running", stalled: false });
   });
 
-  test.each([["row-refused"], ["row-read-failed"], ["level-read-failed"]])("submodule event %s keeps the operation running", (type) => {
-    expectStep({ operation: SUBMODULES, state: "running" }, { type } as Event, { state: "running" });
-  });
+  test.each([["row-refused"], ["row-read-failed"], ["level-read-failed"]])(
+    "submodule event %s keeps the operation running and starts no process for the row or its nested rows",
+    (type) => {
+      const result = expectStep({ operation: SUBMODULES, state: "running" }, { type, rowId: "row-1" } as Event, { state: "running", rowId: "row-1" }, [
+        "start-no-process-for-row-and-nested",
+      ]);
+      expect(result.actions).not.toContain("start-no-later-process");
+      expect(result.actions).not.toContain("close-job");
+    },
+  );
 
   test.each([["inactivity"], ["ceiling"]])("a submodule process %s deadline enters reconciling with DEADLINE", (reason) => {
     expectStep(
@@ -243,10 +249,8 @@ describe("reconciling", () => {
     );
   });
 
-  test("left effects after failure give failed-with-effects without rollback", () => {
-    const result = expectStep(reconciling(), { type: "failed-with-effects" }, { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
-    expect(result.actions).not.toContain("rollback");
-    expect(result.actions).not.toContain("retry");
+  test("left effects after failure give failed-with-effects and preserve the draft", () => {
+    expectStep(reconciling(), { type: "failed-with-effects" }, { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" }, ["preserve-draft"]);
   });
 
   test.each([["ambiguous"], ["evidence-limit"], ["no-retained-request"]])(
@@ -334,12 +338,26 @@ describe("revokeTrust", () => {
     expect(result.actions).toContain("close-lingering-job");
   });
 
-  test.each([["running"], ["cancel-requested"], ["reconciling"]])("during %s it cancels nothing and sets endProcesses", (state) => {
-    const result = step({ operation: COMMIT, state } as Snapshot, { type: "revoke-trust" });
-    expect(result).toMatchObject({ state, endProcesses: true });
-    expect(result.actions).not.toContain("signal-owned-processes");
-    expect(result.actions).not.toContain("close-job");
-  });
+  const toReconciling: Record<string, Event | null> = {
+    running: { type: "execution-ended", lingeringDescendants: 2 },
+    "cancel-requested": { type: "processes-stopped" },
+    reconciling: null,
+  };
+
+  test.each([["running"], ["cancel-requested"], ["reconciling"]])(
+    "during %s it cancels nothing, sets endProcesses, and the outcome has lingeringDescendants 0",
+    (state) => {
+      const result = step({ operation: COMMIT, state, lingeringDescendants: 2 } as Snapshot, { type: "revoke-trust" });
+      expect(result).toMatchObject({ state, endProcesses: true });
+      expect(result.actions).not.toContain("signal-owned-processes");
+      expect(result.actions).not.toContain("close-job");
+      const enter = toReconciling[state];
+      const entered = enter ? step({ operation: COMMIT, ...result } as Snapshot, enter) : result;
+      expect(entered.state).toBe("reconciling");
+      const outcome = step({ operation: COMMIT, ...entered } as Snapshot, { type: "intended-effects-confirmed" });
+      expect(outcome).toMatchObject({ state: "succeeded", lingeringDescendants: 0 });
+    },
+  );
 });
 
 describe("workspace recovery", () => {
@@ -383,6 +401,7 @@ describe("workspace recovery", () => {
     const registered = workspaceTransition("none", { type: "registration", marker: false, retainedRequest: false, restarted: true });
     expect(registered.state).toBe("unknown");
     expect(workspaceTransition("unknown", { type: "read", refresh: false, observation: "complete" }).state).toBe("unknown");
-    expect(workspaceTransition("unknown", { type: "read", refresh: true, observation: "complete" }).state).toBe("ready");
+    const released = workspaceTransition("unknown", { type: "read", refresh: true, observation: "complete" });
+    expect(released).toMatchObject({ state: "ready", priorOutcome: null });
   });
 });

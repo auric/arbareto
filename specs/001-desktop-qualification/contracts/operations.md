@@ -12,7 +12,7 @@ Grant only the operations below to the main local window. Deny remote webviews, 
 
 Rust and the compiled service use private inherited pipes. Frames contain a four-byte unsigned little-endian payload length followed by UTF-8 JSON.
 
-Each pipe frame has a top-level `kind` field with the value `public`, `process`, `mutation`, `trust`, or `handshake`. A `public` frame holds one §2 request, its response, or a progress event. Its body is `{"kind":"public","request":<envelope>}`, `{"kind":"public","response":<response>}`, or `{"kind":"public","progress":<event>}`. A `handshake` frame holds the §6 "Startup handshake" frame or its reply. A `process` frame holds one §6 process, identity, or lingering count request, their output, or one §6 activity event. A `mutation` frame holds one §6 recovery-marker message. A `trust` frame holds one §7 trust-store message. The shell never forwards a `process`, `mutation`, `trust`, or `handshake` frame to the renderer. The renderer envelope in §2 has no `kind` field.
+Each pipe frame has a top-level `kind` field with the value `public`, `process`, `mutation`, `trust`, or `handshake`. A `public` frame holds one §2 request, its response, or a progress event. Its body is `{"kind":"public","request":<envelope>}`, `{"kind":"public","response":<response>}`, or `{"kind":"public","progress":<event>}`. A `handshake` frame holds the §6 "Startup handshake" frame or its reply. A `process`, `mutation`, or `trust` frame holds one message from §6 "Channel frames". The shell never forwards a `process`, `mutation`, `trust`, or `handshake` frame to the renderer. The renderer envelope in §2 has no `kind` field.
 
 Reject a length header above the §5 frame bound before reading or allocating the body. The service answers it with a `public` response with `rejected`, `FRAME_LIMIT`, and `requestId` `null`. It then discards that many bytes without storing them. Reject invalid UTF-8, malformed JSON, duplicate object keys, excessive nesting, unknown fields, and unsupported protocol versions. Such a frame gets a `public` response with `rejected` and `INVALID_REQUEST`, or `PROTOCOL_VERSION` for an unsupported version. Its `requestId` is `null`, unless the frame holds a valid `requestId`.
 
@@ -80,7 +80,7 @@ The shell sends three events to the main window. `service-stopped` reports a ser
 | `reviewSubmodules` | Current snapshot ID. | Read-only submodule plan (§12 "Plan"), each refusal, the submodule program list, and a one-use submodule review token. Trust gating follows the read rule in §7. |
 | `updateSubmodules` | `submoduleReviewToken` and `start`: `true`. Any other `start` value gives `INVALID_REQUEST`. | Fresh preflight, and a native confirmation when §12 lists submodule programs. Fetch, check, and checkout steps for each row, level by level, with progress events (§12 "Update protocol"). A reconciled outcome with one result per submodule (§12). A repeated request with a consumed token returns the existing operation state and `operationId`, and starts no Git process. |
 | `cancel` | Issued operation ID. | Cancellation-requested acknowledgement followed by the actual terminal outcome. |
-| `getOperation` | Issued operation ID. | Current or retained terminal state. Never retries an operation. |
+| `getOperation` | Issued operation ID. | Current or retained terminal state. Never retries an operation. A removed record gives `UNKNOWN_TARGET` (§5 "Finished operation records"). |
 | `requestClose` | `stay`, `closeIfIdle`, or `interruptAndClose`. | The shell decides natively and never forwards this operation to the service. A running mutation always shows the native prompt, whose default is Stay open. Only its Interrupt and close button confirms interruption. |
 | `currentSession` | Empty object. The envelope has no `sessionId`. | The shell answers natively and never forwards this operation to the service. The result is the current `sessionId`, or `SERVICE_UNAVAILABLE` while no service session runs. Both results carry `textScale`: the current Windows text scale factor, from 1.00 to 2.25 (plan.md "Windows text size"). |
 | `dismissRecoveryMarker` | Renderer: one marker ID from `getEnvironment` or `service-stopped`. Service: that marker ID and the native-issued `bootstrapId`. | Explicit removal of a marker whose repository is gone (§6 "Dismissal"). The result states that the operation outcome stays unknown. |
@@ -298,10 +298,13 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | Frontend graph layout | 24 simultaneous lanes and 4,096 SVG path segments; explicit row-only fallback |
 | Effective configuration/trust input | 4 MiB; overflow blocks execution approval |
 | Trust program file digests | 64 files, 1 MiB per file, and 8 MiB total (§7 "Program file digests"). Overflow permits only a session approval without a stored record |
-| Diagnostic bytes retained | 64 KiB per stream, never persisted as raw logs |
-| Total unexpected diagnostic output | 4 MiB per operation before cancellation. Each `updateSubmodules` process counts its own 4 MiB, because its stderr carries progress (§12 "Deadlines and Cancel"). |
-| Native stdout/stderr chunk | 64 KiB |
-| Queued pipe data | 8 chunks per stream; apply backpressure |
+| Diagnostic bytes retained | 64 KiB per stream, never persisted as raw logs. The service retains them, and the shell forwards every byte before the completion signal (§6 "Channel frames"). |
+| Total unexpected diagnostic output | 4 MiB per operation before cancellation. Each `updateSubmodules` process counts its own 4 MiB, because its stderr carries progress (§12 "Deadlines and Cancel"). The service counts the forwarded bytes and sends `cancel` at the bound. |
+| Native stdout/stderr chunk | 64 KiB of decoded bytes in one `output` or `input` frame (§6 "Channel frames") |
+| Queued pipe data | 8 chunks per stream in the shell. A full queue stops the reads of that child pipe. A chunk leaves the queue when its frame write to the service returns. Streamed input allows 8 unacknowledged chunks per process (§6 "Channel frames"). |
+| Inline process input | 64 KiB of decoded bytes in the `input` field of a `run` request. Larger input uses a stream (§6 "Channel frames"). |
+| Streamed process input | 536,870,912 bytes (512 MiB) per process, the whole-file stage input bound |
+| Finished operation records | 256 terminal records of reads and rejected requests per service session. A new terminal record above 256 removes the oldest one. A mutation record that consumed an approval stays for the service session (§2). `getOperation` or `cancel` with a removed `operationId` gives `UNKNOWN_TARGET`. |
 | Registered workspaces | 8 at one time per service session. Reuse and release follow §6 "Registration reuse and release". |
 | Trust approval records | 4 KiB per record and 256 records. A new record above 256 replaces the oldest record. |
 | Retained comparison data | 4 comparisons and 128 MiB total |
@@ -416,7 +419,7 @@ A release invalidates the released `repositoryId` and its snapshots, comparisons
 
 ### Process fields
 
-Every private process frame carries `kind` `process` (§1).
+Every private process frame carries `kind` `process` (§1). "Channel frames" below defines each request and reply body.
 
 | Field | Native validation |
 | --- | --- |
@@ -425,13 +428,13 @@ Every private process frame carries `kind` `process` (§1).
 | `bootstrapId` | Native-issued temporary context; required only for probe/discovery. |
 | `gitInstallationId` | Required after Git registration. A probe instead uses its native-selected executable context. |
 | `repositoryId` | Required for registered operations. Discovery instead uses its native-selected directory context. |
-| `arguments` | Structured string array; bounded count/size; no NUL. Constructed by the service. |
-| `input` | Bounded input bytes or bounded streaming input. |
+| `arguments` | Structured string array. Constructed by the service. No string holds NUL or a lone surrogate. The quoted command line, with the terminating null, has at most 32,767 UTF-16 units (Microsoft Learn `CreateProcessW`). |
+| `input` | At most 64 KiB inline, or a stream of at most 512 MiB (§5, "Channel frames"). |
 | `environmentPolicy` | Internal fixed policy identifier, not caller-defined key/value pairs. |
 | `transactionId` | Service-owned candidate-index context where an approved design requires it. |
-| `limits` | Cannot exceed contract caps. A `network` request carries the §12 inactivity limit and ceiling, and the shell enforces both. A commit request and each `network` request carry the 15-second stall threshold ("Activity and stall notice"). |
+| `limits` | Cannot exceed contract caps. A `network` request carries the §12 inactivity limit and ceiling, and the shell enforces both. A commit request and each `network` request carry the 15-second stall threshold ("Activity and stall notice"). `deadlineMs` is at most 30 seconds for a bootstrap context, 60 seconds for a WSL distro start, else 120 seconds. Only the `network` policy carries the inactivity limit and the ceiling. |
 
-An identity request is a `process` frame with `operationId`, `contextKind`, and the bootstrap or repository ID. It carries at most 8 absolute paths. Each path has at most 32,767 UTF-16 units and no NUL. The shell opens each path with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`. It follows junctions and reads no file data. It returns only each identity or an error code. A Windows identity reply is `{"volumeSerial":"<16 lowercase hex digits>","fileId":"<32 lowercase hex digits>"}` from `FILE_ID_INFO`. `volumeSerial` is the 64-bit `VolumeSerialNumber`, and `fileId` is the 128-bit `FILE_ID_128` `Identifier` bytes in array order. A path can lie outside the selected directory, because a linked worktree's common directory can live elsewhere.
+An identity request is a `process` frame with `operationId`, `contextKind`, and the bootstrap or repository ID. It carries at most 8 absolute paths. Each path has at most 32,767 UTF-16 units and no NUL. The shell opens each path with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`. It follows junctions and reads no file data. It returns only each identity or the code `UNSUPPORTED_REPOSITORY`. A Windows identity reply is `{"volumeSerial":"<16 lowercase hex digits>","fileId":"<32 lowercase hex digits>"}` from `FILE_ID_INFO`. `volumeSerial` is the 64-bit `VolumeSerialNumber`, and `fileId` is the 128-bit `FILE_ID_128` `Identifier` bytes in array order. A path can lie outside the selected directory, because a linked worktree's common directory can live elsewhere.
 
 Supply the executable through `CreateProcessW.lpApplicationName`. Preserve structured arguments until the tested Windows quoting boundary. Never insert an intermediate command shell.
 
@@ -454,7 +457,7 @@ Use only intended inherited pipe handles. Create the child suspended and assign 
 
 Each operation has its own Job. The service has a separate Job. Each operation Job and the service Job use kill-on-close and no breakaway. Their handles stay non-inheritable. A shell crash closes these handles and ends every owned descendant. Canceling one operation must not stop unrelated reads.
 
-Drain stdout and stderr independently. Enforce caps before forwarding chunks to Bun. After service failure, close every operation Job outside the lingering set. Lingering Jobs stay (below).
+Drain stdout and stderr independently. Enforce the chunk size and queue caps before forwarding chunks to Bun. The service enforces the byte caps of §5. After service failure, close every operation Job outside the lingering set. Lingering Jobs stay (below).
 
 **Completion signal.** A process ends when its process handle signals, never at pipe EOF. A descendant can inherit a pipe and keep it open after the process exits. A research R5 probe saw Git exit after 0.25 seconds while a `post-commit` child held stderr for 8.3 seconds. At the signal, the shell forwards the bytes that each pipe already holds, within the caps. Then it keeps draining each pipe into a discard sink until EOF or Job close. So a writing descendant never blocks or fails on the pipe, and memory does not grow. Discarded bytes count toward no cap. The app never forwards, shows, retains, or logs them. The exit reply follows the forwarded bytes.
 
@@ -489,12 +492,12 @@ Processes that Git or a hook starts during a mutation can outlive the mutation's
 - An `ended` frame with `endProcesses: true` closes the Job at once, with every descendant, and it never lingers. The service sets it after a cancellation during `reconciling` (§8). It also sets it when `revokeTrust` for that common directory came after `started`.
 - The shell tags each mutation Job with the common-directory identity that it reads for the `started` frame. The tag survives a service restart.
 - A `revoke` trust frame (§7) closes every lingering Job whose tag equals the identity of its common-directory path. The reply states how many processes were active in those Jobs before the close.
-- A lingering count request is a `process` frame with one common-directory path. The shell reads its identity and returns the total active process count of the lingering Jobs with that tag. It carries no process name, PID, or argument. §9 uses the count in remedies.
+- A lingering count request is a `process` frame with the active `operationId` and one common-directory path. The shell reads its identity and returns the total active process count of the lingering Jobs with that tag. It carries no process name, PID, or argument. §9 uses the count in remedies.
 - A lingering Job belongs to no running operation. It closes when the port reports `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` for it, or when the application closes.
 - Port message delivery is not guaranteed (research R5). At each `ended` frame, the shell also reads the count of each lingering Job and closes each empty one. A missed message therefore keeps only an empty handle, never a process.
 - One shell thread reads the port with `GetQueuedCompletionStatus` and a 1-second timeout. It stops at application close.
 - Cancellation, deadline expiry, and Interrupt and close close the operation Job at once, with every descendant. They never create a lingering Job. A cancellation during `reconciling` closes the Job at `ended` instead, so reconciliation reads can finish (§8).
-- Read operation Jobs never linger. A read Job closes when the read ends.
+- Read operation Jobs never linger. A read Job closes when the read ends. The service then sends `closeJob` ("Channel frames").
 - A service exit or Restart service keeps every lingering Job. The shell owns these Jobs, and they belong to no running operation. They close at application close.
 - Application close closes every lingering Job, after the operation Jobs and before the service Job. Kill-on-close ends every remaining process. This holds for `closeIfIdle`, Interrupt and close, and Restart Arbareto. A shell crash closes the handles as well.
 - Lingering Jobs alone never make a mutation count as running, so `requestClose` shows no prompt for them (research R7).
@@ -509,7 +512,7 @@ A marker holds its ID, the operation kind, and the start time. It also holds the
 
 The service sends three `mutation` frames:
 
-- `started` with `operationId`, `repositoryId`, `kind`, and the Git-resolved worktree and common-directory paths. The service sends it before it creates the canonical index lock. That lock is the first side effect of every mutation protocol. See research R3 step 4, R4 step 2, and §4 "File staging" step 2. Exception: `updateSubmodules` takes no canonical index lock, and its first side effect is its first update process (§12 "Update protocol"). The shell reads the common-directory identity itself through `FileIdInfo`. Then it takes the named mutex `Local\Arbareto-mutation-<SHA-256 of that identity>` without waiting ("Cross-instance exclusion" below). It writes and flushes the file, then replies with the marker ID. When the write or flush fails, it replies with the failure class: `disk-full`, `access-denied`, or `other`. Without a marker ID, the service creates no lock and starts no Git process. A failure reply refuses the mutation with `RECOVERY_MARKER_FAILED` (§9).
+- `started` with `operationId`, `repositoryId`, `kind`, and the Git-resolved worktree and common-directory paths. The service sends it before it creates the canonical index lock. That lock is the first side effect of every mutation protocol. See research R3 step 4, R4 step 2, and §4 "File staging" step 2. Exception: `updateSubmodules` takes no canonical index lock, and its first side effect is its first update process (§12 "Update protocol"). The shell reads the common-directory identity itself through `FileIdInfo`. Then it takes the named mutex `Local\Arbareto-mutation-<SHA-256 of that identity>` without waiting ("Cross-instance exclusion" below). It writes and flushes the file, then replies with the marker ID. When the write or flush fails, it releases the mutex. It then replies with the failure class: `disk-full`, `access-denied`, or `other`. The reply also holds the `recovery` folder path (§9). Without a marker ID, the service creates no lock and starts no Git process. A failure reply refuses the mutation with `RECOVERY_MARKER_FAILED` (§9).
 - `ended` with `operationId` and `endProcesses` ("Lingering Jobs"), after the terminal response. From `started` to `ended`, the shell treats the mutation as running for `requestClose`. After a service exit, `ended` never arrives. The shell then closes every operation Job outside the lingering set, and afterwards no mutation counts as running. Lingering Jobs stay until application close ("Lingering Jobs"). The marker file stays.
 - `resolved` with the marker ID. The service sends it after a known outcome, or after a recovery refresh states an `unknown` outcome (§8). The shell then deletes the file.
 
@@ -531,6 +534,126 @@ The owning shell keeps each marker file open without delete sharing. At startup,
 - Dismissal refused: any other result. The code is `STATE_UNKNOWN` with the remedy "Open this repository and use Refresh."
 
 When dismissal is allowed, the shell shows a native confirmation. It names the worktree path, the operation kind, and the start time. It states that the operation outcome stays unknown. Its buttons are Dismiss and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Only the Dismiss button deletes the file. A dismissed marker never counts as a resolved outcome.
+
+### Channel frames
+
+This subsection defines the bodies of `process`, `mutation`, and `trust` frames. A frame body is `{"kind":"<kind>","<kind>":{…}}` with exactly these two keys. The inner object always has `type`. The strict decoder of §1 applies in both directions.
+
+- `callId`: the service issues a new UUID-shaped identifier for each request that expects a reply. Every reply repeats `callId`.
+- A reply repeats the request `type`, except the `run` and `input` replies and `refused`.
+- `ended`, `resolved`, `release`, and `closeJob` carry no `callId` and get no reply.
+- `cancel` and `input` carry the `callId` of their `run` request.
+- Paths are absolute, have 1 to 32,767 UTF-16 units, and hold no NUL or lone surrogate.
+- Bytes travel as standard base64 with padding. A decoded chunk holds 1 to 65,536 bytes.
+
+**Process requests.** The service sends these with `kind` `process`.
+
+| `type` | Fields | Shell behavior |
+| --- | --- | --- |
+| `run` | `callId`, `operationId`, `contextKind`, the context IDs, `arguments`, `environmentPolicy`, `limits`. Optional: `input` or `inputBytes`, `transactionId` with `indexFile`. | Validates each field by "Process fields" and the rules below. Starts one process, or replies `refused`. |
+| `input` | `callId`, `data`. | Writes the chunk to the child stdin, then replies `inputWritten`. |
+| `cancel` | `callId`. | Closes the Job of the operation that owns that call, with every descendant. Each process of that operation then gets `exit`. A cancel for an ended call is dropped. |
+| `identity` | `callId`, `operationId`, `contextKind`, the context IDs, `paths`: 1 to 8 paths. | Replies `identity` with one entry per path, in request order. |
+| `lingeringCount` | `callId`, `operationId`, `commonDirectory`. | Replies `lingeringCount` with the active process count of the lingering Jobs with that tag. An unreadable identity gives 0. |
+| `register` | `callId`, `operationId`, `bootstrapId`, `gitInstallationId`, and either `version` and `confirm`, or `repositoryId`, `worktreeRoot`, `gitDirectory`, and `commonDirectory`. | Binds the issued ID to the native context of `bootstrapId`. |
+| `release` | Exactly one of `repositoryId` or `gitInstallationId`. | Removes the binding. A later request with that ID gets `refused` with `UNKNOWN_TARGET`. |
+| `closeJob` | `operationId`. | Closes that operation Job with every descendant. The ID is then inactive. |
+
+`run` request fields. Every field is required, except where the row says otherwise.
+
+| Field | Value |
+| --- | --- |
+| `type` | `run`. |
+| `callId` | New identifier for this call. |
+| `operationId` | Active operation: from its first request until `ended` or `closeJob` for it. |
+| `contextKind` | `gitProbe`, `repositoryDiscovery`, or `registeredOperation`. |
+| `bootstrapId` | Only for `gitProbe` and `repositoryDiscovery`. A live context of that kind. |
+| `gitInstallationId` | For `repositoryDiscovery` and `registeredOperation`. A bound ID ("`register`"). Absent for `gitProbe`. |
+| `repositoryId` | Only for `registeredOperation`. A bound ID that is not released. |
+| `arguments` | "Process fields" rules. `gitProbe` permits only `version` and `--build-options`. Every other array starts with `--no-lazy-fetch`. |
+| `input` | Optional base64 string with 1 to 65,536 decoded bytes. Not with `inputBytes`. |
+| `inputBytes` | Optional integer from 1 to 536,870,912. The service then streams `input` chunks. Not with `input`. |
+| `environmentPolicy` | `probe` for a bootstrap context. `read`, `mutation`, or `network` for `registeredOperation`. |
+| `transactionId` | Optional. Only with `mutation`. |
+| `indexFile` | Required with `transactionId`, absent otherwise. Its name starts with `arbareto-candidate-`, inside the registered Git directory. |
+| `limits` | `{deadlineMs, stallMs?}`, or `{inactivityMs, ceilingMs, stallMs}` only with `network`. |
+| `limits.deadlineMs` | 1 to 30,000 for a bootstrap context. 1 to 60,000 for a WSL distro start probe (§11). 1 to 120,000 for `registeredOperation`. |
+| `limits.inactivityMs` | 1 to 300,000. |
+| `limits.ceilingMs` | 1 to 14,400,000. |
+| `limits.stallMs` | Exactly 15,000. Only in `registeredOperation`. |
+
+Current directory: `gitProbe` uses the application-owned launch directory, and `repositoryDiscovery` uses the selected directory ("Registration bootstrap"). `registeredOperation` uses the worktree root that `register` bound to `repositoryId`. This last rule is a choice; §12 steps still pass their own `-C`.
+
+Context rules:
+
+- A live `bootstrapId` has the matching kind and is younger than 60 seconds. Its first `operationId` owns it. Another `operationId` gets `UNKNOWN_TARGET`.
+- The startup `gitProbe` context has no public operation. The service issues an internal `operationId` for it.
+- `register` field `version` is printable ASCII with at most 64 bytes, as `webView2Version`.
+
+Streamed input:
+
+- After `run` with `inputBytes`, the service sends `input` chunks in order.
+- At most 8 chunks of one call wait without an `inputWritten` reply.
+- The shell closes the child stdin when the written total equals `inputBytes`.
+- A chunk past `inputBytes` closes the operation Job. The `exit` then follows.
+- After `exit`, the shell drops each `input` of that call.
+
+**Process replies.** The shell sends these with `kind` `process`.
+
+| `type` | Fields | Meaning |
+| --- | --- | --- |
+| `output` | `callId`, `stream`: `stdout` or `stderr`, `data`. | Bytes that the child wrote before its completion signal. |
+| `activity` | `callId`, `state`: `stalled` or `active`. | The stall event of "Activity and stall notice". Only a call with `stallMs` gets it. |
+| `inputWritten` | `callId`. | The shell wrote one `input` chunk to the child stdin. |
+| `exit` | `callId`, `exitCode`, `activeDescendants`, optional `deadline`. | The last reply of a `run`. It follows every `output` of that call. |
+| `refused` | `callId`, `code`. | The request started nothing. Valid for each request with `callId`. |
+| `identity` | `callId`, `identities`. | Each entry is an identity reply ("Process fields") or `{"code":"UNSUPPORTED_REPOSITORY"}`. |
+| `lingeringCount` | `callId`, `count`. | Nonnegative safe integer. |
+| `register` | `callId`, `result`: `approved`, `declined`, or `another`. With `another`, also `bootstrapId`. | Git with `confirm: true`: the Git selection confirmation result. Otherwise `approved`. |
+
+- `exitCode` is an integer from 0 to 4,294,967,295. It is `null` when a Job close ended the process.
+- `deadline` is `deadline`, `inactivity`, or `ceiling`. It names the expired limit.
+- `activeDescendants` is the active process count of the Job at the exit ("Lingering Jobs").
+- `refused` codes: `INVALID_REQUEST` for a field that breaks a rule. `UNKNOWN_TARGET` for an inactive or unbound ID or an expired context.
+- More `refused` codes: `GIT_CHANGED` for a changed executable identity, and `PROCESS_OWNERSHIP_FAILED` for a failed start or Job assignment.
+
+**Backpressure.** The shell keeps at most 8 chunks per stream. A chunk leaves the queue when its frame write returns. A full queue stops the reads of that child pipe, so Git waits on its write. The service handles each frame before it reads the next frame. It never queues output frames itself. Streamed input uses `inputWritten` instead, so the shell never blocks its service pipe reader.
+
+**Byte caps.** The shell forwards every byte before the completion signal. It enforces only the chunk size and the queue depth. The service retains at most 64 KiB per stream for diagnostics (§5). It counts every forwarded stderr byte of the operation. At 4 MiB it sends `cancel` (§9). An `updateSubmodules` process counts its own 4 MiB. A stream above its §5 result bound also gets `cancel`.
+
+**Mutation frames.** "Recovery markers" defines their use.
+
+| `type` | Fields | Reply |
+| --- | --- | --- |
+| `started` | `callId`, `operationId`, `repositoryId`, `kind`: one mutation name of §3, `worktreeRoot`, `commonDirectory`. | `{type, callId, markerId}`, `{type, callId, busy: true}`, or `{type, callId, failure, folder}`. |
+| `ended` | `operationId`, `endProcesses`: boolean. | None. Only after a `started` reply with `markerId`. |
+| `resolved` | `markerId`. | None. |
+
+- `failure` is `disk-full`, `access-denied`, or `other`. `folder` is the `recovery` folder path.
+- An unreadable common-directory identity gives `failure` `other`.
+- A `busy` or failure reply holds no mutex and no marker. The service then sends `closeJob`, not `ended`.
+
+**Trust frames.** §7 "Trust approval store" defines their use.
+
+| `type` | Fields | Reply |
+| --- | --- | --- |
+| `confirm` | `callId`, `worktreeRoot`, `gitDirectory`, `commonDirectory`, `gitInstallationDigest`, `fingerprint`, `persist`: boolean. With `persist: false`, also `bound`. | `{type, callId, result}`: `approved` or `declined`. `approved` also carries `stored`. With `stored: true`, the reply also holds `record` in the handshake record form. `stored: false` has no `record`. It follows `persist: false` or a failed record write (§7 "Trust approval store"). |
+| `revoke` | `callId`, `commonDirectory`. | `{type, callId, endedProcesses}`: a nonnegative safe integer. |
+| `confirmRun` | `callId`, `worktreeRoot`, `submodulePaths`: 1 to 256 paths in display order, `programCount`: at least 1, `uncheckedCount`: 0 to `programCount`. | `{type, callId, result}`: `approved` or `declined`. |
+
+- `gitInstallationDigest` and `fingerprint` are 64 lowercase hex digits.
+- `bound` is `file-count`, `file-bytes`, or `total-bytes` (§7 "Program file digests").
+- An unreadable common-directory identity gives `revoke` the reply `endedProcesses` 0, as for `lingeringCount`.
+- A service exit closes each open trust dialog as Cancel. The shell then writes and deletes no record.
+
+**Errors.**
+
+- The service drops a reply with an unknown `callId`.
+- A reply that breaks its shape gets a `public` response with `rejected`, `INVALID_REQUEST`, and `requestId` `null` (§1).
+- For a `run` call, that reply also makes the service send `cancel`. It ignores later output and waits for `exit`. The call then fails with `PROCESS_OWNERSHIP_FAILED`.
+- A malformed `exit` fails its call at once with `PROCESS_OWNERSHIP_FAILED`. So does a malformed reply to a request other than `run`.
+- The shell answers a malformed request that holds a valid `callId` with `refused` and `INVALID_REQUEST`. It drops every other malformed frame.
+- A service exit drops every pending call. The shell keeps the lingering set ("Lingering Jobs").
 
 ## 7. Startup, trust, and environment
 
@@ -630,7 +753,7 @@ Missing approval never disables a hook. A mutation that needs approval refuses w
 
 **Trust approval store.** Approval persists across launches (spec Clarifications, 2026-09-30). The shell stores one record for each worktree in the `trust` folder of the application data directory. The fingerprint is per worktree, because worktree configuration, relative program paths, and a relative `core.hooksPath` resolve per worktree. A record holds the Git-resolved common-directory path and its `FileIdInfo` identity. It also holds the Git-resolved worktree root and administration-directory paths and their `FileIdInfo` identities. These identities form the worktree identity (data-model §2). It also holds the approved fingerprint, the approval time, and the executable identity digest of the selected Git (data-model §1). It holds no configuration value, command text, environment value, or credential. The fingerprint is the digest that `readTrust` returns. Each startup handshake carries every record. The service sends three `trust` frames:
 
-- `confirm` with the worktree path, the worktree administration-directory path, the common-directory path, the Git installation digest, the fingerprint, and `persist`. The service computes the digest from the executable identity (data-model §1). The shell reads the common-directory identity and the worktree identity itself. It shows a native confirmation that names the worktree path and the fingerprint. With `persist: false`, it also shows the reached bound and the session-only text from "Program file digests". Its buttons are Approve and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. On Approve with `persist: true`, the shell writes and flushes the record. It replaces every record of the same worktree. A record is of the same worktree when both its common-directory identity and its worktree identity match. It is also of the same worktree when both its common-directory path and its worktree root path match. Records of other worktrees of that common directory stay unchanged. With `persist: false`, it writes no record and deletes every record of the same worktree, because none matches the new fingerprint. Then it replies `approved`. Otherwise it replies `declined`, and `approveTrust` ends `canceled`.
+- `confirm` with the worktree path, the worktree administration-directory path, the common-directory path, the Git installation digest, the fingerprint, and `persist`. The service computes the digest from the executable identity (data-model §1). The shell reads the common-directory identity and the worktree identity itself. It shows a native confirmation that names the worktree path and the fingerprint. With `persist: false`, the frame also carries `bound`. The dialog then shows that bound and the session-only text from "Program file digests". Its buttons are Approve and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. On Approve with `persist: true`, the shell writes and flushes the record. It replaces every record of the same worktree. A record is of the same worktree when both its common-directory identity and its worktree identity match. It is also of the same worktree when both its common-directory path and its worktree root path match. Records of other worktrees of that common directory stay unchanged. When that write or flush fails, the approval still holds for this service session only. The shell then replies `approved` with `stored: false` and without `record`. The service keeps a session approval, and `readTrust` reports `persistence` `session`. The UI states that the approval holds only for this session: "Arbareto could not save this approval. This approval lasts until Arbareto closes or its Git service restarts." The second sentence is the session-only text from "Program file digests". With `persist: false`, it writes no record and deletes every record of the same worktree, because none matches the new fingerprint. Then it replies `approved`. Otherwise it replies `declined`, and `approveTrust` ends `canceled`.
 - `revoke` with the common-directory path. The shell reads the identity of that path. It deletes every record whose common-directory identity or path matches, for every worktree of that common directory. It also closes every lingering Job with that identity tag (§6 "Lingering Jobs"). Then it replies with the count of processes that the close ended. `revokeTrust` then invalidates the trust ID and returns that count.
 - `confirmRun` with the worktree path, the submodule paths, and the count of listed submodule programs. It also carries the count of `unchecked` entries (§12 "Trust"). The shell shows a native confirmation with the §12 text. Its buttons are Run and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Run replies `approved`, and any other result replies `declined`. The shell writes, replaces, and deletes no record.
 

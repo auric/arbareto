@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-trust"
+description = "Enables the read_trust command without any pre-configured scope."
+commands.allow = ["read_trust"]
+
+[[permission]]
+identifier = "deny-read-trust"
+description = "Denies the read_trust command without any pre-configured scope."
+commands.deny = ["read_trust"]

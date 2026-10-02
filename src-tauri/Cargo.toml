@@ -1,0 +1,36 @@
+[package]
+name = "arbareto"
+version = "0.1.0"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/auric/arbareto"
+edition = "2024"
+
+[lib]
+name = "arbareto_lib"
+
+[build-dependencies]
+tauri-build = "2.7.0"
+
+[dependencies]
+tauri = "2.12.0"
+tauri-plugin-dialog = "2.8.0"
+webview2-com = "0.39.1"
+serde = "1.0.228"
+serde_json = "1.0.145"
+
+[dependencies.windows]
+version = "0.62.0"
+features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+  "Win32_UI_Controls",
+  "Win32_UI_WindowsAndMessaging",
+  "Wdk_System_SystemServices",
+]

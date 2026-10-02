@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-revoke-trust"
+description = "Enables the revoke_trust command without any pre-configured scope."
+commands.allow = ["revoke_trust"]
+
+[[permission]]
+identifier = "deny-revoke-trust"
+description = "Denies the revoke_trust command without any pre-configured scope."
+commands.deny = ["revoke_trust"]

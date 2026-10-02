@@ -1,0 +1,30 @@
+{
+  "identifier": "main",
+  "description": "Typed operations and service events for the local main window.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "allow-get-environment",
+    "allow-choose-git",
+    "allow-choose-repository",
+    "allow-restore-workspace",
+    "allow-read-workspace",
+    "allow-read-history",
+    "allow-read-comparison",
+    "allow-read-trust",
+    "allow-approve-trust",
+    "allow-revoke-trust",
+    "allow-apply-hunk",
+    "allow-apply-file",
+    "allow-review-commit",
+    "allow-commit",
+    "allow-review-submodules",
+    "allow-update-submodules",
+    "allow-cancel",
+    "allow-get-operation",
+    "allow-request-close",
+    "allow-current-session",
+    "allow-dismiss-recovery-marker",
+    "core:event:allow-listen"
+  ]
+}

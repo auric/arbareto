@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-apply-hunk"
+description = "Enables the apply_hunk command without any pre-configured scope."
+commands.allow = ["apply_hunk"]
+
+[[permission]]
+identifier = "deny-apply-hunk"
+description = "Denies the apply_hunk command without any pre-configured scope."
+commands.deny = ["apply_hunk"]

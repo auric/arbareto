@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-submodules"
+description = "Enables the update_submodules command without any pre-configured scope."
+commands.allow = ["update_submodules"]
+
+[[permission]]
+identifier = "deny-update-submodules"
+description = "Denies the update_submodules command without any pre-configured scope."
+commands.deny = ["update_submodules"]

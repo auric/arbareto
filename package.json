@@ -1,0 +1,36 @@
+{
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/auric/arbareto"
+  },
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "build:frontend": "bunx --bun vite build",
+    "build:service": "bun -e \"if (Bun.version !== '1.4.2') { console.error('Bun 1.4.2 required, found ' + Bun.version); process.exit(1) }\" && bun build src/git-service/main.ts --compile --target=bun-windows-x64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json --outfile src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe",
+    "build": "bun run build:frontend && bun run build:service"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.8.0",
+    "@pierre/diffs": "^1.5.1",
+    "@shikijs/transformers": "^4.4.3",
+    "@tanstack/react-virtual": "^3.14.13",
+    "@tauri-apps/api": "^2.12.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "shiki": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/bun": "~1.4.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "shadcn": "^4.21.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
+  }
+}

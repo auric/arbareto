@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-approve-trust"
+description = "Enables the approve_trust command without any pre-configured scope."
+commands.allow = ["approve_trust"]
+
+[[permission]]
+identifier = "deny-approve-trust"
+description = "Denies the approve_trust command without any pre-configured scope."
+commands.deny = ["approve_trust"]

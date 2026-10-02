@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dismiss-recovery-marker"
+description = "Enables the dismiss_recovery_marker command without any pre-configured scope."
+commands.allow = ["dismiss_recovery_marker"]
+
+[[permission]]
+identifier = "deny-dismiss-recovery-marker"
+description = "Denies the dismiss_recovery_marker command without any pre-configured scope."
+commands.deny = ["dismiss_recovery_marker"]

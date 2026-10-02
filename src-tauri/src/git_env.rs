@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The shell does not use these items yet. T037 removes this attribute.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;

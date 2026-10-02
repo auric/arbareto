@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The shell does not use these items yet. T037 removes this attribute.
-#![allow(dead_code)]
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use std::sync::Arc;
+use serde_json::{Value, json};
+use tauri::async_runtime::{Receiver, Sender, channel};
+use tauri::{State, Webview};
+
+use crate::framing::{PUBLIC_REQUEST_BYTES, public_request_body};
+use crate::process_requests::{decode_strict, is_identifier};
 
 /// The label of the only window that may call the public operations (contract §1).
 pub const MAIN_WINDOW: &str = "main";
@@ -34,7 +39,23 @@ pub const OPERATIONS: [&str; 21] = [
     "dismissRecoveryMarker",
 ];
 
+/// Contract §3: the shell runs these first. Until T063 and T140 replace the stubs, each gives `SERVICE_UNAVAILABLE`.
+const NATIVE_FIRST: [&str; 5] = [
+    "requestClose",
+    "chooseGit",
+    "chooseRepository",
+    "restoreWorkspace",
+    "dismissRecoveryMarker",
+];
+
+/// Pinned Tauri serves the bundled frontend on Windows at this host (manager/mod.rs:335-338, webview/mod.rs:1966-1974).
+const LOCAL_HOST: &str = "tauri.localhost";
+
 /// What the shell does with one renderer request.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the tests check the request rules through handle")
+)]
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     /// The shell answers the renderer itself and writes no service frame.
@@ -55,30 +76,377 @@ pub enum ToRenderer {
 /// Writes one frame body to the service.
 pub type FrameSink = Arc<dyn Fn(String) + Send + Sync>;
 
+/// A forwarded request waits here for the service response with its `requestId`.
+enum Submitted {
+    Answer(Value),
+    Waiting(Receiver<Value>),
+    Denied,
+}
+
+#[derive(Default)]
+struct Session {
+    session_id: Option<String>,
+    pending: HashMap<String, Sender<Value>>,
+}
+
 pub struct Ipc {
-    _private: (),
+    forward: FrameSink,
+    session: Mutex<Session>,
 }
 
 impl Ipc {
-    pub fn new(_forward: FrameSink) -> Ipc {
-        todo!("T037")
+    pub fn new(forward: FrameSink) -> Ipc {
+        Ipc {
+            forward,
+            session: Mutex::new(Session::default()),
+        }
     }
 
     /// Sets the current service session. `None` means that no service session runs.
-    pub fn set_session(&self, _session_id: Option<String>) {
-        todo!("T037")
+    /// Each request without a terminal response then ends as State unknown (contract §2).
+    pub fn set_session(&self, session_id: Option<String>) {
+        let mut session = self.session();
+        if session_id.is_none() {
+            for (request_id, waiting) in session.pending.drain() {
+                let _ = waiting.try_send(
+                    json!({ "requestId": request_id, "state": "unknown", "code": "STATE_UNKNOWN" }),
+                );
+            }
+        }
+        session.session_id = session_id;
     }
 
     /// Checks the caller, the operation, and the encoded size, then answers or forwards one renderer request.
     /// `url` is the URL of the calling webview. The encoded size is the length of `serde_json::to_string(request)`.
-    pub fn handle(&self, _window_label: &str, _url: &str, _request: &serde_json::Value) -> Outcome {
-        todo!("T037")
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the commands call submit, which handle wraps")
+    )]
+    pub fn handle(&self, window_label: &str, url: &str, request: &serde_json::Value) -> Outcome {
+        match self.submit(window_label, url, request, None) {
+            Submitted::Answer(answer) => Outcome::Answer(answer),
+            Submitted::Waiting(_) => Outcome::Forwarded,
+            Submitted::Denied => Outcome::Denied,
+        }
+    }
+
+    /// Gives a service response to the request with its `requestId`. Other responses are dropped.
+    pub fn deliver(&self, response: Value) {
+        let waiting = response
+            .get("requestId")
+            .and_then(Value::as_str)
+            .and_then(|request_id| self.session().pending.remove(request_id));
+        if let Some(waiting) = waiting {
+            let _ = waiting.try_send(response);
+        }
+    }
+
+    fn session(&self) -> MutexGuard<'_, Session> {
+        self.session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// `command` names the operation of the invoked command. Another operation in the envelope is refused.
+    fn submit(&self, label: &str, url: &str, request: &Value, command: Option<&str>) -> Submitted {
+        if label != MAIN_WINDOW || !is_local(url) {
+            return Submitted::Denied;
+        }
+        let request_id = request
+            .get("requestId")
+            .and_then(Value::as_str)
+            .filter(|id| is_identifier(id));
+        let reject = |code: &str| {
+            Submitted::Answer(json!({ "requestId": request_id, "state": "rejected", "code": code }))
+        };
+        if !request.is_object() {
+            return reject("INVALID_REQUEST");
+        }
+        let Some(operation) = request
+            .get("operation")
+            .and_then(Value::as_str)
+            .filter(|operation| OPERATIONS.contains(operation))
+        else {
+            return reject("UNKNOWN_OPERATION");
+        };
+        let encoded = request.to_string();
+        if encoded.len() > PUBLIC_REQUEST_BYTES {
+            return reject("FRAME_LIMIT");
+        }
+        let Some(request_id) = request_id else {
+            return reject("INVALID_REQUEST");
+        };
+        if command.is_some_and(|command| command != operation) {
+            return reject("INVALID_REQUEST");
+        }
+        if operation == "currentSession" {
+            return match &self.session().session_id {
+                Some(session_id) => Submitted::Answer(json!({
+                    "requestId": request_id, "state": "succeeded", "result": { "sessionId": session_id },
+                })),
+                None => reject("SERVICE_UNAVAILABLE"),
+            };
+        }
+        if NATIVE_FIRST.contains(&operation) {
+            return reject("SERVICE_UNAVAILABLE");
+        }
+        let (waiting, response) = channel(1);
+        {
+            let mut session = self.session();
+            if session.pending.contains_key(request_id) {
+                return reject("INVALID_REQUEST");
+            }
+            // Without a session the sender drops at once, so the invoke fails with SERVICE_UNAVAILABLE in the bridge.
+            if session.session_id.is_some() {
+                session.pending.insert(request_id.to_string(), waiting);
+            }
+        }
+        if let Ok(body) = public_request_body(&encoded) {
+            (self.forward)(body);
+        }
+        Submitted::Waiting(response)
     }
 }
 
+/// The local origin over `http` or `https`, without a port or user information.
+fn is_local(url: &str) -> bool {
+    tauri::Url::parse(url).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str() == Some(LOCAL_HOST)
+            && url.port().is_none()
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
+}
+
 /// The renderer message of a service frame. A `process`, `mutation`, `trust`, or `handshake` frame gives `None`.
-pub fn renderer_message(_frame_body: &str) -> Option<ToRenderer> {
-    todo!("T037")
+pub fn renderer_message(frame_body: &str) -> Option<ToRenderer> {
+    let Value::Object(mut frame) = decode_strict(frame_body)? else {
+        return None;
+    };
+    if frame.len() != 2 || frame.get("kind").and_then(Value::as_str) != Some("public") {
+        return None;
+    }
+    match (frame.remove("response"), frame.remove("progress")) {
+        (Some(response @ Value::Object(_)), None) => Some(ToRenderer::Response(response)),
+        (None, Some(progress @ Value::Object(_))) => Some(ToRenderer::Progress(progress)),
+        _ => None,
+    }
+}
+
+const DENIED: &str = "denied";
+
+/// Runs one command off the async workers, because a forward can wait on the service pipe.
+async fn call(
+    webview: Webview,
+    ipc: &Arc<Ipc>,
+    operation: &'static str,
+    request: Value,
+) -> Result<Value, &'static str> {
+    let label = webview.label().to_string();
+    let url = webview.url().map_err(|_| DENIED)?.to_string();
+    let ipc = Arc::clone(ipc);
+    let submitted = tauri::async_runtime::spawn_blocking(move || {
+        ipc.submit(&label, &url, &request, Some(operation))
+    })
+    .await
+    .map_err(|_| DENIED)?;
+    match submitted {
+        Submitted::Answer(answer) => Ok(answer),
+        Submitted::Waiting(mut response) => response.recv().await.ok_or("SERVICE_UNAVAILABLE"),
+        Submitted::Denied => Err(DENIED),
+    }
+}
+
+// One command per contract §3 operation. Each name equals its entry in `COMMANDS` of `src-tauri/build.rs`.
+
+#[tauri::command]
+pub async fn get_environment(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "getEnvironment", request).await
+}
+
+#[tauri::command]
+pub async fn choose_git(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "chooseGit", request).await
+}
+
+#[tauri::command]
+pub async fn choose_repository(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "chooseRepository", request).await
+}
+
+#[tauri::command]
+pub async fn restore_workspace(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "restoreWorkspace", request).await
+}
+
+#[tauri::command]
+pub async fn read_workspace(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readWorkspace", request).await
+}
+
+#[tauri::command]
+pub async fn read_history(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readHistory", request).await
+}
+
+#[tauri::command]
+pub async fn read_comparison(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readComparison", request).await
+}
+
+#[tauri::command]
+pub async fn read_trust(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readTrust", request).await
+}
+
+#[tauri::command]
+pub async fn approve_trust(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "approveTrust", request).await
+}
+
+#[tauri::command]
+pub async fn revoke_trust(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "revokeTrust", request).await
+}
+
+#[tauri::command]
+pub async fn apply_hunk(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "applyHunk", request).await
+}
+
+#[tauri::command]
+pub async fn apply_file(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "applyFile", request).await
+}
+
+#[tauri::command]
+pub async fn review_commit(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "reviewCommit", request).await
+}
+
+#[tauri::command]
+pub async fn commit(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "commit", request).await
+}
+
+#[tauri::command]
+pub async fn review_submodules(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "reviewSubmodules", request).await
+}
+
+#[tauri::command]
+pub async fn update_submodules(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "updateSubmodules", request).await
+}
+
+#[tauri::command]
+pub async fn cancel(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "cancel", request).await
+}
+
+#[tauri::command]
+pub async fn get_operation(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "getOperation", request).await
+}
+
+#[tauri::command]
+pub async fn request_close(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "requestClose", request).await
+}
+
+#[tauri::command]
+pub async fn current_session(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "currentSession", request).await
+}
+
+#[tauri::command]
+pub async fn dismiss_recovery_marker(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Value,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "dismissRecoveryMarker", request).await
 }
 
 #[cfg(test)]
@@ -234,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn current_session_is_answered_natively_and_no_initialization_script_carries_a_session() {
+    fn current_session_is_answered_natively_and_no_startup_script_carries_a_session() {
         let (ipc, frames) = ipc();
         let current = json!({ "version": 1, "requestId": REQUEST_ID, "operation": "currentSession", "payload": {} });
         ipc.set_session(Some("0f0f0f0f-0000-4000-8000-0000000000aa".to_string()));

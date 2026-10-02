@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The shell does not use these items yet. T037 removes this attribute.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::os::windows::fs::OpenOptionsExt;
@@ -83,6 +80,10 @@ pub struct Context {
     pub kind: ContextKind,
     pub path: PathBuf,
     pub identity: Identity,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only tests read the session of a context")
+    )]
     pub session_id: String,
     pub expires_at: Instant,
 }
@@ -147,6 +148,13 @@ impl Contexts {
     }
 
     /// Binds a new context to the selected path and its identity. Returns its UUID-shaped `bootstrapId`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the T060 dialogs and the T063 startup context create contexts"
+        )
+    )]
     pub fn create(
         &self,
         kind: ContextKind,

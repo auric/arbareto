@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The shell does not use these items yet. T037 removes this attribute.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -345,6 +342,7 @@ impl Supervisor {
     }
 
     /// The open Job handle of an operation, or of a lingering Job.
+    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read Job handles"))]
     pub fn job_handle(&self, operation_id: &str) -> Option<HANDLE> {
         self.shared
             .state()
@@ -360,6 +358,7 @@ impl Supervisor {
     }
 
     /// The IDs of the processes in the Job. Only tests read process IDs.
+    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read process IDs"))]
     pub fn process_ids(&self, operation_id: &str) -> Vec<u32> {
         let state = self.shared.state();
         state
@@ -391,6 +390,10 @@ impl Supervisor {
         state.remove_where(|entry| entry.lingering && is_empty(&entry.job));
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only tests read the lingering state")
+    )]
     pub fn is_lingering(&self, operation_id: &str) -> bool {
         self.shared
             .state()
@@ -409,6 +412,10 @@ impl Supervisor {
     }
 
     /// Closes the lingering Jobs with this tag. Returns their active process count before the close.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "T063 routes the trust frame revoke")
+    )]
     pub fn revoke(&self, tag: &Identity) -> u32 {
         let mut state = self.shared.state();
         let count = state
@@ -446,6 +453,7 @@ impl Supervisor {
     }
 
     /// Test hook: the process IDs of the `JOB_OBJECT_MSG_NEW_PROCESS` messages of a Job.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn observed_new_processes(&self, operation_id: &str) -> Vec<u32> {
         self.shared
             .state()
@@ -456,6 +464,7 @@ impl Supervisor {
     }
 
     /// Test hook: drops every `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` message while set.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn drop_zero_messages(&self, drop: bool) {
         self.shared.drop_zero.store(drop, Ordering::SeqCst);
     }
@@ -530,6 +539,7 @@ pub(crate) mod tests {
             .collect()
     }
 
+    #[expect(dead_code, reason = "no test passes a wide path yet")]
     pub(crate) fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(Some(0)).collect()
     }
@@ -736,8 +746,14 @@ pub(crate) mod tests {
     }
 
     fn spawn_self(mode: &[&str], inherit_output: bool) -> Child {
+        use std::os::windows::process::CommandExt;
         let mut command = Command::new(test_exe());
         command.args(child_arguments(mode)).stdin(Stdio::null());
+        // A child without a console starts its children with DETACHED_PROCESS, as Git does (compat/mingw.c:2247-2263).
+        // Otherwise each grandchild gets a new console, and its conhost.exe joins the Job.
+        if unsafe { GetConsoleWindow() }.is_null() {
+            command.creation_flags(windows::Win32::System::Threading::DETACHED_PROCESS.0);
+        }
         if !inherit_output {
             command.stdout(Stdio::null()).stderr(Stdio::null());
         }

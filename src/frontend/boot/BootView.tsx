@@ -20,7 +20,7 @@ export interface Environment {
 
 export type BootProps =
   | { state: "loading" }
-  | { state: "unavailable"; code: string }
+  | { state: "unavailable"; code: string; session?: boolean }
   | { state: "facts"; environment: Environment; onSelectGit: () => void; onDismissMarker: (markerId: string) => void };
 
 const GIT_BLOCKED: Record<string, string> = {
@@ -42,9 +42,10 @@ export function BootView(props: BootProps) {
 
   if (props.state === "loading") return <p>Loading…</p>;
   if (props.state === "unavailable") {
+    const text = !props.session ? "Git service not connected" : props.code === "SERVICE_UNAVAILABLE" ? "Environment not available yet" : "Environment request failed";
     return (
       <p>
-        {props.code === "SERVICE_UNAVAILABLE" ? "Git service not connected" : "Environment request failed"}: {props.code}
+        {text}: {props.code}
       </p>
     );
   }

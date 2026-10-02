@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The shell does not use these items yet. T037 removes this attribute.
-#![allow(dead_code)]
-
 use std::io::{ErrorKind, Read, Write};
 
 const KIB: usize = 1024;
@@ -14,6 +11,10 @@ pub const PIPE_FRAME_BYTES: usize = 16 * MIB;
 /// Contract §5 "Incoming public request": the bound of the encoded renderer envelope.
 pub const PUBLIC_REQUEST_BYTES: usize = MIB;
 /// `{"kind":"public","request":` and `}` add 28 bytes to the envelope (contract §5).
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only tests check the frame body bound")
+)]
 pub const PUBLIC_FRAME_BODY_BYTES: usize = PUBLIC_REQUEST_BYTES + 28;
 
 #[derive(Debug, PartialEq, Eq)]

@@ -11,6 +11,7 @@ import { BootView, type Environment } from "./boot/BootView";
 // The capability grants no `unlisten`, so the bridge must exist once for the page life, outside React.
 const bridge = createBridge(invoke, listen);
 const firstEnvironment = bridge.getEnvironment();
+const hasSession = bridge.currentSession().then((response) => response.state === "succeeded");
 
 function App() {
   const [environment, setEnvironment] = useState(firstEnvironment);
@@ -24,7 +25,8 @@ function App() {
 
 function Boot({ response, reload }: { response: Promise<BridgeResponse>; reload: () => void }) {
   const result = use(response);
-  if (result.state !== "succeeded") return <BootView state="unavailable" code={result.code ?? result.state} />;
+  const session = use(hasSession);
+  if (result.state !== "succeeded") return <BootView state="unavailable" code={result.code ?? result.state} session={session} />;
   return (
     <BootView
       state="facts"

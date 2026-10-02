@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The shell does not use these items yet. T037 removes this attribute.
-#![allow(dead_code)]
-
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::Write;
@@ -65,6 +62,10 @@ pub struct SpawnRequest<'a> {
 pub struct Spawned {
     /// The caller owns and closes this handle.
     pub process: HANDLE,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only tests read the process ID")
+    )]
     pub pid: u32,
     pub stdin: Option<File>,
     pub stdout: File,

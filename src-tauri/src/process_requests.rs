@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The shell does not use these items yet. T037 removes this attribute.
-#![allow(dead_code)]
-
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::os::windows::io::AsRawHandle;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak, mpsc};
+use std::time::{Duration, Instant};
 
-use crate::bootstrap::{Contexts, Identity};
+use serde_json::{Map, Value, json};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::System::Pipes::PeekNamedPipe;
+use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+
+use crate::bootstrap::{ContextKind, Contexts, Identity, read_identity};
+use crate::git_env::child_environment;
 use crate::jobs::Supervisor;
+use crate::spawn::{Input, SpawnRequest, command_line, spawn};
 
 /// Contract §5 "Native stdout/stderr chunk": decoded bytes in one `output` or `input` frame.
 pub const CHUNK_BYTES: usize = 64 * 1024;
@@ -25,13 +36,25 @@ pub const IDENTITY_PATHS: usize = 8;
 pub const PATH_UNITS: usize = 32_767;
 /// Contract §6 "Channel frames" `limits` caps, in milliseconds.
 pub const BOOTSTRAP_DEADLINE_MS: u64 = 30_000;
-pub const WSL_START_DEADLINE_MS: u64 = 60_000;
 pub const REGISTERED_DEADLINE_MS: u64 = 120_000;
-pub const INACTIVITY_MS: u64 = 300_000;
-pub const CEILING_MS: u64 = 14_400_000;
 pub const STALL_MS: u64 = 15_000;
 /// Contract §6 "Context rules": `register` field `version` is printable ASCII.
 pub const VERSION_BYTES: usize = 64;
+/// Contract §5 "JSON nesting".
+const JSON_NESTING_LEVELS: usize = 16;
+/// Contract §6 "Channel frames" `indexFile`.
+const CANDIDATE_PREFIX: &str = "arbareto-candidate-";
+/// The wait for a process handle after the shell closes its Job.
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
+// ponytail: a silent child costs one pipe peek per stream every 10 ms. Blocking reads with CancelSynchronousIo remove it if T167 measures the wakeups.
+const POLL: Duration = Duration::from_millis(10);
+
+const INVALID: &str = "INVALID_REQUEST";
+const UNKNOWN: &str = "UNKNOWN_TARGET";
+const OWNERSHIP: &str = "PROCESS_OWNERSHIP_FAILED";
+
+type Code = &'static str;
+type Fields = Map<String, Value>;
 
 /// Writes one frame body to the service. A queued chunk leaves its queue when this call returns.
 pub type ReplySink = Arc<dyn Fn(String) + Send + Sync>;
@@ -46,44 +69,1250 @@ pub struct Config {
     pub argument_prefix: Vec<String>,
 }
 
+struct Git {
+    program: PathBuf,
+    identity: Identity,
+}
+
+struct Repository {
+    worktree_root: PathBuf,
+    git_directory: PathBuf,
+}
+
+/// Streamed input of one call (contract §6 "Streamed input").
+struct Streamed {
+    chunks: mpsc::Sender<Vec<u8>>,
+    declared: u64,
+    sent: u64,
+    unacknowledged: Arc<AtomicUsize>,
+}
+
+struct Call {
+    operation_id: String,
+    streamed: Option<Streamed>,
+}
+
+#[derive(Default)]
+struct State {
+    /// Operations after `ended` or `closeJob`. Every other operation is active from its first request.
+    inactive: HashSet<String>,
+    /// The first `operationId` of a `bootstrapId` owns it (contract §6 "Context rules").
+    owners: HashMap<String, String>,
+    gits: HashMap<String, Git>,
+    repositories: HashMap<String, Repository>,
+    /// Bound and released IDs. A released ID never binds again.
+    issued: HashSet<String>,
+    calls: HashMap<String, Call>,
+    /// The count of shell Job closes per operation. A process that a Job close ended exits with `exitCode` null.
+    job_closes: HashMap<String, u64>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Bootstrap(ContextKind),
+    Registered,
+}
+
+/// The native selection that a request runs against.
+struct Target {
+    program: PathBuf,
+    current_dir: PathBuf,
+    bootstrap_id: Option<String>,
+    /// `None` for a probe, whose context identity is the executable identity.
+    git_identity: Option<Identity>,
+    git_directory: Option<PathBuf>,
+}
+
+enum RunInput {
+    Closed,
+    Bytes(Vec<u8>),
+    Streamed(u64),
+}
+
+/// The two output pipes of one run and the budget that the completion signal sets (contract §6 "Completion signal").
+struct Run {
+    call_id: String,
+    operation_id: String,
+    generation: u64,
+    pipes: [File; 2],
+    state: Mutex<Drain>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct Drain {
+    /// The bytes that a stream may still forward. `None` until the completion signal.
+    budget: [Option<u64>; 2],
+    /// The stream forwarded its budget or reached end-of-file.
+    done: [bool; 2],
+}
+
+const STREAMS: [&str; 2] = ["stdout", "stderr"];
+
 /// The shell side of the private `process` channel (contract §6 "Channel frames").
 pub struct ProcessRequests {
-    _private: (),
+    me: Weak<ProcessRequests>,
+    config: Config,
+    contexts: Arc<Contexts>,
+    jobs: Arc<Supervisor>,
+    sink: ReplySink,
+    state: Mutex<State>,
+    /// A service exit starts a new generation. Replies of an older generation are dropped.
+    generation: AtomicU64,
+    peak: AtomicUsize,
 }
 
 impl ProcessRequests {
     pub fn new(
-        _config: Config,
-        _contexts: Arc<Contexts>,
-        _jobs: Arc<Supervisor>,
-        _sink: ReplySink,
+        config: Config,
+        contexts: Arc<Contexts>,
+        jobs: Arc<Supervisor>,
+        sink: ReplySink,
     ) -> Arc<ProcessRequests> {
-        todo!("T035")
+        Arc::new_cyclic(|me| ProcessRequests {
+            me: me.clone(),
+            config,
+            contexts,
+            jobs,
+            sink,
+            state: Mutex::new(State::default()),
+            generation: AtomicU64::new(0),
+            peak: AtomicUsize::new(0),
+        })
     }
 
     /// Handles one `process` frame body. It never waits on a child pipe.
-    pub fn handle(&self, _body: &str) {
-        todo!("T035")
+    pub fn handle(&self, body: &str) {
+        let Some(frame) = decode_strict(body) else {
+            return;
+        };
+        let Some(request) = frame.get("process").and_then(Value::as_object) else {
+            return;
+        };
+        let call_id = request
+            .get("callId")
+            .and_then(Value::as_str)
+            .filter(|id| is_identifier(id));
+        let shaped = frame.as_object().is_some_and(|f| f.len() == 2)
+            && frame.get("kind").and_then(Value::as_str) == Some("process");
+        let result = if shaped {
+            self.dispatch(request, call_id)
+        } else {
+            Err(INVALID)
+        };
+        if let (Err(code), Some(call_id)) = (result, call_id) {
+            self.send(
+                self.current(),
+                json!({ "type": "refused", "callId": call_id, "code": code }),
+            );
+        }
     }
 
     /// Tags the Job of a mutation with the common-directory identity that the `started` frame read.
-    pub fn tag(&self, _operation_id: &str, _common_identity: Identity) {
-        todo!("T035")
+    /// `started` comes before the first process, so the Job opens here (contract §6 "Recovery markers").
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "T063 tags the Job at the mutation frame started")
+    )]
+    pub fn tag(&self, operation_id: &str, common_identity: Identity) {
+        if self.jobs.open(operation_id).is_ok() {
+            self.jobs.tag(operation_id, common_identity);
+        }
     }
 
     /// Handles the `mutation` frame `ended` (contract §6 "Lingering Jobs").
-    pub fn ended(&self, _operation_id: &str, _end_processes: bool) {
-        todo!("T035")
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "T063 routes the mutation frame ended")
+    )]
+    pub fn ended(&self, operation_id: &str, end_processes: bool) {
+        let mut state = self.state();
+        if end_processes {
+            *state
+                .job_closes
+                .entry(operation_id.to_string())
+                .or_default() += 1;
+        }
+        self.jobs.ended(operation_id, end_processes);
+        state.inactive.insert(operation_id.to_string());
     }
 
     /// Drops every pending call, and closes every operation Job outside the lingering set.
     pub fn service_exited(&self) {
-        todo!("T035")
+        let mut state = self.state();
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.jobs.service_exited();
+        *state = State::default();
     }
 
     /// Test hook: the largest number of chunks that one stream queue held.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn peak_queued_chunks(&self) -> usize {
-        todo!("T035")
+        self.peak.load(Ordering::SeqCst)
+    }
+
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn current(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    fn send(&self, generation: u64, reply: Value) {
+        if generation == self.current() {
+            (self.sink)(json!({ "kind": "process", "process": reply }).to_string());
+        }
+    }
+
+    fn dispatch(&self, request: &Fields, call_id: Option<&str>) -> Result<(), Code> {
+        let call = || call_id.ok_or(INVALID);
+        match request.get("type").and_then(Value::as_str) {
+            Some("run") => self.run(request, call()?),
+            Some("input") => self.input(request),
+            Some("cancel") => self.cancel(request),
+            Some("identity") => self.identity(request, call()?),
+            Some("lingeringCount") => self.lingering_count(request, call()?),
+            Some("register") => self.register(request, call()?),
+            Some("release") => self.release(request),
+            Some("closeJob") => self.close_job(request),
+            _ => Err(INVALID),
+        }
+    }
+
+    fn run(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        keys(
+            request,
+            &[
+                "type",
+                "callId",
+                "operationId",
+                "contextKind",
+                "arguments",
+                "environmentPolicy",
+                "limits",
+            ],
+            &[
+                "bootstrapId",
+                "gitInstallationId",
+                "repositoryId",
+                "input",
+                "inputBytes",
+                "transactionId",
+                "indexFile",
+            ],
+        )?;
+        let operation_id = identifier(&request["operationId"])?;
+        let kind = context_kind(request)?;
+        let arguments: Vec<String> = request["arguments"]
+            .as_array()
+            .ok_or(INVALID)?
+            .iter()
+            .map(|a| a.as_str().filter(|a| !a.contains('\0')).map(str::to_string))
+            .collect::<Option<_>>()
+            .ok_or(INVALID)?;
+        let policy = request["environmentPolicy"].as_str().ok_or(INVALID)?;
+        // `network` waits for its inactivity and ceiling limits (T228).
+        let policy_fits = match kind {
+            Kind::Bootstrap(_) => policy == "probe",
+            Kind::Registered => matches!(policy, "read" | "mutation"),
+        };
+        if !policy_fits {
+            return Err(INVALID);
+        }
+        if kind == Kind::Registered
+            && arguments.first().map(String::as_str) != Some("--no-lazy-fetch")
+        {
+            return Err(INVALID);
+        }
+        let limit = deadline(&request["limits"], kind)?;
+        let input = match (request.get("input"), request.get("inputBytes")) {
+            (None, None) => RunInput::Closed,
+            (Some(data), None) => RunInput::Bytes(chunk(data, INLINE_INPUT_BYTES)?),
+            (None, Some(total)) => RunInput::Streamed(count(total, 1, STREAMED_INPUT_BYTES)?),
+            _ => return Err(INVALID),
+        };
+        let index_file = match (request.get("transactionId"), request.get("indexFile")) {
+            (None, None) => None,
+            (Some(transaction), Some(file)) if policy == "mutation" => {
+                identifier(transaction)?;
+                Some(path(file)?)
+            }
+            _ => return Err(INVALID),
+        };
+
+        let mut state = self.state();
+        if state.calls.contains_key(call_id) {
+            return Err(INVALID);
+        }
+        check_active(&state, operation_id)?;
+        let target = self.target(&mut state, request, kind, operation_id)?;
+        if let Some(file) = &index_file {
+            let named = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(CANDIDATE_PREFIX));
+            if !named || file.parent() != target.git_directory.as_deref() {
+                return Err(INVALID);
+            }
+        }
+        let now = Instant::now();
+        if let Some(bootstrap_id) = &target.bootstrap_id {
+            self.contexts.permits(bootstrap_id, &arguments, now)?;
+        }
+        let mut full = self.config.argument_prefix.clone();
+        full.extend(arguments);
+        command_line(&target.program, &full).map_err(|_| INVALID)?;
+        self.revalidate(&target, now)?;
+        let environment =
+            child_environment(policy, &self.config.base_environment, index_file.as_deref())?;
+
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let jobs = &self.jobs;
+        let spawned = spawn(
+            &SpawnRequest {
+                program: &target.program,
+                arguments: &full,
+                environment: &environment,
+                current_dir: &target.current_dir,
+                wsl: false,
+                input: match &input {
+                    RunInput::Closed => Input::Closed,
+                    RunInput::Bytes(bytes) => Input::Bytes(bytes),
+                    RunInput::Streamed(_) => Input::Stream,
+                },
+            },
+            &mut |process| jobs.assign(operation_id, process),
+        )
+        .map_err(|_| OWNERSHIP)?;
+
+        let generation = self.current();
+        let streamed = match (input, spawned.stdin) {
+            (RunInput::Streamed(declared), Some(stdin)) => {
+                Some(Arc::clone(&me).write_input(call_id, generation, declared, stdin))
+            }
+            _ => None,
+        };
+        state.calls.insert(
+            call_id.to_string(),
+            Call {
+                operation_id: operation_id.to_string(),
+                streamed,
+            },
+        );
+        let closes = state.job_closes.get(operation_id).copied().unwrap_or(0);
+        drop(state);
+
+        let run = Arc::new(Run {
+            call_id: call_id.to_string(),
+            operation_id: operation_id.to_string(),
+            generation,
+            pipes: [spawned.stdout, spawned.stderr],
+            state: Mutex::new(Drain::default()),
+            changed: Condvar::new(),
+        });
+        for stream in 0..2 {
+            let (me, run) = (Arc::clone(&me), Arc::clone(&run));
+            std::thread::spawn(move || me.read_stream(&run, stream));
+        }
+        let process = Owned(spawned.process);
+        std::thread::spawn(move || me.watch(&run, process, limit, closes));
+        Ok(())
+    }
+
+    /// Resolves the context IDs of a `run` or `identity` request (contract §6 "Context rules").
+    fn target(
+        &self,
+        state: &mut State,
+        request: &Fields,
+        kind: Kind,
+        operation_id: &str,
+    ) -> Result<Target, Code> {
+        let now = Instant::now();
+        let git = |state: &State| -> Result<(PathBuf, Identity), Code> {
+            let id = request["gitInstallationId"].as_str().ok_or(INVALID)?;
+            let git = state.gits.get(id).ok_or(UNKNOWN)?;
+            Ok((git.program.clone(), git.identity))
+        };
+        match kind {
+            Kind::Bootstrap(context_kind) => {
+                let bootstrap_id = request["bootstrapId"].as_str().ok_or(INVALID)?;
+                let context = self.contexts.get(bootstrap_id, now)?;
+                if context.kind != context_kind {
+                    return Err(UNKNOWN);
+                }
+                own(state, bootstrap_id, operation_id)?;
+                let (program, git_identity, current_dir) = match context_kind {
+                    ContextKind::GitProbe => {
+                        (context.path, None, self.config.launch_directory.clone())
+                    }
+                    ContextKind::RepositoryDiscovery => {
+                        let (program, identity) = git(state)?;
+                        (program, Some(identity), context.path)
+                    }
+                };
+                Ok(Target {
+                    program,
+                    current_dir,
+                    bootstrap_id: Some(bootstrap_id.to_string()),
+                    git_identity,
+                    git_directory: None,
+                })
+            }
+            Kind::Registered => {
+                let (program, identity) = git(state)?;
+                let id = request["repositoryId"].as_str().ok_or(INVALID)?;
+                let repository = state.repositories.get(id).ok_or(UNKNOWN)?;
+                Ok(Target {
+                    program,
+                    current_dir: repository.worktree_root.clone(),
+                    bootstrap_id: None,
+                    git_identity: Some(identity),
+                    git_directory: Some(repository.git_directory.clone()),
+                })
+            }
+        }
+    }
+
+    /// Reads the selected identities again before execution (contract §6 "Registration bootstrap").
+    fn revalidate(&self, target: &Target, now: Instant) -> Result<(), Code> {
+        if let Some(bootstrap_id) = &target.bootstrap_id {
+            self.contexts.revalidate(bootstrap_id, now)?;
+        }
+        match target.git_identity {
+            Some(identity) if read_identity(&target.program) != Ok(identity) => Err("GIT_CHANGED"),
+            _ => Ok(()),
+        }
+    }
+
+    fn write_input(
+        self: Arc<Self>,
+        call_id: &str,
+        generation: u64,
+        declared: u64,
+        mut stdin: File,
+    ) -> Streamed {
+        let (chunks, received) = mpsc::channel::<Vec<u8>>();
+        let unacknowledged = Arc::new(AtomicUsize::new(0));
+        let pending = Arc::clone(&unacknowledged);
+        let call_id = call_id.to_string();
+        std::thread::spawn(move || {
+            let mut written = 0u64;
+            // The channel closes when the call exits, which drops the parent end of stdin.
+            for chunk in received {
+                if stdin.write_all(&chunk).is_err() {
+                    return;
+                }
+                written += chunk.len() as u64;
+                pending.fetch_sub(1, Ordering::SeqCst);
+                if self.state().calls.contains_key(&call_id) {
+                    self.send(
+                        generation,
+                        json!({ "type": "inputWritten", "callId": call_id }),
+                    );
+                }
+                if written == declared {
+                    return;
+                }
+            }
+        });
+        Streamed {
+            chunks,
+            declared,
+            sent: 0,
+            unacknowledged,
+        }
+    }
+
+    fn input(&self, request: &Fields) -> Result<(), Code> {
+        keys(request, &["type", "callId", "data"], &[])?;
+        let data = chunk(&request["data"], CHUNK_BYTES)?;
+        let call_id = request["callId"].as_str().ok_or(INVALID)?;
+        let mut state = self.state();
+        // After `exit`, the shell drops each `input` of that call.
+        let Some(call) = state.calls.get_mut(call_id) else {
+            return Ok(());
+        };
+        let operation_id = call.operation_id.clone();
+        let fits = call.streamed.as_mut().is_some_and(|streamed| {
+            let fits = streamed.sent + data.len() as u64 <= streamed.declared
+                && streamed.unacknowledged.load(Ordering::SeqCst) < QUEUED_CHUNKS_PER_STREAM;
+            if fits {
+                streamed.sent += data.len() as u64;
+                streamed.unacknowledged.fetch_add(1, Ordering::SeqCst);
+                let _ = streamed.chunks.send(data);
+            }
+            fits
+        });
+        // A chunk past `inputBytes` or past 8 unacknowledged chunks closes the operation Job. The `exit` then follows.
+        if !fits {
+            close_job_of(&self.jobs, &mut state, &operation_id);
+        }
+        Ok(())
+    }
+
+    fn cancel(&self, request: &Fields) -> Result<(), Code> {
+        keys(request, &["type", "callId"], &[])?;
+        let call_id = request["callId"].as_str().ok_or(INVALID)?;
+        let mut state = self.state();
+        // A cancel for an ended call is dropped.
+        if let Some(operation_id) = state.calls.get(call_id).map(|c| c.operation_id.clone()) {
+            close_job_of(&self.jobs, &mut state, &operation_id);
+        }
+        Ok(())
+    }
+
+    fn identity(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        keys(
+            request,
+            &["type", "callId", "operationId", "contextKind", "paths"],
+            &["bootstrapId", "gitInstallationId", "repositoryId"],
+        )?;
+        let operation_id = identifier(&request["operationId"])?;
+        let kind = context_kind(request)?;
+        let paths: Vec<PathBuf> = request["paths"]
+            .as_array()
+            .filter(|paths| (1..=IDENTITY_PATHS).contains(&paths.len()))
+            .ok_or(INVALID)?
+            .iter()
+            .map(path)
+            .collect::<Result<_, _>>()?;
+        {
+            let mut state = self.state();
+            check_active(&state, operation_id)?;
+            self.target(&mut state, request, kind, operation_id)?;
+        }
+        let identities: Vec<Value> = paths
+            .iter()
+            .map(|path| match read_identity(path) {
+                Ok(identity) => identity.reply(),
+                Err(code) => json!({ "code": code }),
+            })
+            .collect();
+        self.send(
+            self.current(),
+            json!({ "type": "identity", "callId": call_id, "identities": identities }),
+        );
+        Ok(())
+    }
+
+    fn lingering_count(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        keys(
+            request,
+            &["type", "callId", "operationId", "commonDirectory"],
+            &[],
+        )?;
+        let operation_id = identifier(&request["operationId"])?;
+        let common = path(&request["commonDirectory"])?;
+        check_active(&self.state(), operation_id)?;
+        // An unreadable identity gives 0.
+        let count = read_identity(&common).map_or(0, |tag| self.jobs.lingering_count(&tag));
+        self.send(
+            self.current(),
+            json!({ "type": "lingeringCount", "callId": call_id, "count": count }),
+        );
+        Ok(())
+    }
+
+    fn register(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        const GIT: [&str; 2] = ["version", "confirm"];
+        const REPOSITORY: [&str; 4] = [
+            "repositoryId",
+            "worktreeRoot",
+            "gitDirectory",
+            "commonDirectory",
+        ];
+        keys(
+            request,
+            &[
+                "type",
+                "callId",
+                "operationId",
+                "bootstrapId",
+                "gitInstallationId",
+            ],
+            &[GIT.as_slice(), REPOSITORY.as_slice()].concat(),
+        )?;
+        let operation_id = identifier(&request["operationId"])?;
+        let bootstrap_id = identifier(&request["bootstrapId"])?;
+        let git_id = identifier(&request["gitInstallationId"])?;
+        let has = |names: &[&str]| names.iter().filter(|&&n| request.contains_key(n)).count();
+        let git_form = match (has(&GIT), has(&REPOSITORY)) {
+            (2, 0) => true,
+            (0, 4) => false,
+            _ => return Err(INVALID),
+        };
+        let now = Instant::now();
+        let mut state = self.state();
+        let result = if git_form {
+            let version = request["version"].as_str().ok_or(INVALID)?;
+            if version.len() > VERSION_BYTES || !version.bytes().all(|b| (0x20..0x7f).contains(&b))
+            {
+                return Err(INVALID);
+            }
+            let confirm = request["confirm"].as_bool().ok_or(INVALID)?;
+            if state.issued.contains(git_id) {
+                return Err(INVALID);
+            }
+            check_active(&state, operation_id)?;
+            let context = self.contexts.get(bootstrap_id, now)?;
+            if context.kind != ContextKind::GitProbe {
+                return Err(UNKNOWN);
+            }
+            own(&mut state, bootstrap_id, operation_id)?;
+            self.contexts.revalidate(bootstrap_id, now)?;
+            self.contexts.destroy(bootstrap_id);
+            // T060 shows the Git selection confirmation. Until then, a call failure means Cancel.
+            if confirm {
+                "declined"
+            } else {
+                state.issued.insert(git_id.to_string());
+                state.gits.insert(
+                    git_id.to_string(),
+                    Git {
+                        program: context.path,
+                        identity: context.identity,
+                    },
+                );
+                "approved"
+            }
+        } else {
+            let repository_id = identifier(&request["repositoryId"])?;
+            let worktree_root = path(&request["worktreeRoot"])?;
+            let git_directory = path(&request["gitDirectory"])?;
+            path(&request["commonDirectory"])?;
+            if state.issued.contains(repository_id) {
+                return Err(INVALID);
+            }
+            check_active(&state, operation_id)?;
+            let context = self.contexts.get(bootstrap_id, now)?;
+            if context.kind != ContextKind::RepositoryDiscovery {
+                return Err(UNKNOWN);
+            }
+            own(&mut state, bootstrap_id, operation_id)?;
+            if !state.gits.contains_key(git_id) {
+                return Err(UNKNOWN);
+            }
+            self.contexts.revalidate(bootstrap_id, now)?;
+            self.contexts.destroy(bootstrap_id);
+            state.issued.insert(repository_id.to_string());
+            state.repositories.insert(
+                repository_id.to_string(),
+                Repository {
+                    worktree_root,
+                    git_directory,
+                },
+            );
+            "approved"
+        };
+        drop(state);
+        self.send(
+            self.current(),
+            json!({ "type": "register", "callId": call_id, "result": result }),
+        );
+        Ok(())
+    }
+
+    fn release(&self, request: &Fields) -> Result<(), Code> {
+        let mut state = self.state();
+        match (
+            request.get("repositoryId"),
+            request.get("gitInstallationId"),
+        ) {
+            (Some(id), None) => {
+                keys(request, &["type", "repositoryId"], &[])?;
+                state.repositories.remove(identifier(id)?);
+            }
+            (None, Some(id)) => {
+                keys(request, &["type", "gitInstallationId"], &[])?;
+                state.gits.remove(identifier(id)?);
+            }
+            _ => return Err(INVALID),
+        }
+        Ok(())
+    }
+
+    fn close_job(&self, request: &Fields) -> Result<(), Code> {
+        keys(request, &["type", "operationId"], &[])?;
+        let operation_id = identifier(&request["operationId"])?;
+        let mut state = self.state();
+        close_job_of(&self.jobs, &mut state, operation_id);
+        state.inactive.insert(operation_id.to_string());
+        Ok(())
+    }
+
+    /// Reads one pipe. Every read runs under the drain lock, so the completion signal sees an exact pipe count.
+    fn read_stream(&self, run: &Run, stream: usize) {
+        let pipe = &run.pipes[stream];
+        let mut buffer = vec![0u8; CHUNK_BYTES];
+        let mut drain = lock(&run.state);
+        while let Some(available) = peek(pipe) {
+            let limit = match drain.budget[stream] {
+                Some(0) => break,
+                Some(budget) => budget.min(CHUNK_BYTES as u64) as usize,
+                None => CHUNK_BYTES,
+            };
+            if available == 0 {
+                drain = run
+                    .changed
+                    .wait_timeout(drain, POLL)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .0;
+                continue;
+            }
+            // The pipe holds `available` bytes, so this read does not block.
+            let Ok(read) = (&*pipe).read(&mut buffer[..available.min(limit)]) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            if let Some(budget) = &mut drain.budget[stream] {
+                *budget -= read as u64;
+            }
+            drop(drain);
+            // A stream holds one chunk at a time, and its pipe waits while the frame write runs.
+            self.peak.fetch_max(1, Ordering::SeqCst);
+            self.send(
+                run.generation,
+                json!({
+                    "type": "output", "callId": run.call_id, "stream": STREAMS[stream],
+                    "data": encode_base64(&buffer[..read]),
+                }),
+            );
+            drain = lock(&run.state);
+        }
+        drain.done[stream] = true;
+        run.changed.notify_all();
+        drop(drain);
+        // The discard sink: later bytes count toward no cap, and the shell never forwards them.
+        while matches!((&*pipe).read(&mut buffer), Ok(read) if read > 0) {}
+    }
+
+    /// Ends the run at its process handle signal, never at pipe end-of-file (contract §6 "Completion signal").
+    fn watch(&self, run: &Run, process: Owned, deadline: Duration, closes: u64) {
+        let mut expired = false;
+        if !wait(process.0, deadline) {
+            expired = true;
+            close_job_of(&self.jobs, &mut self.state(), &run.operation_id);
+            wait(process.0, CLOSE_WAIT);
+        }
+        let closed = self
+            .state()
+            .job_closes
+            .get(&run.operation_id)
+            .is_some_and(|&now| now != closes);
+        let active = self.jobs.active_processes(&run.operation_id).unwrap_or(0);
+        let mut code = 0u32;
+        // SAFETY: `process` owns the open process handle, and `code` is a live local.
+        let read = unsafe { GetExitCodeProcess(process.0, &mut code) }.is_ok();
+        let exit_code = if closed || !read {
+            Value::Null
+        } else {
+            json!(code)
+        };
+        drop(process);
+
+        let mut drain = lock(&run.state);
+        for stream in 0..2 {
+            if !drain.done[stream] {
+                drain.budget[stream] = Some(peek(&run.pipes[stream]).unwrap_or(0) as u64);
+            }
+        }
+        run.changed.notify_all();
+        while !drain.done.iter().all(|&done| done) {
+            drain = run
+                .changed
+                .wait_timeout(drain, Duration::from_secs(1))
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        drop(drain);
+
+        // Removing the call drops its input channel, so later `input` and `cancel` frames are dropped.
+        self.state().calls.remove(&run.call_id);
+        let mut exit = json!({
+            "type": "exit", "callId": run.call_id, "exitCode": exit_code, "activeDescendants": active,
+        });
+        if expired {
+            exit["deadline"] = json!("deadline");
+        }
+        self.send(run.generation, exit);
+    }
+}
+
+/// An owned process handle. Drop closes it.
+pub(crate) struct Owned(pub(crate) HANDLE);
+
+// SAFETY: a process handle is a kernel handle that any thread can use. `Owned` is its only owner.
+unsafe impl Send for Owned {}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        // SAFETY: `Owned` owns the handle and closes it once.
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+/// True when the handle signals within `timeout`.
+pub(crate) fn wait(process: HANDLE, timeout: Duration) -> bool {
+    let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+    // SAFETY: the caller keeps the process handle open for the call.
+    unsafe { WaitForSingleObject(process, ms) == WAIT_OBJECT_0 }
+}
+
+/// The bytes that the pipe holds. `None` at end-of-file or on a failed call.
+fn peek(pipe: &File) -> Option<usize> {
+    let mut available = 0u32;
+    // SAFETY: `pipe` keeps the handle open, and `available` is a live local.
+    unsafe {
+        PeekNamedPipe(
+            HANDLE(pipe.as_raw_handle()),
+            None,
+            0,
+            None,
+            Some(&raw mut available),
+            None,
+        )
+    }
+    .ok()?;
+    Some(available as usize)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn close_job_of(jobs: &Supervisor, state: &mut State, operation_id: &str) {
+    *state
+        .job_closes
+        .entry(operation_id.to_string())
+        .or_default() += 1;
+    jobs.close(operation_id);
+}
+
+/// An operation is active from its first request until `ended` or `closeJob` (contract §6 "Channel frames").
+fn check_active(state: &State, operation_id: &str) -> Result<(), Code> {
+    if state.inactive.contains(operation_id) {
+        return Err(UNKNOWN);
+    }
+    Ok(())
+}
+
+fn own(state: &mut State, bootstrap_id: &str, operation_id: &str) -> Result<(), Code> {
+    match state.owners.entry(bootstrap_id.to_string()) {
+        Entry::Occupied(owner) if owner.get() != operation_id => Err(UNKNOWN),
+        Entry::Occupied(_) => Ok(()),
+        Entry::Vacant(owner) => {
+            owner.insert(operation_id.to_string());
+            Ok(())
+        }
+    }
+}
+
+/// Each key is required or optional, and no other key exists.
+fn keys(request: &Fields, required: &[&str], optional: &[&str]) -> Result<(), Code> {
+    let known = request
+        .keys()
+        .all(|k| required.contains(&k.as_str()) || optional.contains(&k.as_str()));
+    if known && required.iter().all(|k| request.contains_key(*k)) {
+        Ok(())
+    } else {
+        Err(INVALID)
+    }
+}
+
+/// The context IDs that each `contextKind` carries (contract §6 "Channel frames" `run` fields).
+fn context_kind(request: &Fields) -> Result<Kind, Code> {
+    let (kind, present) = match request["contextKind"].as_str() {
+        Some("gitProbe") => (Kind::Bootstrap(ContextKind::GitProbe), [true, false, false]),
+        Some("repositoryDiscovery") => (
+            Kind::Bootstrap(ContextKind::RepositoryDiscovery),
+            [true, true, false],
+        ),
+        Some("registeredOperation") => (Kind::Registered, [false, true, true]),
+        _ => return Err(INVALID),
+    };
+    for (name, present) in ["bootstrapId", "gitInstallationId", "repositoryId"]
+        .into_iter()
+        .zip(present)
+    {
+        match request.get(name) {
+            Some(id) if present => {
+                identifier(id)?;
+            }
+            None if !present => {}
+            _ => return Err(INVALID),
+        }
+    }
+    Ok(kind)
+}
+
+/// `{deadlineMs, stallMs?}` within the contract caps. `stallMs` exists only in `registeredOperation`.
+fn deadline(limits: &Value, kind: Kind) -> Result<Duration, Code> {
+    let limits = limits.as_object().ok_or(INVALID)?;
+    keys(limits, &["deadlineMs"], &["stallMs"])?;
+    let cap = match kind {
+        Kind::Registered => REGISTERED_DEADLINE_MS,
+        Kind::Bootstrap(_) => BOOTSTRAP_DEADLINE_MS,
+    };
+    let ms = count(&limits["deadlineMs"], 1, cap)?;
+    // T228 sends the activity events of `stallMs`.
+    if let Some(stall) = limits.get("stallMs")
+        && (kind != Kind::Registered || stall.as_u64() != Some(STALL_MS))
+    {
+        return Err(INVALID);
+    }
+    Ok(Duration::from_millis(ms))
+}
+
+fn count(value: &Value, min: u64, max: u64) -> Result<u64, Code> {
+    value
+        .as_u64()
+        .filter(|n| (min..=max).contains(n))
+        .ok_or(INVALID)
+}
+
+/// A base64 chunk with 1 to `max` decoded bytes.
+fn chunk(value: &Value, max: usize) -> Result<Vec<u8>, Code> {
+    value
+        .as_str()
+        .and_then(decode_base64)
+        .filter(|bytes| (1..=max).contains(&bytes.len()))
+        .ok_or(INVALID)
+}
+
+/// An absolute path with 1 to 32,767 UTF-16 units and no NUL. A lone surrogate never decodes to a string.
+fn path(value: &Value) -> Result<PathBuf, Code> {
+    let text = value.as_str().ok_or(INVALID)?;
+    let units = text.encode_utf16().count();
+    let path = PathBuf::from(text);
+    if units == 0 || units > PATH_UNITS || text.contains('\0') || !Path::is_absolute(&path) {
+        return Err(INVALID);
+    }
+    Ok(path)
+}
+
+fn identifier(value: &Value) -> Result<&str, Code> {
+    value.as_str().filter(|id| is_identifier(id)).ok_or(INVALID)
+}
+
+/// A UUID-shaped lowercase ASCII identifier, as `src/contracts/operations.ts` `isIdentifier` checks it.
+pub(crate) fn is_identifier(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(i, &b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
+        })
+}
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard base64 with padding (contract §6 "Channel frames").
+fn encode_base64(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for group in bytes.chunks(3) {
+        let n = group
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= group.len() {
+                BASE64[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
+/// Decodes only the canonical padded form. Other text gives `None`.
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let groups = bytes.len() / 4;
+    let mut out = Vec::with_capacity(groups * 3);
+    for (index, group) in bytes.chunks(4).enumerate() {
+        let padding = group.iter().rev().take_while(|&&b| b == b'=').count();
+        if padding > 2 || (padding > 0 && index + 1 < groups) {
+            return None;
+        }
+        let mut n = 0u32;
+        for &b in &group[..4 - padding] {
+            n = n << 6 | BASE64.iter().position(|&a| a == b)? as u32;
+        }
+        n <<= 6 * padding as u32;
+        let decoded = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        if decoded[3 - padding..].iter().any(|&b| b != 0) {
+            return None;
+        }
+        out.extend_from_slice(&decoded[..3 - padding]);
+    }
+    Some(out)
+}
+
+/// The contract §1 strict decoder, as `src/contracts/strict-json.ts` applies it: no duplicate key, at most 16 nested levels, no trailing data, and only safe integers.
+/// A string value with a lone surrogate decodes to `null`. So no string field accepts it, and the frame keeps its `callId`.
+pub(crate) fn decode_strict(text: &str) -> Option<Value> {
+    let mut parser = Parser { text, at: 0 };
+    let value = parser.value(0)?;
+    parser.space();
+    (parser.at == text.len()).then_some(value)
+}
+
+struct Parser<'a> {
+    text: &'a str,
+    at: usize,
+}
+
+impl Parser<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.text.as_bytes().get(self.at).copied()
+    }
+
+    fn next(&mut self) -> Option<u8> {
+        let byte = self.peek()?;
+        self.at += 1;
+        Some(byte)
+    }
+
+    fn space(&mut self) {
+        while let Some(b' ' | b'\t' | b'\n' | b'\r') = self.peek() {
+            self.at += 1;
+        }
+    }
+
+    fn value(&mut self, depth: usize) -> Option<Value> {
+        self.space();
+        match self.peek()? {
+            b'{' | b'[' if depth >= JSON_NESTING_LEVELS => None,
+            b'{' => self.object(depth + 1),
+            b'[' => self.array(depth + 1),
+            b'"' => Some(self.string()?.map_or(Value::Null, Value::String)),
+            b't' => self.literal("true", Value::Bool(true)),
+            b'f' => self.literal("false", Value::Bool(false)),
+            b'n' => self.literal("null", Value::Null),
+            b'-' | b'0'..=b'9' => self.number(),
+            _ => None,
+        }
+    }
+
+    fn literal(&mut self, word: &str, value: Value) -> Option<Value> {
+        self.text[self.at..].starts_with(word).then(|| {
+            self.at += word.len();
+            value
+        })
+    }
+
+    fn array(&mut self, depth: usize) -> Option<Value> {
+        self.at += 1;
+        let mut out = Vec::new();
+        self.space();
+        if self.peek() == Some(b']') {
+            self.at += 1;
+            return Some(Value::Array(out));
+        }
+        loop {
+            out.push(self.value(depth)?);
+            self.space();
+            match self.next()? {
+                b']' => return Some(Value::Array(out)),
+                b',' => {}
+                _ => return None,
+            }
+        }
+    }
+
+    fn object(&mut self, depth: usize) -> Option<Value> {
+        self.at += 1;
+        let mut out = Map::new();
+        self.space();
+        if self.peek() == Some(b'}') {
+            self.at += 1;
+            return Some(Value::Object(out));
+        }
+        loop {
+            self.space();
+            if self.peek() != Some(b'"') {
+                return None;
+            }
+            // A key with a lone surrogate fails the frame.
+            let key = self.string()??;
+            self.space();
+            if self.next()? != b':' {
+                return None;
+            }
+            let value = self.value(depth)?;
+            if out.insert(key, value).is_some() {
+                return None;
+            }
+            self.space();
+            match self.next()? {
+                b'}' => return Some(Value::Object(out)),
+                b',' => {}
+                _ => return None,
+            }
+        }
+    }
+
+    /// `Some(None)` is a well-formed string with a lone surrogate.
+    fn string(&mut self) -> Option<Option<String>> {
+        self.at += 1;
+        let mut out = String::new();
+        let mut lone = false;
+        let mut segment = self.at;
+        loop {
+            match self.peek()? {
+                b'"' => {
+                    out.push_str(&self.text[segment..self.at]);
+                    self.at += 1;
+                    return Some((!lone).then_some(out));
+                }
+                0..=0x1f => return None,
+                b'\\' => {
+                    out.push_str(&self.text[segment..self.at]);
+                    self.at += 1;
+                    match self.next()? {
+                        b'"' => out.push('"'),
+                        b'\\' => out.push('\\'),
+                        b'/' => out.push('/'),
+                        b'b' => out.push('\u{8}'),
+                        b'f' => out.push('\u{c}'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => match self.hex4()? {
+                            high @ 0xd800..=0xdbff => {
+                                let back = self.at;
+                                let low = self.text[self.at..]
+                                    .starts_with("\\u")
+                                    .then(|| {
+                                        self.at += 2;
+                                        self.hex4()
+                                    })
+                                    .flatten();
+                                match low {
+                                    Some(low @ 0xdc00..=0xdfff) => out.push(char::from_u32(
+                                        0x10000 + ((high - 0xd800) << 10) + (low - 0xdc00),
+                                    )?),
+                                    _ => {
+                                        lone = true;
+                                        self.at = back;
+                                    }
+                                }
+                            }
+                            0xdc00..=0xdfff => lone = true,
+                            unit => out.push(char::from_u32(unit)?),
+                        },
+                        _ => return None,
+                    }
+                    segment = self.at;
+                }
+                _ => self.at += 1,
+            }
+        }
+    }
+
+    fn hex4(&mut self) -> Option<u32> {
+        let digits = self.text.get(self.at..self.at + 4)?;
+        if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        self.at += 4;
+        u32::from_str_radix(digits, 16).ok()
+    }
+
+    fn number(&mut self) -> Option<Value> {
+        let start = self.at;
+        let digits = |p: &mut Self| {
+            let from = p.at;
+            while p.peek().is_some_and(|b| b.is_ascii_digit()) {
+                p.at += 1;
+            }
+            p.at > from
+        };
+        if self.peek() == Some(b'-') {
+            self.at += 1;
+        }
+        if self.peek() == Some(b'0') {
+            self.at += 1;
+        } else if !digits(self) {
+            return None;
+        }
+        let mut integer = true;
+        if self.peek() == Some(b'.') {
+            self.at += 1;
+            integer = false;
+            if !digits(self) {
+                return None;
+            }
+        }
+        if let Some(b'e' | b'E') = self.peek() {
+            self.at += 1;
+            integer = false;
+            if let Some(b'+' | b'-') = self.peek() {
+                self.at += 1;
+            }
+            if !digits(self) {
+                return None;
+            }
+        }
+        let text = &self.text[start..self.at];
+        if integer {
+            // Number.MAX_SAFE_INTEGER.
+            let n: i64 = text.parse().ok()?;
+            (n.unsigned_abs() < 1 << 53).then(|| Value::from(n))
+        } else {
+            serde_json::Number::from_f64(text.parse().ok()?).map(Value::Number)
+        }
+    }
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use super::*;
+
+    #[test]
+    fn the_strict_decoder_and_the_base64_codec_follow_the_contract() {
+        assert_eq!(
+            decode_strict(r#"{"a":[1,-2.5,{"b":"é😀"}]}"#),
+            Some(json!({ "a": [1, -2.5, { "b": "é😀" }] }))
+        );
+        for refused in [
+            r#"{"a":1,"a":2}"#,
+            r#"{"a":1} x"#,
+            "9007199254740992",
+            "[01]",
+            r#""\x""#,
+            r#"{"\ud800":1}"#,
+        ] {
+            assert_eq!(decode_strict(refused), None, "{refused}");
+        }
+        let nested = |levels: usize| format!("{}{}", "[".repeat(levels), "]".repeat(levels));
+        assert!(decode_strict(&nested(16)).is_some(), "16 levels");
+        assert_eq!(decode_strict(&nested(17)), None, "17 levels");
+        assert_eq!(
+            decode_strict(r#"["\ud800","\udc00x","\ud800A"]"#),
+            Some(json!([null, null, null])),
+            "a lone surrogate gives no string"
+        );
+        for bytes in [&b"a"[..], b"ab", b"abc", b"abcd"] {
+            assert_eq!(decode_base64(&encode_base64(bytes)).as_deref(), Some(bytes));
+        }
+        for refused in ["", "YQ", "YR==", "Y===", "YQ==YQ==", "****"] {
+            assert_eq!(decode_base64(refused), None, "{refused:?}");
+        }
     }
 }
 

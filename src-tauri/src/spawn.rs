@@ -4,12 +4,30 @@
 // The shell does not use these items yet. T037 removes this attribute.
 #![allow(dead_code)]
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
+use std::io::Write;
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 
-use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::Threading::PROCESS_CREATION_FLAGS;
+use windows::Wdk::System::SystemServices::RtlUpcaseUnicodeChar;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
+use windows::Win32::System::Pipes::CreatePipe;
+use windows::Win32::System::Threading::{
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+    DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, ResumeThread,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+};
+use windows::core::{PCWSTR, PWSTR};
+
+const QUOTE: u16 = b'"' as u16;
+const BACKSLASH: u16 = b'\\' as u16;
+const SPACE: u16 = b' ' as u16;
+const TAB: u16 = b'\t' as u16;
+const EQUALS: u16 = b'=' as u16;
 
 /// The `CreateProcessW` command-line limit in UTF-16 units, with the terminating null (contract §6 "Process fields").
 pub const COMMAND_LINE_UNITS: usize = 32_767;
@@ -54,20 +72,227 @@ pub struct Spawned {
 }
 
 /// Quotes the program and the arguments into a null-terminated `CreateProcessW` command line.
-pub fn command_line(_program: &Path, _arguments: &[String]) -> Result<Vec<u16>, SpawnError> {
-    todo!("T033")
+/// The rules equal Rust std `make_command_line` and `append_arg` (library/std/src/sys/process/windows.rs, sys/pal/windows/args.rs).
+pub fn command_line(program: &Path, arguments: &[String]) -> Result<Vec<u16>, SpawnError> {
+    let mut line = vec![QUOTE];
+    for unit in program.as_os_str().encode_wide() {
+        if unit == 0 || unit == QUOTE {
+            return Err(SpawnError::InvalidArgument);
+        }
+        line.push(unit);
+    }
+    line.push(QUOTE);
+    for argument in arguments {
+        line.push(SPACE);
+        let units: Vec<u16> = argument.encode_utf16().collect();
+        if units.contains(&0) {
+            return Err(SpawnError::InvalidArgument);
+        }
+        let quote = units.is_empty() || units.contains(&SPACE) || units.contains(&TAB);
+        if quote {
+            line.push(QUOTE);
+        }
+        let mut backslashes = 0;
+        for unit in units {
+            if unit == BACKSLASH {
+                backslashes += 1;
+            } else {
+                if unit == QUOTE {
+                    line.extend(std::iter::repeat_n(BACKSLASH, backslashes + 1));
+                }
+                backslashes = 0;
+            }
+            line.push(unit);
+        }
+        if quote {
+            line.extend(std::iter::repeat_n(BACKSLASH, backslashes));
+            line.push(QUOTE);
+        }
+    }
+    line.push(0);
+    if line.len() > COMMAND_LINE_UNITS {
+        return Err(SpawnError::CommandLineTooLong);
+    }
+    Ok(line)
 }
 
-pub fn creation_flags(_wsl: bool) -> PROCESS_CREATION_FLAGS {
-    todo!("T033")
+pub fn creation_flags(wsl: bool) -> PROCESS_CREATION_FLAGS {
+    let console = if wsl {
+        CREATE_NO_WINDOW
+    } else {
+        DETACHED_PROCESS
+    };
+    CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | console
+}
+
+fn null_terminated(value: &OsStr) -> Result<Vec<u16>, SpawnError> {
+    let units: Vec<u16> = value.encode_wide().chain(Some(0)).collect();
+    if units[..units.len() - 1].contains(&0) {
+        return Err(SpawnError::InvalidArgument);
+    }
+    Ok(units)
+}
+
+/// The block is sorted by name without case, in Unicode order (Microsoft Learn "Changing Environment Variables").
+fn environment_block(environment: &[(OsString, OsString)]) -> Result<Vec<u16>, SpawnError> {
+    let mut entries = Vec::with_capacity(environment.len());
+    for (name, value) in environment {
+        let name: Vec<u16> = name.encode_wide().collect();
+        let value: Vec<u16> = value.encode_wide().collect();
+        if name.is_empty() || name[1..].contains(&EQUALS) || name.contains(&0) || value.contains(&0)
+        {
+            return Err(SpawnError::InvalidArgument);
+        }
+        entries.push((name, value));
+    }
+    entries.sort_by_cached_key(|(name, _)| {
+        name.iter()
+            // SAFETY: the call takes and returns one UTF-16 unit by value.
+            .map(|&unit| unsafe { RtlUpcaseUnicodeChar(unit) })
+            .collect::<Vec<u16>>()
+    });
+    let mut block = Vec::new();
+    for (name, value) in entries {
+        block.extend(name);
+        block.push(EQUALS);
+        block.extend(value);
+        block.push(0);
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
+}
+
+/// A pipe with two non-inheritable ends: the parent end and the child end.
+fn pipe() -> Result<(OwnedHandle, OwnedHandle), SpawnError> {
+    let (mut read, mut write) = (HANDLE::default(), HANDLE::default());
+    // SAFETY: no security attributes, so neither end is inheritable. The caller owns both ends.
+    unsafe { CreatePipe(&mut read, &mut write, None, 0) }
+        .map_err(|_| SpawnError::OwnershipFailed)?;
+    // SAFETY: CreatePipe returned two new handles that nothing else owns.
+    Ok(unsafe {
+        (
+            OwnedHandle::from_raw_handle(read.0),
+            OwnedHandle::from_raw_handle(write.0),
+        )
+    })
+}
+
+fn raw(handle: &OwnedHandle) -> HANDLE {
+    HANDLE(handle.as_raw_handle())
 }
 
 /// Starts the child suspended, calls `assign` with its process handle, then resumes it.
 pub fn spawn(
-    _request: &SpawnRequest,
-    _assign: &mut dyn FnMut(HANDLE) -> windows::core::Result<()>,
+    request: &SpawnRequest,
+    assign: &mut dyn FnMut(HANDLE) -> windows::core::Result<()>,
 ) -> Result<Spawned, SpawnError> {
-    todo!("T033")
+    let mut command_line = command_line(request.program, request.arguments)?;
+    let application = null_terminated(request.program.as_os_str())?;
+    let directory = null_terminated(request.current_dir.as_os_str())?;
+    let environment = environment_block(request.environment)?;
+
+    let (child_stdin, parent_stdin) = pipe()?;
+    let (parent_stdout, child_stdout) = pipe()?;
+    let (parent_stderr, child_stderr) = pipe()?;
+    let inherited = [raw(&child_stdin), raw(&child_stdout), raw(&child_stderr)];
+    for handle in inherited {
+        // SAFETY: the handle is open. Only the handle list below passes it to the child.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT) }
+            .map_err(|_| SpawnError::OwnershipFailed)?;
+    }
+
+    let mut size = 0;
+    // SAFETY: a size query without a list. It fails with ERROR_INSUFFICIENT_BUFFER and sets `size`.
+    let _ = unsafe { InitializeProcThreadAttributeList(None, 1, None, &mut size) };
+    let mut storage = vec![0usize; size.div_ceil(size_of::<usize>())];
+    let list = LPPROC_THREAD_ATTRIBUTE_LIST(storage.as_mut_ptr().cast());
+    // SAFETY: `storage` is pointer-aligned and holds at least `size` bytes.
+    unsafe { InitializeProcThreadAttributeList(Some(list), 1, None, &mut size) }
+        .map_err(|_| SpawnError::OwnershipFailed)?;
+    // SAFETY: `inherited` outlives the list use in CreateProcessW below. The size is that of the array.
+    let updated = unsafe {
+        UpdateProcThreadAttribute(
+            list,
+            0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+            Some(inherited.as_ptr().cast()),
+            size_of_val(&inherited),
+            None,
+            None,
+        )
+    };
+    let mut startup = STARTUPINFOEXW::default();
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = inherited[0];
+    startup.StartupInfo.hStdOutput = inherited[1];
+    startup.StartupInfo.hStdError = inherited[2];
+    startup.lpAttributeList = list;
+    let mut info = PROCESS_INFORMATION::default();
+    let created = updated.and_then(|()| {
+        // SAFETY: every string is null-terminated and outlives the call. `command_line` is writable.
+        // The environment block ends with two nulls and matches CREATE_UNICODE_ENVIRONMENT.
+        unsafe {
+            CreateProcessW(
+                PCWSTR(application.as_ptr()),
+                Some(PWSTR(command_line.as_mut_ptr())),
+                None,
+                None,
+                true,
+                creation_flags(request.wsl),
+                Some(environment.as_ptr().cast()),
+                PCWSTR(directory.as_ptr()),
+                &startup.StartupInfo,
+                &mut info,
+            )
+        }
+    });
+    // SAFETY: the list was initialized above, and CreateProcessW has returned.
+    unsafe { DeleteProcThreadAttributeList(list) };
+    drop((child_stdin, child_stdout, child_stderr));
+    created.map_err(|_| SpawnError::OwnershipFailed)?;
+
+    // SAFETY: CreateProcessW returned the thread handle, and this function owns it.
+    let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread.0) };
+    let owned = assign(info.hProcess).is_ok()
+        // SAFETY: `thread` is the open primary thread handle of the suspended child.
+        && unsafe { ResumeThread(raw(&thread)) } != u32::MAX;
+    drop(thread);
+    if !owned {
+        // SAFETY: this function owns the process handle and closes it once.
+        unsafe {
+            let _ = TerminateProcess(info.hProcess, 1);
+            let _ = CloseHandle(info.hProcess);
+        }
+        return Err(SpawnError::OwnershipFailed);
+    }
+
+    let mut parent_stdin = File::from(parent_stdin);
+    let stdin = match request.input {
+        Input::Closed => {
+            drop(parent_stdin);
+            None
+        }
+        Input::Bytes(bytes) => {
+            // A child that reads late must not block the caller. The write ends when the child reads or exits.
+            let bytes = bytes.to_vec();
+            std::thread::spawn(move || {
+                let _ = parent_stdin.write_all(&bytes);
+            });
+            None
+        }
+        Input::Stream => Some(parent_stdin),
+    };
+    Ok(Spawned {
+        process: info.hProcess,
+        pid: info.dwProcessId,
+        stdin,
+        stdout: File::from(parent_stdout),
+        stderr: File::from(parent_stderr),
+    })
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 // The shell does not use these items yet. T037 removes this attribute.
 #![allow(dead_code)]
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * KIB;
@@ -28,17 +28,52 @@ pub enum FrameError {
 }
 
 /// Reads one frame: a four-byte unsigned little-endian length and a UTF-8 body. A clean end of stream before a header gives `None`.
-pub fn read_frame(_reader: &mut impl Read) -> Result<Option<String>, FrameError> {
-    todo!("T030")
+pub fn read_frame(reader: &mut impl Read) -> Result<Option<String>, FrameError> {
+    let mut header = [0u8; 4];
+    let mut filled = 0;
+    while filled < header.len() {
+        match reader.read(&mut header[filled..]) {
+            Ok(0) if filled == 0 => return Ok(None),
+            Ok(0) => return Err(FrameError::Truncated),
+            Ok(n) => filled += n,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(FrameError::Io(error.kind())),
+        }
+    }
+    let length = u32::from_le_bytes(header) as usize;
+    if length > PIPE_FRAME_BYTES {
+        return Err(FrameError::FrameLimit);
+    }
+    let mut body = vec![0u8; length];
+    reader
+        .read_exact(&mut body)
+        .map_err(|error| match error.kind() {
+            ErrorKind::UnexpectedEof => FrameError::Truncated,
+            kind => FrameError::Io(kind),
+        })?;
+    String::from_utf8(body)
+        .map(Some)
+        .map_err(|_| FrameError::InvalidUtf8)
 }
 
-pub fn write_frame(_writer: &mut impl Write, _body: &str) -> Result<(), FrameError> {
-    todo!("T030")
+pub fn write_frame(writer: &mut impl Write, body: &str) -> Result<(), FrameError> {
+    if body.len() > PIPE_FRAME_BYTES {
+        return Err(FrameError::FrameLimit);
+    }
+    let io = |error: std::io::Error| FrameError::Io(error.kind());
+    writer
+        .write_all(&(body.len() as u32).to_le_bytes())
+        .map_err(io)?;
+    writer.write_all(body.as_bytes()).map_err(io)?;
+    writer.flush().map_err(io)
 }
 
 /// Wraps an encoded renderer envelope into the body `{"kind":"public","request":<envelope>}`.
-pub fn public_request_body(_envelope: &str) -> Result<String, FrameError> {
-    todo!("T030")
+pub fn public_request_body(envelope: &str) -> Result<String, FrameError> {
+    if envelope.len() > PUBLIC_REQUEST_BYTES {
+        return Err(FrameError::FrameLimit);
+    }
+    Ok(format!("{{\"kind\":\"public\",\"request\":{envelope}}}"))
 }
 
 #[cfg(test)]

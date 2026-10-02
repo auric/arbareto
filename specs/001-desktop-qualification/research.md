@@ -521,6 +521,46 @@ They do not sanitize environment variables. `BUN_BE_BUN=1` can select the Bun CL
 
 Sanitize runtime-control variables before Rust launches the service. Match environment names case-insensitively on Windows. Use fixed executable arguments and an application-owned startup directory.
 
+`src-tauri/src/env_sanitize.rs` removes the names below from the service environment (T032). The T025 test lists them as Bun reads between process entry and the entry module. This record verifies each read site, not the read time. The tag `bun-v1.4.2` points directly at commit `744846f844374847c902b5e7fd59b4342a51ef99` (GitHub API `git/refs/tags/bun-v1.4.2`, object type `commit`). Each site is a path at that commit. On 2026-10-03, the T032 implementer read each line below in the source archive of that commit.
+
+| Removed name | Bun 1.4.2 read site |
+| --- | --- |
+| `BUN_BE_BUN` | `src/bun_core/env_var.rs:213` |
+| `BUN_OPTIONS` | `src/bun_core/env_var.rs:114` |
+| `BUN_FEATURE_FLAG_NO_ORPHANS` | `src/bun_core/env_var.rs:88` |
+| Every name that starts with `BUN_JSC_` | `src/jsc/bindings/ZigGlobalObject.cpp:369` checks the prefix, and `:373` sets the JSC option after it. |
+| `BUN_DISABLE_STOP_IF_NECESSARY_TIMER` | `src/jsc/bindings/ZigGlobalObject.cpp:478` |
+| `BUN_GC_TIMER_INTERVAL` | `src/bun_core/env_var.rs:93` |
+| `BUN_GC_RUNS_UNTIL_SKIP_RELEASE_ACCESS` | `src/bun_core/env_var.rs:91` |
+| `BUN_GC_TIMER_DISABLE` | `src/bun_core/env_var.rs:92` |
+| `BUN_IDLE_GC_SECONDS` | `src/bun_core/env_var.rs:94` |
+| `HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET` | `src/bun_core/env_var.rs:155` |
+| `BUN_INSPECT` | `src/bun_core/env_var.rs:98` |
+| `BUN_INSPECT_CONNECT_TO` | `src/bun_core/env_var.rs:99` |
+| `BUN_INSPECT_NOTIFY` | `src/js/internal/debugger.ts:249` |
+| `BUN_INSPECT_PRELOAD` | `src/bun_core/env_var.rs:100` |
+| `NODE_PENDING_DEPRECATION` | `src/bun_core/env_var.rs:174` |
+| `NODE_USE_SYSTEM_CA` | `src/bun_core/env_var.rs:176` |
+| `_BUN_WATCHER_CHILD` | `src/sys/windows/mod.rs:1521` reads it with `GetEnvironmentVariableW`. Lines 1508-1511 define the name. |
+| `NODE_ENV` | `src/runtime/cli/run_command.rs:672` and `src/dotenv/env_loader.rs:203` |
+| `BUN_ENV` | `src/dotenv/env_loader.rs:203` |
+| `BUN_DISABLE_TRANSPILER` | `src/bundler/transpiler.rs:843` |
+| `BUN_CONFIG_MAX_HTTP_REQUESTS` | `src/http/AsyncHTTP.rs:204` |
+| `BUN_SHOW_BUN_STACKFRAMES` | `src/jsc/VirtualMachine.rs:3680` |
+| `BUN_FEATURE_FLAG_DISABLE_ASYNC_TRANSPILER` | `src/bun_core/env_var.rs:230` |
+| `NODE_CHANNEL_FD` | `src/bun_core/env_var.rs:162` |
+| `NODE_CHANNEL_SERIALIZATION_MODE` | `src/jsc/VirtualMachine.rs:3695` |
+| `NODE_PRESERVE_SYMLINKS` | `src/jsc/VirtualMachine.rs:3725` |
+| `BUN_GARBAGE_COLLECTOR_LEVEL` | `src/jsc/VirtualMachine.rs:3729` |
+| `BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` | `src/jsc/VirtualMachine.rs:3733` |
+| `BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING` | `src/jsc/VirtualMachine.rs:3737` |
+| `BUN_FEATURE_FLAG_SYNTHETIC_MEMORY_LIMIT` | `src/jsc/VirtualMachine.rs:3750` |
+| `BUN_FEATURE_FLAG_DISABLE_STANDALONE_MADVISE` | `src/bun_core/env_var.rs:264` |
+
+On Windows, Bun 1.4.2 compares environment names without ASCII letter case. The `env_var.rs` reads go through `getenv_z_any_case` (`src/bun_core/util.rs:344`), which compares at lines 409-412. The `DotEnv` map is `CaseInsensitiveAsciiStringArrayHashMap` (`src/dotenv/env_loader.rs:1339`). The `BUN_JSC_` check compares exact bytes (`ZigGlobalObject.cpp:369`). The shell removes each name and the prefix without ASCII letter case (contract §7). So it removes every form that Bun reads. Git child environments (T182) use the same name rule.
+
+Sources: [tag ref](https://api.github.com/repos/oven-sh/bun/git/refs/tags/bun-v1.4.2), [variable registry](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/bun_core/env_var.rs#L88-L264), [JSC options](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/jsc/bindings/ZigGlobalObject.cpp#L363-L377), [virtual machine reads](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/jsc/VirtualMachine.rs#L3680-L3750), [Windows name comparison](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/bun_core/util.rs#L340-L412), [DotEnv map](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/dotenv/env_loader.rs#L1332-L1339), [watcher child](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/sys/windows/mod.rs#L1508-L1521).
+
 Keep Git's controlled child environment separate. Preserve required user authentication settings without modifying PATH, agents, helpers, or persistent configuration.
 
 A Git-behavior probe on 2026-09-29 used Git `2.55.0.windows.3` in a throwaway repository. `GIT_CONFIG_COUNT` pairs and `GIT_CONFIG_PARAMETERS` appeared in `git config list --show-scope` with scope `command`. An environment `core.hooksPath` changed the `git rev-parse --git-path hooks` result. With `GIT_CONFIG` set, `git config list` showed only that file, and a local key disappeared. `git rev-parse` still honored the local `core.hooksPath`. `git var GIT_AUTHOR_IDENT` used `GIT_AUTHOR_NAME` also under `user.useConfigOnly=true`. This probe is not qualification evidence, and no Arbareto build ran.

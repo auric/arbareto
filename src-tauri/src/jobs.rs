@@ -4,122 +4,468 @@
 // The shell does not use these items yet. T037 removes this attribute.
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{
+    CloseHandle, E_INVALIDARG, ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+};
+use windows::Win32::System::IO::{
+    CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus,
+};
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
+    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    SetInformationJobObject,
+};
+use windows::Win32::System::SystemServices::{
+    JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO, JOB_OBJECT_MSG_NEW_PROCESS,
+};
+use windows::core::{HRESULT, PCWSTR};
 
 use crate::bootstrap::Identity;
+
+/// The port thread waits at most 1 second per call (contract §6 "Lingering Jobs").
+const PORT_WAIT_MS: u32 = 1000;
+/// No Job uses this completion key. A packet with it only wakes the port thread.
+const WAKE_KEY: usize = 0;
 
 /// One Job object. It has kill-on-close and no breakaway, and its handle is not inheritable (contract §6).
 pub struct Job {
     handle: HANDLE,
 }
 
+// SAFETY: the Job handle is a kernel handle that any thread can use. `Job` is its only owner.
+unsafe impl Send for Job {}
+unsafe impl Sync for Job {}
+
 impl Job {
     pub fn create() -> windows::core::Result<Job> {
-        todo!("T031")
+        // SAFETY: no security attributes, so the new handle is not inheritable. `Job` owns it.
+        let job = Job {
+            handle: unsafe { CreateJobObjectW(None, PCWSTR::null()) }?,
+        };
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `limits` matches the information class and the passed size.
+        unsafe {
+            SetInformationJobObject(
+                job.handle,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size_of_val(&limits) as u32,
+            )
+        }?;
+        Ok(job)
     }
 
     pub fn handle(&self) -> HANDLE {
         self.handle
     }
 
-    pub fn assign(&self, _process: HANDLE) -> windows::core::Result<()> {
-        todo!("T031")
+    pub fn assign(&self, process: HANDLE) -> windows::core::Result<()> {
+        // SAFETY: the caller keeps `process` open for the call, and `self` keeps the Job open.
+        unsafe { AssignProcessToJobObject(self.handle, process) }
     }
 
     pub fn active_processes(&self) -> windows::core::Result<u32> {
-        todo!("T031")
+        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        // SAFETY: `info` matches the information class and the passed size.
+        unsafe {
+            QueryInformationJobObject(
+                Some(self.handle),
+                JobObjectBasicAccountingInformation,
+                (&raw mut info).cast(),
+                size_of_val(&info) as u32,
+                None,
+            )
+        }?;
+        Ok(info.ActiveProcesses)
     }
+
+    fn associate(&self, port: HANDLE, key: usize) -> windows::core::Result<()> {
+        let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+            CompletionKey: key as *mut core::ffi::c_void,
+            CompletionPort: port,
+        };
+        // SAFETY: `association` matches the information class and the passed size.
+        unsafe {
+            SetInformationJobObject(
+                self.handle,
+                JobObjectAssociateCompletionPortInformation,
+                (&raw const association).cast(),
+                size_of_val(&association) as u32,
+            )
+        }
+    }
+
+    fn process_ids(&self) -> Vec<u32> {
+        let first = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
+            / size_of::<usize>();
+        let mut slots = 64;
+        loop {
+            let mut buffer = vec![0usize; first + slots];
+            // SAFETY: `buffer` is aligned for the list and has the passed size in bytes.
+            let result = unsafe {
+                QueryInformationJobObject(
+                    Some(self.handle),
+                    JobObjectBasicProcessIdList,
+                    buffer.as_mut_ptr().cast(),
+                    (buffer.len() * size_of::<usize>()) as u32,
+                    None,
+                )
+            };
+            // SAFETY: the buffer starts with the list header, which the call filled.
+            let list = unsafe { &*buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
+            let assigned = list.NumberOfAssignedProcesses as usize;
+            let listed = list.NumberOfProcessIdsInList as usize;
+            match result {
+                Ok(()) if listed == assigned => {
+                    return buffer[first..first + listed]
+                        .iter()
+                        .map(|&id| id as u32)
+                        .collect();
+                }
+                Err(error) if error.code() != HRESULT::from_win32(ERROR_MORE_DATA.0) => {
+                    return Vec::new();
+                }
+                _ => slots = assigned.max(slots * 2),
+            }
+        }
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: `Job` owns the handle and closes it once. Kill-on-close then ends every process in it.
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
+struct Port(HANDLE);
+
+// SAFETY: the port handle is a kernel handle that any thread can use. `Port` is its only owner.
+unsafe impl Send for Port {}
+unsafe impl Sync for Port {}
+
+impl Drop for Port {
+    fn drop(&mut self) {
+        // SAFETY: `Port` owns the handle and closes it once.
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+struct Entry {
+    job: Job,
+    key: usize,
+    tag: Option<Identity>,
+    lingering: bool,
+    new_processes: Vec<u32>,
+}
+
+#[derive(Default)]
+struct State {
+    jobs: HashMap<String, Entry>,
+    operations: HashMap<usize, String>,
+    last_key: usize,
+}
+
+impl State {
+    fn remove(&mut self, operation_id: &str) {
+        if let Some(entry) = self.jobs.remove(operation_id) {
+            self.operations.remove(&entry.key);
+        }
+    }
+
+    /// Closes each Job that `close` selects. Dropping an entry closes its Job handle.
+    fn remove_where(&mut self, mut close: impl FnMut(&Entry) -> bool) {
+        let (operations, jobs) = (&mut self.operations, &mut self.jobs);
+        jobs.retain(|_, entry| {
+            let keep = !close(entry);
+            if !keep {
+                operations.remove(&entry.key);
+            }
+            keep
+        });
+    }
+
+    fn lingering_with<'a>(&'a self, tag: &'a Identity) -> impl Iterator<Item = &'a Entry> {
+        self.jobs
+            .values()
+            .filter(move |entry| entry.lingering && entry.tag.as_ref() == Some(tag))
+    }
+}
+
+struct Shared {
+    port: Port,
+    state: Mutex<State>,
+    stop: AtomicBool,
+    drop_zero: AtomicBool,
+}
+
+impl Shared {
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn read_port(&self) {
+        while !self.stop.load(Ordering::SeqCst) {
+            let (mut message, mut key) = (0u32, 0usize);
+            let mut overlapped: *mut OVERLAPPED = std::ptr::null_mut();
+            // SAFETY: the out pointers name live locals, and `self` keeps the port open.
+            let result = unsafe {
+                GetQueuedCompletionStatus(
+                    self.port.0,
+                    &mut message,
+                    &mut key,
+                    &mut overlapped,
+                    PORT_WAIT_MS,
+                )
+            };
+            match result {
+                Ok(()) => self.message(message, key, overlapped as usize as u32),
+                Err(error) if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) => {}
+                Err(_) => return,
+            }
+        }
+    }
+
+    /// A Job message carries the process ID in the `lpOverlapped` value.
+    fn message(&self, message: u32, key: usize, process_id: u32) {
+        let mut state = self.state();
+        let Some(operation_id) = state.operations.get(&key).cloned() else {
+            return;
+        };
+        match message {
+            JOB_OBJECT_MSG_NEW_PROCESS => {
+                if let Some(entry) = state.jobs.get_mut(&operation_id) {
+                    entry.new_processes.push(process_id);
+                }
+            }
+            JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO
+                if !self.drop_zero.load(Ordering::SeqCst)
+                    && state.jobs.get(&operation_id).is_some_and(|e| e.lingering) =>
+            {
+                state.remove(&operation_id);
+            }
+            _ => {}
+        }
+    }
+
+    fn wake(&self) {
+        // SAFETY: `self` keeps the port open. The packet carries no OVERLAPPED.
+        let _ = unsafe { PostQueuedCompletionStatus(self.port.0, 0, WAKE_KEY, None) };
+    }
+}
+
+fn is_empty(job: &Job) -> bool {
+    matches!(job.active_processes(), Ok(0))
 }
 
 /// Owns the operation Jobs, the lingering set, and the completion-port thread (contract §6 "Lingering Jobs").
 pub struct Supervisor {
-    _private: (),
+    shared: Arc<Shared>,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Supervisor {
     /// Creates the completion port and starts its reader thread.
     pub fn start() -> windows::core::Result<Arc<Supervisor>> {
-        todo!("T031")
+        // SAFETY: a new port without a file handle. `Port` owns the returned handle.
+        let port = Port(unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, 1) }?);
+        let shared = Arc::new(Shared {
+            port,
+            state: Mutex::new(State::default()),
+            stop: AtomicBool::new(false),
+            drop_zero: AtomicBool::new(false),
+        });
+        let reader = Arc::clone(&shared);
+        let thread = std::thread::Builder::new()
+            .name("job-port".into())
+            .spawn(move || reader.read_port())
+            .map_err(|_| windows::core::Error::from_hresult(E_INVALIDARG))?;
+        Ok(Arc::new(Supervisor {
+            shared,
+            thread: Mutex::new(Some(thread)),
+        }))
     }
 
     /// Creates the Job of an operation and associates the port before any process joins.
-    pub fn open(&self, _operation_id: &str) -> windows::core::Result<()> {
-        todo!("T031")
+    /// A second call for a running operation keeps its Job. A lingering Job refuses the call.
+    pub fn open(&self, operation_id: &str) -> windows::core::Result<()> {
+        let mut state = self.shared.state();
+        if let Some(entry) = state.jobs.get(operation_id) {
+            if entry.lingering {
+                return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+            }
+            return Ok(());
+        }
+        let job = Job::create()?;
+        let key = state.last_key + 1;
+        job.associate(self.shared.port.0, key)?;
+        state.last_key = key;
+        state.operations.insert(key, operation_id.to_string());
+        state.jobs.insert(
+            operation_id.to_string(),
+            Entry {
+                job,
+                key,
+                tag: None,
+                lingering: false,
+                new_processes: Vec::new(),
+            },
+        );
+        Ok(())
     }
 
     /// Sets the common-directory identity tag of a mutation Job.
-    pub fn tag(&self, _operation_id: &str, _tag: Identity) {
-        todo!("T031")
+    pub fn tag(&self, operation_id: &str, tag: Identity) {
+        if let Some(entry) = self.shared.state().jobs.get_mut(operation_id) {
+            entry.tag = Some(tag);
+        }
     }
 
-    pub fn assign(&self, _operation_id: &str, _process: HANDLE) -> windows::core::Result<()> {
-        todo!("T031")
+    /// Only a running operation Job takes a process.
+    pub fn assign(&self, operation_id: &str, process: HANDLE) -> windows::core::Result<()> {
+        match self.shared.state().jobs.get(operation_id) {
+            Some(entry) if !entry.lingering => entry.job.assign(process),
+            _ => Err(windows::core::Error::from_hresult(E_INVALIDARG)),
+        }
     }
 
     /// The open Job handle of an operation, or of a lingering Job.
-    pub fn job_handle(&self, _operation_id: &str) -> Option<HANDLE> {
-        todo!("T031")
+    pub fn job_handle(&self, operation_id: &str) -> Option<HANDLE> {
+        self.shared
+            .state()
+            .jobs
+            .get(operation_id)
+            .map(|entry| entry.job.handle())
     }
 
     /// The active process count from `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`.
-    pub fn active_processes(&self, _operation_id: &str) -> Option<u32> {
-        todo!("T031")
+    pub fn active_processes(&self, operation_id: &str) -> Option<u32> {
+        let state = self.shared.state();
+        state.jobs.get(operation_id)?.job.active_processes().ok()
     }
 
     /// The IDs of the processes in the Job. Only tests read process IDs.
-    pub fn process_ids(&self, _operation_id: &str) -> Vec<u32> {
-        todo!("T031")
+    pub fn process_ids(&self, operation_id: &str) -> Vec<u32> {
+        let state = self.shared.state();
+        state
+            .jobs
+            .get(operation_id)
+            .map(|entry| entry.job.process_ids())
+            .unwrap_or_default()
     }
 
     /// Closes the Job at once, with every descendant. Cancel, deadline, and `closeJob` use it.
-    pub fn close(&self, _operation_id: &str) {
-        todo!("T031")
+    pub fn close(&self, operation_id: &str) {
+        self.shared.state().remove(operation_id);
     }
 
     /// Handles an `ended` frame (contract §6 "Lingering Jobs").
-    pub fn ended(&self, _operation_id: &str, _end_processes: bool) {
-        todo!("T031")
+    pub fn ended(&self, operation_id: &str, end_processes: bool) {
+        let mut state = self.shared.state();
+        let close = match state.jobs.get_mut(operation_id) {
+            None => false,
+            Some(entry) if end_processes || is_empty(&entry.job) => true,
+            Some(entry) => {
+                entry.lingering = true;
+                is_empty(&entry.job)
+            }
+        };
+        if close {
+            state.remove(operation_id);
+        }
+        state.remove_where(|entry| entry.lingering && is_empty(&entry.job));
     }
 
-    pub fn is_lingering(&self, _operation_id: &str) -> bool {
-        todo!("T031")
+    pub fn is_lingering(&self, operation_id: &str) -> bool {
+        self.shared
+            .state()
+            .jobs
+            .get(operation_id)
+            .is_some_and(|entry| entry.lingering)
     }
 
     /// The sum of the active process counts of the lingering Jobs with this tag.
-    pub fn lingering_count(&self, _tag: &Identity) -> u32 {
-        todo!("T031")
+    pub fn lingering_count(&self, tag: &Identity) -> u32 {
+        let state = self.shared.state();
+        state
+            .lingering_with(tag)
+            .map(|entry| entry.job.active_processes().unwrap_or(0))
+            .sum()
     }
 
     /// Closes the lingering Jobs with this tag. Returns their active process count before the close.
-    pub fn revoke(&self, _tag: &Identity) -> u32 {
-        todo!("T031")
+    pub fn revoke(&self, tag: &Identity) -> u32 {
+        let mut state = self.shared.state();
+        let count = state
+            .lingering_with(tag)
+            .map(|entry| entry.job.active_processes().unwrap_or(0))
+            .sum();
+        state.remove_where(|entry| entry.lingering && entry.tag.as_ref() == Some(tag));
+        count
     }
 
     /// Closes every operation Job outside the lingering set.
     pub fn service_exited(&self) {
-        todo!("T031")
+        self.shared.state().remove_where(|entry| !entry.lingering);
     }
 
     /// Application close: closes the operation Jobs, then the lingering Jobs.
     pub fn close_all(&self) {
-        todo!("T031")
+        let mut state = self.shared.state();
+        state.remove_where(|entry| !entry.lingering);
+        state.remove_where(|_| true);
     }
 
     /// Stops the port thread.
     pub fn shutdown(&self) {
-        todo!("T031")
+        self.shared.stop.store(true, Ordering::SeqCst);
+        self.shared.wake();
+        let thread = self
+            .thread
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
     }
 
     /// Test hook: the process IDs of the `JOB_OBJECT_MSG_NEW_PROCESS` messages of a Job.
-    pub fn observed_new_processes(&self, _operation_id: &str) -> Vec<u32> {
-        todo!("T031")
+    pub fn observed_new_processes(&self, operation_id: &str) -> Vec<u32> {
+        self.shared
+            .state()
+            .jobs
+            .get(operation_id)
+            .map(|entry| entry.new_processes.clone())
+            .unwrap_or_default()
     }
 
     /// Test hook: drops every `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` message while set.
-    pub fn drop_zero_messages(&self, _drop: bool) {
-        todo!("T031")
+    pub fn drop_zero_messages(&self, drop: bool) {
+        self.shared.drop_zero.store(drop, Ordering::SeqCst);
+    }
+}
+
+/// The port thread stops and then drops the last `Shared`, which closes every Job.
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::SeqCst);
+        self.shared.wake();
     }
 }
 

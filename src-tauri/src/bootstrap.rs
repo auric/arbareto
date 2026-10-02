@@ -4,8 +4,19 @@
 // The shell does not use these items yet. T037 removes this attribute.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher, RandomState};
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Storage::FileSystem::{
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx,
+};
 
 /// A bootstrap context lasts at most 60 seconds (contract §6 "Registration bootstrap").
 pub const CONTEXT_LIFETIME: Duration = Duration::from_secs(60);
@@ -19,19 +30,46 @@ pub struct Identity {
 
 impl Identity {
     /// Refuses the all-zero and the all-ones file ID with `UNSUPPORTED_REPOSITORY` (MS-FSCC, research R2).
-    pub fn checked(_volume_serial: u64, _file_id: [u8; 16]) -> Result<Identity, &'static str> {
-        todo!("T034")
+    pub fn checked(volume_serial: u64, file_id: [u8; 16]) -> Result<Identity, &'static str> {
+        if file_id == [0; 16] || file_id == [0xff; 16] {
+            return Err("UNSUPPORTED_REPOSITORY");
+        }
+        Ok(Identity {
+            volume_serial,
+            file_id,
+        })
     }
 
     /// The identity reply `{"volumeSerial":"<16 hex>","fileId":"<32 hex>"}` (contract §6 "Process fields").
     pub fn reply(&self) -> serde_json::Value {
-        todo!("T034")
+        let file_id: String = self.file_id.iter().map(|b| format!("{b:02x}")).collect();
+        serde_json::json!({
+            "volumeSerial": format!("{:016x}", self.volume_serial),
+            "fileId": file_id,
+        })
     }
 }
 
 /// Opens `path` with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`, then reads `FileIdInfo`.
-pub fn read_identity(_path: &Path) -> Result<Identity, &'static str> {
-    todo!("T034")
+pub fn read_identity(path: &Path) -> Result<Identity, &'static str> {
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES.0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .open(path)
+        .map_err(|_| "UNSUPPORTED_REPOSITORY")?;
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: `file` keeps the handle open, and `info` has the passed size.
+    unsafe {
+        GetFileInformationByHandleEx(
+            HANDLE(file.as_raw_handle()),
+            FileIdInfo,
+            (&raw mut info).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    }
+    .map_err(|_| "UNSUPPORTED_REPOSITORY")?;
+    Identity::checked(info.VolumeSerialNumber, info.FileId.Identifier)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,54 +87,151 @@ pub struct Context {
     pub expires_at: Instant,
 }
 
+/// The options that a discovery `symbolic-ref` permits besides the one name `HEAD` (contract §6 "Registration bootstrap").
+const SYMBOLIC_REF_OPTIONS: [&str; 3] = ["-q", "--quiet", "--short"];
+
 /// The native bootstrap contexts of one service session.
 pub struct Contexts {
-    _private: (),
+    state: Mutex<State>,
+}
+
+struct State {
+    session_id: String,
+    contexts: HashMap<String, Context>,
+    /// `RandomState` takes its keys from the OS random source.
+    keys: RandomState,
+    issued: u64,
+}
+
+impl State {
+    /// A UUID-shaped ID: 64 keyed SipHash bits of the issue count, then the count itself, so no ID repeats in a process.
+    fn next_id(&mut self) -> String {
+        self.issued += 1;
+        let mut hasher = self.keys.build_hasher();
+        hasher.write_u64(self.issued);
+        let random = hasher.finish();
+        format!(
+            "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+            random >> 32,
+            (random >> 16) & 0xffff,
+            random & 0xfff,
+            0x8000 | ((self.issued >> 48) & 0x3fff),
+            self.issued & 0xffff_ffff_ffff,
+        )
+    }
+
+    fn live(&self, bootstrap_id: &str, now: Instant) -> Result<&Context, &'static str> {
+        self.contexts
+            .get(bootstrap_id)
+            .filter(|context| now < context.expires_at)
+            .ok_or("UNKNOWN_TARGET")
+    }
 }
 
 impl Contexts {
-    pub fn new(_session_id: &str) -> Contexts {
-        todo!("T034")
+    pub fn new(session_id: &str) -> Contexts {
+        Contexts {
+            state: Mutex::new(State {
+                session_id: session_id.to_string(),
+                contexts: HashMap::new(),
+                keys: RandomState::new(),
+                issued: 0,
+            }),
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Binds a new context to the selected path and its identity. Returns its UUID-shaped `bootstrapId`.
     pub fn create(
         &self,
-        _kind: ContextKind,
-        _path: &Path,
-        _now: Instant,
+        kind: ContextKind,
+        path: &Path,
+        now: Instant,
     ) -> Result<String, &'static str> {
-        todo!("T034")
+        let identity = read_identity(path).map_err(|code| match kind {
+            ContextKind::GitProbe => "GIT_UNAVAILABLE",
+            ContextKind::RepositoryDiscovery => code,
+        })?;
+        let mut state = self.state();
+        state.contexts.retain(|_, context| now < context.expires_at);
+        let id = state.next_id();
+        let context = Context {
+            kind,
+            path: path.to_path_buf(),
+            identity,
+            session_id: state.session_id.clone(),
+            expires_at: now + CONTEXT_LIFETIME,
+        };
+        state.contexts.insert(id.clone(), context);
+        Ok(id)
     }
 
     /// A live context. An unknown, destroyed, or expired ID gives `UNKNOWN_TARGET`.
-    pub fn get(&self, _bootstrap_id: &str, _now: Instant) -> Result<Context, &'static str> {
-        todo!("T034")
+    pub fn get(&self, bootstrap_id: &str, now: Instant) -> Result<Context, &'static str> {
+        self.state().live(bootstrap_id, now).cloned()
     }
 
     /// Checks the arguments against the permitted probe of the context. A refused array gives `INVALID_REQUEST`.
     pub fn permits(
         &self,
-        _bootstrap_id: &str,
-        _arguments: &[String],
-        _now: Instant,
+        bootstrap_id: &str,
+        arguments: &[String],
+        now: Instant,
     ) -> Result<(), &'static str> {
-        todo!("T034")
+        let permitted = match self.get(bootstrap_id, now)?.kind {
+            ContextKind::GitProbe => arguments == ["version", "--build-options"],
+            ContextKind::RepositoryDiscovery => match arguments {
+                [prefix, command, rest @ ..] if prefix == "--no-lazy-fetch" => {
+                    match command.as_str() {
+                        "rev-parse" | "show-ref" => true,
+                        "symbolic-ref" => {
+                            rest.iter().filter(|a| *a == "HEAD").count() == 1
+                                && rest.iter().all(|a| {
+                                    a == "HEAD" || SYMBOLIC_REF_OPTIONS.contains(&a.as_str())
+                                })
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            },
+        };
+        if permitted {
+            Ok(())
+        } else {
+            Err("INVALID_REQUEST")
+        }
     }
 
     /// Reads the identity of the selected path again. A changed identity destroys the context.
-    pub fn revalidate(&self, _bootstrap_id: &str, _now: Instant) -> Result<(), &'static str> {
-        todo!("T034")
+    /// The code is `GIT_CHANGED` for `gitProbe` and `UNKNOWN_TARGET` for `repositoryDiscovery`.
+    pub fn revalidate(&self, bootstrap_id: &str, now: Instant) -> Result<(), &'static str> {
+        let context = self.get(bootstrap_id, now)?;
+        if read_identity(&context.path) == Ok(context.identity) {
+            return Ok(());
+        }
+        self.destroy(bootstrap_id);
+        Err(match context.kind {
+            ContextKind::GitProbe => "GIT_CHANGED",
+            ContextKind::RepositoryDiscovery => "UNKNOWN_TARGET",
+        })
     }
 
     /// Cancel, failure, and completion destroy the context.
-    pub fn destroy(&self, _bootstrap_id: &str) {
-        todo!("T034")
+    pub fn destroy(&self, bootstrap_id: &str) {
+        self.state().contexts.remove(bootstrap_id);
     }
 
     /// A service restart destroys every context and starts a new session.
-    pub fn restart(&self, _session_id: &str) {
-        todo!("T034")
+    pub fn restart(&self, session_id: &str) {
+        let mut state = self.state();
+        state.contexts.clear();
+        state.session_id = session_id.to_string();
     }
 }
 
@@ -406,6 +541,57 @@ mod tests {
                 contexts.permits(&id, &strings(refused), now),
                 Err("INVALID_REQUEST"),
                 "{refused:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_discovery_context_permits_only_read_forms_of_symbolic_ref() {
+        let fixture = Fixture::new();
+        let directory = fixture.path("selected");
+        std::fs::create_dir(&directory).expect("mkdir");
+        let contexts = Contexts::new(SESSION);
+        let now = Instant::now();
+        let id = contexts
+            .create(ContextKind::RepositoryDiscovery, &directory, now)
+            .expect("create");
+        for refused in [
+            &["--no-lazy-fetch", "symbolic-ref", "HEAD", "refs/heads/x"][..],
+            &["--no-lazy-fetch", "symbolic-ref", "-d", "HEAD"],
+            &["--no-lazy-fetch", "symbolic-ref", "--delete", "HEAD"],
+            &[
+                "--no-lazy-fetch",
+                "symbolic-ref",
+                "-m",
+                "msg",
+                "HEAD",
+                "refs/heads/x",
+            ],
+            &["--no-lazy-fetch", "symbolic-ref", "HEAD", "HEAD"],
+            &["--no-lazy-fetch", "symbolic-ref"],
+        ] {
+            assert_eq!(
+                contexts.permits(&id, &strings(refused), now),
+                Err("INVALID_REQUEST"),
+                "{refused:?}"
+            );
+        }
+        for permitted in [
+            &["--no-lazy-fetch", "symbolic-ref", "HEAD"][..],
+            &["--no-lazy-fetch", "symbolic-ref", "-q", "HEAD"],
+            &["--no-lazy-fetch", "symbolic-ref", "--short", "HEAD"],
+            &[
+                "--no-lazy-fetch",
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+            ],
+        ] {
+            assert_eq!(
+                contexts.permits(&id, &strings(permitted), now),
+                Ok(()),
+                "{permitted:?}"
             );
         }
     }

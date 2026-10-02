@@ -4,11 +4,72 @@
 // The shell does not use these items yet. T037 removes this attribute.
 #![allow(dead_code)]
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::os::windows::ffi::OsStrExt;
+
+/// Bun 1.4.2 reads each name at startup. Research R7 lists each read site.
+const STARTUP_CONTROLS: [&str; 30] = [
+    "BUN_BE_BUN",
+    "BUN_OPTIONS",
+    "BUN_FEATURE_FLAG_NO_ORPHANS",
+    "BUN_DISABLE_STOP_IF_NECESSARY_TIMER",
+    "BUN_GC_TIMER_INTERVAL",
+    "BUN_GC_RUNS_UNTIL_SKIP_RELEASE_ACCESS",
+    "BUN_GC_TIMER_DISABLE",
+    "BUN_IDLE_GC_SECONDS",
+    "HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET",
+    "BUN_INSPECT",
+    "BUN_INSPECT_CONNECT_TO",
+    "BUN_INSPECT_NOTIFY",
+    "BUN_INSPECT_PRELOAD",
+    "NODE_PENDING_DEPRECATION",
+    "NODE_USE_SYSTEM_CA",
+    "_BUN_WATCHER_CHILD",
+    "NODE_ENV",
+    "BUN_ENV",
+    "BUN_DISABLE_TRANSPILER",
+    "BUN_CONFIG_MAX_HTTP_REQUESTS",
+    "BUN_SHOW_BUN_STACKFRAMES",
+    "BUN_FEATURE_FLAG_DISABLE_ASYNC_TRANSPILER",
+    "NODE_CHANNEL_FD",
+    "NODE_CHANNEL_SERIALIZATION_MODE",
+    "NODE_PRESERVE_SYMLINKS",
+    "BUN_GARBAGE_COLLECTOR_LEVEL",
+    "BUN_FEATURE_FLAG_FORCE_WAITER_THREAD",
+    "BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING",
+    "BUN_FEATURE_FLAG_SYNTHETIC_MEMORY_LIMIT",
+    "BUN_FEATURE_FLAG_DISABLE_STANDALONE_MADVISE",
+];
+
+/// Each name after `BUN_JSC_` sets one JSC option.
+const STARTUP_CONTROL_PREFIX: &str = "BUN_JSC_";
 
 /// Removes each runtime-control variable that the pinned Bun 1.4.2 reads at startup (contract §7). Names match without case.
-pub fn sanitize(_environment: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
-    todo!("T032")
+pub fn sanitize(environment: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    environment
+        .into_iter()
+        .filter(|(name, _)| {
+            !name_starts_with(name, STARTUP_CONTROL_PREFIX)
+                && !STARTUP_CONTROLS
+                    .iter()
+                    .any(|control| name_is(name, control))
+        })
+        .collect()
+}
+
+/// Matches an ASCII name without ASCII letter case. Bun 1.4.2 uses this rule on Windows (research R7).
+pub(crate) fn name_is(name: &OsStr, ascii: &str) -> bool {
+    name.len() == ascii.len() && name_starts_with(name, ascii)
+}
+
+pub(crate) fn name_starts_with(name: &OsStr, ascii: &str) -> bool {
+    let mut units = name.encode_wide();
+    ascii.bytes().all(|byte| {
+        units
+            .next()
+            .and_then(|unit| u8::try_from(unit).ok())
+            .is_some_and(|unit| unit.eq_ignore_ascii_case(&byte))
+    })
 }
 
 #[cfg(test)]

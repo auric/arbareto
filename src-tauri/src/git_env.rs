@@ -4,17 +4,94 @@
 // The shell does not use these items yet. T037 removes this attribute.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
+use std::sync::OnceLock;
+
+use serde_json::Value;
+
+use crate::env_sanitize::{name_is, name_starts_with};
+
+struct Policy {
+    remove: Vec<String>,
+    remove_prefixes: Vec<String>,
+    set: Vec<(String, String)>,
+    index_file_variable: Option<String>,
+}
+
+fn policies() -> &'static HashMap<String, Policy> {
+    static POLICIES: OnceLock<HashMap<String, Policy>> = OnceLock::new();
+    POLICIES.get_or_init(|| {
+        let json: Value =
+            serde_json::from_str(include_str!("../../src/contracts/git-environment.json"))
+                .expect("git-environment.json is valid JSON");
+        let strings = |value: &Value| -> Vec<String> {
+            value
+                .as_array()
+                .expect("a string array")
+                .iter()
+                .map(|item| item.as_str().expect("a string").to_string())
+                .collect()
+        };
+        json["policies"]
+            .as_object()
+            .expect("a policies object")
+            .iter()
+            .map(|(id, policy)| {
+                let set = policy["set"]
+                    .as_object()
+                    .expect("a set object")
+                    .iter()
+                    .map(|(name, value)| {
+                        (name.clone(), value.as_str().expect("a string").to_string())
+                    })
+                    .collect();
+                let policy = Policy {
+                    remove: strings(&policy["remove"]),
+                    remove_prefixes: strings(&policy["removePrefixes"]),
+                    set,
+                    index_file_variable: policy["indexFileVariable"].as_str().map(str::to_string),
+                };
+                (id.clone(), policy)
+            })
+            .collect()
+    })
+}
 
 /// Builds a Git child environment from `base` and one fixed policy of `src/contracts/git-environment.json` (contract §7).
 /// `index_file` comes only from a service-owned `transactionId`. A policy without an index file variable refuses it with `INVALID_REQUEST`.
 pub fn child_environment(
-    _policy: &str,
-    _base: &[(OsString, OsString)],
-    _index_file: Option<&Path>,
+    policy: &str,
+    base: &[(OsString, OsString)],
+    index_file: Option<&Path>,
 ) -> Result<Vec<(OsString, OsString)>, &'static str> {
-    todo!("T182")
+    let policy = policies().get(policy).ok_or("INVALID_REQUEST")?;
+    let index_file = match (&policy.index_file_variable, index_file) {
+        (None, Some(_)) => return Err("INVALID_REQUEST"),
+        (Some(name), Some(path)) => Some((OsString::from(name), path.as_os_str().to_owned())),
+        _ => None,
+    };
+    let mut environment: Vec<(OsString, OsString)> = base
+        .iter()
+        .filter(|(name, _)| {
+            !policy.remove.iter().any(|removed| name_is(name, removed))
+                && !policy
+                    .remove_prefixes
+                    .iter()
+                    .any(|prefix| name_starts_with(name, prefix))
+                && !policy.set.iter().any(|(set, _)| name_is(name, set))
+        })
+        .cloned()
+        .collect();
+    environment.extend(
+        policy
+            .set
+            .iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+    );
+    environment.extend(index_file);
+    Ok(environment)
 }
 
 #[cfg(test)]

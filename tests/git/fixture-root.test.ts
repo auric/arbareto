@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+import { afterAll, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describeGit } from "./git-binary";
+import {
+  FIXTURE_GLOBAL_CONFIG,
+  FIXTURE_ROOT,
+  fixtureEnv,
+  fixturePath,
+  FixturePathRefusal,
+  realGlobalConfigDigests,
+  removeFixtureRoot,
+  serviceEnv,
+  useFixtureRoot,
+} from "./fixture-root";
+
+// This file imports no `src/` module, so it prints no ORIGIN line.
+
+const canonical = (p: string) => p.replaceAll("\\", "/").toLowerCase();
+const insideRoot = (p: string) => canonical(p).startsWith(canonical(FIXTURE_ROOT) + "/");
+
+describeGit("fixture root", (git) => {
+  const before = realGlobalConfigDigests(git);
+  useFixtureRoot();
+
+  test("global configuration resolves only inside the owned root", () => {
+    for (const env of [fixtureEnv(), serviceEnv()]) {
+      // `-z` prints each origin unquoted: `file:<path>` NUL `<key>` LF `<value>` NUL.
+      const proc = Bun.spawnSync([git, "config", "--global", "--list", "--show-origin", "-z"], { cwd: FIXTURE_ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      expect(proc.exitCode).toBe(0);
+      const fields = proc.stdout.toString().split("\0").slice(0, -1);
+      expect(fields.length).toBeGreaterThan(0);
+      expect(fields.length % 2).toBe(0);
+      for (let i = 0; i < fields.length; i += 2) {
+        const origin = /^file:(.+)$/.exec(fields[i]!)?.[1];
+        console.log(`GLOBAL_ORIGIN ${origin}`);
+        expect(origin).toBeDefined();
+        expect(insideRoot(origin!)).toBe(true);
+        expect(canonical(origin!)).toBe(canonical(FIXTURE_GLOBAL_CONFIG));
+      }
+      const selected = Bun.spawnSync([git, "var", "GIT_CONFIG_GLOBAL"], { cwd: FIXTURE_ROOT, env, stdin: "ignore", stdout: "pipe" });
+      expect(selected.exitCode).toBe(0);
+      for (const p of selected.stdout.toString().trim().split(/\r?\n/)) expect(insideRoot(p)).toBe(true);
+    }
+  });
+
+  test("fixturePath refuses outside, dot-dot, and root paths", () => {
+    expect(() => fixturePath(tmpdir())).toThrow(FixturePathRefusal);
+    expect(() => fixturePath("..")).toThrow(FixturePathRefusal);
+    expect(() => fixturePath("..", "escape")).toThrow(FixturePathRefusal);
+    expect(() => fixturePath("a", "..", "..", "escape")).toThrow(FixturePathRefusal);
+    expect(() => fixturePath("..", `${FIXTURE_ROOT.split(/[\\/]/).pop()}-sibling`)).toThrow(FixturePathRefusal);
+    expect(() => fixturePath(".")).toThrow(FixturePathRefusal);
+    expect(insideRoot(fixturePath("a", "..", "b"))).toBe(true);
+  });
+
+  // The junction stays until root removal, so the removal must not follow it.
+  const target = mkdtempSync(join(tmpdir(), "arbareto-junction-target-"));
+  const canary = join(target, "canary.txt");
+  writeFileSync(canary, "canary");
+  afterAll(() => {
+    removeFixtureRoot();
+    const intact = existsSync(canary);
+    console.log(`JUNCTION_TARGET_INTACT ${intact}`);
+    rmSync(target, { recursive: true, force: true });
+    expect(intact).toBe(true);
+  });
+
+  const probe = join(target, "junction-probe");
+  let junctions = true;
+  try {
+    symlinkSync(target, probe, "junction");
+    rmdirSync(probe);
+  } catch (error) {
+    junctions = false;
+    console.log(`SKIP: junction-create (${(error as Error).message})`);
+  }
+
+  test.skipIf(!junctions)("fixturePath refuses a junction to an outside directory", () => {
+    symlinkSync(target, fixturePath("junction"), "junction");
+    expect(() => fixturePath("junction")).toThrow(FixturePathRefusal);
+    expect(() => fixturePath("junction", "canary.txt")).toThrow(FixturePathRefusal);
+    expect(() => fixturePath("junction", "new", "file")).toThrow(FixturePathRefusal);
+  });
+
+  test("fixture and service processes lack the removed variables", () => {
+    const canaries: Record<string, string> = {
+      GIT_CONFIG_PARAMETERS: "'user.name'='canary'",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "canary",
+      GIT_CONFIG: "C:/canary/config",
+      GIT_AUTHOR_NAME: "canary",
+      GIT_AUTHOR_EMAIL: "canary@invalid",
+      GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
+      GIT_COMMITTER_NAME: "canary",
+      GIT_COMMITTER_EMAIL: "canary@invalid",
+      GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
+      git_author_name: "canary",
+      EMAIL: "canary@invalid",
+      Email: "canary@invalid",
+      HOME: "C:/canary/home",
+      UserProfile: "C:/canary/profile",
+      GIT_CONFIG_GLOBAL: "C:/canary/gitconfig",
+    };
+    const base = { ...process.env, ...canaries };
+    const script = "console.log(JSON.stringify(process.env))";
+    for (const [name, env] of [["fixture", fixtureEnv({}, base)], ["service", serviceEnv({}, base)]] as const) {
+      const proc = Bun.spawnSync([process.execPath, "-e", script], { cwd: FIXTURE_ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      expect(proc.exitCode).toBe(0);
+      const seen = JSON.parse(proc.stdout.toString()) as Record<string, string>;
+      const present = Object.keys(seen).filter((k) => /^(GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+|GIT_CONFIG|GIT_(AUTHOR|COMMITTER)_.*|EMAIL)$/i.test(k));
+      console.log(`REMOVED_VARIABLES ${name} present=${JSON.stringify(present)}`);
+      expect(present).toEqual([]);
+      expect(Object.values(seen).some((v) => v.includes("canary"))).toBe(false);
+      const upper = Object.fromEntries(Object.entries(seen).map(([k, v]) => [k.toUpperCase(), v]));
+      for (const key of ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"]) expect(insideRoot(upper[key]!)).toBe(true);
+      expect(upper.GIT_CONFIG_NOSYSTEM as string | undefined).toBe(name === "fixture" ? "1" : undefined);
+    }
+  });
+
+  test("real global configuration digest is unchanged", () => {
+    const after = realGlobalConfigDigests(git);
+    for (const line of after) console.log(`GLOBAL_CONFIG_SHA256 in-run ${line}`);
+    expect(after).toEqual(before);
+  });
+});

@@ -37,6 +37,7 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `bun run build`
 - `bun run typecheck`
 - `bun run test:contracts`
+- `bun run test:git`
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml`
 
 ## License

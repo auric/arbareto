@@ -38,6 +38,7 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `bun run typecheck`
 - `bun run test:contracts`
 - `bun run test:git`
+- `bun run test:windows` (needs `bun run build:service` first; skips without the service binary)
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml`
 - Run the app for development: `bun run dev`
 

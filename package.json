@@ -14,6 +14,7 @@
     "typecheck": "bunx --bun tsc --noEmit",
     "test:contracts": "bun test tests/contracts",
     "test:git": "bun test tests/git",
+    "test:windows": "bun test tests/windows",
     "dev": "bun run build && cargo tauri dev --no-dev-server"
   },
   "dependencies": {

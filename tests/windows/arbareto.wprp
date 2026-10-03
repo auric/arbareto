@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Arbareto WPR recording profile (T193). It enables one event provider: WebView2 E16EC3D2-BB0F-4E8F-BDB8-DE0BEA82DC3D at level 5.
+  Arbareto.Light uses keyword 0x10000 (blink.user_timing). That category carries the performance.mark events.
+  Arbareto.Verbose uses keyword 0x10200. Bit 0x200 (toplevel) adds the task events of plan.md "Responsiveness metrics".
+  Provider element form: Microsoft WebView2Feedback commit 874307a3f444dec048f9cfead987ea263d78086e, diagnostics/resources/WebView2.wprp, element "Edge_WebView".
+
+  Recording procedure:
+  1. Install the package as the current user, and start arbareto.exe as the current user.
+  2. Open an elevated session. Download no tool and no other profile.
+  3. For a timing series, run: wpr -start GPU -start tests/windows/arbareto.wprp!Arbareto.Light -filemode
+  4. For a stall workload, run: wpr -start GPU -start tests/windows/arbareto.wprp!Arbareto.Verbose -filemode
+  5. After the boot view shows, run: wpr -stop <owned path>.etl
+  6. Record once with each level. Report the observations in research.md R6.
+-->
+<WindowsPerformanceRecorder Version="1.0" Comments="Arbareto WebView2 marks and task events">
+    <Profiles>
+        <EventCollector Id="EventCollector_Arbareto" Name="Arbareto Event Collector">
+            <BufferSize Value="1024"/>
+            <Buffers Value="3" PercentageOfTotalMemory="true"/>
+        </EventCollector>
+
+        <EventProvider Id="Edge_WebView_Light" Name="E16EC3D2-BB0F-4E8F-BDB8-DE0BEA82DC3D" Level="5">
+            <Keywords>
+                <Keyword Value="0x10000"/>
+            </Keywords>
+        </EventProvider>
+        <EventProvider Id="Edge_WebView_Verbose" Name="E16EC3D2-BB0F-4E8F-BDB8-DE0BEA82DC3D" Level="5">
+            <Keywords>
+                <Keyword Value="0x10200"/>
+            </Keywords>
+        </EventProvider>
+
+        <Profile Id="Arbareto.Light.File" Name="Arbareto" DetailLevel="Light" LoggingMode="File" Description="Arbareto WebView2 user timing marks">
+            <Collectors>
+                <EventCollectorId Value="EventCollector_Arbareto">
+                    <EventProviders>
+                        <EventProviderId Value="Edge_WebView_Light"/>
+                    </EventProviders>
+                </EventCollectorId>
+            </Collectors>
+        </Profile>
+        <Profile Id="Arbareto.Light.Memory" Name="Arbareto" DetailLevel="Light" LoggingMode="Memory" Description="Arbareto WebView2 user timing marks">
+            <Collectors>
+                <EventCollectorId Value="EventCollector_Arbareto">
+                    <EventProviders>
+                        <EventProviderId Value="Edge_WebView_Light"/>
+                    </EventProviders>
+                </EventCollectorId>
+            </Collectors>
+        </Profile>
+        <Profile Id="Arbareto.Verbose.File" Name="Arbareto" DetailLevel="Verbose" LoggingMode="File" Description="Arbareto WebView2 user timing marks and task events">
+            <Collectors>
+                <EventCollectorId Value="EventCollector_Arbareto">
+                    <EventProviders>
+                        <EventProviderId Value="Edge_WebView_Verbose"/>
+                    </EventProviders>
+                </EventCollectorId>
+            </Collectors>
+        </Profile>
+        <Profile Id="Arbareto.Verbose.Memory" Name="Arbareto" DetailLevel="Verbose" LoggingMode="Memory" Description="Arbareto WebView2 user timing marks and task events">
+            <Collectors>
+                <EventCollectorId Value="EventCollector_Arbareto">
+                    <EventProviders>
+                        <EventProviderId Value="Edge_WebView_Verbose"/>
+                    </EventProviders>
+                </EventCollectorId>
+            </Collectors>
+        </Profile>
+    </Profiles>
+</WindowsPerformanceRecorder>

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { useEffect } from "react";
+import type { createBridge } from "../bridge";
 
 // T054 and T062 fix the `getEnvironment` result. These names follow the contract §6 handshake and data-model §1.
 export interface Environment {
@@ -31,13 +32,24 @@ const GIT_BLOCKED: Record<string, string> = {
 
 // T193 needs exactly one mark for each page life.
 let marked = false;
+export function markBootView() {
+  if (marked) return;
+  marked = true;
+  performance.mark("arbareto:boot-view");
+}
+
+type Bridge = ReturnType<typeof createBridge>;
+export function bootActions(bridge: Pick<Bridge, "chooseGit" | "dismissRecoveryMarker">, reload: () => void) {
+  return {
+    onSelectGit: () => void bridge.chooseGit().then(reload),
+    onDismissMarker: (markerId: string) => void bridge.dismissRecoveryMarker({ markerId }).then(reload),
+  };
+}
 
 export function BootView(props: BootProps) {
   const facts = props.state === "facts";
   useEffect(() => {
-    if (!facts || marked) return;
-    marked = true;
-    performance.mark("arbareto:boot-view");
+    if (facts) markBootView();
   }, [facts]);
 
   if (props.state === "loading") return <p>Loading…</p>;

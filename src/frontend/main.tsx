@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Suspense, use, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createBridge, type BridgeResponse } from "./bridge";
-import { BootView, type Environment } from "./boot/BootView";
+import { BootView, bootActions, type Environment } from "./boot/BootView";
 
 // The capability grants no `unlisten`, so the bridge must exist once for the page life, outside React.
 const bridge = createBridge(invoke, listen);
@@ -27,14 +27,7 @@ function Boot({ response, reload }: { response: Promise<BridgeResponse>; reload:
   const result = use(response);
   const session = use(hasSession);
   if (result.state !== "succeeded") return <BootView state="unavailable" code={result.code ?? result.state} session={session} />;
-  return (
-    <BootView
-      state="facts"
-      environment={result.result as Environment}
-      onSelectGit={() => void bridge.chooseGit().then(reload)}
-      onDismissMarker={(markerId) => void bridge.dismissRecoveryMarker({ markerId }).then(reload)}
-    />
-  );
+  return <BootView state="facts" environment={result.result as Environment} {...bootActions(bridge, reload)} />;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

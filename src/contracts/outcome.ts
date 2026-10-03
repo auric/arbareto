@@ -4,7 +4,7 @@
 import { codeFitsState, TERMINAL_STATES, type TerminalState } from "./errors";
 import { MUTATIONS } from "./operations";
 
-// Data-model §7 "Operation and outcome". `operationId` is issued by the service in the accepted response. `requestId` correlates a request with exactly one terminal response.
+// Data-model §7 "Operation and outcome". The service issues `operationId` in the accepted event (contract §2). `requestId` correlates a request with exactly one terminal response.
 
 export const OPERATION_STATES = ["accepted", "running", "cancel-requested", "reconciling", ...TERMINAL_STATES] as const;
 export type OperationState = (typeof OPERATION_STATES)[number];

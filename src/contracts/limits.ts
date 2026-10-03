@@ -42,6 +42,10 @@ export const DIAGNOSTIC_RETAINED_BYTES_PER_STREAM = 64 * KIB;
 export const UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION = 4 * MIB;
 export const NATIVE_CHUNK_BYTES = 64 * KIB;
 export const QUEUED_PIPE_CHUNKS_PER_STREAM = 8;
+export const UNACKNOWLEDGED_INPUT_CHUNKS = 8;
+export const INLINE_PROCESS_INPUT_BYTES = 64 * KIB;
+export const STREAMED_PROCESS_INPUT_BYTES = WHOLE_FILE_STAGE_INPUT_BYTES;
+export const FINISHED_OPERATION_RECORDS = 256;
 export const REGISTERED_WORKSPACES = 8;
 export const TRUST_RECORD_BYTES = 4 * KIB;
 export const TRUST_RECORDS = 256;
@@ -71,3 +75,13 @@ export const RECONCILIATION_TARGET_MS = 5 * SECOND_MS;
 export const RECOVERY_MARKER_BYTES = 4 * KIB;
 export const RECOVERY_MARKERS_PER_HANDSHAKE = 64;
 export const CLOSE_CLEANUP_TARGET_MS = 5 * SECOND_MS;
+
+// Contract §6 "Process fields" and "Channel frames".
+// Microsoft Learn `CreateProcessW`: the command line, with the terminating null.
+export const WINDOWS_COMMAND_LINE_UNITS = 32_767;
+export const CHANNEL_PATH_UNITS = 32_767;
+export const IDENTITY_PATHS = 8;
+export const BOOTSTRAP_DEADLINE_CAP_MS = 30 * SECOND_MS;
+export const REGISTERED_DEADLINE_CAP_MS = 120 * SECOND_MS;
+export const PROCESS_EXIT_CODE_MAX = 4_294_967_295;
+export const REGISTER_VERSION_BYTES = 64;

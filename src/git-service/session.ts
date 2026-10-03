@@ -11,7 +11,7 @@ import {
 } from "../contracts/limits";
 import { isFingerprint, isIdentifier, MUTATIONS, REPOSITORY_BOUND, type OperationName } from "../contracts/operations";
 import { decodeStrictJson } from "../contracts/strict-json";
-import type { GitRunner } from "./git-runner";
+import { isChannelPath, type GitRunner } from "./git-runner";
 import { createSessionLog } from "./log";
 import { createOperationRegistry, type Response } from "./operations";
 import { isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
@@ -22,7 +22,6 @@ type Fields = Record<string, unknown>;
 const isObject = (v: unknown): v is Fields => typeof v === "object" && v !== null && !Array.isArray(v);
 const isCount: Check = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const isString: Check = (v) => typeof v === "string";
-const isPath: Check = (v) => typeof v === "string" && v.length > 0 && !v.includes("\0");
 const isHex = (digits: number): Check => (v) => typeof v === "string" && v.length === digits && /^[0-9a-f]+$/.test(v);
 const oneOf =
   (...allowed: unknown[]): Check =>
@@ -58,15 +57,16 @@ const isMarker = exact({
   markerId: isIdentifier,
   kind: oneOf(...MUTATIONS),
   startedAt: isUtcTime,
-  worktreeRoot: isPath,
-  commonDirectory: isPath,
+  worktreeRoot: isChannelPath,
+  commonDirectory: isChannelPath,
   commonIdentity: isIdentity,
 });
-const isTrustRecord = exact({
-  commonDirectory: isPath,
+// Contract §6 "Startup handshake": also the record form of a `confirm` reply.
+export const isTrustRecord = exact({
+  commonDirectory: isChannelPath,
   commonIdentity: isIdentity,
-  worktreeRoot: isPath,
-  gitDirectory: isPath,
+  worktreeRoot: isChannelPath,
+  gitDirectory: isChannelPath,
   worktreeIdentity: (v) => Array.isArray(v) && v.length === 2 && v.every(isIdentity),
   configurationFingerprint: isFingerprint,
   approvedAt: isUtcTime,
@@ -132,7 +132,7 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
     seenRequests.add(requestId);
     return true;
   };
-  const registry = createOperationRegistry(respond, (progress) => writer.write({ kind: "public", progress }), log);
+  const registry = createOperationRegistry(respond, (progress) => writer.write({ kind: "public", progress }), log, runner);
 
   const operationTarget = (request: RequestEnvelope, answer: (view: object) => void) => {
     const view = registry.get(request.payload.operationId as string);

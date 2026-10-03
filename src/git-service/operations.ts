@@ -2,8 +2,10 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { TERMINAL_STATES, type ErrorCode } from "../contracts/errors";
-import type { OperationName } from "../contracts/operations";
+import { FINISHED_OPERATION_RECORDS } from "../contracts/limits";
+import { MUTATIONS, type OperationName } from "../contracts/operations";
 import { transition, type OperationEvent, type OperationSnapshot, type TransitionResult } from "../contracts/outcome";
+import type { GitRunner } from "./git-runner";
 import type { SessionLog } from "./log";
 
 // Data-model §7 `phase`.
@@ -48,13 +50,32 @@ interface Entry {
   requestId: string;
   startedAt: number;
   controller: AbortController;
+  // The shell replied to `started` with a marker ID.
+  marker: boolean;
 }
 
 const isCount = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const isTerminal = (state: string) => (TERMINAL_STATES as readonly string[]).includes(state);
 
-export function createOperationRegistry(respond: (response: Response) => void, progress: (event: ProgressEvent) => void, log: SessionLog) {
+export function createOperationRegistry(
+  respond: (response: Response) => void,
+  progress: (event: ProgressEvent) => void,
+  log: SessionLog,
+  runner: Pick<GitRunner, "closeJob" | "ended">,
+) {
   const entries = new Map<string, Entry>();
+  // Contract §5 "Finished operation records": the terminal records that a new terminal record can remove, oldest first.
+  const finished = new Set<string>();
+
+  function retire(operationId: string, view: OperationView): void {
+    // Contract §2 and §5: a mutation record that consumed its approval stays. Such a mutation passed `marker-recorded`, so it ends in any terminal state except `rejected`.
+    if ((MUTATIONS as readonly string[]).includes(view.operation) && view.state !== "rejected") return;
+    finished.add(operationId);
+    if (finished.size <= FINISHED_OPERATION_RECORDS) return;
+    const [oldest] = finished;
+    finished.delete(oldest);
+    entries.delete(oldest);
+  }
 
   const entry = (operationId: string): Entry => {
     const found = entries.get(operationId);
@@ -66,7 +87,7 @@ export function createOperationRegistry(respond: (response: Response) => void, p
     start(operation: OperationName, requestId: string): { operationId: string; signal: AbortSignal } {
       const operationId = crypto.randomUUID();
       const controller = new AbortController();
-      entries.set(operationId, { view: { operationId, operation, state: "accepted" }, requestId, startedAt: performance.now(), controller });
+      entries.set(operationId, { view: { operationId, operation, state: "accepted" }, requestId, startedAt: performance.now(), controller, marker: false });
       progress({ requestId, operationId, state: "accepted", counters: {} });
       return { operationId, signal: controller.signal };
     },
@@ -77,6 +98,7 @@ export function createOperationRegistry(respond: (response: Response) => void, p
       const next = transition(e.view, event);
       const { actions, terminalResponse, endedProcesses, rowResult, ...fields } = next;
       e.view = { ...fields, operationId, operation: e.view.operation, phase: e.view.phase };
+      if (event.type === "marker-recorded") e.marker = true;
       if (actions.includes("signal-owned-processes")) e.controller.abort();
       if (terminalResponse) {
         const code = e.view.code as ErrorCode | undefined;
@@ -87,6 +109,10 @@ export function createOperationRegistry(respond: (response: Response) => void, p
           durationMs: Math.round(performance.now() - e.startedAt),
           ...(code ? { code } : {}),
         });
+        // Contract §6: `ended` follows the terminal response of a mutation with a marker. Every other operation gets `closeJob`.
+        if (e.marker) runner.ended(operationId, e.view.endProcesses === true);
+        else runner.closeJob(operationId);
+        retire(operationId, e.view);
       }
       return next;
     },

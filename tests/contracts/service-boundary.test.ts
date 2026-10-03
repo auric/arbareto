@@ -470,7 +470,7 @@ describe("service boundary", () => {
       const frames: Frame[] = [];
       const session = createSession({
         writer: { write: (frame) => void frames.push(frame as Frame), flush: async () => {} },
-        runner: { receive: () => false } as unknown as SessionOptions["runner"],
+        runner: { receive: () => false, closeJob: () => {} } as unknown as SessionOptions["runner"],
         fail: () => {},
       });
       session.receive({ type: "frame", body: encoder.encode(JSON.stringify(HANDSHAKE)) });

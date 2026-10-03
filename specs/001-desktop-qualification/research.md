@@ -409,6 +409,27 @@ The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Ki
 - T058, 2026-10-03: WebView2 runtime `154.0.4258.53` is admitted. The plan.md reference value is `154.0.4258.37`.
 - T027, 2026-10-03: a tty hook commit ended after 117 ms (95 ms on a second run). A credential hook commit ended after 369 ms (302 ms). A PowerShell console wait ended at the 5 s deadline (5028 ms). An ssh-keygen console wait ended at the 5 s deadline (5018 ms). The T065 runs printed 139 ms and 120 ms (tty), 355 ms and 331 ms (credential), 5018 ms and 5015 ms (PowerShell), and 5019 ms and 5023 ms (ssh-keygen).
 
+**T193 recordings, 2026-10-03.** The user recorded the installed package of build `ef77081` in an elevated session. Each recording used WPR with `-filemode`. The analysis used `xperf -a process -withcmdline`, `xperf -a tracestats`, and a CSV filter of the dumped events. Times are relative to the creation of `arbareto.exe`. These are observations; no budget applies.
+
+| Observation | Light: `GPU` and `arbareto.wprp!Arbareto.Light` | Verbose: `arbareto.wprp!Arbareto.Verbose` |
+| --- | --- | --- |
+| Trace length and lost events | 15.30 s, 0 lost | 16.29 s, 0 lost |
+| `arbareto.exe` created, parent `explorer.exe` | 0 ms | 0 ms |
+| Service `arbareto-git.exe` created, parent `arbareto.exe` | +54.9 ms | +49.7 ms |
+| First `git.exe` start and end | +102.7 ms to +174.7 ms | +85.9 ms to +154.8 ms |
+| WebView2 browser `msedgewebview2.exe` 154.0.4258.53 created | +136.0 ms | +115.8 ms |
+| Service creation to browser creation | 81.1 ms | 66.1 ms |
+| WebView2 GPU process created | +325.8 ms | +303.7 ms |
+| WebView2 renderer created | +527.4 ms | +480.2 ms |
+| First `Microsoft-Windows-DXGI` Present of the GPU process | +760.4 ms | +659.2 ms |
+| `arbareto:boot-view` mark | Once, as `Microsoft.MSEdgeWebView/performance.mark`, at +1315.4 ms | Once, at +1156.8 ms |
+| `toplevel` task events | None, as keyword `0x10000` intends | 684 Begin and 684 End events, the first at +581.9 ms |
+
+- The first `git.exe` is the startup probe of the saved Git: `C:\Git\cmd\git.exe version --build-options`. In the Light trace, it started a child `git.exe` at +123.5 ms.
+- In the Verbose trace, the mark appears on the renderer main thread. That thread emits `RendererMain.START_MSG_LOOP`.
+- The `toplevel` task events appear on that thread with Begin and End phases. Their name is `ThreadControllerImpl::RunTask`. The `Edge_RunTask` events carry the same name in their name field.
+- Each probe through the wrapper also started a `conhost.exe` about 11 ms after the inner `git.exe`. This finding led to the wrapper fix in 0f92bd7 (R10 "Batch reviews").
+
 Git Extensions `v7.2.1` resolves to `0aea2d6df4c120806c46f1797ba6a45f5d14b345`. Its Windows release includes x64 MSI and portable artifacts. Its release notes require .NET Desktop `10.0.9` or later `10.x` and recommend Git `2.53.0` or later.
 
 Source: [Git Extensions release](https://github.com/gitextensions/gitextensions/releases/tag/v7.2.1).
@@ -1011,7 +1032,24 @@ Future records must identify scenario, build/package digest, environment, fixtur
 - Native control mutation: removing only the check before `frame()` in `ipc.rs` left `cargo test` green. `frame()` runs before `prepare` and checks the same bound through `framing::public_request_body`. So an oversized native-first request with a valid `requestId` never reached a dialog. The early check alone gives `FRAME_LIMIT` to an oversized envelope without a valid `requestId` and to an oversized `currentSession`. No test covered these two cases. With both checks removed, both T029 `FRAME_LIMIT` tests failed. The undone run passed 193 tests. Both files are byte-identical to HEAD.
 - Gap fix, 2026-10-03: the `ipc.rs` test `an_envelope_above_1_mib_gets_frame_limit_before_any_other_check_or_native_step` covers these two cases. It also checks oversized `chooseGit` and `chooseRepository` requests: `FRAME_LIMIT`, no `prepare` call, no frame, and no pending request. With only the early check removed, the test fails: the envelope without a `requestId` gets `INVALID_REQUEST`. With that assertion also removed, the oversized `currentSession` gets `succeeded`. The undone run passes.
 - Build identity: with an untracked `src/build-identity-probe.txt`, the debug build printed `ARBARETO_BUILD_IDENTITY=ef77081d971f3baa200c4cc59a7d889a213fa2f5-dirty`. After its removal, the next build printed the value without `-dirty`. Cargo reported the missing `arbareto-build-identity.always-rerun` file and ran the script again.
-- Pending for the user: install the package as the current user, and check the boot view and its build identity. Also run the elevated T193 recordings at both levels, and copy their observations into R6.
+- Installed-package boot check, build `ef77081`: passed. The user installed the package as the current user. The boot view showed a service session, the admitted Git, scope `qualification-target`, and "Unsigned local test package". It showed the identity `ef77081d971f3baa200c4cc59a7d889a213fa2f5` without `-dirty`. No console window opened. The sidecar exited within 100 ms.
+- The user ran the elevated T193 recordings at both levels on that package. R6 "T193 recordings, 2026-10-03" holds the observations.
+
+**T065 rerun, 2026-10-03.** The rerun used commit `0f92bd7206ab78556e99535e8603e3f087c847fc` on a clean tree. Every command exited with code 0. The tree was clean again after the run.
+
+- `bun install --frozen-lockfile` changed nothing. `bunx --bun tsc --noEmit` and `bun run build` passed.
+- `bun test tests/contracts tests/git tests/windows`: 1005 pass, 0 fail, 0 skip, in 18 files. 40 `ORIGIN` lines point into `D:\dev\rozvio\src` or to the sidecar. 8 `GLOBAL_ORIGIN` lines point to the fixture home `.gitconfig` under the temporary directory.
+- The Bun run printed `git version 2.55.0.windows.3` at `C:\Git\cmd\git.exe`.
+- `cargo test`: 206 pass, 0 fail, 2 ignored. The ignored tests are the same two `child_entry` entries. `ORIGIN` is `D:\dev\rozvio\src-tauri`.
+- Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 32851738 bytes, SHA-256 `9d13c479d31bc1537f74c5161d97caf45d006846c30989ffd88a3b16a31f9959`. NSIS is `v3.11`. `package.json` and `src-tauri/Cargo.toml` hold version `0.1.0`.
+- A byte search of the release `arbareto.exe` found `0f92bd7206ab78556e99535e8603e3f087c847fc` and no `-dirty` string.
+- Both header checks printed nothing.
+- Control mutation: without the duplicate-key check in `strict-json.ts`, `bun test tests/contracts` failed in 7 `strict-json.test.ts` cases and 1 `service-boundary.test.ts` case. The undone run passed 973 tests.
+- Native control mutation: the run removed only the `if` block of the early 1 MiB check in `ipc.rs`. The test `an_envelope_above_1_mib_gets_frame_limit_before_any_other_check_or_native_step` failed alone; 205 tests passed. The two older T029 `FRAME_LIMIT` tests stayed green, because `frame()` checks the same bound. The undone run passed 206 tests.
+- Both mutated files are byte-identical to HEAD after the undo.
+- Build identity: with the untracked probe file, the debug build printed `ARBARETO_BUILD_IDENTITY=0f92bd7206ab78556e99535e8603e3f087c847fc-dirty`. After its removal, the next build printed the value without `-dirty`. Cargo reported the missing `arbareto-build-identity.always-rerun` file.
+- Release binary boot, not installed: the release `arbareto.exe` opened the `Arbareto` window with the children `arbareto-git.exe` and `msedgewebview2.exe`. The view showed this text, line by line, and a Select Git action: "Build: 0.1.0 0f92bd7206ab78556e99535e8603e3f087c847fc"; "Unsigned local test package"; "Platform scope: qualification-target"; "Detected Git version: none"; "Minimum Git version: 2.55.0.windows.3"; "Qualification: unverified"; "Git changed: GIT_CHANGED". The saved Git is the wrapper `C:\Git\cmd\git.exe`, so `GIT_CHANGED` is the expected result. `CloseMainWindow()` closed the app with exit code 0, and no process stayed.
+- Pending for the user: install the `0f92bd7` package, and check the boot view again.
 
 ### Batch reviews
 
@@ -1028,13 +1066,16 @@ Each batch verification task passes only after one independent review of its bat
 | Shell B2 | Some forwarded requests never got a response. The shell skipped the strict decode and the size check after `prepare`. | 943316c: strict decode and bound before the forward, and every failure gives an answer. |
 | Shell B3 | A refused identity read showed as `canceled`. | 943316c: the refusal keeps its code. The next commit makes a missing or unreadable saved Git path no candidate, so the next contract §3 source follows. |
 | Shell B4 | Nothing saved `lastRepository`, so `restoreWorkspace` never restored. | 943316c: a succeeded `chooseRepository` saves its native context path. |
+| Shell B13 | One damaged marker file counted as unloaded and blocked mutations. | b48bb6c: the boot view lists each damaged marker. It blocks nothing, and the user can dismiss it. |
+| TS m1 | `seenRequests` and the session log had no bound. | b48bb6c: the service keeps the last 65,536 request IDs and at most 1,000 log entries. |
+| Qualification: Job gap | A suspended debug sidecar stayed outside its kill-on-close Job. The parent ended between `CreateProcessW` and `AssignProcessToJobObject`. | 0f92bd7: each child starts inside its Job through `PROC_THREAD_ATTRIBUTE_JOB_LIST`. Two crash tests of the installed app after the assignment ended the sidecar within 77 ms. |
+| Qualification: Git wrapper | The Git for Windows wrapper `cmd\git.exe` gave Git a hidden console. A prompt would then wait and not fail fast. | 0f92bd7: resolution reads `--exec-path` and runs the real `git.exe`. |
 
 Open items and reasons:
 
-- TS m1: `seenRequests`, the session log, and mutation records have no bound. The contract keeps them for the service session.
+- TS m1, mutation records: the mutation records have no bound. The contract keeps them for the service session.
 - TS m5: some tests assert only that nothing happens in a window. They are bounded and cannot fail spuriously, but a slow host can hide a late event.
 - Shell B10: the per-session maps in `process_requests.rs` have no bound. They clear only at a service exit.
-- Shell B13: one damaged marker file counts as unloaded and blocks mutations. This needs a spec decision.
 - Shell S1 to S11: suspicions only. No reviewer proved them.
 - Shell B5 remark: the shell closes the Job on a ninth unacknowledged input chunk. The contract does not state this rule.
 

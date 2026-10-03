@@ -76,7 +76,7 @@ Expected checks:
 
 - Contract tests reject malformed frames, unknown operations, forged IDs, hostile paths, oversized output, and credential-bearing diagnostics.
 - Service tests use real Git and owned disposable repositories. Every mutation verifies index, working-file, reference, and operation-state results.
-- Native tests verify quoting, intended handle inheritance, suspended creation, Job assignment failures, and independent cancellation.
+- Native tests verify quoting, intended handle inheritance, suspended creation inside the Job, failed creation, and independent cancellation.
 - The compiled service ignores hostile repository startup files and runtime-control environment variables.
 - The release bundle contains no development server, Node executable, unnecessary native build tools, or missing runtime assets.
 

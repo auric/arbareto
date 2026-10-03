@@ -34,7 +34,7 @@ const ERROR_CODES = new Set(
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Contract §6 "Startup handshake". A real bootstrapId needs the shell process channel, so the frame omits it.
+// Contract §6 "Startup handshake". The frame omits the optional `savedGit`.
 const HANDSHAKE_FIELDS = {
   version: 1,
   restarted: false,
@@ -47,6 +47,12 @@ const HANDSHAKE_FIELDS = {
   trustRecords: [] as unknown[],
 };
 const HANDSHAKE = { kind: "handshake", handshake: HANDSHAKE_FIELDS };
+const SAVED_GIT = {
+  bootstrapId: "00000000-0000-4000-8000-0000000000aa",
+  executablePath: "C:\\Program Files\\Git\\cmd\\git.exe",
+  version: "2.55.0.windows.3",
+  digest: "c".repeat(64),
+};
 
 // Contract §6 "Process fields": a Windows identity reply.
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
@@ -543,6 +549,8 @@ describe("startup handshake bounds", () => {
   const atBound: Array<[string, Record<string, unknown>]> = [
     ["64 markers", { markers: markers(64) }],
     ["256 trust records", { trustRecords: trustRecords(256) }],
+    // Positive control for the `savedGit` failures.
+    ["a savedGit", { savedGit: SAVED_GIT }],
   ];
   for (const [name, fields] of atBound) {
     test(
@@ -566,7 +574,19 @@ describe("startup handshake failures", () => {
     ["a wrong type", { ...HANDSHAKE_FIELDS, restarted: "false" }, "INVALID_REQUEST"],
     ["65 markers", { ...HANDSHAKE_FIELDS, markers: markers(65) }, "INVALID_REQUEST"],
     ["257 trust records", { ...HANDSHAKE_FIELDS, trustRecords: trustRecords(257) }, "INVALID_REQUEST"],
-    ["a malformed bootstrapId", { ...HANDSHAKE_FIELDS, bootstrapId: "not-a-uuid" }, "INVALID_REQUEST"],
+    ["a top-level bootstrapId", { ...HANDSHAKE_FIELDS, bootstrapId: crypto.randomUUID() }, "INVALID_REQUEST"],
+    ...Object.keys(SAVED_GIT).map((field): [string, unknown, string] => [
+      `a savedGit without ${field}`,
+      { ...HANDSHAKE_FIELDS, savedGit: Object.fromEntries(Object.entries(SAVED_GIT).filter(([k]) => k !== field)) },
+      "INVALID_REQUEST",
+    ]),
+    ["a savedGit with an unknown field", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, extra: 1 } }, "INVALID_REQUEST"],
+    ["a savedGit with a malformed bootstrapId", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, bootstrapId: "not-a-uuid" } }, "INVALID_REQUEST"],
+    ["a savedGit with a non-hex digest", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, digest: "g".repeat(64) } }, "INVALID_REQUEST"],
+    ["a savedGit with an uppercase digest", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, digest: "C".repeat(64) } }, "INVALID_REQUEST"],
+    ["a savedGit with a short digest", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, digest: "c".repeat(63) } }, "INVALID_REQUEST"],
+    ["a savedGit with a relative executablePath", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, executablePath: "git.exe" } }, "INVALID_REQUEST"],
+    ["a savedGit that is not an object", { ...HANDSHAKE_FIELDS, savedGit: null }, "INVALID_REQUEST"],
     ["version 2", { ...HANDSHAKE_FIELDS, version: 2 }, "PROTOCOL_VERSION"],
   ];
   for (const [name, handshake, code] of failures) {

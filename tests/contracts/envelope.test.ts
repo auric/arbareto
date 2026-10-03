@@ -15,11 +15,12 @@ type Json = Record<string, unknown>;
 const MIB = 1024 * 1024;
 const id = () => crypto.randomUUID();
 const FINGERPRINT = "a".repeat(64);
+const GIT_PATH = "C:\\Program Files\\Git\\cmd\\git.exe";
 
 // Contract §3 names the payload values. Field names that the contract does not fix are test choices.
 const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> = {
   getEnvironment: { renderer: () => ({}), service: () => ({}) },
-  chooseGit: { renderer: () => ({}), service: () => ({ bootstrapId: id() }) },
+  chooseGit: { renderer: () => ({}), service: () => ({ bootstrapId: id(), executablePath: GIT_PATH }) },
   chooseRepository: { renderer: () => ({}), service: () => ({ bootstrapId: id() }) },
   restoreWorkspace: { renderer: () => ({}), service: () => ({ bootstrapId: id() }) },
   readWorkspace: {
@@ -418,6 +419,36 @@ describe("native bootstrap operations", () => {
       expectCode(envelope(name, "renderer", { bootstrapId: id() }), "INVALID_REQUEST");
       expectCode(envelope(name, "renderer", { path: "C:\\repo" }), "INVALID_REQUEST");
     });
+  }
+
+  test("chooseGit renderer payload rejects executablePath", () => {
+    expectCode(envelope("chooseGit", "renderer", { executablePath: GIT_PATH }), "INVALID_REQUEST");
+  });
+
+  test("chooseGit service payload holds exactly bootstrapId and executablePath", () => {
+    expectAccepted(envelope("chooseGit", "service", { bootstrapId: id(), executablePath: GIT_PATH }), "service");
+    expectAccepted(envelope("chooseGit", "service", { bootstrapId: id(), executablePath: "\\\\server\\share\\git.exe" }), "service");
+    expectCode(envelope("chooseGit", "service", {}), "INVALID_REQUEST", "service");
+    expectCode(envelope("chooseGit", "service", { bootstrapId: id() }), "INVALID_REQUEST", "service");
+    expectCode(envelope("chooseGit", "service", { executablePath: GIT_PATH }), "INVALID_REQUEST", "service");
+    expectCode(envelope("chooseGit", "service", { bootstrapId: "x", executablePath: GIT_PATH }), "INVALID_REQUEST", "service");
+    expectCode(envelope("chooseGit", "service", { bootstrapId: id(), executablePath: GIT_PATH, path: "C:\\repo" }), "INVALID_REQUEST", "service");
+  });
+
+  test.each([
+    ["a relative path", "git.exe"],
+    ["a drive-relative path", "C:git.exe"],
+    ["a rooted path without a drive", "\\Git\\cmd\\git.exe"],
+    ["a path with NUL", "C:\\Git\\cmd\\git\u0000.exe"],
+    ["a lone surrogate", "C:\\Git\\cmd\\git\ud800.exe"],
+    ["an empty path", ""],
+    ["a path above 32,767 UTF-16 units", `C:\\${"a".repeat(32_765)}`],
+    ["a non-string path", 1],
+  ])("chooseGit service executablePath: %s gives INVALID_REQUEST", (_, executablePath) => {
+    expectCode(envelope("chooseGit", "service", { bootstrapId: id(), executablePath }), "INVALID_REQUEST", "service");
+  });
+
+  for (const name of ["chooseRepository", "restoreWorkspace"]) {
     test(`${name} service payload holds only bootstrapId`, () => {
       expectAccepted(envelope(name, "service", { bootstrapId: id() }), "service");
       expectCode(envelope(name, "service", {}), "INVALID_REQUEST", "service");

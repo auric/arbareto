@@ -63,8 +63,8 @@ The shell sends four events to the main window. `operation-progress` carries one
 
 | Operation | Payload | Result and checks |
 | --- | --- | --- |
-| `getEnvironment` | Empty object. | Build identity, detected and minimum versions, selected Git, prerequisite admission, and separate qualification status. The qualification status is `passed` only when the detected version set is on a build-time list. That list holds the sets with recorded passing evidence. This slice ships that list empty, so the status stays `unverified`. Platform scope `qualification-target` for Windows 11 x64 on a native AMD64 machine with product type `VER_NT_WORKSTATION`, otherwise `other`. The recovery markers that the shell owns at session start (§6, §8). No environment dump. |
-| `chooseGit` | Renderer: empty object. Service: only the native-issued `bootstrapId`. | Native executable proposal or selection, explicit approval, version probe, and installation ID. Cancel preserves the current selection. "Git proposal" below defines the native step. |
+| `getEnvironment` | Empty object. | Build identity, detected and minimum versions, selected Git, prerequisite admission, and separate qualification status. The qualification status is `passed` only when the detected version set is on a build-time list. That list holds the sets with recorded passing evidence. This slice ships that list empty, so the status stays `unverified`. Platform scope `qualification-target` for Windows 11 x64 on a native AMD64 machine with product type `VER_NT_WORKSTATION`, otherwise `other`. The recovery markers that the shell owns at session start (§6, §8). Each marker holds exactly `markerId`, `kind`, `startedAt`, and `worktreeRoot`. No environment dump. |
+| `chooseGit` | Renderer: empty object. Service: exactly the native-issued `bootstrapId` and the probed `executablePath`, a fully qualified Windows path (§6 "Channel frames"). | Native executable proposal or selection, explicit approval, version probe, and installation ID. Cancel preserves the current selection. "Git proposal" below defines the native step. |
 | `chooseRepository` | Renderer: empty object. Service: only the native-issued `bootstrapId`. | Native folder selection and Git registration. The result holds the `repositoryId`, the current `generation`, and the `worktreeKey` ("Worktree key" below). Cancel preserves the current workspace. A WSL path follows §11, including the distro start and its Cancel. |
 | `restoreWorkspace` | Renderer: empty object. Service: only the native-issued `bootstrapId`. | Revalidate the last explicitly chosen repository from application settings. No caller-supplied path. The result holds the `repositoryId`, the current `generation`, and the `worktreeKey`. A WSL path follows §11. |
 | `readWorkspace` | `refresh: boolean` and `check: "full"` or `"changes"`. `refresh: true` with `check: "changes"` gives `INVALID_REQUEST`. | Git-derived identity, HEAD, operation state, status completeness, hunk-profile eligibility, snapshot ID, and recovery state. Only a user Refresh action sends `refresh: true`, always with `check: "full"`. Focus return and the first read send `refresh: false` with `check: "full"`. The read after a mutation outcome and the read after a trust approval also send `refresh: false` with `check: "full"`. Polls send `refresh: false` with `check: "changes"` (§8 "Change check"). WSL polls send `check: "full"` instead (§11 "Change polling"). An explicit refresh of a blocked workspace performs recovery reconciliation (§8). |
@@ -87,7 +87,7 @@ The shell sends four events to the main window. `operation-progress` carries one
 
 The native dialog and confirmation code must not accept renderer-supplied replacements for selected paths or approval fingerprints. The trust confirmation shows only the fingerprint that the service sends.
 
-The shell runs the native step of `chooseGit`, `chooseRepository`, and `restoreWorkspace` first. A canceled dialog returns a canceled result from the shell, and no frame reaches the service. Otherwise the shell forwards the request with its native-issued `bootstrapId` in the payload. The renderer payload must be empty, and the shell rejects any renderer field.
+The shell runs the native step of `chooseGit`, `chooseRepository`, and `restoreWorkspace` first. A canceled dialog returns a canceled result from the shell, and no frame reaches the service. Otherwise the shell forwards the request with its native-issued `bootstrapId` in the payload. For `chooseGit`, the payload also holds the candidate `executablePath` of that context. The service reads that file to compute its SHA-256 digest. The renderer payload must be empty, and the shell rejects any renderer field.
 
 **Git proposal.** The native step of `chooseGit` first looks for a candidate `git.exe`. With a saved path, the candidate is that path. Without one, the shell searches its own `PATH` for `git.exe`, then tries `%ProgramFiles%\Git\cmd\git.exe`. The shell creates a `gitProbe` context for the candidate, and the service probes it. The native Git selection confirmation then shows the probed path and version. After `GIT_CHANGED` at the saved path, it also shows the stored version (data-model §1). Its buttons are Use this Git, Choose another Git, and Cancel, and Cancel is the default. Choose another Git opens the executable picker. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Without a candidate, the picker opens directly. No candidate is ever selected without Use this Git (FR-003).
 
@@ -352,7 +352,7 @@ Only the compiled service can use this private channel. No public Tauri command 
 
 ### Startup handshake
 
-The shell sends one `handshake` frame as the first frame of each service session. Its body is `{"kind":"handshake","handshake":{…}}`. Every field below is required, except `bootstrapId`.
+The shell sends one `handshake` frame as the first frame of each service session. Its body is `{"kind":"handshake","handshake":{…}}`. Every field below is required, except `savedGit`.
 
 | Field | Value |
 | --- | --- |
@@ -365,9 +365,9 @@ The shell sends one `handshake` frame as the first frame of each service session
 | `markers` | Array of at most 64 recovery markers (§5). Each holds `markerId`, `kind`, `startedAt`, `worktreeRoot`, `commonDirectory`, and `commonIdentity` ("Recovery markers"). Zero markers give an empty array. |
 | `unloadedMarkers` | Nonnegative safe integer: the count of marker files that the shell did not load (§5). |
 | `trustRecords` | Array of at most 256 trust records (§5). Each holds `commonDirectory`, `commonIdentity`, `worktreeRoot`, `gitDirectory`, `worktreeIdentity`, `configurationFingerprint`, `approvedAt`, and `gitInstallationDigest` (§7 "Trust approval store"). Zero records give an empty array. |
-| `bootstrapId` | The startup `gitProbe` context ("Startup contexts"). It is present only when the settings hold a Git path. |
+| `savedGit` | Object with exactly `bootstrapId`, `executablePath`, `version`, and `digest` (data-model §1). `bootstrapId` is the startup `gitProbe` context ("Startup contexts"). `executablePath` is the saved Git path. `version` is the stored parsed version text. `digest` is the stored SHA-256 of the executable. The object is present only when the settings hold a Git path. |
 
-`startedAt` and `approvedAt` are UTC times in RFC 3339 form. `commonIdentity` uses the form of an identity reply ("Process fields"). `worktreeIdentity` holds the identity replies of `worktreeRoot` and `gitDirectory`, in that order. `configurationFingerprint` and `gitInstallationDigest` are 64 lowercase hex digits.
+`startedAt` and `approvedAt` are UTC times in RFC 3339 form. `commonIdentity` uses the form of an identity reply ("Process fields"). `worktreeIdentity` holds the identity replies of `worktreeRoot` and `gitDirectory`, in that order. `configurationFingerprint`, `gitInstallationDigest`, and `digest` are 64 lowercase hex digits. `executablePath` follows the path rule of "Channel frames".
 
 The service validates the frame with the strict decoder (§1). It replies `{"kind":"handshake","handshake":{"sessionId":"<ID>"}}`. `getEnvironment` takes its facts and markers only from this frame.
 
@@ -386,7 +386,7 @@ The renderer cannot supply or replace those paths. Restoration uses only the app
 
 **Startup contexts.** Two saved selections need contexts without a dialog:
 
-- Saved Git path: the shell creates one `gitProbe` context for the saved path at each startup handshake. This includes the handshake after Restart service. The handshake carries its `bootstrapId`. The service revalidates the executable in that context before it answers its first public request. A changed identity gives `GIT_CHANGED`, and the service selects no other executable. Without a saved path, the handshake carries no context, and Git stays unselected.
+- Saved Git path: the shell creates one `gitProbe` context for the saved path at each startup handshake. This includes the handshake after Restart service. The handshake carries its `bootstrapId` in `savedGit`, with the saved path, version text, and digest. The service revalidates the executable in that context before it answers its first public request. It computes the SHA-256 of the file at `executablePath` and compares it with the stored digest. Any difference gives `GIT_CHANGED`, and the service selects no other executable. A file rewritten in place keeps its file ID, so the digest decides. `GIT_CHANGED` carries no new version, because the native check refuses the run. The next `chooseGit` probe in a new context reports the new version. Without a saved path, the handshake carries no `savedGit`, and Git stays unselected.
 - Last repository: the shell creates no context at startup. Each `restoreWorkspace` request creates one `repositoryDiscovery` context for the stored last-selection path.
 
 | Context | Permitted execution | Completion |
@@ -555,7 +555,7 @@ This subsection defines the bodies of `process`, `mutation`, and `trust` frames.
 | `cancel` | `callId`. | Closes the Job of the operation that owns that call, with every descendant. Each process of that operation then gets `exit`. A cancel for an ended call is dropped. |
 | `identity` | `callId`, `operationId`, `contextKind`, the context IDs, `paths`: 1 to 8 paths. | Replies `identity` with one entry per path, in request order. |
 | `lingeringCount` | `callId`, `operationId`, `commonDirectory`. | Replies `lingeringCount` with the active process count of the lingering Jobs with that tag. An unreadable identity gives 0. |
-| `register` | `callId`, `operationId`, `bootstrapId`, `gitInstallationId`, and either `version` and `confirm`, or `repositoryId`, `worktreeRoot`, `gitDirectory`, and `commonDirectory`. | Binds the issued ID to the native context of `bootstrapId`. |
+| `register` | `callId`, `operationId`, `bootstrapId`, `gitInstallationId`, and either `version` and `confirm`, or `repositoryId`, `worktreeRoot`, `gitDirectory`, and `commonDirectory`. `version` is the parsed version text, such as `2.55.0.windows.3`, not the full output line. | Binds the issued ID to the native context of `bootstrapId`. |
 | `release` | Exactly one of `repositoryId` or `gitInstallationId`. | Removes the binding. A later request with that ID gets `refused` with `UNKNOWN_TARGET`. |
 | `closeJob` | `operationId`. | Closes that operation Job with every descendant. The ID is then inactive. |
 

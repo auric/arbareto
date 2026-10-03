@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { COMMIT_MESSAGE_BYTES, IDENTIFIER_BYTES } from "./limits";
+import { CHANNEL_PATH_UNITS, COMMIT_MESSAGE_BYTES, IDENTIFIER_BYTES } from "./limits";
 
 // Contract §3: the closed list of public operations.
 const OPERATION_NAMES = [
@@ -79,6 +79,9 @@ export function isIdentifier(value: unknown): value is string {
 
 // Contract §6: `configurationFingerprint` is 64 lowercase hex digits.
 export const isFingerprint = (value: unknown) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+// Contract §3 `chooseGit`: the §6 channel path rule. Microsoft Learn "File path formats on Windows systems": a fully qualified path starts with a drive letter and a separator, or with two separators.
+const isWindowsPath = (value: unknown) =>
+  typeof value === "string" && value.length <= CHANNEL_PATH_UNITS && !value.includes("\u0000") && value.isWellFormed() && /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(value);
 const isTrue = (value: unknown) => value === true;
 const isBoolean = (value: unknown) => typeof value === "boolean";
 const oneOf =
@@ -114,7 +117,7 @@ const bootstrap = exact({ bootstrapId: isIdentifier });
 // Contract §3 names the values. The field names `snapshotId`, `entryId`, `trustId`, `comparisonId`, `hunkId`, `operationId`, `choice`, and `markerId` follow test T012.
 export const PAYLOAD_VALIDATORS: Record<OperationName, { renderer: PayloadValidator; service: PayloadValidator }> = {
   getEnvironment: { renderer: empty, service: empty },
-  chooseGit: { renderer: empty, service: bootstrap },
+  chooseGit: { renderer: empty, service: exact({ bootstrapId: isIdentifier, executablePath: isWindowsPath }) },
   chooseRepository: { renderer: empty, service: bootstrap },
   restoreWorkspace: { renderer: empty, service: bootstrap },
   readWorkspace: same(exact({ refresh: isBoolean, check: oneOf("full", "changes") }, (p) => !(p.refresh === true && p.check !== "full"))),

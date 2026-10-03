@@ -84,9 +84,9 @@ const isHandshake = exact(
     markers: arrayOf(RECOVERY_MARKERS_PER_HANDSHAKE, isMarker),
     unloadedMarkers: isCount,
     trustRecords: arrayOf(TRUST_RECORDS, isTrustRecord),
-    bootstrapId: isIdentifier,
+    savedGit: exact({ bootstrapId: isIdentifier, executablePath: isChannelPath, version: isString, digest: isFingerprint }),
   },
-  ["bootstrapId"],
+  ["savedGit"],
 );
 
 export interface Handshake {
@@ -99,7 +99,7 @@ export interface Handshake {
   markers: Fields[];
   unloadedMarkers: number;
   trustRecords: Fields[];
-  bootstrapId?: string;
+  savedGit?: { bootstrapId: string; executablePath: string; version: string; digest: string };
 }
 
 // Contract §3 without the shell-only `requestClose` and `currentSession`.

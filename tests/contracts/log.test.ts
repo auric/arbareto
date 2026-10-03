@@ -60,6 +60,15 @@ const SAFE_ENTRY = {
 };
 
 describe("session log", () => {
+  test("keeps the last 1,000 entries and drops the oldest first (contract §5)", () => {
+    const log = createSessionLog();
+    for (let count = 0; count <= 1_000; count++) log.record({ kind: "getEnvironment", count });
+    const entries = log.entries();
+    expect(entries).toHaveLength(1_000);
+    expect(entries[0].count).toBe(1);
+    expect(entries.at(-1)?.count).toBe(1_000);
+  });
+
   test("keeps an allowlisted entry", () => {
     const log = createSessionLog();
     log.record(SAFE_ENTRY as never);

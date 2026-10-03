@@ -17,6 +17,7 @@ export interface Environment {
   markers: { markerId: string; kind: string; startedAt: string; worktreeRoot: string }[];
   markerLimit?: number;
   unloadedMarkers?: number;
+  damagedMarkers: { markerId: string; fileName: string }[];
 }
 
 export type BootProps =
@@ -95,6 +96,21 @@ export function BootView(props: BootProps) {
             {env.markers.map((marker) => (
               <li key={marker.markerId}>
                 {marker.kind} {marker.worktreeRoot} {marker.startedAt}{" "}
+                <button type="button" onClick={() => props.onDismissMarker(marker.markerId)}>
+                  Dismiss
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {env.damagedMarkers.length > 0 && (
+        <section>
+          <h2>Damaged recovery markers</h2>
+          <ul>
+            {env.damagedMarkers.map((marker) => (
+              <li key={marker.markerId}>
+                Damaged recovery marker {marker.fileName}{" "}
                 <button type="button" onClick={() => props.onDismissMarker(marker.markerId)}>
                   Dismiss
                 </button>

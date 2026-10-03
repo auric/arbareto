@@ -224,7 +224,7 @@ Compare actual commit scope through read-only Git inspection against that retain
 | Field | Meaning and validation |
 | --- | --- |
 | `operationId` | Session-unique identifier that the service issues in the accepted event (contract §2). No request creates one; `cancel` and `getOperation` name an issued one. A repeated request with a consumed approval returns the existing state, not another execution. |
-| `requestId` | Correlates a request with exactly one terminal response. Every progress event of the operation also carries it (contract §2). A repeated `requestId` in one service session gives `INVALID_REQUEST` and starts nothing. |
+| `requestId` | Correlates a request with exactly one terminal response. Every progress event of the operation also carries it (contract §2). A `requestId` repeated within the last 65,536 requests of one service session gives `INVALID_REQUEST` and starts nothing (contract §5). |
 | `repositoryId`, `commonIdentity` | Registered target and mutation exclusion group, when applicable. Pre-registration operations use a native bootstrap context. |
 | `kind` | One operation from the protocol allowlist. |
 | `state` | State from the transition table below. |

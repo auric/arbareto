@@ -16,6 +16,7 @@ const environment = (fields: Partial<Environment> = {}): Environment => ({
   minimumVersion: "2.55.0.windows.3",
   qualification: "unverified",
   markers: [],
+  damagedMarkers: [],
   ...fields,
 });
 
@@ -59,16 +60,25 @@ describe("boot view", () => {
     for (const text of ["commit", "C:\\repo", "2026-10-02T10:00:00Z", "Dismiss", "Marker limit: 64", "Unloaded marker files: 3"]) expect(html).toContain(text);
   });
 
+  test("each damaged marker shows its label, its file name, and a Dismiss action", () => {
+    const damagedMarkers = [{ markerId: crypto.randomUUID(), fileName: "broken.json" }];
+    const html = render(environment({ damagedMarkers }));
+    for (const text of ["Damaged recovery marker", "broken.json", "Dismiss"]) expect(html).toContain(text);
+    expect(html).not.toContain("Marker limit");
+    expect(render(environment())).not.toContain("Damaged recovery marker");
+  });
+
   test("each button calls its action with the marker ID", () => {
     const markers = ["a", "b"].map((markerId) => ({ markerId, kind: "commit", startedAt: "2026-10-02T10:00:00Z", worktreeRoot: "C:\\repo" }));
     const calls: string[] = [];
-    const props: BootProps = { state: "facts", environment: environment({ gitCode: "GIT_UNAVAILABLE", markers }), onSelectGit: () => calls.push("select"), onDismissMarker: (id) => calls.push(`dismiss ${id}`) };
+    const damagedMarkers = [{ markerId: "c", fileName: "broken.json" }];
+    const props: BootProps = { state: "facts", environment: environment({ gitCode: "GIT_UNAVAILABLE", markers, damagedMarkers }), onSelectGit: () => calls.push("select"), onDismissMarker: (id) => calls.push(`dismiss ${id}`) };
     // A direct component call inside a render keeps the hooks valid and returns the element tree.
     let tree: ReactNode;
     const Probe = () => ((tree = BootView(props)), null);
     renderToStaticMarkup(<Probe />);
     for (const button of buttons(tree)) button.props.onClick();
-    expect(calls).toEqual(["select", "dismiss a", "dismiss b"]);
+    expect(calls).toEqual(["select", "dismiss a", "dismiss b", "dismiss c"]);
   });
 
   test("Select Git calls chooseGit and Dismiss calls dismissRecoveryMarker, then each reloads", async () => {

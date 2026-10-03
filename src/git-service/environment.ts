@@ -23,6 +23,7 @@ export interface Environment {
   markers: { markerId: string; kind: string; startedAt: string; worktreeRoot: string }[];
   markerLimit?: number;
   unloadedMarkers?: number;
+  damagedMarkers: { markerId: string; fileName: string }[];
 }
 
 // `git` is null when the handshake carried no `savedGit` and no `chooseGit` succeeded.
@@ -49,5 +50,7 @@ export function getEnvironment(handshake: Handshake, git: GitProbeResult | null)
     markers,
     // Contract §5 "Recovery markers": above 64 marker files, the shell loads 64 and counts the rest.
     ...(handshake.unloadedMarkers > 0 ? { markerLimit: RECOVERY_MARKERS_PER_HANDSHAKE, unloadedMarkers: handshake.unloadedMarkers } : {}),
+    // Contract §6 "Damaged markers": the ID and the file name only.
+    damagedMarkers: handshake.damagedMarkers.map(({ markerId, fileName }) => ({ markerId, fileName })),
   };
 }

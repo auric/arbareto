@@ -30,7 +30,7 @@ The public bridge is not a generic message bus. Its operation discriminator is a
 | --- | --- |
 | `version` | Integer `1`. |
 | `sessionId` | Opaque service-session identifier. The service issues it in the shell-service startup handshake. The page receives it as the session paragraph below states. |
-| `requestId` | Bounded identifier for response correlation. It is unique in the service session. The service records each valid `requestId` of a decoded envelope, also when it rejects the request. A repeated `requestId` gives `INVALID_REQUEST` and starts nothing. |
+| `requestId` | Bounded identifier for response correlation. It is unique within the last 65,536 requests of the service session (§5 "Recorded request IDs"). The service records each valid `requestId` of a decoded envelope, also when it rejects the request. A repeated `requestId` gives `INVALID_REQUEST` and starts nothing. |
 | `operation` | One exact operation name from the table below. |
 | `repositoryId` | Registered workspace identifier. Required for `readWorkspace`, `readHistory`, `readComparison`, `readTrust`, `approveTrust`, `revokeTrust`, `applyHunk`, `applyFile`, `reviewCommit`, `commit`, `reviewSubmodules`, and `updateSubmodules`. Other operations omit it. |
 | `repositoryGeneration` | Nonnegative safe integer for snapshot-bound operations. It must match the supplied snapshot, review, or trust fingerprint. For `readHistory`, it must equal the current workspace generation. |
@@ -63,7 +63,7 @@ The shell sends four events to the main window. `operation-progress` carries one
 
 | Operation | Payload | Result and checks |
 | --- | --- | --- |
-| `getEnvironment` | Empty object. | Build identity, detected and minimum versions, selected Git, prerequisite admission, and separate qualification status. The qualification status is `passed` only when the detected version set is on a build-time list. That list holds the sets with recorded passing evidence. This slice ships that list empty, so the status stays `unverified`. Platform scope `qualification-target` for Windows 11 x64 on a native AMD64 machine with product type `VER_NT_WORKSTATION`, otherwise `other`. The recovery markers that the shell owns at session start (§6, §8). Each marker holds exactly `markerId`, `kind`, `startedAt`, and `worktreeRoot`. No environment dump. |
+| `getEnvironment` | Empty object. | Build identity, detected and minimum versions, selected Git, prerequisite admission, and separate qualification status. The qualification status is `passed` only when the detected version set is on a build-time list. That list holds the sets with recorded passing evidence. This slice ships that list empty, so the status stays `unverified`. Platform scope `qualification-target` for Windows 11 x64 on a native AMD64 machine with product type `VER_NT_WORKSTATION`, otherwise `other`. The recovery markers that the shell owns at session start (§6, §8). Each marker holds exactly `markerId`, `kind`, `startedAt`, and `worktreeRoot`. The damaged markers of the handshake, each with exactly `markerId` and `fileName` (§6 "Damaged markers"). No environment dump. |
 | `chooseGit` | Renderer: empty object. Service: exactly the native-issued `bootstrapId` and the probed `executablePath`, a fully qualified Windows path (§6 "Channel frames"). | Native executable proposal or selection, explicit approval, version probe, and installation ID. Cancel preserves the current selection. A success that issues a new `gitInstallationId` sends one `release` for the previous one (§6 "Channel frames"). A failed or canceled `chooseGit` releases nothing. "Git proposal" below defines the native step. |
 | `chooseRepository` | Renderer: empty object. Service: only the native-issued `bootstrapId`. | Native folder selection and Git registration. The result holds the `repositoryId`, the current `generation`, and the `worktreeKey` ("Worktree key" below). Cancel preserves the current workspace. A WSL path follows §11, including the distro start and its Cancel. |
 | `restoreWorkspace` | Renderer: empty object. Service: only the native-issued `bootstrapId`. | Revalidate the last explicitly chosen repository from application settings. No caller-supplied path. The result holds the `repositoryId`, the current `generation`, and the `worktreeKey`. A WSL path follows §11. |
@@ -83,7 +83,7 @@ The shell sends four events to the main window. `operation-progress` carries one
 | `getOperation` | Issued operation ID. | Current or retained terminal state. Never retries an operation. A removed record gives `UNKNOWN_TARGET` (§5 "Finished operation records"). |
 | `requestClose` | `stay`, `closeIfIdle`, or `interruptAndClose`. | The shell decides natively and never forwards this operation to the service. A running mutation always shows the native prompt, whose default is Stay open. Only its Interrupt and close button confirms interruption. |
 | `currentSession` | Empty object. The envelope has no `sessionId`. | The shell answers natively and never forwards this operation to the service. The result is the current `sessionId`, or `SERVICE_UNAVAILABLE` while no service session runs. Both results carry `textScale`: the current Windows text scale factor, from 1.00 to 2.25 (plan.md "Windows text size"). |
-| `dismissRecoveryMarker` | Renderer: one marker ID from `getEnvironment` or `service-stopped`. Service: that marker ID and the native-issued `bootstrapId`. When the stored worktree path does not exist, the service payload holds only the marker ID (§6 "Dismissal"). | Explicit removal of a marker whose repository is gone (§6 "Dismissal"). The result states that the operation outcome stays unknown. |
+| `dismissRecoveryMarker` | Renderer: one marker ID from `getEnvironment` or `service-stopped`. Service: that marker ID and the native-issued `bootstrapId`. When the stored worktree path does not exist, the service payload holds only the marker ID (§6 "Dismissal"). For a damaged marker, the service payload also holds only the marker ID. | Explicit removal of a marker whose repository is gone, or of a damaged marker (§6 "Dismissal"). The result states that the operation outcome stays unknown. |
 
 The native dialog and confirmation code must not accept renderer-supplied replacements for selected paths or approval fingerprints. The trust confirmation shows only the fingerprint that the service sends.
 
@@ -93,7 +93,7 @@ The shell runs the native step of `chooseGit`, `chooseRepository`, and `restoreW
 
 **Worktree key.** `worktreeKey` is 64 lowercase hex digits: the SHA-256 of the worktree root identity. For a Windows worktree, that identity is the volume serial number and the 128-bit file ID (§6). For a WSL worktree, it is the distro GUID, the UUID-derived file-system ID, and the inode number (§11). So both WSL prefixes of one folder give one key, and the key stays equal across sessions. The key grants no access; it only names the stored draft of that worktree (plan.md "Stored drafts"). No log or diagnostic receives it.
 
-For `dismissRecoveryMarker`, the renderer payload holds only a marker ID that the shell owns. The shell binds a `repositoryDiscovery` context to the stored worktree path of that marker. It forwards the marker ID with the `bootstrapId`. When that path does not exist, the shell creates no context and forwards only the marker ID. The native confirmation comes after the service result (§6 "Dismissal").
+For `dismissRecoveryMarker`, the renderer payload holds only a marker ID that the shell owns. The shell binds a `repositoryDiscovery` context to the stored worktree path of that marker. It forwards the marker ID with the `bootstrapId`. When that path does not exist, the shell creates no context and forwards only the marker ID. A damaged marker has no stored worktree path, so the shell also forwards only its marker ID. The native confirmation comes after the service result (§6 "Dismissal").
 
 Blank messages, empty staged scope, conflicts, unfinished operations, stale snapshots, and incomplete data refuse mutation. Missing trust refuses a mutation only when it can run a repository-controlled integration (§7 "Mutation trust").
 
@@ -305,6 +305,8 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | Queued pipe data | 8 chunks per stream in the shell. A full queue stops the reads of that child pipe. A chunk leaves the queue when its frame write to the service returns. Streamed input allows 8 unacknowledged chunks per process (§6 "Channel frames"). |
 | Inline process input | 64 KiB of decoded bytes in the `input` field of a `run` request. Larger input uses a stream (§6 "Channel frames"). |
 | Streamed process input | 536,870,912 bytes (512 MiB) per process, the whole-file stage input bound |
+| Recorded request IDs | 65,536 per service session. A new `requestId` above 65,536 drops the oldest one, so that `requestId` is usable again (§2). |
+| Session log entries | 1,000 per service session. A new entry above 1,000 drops the oldest one (§7). |
 | Finished operation records | 256 terminal records of reads and rejected requests per service session. A new terminal record above 256 removes the oldest one. A mutation record that consumed an approval stays for the service session (§2). `getOperation` or `cancel` with a removed `operationId` gives `UNKNOWN_TARGET`. |
 | Registered workspaces | 8 at one time per service session. Reuse and release follow §6 "Registration reuse and release". |
 | Trust approval records | 4 KiB per record and 256 records. A new record above 256 replaces the oldest record. |
@@ -325,7 +327,8 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | WSL anchor count | One line with the count and the I/O sum for each stdin line. After stdin closes, one line each second (§11 "Process ownership"). While a commit or submodule update process runs, the shell writes one stdin line each second (§6). |
 | Commit failure output tail | Last 16 KiB and at most 100 lines of commit stderr (§9 "Commit failure output") |
 | Cancellation/reconciliation target | 5 seconds; report unknown if state cannot be confirmed |
-| Recovery markers | 4 KiB per marker and 64 markers per handshake. Above 64, the shell loads the 64 oldest markers. `getEnvironment` reports the limit and the count of files that the shell did not load. Every mutation stays blocked with `STATE_UNKNOWN`. Dismissal (§6) stays available. The block ends at the next handshake that finds at most 64 marker files. |
+| Recovery markers | 4 KiB per marker and 64 markers per handshake. Above 64, the shell loads the 64 oldest markers. `getEnvironment` reports the limit and the count of files that the shell did not load. Every mutation stays blocked with `STATE_UNKNOWN`. Dismissal (§6) stays available. The block ends at the next handshake that finds at most 64 marker files. Damaged marker files do not count toward this limit (§6 "Damaged markers"). |
+| Damaged recovery markers | 64 per handshake, in file-name order. A further damaged file stays unlisted until dismissals free a place. It blocks no mutation. |
 | Confirmed-close cleanup target | 5 seconds |
 
 **Deadline outcomes.** Every Git process has a deadline. A deadline closes the Job of that process at once, with every descendant.
@@ -364,7 +367,8 @@ The shell sends one `handshake` frame as the first frame of each service session
 | `webView2Version` | The detected WebView2 runtime version text, at most 64 ASCII bytes. |
 | `buildIdentity` | Object with `version`, `commit`, and `signing`. `commit` is the full commit ID, with the suffix `-dirty` when it applies. `signing` is `unsigned` in this slice. |
 | `markers` | Array of at most 64 recovery markers (§5). Each holds `markerId`, `kind`, `startedAt`, `worktreeRoot`, `commonDirectory`, and `commonIdentity` ("Recovery markers"). Zero markers give an empty array. |
-| `unloadedMarkers` | Nonnegative safe integer: the count of marker files that the shell did not load (§5). |
+| `unloadedMarkers` | Nonnegative safe integer: the count of marker files above the 64-marker limit that the shell did not load (§5). Damaged markers do not count. |
+| `damagedMarkers` | Array of at most 64 damaged markers (§5, "Damaged markers"). Each holds exactly `markerId` and `fileName`. `fileName` is the file name in the `recovery` folder. It has 1 to 255 UTF-16 units and no path separator. It holds no file content. Zero damaged markers give an empty array. |
 | `trustRecords` | Array of at most 256 trust records (§5). Each holds `commonDirectory`, `commonIdentity`, `worktreeRoot`, `gitDirectory`, `worktreeIdentity`, `configurationFingerprint`, `approvedAt`, and `gitInstallationDigest` (§7 "Trust approval store"). Zero records give an empty array. |
 | `savedGit` | Object with exactly `bootstrapId`, `executablePath`, `version`, and `digest` (data-model §1). `bootstrapId` is the startup `gitProbe` context ("Startup contexts"). `executablePath` is the saved Git path. `version` is the stored parsed version text. `digest` is the stored SHA-256 of the executable. The object is present only when the settings hold a Git path. |
 
@@ -372,7 +376,7 @@ The shell sends one `handshake` frame as the first frame of each service session
 
 The service validates the frame with the strict decoder (§1). It replies `{"kind":"handshake","handshake":{"sessionId":"<ID>"}}`. `getEnvironment` takes its facts and markers only from this frame.
 
-- A missing field, an unknown field, or a wrong type fails the handshake. So do more than 64 markers or more than 256 records.
+- A missing field, an unknown field, or a wrong type fails the handshake. So do more than 64 markers, more than 64 damaged markers, or more than 256 records.
 - A failed handshake gets `{"kind":"handshake","handshake":{"code":"<code>"}}`. The code is `PROTOCOL_VERSION` for another `version`, otherwise `INVALID_REQUEST`. The service then exits, and the shell treats this as a failed handshake (§2).
 - A second handshake in a session gets that failure reply with `INVALID_REQUEST`. The session continues unchanged.
 - A `public` frame before the handshake gets `rejected` with `SERVICE_UNAVAILABLE`.
@@ -530,12 +534,16 @@ The service sends three `mutation` frames:
 
 The owning shell keeps each marker file open without delete sharing. At startup, the shell opens each marker file with no sharing. A sharing violation means that a running instance owns the file, so the shell skips it. Otherwise the owner stopped, and this shell takes ownership. The OS closes the handles of a stopped process. So a crash leaves a file that the next start can open. Each startup handshake, also after Restart service, carries every marker that the shell owns. The shell rescans the `recovery` folder for each handshake.
 
+**Damaged markers.** A damaged marker is a marker file that the shell cannot decode into the handshake form. A file above 4 KiB is damaged. A file whose `markerId` differs from its file name is also damaged. The shell keeps a damaged file open without delete sharing, as an owned marker. It issues one UUID-shaped `markerId` for each damaged file. The ID stays the same in each rescan of that shell process. A damaged marker is not an unloaded file. It does not count toward the 64-marker limit, and it blocks no mutation. The handshake lists it in `damagedMarkers` with its `markerId` and file name only. A file that the shell cannot open or read for another reason is skipped. The next handshake scans it again.
+
 **Dismissal.** A marker for a deleted or moved repository never resolves through a refresh. `dismissRecoveryMarker` removes such a marker explicitly. The shell binds a `repositoryDiscovery` context to the stored worktree path of the marker. The context needs the identity of that path. When the identity open fails with `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`, the path does not exist. The shell then creates no context and forwards only the marker ID. Any other identity failure refuses the request with its code ("Registration bootstrap"). With a context, the service runs the discovery profiles there. The service returns one of two results:
 
 - Dismissal allowed: the payload holds no `bootstrapId`, so the service runs no discovery. Discovery also allows it when Git reports `REPOSITORY_UNAVAILABLE` or `NOT_A_REPOSITORY`. It allows it when the resolved common-directory identity differs from the marker identity.
 - Dismissal refused: any other result. The code is `STATE_UNKNOWN` with the remedy "Open this repository and use Refresh."
 
-When dismissal is allowed, the shell shows a native confirmation. It names the worktree path, the operation kind, and the start time. It states that the operation outcome stays unknown. Its buttons are Dismiss and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Only the Dismiss button deletes the file. A dismissed marker never counts as a resolved outcome.
+A damaged marker needs no repository context. The shell creates no context and forwards only its marker ID, so the service allows the dismissal.
+
+When dismissal is allowed, the shell shows a native confirmation. It names the worktree path, the operation kind, and the start time. For a damaged marker, it names the file name instead. It states that the operation outcome stays unknown. Its buttons are Dismiss and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Only the Dismiss button deletes the file. A dismissed marker never counts as a resolved outcome.
 
 ### Channel frames
 
@@ -764,7 +772,7 @@ The service derives trust `state` from the records and from its session approval
 
 Do not disable required hooks to obtain a successful result. Do not add an application-owned hook without approved scope changes.
 
-Logs stay in memory for the session; this slice writes no log files. Logs contain only allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries (data-model §7 `effects`). Do not retain raw stderr, hook output, messages, patches, environment blocks, or configuration dumps. Two response fields carry Git or hook output: the commit failure output (§9) and each submodule output tail (§12). They never enter a log, a `diagnostic`, or a progress event.
+Logs stay in memory for the session, with at most 1,000 entries (§5 "Session log entries"). This slice writes no log files. Logs contain only allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries (data-model §7 `effects`). Do not retain raw stderr, hook output, messages, patches, environment blocks, or configuration dumps. Two response fields carry Git or hook output: the commit failure output (§9) and each submodule output tail (§12). They never enter a log, a `diagnostic`, or a progress event.
 
 Provide actionable safe explanations. Full repository-specific diagnostics remain available through the user's selected Git tools, not unrestricted automatic log export.
 

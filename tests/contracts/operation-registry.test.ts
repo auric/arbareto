@@ -247,6 +247,7 @@ describe("operation records through the session", () => {
       buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
       markers: [],
       unloadedMarkers: 0,
+      damagedMarkers: [],
       trustRecords: [],
     },
   };

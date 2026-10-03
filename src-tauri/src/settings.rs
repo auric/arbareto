@@ -15,8 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_ABANDONED,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::Cryptography::{
     BCRYPT_SHA256_ALG_HANDLE, BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom, BCryptHash,
@@ -552,6 +551,21 @@ impl Marker {
     }
 }
 
+/// A marker file that the scan cannot load (contract §6 "Damaged markers").
+#[derive(Clone, Debug, PartialEq)]
+pub struct Damaged {
+    /// Issued by the shell. The file name need not hold an ID.
+    pub marker_id: String,
+    pub file_name: String,
+}
+
+impl Damaged {
+    /// The handshake form: exactly `markerId` and `fileName`.
+    pub fn handshake(&self) -> Value {
+        json!({ "markerId": self.marker_id, "fileName": self.file_name })
+    }
+}
+
 /// The `started` mutation frame (contract §6 "Channel frames").
 pub struct Started<'a> {
     pub operation_id: &'a str,
@@ -596,8 +610,10 @@ impl StartedReply {
 #[derive(Debug, PartialEq)]
 pub struct Scan {
     pub markers: Vec<Marker>,
-    /// The marker files that the shell did not load. A nonzero count is the limit result.
+    /// The marker files above the 64-marker limit. A nonzero count is the limit result.
     pub unloaded: u32,
+    /// At most 64, in file-name order.
+    pub damaged: Vec<Damaged>,
 }
 
 /// The name `Local\Arbareto-mutation-<SHA-256 of the identity>` (contract §6 "Recovery markers").
@@ -706,6 +722,8 @@ struct Owned {
 
 struct MarkerState {
     owned: HashMap<String, Owned>,
+    /// Keyed by the shell-issued `markerId`. The open handle denies delete sharing, as for an owned marker.
+    damaged: HashMap<String, (Damaged, File)>,
     fault: Fault,
 }
 
@@ -726,6 +744,7 @@ impl Markers {
             folder: folder.to_path_buf(),
             state: Mutex::new(MarkerState {
                 owned: HashMap::new(),
+                damaged: HashMap::new(),
                 fault: None,
             }),
             mutexes: Some(sender),
@@ -793,7 +812,7 @@ impl Markers {
         };
         let form = marker.handshake();
         let bytes = form.to_string().into_bytes();
-        // A marker that the next scan cannot load would block every mutation (contract §5).
+        // The next scan would list a marker that it cannot load as damaged (contract §6 "Damaged markers").
         if bytes.len() > MARKER_BYTES || Marker::parse(&form).as_ref() != Some(&marker) {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
@@ -832,28 +851,44 @@ impl Markers {
         let mut state = lock(&self.state);
         let mut unloaded = 0;
         let mut found = HashSet::new();
-        for (stem, path) in json_files(&self.folder) {
-            if state.owned.contains_key(&stem) {
+        let mut files = json_files(&self.folder);
+        // File-name order decides which 64 damaged files the scan lists.
+        files.sort_by(|a, b| a.1.cmp(&b.1));
+        for (stem, path) in files {
+            let file_name = format!("{stem}.json");
+            if state.owned.contains_key(&stem)
+                || state
+                    .damaged
+                    .values()
+                    .any(|(damaged, _)| damaged.file_name == file_name)
+            {
                 continue;
             }
-            match open_exclusive(&path, MARKER_BYTES) {
-                Ok((file, bytes)) => {
-                    let marker = (bytes.len() <= MARKER_BYTES)
-                        .then(|| serde_json::from_slice::<Value>(&bytes).ok())
-                        .flatten()
-                        .and_then(|value| Marker::parse(&value))
-                        .filter(|marker| marker.marker_id == stem);
-                    match marker {
-                        Some(marker) => {
-                            found.insert(stem.clone());
-                            state.owned.insert(stem, Owned { file, marker });
-                        }
-                        None => unloaded += 1,
+            // A sharing violation means that a running instance owns the file. Another failure skips the file until the next scan.
+            let Ok((file, bytes)) = open_exclusive(&path, MARKER_BYTES) else {
+                continue;
+            };
+            let marker = (bytes.len() <= MARKER_BYTES)
+                .then(|| serde_json::from_slice::<Value>(&bytes).ok())
+                .flatten()
+                .and_then(|value| Marker::parse(&value))
+                .filter(|marker| marker.marker_id == stem);
+            match marker {
+                Some(marker) => {
+                    found.insert(stem.clone());
+                    state.owned.insert(stem, Owned { file, marker });
+                }
+                None if state.damaged.len() < MARKER_LIMIT => {
+                    if let Ok(marker_id) = random_id() {
+                        let damaged = Damaged {
+                            marker_id: marker_id.clone(),
+                            file_name,
+                        };
+                        state.damaged.insert(marker_id, (damaged, file));
                     }
                 }
-                // A running instance owns the file.
-                Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION.0 as i32) => {}
-                Err(_) => unloaded += 1,
+                // Above 64 damaged files, the handle closes, and a later scan lists the file.
+                None => {}
             }
         }
         let mut markers: Vec<Marker> = state
@@ -871,7 +906,45 @@ impl Markers {
                 state.owned.remove(&newer.marker_id);
             }
         }
-        Scan { markers, unloaded }
+        let mut damaged: Vec<Damaged> = state
+            .damaged
+            .values()
+            .map(|(damaged, _)| damaged.clone())
+            .collect();
+        damaged.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+        Scan {
+            markers,
+            unloaded,
+            damaged,
+        }
+    }
+
+    /// The damaged marker with this ID.
+    pub fn damaged(&self, marker_id: &str) -> Option<Damaged> {
+        lock(&self.state)
+            .damaged
+            .get(marker_id)
+            .map(|(damaged, _)| damaged.clone())
+    }
+
+    /// Deletes the damaged file only when `confirm` accepts. Returns true when the file is deleted.
+    pub fn dismiss_damaged(&self, marker_id: &str, confirm: impl FnOnce(&Damaged) -> bool) -> bool {
+        let Some(damaged) = self.damaged(marker_id) else {
+            return false;
+        };
+        // The confirmation is a native dialog, so the store stays unlocked while it shows.
+        if !confirm(&damaged) {
+            return false;
+        }
+        let mut state = lock(&self.state);
+        let Some((damaged, file)) = state.damaged.remove(marker_id) else {
+            return false;
+        };
+        if delete(&file).is_ok() {
+            return true;
+        }
+        state.damaged.insert(marker_id.to_string(), (damaged, file));
+        false
     }
 
     /// The owned marker with this ID.
@@ -1877,16 +1950,88 @@ mod tests {
     }
 
     #[test]
-    fn a_marker_above_4_kib_stays_unloaded() {
+    fn a_marker_above_4_kib_is_damaged_and_not_unloaded() {
         let fixture = Fixture::new();
         let repository = repository(&fixture, "repo");
         let recovery = folder(&fixture, "recovery");
         let small = write_marker(&recovery, &repository, 1, 0);
-        write_marker(&recovery, &repository, 2, MARKER_BYTES);
+        let large = write_marker(&recovery, &repository, 2, MARKER_BYTES);
         let scan = Markers::open(&recovery).scan();
-        assert_eq!(scan.unloaded, 1);
+        assert_eq!(scan.unloaded, 0, "a damaged marker is not the limit result");
         assert_eq!(scan.markers.len(), 1);
         assert_eq!(scan.markers[0].marker_id, small);
+        assert_eq!(scan.damaged.len(), 1);
+        assert_eq!(scan.damaged[0].file_name, format!("{large}.json"));
+        assert!(is_identifier(&scan.damaged[0].marker_id));
+        assert_eq!(
+            scan.damaged[0].handshake(),
+            json!({ "markerId": scan.damaged[0].marker_id, "fileName": format!("{large}.json") })
+        );
+    }
+
+    #[test]
+    fn a_damaged_marker_keeps_its_id_and_its_file_in_a_rescan() {
+        let fixture = Fixture::new();
+        let recovery = folder(&fixture, "recovery");
+        std::fs::write(recovery.join("broken.json"), "{").expect("write");
+        let markers = Markers::open(&recovery);
+        let first = markers.scan().damaged;
+        assert_eq!(first.len(), 1);
+        assert_eq!(markers.scan().damaged, first, "the same ID in the rescan");
+        assert!(
+            std::fs::remove_file(recovery.join("broken.json")).is_err(),
+            "the shell keeps the damaged file open without delete sharing"
+        );
+    }
+
+    #[test]
+    fn above_64_damaged_files_the_scan_lists_64_in_file_name_order() {
+        let fixture = Fixture::new();
+        let recovery = folder(&fixture, "recovery");
+        let names: Vec<String> = (0..65).map(|n| format!("damaged-{n:02}.json")).collect();
+        for name in names.iter().rev() {
+            std::fs::write(recovery.join(name), "not JSON").expect("write");
+        }
+        let markers = Markers::open(&recovery);
+        let scan = markers.scan();
+        assert_eq!(scan.unloaded, 0);
+        let listed: Vec<&str> = scan.damaged.iter().map(|d| d.file_name.as_str()).collect();
+        assert_eq!(listed, names[..64]);
+        assert!(markers.dismiss_damaged(&scan.damaged[0].marker_id, |_| true));
+        let listed: Vec<String> = markers
+            .scan()
+            .damaged
+            .into_iter()
+            .map(|d| d.file_name)
+            .collect();
+        assert_eq!(listed, names[1..], "a dismissal frees a place");
+    }
+
+    #[test]
+    fn a_damaged_marker_is_deleted_only_after_an_accepted_confirmation() {
+        let fixture = Fixture::new();
+        let recovery = folder(&fixture, "recovery");
+        std::fs::write(recovery.join("broken.json"), "{").expect("write");
+        let markers = Markers::open(&recovery);
+        let damaged = markers.scan().damaged.remove(0);
+        assert_eq!(markers.damaged(&damaged.marker_id), Some(damaged.clone()));
+        assert_eq!(markers.get(&damaged.marker_id), None, "not a loaded marker");
+        assert!(
+            !markers.dismiss_damaged(&damaged.marker_id, |_| false),
+            "declined"
+        );
+        assert_eq!(entries(&recovery), ["broken.json"]);
+        let mut shown = None;
+        assert!(
+            markers.dismiss_damaged(&damaged.marker_id, |shown_damaged| {
+                shown = Some(shown_damaged.file_name.clone());
+                true
+            })
+        );
+        assert_eq!(shown.as_deref(), Some("broken.json"));
+        assert_eq!(entries(&recovery), Vec::<String>::new());
+        assert_eq!(markers.damaged(&damaged.marker_id), None);
+        assert!(markers.scan().damaged.is_empty());
     }
 
     #[test]
@@ -2423,7 +2568,7 @@ mod tests {
     }
 
     #[test]
-    fn a_marker_that_the_handshake_decoder_refuses_stays_unloaded() {
+    fn a_marker_that_the_handshake_decoder_refuses_is_damaged() {
         let fixture = Fixture::new();
         let repository = repository(&fixture, "repo");
         let recovery = folder(&fixture, "recovery");
@@ -2431,7 +2576,12 @@ mod tests {
         let path = recovery.join(format!("{id}.json"));
         let valid: Value =
             serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
-        let cases: [(&str, &str, Value); 6] = [
+        let cases: [(&str, &str, Value); 7] = [
+            (
+                "a markerId that differs from the file name",
+                "markerId",
+                json!("0f0f0f0f-0000-4000-8000-0000000000ff"),
+            ),
             (
                 "a day that does not exist",
                 "startedAt",
@@ -2456,7 +2606,11 @@ mod tests {
             marker[key] = value;
             std::fs::write(&path, marker.to_string()).expect("write");
             let scan = Markers::open(&recovery).scan();
-            assert_eq!((scan.markers.len(), scan.unloaded), (0, 1), "{name}");
+            assert_eq!(
+                (scan.markers.len(), scan.unloaded, scan.damaged.len()),
+                (0, 0, 1),
+                "{name}"
+            );
         }
     }
 

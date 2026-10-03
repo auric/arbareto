@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { isErrorCode, type ErrorCode } from "../contracts/errors";
+import { SESSION_LOG_ENTRIES } from "../contracts/limits";
 import { isIdentifier, isOperationName, type OperationName } from "../contracts/operations";
 
 // Contract §7: the log holds only allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries. It stays in memory and writes no file.
@@ -53,6 +54,8 @@ export function createSessionLog() {
       const copy: Record<string, unknown> = {};
       for (const k of keys) copy[k] = k === "effects" ? Object.freeze({ ...(source[k] as EffectSummary) }) : source[k];
       entries.push(Object.freeze(copy) as unknown as LogEntry);
+      // Contract §5 "Session log entries".
+      if (entries.length > SESSION_LOG_ENTRIES) entries.shift();
     },
     entries(): readonly LogEntry[] {
       return [...entries];

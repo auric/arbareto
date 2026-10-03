@@ -44,6 +44,7 @@ const HANDSHAKE_FIELDS = {
   buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
   markers: [] as unknown[],
   unloadedMarkers: 0,
+  damagedMarkers: [] as unknown[],
   trustRecords: [] as unknown[],
 };
 const HANDSHAKE = { kind: "handshake", handshake: HANDSHAKE_FIELDS };
@@ -522,6 +523,30 @@ describe("service boundary", () => {
     TEST_TIMEOUT_MS,
   );
 
+  test("the session keeps the last 65,536 requestId values and drops the oldest first", () => {
+    // In process and without Git, so the 65,537 requests stay fast.
+    const responses = new Map<unknown, Frame["response"]>();
+    const session = createSession({
+      writer: { write: (frame) => void responses.set((frame as Frame).response?.requestId, (frame as Frame).response), flush: async () => {} },
+      runner: { receive: () => false, closeJob: () => {} } as unknown as SessionOptions["runner"],
+      fail: () => {},
+    });
+    session.receive({ type: "frame", body: encoder.encode(JSON.stringify(HANDSHAKE)) });
+    const sessionId = session.sessionId as string;
+    const id = (i: number) => `00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}` as ReturnType<typeof crypto.randomUUID>;
+    // A request without its other envelope fields still records its requestId (contract §2).
+    for (let i = 1; i <= 65_537; i++) session.receive({ type: "frame", body: encoder.encode(`{"kind":"public","request":{"requestId":"${id(i)}"}}`) });
+    expect(responses.get(id(65_537))?.code).toBe("INVALID_REQUEST");
+    const send = (requestId: ReturnType<typeof crypto.randomUUID>) => {
+      session.receive({ type: "frame", body: encoder.encode(JSON.stringify(request(sessionId, "getEnvironment", {}, requestId))) });
+      return responses.get(requestId);
+    };
+    expect(send(id(2))?.code).toBe("INVALID_REQUEST");
+    expect(send(id(1))?.state).toBe("succeeded");
+    // Recording the first requestId again dropped the second, so the set holds 65,536.
+    expect(send(id(2))?.state).toBe("succeeded");
+  });
+
   test(
     "every pipe frame carries a known top-level kind",
     async () => {
@@ -540,6 +565,9 @@ describe("service boundary", () => {
   );
 });
 
+const DAMAGED = { markerId: "00000000-0000-4000-8000-0000000000d0", fileName: "broken.json" };
+const damagedAt = (i: number) => ({ markerId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, fileName: `damaged-${i}.json` });
+const damaged = (count: number) => Array.from({ length: count }, (_, i) => damagedAt(i));
 const markerAt = (i: number) => ({ ...MARKER, markerId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}` });
 const markers = (count: number) => Array.from({ length: count }, (_, i) => markerAt(i));
 const trustRecords = (count: number) => Array.from({ length: count }, () => ({ ...TRUST_RECORD }));
@@ -554,6 +582,9 @@ describe("startup handshake bounds", () => {
   // Positive controls for the "65 markers" and "257 trust records" failures.
   const atBound: Array<[string, Record<string, unknown>]> = [
     ["64 markers", { markers: markers(64) }],
+    ["64 damaged markers", { damagedMarkers: damaged(64) }],
+    // Contract §6: a file name has at most 255 UTF-16 units.
+    ["a 255-unit damaged file name", { damagedMarkers: [{ ...DAMAGED, fileName: `${"é".repeat(250)}.json` }] }],
     ["256 trust records", { trustRecords: trustRecords(256) }],
     // Positive control for the `savedGit` failures.
     ["a savedGit", { savedGit: SAVED_GIT }],
@@ -582,6 +613,14 @@ describe("startup handshake failures", () => {
     ["an unknown field", { ...HANDSHAKE_FIELDS, extra: 1 }, "INVALID_REQUEST"],
     ["a wrong type", { ...HANDSHAKE_FIELDS, restarted: "false" }, "INVALID_REQUEST"],
     ["65 markers", { ...HANDSHAKE_FIELDS, markers: markers(65) }, "INVALID_REQUEST"],
+    ["65 damaged markers", { ...HANDSHAKE_FIELDS, damagedMarkers: damaged(65) }, "INVALID_REQUEST"],
+    ["a damaged marker without fileName", { ...HANDSHAKE_FIELDS, damagedMarkers: [{ markerId: DAMAGED.markerId }] }, "INVALID_REQUEST"],
+    ["a damaged marker with file content", { ...HANDSHAKE_FIELDS, damagedMarkers: [{ ...DAMAGED, content: "{" }] }, "INVALID_REQUEST"],
+    ["a damaged marker with a malformed markerId", { ...HANDSHAKE_FIELDS, damagedMarkers: [{ ...DAMAGED, markerId: "broken" }] }, "INVALID_REQUEST"],
+    ["a damaged marker with an empty file name", { ...HANDSHAKE_FIELDS, damagedMarkers: [{ ...DAMAGED, fileName: "" }] }, "INVALID_REQUEST"],
+    ["a 256-unit damaged file name", { ...HANDSHAKE_FIELDS, damagedMarkers: [{ ...DAMAGED, fileName: `${"a".repeat(251)}.json` }] }, "INVALID_REQUEST"],
+    ["a damaged file name with a backslash", { ...HANDSHAKE_FIELDS, damagedMarkers: [{ ...DAMAGED, fileName: "..\\settings.json" }] }, "INVALID_REQUEST"],
+    ["a damaged file name with a slash", { ...HANDSHAKE_FIELDS, damagedMarkers: [{ ...DAMAGED, fileName: "../settings.json" }] }, "INVALID_REQUEST"],
     ["257 trust records", { ...HANDSHAKE_FIELDS, trustRecords: trustRecords(257) }, "INVALID_REQUEST"],
     ["a top-level bootstrapId", { ...HANDSHAKE_FIELDS, bootstrapId: crypto.randomUUID() }, "INVALID_REQUEST"],
     ...Object.keys(SAVED_GIT).map((field): [string, unknown, string] => [
@@ -685,6 +724,7 @@ describe("getEnvironment through the service", () => {
         buildIdentity: HANDSHAKE_FIELDS.buildIdentity,
         platformScope: HANDSHAKE_FIELDS.platformScope,
         markers: [],
+        damagedMarkers: [],
       });
       expect(response.result?.selectedGit).toBeUndefined();
       const accepted = service.frames.filter((f) => f.progress?.requestId === frame.request.requestId);

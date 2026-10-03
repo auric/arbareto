@@ -37,6 +37,7 @@ function handshake(extra: Partial<Handshake> = {}): Handshake {
     buildIdentity: { version: "0.1.0", commit: `${"a".repeat(40)}-dirty`, signing: "unsigned" },
     markers: [],
     unloadedMarkers: 0,
+    damagedMarkers: [],
     trustRecords: [],
     ...extra,
   };
@@ -75,6 +76,7 @@ describe("getEnvironment (T054)", () => {
       admission: "admitted",
       qualification: "unverified",
       markers: [],
+      damagedMarkers: [],
     });
   });
 
@@ -116,6 +118,19 @@ describe("getEnvironment (T054)", () => {
     expect(env.markers).toHaveLength(64);
     expect(env.markerLimit).toBe(64);
     expect(env.unloadedMarkers).toBe(3);
+  });
+
+  test("each damaged marker comes from the handshake with exactly its ID and file name, and reports no limit", () => {
+    const damagedMarkers = [
+      { markerId: "00000000-0000-4000-8000-0000000000d1", fileName: "broken.json" },
+      { markerId: "00000000-0000-4000-8000-0000000000d2", fileName: "large.json" },
+    ];
+    const env = getEnvironment(handshake({ markers: [marker(1)], damagedMarkers }), admitted);
+    expect(env.damagedMarkers).toEqual(damagedMarkers);
+    expect(env.markers).toHaveLength(1);
+    expect(env.markerLimit).toBeUndefined();
+    expect(env.unloadedMarkers).toBeUndefined();
+    expect(getEnvironment(handshake(), admitted).damagedMarkers).toEqual([]);
   });
 
   test("no environment variable name or value appears in the result", () => {

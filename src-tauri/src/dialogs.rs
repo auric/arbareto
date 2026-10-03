@@ -23,7 +23,7 @@ use windows::core::{HRESULT, HSTRING, PCWSTR, w};
 use crate::bootstrap::{ContextKind, Contexts, is_absent};
 use crate::ipc::MAIN_WINDOW;
 use crate::process_requests::{PATH_UNITS, is_identifier};
-use crate::settings::{Confirm, Marker, SavedGit, Settings};
+use crate::settings::{Confirm, Damaged, Marker, SavedGit, Settings};
 
 /// Escape, Alt+F4, and the close button return `IDCANCEL`, so the Cancel button carries that ID.
 const CANCEL: i32 = IDCANCEL.0;
@@ -287,6 +287,23 @@ pub fn dismissal_confirmation(marker: &Marker) -> Confirmation {
 /// True only for the Dismiss button.
 pub fn confirm_dismissal(native: &dyn Native, marker: &Marker) -> bool {
     let confirmation = dismissal_confirmation(marker);
+    native.confirm(&confirmation) == Some(confirmation.accept_button)
+}
+
+/// The damaged marker dismissal confirmation: Dismiss and Cancel (contract §6 "Dismissal").
+pub fn damaged_dismissal_confirmation(damaged: &Damaged) -> Confirmation {
+    let text = format!(
+        "Dismiss this damaged recovery marker?
+Damaged recovery marker: {}
+Arbareto cannot read this file. The operation outcome stays unknown.",
+        damaged.file_name
+    );
+    confirmation(text, "Dismiss", None)
+}
+
+/// True only for the Dismiss button.
+pub fn confirm_damaged_dismissal(native: &dyn Native, damaged: &Damaged) -> bool {
+    let confirmation = damaged_dismissal_confirmation(damaged);
     native.confirm(&confirmation) == Some(confirmation.accept_button)
 }
 
@@ -987,6 +1004,34 @@ pub(crate) mod tests {
         ));
         for press in CANCELS {
             assert!(!confirm_dismissal(&Fake::pressing(&[press]), &marker));
+        }
+    }
+
+    #[test]
+    fn the_damaged_marker_confirmation_names_the_file_and_only_dismiss_accepts_it() {
+        let damaged = Damaged {
+            marker_id: "0f0f0f0f-0000-4000-8000-000000000002".to_string(),
+            file_name: "broken.json".to_string(),
+        };
+        let confirmation = damaged_dismissal_confirmation(&damaged);
+        assert!(confirmation.text.contains("Damaged recovery marker"));
+        assert!(confirmation.text.contains("broken.json"));
+        assert!(
+            confirmation.text.to_lowercase().contains("unknown"),
+            "the outcome stays unknown"
+        );
+        assert_eq!(labels(&confirmation), ["Dismiss", "Cancel"]);
+        assert_eq!(confirmation.default_button, id_of(&confirmation, "Cancel"));
+        assert_eq!(confirmation.accept_button, id_of(&confirmation, "Dismiss"));
+        assert!(confirm_damaged_dismissal(
+            &Fake::pressing(&[Press::Label("Dismiss")]),
+            &damaged
+        ));
+        for press in CANCELS {
+            assert!(!confirm_damaged_dismissal(
+                &Fake::pressing(&[press]),
+                &damaged
+            ));
         }
     }
 

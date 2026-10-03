@@ -75,6 +75,11 @@ export const COMMIT_OUTPUT_TAIL_LINES = 100;
 export const RECONCILIATION_TARGET_MS = 5 * SECOND_MS;
 export const RECOVERY_MARKER_BYTES = 4 * KIB;
 export const RECOVERY_MARKERS_PER_HANDSHAKE = 64;
+export const DAMAGED_MARKERS_PER_HANDSHAKE = 64;
+// Contract §6 "Startup handshake" `damagedMarkers`: the Windows file name component limit.
+export const DAMAGED_MARKER_FILE_NAME_UNITS = 255;
+export const RECORDED_REQUEST_IDS = 65_536;
+export const SESSION_LOG_ENTRIES = 1_000;
 export const CLOSE_CLEANUP_TARGET_MS = 5 * SECOND_MS;
 
 // Contract §6 "Process fields" and "Channel frames".

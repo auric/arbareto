@@ -285,6 +285,7 @@ describe("Git installation probe (T053)", () => {
         buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
         markers: [],
         unloadedMarkers: 0,
+        damagedMarkers: [],
         trustRecords: [],
       };
       const send = (frame: object) => session.receive({ type: "frame", body: new TextEncoder().encode(JSON.stringify(frame)) });

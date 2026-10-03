@@ -4,10 +4,13 @@
 import { validateRequest, type RequestEnvelope } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
 import {
+  DAMAGED_MARKER_FILE_NAME_UNITS,
+  DAMAGED_MARKERS_PER_HANDSHAKE,
   GIT_PROCESS_DEADLINE_MS,
   PENDING_READS_GLOBAL,
   PUBLIC_FRAME_BODY_BYTES,
   RECOVERY_MARKER_BYTES,
+  RECORDED_REQUEST_IDS,
   RECOVERY_MARKERS_PER_HANDSHAKE,
   TRUST_RECORD_BYTES,
   TRUST_RECORDS,
@@ -73,6 +76,11 @@ const isMarker = withinBytes(RECOVERY_MARKER_BYTES, exact({
   commonDirectory: isChannelPath,
   commonIdentity: isIdentity,
 }));
+// Contract §6 "Startup handshake" `damagedMarkers`: the file name only, without a path separator.
+const isDamagedMarker = exact({
+  markerId: isIdentifier,
+  fileName: (v) => typeof v === "string" && v.length >= 1 && v.length <= DAMAGED_MARKER_FILE_NAME_UNITS && !/[\\/]/.test(v),
+});
 // Contract §6 "Startup handshake": also the record form of a `confirm` reply.
 export const isTrustRecord = withinBytes(TRUST_RECORD_BYTES, exact({
   commonDirectory: isChannelPath,
@@ -95,6 +103,7 @@ const isHandshake = exact(
     buildIdentity: exact({ version: isPrintable, commit: (v) => typeof v === "string" && /^([0-9a-f]{40}|[0-9a-f]{64})(-dirty)?$/.test(v), signing: oneOf("unsigned") }),
     markers: arrayOf(RECOVERY_MARKERS_PER_HANDSHAKE, isMarker),
     unloadedMarkers: isCount,
+    damagedMarkers: arrayOf(DAMAGED_MARKERS_PER_HANDSHAKE, isDamagedMarker),
     trustRecords: arrayOf(TRUST_RECORDS, isTrustRecord),
     savedGit: exact({ bootstrapId: isIdentifier, executablePath: isChannelPath, version: isPrintable, digest: isFingerprint }),
   },
@@ -110,6 +119,7 @@ export interface Handshake {
   buildIdentity: { version: string; commit: string; signing: "unsigned" };
   markers: Fields[];
   unloadedMarkers: number;
+  damagedMarkers: { markerId: string; fileName: string }[];
   trustRecords: Fields[];
   savedGit?: { bootstrapId: string; executablePath: string; version: string; digest: string };
 }
@@ -144,10 +154,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const reject = (requestId: string | null, code: ErrorCode) => respond({ requestId, state: "rejected", code });
   const requestIdOf = (envelope: unknown) => (isObject(envelope) && isIdentifier(envelope.requestId) ? envelope.requestId : null);
   // Contract §2: the service records each valid requestId, also of a rejected request. A repeated one gives INVALID_REQUEST.
+  // Contract §5 "Recorded request IDs": a Set iterates in insertion order, so the first value is the oldest.
   const claim = (requestId: string | null) => {
     if (requestId === null) return true;
     if (seenRequests.has(requestId)) return false;
     seenRequests.add(requestId);
+    if (seenRequests.size > RECORDED_REQUEST_IDS) seenRequests.delete(seenRequests.values().next().value as string);
     return true;
   };
   const registry = createOperationRegistry(respond, (progress) => writer.write({ kind: "public", progress }), log, runner);

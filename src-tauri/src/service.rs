@@ -25,8 +25,8 @@ use crate::process_requests::{
     identifier, is_identifier, keys, path, wait,
 };
 use crate::settings::{
-    self, Confirm, MUTATIONS, Marker, Markers, SavedGit, Settings, Started, StartedReply, Trust,
-    is_hex,
+    self, Confirm, Damaged, MUTATIONS, Marker, Markers, SavedGit, Settings, Started, StartedReply,
+    Trust, is_hex,
 };
 use crate::spawn::{Input, SpawnRequest, spawn};
 
@@ -177,7 +177,7 @@ impl Service {
         let Some(reply) = lock(&self.handshake).take() else {
             return false;
         };
-        write(&self.stdin, &self.handshake_frame(facts, stores));
+        write(&self.stdin, &handshake_frame(facts, stores, &self.contexts));
         match reply.recv_timeout(HANDSHAKE_WAIT) {
             Ok(Some(session_id)) => {
                 self.ipc.set_session(Some(session_id));
@@ -189,32 +189,6 @@ impl Service {
                 false
             }
         }
-    }
-
-    /// The startup handshake (contract §6 "Startup handshake"). Each handshake rescans the markers and the records.
-    fn handshake_frame(&self, facts: &Facts, stores: &Stores) -> String {
-        let scan = stores.markers.scan();
-        let mut handshake = json!({
-            "version": 1,
-            "restarted": false,
-            "platformScope": facts.platform_scope,
-            "osBuild": facts.os_build,
-            "webView2Version": facts.webview2_version,
-            "buildIdentity": {
-                "version": env!("CARGO_PKG_VERSION"),
-                "commit": env!("ARBARETO_BUILD_IDENTITY"),
-                "signing": "unsigned",
-            },
-            "markers": scan.markers.iter().map(Marker::handshake).collect::<Vec<_>>(),
-            "unloadedMarkers": scan.unloaded,
-            "trustRecords": stores.trust.records(),
-        });
-        let settings = lock(&stores.settings).clone();
-        if let Some(saved_git) = dialogs::startup_context(&settings, &self.contexts, Instant::now())
-        {
-            handshake["savedGit"] = saved_git;
-        }
-        json!({ "kind": "handshake", "handshake": handshake }).to_string()
     }
 
     /// Reads the service frames until end-of-file.
@@ -422,6 +396,32 @@ impl NativeFirst for Service {
     }
 }
 
+/// The startup handshake (contract §6 "Startup handshake"). Each handshake rescans the markers and the records.
+fn handshake_frame(facts: &Facts, stores: &Stores, contexts: &Contexts) -> String {
+    let scan = stores.markers.scan();
+    let mut handshake = json!({
+        "version": 1,
+        "restarted": false,
+        "platformScope": facts.platform_scope,
+        "osBuild": facts.os_build,
+        "webView2Version": facts.webview2_version,
+        "buildIdentity": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": env!("ARBARETO_BUILD_IDENTITY"),
+            "signing": "unsigned",
+        },
+        "markers": scan.markers.iter().map(Marker::handshake).collect::<Vec<_>>(),
+        "unloadedMarkers": scan.unloaded,
+        "damagedMarkers": scan.damaged.iter().map(Damaged::handshake).collect::<Vec<_>>(),
+        "trustRecords": stores.trust.records(),
+    });
+    let settings = lock(&stores.settings).clone();
+    if let Some(saved_git) = dialogs::startup_context(&settings, contexts, Instant::now()) {
+        handshake["savedGit"] = saved_git;
+    }
+    json!({ "kind": "handshake", "handshake": handshake }).to_string()
+}
+
 /// The native step before the forward (contract §3). `Ok(None)` is a canceled dialog.
 fn prepare(
     stores: &Stores,
@@ -443,9 +443,13 @@ fn prepare(
         }
         "dismissRecoveryMarker" => {
             let marker_id = payload["markerId"].as_str().ok_or(INVALID)?;
-            let marker = stores.markers.get(marker_id).ok_or("UNKNOWN_TARGET")?;
             // Without a context, the service allows the dismissal without discovery (contract §6 "Dismissal").
-            let payload = match dialogs::dismissal_context(&marker, contexts, now)? {
+            let bootstrap_id = match stores.markers.get(marker_id) {
+                Some(marker) => dialogs::dismissal_context(&marker, contexts, now)?,
+                None if stores.markers.damaged(marker_id).is_some() => None,
+                None => return Err("UNKNOWN_TARGET"),
+            };
+            let payload = match bootstrap_id {
                 Some(bootstrap_id) => json!({ "markerId": marker_id, "bootstrapId": bootstrap_id }),
                 None => json!({ "markerId": marker_id }),
             };
@@ -502,10 +506,17 @@ fn finish(
         "dismissRecoveryMarker" => {
             let marker_id = prepared.payload["markerId"].as_str().unwrap_or_default();
             let mut accepted = false;
-            let dismissed = stores.markers.dismiss(marker_id, |marker| {
-                accepted = dialogs::confirm_dismissal(native, marker);
-                accepted
-            });
+            let dismissed = if stores.markers.damaged(marker_id).is_some() {
+                stores.markers.dismiss_damaged(marker_id, |damaged| {
+                    accepted = dialogs::confirm_damaged_dismissal(native, damaged);
+                    accepted
+                })
+            } else {
+                stores.markers.dismiss(marker_id, |marker| {
+                    accepted = dialogs::confirm_dismissal(native, marker);
+                    accepted
+                })
+            };
             if dismissed {
                 return response;
             }
@@ -956,6 +967,86 @@ mod tests {
             allowed
         );
         assert_eq!(shell.marker_files(), 0, "Dismiss deletes the marker file");
+    }
+
+    #[test]
+    fn the_handshake_lists_damaged_markers_apart_from_the_unloaded_count() {
+        let shell = Shell::new();
+        std::fs::write(shell.folder("recovery").join("broken.json"), "{").expect("write");
+        let facts = Facts {
+            platform_scope: "other",
+            os_build: 26200,
+            webview2_version: "154.0.4258.53".to_string(),
+        };
+        let frame: Value =
+            serde_json::from_str(&handshake_frame(&facts, &shell.stores, &shell.contexts))
+                .expect("JSON");
+        let handshake = &frame["handshake"];
+        let mut keys: Vec<&str> = handshake
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "buildIdentity",
+                "damagedMarkers",
+                "markers",
+                "osBuild",
+                "platformScope",
+                "restarted",
+                "trustRecords",
+                "unloadedMarkers",
+                "version",
+                "webView2Version"
+            ]
+        );
+        assert_eq!(handshake["markers"], json!([]));
+        assert_eq!(handshake["unloadedMarkers"], json!(0));
+        let damaged = handshake["damagedMarkers"].as_array().expect("array");
+        assert_eq!(damaged.len(), 1);
+        assert_eq!(damaged[0]["fileName"], json!("broken.json"));
+        assert!(damaged[0]["markerId"].as_str().is_some_and(is_identifier));
+        assert_eq!(damaged[0].as_object().map(|fields| fields.len()), Some(2));
+    }
+
+    #[test]
+    fn a_damaged_marker_dismissal_forwards_only_the_marker_id_and_deletes_after_dismiss() {
+        let shell = Shell::new();
+        std::fs::write(shell.folder("recovery").join("broken.json"), "{").expect("write");
+        let marker_id = shell.stores.markers.scan().damaged[0].marker_id.clone();
+        let dismiss = json!({ "markerId": marker_id });
+        let prepared = shell
+            .prepare(&Fake::default(), "dismissRecoveryMarker", dismiss.clone())
+            .expect("prepare")
+            .expect("payload");
+        assert_eq!(
+            prepared,
+            Prepared {
+                payload: dismiss,
+                path: None
+            }
+        );
+        let allowed = json!({ "requestId": CALL, "state": "succeeded", "result": {} });
+        assert_eq!(
+            shell.finish(
+                &Fake::pressing(&[Press::Label("Cancel")]),
+                "dismissRecoveryMarker",
+                &prepared,
+                allowed.clone()
+            ),
+            json!({ "requestId": CALL, "state": "canceled", "code": "CANCELED" })
+        );
+        assert_eq!(shell.marker_files(), 1, "Cancel keeps the file");
+        let native = Fake::pressing(&[Press::Label("Dismiss")]);
+        assert_eq!(
+            shell.finish(&native, "dismissRecoveryMarker", &prepared, allowed.clone()),
+            allowed
+        );
+        assert_eq!(shell.marker_files(), 0, "Dismiss deletes the file");
     }
 
     #[test]

@@ -970,7 +970,28 @@ Future records must identify scenario, build/package digest, environment, fixtur
 
 ### Batch reviews
 
-Each batch verification task passes only after one independent review of its batch is recorded here (plan.md, Constitution Check). A record names the batch, the reviewer, the reviewed scope, and the findings. It also names the causes, corrections, and unverified claims. T116 records the batch 3 review here. One review runs per batch; no automatic review loop runs. No batch review exists yet.
+Each batch verification task passes only after one independent review of its batch is recorded here (plan.md, Constitution Check). A record names the batch, the reviewer, the reviewed scope, and the findings. It also names the causes, corrections, and unverified claims. T116 records the batch 3 review here. One review runs per batch; no automatic review loop runs.
+
+**Batch 1, 2026-10-03.** Two independent subagent reviewers checked batch 1. Neither reviewer wrote the reviewed code. The TypeScript review covered `src/`, `tests/`, and the build files at commit 8d95f02. The shell review covered `src-tauri/` at commit bdb083f. Both reviews ran the test suites and printed ORIGIN lines for the code under test. The TypeScript review turned one control mutation red.
+
+| Finding | Failure and cause | Remedy |
+| --- | --- | --- |
+| TS B1 (blocker) | Fixture Git kept `GIT_DIR`, `GIT_INDEX_FILE`, and other repository-location variables. A probe committed into a foreign repository. | 5b1014b: fixture Git removes the `git-environment.json` probe list and `GIT_TEST_*`. |
+| TS M1 | The startup Git check had no deadline. Queued public frames grew without a bound. | 5b1014b: a 30 s deadline, and at most 8 queued frames. |
+| TS M2 | A cancel during the Git confirmation left a bound `gitInstallationId` without `release`. | 943316c: the service releases an ID that the user approved after a cancel. |
+| Shell B1 | A marker of a deleted repository could not be dismissed. The context needed the identity of a missing folder. | 943316c: dismissal of a missing worktree path needs no context. |
+| Shell B2 | Some forwarded requests never got a response. The shell skipped the strict decode and the size check after `prepare`. | 943316c: strict decode and bound before the forward, and every failure gives an answer. |
+| Shell B3 | A refused identity read showed as `canceled`. | 943316c: the refusal keeps its code. The next commit makes a missing or unreadable saved Git path no candidate, so the next contract §3 source follows. |
+| Shell B4 | Nothing saved `lastRepository`, so `restoreWorkspace` never restored. | 943316c: a succeeded `chooseRepository` saves its native context path. |
+
+Open items and reasons:
+
+- TS m1: `seenRequests`, the session log, and mutation records have no bound. The contract keeps them for the service session.
+- TS m5: some tests assert only that nothing happens in a window. They are bounded and cannot fail spuriously, but a slow host can hide a late event.
+- Shell B10: the per-session maps in `process_requests.rs` have no bound. They clear only at a service exit.
+- Shell B13: one damaged marker file counts as unloaded and blocks mutations. This needs a spec decision.
+- Shell S1 to S11: suspicions only. No reviewer proved them.
+- Shell B5 remark: the shell closes the Job on a ninth unacknowledged input chunk. The contract does not state this rule.
 
 ### Dependency reviews
 

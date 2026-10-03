@@ -110,28 +110,20 @@ fn pick_git(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
 
 /// Creates a `gitProbe` context for the contract §3 "Git proposal" candidate: the saved path,
 /// then the `PATH` search result, then `%ProgramFiles%\Git\cmd\git.exe`. Without a candidate, it opens the picker.
-/// With a saved path, the candidate is that path, so an unreadable saved path is refused.
+/// A path whose identity cannot be read is no candidate.
 pub fn choose_git(
     native: &dyn Native,
     saved: Option<&SavedGit>,
     contexts: &Contexts,
     now: Instant,
 ) -> Chosen {
-    if let Some(git) = saved {
-        return context(
-            contexts,
-            ContextKind::GitProbe,
-            git.executable_path.clone(),
-            now,
-        );
-    }
     let probe = |path: PathBuf| match context(contexts, ContextKind::GitProbe, path, now) {
         chosen @ Chosen::Context { .. } => Some(chosen),
         _ => None,
     };
-    native
-        .search_path()
-        .and_then(probe)
+    saved
+        .and_then(|git| probe(git.executable_path.clone()))
+        .or_else(|| native.search_path().and_then(probe))
         .or_else(|| {
             native
                 .program_files()
@@ -1092,21 +1084,20 @@ pub(crate) mod tests {
     // ---- Identity refusals ----
 
     #[test]
-    fn a_missing_saved_git_path_is_refused_and_never_falls_back_to_the_path_candidate() {
+    fn a_missing_saved_git_path_is_no_candidate_and_the_path_search_result_follows() {
         let fixture = Fixture::new();
         let contexts = Contexts::new(SESSION);
+        let found = file(&fixture, "path\\git.exe");
         let native = Fake {
-            search: Some(file(&fixture, "path\\git.exe")),
+            search: Some(found.clone()),
             program_files: Some(folder(&fixture, "pf")),
             ..Fake::default()
         };
         file(&fixture, "pf\\Git\\cmd\\git.exe");
         let missing = saved(&fixture.path("moved\\git.exe"));
-        assert_eq!(
-            choose_git(&native, Some(&missing), &contexts, Instant::now()),
-            Chosen::Refused("GIT_UNAVAILABLE")
-        );
-        assert_eq!(native.calls(), Vec::<&str>::new(), "no other candidate");
+        let chosen = choose_git(&native, Some(&missing), &contexts, Instant::now());
+        assert_eq!(context(&contexts, &chosen), (ContextKind::GitProbe, found));
+        assert!(!native.calls().contains(&"pick_executable"));
     }
 
     #[test]

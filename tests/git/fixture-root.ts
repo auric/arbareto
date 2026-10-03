@@ -59,7 +59,12 @@ function canonical(path: string): string {
 
 // Resolves the deepest existing ancestor through the file system, so `..` segments and junctions resolve before the check.
 export function fixturePath(...segments: string[]): string {
-  const target = resolve(FIXTURE_ROOT, ...segments);
+  return ownedPath(FIXTURE_ROOT, ...segments);
+}
+
+// The `fixturePath` check against another owned root, such as the T164 cache root.
+export function ownedPath(root: string, ...segments: string[]): string {
+  const target = resolve(root, ...segments);
   let existing = target;
   while (!existsSync(existing)) {
     const parent = dirname(existing);
@@ -67,7 +72,7 @@ export function fixturePath(...segments: string[]): string {
     existing = parent;
   }
   const real = join(realpathSync.native(existing), relative(existing, target));
-  if (!canonical(real + sep).startsWith(canonical(FIXTURE_ROOT + sep)) || canonical(real) === canonical(FIXTURE_ROOT)) {
+  if (!canonical(real + sep).startsWith(canonical(root + sep)) || canonical(real) === canonical(root)) {
     throw new FixturePathRefusal(`outside the fixture root: ${target}`);
   }
   return real;
@@ -109,15 +114,26 @@ export function serviceEnv(extra: Env = {}, base: Env = process.env): Record<str
 
 // Runs one fixture construction Git command with the fixed timestamps.
 export function fixtureGit(git: string, cwd: string, args: string[], input?: string): string {
+  return ownedGit(git, FIXTURE_ROOT, cwd, args, { input: input === undefined ? undefined : Buffer.from(input) }).toString();
+}
+
+export interface OwnedGitOptions {
+  input?: Uint8Array;
+  env?: Env;
+  allowExit?: number[];
+}
+
+// `fixtureGit` with byte input and output, extra environment entries, and a working directory under `root`.
+export function ownedGit(git: string, root: string, cwd: string, args: string[], options: OwnedGitOptions = {}): Buffer {
   const proc = Bun.spawnSync([git, ...args], {
-    cwd: fixturePath(relative(FIXTURE_ROOT, cwd)),
-    env: fixtureEnv({ ...FIXED_TIMESTAMPS }),
-    stdin: input === undefined ? "ignore" : Buffer.from(input),
+    cwd: ownedPath(root, relative(root, cwd)),
+    env: fixtureEnv({ ...FIXED_TIMESTAMPS, ...options.env }),
+    stdin: options.input === undefined ? "ignore" : options.input,
     stdout: "pipe",
     stderr: "pipe",
   });
-  if (proc.exitCode !== 0) throw new Error(`git ${args.join(" ")} exited ${proc.exitCode}: ${proc.stderr.toString()}`);
-  return proc.stdout.toString();
+  if (!(options.allowExit ?? [0]).includes(proc.exitCode)) throw new Error(`git ${args.join(" ")} exited ${proc.exitCode}: ${proc.stderr.toString()}`);
+  return proc.stdout;
 }
 
 // Creates a directory under the root.
@@ -128,7 +144,7 @@ export function fixtureDir(name: string): string {
 }
 
 // Never follows a link or junction. It removes the link only.
-function removeTree(path: string): void {
+export function removeTree(path: string): void {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) {
     try {

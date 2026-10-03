@@ -19,12 +19,14 @@ const kernel32 = dlopen("kernel32.dll", {
   GetProcessTimes: { args: [P, P, P, P, P], returns: i32 },
   TerminateProcess: { args: [P, u32], returns: i32 },
   WaitForSingleObject: { args: [P, u32], returns: u32 },
+  SetFileTime: { args: [P, P, P, P], returns: i32 },
 }).symbols;
 
 // Microsoft Learn constants of `CreateNamedPipeW`, `CreateFileW`, `OpenProcess`, and `WaitForSingleObject`.
 const PIPE_ACCESS_INBOUND = 0x1;
 const PIPE_REJECT_REMOTE_CLIENTS = 0x8;
 const FILE_READ_ATTRIBUTES = 0x80;
+const FILE_WRITE_ATTRIBUTES = 0x100;
 const FILE_SHARE_ALL = 0x7;
 const OPEN_EXISTING = 3;
 const FILE_FLAG_BACKUP_SEMANTICS = 0x0200_0000;
@@ -84,6 +86,21 @@ export function readIdentity(path: string, fileIdOverride?: Uint8Array): FileIde
     if (fileId.every((b) => b === 0) || fileId.every((b) => b === 0xff)) return refused;
     const volumeSerial = new DataView(info.buffer).getBigUint64(0, true).toString(16).padStart(16, "0");
     return { volumeSerial, fileId: fileId.toHex() };
+  } finally {
+    kernel32.CloseHandle(handle);
+  }
+}
+
+// `FILETIME` counts 100 ns intervals from 1601-01-01 UTC.
+const FILETIME_UNIX_OFFSET_SECONDS = 11_644_473_600n;
+
+// Sets the creation and last-write times. Git for Windows stores them as the index `ctime` and `mtime`.
+export function setFileTimes(path: string, unixSeconds: number): void {
+  const handle = kernel32.CreateFileW(wide(path), FILE_WRITE_ATTRIBUTES, FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, null);
+  if (!valid(handle)) throw new Error(`CreateFileW failed for ${path}`);
+  try {
+    const time = new BigUint64Array([(BigInt(unixSeconds) + FILETIME_UNIX_OFFSET_SECONDS) * 10_000_000n]);
+    if (!kernel32.SetFileTime(handle, ptr(time), null, ptr(time))) throw new Error(`SetFileTime failed for ${path}`);
   } finally {
     kernel32.CloseHandle(handle);
   }

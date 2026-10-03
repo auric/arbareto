@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "T058 implements the WebView2 checks, and T063 runs them"
-    )
-)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -67,7 +60,6 @@ pub fn installed_version() -> Option<String> {
 
 /// Admits the installed runtime and returns its version text for the handshake.
 /// On rejection, shows a native message and returns the error code. The caller then creates no window.
-#[cfg_attr(test, expect(dead_code, reason = "T063 calls it at startup"))]
 pub fn check() -> Result<String, &'static str> {
     let version = installed_version();
     if let Err(code) = admission(version.as_deref()) {
@@ -165,7 +157,6 @@ static ARGS2_CAST_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Runs inside the one `with_webview` call on the hidden main window, before the window shows (research.md R7).
 /// Keeps `AreDefaultContextMenusEnabled` true, because `ContextMenuRequested` fires only then.
-#[cfg_attr(test, expect(dead_code, reason = "T063 calls it in `with_webview`"))]
 pub fn attach(controller: &ICoreWebView2Controller) -> windows::core::Result<()> {
     let mut token = 0;
     // SAFETY: `with_webview` runs on the UI thread of the webview, and `controller` is live.

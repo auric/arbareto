@@ -148,13 +148,6 @@ impl Contexts {
     }
 
     /// Binds a new context to the selected path and its identity. Returns its UUID-shaped `bootstrapId`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the T060 dialogs and the T063 startup context create contexts"
-        )
-    )]
     pub fn create(
         &self,
         kind: ContextKind,

@@ -2,12 +2,13 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use serde_json::{Value, json};
 use tauri::async_runtime::{Receiver, Sender, channel};
 use tauri::{State, Webview};
 
+use crate::dialogs::check_renderer_payload;
 use crate::framing::{PUBLIC_REQUEST_BYTES, public_request_body};
 use crate::process_requests::{decode_strict, is_identifier};
 
@@ -39,7 +40,7 @@ pub const OPERATIONS: [&str; 21] = [
     "dismissRecoveryMarker",
 ];
 
-/// Contract §3: the shell runs these first. Until T063 and T140 replace the stubs, each gives `SERVICE_UNAVAILABLE`.
+/// Contract §3: the shell runs these first. Until T140 replaces its stub, `requestClose` gives `SERVICE_UNAVAILABLE`.
 const NATIVE_FIRST: [&str; 5] = [
     "requestClose",
     "chooseGit",
@@ -76,6 +77,14 @@ pub enum ToRenderer {
 /// Writes one frame body to the service.
 pub type FrameSink = Arc<dyn Fn(String) + Send + Sync>;
 
+/// The native steps of a native-first operation (contract §3). Both steps can show a dialog, so they block.
+pub trait NativeFirst: Send + Sync {
+    /// Runs before the forward. `Ok(None)` is a canceled dialog. `Ok(Some(payload))` is the service payload.
+    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Value>, &'static str>;
+    /// Runs after the service response of a forwarded request. It returns the response for the renderer.
+    fn finish(&self, operation: &str, payload: &Value, response: Value) -> Value;
+}
+
 /// A forwarded request waits here for the service response with its `requestId`.
 enum Submitted {
     Answer(Value),
@@ -92,6 +101,7 @@ struct Session {
 pub struct Ipc {
     forward: FrameSink,
     session: Mutex<Session>,
+    native: OnceLock<Weak<dyn NativeFirst>>,
 }
 
 impl Ipc {
@@ -99,7 +109,17 @@ impl Ipc {
         Ipc {
             forward,
             session: Mutex::new(Session::default()),
+            native: OnceLock::new(),
         }
+    }
+
+    /// Without the native steps, each native-first operation gives `SERVICE_UNAVAILABLE`.
+    pub fn set_native(&self, native: Weak<dyn NativeFirst>) {
+        let _ = self.native.set(native);
+    }
+
+    fn native(&self) -> Option<Arc<dyn NativeFirst>> {
+        self.native.get().and_then(Weak::upgrade)
     }
 
     /// Sets the current service session. `None` means that no service session runs.
@@ -187,8 +207,31 @@ impl Ipc {
                 None => reject("SERVICE_UNAVAILABLE"),
             };
         }
+        let mut encoded = encoded;
         if NATIVE_FIRST.contains(&operation) {
-            return reject("SERVICE_UNAVAILABLE");
+            if operation == "requestClose" {
+                return reject("SERVICE_UNAVAILABLE");
+            }
+            if let Err(code) = check_renderer_payload(operation, &request["payload"]) {
+                return reject(code);
+            }
+            let native = self.native();
+            let (Some(native), true) = (native, self.session().session_id.is_some()) else {
+                return reject("SERVICE_UNAVAILABLE");
+            };
+            match native.prepare(operation, &request["payload"]) {
+                Err(code) => return reject(code),
+                Ok(None) => {
+                    return Submitted::Answer(
+                        json!({ "requestId": request_id, "state": "canceled", "code": "CANCELED" }),
+                    );
+                }
+                Ok(Some(payload)) => {
+                    let mut forwarded = request.clone();
+                    forwarded["payload"] = payload;
+                    encoded = forwarded.to_string();
+                }
+            }
         }
         let (waiting, response) = channel(1);
         {
@@ -283,16 +326,25 @@ async fn call(
 ) -> Result<Value, &'static str> {
     let label = webview.label().to_string();
     let url = webview.url().map_err(|_| DENIED)?.to_string();
-    let ipc = Arc::clone(ipc);
+    let payload = request["payload"].clone();
+    let submitter = Arc::clone(ipc);
     let submitted = tauri::async_runtime::spawn_blocking(move || {
-        ipc.submit(&label, &url, &request, Some(operation))
+        submitter.submit(&label, &url, &request, Some(operation))
     })
     .await
     .map_err(|_| DENIED)?;
-    match submitted {
-        Submitted::Answer(answer) => Ok(answer),
-        Submitted::Waiting(mut response) => response.recv().await.ok_or("SERVICE_UNAVAILABLE"),
-        Submitted::Denied => Err(DENIED),
+    let response = match submitted {
+        Submitted::Answer(answer) => return Ok(answer),
+        Submitted::Waiting(mut response) => response.recv().await.ok_or("SERVICE_UNAVAILABLE")?,
+        Submitted::Denied => return Err(DENIED),
+    };
+    match ipc.native().filter(|_| NATIVE_FIRST.contains(&operation)) {
+        Some(native) => tauri::async_runtime::spawn_blocking(move || {
+            native.finish(operation, &payload, response)
+        })
+        .await
+        .map_err(|_| "SERVICE_UNAVAILABLE"),
+        None => Ok(response),
     }
 }
 

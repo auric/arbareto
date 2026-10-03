@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "T059 implements the native settings and stores, and T063 wires them"
-    )
-)]
-
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -334,7 +326,7 @@ fn text(path: &Path) -> io::Result<&str> {
 
 // ---- Shared value rules ----
 
-fn is_hex(text: &str, digits: usize) -> bool {
+pub(crate) fn is_hex(text: &str, digits: usize) -> bool {
     text.len() == digits
         && text
             .bytes()
@@ -511,7 +503,7 @@ pub const MARKER_BYTES: usize = 4096;
 pub const MARKER_LIMIT: usize = 64;
 
 /// The mutation names of contract §3, as `src/contracts/operations.ts` `MUTATIONS` lists them.
-const MUTATIONS: [&str; 4] = ["applyHunk", "applyFile", "commit", "updateSubmodules"];
+pub(crate) const MUTATIONS: [&str; 4] = ["applyHunk", "applyFile", "commit", "updateSubmodules"];
 
 /// One recovery marker. Its file is `<markerId>.json` in the `recovery` folder and holds the handshake form.
 #[derive(Clone, Debug, PartialEq)]
@@ -875,6 +867,14 @@ impl Markers {
         Scan { markers, unloaded }
     }
 
+    /// The owned marker with this ID.
+    pub fn get(&self, marker_id: &str) -> Option<Marker> {
+        lock(&self.state)
+            .owned
+            .get(marker_id)
+            .map(|owned| owned.marker.clone())
+    }
+
     /// Deletes the marker file only when `confirm` accepts. Returns true when the file is deleted.
     pub fn dismiss(&self, marker_id: &str, confirm: impl FnOnce(&Marker) -> bool) -> bool {
         let Some(marker) = lock(&self.state)
@@ -900,6 +900,7 @@ impl Markers {
     }
 
     /// Fails the next marker write at `stage` with the OS error code `os_error`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn fail_next(&self, stage: Stage, os_error: i32) {
         lock(&self.state).fault = Some((stage, os_error));
     }
@@ -1185,6 +1186,7 @@ impl Trust {
     }
 
     /// Fails the next record write at `stage` with the OS error code `os_error`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn fail_next(&self, stage: Stage, os_error: i32) {
         lock(&self.state).fault = Some((stage, os_error));
     }

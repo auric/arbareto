@@ -1,28 +1,38 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "T060 implements the native dialogs, and T063 wires them"
-    )
-)]
-#![cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "the T060 stubs read no input until T060 implements them"
-    )
-)]
-
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
-use serde_json::Value;
+use serde_json::{Value, json};
+use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri_plugin_dialog::DialogExt;
+use windows::Win32::Foundation::{HWND, LPARAM, S_OK, WPARAM};
+use windows::Win32::Storage::FileSystem::SearchPathW;
+use windows::Win32::UI::Controls::{
+    TASKDIALOG_BUTTON, TASKDIALOG_NOTIFICATIONS, TASKDIALOGCONFIG, TDF_ALLOW_DIALOG_CANCELLATION,
+    TDF_POSITION_RELATIVE_TO_WINDOW, TDM_CLICK_BUTTON, TDN_CREATED, TDN_DESTROYED,
+    TaskDialogIndirect,
+};
+use windows::Win32::UI::WindowsAndMessaging::{IDCANCEL, PostMessageW};
+use windows::core::{HRESULT, HSTRING, PCWSTR, w};
 
-use crate::bootstrap::Contexts;
+use crate::bootstrap::{ContextKind, Contexts};
+use crate::ipc::MAIN_WINDOW;
+use crate::process_requests::{PATH_UNITS, is_identifier};
 use crate::settings::{Confirm, Marker, SavedGit, Settings};
+
+/// Escape, Alt+F4, and the close button return `IDCANCEL`, so the Cancel button carries that ID.
+const CANCEL: i32 = IDCANCEL.0;
+/// Custom button IDs stay clear of the common button IDs 1 to 11.
+const ACCEPT: i32 = 100;
+const ANOTHER: i32 = 101;
+
+/// Contract §7 "Program file digests": the text of an approval over a digest bound.
+const SESSION_APPROVAL: &str = "Arbareto cannot check these program files for later edits. This approval lasts until Arbareto closes or its Git service restarts.";
 
 /// One button of a `TaskDialogIndirect` confirmation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +48,25 @@ pub struct Confirmation {
     pub buttons: Vec<Button>,
     pub default_button: i32,
     pub accept_button: i32,
+}
+
+/// `extra` goes between the accept button and Cancel.
+fn confirmation(text: String, accept: &'static str, extra: Option<Button>) -> Confirmation {
+    let mut buttons = vec![Button {
+        id: ACCEPT,
+        label: accept,
+    }];
+    buttons.extend(extra);
+    buttons.push(Button {
+        id: CANCEL,
+        label: "Cancel",
+    });
+    Confirmation {
+        text,
+        buttons,
+        default_button: CANCEL,
+        accept_button: ACCEPT,
+    }
 }
 
 /// The native pickers and confirmations. T183 injects them, so the tests run without a window.
@@ -63,25 +92,54 @@ pub enum Chosen {
     Context { bootstrap_id: String, path: PathBuf },
 }
 
+/// A path whose identity the shell cannot read gives no context.
+fn context(contexts: &Contexts, kind: ContextKind, path: PathBuf, now: Instant) -> Option<Chosen> {
+    let bootstrap_id = contexts.create(kind, &path, now).ok()?;
+    Some(Chosen::Context { bootstrap_id, path })
+}
+
+fn pick_git(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
+    native
+        .pick_executable()
+        .and_then(|path| context(contexts, ContextKind::GitProbe, path, now))
+        .unwrap_or(Chosen::Canceled)
+}
+
 /// Creates a `gitProbe` context for the contract §3 "Git proposal" candidate: the saved path,
 /// then the `PATH` search result, then `%ProgramFiles%\Git\cmd\git.exe`. Without a candidate, it opens the picker.
 pub fn choose_git(
-    _native: &dyn Native,
-    _saved: Option<&SavedGit>,
-    _contexts: &Contexts,
-    _now: Instant,
+    native: &dyn Native,
+    saved: Option<&SavedGit>,
+    contexts: &Contexts,
+    now: Instant,
 ) -> Chosen {
-    todo!("T060")
+    let probe = |path: PathBuf| context(contexts, ContextKind::GitProbe, path, now);
+    saved
+        .and_then(|git| probe(git.executable_path.clone()))
+        .or_else(|| native.search_path().and_then(probe))
+        .or_else(|| {
+            native
+                .program_files()
+                .and_then(|folder| probe(folder.join(r"Git\cmd\git.exe")))
+        })
+        .unwrap_or_else(|| pick_git(native, contexts, now))
 }
 
 /// Opens the folder picker and creates a `repositoryDiscovery` context.
-pub fn choose_repository(_native: &dyn Native, _contexts: &Contexts, _now: Instant) -> Chosen {
-    todo!("T060")
+pub fn choose_repository(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
+    native
+        .pick_folder()
+        .and_then(|path| context(contexts, ContextKind::RepositoryDiscovery, path, now))
+        .unwrap_or(Chosen::Canceled)
 }
 
 /// Creates a `repositoryDiscovery` context for the stored last repository.
-pub fn restore_workspace(_settings: &Settings, _contexts: &Contexts, _now: Instant) -> Chosen {
-    todo!("T060")
+pub fn restore_workspace(settings: &Settings, contexts: &Contexts, now: Instant) -> Chosen {
+    settings
+        .last_repository
+        .clone()
+        .and_then(|path| context(contexts, ContextKind::RepositoryDiscovery, path, now))
+        .unwrap_or(Chosen::Canceled)
 }
 
 /// The probed candidate of a `register` request with `confirm: true`.
@@ -93,8 +151,23 @@ pub struct Proposal<'a> {
 }
 
 /// The Git selection confirmation: Use this Git, Choose another Git, and Cancel.
-pub fn git_confirmation(_proposal: &Proposal) -> Confirmation {
-    todo!("T060")
+pub fn git_confirmation(proposal: &Proposal) -> Confirmation {
+    let mut text = format!(
+        "Use this Git?\nPath: {}\nVersion: {}",
+        proposal.executable_path.display(),
+        proposal.version
+    );
+    if let Some(stored) = proposal.stored_version {
+        text.push_str(&format!("\nStored version: {stored}"));
+    }
+    confirmation(
+        text,
+        "Use this Git",
+        Some(Button {
+            id: ANOTHER,
+            label: "Choose another Git",
+        }),
+    )
 }
 
 /// The `register` reply `result` (contract §6 "Channel frames").
@@ -110,60 +183,307 @@ pub enum Registered {
 }
 
 impl Registered {
-    pub fn reply(&self, _call_id: &str) -> Value {
-        todo!("T060")
+    pub fn reply(&self, call_id: &str) -> Value {
+        match self {
+            Registered::Approved => {
+                json!({ "type": "register", "callId": call_id, "result": "approved" })
+            }
+            Registered::Declined => {
+                json!({ "type": "register", "callId": call_id, "result": "declined" })
+            }
+            Registered::Another {
+                bootstrap_id,
+                executable_path,
+            } => json!({
+                "type": "register",
+                "callId": call_id,
+                "result": "another",
+                "bootstrapId": bootstrap_id,
+                "executablePath": executable_path.to_string_lossy(),
+            }),
+        }
     }
 }
 
 /// Shows the Git selection confirmation. Choose another Git opens the executable picker.
 pub fn confirm_git(
-    _native: &dyn Native,
-    _proposal: &Proposal,
-    _contexts: &Contexts,
-    _now: Instant,
+    native: &dyn Native,
+    proposal: &Proposal,
+    contexts: &Contexts,
+    now: Instant,
 ) -> Registered {
-    todo!("T060")
+    let confirmation = git_confirmation(proposal);
+    match native.confirm(&confirmation) {
+        Some(id) if id == confirmation.accept_button => Registered::Approved,
+        Some(ANOTHER) => match pick_git(native, contexts, now) {
+            Chosen::Context { bootstrap_id, path } => Registered::Another {
+                bootstrap_id,
+                executable_path: path,
+            },
+            Chosen::Canceled => Registered::Declined,
+        },
+        _ => Registered::Declined,
+    }
+}
+
+/// The contract §5 "Trust program file digests" row of a `bound` name.
+fn bound_text(bound: &str) -> Option<&'static str> {
+    match bound {
+        "file-count" => Some("64 files"),
+        "file-bytes" => Some("1 MiB per file"),
+        "total-bytes" => Some("8 MiB total"),
+        _ => None,
+    }
+}
+
+/// True for a `bound` name of contract §6 "Channel frames".
+pub fn is_bound(bound: &str) -> bool {
+    bound_text(bound).is_some()
 }
 
 /// The trust confirmation: Approve and Cancel.
-pub fn trust_confirmation(_request: &Confirm) -> Confirmation {
-    todo!("T060")
+pub fn trust_confirmation(request: &Confirm) -> Confirmation {
+    let mut text = format!(
+        "Approve this repository?\nWorktree: {}\nFingerprint: {}\nApproval lets Git run the programs that this repository's configuration names.",
+        request.worktree_root.display(),
+        request.fingerprint
+    );
+    if !request.persist {
+        if let Some(bound) = request.bound.as_deref().and_then(bound_text) {
+            text.push_str(&format!("\nReached bound: {bound}."));
+        }
+        text.push_str(&format!(
+            "\n{SESSION_APPROVAL} An edit of an unchecked file keeps this approval."
+        ));
+    }
+    confirmation(text, "Approve", None)
 }
 
 /// True only for the Approve button.
-pub fn confirm_trust(_native: &dyn Native, _request: &Confirm) -> bool {
-    todo!("T060")
+pub fn confirm_trust(native: &dyn Native, request: &Confirm) -> bool {
+    let confirmation = trust_confirmation(request);
+    native.confirm(&confirmation) == Some(confirmation.accept_button)
 }
 
 /// The marker dismissal confirmation: Dismiss and Cancel.
-pub fn dismissal_confirmation(_marker: &Marker) -> Confirmation {
-    todo!("T060")
+pub fn dismissal_confirmation(marker: &Marker) -> Confirmation {
+    let text = format!(
+        "Dismiss this recovery marker?\nWorktree: {}\nOperation: {}\nStarted: {}\nThe operation outcome stays unknown.",
+        marker.worktree_root.display(),
+        marker.kind,
+        marker.started_at
+    );
+    confirmation(text, "Dismiss", None)
 }
 
 /// True only for the Dismiss button.
-pub fn confirm_dismissal(_native: &dyn Native, _marker: &Marker) -> bool {
-    todo!("T060")
+pub fn confirm_dismissal(native: &dyn Native, marker: &Marker) -> bool {
+    let confirmation = dismissal_confirmation(marker);
+    native.confirm(&confirmation) == Some(confirmation.accept_button)
+}
+
+/// The startup failure dialog. T142 adds Restart service.
+pub fn service_stopped() -> Confirmation {
+    Confirmation {
+        text: "Git service stopped.".to_string(),
+        buttons: vec![Button {
+            id: ACCEPT,
+            label: "Close Arbareto",
+        }],
+        default_button: ACCEPT,
+        accept_button: ACCEPT,
+    }
 }
 
 /// The renderer payload of a native-first operation. `dismissRecoveryMarker` holds exactly `markerId`; the others are empty.
 /// Any other field gives `INVALID_REQUEST`.
-pub fn check_renderer_payload(_operation: &str, _payload: &Value) -> Result<(), &'static str> {
-    todo!("T060")
+pub fn check_renderer_payload(operation: &str, payload: &Value) -> Result<(), &'static str> {
+    let expected: &[&str] = if operation == "dismissRecoveryMarker" {
+        &["markerId"]
+    } else {
+        &[]
+    };
+    let exact = payload.as_object().is_some_and(|fields| {
+        fields.len() == expected.len()
+            && expected.iter().all(|key| {
+                fields
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(is_identifier)
+            })
+    });
+    if exact {
+        Ok(())
+    } else {
+        Err("INVALID_REQUEST")
+    }
 }
 
 /// Binds a `repositoryDiscovery` context to the stored worktree path of the marker.
 pub fn dismissal_context(
-    _marker: &Marker,
-    _contexts: &Contexts,
-    _now: Instant,
+    marker: &Marker,
+    contexts: &Contexts,
+    now: Instant,
 ) -> Result<String, &'static str> {
-    todo!("T060")
+    contexts.create(ContextKind::RepositoryDiscovery, &marker.worktree_root, now)
 }
 
 /// The handshake `savedGit` object for the saved Git path (contract §6 "Startup contexts").
-/// Without a saved Git path, there is no context.
-pub fn startup_context(_settings: &Settings, _contexts: &Contexts, _now: Instant) -> Option<Value> {
-    todo!("T060")
+/// Without a saved Git path, or without a readable file at it, there is no context.
+pub fn startup_context(settings: &Settings, contexts: &Contexts, now: Instant) -> Option<Value> {
+    let git = settings.git.as_ref()?;
+    let bootstrap_id = contexts
+        .create(ContextKind::GitProbe, &git.executable_path, now)
+        .ok()?;
+    Some(json!({
+        "bootstrapId": bootstrap_id,
+        "executablePath": git.executable_path.to_string_lossy(),
+        "version": git.version,
+        "digest": git.digest,
+    }))
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The product pickers and confirmations. The pickers block, so no caller runs on the main thread.
+pub struct Dialogs {
+    app: AppHandle,
+    /// The open confirmation windows.
+    open: Mutex<Vec<isize>>,
+}
+
+impl Dialogs {
+    pub fn new(app: AppHandle) -> Dialogs {
+        Dialogs {
+            app,
+            open: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn owner(&self) -> Option<WebviewWindow> {
+        self.app.get_webview_window(MAIN_WINDOW)
+    }
+
+    /// Clicks Cancel in each open confirmation. A service exit closes each open trust dialog as Cancel (contract §6).
+    pub fn cancel_open(&self) {
+        for &hwnd in lock(&self.open).iter() {
+            // SAFETY: TDN_DESTROYED removes each handle before its window goes, and the list lock is held.
+            let _ = unsafe {
+                PostMessageW(
+                    Some(HWND(hwnd as _)),
+                    TDM_CLICK_BUTTON.0 as u32,
+                    WPARAM(CANCEL as usize),
+                    LPARAM(0),
+                )
+            };
+        }
+    }
+}
+
+/// Records each open confirmation window. `data` points to `Dialogs::open`.
+unsafe extern "system" fn track(
+    hwnd: HWND,
+    notification: TASKDIALOG_NOTIFICATIONS,
+    _: WPARAM,
+    _: LPARAM,
+    data: isize,
+) -> HRESULT {
+    // SAFETY: `Dialogs::confirm` passes `&self.open`, and that borrow outlives the dialog.
+    let open = unsafe { &*(data as *const Mutex<Vec<isize>>) };
+    match notification {
+        TDN_CREATED => lock(open).push(hwnd.0 as isize),
+        TDN_DESTROYED => lock(open).retain(|&open| open != hwnd.0 as isize),
+        _ => {}
+    }
+    S_OK
+}
+
+impl Native for Dialogs {
+    fn pick_executable(&self) -> Option<PathBuf> {
+        let mut picker = self.app.dialog().file().add_filter("Git", &["exe"]);
+        if let Some(owner) = self.owner() {
+            picker = picker.set_parent(&owner);
+        }
+        picker.blocking_pick_file()?.into_path().ok()
+    }
+
+    fn pick_folder(&self) -> Option<PathBuf> {
+        let mut picker = self.app.dialog().file();
+        if let Some(owner) = self.owner() {
+            picker = picker.set_parent(&owner);
+        }
+        picker.blocking_pick_folder()?.into_path().ok()
+    }
+
+    fn confirm(&self, confirmation: &Confirmation) -> Option<i32> {
+        let owner = self
+            .owner()
+            .and_then(|window| window.hwnd().ok())
+            .unwrap_or_default();
+        let title = HSTRING::from("Arbareto");
+        let text = HSTRING::from(confirmation.text.as_str());
+        let labels: Vec<HSTRING> = confirmation
+            .buttons
+            .iter()
+            .map(|button| HSTRING::from(button.label))
+            .collect();
+        let buttons: Vec<TASKDIALOG_BUTTON> = confirmation
+            .buttons
+            .iter()
+            .zip(&labels)
+            .map(|(button, label)| TASKDIALOG_BUTTON {
+                nButtonID: button.id,
+                pszButtonText: PCWSTR(label.as_ptr()),
+            })
+            .collect();
+        let config = TASKDIALOGCONFIG {
+            cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
+            hwndParent: owner,
+            dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+            pszWindowTitle: PCWSTR(title.as_ptr()),
+            pszContent: PCWSTR(text.as_ptr()),
+            cButtons: buttons.len() as u32,
+            pButtons: buttons.as_ptr(),
+            nDefaultButton: confirmation.default_button,
+            pfCallback: Some(track),
+            lpCallbackData: (&raw const self.open) as isize,
+            ..Default::default()
+        };
+        let mut pressed = 0;
+        // SAFETY: the strings, the button array, and `self.open` outlive the modal call.
+        unsafe { TaskDialogIndirect(&config, Some(&mut pressed), None, None) }.ok()?;
+        Some(pressed)
+    }
+
+    fn search_path(&self) -> Option<PathBuf> {
+        // An empty `lpPath` would not search; a null one would search other directories.
+        let path = std::env::var_os("PATH").filter(|path| !path.is_empty())?;
+        let mut found = vec![0u16; PATH_UNITS + 1];
+        // SAFETY: both strings live for the call, and the buffer length is its slice length.
+        let length = unsafe {
+            SearchPathW(
+                &HSTRING::from(path.as_os_str()),
+                w!("git.exe"),
+                PCWSTR::null(),
+                Some(&mut found),
+                None,
+            )
+        } as usize;
+        // A length at or above the buffer size is the size that the call needs.
+        if length == 0 || length >= found.len() {
+            return None;
+        }
+        let found = PathBuf::from(OsString::from_wide(&found[..length]));
+        found.is_absolute().then_some(found)
+    }
+
+    fn program_files(&self) -> Option<PathBuf> {
+        std::env::var_os("ProgramFiles").map(PathBuf::from)
+    }
 }
 
 #[cfg(test)]

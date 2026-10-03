@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -18,6 +18,7 @@ use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
 use crate::bootstrap::{ContextKind, Contexts, Identity, read_identity};
+use crate::dialogs::Registered;
 use crate::git_env::child_environment;
 use crate::jobs::Supervisor;
 use crate::spawn::{Input, SpawnRequest, command_line, spawn};
@@ -53,11 +54,14 @@ const INVALID: &str = "INVALID_REQUEST";
 const UNKNOWN: &str = "UNKNOWN_TARGET";
 const OWNERSHIP: &str = "PROCESS_OWNERSHIP_FAILED";
 
-type Code = &'static str;
-type Fields = Map<String, Value>;
+pub(crate) type Code = &'static str;
+pub(crate) type Fields = Map<String, Value>;
 
 /// Writes one frame body to the service. A queued chunk leaves its queue when this call returns.
 pub type ReplySink = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Shows the Git selection confirmation for the probed path and version (contract §3 "Git proposal").
+pub type GitConfirmation = Box<dyn Fn(&Path, &str) -> Registered + Send + Sync>;
 
 pub struct Config {
     /// The application-owned launch directory of a `gitProbe` run (contract §6 "Channel frames").
@@ -102,6 +106,8 @@ struct State {
     repositories: HashMap<String, Repository>,
     /// Bound and released IDs. A released ID never binds again.
     issued: HashSet<String>,
+    /// The path and version of each Git that the user approved with Use this Git, by `gitInstallationId`.
+    confirmed: HashMap<String, (PathBuf, String)>,
     calls: HashMap<String, Call>,
     /// The count of shell Job closes per operation. A process that a Job close ended exits with `exitCode` null.
     job_closes: HashMap<String, u64>,
@@ -160,6 +166,8 @@ pub struct ProcessRequests {
     /// A service exit starts a new generation. Replies of an older generation are dropped.
     generation: AtomicU64,
     peak: AtomicUsize,
+    /// Without it, a `register` with `confirm: true` gets `declined`.
+    git_confirmation: OnceLock<GitConfirmation>,
 }
 
 impl ProcessRequests {
@@ -178,7 +186,17 @@ impl ProcessRequests {
             state: Mutex::new(State::default()),
             generation: AtomicU64::new(0),
             peak: AtomicUsize::new(0),
+            git_confirmation: OnceLock::new(),
         })
+    }
+
+    pub fn set_git_confirmation(&self, confirmation: GitConfirmation) {
+        let _ = self.git_confirmation.set(confirmation);
+    }
+
+    /// The path and version that Use this Git approved for `git_id`. Each approval is taken once.
+    pub fn take_confirmed_git(&self, git_id: &str) -> Option<(PathBuf, String)> {
+        self.state().confirmed.remove(git_id)
     }
 
     /// Handles one `process` frame body. It never waits on a child pipe.
@@ -210,10 +228,6 @@ impl ProcessRequests {
 
     /// Tags the Job of a mutation with the common-directory identity that the `started` frame read.
     /// `started` comes before the first process, so the Job opens here (contract §6 "Recovery markers").
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "T063 tags the Job at the mutation frame started")
-    )]
     pub fn tag(&self, operation_id: &str, common_identity: Identity) {
         if self.jobs.open(operation_id).is_ok() {
             self.jobs.tag(operation_id, common_identity);
@@ -221,10 +235,6 @@ impl ProcessRequests {
     }
 
     /// Handles the `mutation` frame `ended` (contract §6 "Lingering Jobs").
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "T063 routes the mutation frame ended")
-    )]
     pub fn ended(&self, operation_id: &str, end_processes: bool) {
         let mut state = self.state();
         if end_processes {
@@ -665,20 +675,20 @@ impl ProcessRequests {
             own(&mut state, bootstrap_id, operation_id)?;
             self.contexts.revalidate(bootstrap_id, now)?;
             self.contexts.destroy(bootstrap_id);
-            // T060 shows the Git selection confirmation. Until then, a call failure means Cancel.
             if confirm {
-                "declined"
-            } else {
-                state.issued.insert(git_id.to_string());
-                state.gits.insert(
-                    git_id.to_string(),
-                    Git {
-                        program: context.path,
-                        identity: context.identity,
-                    },
-                );
-                "approved"
+                drop(state);
+                self.confirm_git(context.path, context.identity, git_id, version, call_id);
+                return Ok(());
             }
+            state.issued.insert(git_id.to_string());
+            state.gits.insert(
+                git_id.to_string(),
+                Git {
+                    program: context.path,
+                    identity: context.identity,
+                },
+            );
+            "approved"
         } else {
             let repository_id = identifier(&request["repositoryId"])?;
             let worktree_root = path(&request["worktreeRoot"])?;
@@ -714,6 +724,43 @@ impl ProcessRequests {
             json!({ "type": "register", "callId": call_id, "result": result }),
         );
         Ok(())
+    }
+
+    /// Shows the Git selection confirmation on its own thread, so the frame reader keeps running.
+    /// Only Use this Git binds the ID. A reply after a service exit is dropped and binds nothing.
+    fn confirm_git(
+        &self,
+        program: PathBuf,
+        identity: Identity,
+        git_id: &str,
+        version: &str,
+        call_id: &str,
+    ) {
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        let generation = self.current();
+        let (git_id, version, call_id) =
+            (git_id.to_string(), version.to_string(), call_id.to_string());
+        std::thread::spawn(move || {
+            let mut registered = me
+                .git_confirmation
+                .get()
+                .map_or(Registered::Declined, |confirm| confirm(&program, &version));
+            if registered == Registered::Approved {
+                let mut state = me.state();
+                if generation != me.current() || state.issued.contains(&git_id) {
+                    registered = Registered::Declined;
+                } else {
+                    state.issued.insert(git_id.clone());
+                    state
+                        .confirmed
+                        .insert(git_id.clone(), (program.clone(), version));
+                    state.gits.insert(git_id, Git { program, identity });
+                }
+            }
+            me.send(generation, registered.reply(&call_id));
+        });
     }
 
     fn release(&self, request: &Fields) -> Result<(), Code> {
@@ -918,7 +965,7 @@ fn own(state: &mut State, bootstrap_id: &str, operation_id: &str) -> Result<(), 
 }
 
 /// Each key is required or optional, and no other key exists.
-fn keys(request: &Fields, required: &[&str], optional: &[&str]) -> Result<(), Code> {
+pub(crate) fn keys(request: &Fields, required: &[&str], optional: &[&str]) -> Result<(), Code> {
     let known = request
         .keys()
         .all(|k| required.contains(&k.as_str()) || optional.contains(&k.as_str()));
@@ -990,7 +1037,7 @@ fn chunk(value: &Value, max: usize) -> Result<Vec<u8>, Code> {
 }
 
 /// An absolute path with 1 to 32,767 UTF-16 units and no NUL. A lone surrogate never decodes to a string.
-fn path(value: &Value) -> Result<PathBuf, Code> {
+pub(crate) fn path(value: &Value) -> Result<PathBuf, Code> {
     let text = value.as_str().ok_or(INVALID)?;
     let units = text.encode_utf16().count();
     let path = PathBuf::from(text);
@@ -1000,7 +1047,7 @@ fn path(value: &Value) -> Result<PathBuf, Code> {
     Ok(path)
 }
 
-fn identifier(value: &Value) -> Result<&str, Code> {
+pub(crate) fn identifier(value: &Value) -> Result<&str, Code> {
     value.as_str().filter(|id| is_identifier(id)).ok_or(INVALID)
 }
 

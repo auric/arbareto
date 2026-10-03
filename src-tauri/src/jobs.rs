@@ -412,10 +412,6 @@ impl Supervisor {
     }
 
     /// Closes the lingering Jobs with this tag. Returns their active process count before the close.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "T063 routes the trust frame revoke")
-    )]
     pub fn revoke(&self, tag: &Identity) -> u32 {
         let mut state = self.shared.state();
         let count = state

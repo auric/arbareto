@@ -2,14 +2,18 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 mod bootstrap;
+mod dialogs;
 mod env_sanitize;
 mod framing;
 mod git_env;
 mod ipc;
 mod jobs;
+mod platform;
 mod process_requests;
 mod service;
+mod settings;
 mod spawn;
+mod webview;
 
 use std::sync::Arc;
 

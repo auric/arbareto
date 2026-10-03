@@ -689,7 +689,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// An owned fixture folder in the temporary directory. Drop removes it.
+    /// An owned fixture folder in the temporary directory. Drop removes it within `CLOSE_BOUND`.
     pub(crate) struct Fixture(pub(crate) PathBuf);
 
     impl Fixture {
@@ -717,7 +717,10 @@ pub(crate) mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            // A closed Job ends its processes asynchronously. A process that still runs in the folder keeps it in use.
+            eventually(CLOSE_BOUND, || {
+                std::fs::remove_dir_all(&self.0).is_ok() || !self.0.exists()
+            });
         }
     }
 
@@ -1026,6 +1029,13 @@ pub(crate) mod tests {
             assert!(
                 exits_within(child.handle(), WAIT),
                 "the child exits by itself"
+            );
+            let pid = child.child.id();
+            assert!(
+                eventually(WAIT, || !supervisor
+                    .process_ids(operation_id)
+                    .contains(&pid)),
+                "the Job no longer lists the exited child"
             );
         }
         (child, grandchildren)

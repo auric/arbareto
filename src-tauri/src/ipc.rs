@@ -857,6 +857,45 @@ mod tests {
     }
 
     #[test]
+    fn an_envelope_above_1_mib_gets_frame_limit_before_any_other_check_or_native_step() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let pad = "a".repeat(PUBLIC_REQUEST_BYTES);
+        for operation in ["chooseGit", "chooseRepository"] {
+            assert_eq!(
+                ipc.handle(
+                    MAIN_WINDOW,
+                    LOCAL,
+                    &request(operation, json!({ "pad": pad }))
+                ),
+                rejected("FRAME_LIMIT"),
+                "{operation}"
+            );
+        }
+        let mut without_id = request("chooseGit", json!({}));
+        without_id["pad"] = json!(pad);
+        without_id
+            .as_object_mut()
+            .expect("object")
+            .remove("requestId");
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &without_id),
+            Outcome::Answer(
+                json!({ "requestId": null, "state": "rejected", "code": "FRAME_LIMIT" })
+            ),
+            "an envelope without a requestId"
+        );
+        let current = json!({ "version": 1, "requestId": REQUEST_ID, "operation": "currentSession", "payload": { "pad": pad } });
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &current),
+            rejected("FRAME_LIMIT"),
+            "currentSession"
+        );
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
     fn process_mutation_trust_and_handshake_frames_never_reach_the_renderer() {
         for frame in [
             json!({ "kind": "process", "process": { "type": "output", "callId": REQUEST_ID, "stream": "stdout", "data": "YQ==" } }),

@@ -615,6 +615,37 @@ describe("startup handshake failures", () => {
     );
   }
 
+  // Contract §6 "Startup handshake": `version` is the integer `1`, so its literal has no fraction and no exponent.
+  for (const literal of ["1.0", "1e0"]) {
+    test(
+      `version ${literal} gives PROTOCOL_VERSION, and the service exits`,
+      async () => {
+        const service = start();
+        const text = JSON.stringify(HANDSHAKE).replace('"version":1,', `"version":${literal},`);
+        expect(text).toContain(`"version":${literal},`);
+        service.send(frameBytes(encoder.encode(text)));
+        expect(await service.next()).toEqual({ kind: "handshake", handshake: { code: "PROTOCOL_VERSION" } });
+        expect(await service.exited()).toBe(true);
+      },
+      TEST_TIMEOUT_MS,
+    );
+  }
+
+  test(
+    "version 1 in the handshake text gives a sessionId",
+    async () => {
+      const service = start();
+      const text = JSON.stringify(HANDSHAKE);
+      expect(text).toContain('"version":1,');
+      service.send(frameBytes(encoder.encode(text)));
+      const reply = await service.next();
+      expect(reply.kind).toBe("handshake");
+      expect(typeof reply.handshake?.sessionId).toBe("string");
+      expect(service.running).toBe(true);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   test(
     "a second handshake gives INVALID_REQUEST, and the session continues",
     async () => {

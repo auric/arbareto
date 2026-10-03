@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -45,6 +45,9 @@ pub const VERSION_BYTES: usize = 64;
 const JSON_NESTING_LEVELS: usize = 16;
 /// Contract §6 "Channel frames" `indexFile`.
 const CANDIDATE_PREFIX: &str = "arbareto-candidate-";
+/// The ended operation IDs that the shell keeps (contract §5 "Finished operation records" count).
+/// A request for an older ended ID passes the active check.
+const INACTIVE_OPERATIONS: usize = 256;
 /// The wait for a process handle after the shell closes its Job.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
 // ponytail: a silent child costs one pipe peek per stream every 10 ms. Blocking reads with CancelSynchronousIo remove it if T167 measures the wakeups.
@@ -94,12 +97,14 @@ struct Streamed {
 struct Call {
     operation_id: String,
     streamed: Option<Streamed>,
+    /// A Job close after the start of this call ended its process, so `exit` carries `exitCode` null.
+    closed: bool,
 }
 
 #[derive(Default)]
 struct State {
-    /// Operations after `ended` or `closeJob`. Every other operation is active from its first request.
-    inactive: HashSet<String>,
+    /// Operations after `ended` or `closeJob`, oldest first. Every other operation is active from its first request.
+    inactive: VecDeque<String>,
     /// The first `operationId` of a `bootstrapId` owns it (contract §6 "Context rules").
     owners: HashMap<String, String>,
     gits: HashMap<String, Git>,
@@ -109,8 +114,6 @@ struct State {
     /// The path and version of each Git that the user approved with Use this Git, by `gitInstallationId`.
     confirmed: HashMap<String, (PathBuf, String)>,
     calls: HashMap<String, Call>,
-    /// The count of shell Job closes per operation. A process that a Job close ended exits with `exitCode` null.
-    job_closes: HashMap<String, u64>,
     /// The mutations whose `started` reply carried a marker ID, until `ended`.
     started: HashSet<String>,
 }
@@ -247,13 +250,10 @@ impl ProcessRequests {
             return Err(INVALID);
         }
         if end_processes {
-            *state
-                .job_closes
-                .entry(operation_id.to_string())
-                .or_default() += 1;
+            mark_closed(&mut state, operation_id);
         }
         self.jobs.ended(operation_id, end_processes);
-        state.inactive.insert(operation_id.to_string());
+        deactivate(&mut state, operation_id);
         Ok(())
     }
 
@@ -430,9 +430,9 @@ impl ProcessRequests {
             Call {
                 operation_id: operation_id.to_string(),
                 streamed,
+                closed: false,
             },
         );
-        let closes = state.job_closes.get(operation_id).copied().unwrap_or(0);
         drop(state);
 
         let run = Arc::new(Run {
@@ -449,7 +449,7 @@ impl ProcessRequests {
             std::thread::spawn(move || me.read_stream(&run, stream));
         }
         let process = Owned(spawned.process);
-        std::thread::spawn(move || me.watch(&run, process, limit, closes));
+        std::thread::spawn(move || me.watch(&run, process, limit));
         Ok(())
     }
 
@@ -474,7 +474,7 @@ impl ProcessRequests {
                 if context.kind != context_kind {
                     return Err(UNKNOWN);
                 }
-                own(state, bootstrap_id, operation_id)?;
+                own(state, &self.contexts, bootstrap_id, operation_id, now)?;
                 let (program, git_identity, current_dir) = match context_kind {
                     ContextKind::GitProbe => {
                         (context.path, None, self.config.launch_directory.clone())
@@ -574,15 +574,17 @@ impl ProcessRequests {
         let Some(streamed) = call.streamed.as_mut() else {
             return Err(INVALID);
         };
-        if streamed.sent + data.len() as u64 <= streamed.declared
-            && streamed.unacknowledged.load(Ordering::SeqCst) < QUEUED_CHUNKS_PER_STREAM
-        {
+        if streamed.sent + data.len() as u64 <= streamed.declared {
+            // Contract §6 "Streamed input": at most 8 chunks wait, and a refused frame keeps the Job open.
+            if streamed.unacknowledged.load(Ordering::SeqCst) >= QUEUED_CHUNKS_PER_STREAM {
+                return Err(INVALID);
+            }
             streamed.sent += data.len() as u64;
             streamed.unacknowledged.fetch_add(1, Ordering::SeqCst);
             let _ = streamed.chunks.send(data);
             return Ok(());
         }
-        // A chunk past `inputBytes` or past 8 unacknowledged chunks closes the operation Job. The `exit` then follows.
+        // A chunk past `inputBytes` closes the operation Job. The `exit` then follows.
         let operation_id = call.operation_id.clone();
         close_job_of(&self.jobs, &mut state, &operation_id);
         Ok(())
@@ -700,7 +702,7 @@ impl ProcessRequests {
             if !confirm && !context.startup {
                 return Err(INVALID);
             }
-            own(&mut state, bootstrap_id, operation_id)?;
+            own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
             self.contexts.revalidate(bootstrap_id, now)?;
             self.contexts.destroy(bootstrap_id);
             if confirm {
@@ -730,7 +732,7 @@ impl ProcessRequests {
             if context.kind != ContextKind::RepositoryDiscovery {
                 return Err(UNKNOWN);
             }
-            own(&mut state, bootstrap_id, operation_id)?;
+            own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
             if !state.gits.contains_key(git_id) {
                 return Err(UNKNOWN);
             }
@@ -815,7 +817,7 @@ impl ProcessRequests {
         let operation_id = identifier(&request["operationId"])?;
         let mut state = self.state();
         close_job_of(&self.jobs, &mut state, operation_id);
-        state.inactive.insert(operation_id.to_string());
+        deactivate(&mut state, operation_id);
         Ok(())
     }
 
@@ -872,7 +874,7 @@ impl ProcessRequests {
     }
 
     /// Ends the run at its process handle signal, never at pipe end-of-file (contract §6 "Completion signal").
-    fn watch(&self, run: &Run, process: Owned, deadline: Duration, closes: u64) {
+    fn watch(&self, run: &Run, process: Owned, deadline: Duration) {
         let mut expired = false;
         if !wait(process.0, deadline) {
             expired = true;
@@ -881,9 +883,9 @@ impl ProcessRequests {
         }
         let closed = self
             .state()
-            .job_closes
-            .get(&run.operation_id)
-            .is_some_and(|&now| now != closes);
+            .calls
+            .get(&run.call_id)
+            .is_some_and(|call| call.closed);
         let active = self.jobs.active_processes(&run.operation_id).unwrap_or(0);
         let mut code = 0u32;
         // SAFETY: `process` owns the open process handle, and `code` is a live local.
@@ -971,22 +973,44 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn close_job_of(jobs: &Supervisor, state: &mut State, operation_id: &str) {
-    *state
-        .job_closes
-        .entry(operation_id.to_string())
-        .or_default() += 1;
+    mark_closed(state, operation_id);
     jobs.close(operation_id);
+}
+
+fn mark_closed(state: &mut State, operation_id: &str) {
+    for call in state.calls.values_mut() {
+        if call.operation_id == operation_id {
+            call.closed = true;
+        }
+    }
+}
+
+fn deactivate(state: &mut State, operation_id: &str) {
+    if !state.inactive.iter().any(|id| id == operation_id) {
+        state.inactive.push_back(operation_id.to_string());
+    }
+    if state.inactive.len() > INACTIVE_OPERATIONS {
+        state.inactive.pop_front();
+    }
 }
 
 /// An operation is active from its first request until `ended` or `closeJob` (contract §6 "Channel frames").
 fn check_active(state: &State, operation_id: &str) -> Result<(), Code> {
-    if state.inactive.contains(operation_id) {
+    if state.inactive.iter().any(|id| id == operation_id) {
         return Err(UNKNOWN);
     }
     Ok(())
 }
 
-fn own(state: &mut State, bootstrap_id: &str, operation_id: &str) -> Result<(), Code> {
+/// An owner leaves with its context, because a destroyed or expired context refuses each request.
+fn own(
+    state: &mut State,
+    contexts: &Contexts,
+    bootstrap_id: &str,
+    operation_id: &str,
+    now: Instant,
+) -> Result<(), Code> {
+    state.owners.retain(|id, _| contexts.get(id, now).is_ok());
     match state.owners.entry(bootstrap_id.to_string()) {
         Entry::Occupied(owner) if owner.get() != operation_id => Err(UNKNOWN),
         Entry::Occupied(_) => Ok(()),
@@ -2614,6 +2638,51 @@ mod tests {
     }
 
     #[test]
+    fn a_ninth_unacknowledged_input_chunk_is_refused_and_keeps_the_job() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let call = uuid();
+        let mut body = run_body(
+            &call,
+            &uuid(),
+            &workspace,
+            &["slow-stdin", "2000"],
+            "read",
+            json!({ "deadlineMs": 30_000 }),
+        );
+        let total = (QUEUED_CHUNKS_PER_STREAM + 1) * CHUNK_BYTES;
+        body["inputBytes"] = json!(total);
+        harness.send(body);
+        harness.output_line(&call, "stdout", "PID");
+        let chunk =
+            json!({ "type": "input", "callId": call, "data": encode(&vec![b'i'; CHUNK_BYTES]) });
+        // The child reads no stdin for 2 s, so no chunk gets `inputWritten` before the ninth.
+        for _ in 0..=QUEUED_CHUNKS_PER_STREAM {
+            harness.send(chunk.clone());
+        }
+        assert_eq!(
+            harness
+                .wait_reply(WAIT, |v| v["callId"] == call && v["type"] == "refused")
+                .map(|r| r.1),
+            Some(refused(&call, "INVALID_REQUEST"))
+        );
+        harness
+            .wait_reply(WAIT, |v| v["callId"] == call && v["type"] == "inputWritten")
+            .expect("inputWritten");
+        harness.send(chunk);
+        assert_eq!(
+            harness.output_line(&call, "stdout", "STDIN"),
+            total.to_string(),
+            "the refused chunk counts toward no total"
+        );
+        assert_eq!(
+            harness.exit(&call, WAIT).expect("exit").1["exitCode"],
+            0,
+            "the Job stays open, so the child exits by itself"
+        );
+    }
+
+    #[test]
     fn an_input_written_reply_never_follows_the_exit_reply() {
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
@@ -2721,6 +2790,36 @@ mod tests {
             assert_eq!(exit["exitCode"], 0);
             assert_eq!(exit["activeDescendants"], count);
         }
+    }
+
+    #[test]
+    fn ten_thousand_sequential_operations_leave_the_session_maps_bounded() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let program = test_exe();
+        for _ in 0..10_000 {
+            let read = uuid();
+            let bootstrap = harness
+                .contexts
+                .create(ContextKind::GitProbe, &program, Instant::now())
+                .expect("gitProbe context");
+            let call = uuid();
+            harness.send(json!({
+                "type": "identity", "callId": call, "operationId": read, "contextKind": "gitProbe",
+                "bootstrapId": bootstrap, "paths": [program],
+            }));
+            assert_eq!(harness.reply(&call)["type"], "identity");
+            harness.contexts.destroy(&bootstrap);
+            harness.send(json!({ "type": "closeJob", "operationId": read }));
+            let mutation = uuid();
+            harness.started(&mutation, &workspace);
+            assert_eq!(harness.requests.ended(&mutation, false), Ok(()));
+        }
+        let state = harness.requests.state();
+        assert!(state.inactive.len() <= INACTIVE_OPERATIONS, "inactive");
+        assert!(state.owners.len() <= 1, "owners");
+        assert!(state.started.is_empty(), "started");
+        assert!(state.calls.is_empty(), "calls");
     }
 
     #[test]

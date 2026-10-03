@@ -149,6 +149,16 @@ describe("version", () => {
   test.each([[2], [0], ["1"], [true], [null], [1.5], [-1]])("version %j gives PROTOCOL_VERSION", (version) =>
     expectCode({ ...envelope("getEnvironment"), version }, "PROTOCOL_VERSION"),
   );
+  // Contract §2: `version` is the integer `1`, so its literal has no fraction and no exponent.
+  const withVersion = (literal: string) => {
+    const text = JSON.stringify(envelope("getEnvironment")).replace('"version":1,', `"version":${literal},`);
+    expect(text).toContain(`"version":${literal},`);
+    return decodeRequest(new TextEncoder().encode(text), "renderer");
+  };
+  test.each([["1.0"], ["1e0"], ["1.00"], ["10e-1"], ["1E0"]])("version %s gives PROTOCOL_VERSION", (literal) =>
+    expect(withVersion(literal)).toEqual({ ok: false, code: "PROTOCOL_VERSION" }),
+  );
+  test("version 1 decodes", () => expect(withVersion("1")).toMatchObject({ ok: true }));
 });
 
 const BAD_IDS = [

@@ -13,9 +13,19 @@ const NUMBER = /-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/y;
 const LITERALS: Array<[string, unknown]> = [["true", true], ["false", false], ["null", null]];
 const ESCAPES: Record<number, string> = { 0x22: '"', 0x5c: "\\", 0x2f: "/", 0x62: "\b", 0x66: "\f", 0x6e: "\n", 0x72: "\r", 0x74: "\t" };
 
+// The keys of each decoded object whose number literal has a fraction or an exponent. `1.0` and `1` decode to the same value.
+const fractionOrExponent = new WeakMap<object, Set<string>>();
+
+// True only when `holder` came from `decodeStrictJson` and the literal of `key` has a fraction or an exponent.
+export function hasFractionOrExponent(holder: object, key: string): boolean {
+  return fractionOrExponent.get(holder)?.has(key) ?? false;
+}
+
 // Every byte outside a string must be ASCII JSON syntax. Each string segment between escapes is decoded once with a fatal decoder, so the scan also validates all UTF-8.
 export function decodeStrictJson(bytes: Uint8Array): StrictJsonResult {
   let at = 0;
+  // Set by the last parsed number.
+  let inexact = false;
 
   const fail = (): never => {
     throw new Invalid();
@@ -91,6 +101,7 @@ export function decodeStrictJson(bytes: Uint8Array): StrictJsonResult {
     const match = NUMBER.exec(text);
     if (!match || match[0].length !== text.length) return fail();
     at = end;
+    inexact = match[1] !== undefined || match[2] !== undefined;
     const value = Number(text);
     if (!Number.isFinite(value) || (match[1] === undefined && match[2] === undefined && !Number.isSafeInteger(value))) fail();
     return value;
@@ -147,8 +158,14 @@ export function decodeStrictJson(bytes: Uint8Array): StrictJsonResult {
       if (Object.hasOwn(out, key)) fail();
       skipSpace();
       if (bytes[at++] !== 0x3a) fail();
+      const value = parseValue(depth);
+      if (typeof value === "number" && inexact) {
+        const keys = fractionOrExponent.get(out) ?? new Set<string>();
+        keys.add(key);
+        fractionOrExponent.set(out, keys);
+      }
       // defineProperty keeps `__proto__` an own data property.
-      Object.defineProperty(out, key, { value: parseValue(depth), enumerable: true, writable: true, configurable: true });
+      Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true });
       skipSpace();
       const b = bytes[at++];
       if (b === 0x7d) return out;

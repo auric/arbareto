@@ -14,7 +14,7 @@ import {
   SHELL_ONLY,
   type OperationName,
 } from "./operations";
-import { decodeStrictJson } from "./strict-json";
+import { decodeStrictJson, hasFractionOrExponent } from "./strict-json";
 
 export type Side = "renderer" | "service";
 
@@ -46,7 +46,7 @@ export function decodeRequest(bytes: Uint8Array, side: Side): RequestResult {
 export function validateRequest(value: unknown, side: Side): RequestResult {
   const invalid = { ok: false, code: "INVALID_REQUEST" } as const;
   if (!isObject(value) || !Object.hasOwn(value, "version")) return invalid;
-  if (value.version !== 1) return { ok: false, code: "PROTOCOL_VERSION" };
+  if (value.version !== 1 || hasFractionOrExponent(value, "version")) return { ok: false, code: "PROTOCOL_VERSION" };
   const operation = value.operation;
   if (typeof operation !== "string") return invalid;
   if (!isOperationName(operation) || (side === "service" && SHELL_ONLY.includes(operation))) {

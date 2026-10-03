@@ -14,7 +14,7 @@ import {
   WEBVIEW2_VERSION_BYTES,
 } from "../contracts/limits";
 import { isFingerprint, isIdentifier, MUTATIONS, REPOSITORY_BOUND, type OperationName } from "../contracts/operations";
-import { decodeStrictJson } from "../contracts/strict-json";
+import { decodeStrictJson, hasFractionOrExponent } from "../contracts/strict-json";
 import { isChannelPath, RunnerRefusal, type GitRunner } from "./git-runner";
 import { getEnvironment } from "./environment";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
@@ -218,7 +218,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     const body = frame.handshake;
     const reply = (handshake: Fields) => writer.write({ kind: "handshake", handshake });
     if (sessionId !== null) return reply({ code: "INVALID_REQUEST" });
-    if (Object.keys(frame).length === 2 && isHandshake(body)) {
+    const version = isObject(body) && Object.hasOwn(body, "version") && (body.version !== 1 || hasFractionOrExponent(body, "version"));
+    if (Object.keys(frame).length === 2 && !version && isHandshake(body)) {
       handshake = body as unknown as Handshake;
       sessionId = crypto.randomUUID();
       reply({ sessionId });
@@ -243,7 +244,6 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       revalidateSavedGit(runner, saved, operationId).then(settle, (error) => settle(failure(error instanceof RunnerRefusal ? error.code : "GIT_FAILED")));
       return;
     }
-    const version = isObject(body) && Object.hasOwn(body, "version") && body.version !== 1;
     reply({ code: version ? "PROTOCOL_VERSION" : "INVALID_REQUEST" });
     fail();
   }

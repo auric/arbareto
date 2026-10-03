@@ -35,6 +35,9 @@ import {
 import { printOrigin } from "../origin";
 import { closePipe, createInboundPipe, peekPipe, processCreationTime, readIdentity, readPipe, terminateRecorded, type InboundPipe } from "./win32";
 
+printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
+printOrigin("../../src/contracts/limits.ts", import.meta.dir);
+printOrigin("../../src/contracts/operations.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 
 // The shell polls a silent pipe every 10 ms (src-tauri/src/process_requests.rs `POLL`).

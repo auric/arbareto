@@ -92,7 +92,7 @@ export function decodeStrictJson(bytes: Uint8Array): StrictJsonResult {
     if (!match || match[0].length !== text.length) return fail();
     at = end;
     const value = Number(text);
-    if (match[1] === undefined && match[2] === undefined && !Number.isSafeInteger(value)) fail();
+    if (!Number.isFinite(value) || (match[1] === undefined && match[2] === undefined && !Number.isSafeInteger(value))) fail();
     return value;
   };
 

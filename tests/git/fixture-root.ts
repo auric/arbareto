@@ -5,7 +5,11 @@ import { afterAll, beforeAll } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import gitEnvironment from "../../src/contracts/git-environment.json";
+import { printOrigin } from "../origin";
 import { GIT } from "./git-binary";
+
+printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
 
 export class FixturePathRefusal extends Error {}
 
@@ -70,7 +74,8 @@ export function fixturePath(...segments: string[]): string {
 }
 
 // T043 removes these from every fixture and service-under-test process.
-const REMOVED = [/^GIT_CONFIG_PARAMETERS$/i, /^GIT_CONFIG_COUNT$/i, /^GIT_CONFIG_(KEY|VALUE)_\d+$/i, /^GIT_CONFIG$/i, /^GIT_(AUTHOR|COMMITTER)_/i, /^EMAIL$/i];
+const REMOVED = [/^GIT_CONFIG_PARAMETERS$/i, /^GIT_CONFIG_COUNT$/i, /^GIT_CONFIG_(KEY|VALUE)_\d+$/i, /^GIT_CONFIG$/i, /^GIT_(AUTHOR|COMMITTER)_/i, /^EMAIL$/i, /^GIT_TEST_/i];
+const LOCATION = new Set(gitEnvironment.policies.probe.remove.map((name) => name.toUpperCase()));
 const REDIRECTED = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"];
 
 type Env = Record<string, string | undefined>;
@@ -79,7 +84,7 @@ type Env = Record<string, string | undefined>;
 function ownedEnv(base: Env, extra: Env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
-    if (value === undefined || REMOVED.some((r) => r.test(key)) || REDIRECTED.includes(key.toUpperCase())) continue;
+    if (value === undefined || REMOVED.some((r) => r.test(key)) || LOCATION.has(key.toUpperCase()) || REDIRECTED.includes(key.toUpperCase())) continue;
     env[key] = value;
   }
   Object.assign(env, {

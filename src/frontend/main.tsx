@@ -3,29 +3,36 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Suspense, use, useState } from "react";
+import { Suspense, use, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createBridge, type BridgeResponse } from "./bridge";
 import { BootView, bootActions, type Environment } from "./boot/BootView";
 
+let sessionChanged = () => {};
 // The capability grants no `unlisten`, so the bridge must exist once for the page life, outside React.
-const bridge = createBridge(invoke, listen);
-const firstEnvironment = bridge.getEnvironment();
-const hasSession = bridge.currentSession().then((response) => response.state === "succeeded");
+const bridge = createBridge(invoke, listen, () => sessionChanged());
+const load = () => ({
+  environment: bridge.getEnvironment(),
+  hasSession: bridge.currentSession().then((response) => response.state === "succeeded"),
+});
+const firstLoad = load();
 
 function App() {
-  const [environment, setEnvironment] = useState(firstEnvironment);
-  const reload = () => setEnvironment(bridge.getEnvironment());
+  const [view, setView] = useState(firstLoad);
+  const reload = () => setView(load());
+  useEffect(() => {
+    sessionChanged = reload;
+  }, []);
   return (
     <Suspense fallback={<BootView state="loading" />}>
-      <Boot response={environment} reload={reload} />
+      <Boot view={view} reload={reload} />
     </Suspense>
   );
 }
 
-function Boot({ response, reload }: { response: Promise<BridgeResponse>; reload: () => void }) {
-  const result = use(response);
-  const session = use(hasSession);
+function Boot({ view, reload }: { view: { environment: Promise<BridgeResponse>; hasSession: Promise<boolean> }; reload: () => void }) {
+  const result = use(view.environment);
+  const session = use(view.hasSession);
   if (result.state !== "succeeded") return <BootView state="unavailable" code={result.code ?? result.state} session={session} />;
   return <BootView state="facts" environment={result.result as Environment} {...bootActions(bridge, reload)} />;
 }

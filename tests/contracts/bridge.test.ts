@@ -53,6 +53,9 @@ interface Options {
   // Return undefined to keep the request without a response.
   answer?: (command: string, request: Envelope) => unknown;
   reject?: (command: string) => boolean;
+  // Replaces the resolved subscription result of the double.
+  listen?: (event: string) => Promise<unknown>;
+  onSessionChange?: () => void;
 }
 
 function harness(options: Options = {}) {
@@ -60,11 +63,13 @@ function harness(options: Options = {}) {
   const calls: { command: string; request: Envelope }[] = [];
   const listens: string[] = [];
   const handlers = new Map<string, Handler>();
+  const timeline: string[] = [];
   let unlistens = 0;
 
   const invoke = (command: string, args?: unknown): Promise<unknown> => {
     const request = (args as { request: Envelope }).request;
     calls.push({ command, request });
+    timeline.push(`invoke ${command}`);
     if (options.reject?.(command)) return Promise.reject(new Error(`command ${command} not found`));
     if (command === "current_session") return Promise.resolve({ requestId: request.requestId, state: "succeeded", result: { sessionId } });
     const answer = options.answer ? options.answer(command, request) : defaultAnswer(request);
@@ -76,17 +81,20 @@ function harness(options: Options = {}) {
       : { requestId: request.requestId, state: "rejected", code: "UNKNOWN_TARGET" };
   const listen = (event: string, handler: Handler) => {
     listens.push(event);
+    timeline.push(`listen ${event}`);
     handlers.set(event, handler);
+    if (options.listen) return options.listen(event);
     return Promise.resolve(() => {
       unlistens++;
     });
   };
 
-  const bridge = createBridge(invoke, listen);
+  const bridge = createBridge(invoke, listen, options.onSessionChange);
   return {
     bridge,
     calls,
     listens,
+    timeline,
     unlistens: () => unlistens,
     emit: (event: string, payload: unknown = {}) => handlers.get(event)?.({ payload }),
     newSession: () => (sessionId = id()),
@@ -234,6 +242,44 @@ describe("frontend bridge", () => {
     await h.bridge.getEnvironment();
     expect(h.listens.toSorted()).toEqual(["operation-progress", "service-session", "service-stopped"]);
     expect(h.unlistens()).toBe(0);
+  });
+
+  test("the bridge subscribes to each shell event before the first currentSession call", async () => {
+    const h = harness({ listen: () => new Promise(() => {}) });
+    expect(h.timeline.slice(0, 3).toSorted()).toEqual(["listen operation-progress", "listen service-session", "listen service-stopped"]);
+    expect(h.timeline.slice(3)).toEqual(["invoke current_session"]);
+    expect(((await h.bridge.getEnvironment()) as { state: string }).state).toBe("succeeded");
+  });
+
+  test("a rejected listen leaves no unhandled rejection, and the bridge still reads the session", async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => void unhandled.push(reason);
+    process.on("unhandledRejection", record);
+    try {
+      const h = harness({ listen: () => Promise.reject(new Error("listen denied")) });
+      await settle();
+      await settle();
+      expect(h.listens.toSorted()).toEqual(["operation-progress", "service-session", "service-stopped"]);
+      expect(h.calls.map((c) => c.command)).toEqual(["current_session"]);
+      expect(((await h.bridge.getEnvironment()) as { state: string }).state).toBe("succeeded");
+      await settle();
+      expect(unhandled).toEqual([]);
+      expect(h.unlistens()).toBe(0);
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+  });
+
+  test("onSessionChange runs after a service-session event reads the new session, and not at load", async () => {
+    let changes = 0;
+    const h = harness({ onSessionChange: () => void changes++ });
+    await settle();
+    expect(changes).toBe(0);
+    h.newSession();
+    h.emit("service-session");
+    await settle();
+    expect(changes).toBe(1);
+    expect(h.calls.map((c) => c.command)).toEqual(["current_session", "current_session"]);
   });
 
   test("the bridge exports no generic invoke function", () => {

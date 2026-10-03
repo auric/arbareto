@@ -545,7 +545,7 @@ This subsection defines the bodies of `process`, `mutation`, and `trust` frames.
 - A reply repeats the request `type`, except the `run` and `input` replies and `refused`.
 - `ended`, `resolved`, `release`, and `closeJob` carry no `callId` and get no reply.
 - `cancel` and `input` carry the `callId` of their `run` request.
-- Paths are absolute, have 1 to 32,767 UTF-16 units, and hold no NUL or lone surrogate.
+- Paths are absolute, have 1 to 32,767 UTF-16 units, and hold no NUL or lone surrogate. A path never starts with the device prefix `\\.\` or `\\?\`, with either separator.
 - Bytes travel as standard base64 with padding. A decoded chunk holds 1 to 65,536 bytes.
 
 **Process requests.** The service sends these with `kind` `process`.

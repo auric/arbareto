@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { printOrigin } from "../origin";
+import { PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES } from "../../src/contracts/limits";
+import type { GitRunner } from "../../src/git-service/git-runner";
+import { createSession, type SessionOptions } from "../../src/git-service/session";
+
+printOrigin("../../src/contracts/limits.ts", import.meta.dir);
+printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
+printOrigin("../../src/git-service/session.ts", import.meta.dir);
+
+const DEADLINE_MS = 100;
+const WAIT_MS = 5_000;
+const TEST_TIMEOUT_MS = 10_000;
+
+// The saved Git is this test file: a small file with a fully qualified Windows path.
+const SAVED_GIT = {
+  bootstrapId: "00000000-0000-4000-8000-0000000000aa",
+  executablePath: import.meta.path,
+  version: "2.55.0.windows.3",
+  digest: new Bun.CryptoHasher("sha256").update(readFileSync(import.meta.path)).digest("hex"),
+};
+const HANDSHAKE = {
+  version: 1,
+  restarted: false,
+  platformScope: "other",
+  osBuild: 26200,
+  webView2Version: "140.0.0.0",
+  buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
+  markers: [],
+  unloadedMarkers: 0,
+  trustRecords: [],
+  savedGit: SAVED_GIT,
+};
+const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
+
+type Response = { requestId: string | null; state: string; code?: string; result?: { gitCode?: string } };
+
+function startSession(runner: Partial<GitRunner>) {
+  const responses: Response[] = [];
+  const calls = { closeJob: [] as string[], release: [] as unknown[] };
+  const session = createSession({
+    writer: { write: (frame) => void ("response" in frame && responses.push(frame.response as Response)), flush: async () => {} },
+    runner: {
+      closeJob: (id: string) => void calls.closeJob.push(id),
+      release: (target: unknown) => void calls.release.push(target),
+      receive: () => false,
+      ...runner,
+    } as unknown as SessionOptions["runner"],
+    fail: () => {},
+    startupDeadlineMs: DEADLINE_MS,
+  });
+  const send = (frame: object) => session.receive({ type: "frame", body: new TextEncoder().encode(JSON.stringify(frame)) });
+  send({ kind: "handshake", handshake: HANDSHAKE });
+  const sessionId = session.sessionId as string;
+  const getEnvironment = (requestId: string = crypto.randomUUID()) => {
+    send({ kind: "public", request: { version: 1, sessionId, requestId, operation: "getEnvironment", payload: {} } });
+    return requestId;
+  };
+  const responseFor = async (requestId: string) => {
+    const deadline = Date.now() + WAIT_MS;
+    for (;;) {
+      const found = responses.filter((r) => r.requestId === requestId);
+      if (found.length > 0) return found;
+      if (Date.now() > deadline) throw new Error(`no response for ${requestId}`);
+      await Bun.sleep(10);
+    }
+  };
+  return { responses, calls, send, sessionId, getEnvironment, responseFor };
+}
+
+const never = () => new Promise<never>(() => {});
+
+test(
+  "a startup revalidation that never settles ends at the deadline with DEADLINE",
+  async () => {
+    const { calls, getEnvironment, responseFor } = startSession({ identities: never });
+    const id = getEnvironment();
+    const [response] = await responseFor(id);
+    expect(response).toMatchObject({ state: "succeeded", result: { gitCode: "DEADLINE" } });
+    // The startup Job closes first. The `getEnvironment` operation then closes its own Job.
+    expect(calls.closeJob).toHaveLength(2);
+    const operationId = (response as { operationId?: string }).operationId as string;
+    expect(calls.closeJob[0]).not.toBe(operationId);
+    expect(calls.closeJob[1]).toBe(operationId);
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  `the startup gate holds ${PENDING_READS_GLOBAL} public frames and rejects the rest with SERVICE_UNAVAILABLE after the requestId claim`,
+  async () => {
+    const { responses, getEnvironment, responseFor } = startSession({ identities: never });
+    const held = Array.from({ length: PENDING_READS_GLOBAL }, () => getEnvironment());
+    expect(responses).toEqual([]);
+    const extra = getEnvironment();
+    expect(responses).toEqual([{ requestId: extra, state: "rejected", code: "SERVICE_UNAVAILABLE" }]);
+    getEnvironment(extra);
+    expect(responses[1]).toEqual({ requestId: extra, state: "rejected", code: "INVALID_REQUEST" });
+    for (const id of held) {
+      const terminal = (await responseFor(id)).filter((r) => r.state !== "accepted");
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ state: "succeeded", result: { gitCode: "DEADLINE" } });
+    }
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  "a held oversize frame counts toward the cap and gets FRAME_LIMIT when the gate opens",
+  async () => {
+    const { responses, send, sessionId, getEnvironment, responseFor } = startSession({ identities: never });
+    const held = Array.from({ length: PENDING_READS_GLOBAL - 1 }, () => getEnvironment());
+    const pad = "a".repeat(PUBLIC_FRAME_BODY_BYTES);
+    send({ kind: "public", request: { version: 1, sessionId, requestId: crypto.randomUUID(), operation: "getEnvironment", payload: {}, pad } });
+    expect(responses).toEqual([]);
+    const extra = getEnvironment();
+    expect(responses).toEqual([{ requestId: extra, state: "rejected", code: "SERVICE_UNAVAILABLE" }]);
+    for (const id of held) expect(await responseFor(id)).toHaveLength(1);
+    expect(responses.filter((r) => r.requestId === null)).toEqual([{ requestId: null, state: "rejected", code: "FRAME_LIMIT" }]);
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  "a startup revalidation that throws reports GIT_FAILED, not GIT_UNAVAILABLE",
+  async () => {
+    const { getEnvironment, responseFor } = startSession({
+      identities: async () => {
+        throw new Error("identity reply lost");
+      },
+    });
+    const [response] = await responseFor(getEnvironment());
+    expect(response).toMatchObject({ state: "succeeded", result: { gitCode: "GIT_FAILED" } });
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  "a startup registration that approves after the deadline releases its gitInstallationId",
+  async () => {
+    let approve!: () => void;
+    const registered: string[] = [];
+    const { calls, getEnvironment, responseFor } = startSession({
+      identities: async () => [IDENTITY],
+      run: async (call) => {
+        call.stdout.push(new TextEncoder().encode("git version 2.55.0.windows.3\ncpu: x86_64\n"));
+        return { exitCode: 0, activeDescendants: 0 } as never;
+      },
+      register: (request) => {
+        registered.push(request.gitInstallationId);
+        return new Promise((resolve) => (approve = () => resolve({ result: "approved" })));
+      },
+    });
+    const [response] = await responseFor(getEnvironment());
+    expect(response).toMatchObject({ state: "succeeded", result: { gitCode: "DEADLINE" } });
+    expect(registered).toHaveLength(1);
+    approve();
+    await Bun.sleep(20);
+    expect(calls.release).toEqual([{ gitInstallationId: registered[0] }]);
+    const [later] = await responseFor(getEnvironment());
+    expect(later).toMatchObject({ state: "succeeded", result: { gitCode: "DEADLINE" } });
+  },
+  TEST_TIMEOUT_MS,
+);

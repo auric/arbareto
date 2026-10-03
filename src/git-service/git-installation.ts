@@ -36,7 +36,7 @@ export interface GitProbeOptions {
   signal?: AbortSignal;
 }
 
-const failure = (gitCode: ErrorCode, detectedVersion?: string): GitProbeResult => ({
+export const failure = (gitCode: ErrorCode, detectedVersion?: string): GitProbeResult => ({
   ok: false,
   gitCode,
   ...(detectedVersion === undefined ? {} : { detectedVersion }),

@@ -9,7 +9,9 @@ import { describeGit } from "./git-binary";
 import {
   FIXTURE_GLOBAL_CONFIG,
   FIXTURE_ROOT,
+  fixtureDir,
   fixtureEnv,
+  fixtureGit,
   fixturePath,
   FixturePathRefusal,
   realGlobalConfigDigests,
@@ -18,7 +20,7 @@ import {
   useFixtureRoot,
 } from "./fixture-root";
 
-// This file imports no `src/` module, so it prints no ORIGIN line.
+// `fixture-root.ts` prints the ORIGIN line of the `src/` module that it imports.
 
 const canonical = (p: string) => p.replaceAll("\\", "/").toLowerCase();
 const insideRoot = (p: string) => canonical(p).startsWith(canonical(FIXTURE_ROOT) + "/");
@@ -88,7 +90,16 @@ describeGit("fixture root", (git) => {
   });
 
   test("fixture and service processes lack the removed variables", () => {
+    // The repository-location canaries point at a throwaway repository inside the owned root.
+    const canaryRepo = fixtureDir("canary-repo");
+    fixtureGit(git, canaryRepo, ["init", "-q"]);
     const canaries: Record<string, string> = {
+      GIT_DIR: join(canaryRepo, ".git"),
+      git_index_file: join(canaryRepo, ".git", "index"),
+      GIT_WORK_TREE: canaryRepo,
+      GIT_COMMON_DIR: join(canaryRepo, ".git"),
+      GIT_CEILING_DIRECTORIES: canaryRepo,
+      GIT_TEST_CANARY: "canary",
       GIT_CONFIG_PARAMETERS: "'user.name'='canary'",
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "user.name",
@@ -113,7 +124,7 @@ describeGit("fixture root", (git) => {
       const proc = Bun.spawnSync([process.execPath, "-e", script], { cwd: FIXTURE_ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
       expect(proc.exitCode).toBe(0);
       const seen = JSON.parse(proc.stdout.toString()) as Record<string, string>;
-      const present = Object.keys(seen).filter((k) => /^(GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+|GIT_CONFIG|GIT_(AUTHOR|COMMITTER)_.*|EMAIL)$/i.test(k));
+      const present = Object.keys(seen).filter((k) => /^(GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+|GIT_CONFIG|GIT_(AUTHOR|COMMITTER)_.*|EMAIL|GIT_DIR|GIT_INDEX_FILE|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_CEILING_DIRECTORIES|GIT_TEST_.*)$/i.test(k));
       console.log(`REMOVED_VARIABLES ${name} present=${JSON.stringify(present)}`);
       expect(present).toEqual([]);
       expect(Object.values(seen).some((v) => v.includes("canary"))).toBe(false);

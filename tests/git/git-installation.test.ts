@@ -13,6 +13,7 @@ import { createBunRunner, type BunRunner } from "./bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { readIdentity } from "./win32";
 
+printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-installation.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);

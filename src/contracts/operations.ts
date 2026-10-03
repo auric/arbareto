@@ -81,7 +81,7 @@ export function isIdentifier(value: unknown): value is string {
 export const isFingerprint = (value: unknown) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 // Contract §3 `chooseGit`: the §6 channel path rule. Microsoft Learn "File path formats on Windows systems": a fully qualified path starts with a drive letter and a separator, or with two separators.
 const isWindowsPath = (value: unknown) =>
-  typeof value === "string" && value.length <= CHANNEL_PATH_UNITS && !value.includes("\u0000") && value.isWellFormed() && /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(value);
+  typeof value === "string" && value.length <= CHANNEL_PATH_UNITS && !value.includes("\u0000") && value.isWellFormed() && /^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![.?][\\/]))/.test(value);
 const isTrue = (value: unknown) => value === true;
 const isBoolean = (value: unknown) => typeof value === "boolean";
 const oneOf =

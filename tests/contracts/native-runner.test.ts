@@ -11,7 +11,7 @@ import {
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../../src/contracts/limits";
-import { createCollector, PROCESS_LIMITS, type GitCall, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
+import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, type GitCall, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
 import { createNativeRunner } from "../../src/git-service/native-runner";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -146,8 +146,9 @@ describe("native runner run requests", () => {
     expect(channel.sent).toEqual([]);
     void channel.runner.run(call({ limits: { deadlineMs: 120_000, stallMs: 15_000 } }));
     void channel.runner.run(call({ context: probe, environmentPolicy: "probe", arguments: version, limits: { deadlineMs: 30_000 } }));
-    void channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }));
-    expect(channel.bodies("run").length).toBe(3);
+    // `git-environment.json` has no `network` policy until T228, so the call sends no `run` frame.
+    void channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network })).catch(() => {});
+    expect(channel.bodies("run").length).toBe(2);
   });
 
   test("strings with a NUL or a lone surrogate and over-long command lines are refused", async () => {
@@ -185,6 +186,12 @@ describe("native runner run requests", () => {
     for (const bad of [
       { stream: "stdin", data: chunk(1) },
       { stream: "stdout", data: "not base64!" },
+      { stream: "stdout", data: "QUI" },
+      { stream: "stdout", data: "QQ" },
+      { stream: "stdout", data: "Q U J D" },
+      { stream: "stdout", data: "QUJ\nD" },
+      { stream: "stdout", data: "QUJD\r\n" },
+      { stream: "stdout", data: "QUJD\t" },
       { stream: "stdout", data: chunk(NATIVE_CHUNK_BYTES + 1) },
       { stream: "stdout", data: "" },
       { stream: "stdout", data: chunk(1), extra: 1 },
@@ -334,29 +341,20 @@ describe("native runner stderr bound", () => {
     await again;
   });
 
-  test("a network call counts its own 4 MiB", async () => {
-    const channel = createChannelDouble();
+  // The runner refuses a `network` call until T228, so the counter rule is checked directly.
+  test("the diagnostic counter gives a network call its own 4 MiB", () => {
+    const counter = createDiagnosticCounter();
     const operationId = id();
-    const network = (fields: Partial<GitCall> = {}) => call({ operationId, environmentPolicy: "network", limits: PROCESS_LIMITS.network, ...fields });
-    const read = channel.runner.run(call({ operationId }));
-    const readId = channel.last("run").callId;
-    stderr(channel, readId, 3 * MIB);
-    channel.reply("process", exit(readId));
-    await read;
-    const first = channel.runner.run(network());
-    const firstId = channel.last("run").callId;
-    stderr(channel, firstId, 3 * MIB);
-    channel.reply("process", exit(firstId));
-    expect(await first).toEqual({ exitCode: 0, activeDescendants: 0 });
-    expect(channel.bodies("cancel")).toEqual([]);
-    const second = channel.runner.run(network());
-    const secondId = channel.last("run").callId;
-    stderr(channel, secondId, UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION - 1);
-    expect(channel.bodies("cancel")).toEqual([]);
-    stderr(channel, secondId, 1);
-    expect(channel.bodies("cancel")).toEqual([{ type: "cancel", callId: secondId }]);
-    channel.reply("process", exit(secondId, { exitCode: null }));
-    expect(await second).toMatchObject({ diagnosticLimit: true });
+    const read = { operationId, environmentPolicy: "read", stderr: { bytes: 0 } } as unknown as GitCall;
+    const networkStderr = { bytes: 0 };
+    const network = { operationId, environmentPolicy: "network", stderr: networkStderr } as unknown as GitCall;
+    expect(counter.add(read, 3 * MIB)).toBe(false);
+    networkStderr.bytes = UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION - 1;
+    expect(counter.add(network, UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION - 1)).toBe(false);
+    expect(counter.add(read, 1)).toBe(false);
+    networkStderr.bytes = UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION;
+    expect(counter.add(network, 1)).toBe(true);
+    expect(counter.add(read, MIB - 1)).toBe(true);
   });
 });
 
@@ -512,7 +510,7 @@ describe("native runner identity, lingering count, and registration", () => {
   test("a register reply another needs a fully qualified executablePath", async () => {
     const channel = createChannelDouble();
     const git = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), version: "2.55.0.windows.1", confirm: true };
-    for (const path of [undefined, "git.exe", "\\Git\\git.exe", "C:\\Git\u0000\\git.exe"]) {
+    for (const path of [undefined, "git.exe", "\\Git\\git.exe", "C:\\Git\u0000\\git.exe", "\\\\.\\pipe\\git", "//?/C:/Git/git.exe"]) {
       const asked = channel.runner.register(git);
       const reply = { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: id(), ...(path === undefined ? {} : { executablePath: path }) };
       expect(channel.reply("process", reply)).toBe(false);

@@ -4,16 +4,20 @@
 import { validateRequest, type RequestEnvelope } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
 import {
+  GIT_PROCESS_DEADLINE_MS,
+  PENDING_READS_GLOBAL,
   PUBLIC_FRAME_BODY_BYTES,
+  RECOVERY_MARKER_BYTES,
   RECOVERY_MARKERS_PER_HANDSHAKE,
+  TRUST_RECORD_BYTES,
   TRUST_RECORDS,
   WEBVIEW2_VERSION_BYTES,
 } from "../contracts/limits";
 import { isFingerprint, isIdentifier, MUTATIONS, REPOSITORY_BOUND, type OperationName } from "../contracts/operations";
 import { decodeStrictJson } from "../contracts/strict-json";
-import { isChannelPath, type GitRunner } from "./git-runner";
+import { isChannelPath, RunnerRefusal, type GitRunner } from "./git-runner";
 import { getEnvironment } from "./environment";
-import { probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
+import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createSessionLog } from "./log";
 import { createOperationRegistry, type Response } from "./operations";
 import { isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
@@ -23,7 +27,6 @@ type Fields = Record<string, unknown>;
 
 const isObject = (v: unknown): v is Fields => typeof v === "object" && v !== null && !Array.isArray(v);
 const isCount: Check = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
-const isString: Check = (v) => typeof v === "string";
 const isHex = (digits: number): Check => (v) => typeof v === "string" && v.length === digits && /^[0-9a-f]+$/.test(v);
 const oneOf =
   (...allowed: unknown[]): Check =>
@@ -45,6 +48,13 @@ const isUtcTime: Check = (v) => {
   return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d && h < 24 && mi < 60 && s <= 60;
 };
 const isAscii: Check = (v) => typeof v === "string" && v.length <= WEBVIEW2_VERSION_BYTES && /^[\x00-\x7f]*$/.test(v);
+// The register `version` rule of contract §6 "Context rules".
+const isPrintable: Check = (v) => typeof v === "string" && v.length <= WEBVIEW2_VERSION_BYTES && /^[\x20-\x7e]*$/.test(v);
+// Contract §5 bounds each record by the bytes of its JSON encoding.
+const withinBytes =
+  (max: number, check: Check): Check =>
+  (v) =>
+    check(v) && new TextEncoder().encode(JSON.stringify(v)).length <= max;
 
 function exact(fields: Record<string, Check>, optional: string[] = []): Check {
   return (v) => {
@@ -55,16 +65,16 @@ function exact(fields: Record<string, Check>, optional: string[] = []): Check {
 
 // Contract §6 "Process fields": a Windows identity reply.
 const isIdentity = exact({ volumeSerial: isHex(16), fileId: isHex(32) });
-const isMarker = exact({
+const isMarker = withinBytes(RECOVERY_MARKER_BYTES, exact({
   markerId: isIdentifier,
   kind: oneOf(...MUTATIONS),
   startedAt: isUtcTime,
   worktreeRoot: isChannelPath,
   commonDirectory: isChannelPath,
   commonIdentity: isIdentity,
-});
+}));
 // Contract §6 "Startup handshake": also the record form of a `confirm` reply.
-export const isTrustRecord = exact({
+export const isTrustRecord = withinBytes(TRUST_RECORD_BYTES, exact({
   commonDirectory: isChannelPath,
   commonIdentity: isIdentity,
   worktreeRoot: isChannelPath,
@@ -73,7 +83,7 @@ export const isTrustRecord = exact({
   configurationFingerprint: isFingerprint,
   approvedAt: isUtcTime,
   gitInstallationDigest: isFingerprint,
-});
+}));
 const isHandshake = exact(
   {
     version: oneOf(1),
@@ -82,11 +92,11 @@ const isHandshake = exact(
     osBuild: isCount,
     webView2Version: isAscii,
     // `commit` is a SHA-1 or SHA-256 commit ID.
-    buildIdentity: exact({ version: isString, commit: (v) => typeof v === "string" && /^([0-9a-f]{40}|[0-9a-f]{64})(-dirty)?$/.test(v), signing: oneOf("unsigned") }),
+    buildIdentity: exact({ version: isPrintable, commit: (v) => typeof v === "string" && /^([0-9a-f]{40}|[0-9a-f]{64})(-dirty)?$/.test(v), signing: oneOf("unsigned") }),
     markers: arrayOf(RECOVERY_MARKERS_PER_HANDSHAKE, isMarker),
     unloadedMarkers: isCount,
     trustRecords: arrayOf(TRUST_RECORDS, isTrustRecord),
-    savedGit: exact({ bootstrapId: isIdentifier, executablePath: isChannelPath, version: isString, digest: isFingerprint }),
+    savedGit: exact({ bootstrapId: isIdentifier, executablePath: isChannelPath, version: isPrintable, digest: isFingerprint }),
   },
   ["savedGit"],
 );
@@ -112,9 +122,11 @@ export interface SessionOptions {
   runner: GitRunner & { receive(frame: Frame): boolean };
   // Called after a failed handshake reply. The service then exits.
   fail(): void;
+  // Contract §5 "Other Git process deadline" bounds the startup revalidation. Tests set a shorter value.
+  startupDeadlineMs?: number;
 }
 
-export function createSession({ writer, runner, fail }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -122,8 +134,8 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
   const log = createSessionLog();
   // Null until the startup revalidation or a `chooseGit` gives a result.
   let git: GitProbeResult | null = null;
-  // Contract §6 "Startup contexts": public requests wait for the revalidation of `savedGit`.
-  let startup: Promise<void> | null = null;
+  // Contract §6 "Startup contexts": public requests wait for the revalidation of `savedGit`. Contract §5 "Pending reads" caps the queue.
+  let startup: (() => void)[] | null = null;
 
   const respond = (response: Response) => {
     if (response.state === "rejected" && !codeFitsState("rejected", response.code)) throw new Error("rejected response needs an error code");
@@ -212,15 +224,21 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
       if (!saved) return;
       // Contract §6 "Context rules": the startup `gitProbe` context has no public operation.
       const operationId = crypto.randomUUID();
-      startup = revalidateSavedGit(runner, saved, operationId)
-        .then(
-          (result) => void (git = result),
-          () => {},
-        )
-        .finally(() => {
-          runner.closeJob(operationId);
-          startup = null;
-        });
+      startup = [];
+      let settled = false;
+      const settle = (result: GitProbeResult) => {
+        // A registration that ends after the deadline binds an ID that no service state owns.
+        if (settled) return void (result.ok && runner.release({ gitInstallationId: result.installation.gitInstallationId }));
+        settled = true;
+        clearTimeout(timer);
+        git = result;
+        runner.closeJob(operationId);
+        const waiting = startup ?? [];
+        startup = null;
+        for (const next of waiting) next();
+      };
+      const timer = setTimeout(() => settle(failure("DEADLINE")), startupDeadlineMs);
+      revalidateSavedGit(runner, saved, operationId).then(settle, (error) => settle(failure(error instanceof RunnerRefusal ? error.code : "GIT_FAILED")));
       return;
     }
     const version = isObject(body) && Object.hasOwn(body, "version") && body.version !== 1;
@@ -258,7 +276,12 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
       if (frame.kind === "handshake") return receiveHandshake(frame);
       if (frame.kind === "public") {
         const size = incoming.body.length;
-        return void (startup ? startup.then(() => receivePublic(frame, size)) : receivePublic(frame, size));
+        if (!startup) return receivePublic(frame, size);
+        // A held oversize frame keeps only its answer, not its decoded body.
+        if (size > PUBLIC_FRAME_BODY_BYTES) return void (startup.length < PENDING_READS_GLOBAL ? startup.push(() => reject(null, "FRAME_LIMIT")) : reject(null, "FRAME_LIMIT"));
+        if (startup.length < PENDING_READS_GLOBAL) return void startup.push(() => receivePublic(frame, size));
+        const requestId = requestIdOf(frame.request);
+        return reject(requestId, claim(requestId) ? "SERVICE_UNAVAILABLE" : "INVALID_REQUEST");
       }
       if (!runner.receive(frame as Frame)) reject(null, "INVALID_REQUEST");
     },

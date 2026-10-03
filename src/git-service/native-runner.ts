@@ -52,9 +52,10 @@ const invalid = (detail: string): never => {
   throw new RunnerRefusal("INVALID_REQUEST", detail);
 };
 
-// Standard base64 with padding, 1 to 65,536 decoded bytes.
+// Standard base64 with padding, 1 to 65,536 decoded bytes. `fromBase64` accepts missing padding and white space.
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 function decodeChunk(data: unknown): Uint8Array | undefined {
-  if (typeof data !== "string") return undefined;
+  if (typeof data !== "string" || !BASE64.test(data)) return undefined;
   try {
     const bytes = Uint8Array.fromBase64(data);
     return bytes.length > 0 && bytes.length <= NATIVE_CHUNK_BYTES ? bytes : undefined;

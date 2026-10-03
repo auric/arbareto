@@ -90,6 +90,11 @@ describe("integers outside the safe range", () => {
   );
 });
 
+describe("non-finite numbers", () => {
+  test.each([["1e400"], ["-1e400"], ['{"n":1.5e309}']])("%s gives INVALID_REQUEST", (text) => expectInvalid(utf8(text)));
+  test.each([["1.5"], ["1e2"], ["1.7976931348623157e308"]])("%s decodes", (text) => expectSameAsJsonParse(text));
+});
+
 describe("malformed JSON", () => {
   test.each([[""], ["{"], ['{"a":}'], ["[1,]"], ["{'a':1}"], ["NaN"], ['"\\x"'], ['"a\u0001"']])(
     "%j gives INVALID_REQUEST",

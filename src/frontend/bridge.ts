@@ -34,7 +34,8 @@ type Snapshot = Repository & { repositoryGeneration: number };
 type Target = Partial<Snapshot> & { selectionId?: string };
 type Direction = "stage" | "unstage";
 
-export function createBridge(invoke: Invoke, listen: Listen) {
+// `onSessionChange` runs after a `service-session` event, when the bridge holds the new session.
+export function createBridge(invoke: Invoke, listen: Listen, onSessionChange?: () => void) {
   const pending = new Map<string, { resolve: (response: BridgeResponse) => void; onProgress?: OnProgress; operationId?: string }>();
 
   function send(operation: OperationName, envelope: Omit<RequestEnvelope, "version" | "requestId" | "operation">, onProgress?: OnProgress): Promise<BridgeResponse> {
@@ -64,6 +65,27 @@ export function createBridge(invoke: Invoke, listen: Listen) {
       return response.state === "succeeded" && typeof result?.sessionId === "string" ? result.sessionId : undefined;
     });
 
+  // Contract §2: the page calls `currentSession` at load and after each `service-session` event.
+  // The subscriptions start before the first `currentSession` call. A failed subscription still lets requests run.
+  const subscriptions = [
+    listen("service-session", () => {
+      session = readSession();
+      void session.then(() => onSessionChange?.());
+    }),
+    // Contract §2: a service exit makes each request without a terminal response State unknown.
+    listen("service-stopped", () => {
+      for (const requestId of [...pending.keys()]) settle(requestId, { requestId, state: "unknown", code: "STATE_UNKNOWN" });
+    }),
+    // Contract §2: the bridge routes each progress event by `requestId`. An event without a pending request is dropped.
+    listen("operation-progress", ({ payload }) => {
+      const event = payload as ProgressEvent | null;
+      const waiting = typeof event?.requestId === "string" ? pending.get(event.requestId) : undefined;
+      if (!event || !waiting) return;
+      waiting.operationId = event.operationId;
+      waiting.onProgress?.(event);
+    }),
+  ];
+  for (const subscription of subscriptions) subscription.catch(() => {});
   let session = readSession();
 
   async function call(operation: OperationName, target: Target, payload: Record<string, unknown>, onProgress?: OnProgress): Promise<BridgeResponse> {
@@ -71,23 +93,6 @@ export function createBridge(invoke: Invoke, listen: Listen) {
     if (sessionId === undefined) return { requestId: null, state: "rejected", code: "SERVICE_UNAVAILABLE" };
     return send(operation, { sessionId, ...target, payload }, onProgress);
   }
-
-  // Contract §2: the page calls `currentSession` at load and after each `service-session` event.
-  listen("service-session", () => {
-    session = readSession();
-  });
-  // Contract §2: a service exit makes each request without a terminal response State unknown.
-  listen("service-stopped", () => {
-    for (const requestId of [...pending.keys()]) settle(requestId, { requestId, state: "unknown", code: "STATE_UNKNOWN" });
-  });
-  // Contract §2: the bridge routes each progress event by `requestId`. An event without a pending request is dropped.
-  listen("operation-progress", ({ payload }) => {
-    const event = payload as ProgressEvent | null;
-    const waiting = typeof event?.requestId === "string" ? pending.get(event.requestId) : undefined;
-    if (!event || !waiting) return;
-    waiting.operationId = event.operationId;
-    waiting.onProgress?.(event);
-  });
 
   return {
     getEnvironment: (onProgress?: OnProgress) => call("getEnvironment", {}, {}, onProgress),

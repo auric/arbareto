@@ -543,6 +543,12 @@ describe("service boundary", () => {
 const markerAt = (i: number) => ({ ...MARKER, markerId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}` });
 const markers = (count: number) => Array.from({ length: count }, (_, i) => markerAt(i));
 const trustRecords = (count: number) => Array.from({ length: count }, () => ({ ...TRUST_RECORD }));
+// Contract §5: 4 KiB per trust record and per recovery marker. The path field pads the JSON encoding to `bytes`.
+const sized = <T extends { worktreeRoot: string }>(item: T, bytes: number): T => {
+  const base = encoder.encode(JSON.stringify({ ...item, worktreeRoot: "C:\\" })).length;
+  return { ...item, worktreeRoot: "C:\\" + "a".repeat(bytes - base) };
+};
+const RECORD_BYTES = 4096;
 
 describe("startup handshake bounds", () => {
   // Positive controls for the "65 markers" and "257 trust records" failures.
@@ -551,6 +557,9 @@ describe("startup handshake bounds", () => {
     ["256 trust records", { trustRecords: trustRecords(256) }],
     // Positive control for the `savedGit` failures.
     ["a savedGit", { savedGit: SAVED_GIT }],
+    // Positive controls for the version text and record size failures.
+    ["64-byte printable versions", { buildIdentity: { ...HANDSHAKE_FIELDS.buildIdentity, version: "~".repeat(64) }, savedGit: { ...SAVED_GIT, version: " ".repeat(64) } }],
+    ["a 4096-byte trust record and marker", { trustRecords: [sized(TRUST_RECORD, RECORD_BYTES)], markers: [sized(MARKER, RECORD_BYTES)] }],
   ];
   for (const [name, fields] of atBound) {
     test(
@@ -587,6 +596,12 @@ describe("startup handshake failures", () => {
     ["a savedGit with a short digest", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, digest: "c".repeat(63) } }, "INVALID_REQUEST"],
     ["a savedGit with a relative executablePath", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, executablePath: "git.exe" } }, "INVALID_REQUEST"],
     ["a savedGit that is not an object", { ...HANDSHAKE_FIELDS, savedGit: null }, "INVALID_REQUEST"],
+    ["a 65-byte buildIdentity version", { ...HANDSHAKE_FIELDS, buildIdentity: { ...HANDSHAKE_FIELDS.buildIdentity, version: "1".repeat(65) } }, "INVALID_REQUEST"],
+    ["a buildIdentity version with a control character", { ...HANDSHAKE_FIELDS, buildIdentity: { ...HANDSHAKE_FIELDS.buildIdentity, version: "0.1.0\u0000" } }, "INVALID_REQUEST"],
+    ["a 65-byte savedGit version", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, version: "2".repeat(65) } }, "INVALID_REQUEST"],
+    ["a savedGit version with a non-ASCII character", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, version: `2.55.0${String.fromCharCode(0xe9)}` } }, "INVALID_REQUEST"],
+    ["a trust record above 4 KiB", { ...HANDSHAKE_FIELDS, trustRecords: [sized(TRUST_RECORD, RECORD_BYTES + 1)] }, "INVALID_REQUEST"],
+    ["a marker above 4 KiB", { ...HANDSHAKE_FIELDS, markers: [sized(MARKER, RECORD_BYTES + 1)] }, "INVALID_REQUEST"],
     ["version 2", { ...HANDSHAKE_FIELDS, version: 2 }, "PROTOCOL_VERSION"],
   ];
   for (const [name, handshake, code] of failures) {

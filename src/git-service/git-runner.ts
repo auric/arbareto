@@ -181,8 +181,9 @@ export function exact(value: unknown, fields: Record<string, Check>, optional: r
 const isText = (v: unknown): v is string => typeof v === "string" && !v.includes("\0") && v.isWellFormed();
 
 // Contract §6 "Channel frames": absolute, 1 to 32,767 UTF-16 units. Microsoft Learn "File path formats on Windows systems": a fully qualified path starts with a drive letter and a separator, or with two separators.
+// The same page names `\\.\` and `\\?\` device paths. A device such as a pipe can block a read without end.
 export function isChannelPath(v: unknown): v is string {
-  return isText(v) && v.length <= CHANNEL_PATH_UNITS && /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(v);
+  return isText(v) && v.length <= CHANNEL_PATH_UNITS && /^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![.?][\\/]))/.test(v);
 }
 
 // Contract §6 "Channel frames" `indexFile`.
@@ -228,7 +229,8 @@ export function checkCall(call: GitCall): void {
   } else if (args[0] !== "--no-lazy-fetch") {
     refuse("first argument must be --no-lazy-fetch");
   }
-  if (bootstrap ? policy !== "probe" : !["read", "mutation", "network"].includes(policy)) refuse("environment policy");
+  // `git-environment.json` has no `network` policy, so the shell refuses it until T228.
+  if (bootstrap ? policy !== "probe" : !["read", "mutation"].includes(policy)) refuse("environment policy");
   if (input !== undefined && (!(input instanceof Uint8Array) || input.length > STREAMED_PROCESS_INPUT_BYTES)) refuse("input");
   if (transaction !== undefined) {
     const fits = policy === "mutation" && exact(transaction, { transactionId: isIdentifier, indexFile: isCandidateIndex });

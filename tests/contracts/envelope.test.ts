@@ -444,6 +444,11 @@ describe("native bootstrap operations", () => {
     ["an empty path", ""],
     ["a path above 32,767 UTF-16 units", `C:\\${"a".repeat(32_765)}`],
     ["a non-string path", 1],
+    ["a device path", "\\\\.\\pipe\\git"],
+    ["a device path with slashes", "//./pipe/git"],
+    ["a device path with mixed separators", "\\/.\\C:\\Git\\cmd\\git.exe"],
+    ["a Win32 file namespace path", "\\\\?\\C:\\Git\\cmd\\git.exe"],
+    ["a Win32 file namespace UNC path", "\\\\?\\UNC\\server\\share\\git.exe"],
   ])("chooseGit service executablePath: %s gives INVALID_REQUEST", (_, executablePath) => {
     expectCode(envelope("chooseGit", "service", { bootstrapId: id(), executablePath }), "INVALID_REQUEST", "service");
   });

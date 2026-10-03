@@ -403,6 +403,12 @@ The Windows SDK is present. On 2026-09-29, the x64 `kernel32.Lib` exists for SDK
 
 The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64\kernel32.Lib`. The probe linked `fn main(){}` with `rustc --target x86_64-pc-windows-msvc -C link-arg=/VERBOSE:LIB` in the session scratch directory, and the link exited with code 0. The probe wrote nothing into the repository.
 
+**Batch 1 observations, 2026-10-03.** T065 copied these test and task records.
+
+- T057, 2026-10-03: build 26200, product type 1 (`VER_NT_WORKSTATION`), native machine `0x8664`, scope `qualification-target`.
+- T058, 2026-10-03: WebView2 runtime `154.0.4258.53` is admitted. The plan.md reference value is `154.0.4258.37`.
+- T027, 2026-10-03: a tty hook commit ended after 117 ms (95 ms on a second run). A credential hook commit ended after 369 ms (302 ms). A PowerShell console wait ended at the 5 s deadline (5028 ms). An ssh-keygen console wait ended at the 5 s deadline (5018 ms). The T065 runs printed 139 ms and 120 ms (tty), 355 ms and 331 ms (credential), 5018 ms and 5015 ms (PowerShell), and 5019 ms and 5023 ms (ssh-keygen).
+
 Git Extensions `v7.2.1` resolves to `0aea2d6df4c120806c46f1797ba6a45f5d14b345`. Its Windows release includes x64 MSI and portable artifacts. Its release notes require .NET Desktop `10.0.9` or later `10.x` and recommend Git `2.53.0` or later.
 
 Source: [Git Extensions release](https://github.com/gitextensions/gitextensions/releases/tag/v7.2.1).
@@ -572,6 +578,14 @@ Sources: [command scope and protected configuration](https://github.com/git-for-
 Sources: [repository variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc#L501-L601), [terminal prompt](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc#L758-L760), [configuration file selection](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc#L762-L778).
 
 Sources: [CPU configuration](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/scripts/build/config.ts#L869-L876), [CPU compiler flag](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/scripts/build/flags.ts#L69-L74), [autoload flag parser](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime/cli/Arguments.rs#L2254-L2335), [executable flag encoding](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime/cli/build_command.rs#L918-L934), [runtime flag application](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/bun.js.rs#L10-L28), [Bun CLI bypass](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime/cli/mod.rs#L1192-L1198), [BUN_OPTIONS](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime/cli/mod.rs#L1345-L1385), [explicit config exception](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/bunfig/arguments.rs#L136-L229).
+
+**Batch 1 observations, 2026-10-03.** T065 copied these test and task records.
+
+- T032, 2026-10-03: `RtlUpcaseUnicodeChar` maps no UTF-16 unit from U+0080 to U+FFFF into ASCII on build 26200. The GitHub tag `bun-v1.4.2` points at commit `744846f844374847c902b5e7fd59b4342a51ef99`.
+- T033, 2026-10-03: `CreateFileW("CONOUT$")` fails in a `DETACHED_PROCESS` child and opens in a `CREATE_NO_WINDOW` child (build 26200).
+- T034, 2026-10-03: on a file held with share mode 0, an open with `FILE_READ_ATTRIBUTES` and full sharing succeeds. A `GENERIC_READ` open fails with error 32.
+- T035, 2026-10-03: a grandchild started from a detached child without `DETACHED_PROCESS` gets its own `conhost.exe` inside the Job.
+- T036, 2026-10-03: `cargo tauri dev` without `devUrl` serves `frontendDist` from `http://127.0.0.1:1430/` unless `--no-dev-server` is passed.
 
 ### Why the Rust supervisor exists
 
@@ -967,6 +981,32 @@ The initial constitutional scope conflict and former mutation design blockers ar
 | Package signing and authenticated updates | Public release blocked | Deferred implementation and required verification remain incomplete. |
 
 Future records must identify scenario, build/package digest, environment, fixtures, steps, actual result, failure cause, attempted remedy, and retest. Keep those records here. Do not add a separate qualification report.
+
+**T065 batch 1 verification, 2026-10-03.** The run used commit `ef77081d971f3baa200c4cc59a7d889a213fa2f5` on a clean tree. Every command exited with code 0. Every version meets its plan.md minimum.
+
+| Tool | Source | Value | Minimum | Result |
+| --- | --- | --- | --- | --- |
+| Rust | `rustc --version` | `rustc 1.98.0 (88d9e12ae 2026-08-18)` | `1.98.0` | pass |
+| Cargo | `cargo --version` | `cargo 1.98.0 (797e8a9bc 2026-08-05)` | `1.98.0` | pass |
+| Tauri CLI | `cargo tauri --version` | `tauri-cli 2.12.0` | `2.12.0` | pass |
+| Bun | `bun --version` | `1.4.2` | exactly `1.4.2` | pass |
+| MSVC toolset | T001 link probe (R6) | `14.51.36231` | `14.51.36231` | pass |
+| Windows SDK | T001 link probe (R6) | `10.0.26100.0` | `10.0.26100.0` | pass |
+| NSIS | `makensis.exe /VERSION` after the build | `v3.11` | `3.11` | pass |
+| Git | Bun test output | `git version 2.55.0.windows.3` at `C:\Git\mingw64\bin\git.exe` | `2.55.0.windows.3` | pass |
+| WebView2 | T058 observation (R6) | `154.0.4258.53` | `154.0.4258.37` | pass |
+
+- The pinned bundler downloaded `nsis-3.11.zip` and `nsis_tauri_utils.dll` v0.5.3 in this build. It validated both hashes and extracted NSIS into `%LOCALAPPDATA%\tauri\NSIS`.
+- `bun test tests/contracts tests/git tests/windows`: 976 pass, 0 fail, 0 skip. All 40 `ORIGIN` lines point into `D:\dev\rozvio\src` or to the sidecar `D:\dev\rozvio\src-tauri\binaries\arbareto-git-x86_64-pc-windows-msvc.exe`.
+- `cargo test`: 193 pass, 0 fail, 2 ignored. The ignored tests are the `child_entry` re-execution entries in `jobs` and `settings`, not capability skips. `ORIGIN` is `D:\dev\rozvio\src-tauri`.
+- Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 32838528 bytes, SHA-256 `9e3623af445a4e00b5191e18333c0af64e458da4b7ab6c5f79551a3a259f60a9`. `package.json` and `src-tauri/Cargo.toml` hold version `0.1.0`.
+- The release `arbareto.exe` holds the identity `ef77081d971f3baa200c4cc59a7d889a213fa2f5` and no `-dirty` string. A byte search of the binary found it.
+- Header checks for the SPDX line and the copyright line printed nothing.
+- Manifest changes since T003 and T006: five script-only `package.json` edits, and the T059 feature record below. Commit 734cf79 wrote `tauri` and `tauri-build` in table form with `features = []`. The versions stayed `2.12.0` and `2.7.0`, and `Cargo.lock` did not change. So that edit is not a dependency change.
+- Control mutation: without the duplicate-key check in `strict-json.ts`, `bun test tests/contracts` failed in 7 `strict-json.test.ts` cases and 1 `service-boundary.test.ts` case. The undone run passed 947 tests.
+- Native control mutation: removing only the check before `frame()` in `ipc.rs` left `cargo test` green, because `frame()` checks the same bound through `framing::public_request_body`. With both checks removed, both T029 `FRAME_LIMIT` tests failed. The undone run passed 193 tests. Both files are byte-identical to HEAD.
+- Build identity: with an untracked `src/build-identity-probe.txt`, the debug build printed `ARBARETO_BUILD_IDENTITY=ef77081d971f3baa200c4cc59a7d889a213fa2f5-dirty`. After its removal, the next build printed the value without `-dirty`. Cargo reported the missing `arbareto-build-identity.always-rerun` file and ran the script again.
+- Pending for the user: install the package as the current user, and check the boot view and its build identity. Also run the elevated T193 recordings at both levels, and copy their observations into R6.
 
 ### Batch reviews
 
@@ -1925,6 +1965,7 @@ The probe S34 ran on 2026-10-01 for the verification remediation. It used Git `2
 - Closed item, H1, 2026-10-01: a WSL Job ignores its `IO_COUNTERS`, because the anchor exchange changes them (S29). Unverified: the anchor I/O sum during a real WSL fetch (T225, T232).
 - Unverified, H1: PowerShell versions other than 7.6.6 and 5.1.26100.9444 (S28). The quoting rule refuses U+201C to U+201E and control characters by the stricter reading. S28 kept them literal.
 - Unverified, verification remediation: PowerShell versions other than 7.6.6 and 5.1.26100.9444 for trailing `\` (S34). Also a UNC share root as a command path, and `\` through `wsl.exe`. The rule refuses a trailing `\` without white space by the stricter reading, and S34 kept it literal.
+- T261, 2026-10-03: pwsh 7.6.6 and Windows PowerShell 5.1.26100.9444 each passed 66 parser checks and 68 argument checks, with Git 2.55.0.windows.3. The T065 run printed the same results.
 
 Sources: [submodule--helper update strategy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2107-L2147), [initialization active key](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L596-L597), [current revision failure](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2834-L2838), [GIT_PROTOCOL_FROM_USER](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/git-submodule.sh#L29-L30), [detached ssh](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L2251-L2261), [progress counter](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/progress.c#L134), [protocol policy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/protocol.adoc), [environment variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc), [RelNotes 2.45.0](https://github.com/git/git/blob/master/Documentation/RelNotes/2.45.0.adoc), [GHSA-8h77-4q3w-gfgv](https://github.com/git/git/security/advisories/GHSA-8h77-4q3w-gfgv), [GHSA-vwqx-4fm8-6qc9](https://github.com/git/git/security/advisories/GHSA-vwqx-4fm8-6qc9), [GCM environment](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/environment.md), [submodule fetch](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L2644-L2665), [submodule default remote](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L77-L115), [default remote](https://github.com/git/git/blob/v2.55.0/remote.c#L666-L680), [fetch.all](https://github.com/git/git/blob/v2.55.0/builtin/fetch.c#L2700-L2720), [nested Git directory refusal](https://github.com/git/git/blob/v2.55.0/submodule.c#L2402-L2442).
 

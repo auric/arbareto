@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx,
@@ -47,14 +47,27 @@ impl Identity {
     }
 }
 
-/// Opens `path` with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`, then reads `FileIdInfo`.
-pub fn read_identity(path: &Path) -> Result<Identity, &'static str> {
-    let file = std::fs::OpenOptions::new()
+/// Opens `path` with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`.
+fn open(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES.0)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
         .open(path)
-        .map_err(|_| "UNSUPPORTED_REPOSITORY")?;
+}
+
+/// True when the identity open of `path` fails with `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`.
+pub fn is_absent(path: &Path) -> bool {
+    open(path).is_err_and(|error| {
+        error.raw_os_error().is_some_and(|code| {
+            code == ERROR_FILE_NOT_FOUND.0 as i32 || code == ERROR_PATH_NOT_FOUND.0 as i32
+        })
+    })
+}
+
+/// Opens `path` as `open` does, then reads `FileIdInfo`.
+pub fn read_identity(path: &Path) -> Result<Identity, &'static str> {
+    let file = open(path).map_err(|_| "UNSUPPORTED_REPOSITORY")?;
     let mut info = FILE_ID_INFO::default();
     // SAFETY: `file` keeps the handle open, and `info` has the passed size.
     unsafe {
@@ -86,6 +99,8 @@ pub struct Context {
     )]
     pub session_id: String,
     pub expires_at: Instant,
+    /// The startup `gitProbe` context of the saved Git path (contract §6 "Startup contexts").
+    pub startup: bool,
 }
 
 /// The options that a discovery `symbolic-ref` permits besides the one name `HEAD` (contract §6 "Registration bootstrap").
@@ -154,6 +169,21 @@ impl Contexts {
         path: &Path,
         now: Instant,
     ) -> Result<String, &'static str> {
+        self.insert(kind, path, now, false)
+    }
+
+    /// Creates the startup `gitProbe` context for the saved Git path.
+    pub fn create_startup(&self, path: &Path, now: Instant) -> Result<String, &'static str> {
+        self.insert(ContextKind::GitProbe, path, now, true)
+    }
+
+    fn insert(
+        &self,
+        kind: ContextKind,
+        path: &Path,
+        now: Instant,
+        startup: bool,
+    ) -> Result<String, &'static str> {
         let identity = read_identity(path).map_err(|code| match kind {
             ContextKind::GitProbe => "GIT_UNAVAILABLE",
             ContextKind::RepositoryDiscovery => code,
@@ -167,6 +197,7 @@ impl Contexts {
             identity,
             session_id: state.session_id.clone(),
             expires_at: now + CONTEXT_LIFETIME,
+            startup,
         };
         state.contexts.insert(id.clone(), context);
         Ok(id)

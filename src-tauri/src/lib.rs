@@ -108,7 +108,7 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         }
         // `currentSession` then gives SERVICE_UNAVAILABLE (contract §2).
         None => {
-            app.manage(Arc::new(Ipc::new(Arc::new(|_| {}))));
+            app.manage(Arc::new(Ipc::new(Arc::new(|_| false))));
         }
     }
 

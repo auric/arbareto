@@ -113,6 +113,8 @@ function exact(fields: Record<string, Check>, extra: PayloadValidator = () => tr
 
 const empty = exact({});
 const bootstrap = exact({ bootstrapId: isIdentifier });
+const markerOnly = exact({ markerId: isIdentifier });
+const markerWithBootstrap = exact({ markerId: isIdentifier, bootstrapId: isIdentifier });
 
 // Contract §3 names the values. The field names `snapshotId`, `entryId`, `trustId`, `comparisonId`, `hunkId`, `operationId`, `choice`, and `markerId` follow test T012.
 export const PAYLOAD_VALIDATORS: Record<OperationName, { renderer: PayloadValidator; service: PayloadValidator }> = {
@@ -136,7 +138,8 @@ export const PAYLOAD_VALIDATORS: Record<OperationName, { renderer: PayloadValida
   getOperation: same(exact({ operationId: isIdentifier })),
   requestClose: same(exact({ choice: oneOf("stay", "closeIfIdle", "interruptAndClose") })),
   currentSession: same(empty),
-  dismissRecoveryMarker: { renderer: exact({ markerId: isIdentifier }), service: exact({ markerId: isIdentifier, bootstrapId: isIdentifier }) },
+  // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
+  dismissRecoveryMarker: { renderer: markerOnly, service: (p) => markerWithBootstrap(p) || markerOnly(p) },
 };
 
 function same(validator: PayloadValidator) {

@@ -469,9 +469,13 @@ describe("native bootstrap operations", () => {
     expectCode(envelope("dismissRecoveryMarker", "renderer", { markerId: "..\\x" }), "INVALID_REQUEST");
   });
 
-  test("dismissRecoveryMarker service payload holds markerId and bootstrapId", () => {
+  test("dismissRecoveryMarker service payload holds markerId and bootstrapId, or markerId alone", () => {
     expectAccepted(envelope("dismissRecoveryMarker", "service", { markerId: id(), bootstrapId: id() }), "service");
-    expectCode(envelope("dismissRecoveryMarker", "service", { markerId: id() }), "INVALID_REQUEST", "service");
+    // Contract §6 "Dismissal": the shell creates no context for a worktree path that does not exist.
+    expectAccepted(envelope("dismissRecoveryMarker", "service", { markerId: id() }), "service");
+    expectCode(envelope("dismissRecoveryMarker", "service", { markerId: "x" }), "INVALID_REQUEST", "service");
+    expectCode(envelope("dismissRecoveryMarker", "service", { markerId: id(), bootstrapId: "x" }), "INVALID_REQUEST", "service");
+    expectCode(envelope("dismissRecoveryMarker", "service", { markerId: id(), path: "C:\\x" }), "INVALID_REQUEST", "service");
     expectCode(envelope("dismissRecoveryMarker", "service", { bootstrapId: id() }), "INVALID_REQUEST", "service");
     expectCode(
       envelope("dismissRecoveryMarker", "service", { markerId: id(), bootstrapId: id(), path: "C:\\x" }),

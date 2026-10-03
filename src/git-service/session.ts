@@ -164,6 +164,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     const target = request.payload as { bootstrapId: string; executablePath: string };
     const finish = (result: Awaited<ReturnType<typeof probeGit>> | { ok: false; gitCode: ErrorCode }) => {
       if (registry.get(operationId)?.state === "cancel-requested" || (!result.ok && "canceled" in result)) {
+        // The shell bound this ID, and no service state owns it after a cancel.
+        if (result.ok) runner.release({ gitInstallationId: result.installation.gitInstallationId });
         if (registry.get(operationId)?.state === "running") registry.apply(operationId, { type: "cancel" });
         return registry.apply(operationId, { type: "processes-stopped" });
       }

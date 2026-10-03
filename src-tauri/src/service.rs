@@ -12,15 +12,17 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::bootstrap::{Contexts, read_identity};
-use crate::dialogs::{self, Chosen, Dialogs, Proposal, Registered};
+use crate::bootstrap::Contexts;
+use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered};
 use crate::env_sanitize::sanitize;
 use crate::framing::{FrameError, read_frame, write_frame};
-use crate::ipc::{Ipc, MAIN_WINDOW, NativeFirst, ToRenderer, renderer_message};
+use crate::ipc::{
+    FrameSink, Ipc, MAIN_WINDOW, NativeFirst, Prepared, ToRenderer, renderer_message,
+};
 use crate::jobs::{Job, Supervisor};
 use crate::process_requests::{
-    CHUNK_BYTES, Code, Config, Fields, Owned, ProcessRequests, decode_strict, identifier,
-    is_identifier, keys, path, wait,
+    CHUNK_BYTES, Code, Config, Fields, Owned, ProcessRequests, ReplySink, decode_strict,
+    identifier, is_identifier, keys, path, wait,
 };
 use crate::settings::{
     self, Confirm, MUTATIONS, Marker, Markers, SavedGit, Settings, Started, StartedReply, Trust,
@@ -82,9 +84,15 @@ impl Service {
         let jobs = Supervisor::start()?;
         let contexts = Arc::new(Contexts::new(""));
         let stdin: Arc<Mutex<Option<File>>> = Arc::default();
-        let sink = {
+        let forward: FrameSink = {
             let stdin = Arc::clone(&stdin);
             Arc::new(move |body: String| write(&stdin, &body))
+        };
+        let replies: ReplySink = {
+            let stdin = Arc::clone(&stdin);
+            Arc::new(move |body: String| {
+                write(&stdin, &body);
+            })
         };
         let requests = ProcessRequests::new(
             Config {
@@ -94,11 +102,11 @@ impl Service {
             },
             Arc::clone(&contexts),
             Arc::clone(&jobs),
-            sink.clone(),
+            replies,
         );
         let service = Arc::new(Service {
             app: app.clone(),
-            ipc: Arc::new(Ipc::new(sink)),
+            ipc: Arc::new(Ipc::new(forward)),
             requests,
             jobs,
             contexts,
@@ -259,70 +267,11 @@ impl Service {
 
     /// The `mutation` frames of contract §6 "Channel frames".
     fn mutation(&self, frame: &Value) {
-        let (Some(stores), Some(request)) = (self.stores.get(), body(frame, "mutation")) else {
-            return;
-        };
-        let call_id = call_id(request);
-        let handled = match request.get("type").and_then(Value::as_str) {
-            Some("started") => call_id
-                .ok_or(INVALID)
-                .and_then(|call_id| self.started(stores, request, call_id)),
-            Some("ended") => {
-                keys(request, &["type", "operationId", "endProcesses"], &[]).and_then(|()| {
-                    let operation_id = identifier(&request["operationId"])?;
-                    let end_processes = request["endProcesses"].as_bool().ok_or(INVALID)?;
-                    self.requests.ended(operation_id, end_processes);
-                    stores.markers.ended(operation_id);
-                    Ok(())
-                })
-            }
-            Some("resolved") => keys(request, &["type", "markerId"], &[]).and_then(|()| {
-                stores.markers.resolved(identifier(&request["markerId"])?);
-                Ok(())
-            }),
-            _ => Err(INVALID),
-        };
-        if let (Err(code), Some(call_id)) = (handled, call_id) {
-            self.send("mutation", refused(call_id, code));
-        }
-    }
-
-    /// Replies only after the marker file is flushed, or with the failure class (contract §6 "Recovery markers").
-    fn started(&self, stores: &Stores, request: &Fields, call_id: &str) -> Result<(), Code> {
-        keys(
-            request,
-            &[
-                "type",
-                "callId",
-                "operationId",
-                "repositoryId",
-                "kind",
-                "worktreeRoot",
-                "commonDirectory",
-            ],
-            &[],
-        )?;
-        let operation_id = identifier(&request["operationId"])?;
-        identifier(&request["repositoryId"])?;
-        let kind = request["kind"]
-            .as_str()
-            .filter(|kind| MUTATIONS.contains(kind))
-            .ok_or(INVALID)?;
-        let worktree_root = path(&request["worktreeRoot"])?;
-        let common_directory = path(&request["commonDirectory"])?;
-        let reply = stores.markers.started(&Started {
-            operation_id,
-            kind,
-            worktree_root: &worktree_root,
-            common_directory: &common_directory,
-        });
-        if let StartedReply::Marker(_) = reply
-            && let Ok(identity) = read_identity(&common_directory)
+        if let (Some(stores), Some(request)) = (self.stores.get(), body(frame, "mutation"))
+            && let Some(reply) = mutation(&stores.markers, &self.requests, request)
         {
-            self.requests.tag(operation_id, identity);
+            self.send("mutation", reply);
         }
-        self.send("mutation", reply.reply(call_id));
-        Ok(())
     }
 
     /// The `trust` frames of contract §6 "Channel frames".
@@ -408,29 +357,6 @@ impl Service {
         )
     }
 
-    /// Persists the Git selection after the service success and Use this Git (data-model §1).
-    fn save_git(&self, stores: &Stores, result: &Value) {
-        let Some(git_id) = result["gitInstallationId"].as_str() else {
-            return;
-        };
-        let Some(digest) = result["digest"]
-            .as_str()
-            .filter(|digest| is_hex(digest, 64))
-        else {
-            return;
-        };
-        let Some((executable_path, version)) = self.requests.take_confirmed_git(git_id) else {
-            return;
-        };
-        let mut settings = lock(&stores.settings);
-        settings.git = Some(SavedGit {
-            executable_path,
-            version,
-            digest: digest.to_string(),
-        });
-        let _ = settings::save(&stores.settings_path, &settings);
-    }
-
     /// Waits for the service exit. The shell never restarts the service by itself.
     fn watch(&self, process: Owned) {
         while !wait(process.0, Duration::from_secs(3600)) {}
@@ -476,78 +402,222 @@ impl Service {
 }
 
 impl NativeFirst for Service {
-    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Value>, &'static str> {
+    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, &'static str> {
         let stores = self.stores.get().ok_or(UNAVAILABLE)?;
-        let now = Instant::now();
-        let chosen = match operation {
-            "chooseGit" => {
-                let saved = lock(&stores.settings).git.clone();
-                dialogs::choose_git(&*self.dialogs, saved.as_ref(), &self.contexts, now)
-            }
-            "chooseRepository" => dialogs::choose_repository(&*self.dialogs, &self.contexts, now),
-            "restoreWorkspace" => {
-                let settings = lock(&stores.settings).clone();
-                dialogs::restore_workspace(&settings, &self.contexts, now)
-            }
-            "dismissRecoveryMarker" => {
-                let marker_id = payload["markerId"].as_str().ok_or(INVALID)?;
-                let marker = stores.markers.get(marker_id).ok_or("UNKNOWN_TARGET")?;
-                let bootstrap_id = dialogs::dismissal_context(&marker, &self.contexts, now)?;
-                return Ok(Some(
-                    json!({ "markerId": marker_id, "bootstrapId": bootstrap_id }),
-                ));
-            }
-            _ => return Err(UNAVAILABLE),
-        };
-        Ok(match chosen {
-            Chosen::Canceled => None,
-            Chosen::Context { bootstrap_id, path } if operation == "chooseGit" => Some(
-                json!({ "bootstrapId": bootstrap_id, "executablePath": path.to_string_lossy() }),
-            ),
-            Chosen::Context { bootstrap_id, .. } => Some(json!({ "bootstrapId": bootstrap_id })),
-        })
+        prepare(stores, &*self.dialogs, &self.contexts, operation, payload)
     }
 
-    fn finish(&self, operation: &str, payload: &Value, response: Value) -> Value {
-        let Some(stores) = self
-            .stores
-            .get()
-            .filter(|_| response["state"] == "succeeded")
-        else {
-            return response;
-        };
-        match operation {
-            "chooseGit" => {
-                self.save_git(stores, &response["result"]);
-                response
-            }
-            // Contract §6 "Dismissal": the confirmation follows an allowed service result.
-            "dismissRecoveryMarker" => {
-                let marker_id = payload["markerId"].as_str().unwrap_or_default();
-                let mut accepted = false;
-                let dismissed = stores.markers.dismiss(marker_id, |marker| {
-                    accepted = dialogs::confirm_dismissal(&*self.dialogs, marker);
-                    accepted
-                });
-                if dismissed {
-                    return response;
-                }
-                let (state, code) = if accepted {
-                    ("failed", "RECOVERY_MARKER_FAILED")
-                } else {
-                    ("canceled", "CANCELED")
-                };
-                let mut answer = response;
-                if let Some(fields) = answer.as_object_mut() {
-                    fields.remove("result");
-                    fields.insert("state".to_string(), json!(state));
-                    fields.insert("code".to_string(), json!(code));
-                }
-                answer
-            }
-            _ => response,
+    fn finish(&self, operation: &str, prepared: &Prepared, response: Value) -> Value {
+        match self.stores.get() {
+            Some(stores) => finish(
+                stores,
+                &*self.dialogs,
+                &self.requests,
+                operation,
+                prepared,
+                response,
+            ),
+            None => response,
         }
     }
+}
+
+/// The native step before the forward (contract §3). `Ok(None)` is a canceled dialog.
+fn prepare(
+    stores: &Stores,
+    native: &dyn Native,
+    contexts: &Contexts,
+    operation: &str,
+    payload: &Value,
+) -> Result<Option<Prepared>, Code> {
+    let now = Instant::now();
+    let chosen = match operation {
+        "chooseGit" => {
+            let saved = lock(&stores.settings).git.clone();
+            dialogs::choose_git(native, saved.as_ref(), contexts, now)
+        }
+        "chooseRepository" => dialogs::choose_repository(native, contexts, now),
+        "restoreWorkspace" => {
+            let settings = lock(&stores.settings).clone();
+            dialogs::restore_workspace(&settings, contexts, now)
+        }
+        "dismissRecoveryMarker" => {
+            let marker_id = payload["markerId"].as_str().ok_or(INVALID)?;
+            let marker = stores.markers.get(marker_id).ok_or("UNKNOWN_TARGET")?;
+            // Without a context, the service allows the dismissal without discovery (contract §6 "Dismissal").
+            let payload = match dialogs::dismissal_context(&marker, contexts, now)? {
+                Some(bootstrap_id) => json!({ "markerId": marker_id, "bootstrapId": bootstrap_id }),
+                None => json!({ "markerId": marker_id }),
+            };
+            return Ok(Some(Prepared {
+                payload,
+                path: None,
+            }));
+        }
+        _ => return Err(UNAVAILABLE),
+    };
+    let (bootstrap_id, path) = match chosen {
+        Chosen::Canceled => return Ok(None),
+        Chosen::Refused(code) => return Err(code),
+        Chosen::Context { bootstrap_id, path } => (bootstrap_id, path),
+    };
+    let payload = if operation == "chooseGit" {
+        json!({ "bootstrapId": bootstrap_id, "executablePath": path.to_string_lossy() })
+    } else {
+        json!({ "bootstrapId": bootstrap_id })
+    };
+    Ok(Some(Prepared {
+        payload,
+        path: Some(path),
+    }))
+}
+
+/// The native step after the service response. It returns the response for the renderer.
+fn finish(
+    stores: &Stores,
+    native: &dyn Native,
+    requests: &ProcessRequests,
+    operation: &str,
+    prepared: &Prepared,
+    response: Value,
+) -> Value {
+    if response["state"] != "succeeded" {
+        return response;
+    }
+    match operation {
+        "chooseGit" => {
+            save_git(stores, requests, &response["result"]);
+            response
+        }
+        // Data-model §1: the settings keep the last explicitly opened repository, from the native context.
+        "chooseRepository" => {
+            if let Some(path) = &prepared.path {
+                let mut settings = lock(&stores.settings);
+                settings.last_repository = Some(path.clone());
+                let _ = settings::save(&stores.settings_path, &settings);
+            }
+            response
+        }
+        // Contract §6 "Dismissal": the confirmation follows an allowed service result.
+        "dismissRecoveryMarker" => {
+            let marker_id = prepared.payload["markerId"].as_str().unwrap_or_default();
+            let mut accepted = false;
+            let dismissed = stores.markers.dismiss(marker_id, |marker| {
+                accepted = dialogs::confirm_dismissal(native, marker);
+                accepted
+            });
+            if dismissed {
+                return response;
+            }
+            let (state, code) = if accepted {
+                ("failed", "RECOVERY_MARKER_FAILED")
+            } else {
+                ("canceled", "CANCELED")
+            };
+            let mut answer = response;
+            if let Some(fields) = answer.as_object_mut() {
+                fields.remove("result");
+                fields.insert("state".to_string(), json!(state));
+                fields.insert("code".to_string(), json!(code));
+            }
+            answer
+        }
+        _ => response,
+    }
+}
+
+/// Persists the Git selection after the service success and Use this Git (data-model §1).
+fn save_git(stores: &Stores, requests: &ProcessRequests, result: &Value) {
+    let Some(git_id) = result["gitInstallationId"].as_str() else {
+        return;
+    };
+    let Some(digest) = result["digest"]
+        .as_str()
+        .filter(|digest| is_hex(digest, 64))
+    else {
+        return;
+    };
+    let Some((executable_path, version)) = requests.take_confirmed_git(git_id) else {
+        return;
+    };
+    let mut settings = lock(&stores.settings);
+    settings.git = Some(SavedGit {
+        executable_path,
+        version,
+        digest: digest.to_string(),
+    });
+    let _ = settings::save(&stores.settings_path, &settings);
+}
+
+/// The `mutation` frames of contract §6 "Channel frames". Returns the reply. `ended` and `resolved` get none.
+fn mutation(markers: &Markers, requests: &ProcessRequests, request: &Fields) -> Option<Value> {
+    let call_id = call_id(request);
+    let handled = match request.get("type").and_then(Value::as_str) {
+        Some("started") => call_id
+            .ok_or(INVALID)
+            .and_then(|call_id| started(markers, requests, request, call_id))
+            .map(Some),
+        Some("ended") => {
+            keys(request, &["type", "operationId", "endProcesses"], &[]).and_then(|()| {
+                let operation_id = identifier(&request["operationId"])?;
+                let end_processes = request["endProcesses"].as_bool().ok_or(INVALID)?;
+                requests.ended(operation_id, end_processes)?;
+                markers.ended(operation_id);
+                Ok(None)
+            })
+        }
+        Some("resolved") => keys(request, &["type", "markerId"], &[]).and_then(|()| {
+            markers.resolved(identifier(&request["markerId"])?);
+            Ok(None)
+        }),
+        _ => Err(INVALID),
+    };
+    match (handled, call_id) {
+        (Ok(reply), _) => reply,
+        (Err(code), Some(call_id)) => Some(refused(call_id, code)),
+        (Err(_), None) => None,
+    }
+}
+
+/// Replies only after the marker file is flushed, or with the failure class (contract §6 "Recovery markers").
+fn started(
+    markers: &Markers,
+    requests: &ProcessRequests,
+    request: &Fields,
+    call_id: &str,
+) -> Result<Value, Code> {
+    keys(
+        request,
+        &[
+            "type",
+            "callId",
+            "operationId",
+            "repositoryId",
+            "kind",
+            "worktreeRoot",
+            "commonDirectory",
+        ],
+        &[],
+    )?;
+    let operation_id = identifier(&request["operationId"])?;
+    identifier(&request["repositoryId"])?;
+    let kind = request["kind"]
+        .as_str()
+        .filter(|kind| MUTATIONS.contains(kind))
+        .ok_or(INVALID)?;
+    let worktree_root = path(&request["worktreeRoot"])?;
+    let common_directory = path(&request["commonDirectory"])?;
+    let reply = markers.started(&Started {
+        operation_id,
+        kind,
+        worktree_root: &worktree_root,
+        common_directory: &common_directory,
+    });
+    // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
+    if let StartedReply::Marker { identity, .. } = &reply {
+        requests.tag(operation_id, *identity);
+    }
+    Ok(reply.reply(call_id))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -556,14 +626,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Writes one frame. A failed write closes the service stdin.
-fn write(stdin: &Mutex<Option<File>>, body: &str) {
+/// Writes one frame. A failed write closes the service stdin. False means that the service did not get the whole frame.
+fn write(stdin: &Mutex<Option<File>>, body: &str) -> bool {
     let mut stdin = lock(stdin);
-    if let Some(pipe) = stdin.as_mut()
-        && write_frame(pipe, body).is_err()
-    {
+    let Some(pipe) = stdin.as_mut() else {
+        return false;
+    };
+    let written = write_frame(pipe, body).is_ok();
+    if !written {
         *stdin = None;
     }
+    written
 }
 
 /// The reply `{"kind":"handshake","handshake":{"sessionId":"<ID>"}}`. A failure reply gives `None`.
@@ -647,4 +720,279 @@ fn renderer_marker(marker: &Marker) -> Value {
         "startedAt": marker.started_at,
         "worktreeRoot": marker.worktree_root.to_string_lossy(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::dialogs::tests::{Fake, Press};
+    use crate::jobs::tests::Fixture;
+
+    const CALL: &str = "0f0f0f0f-0000-4000-8000-0000000000cc";
+    const REPOSITORY: &str = "0f0f0f0f-0000-4000-8000-0000000000dd";
+    const FIRST: &str = "0f0f0f0f-0000-4000-8000-0000000000e1";
+    const SECOND: &str = "0f0f0f0f-0000-4000-8000-0000000000e2";
+    const THIRD: &str = "0f0f0f0f-0000-4000-8000-0000000000e3";
+
+    /// The native stores, contexts, and process requests of one test shell. The fixture folder drops last.
+    struct Shell {
+        stores: Stores,
+        contexts: Arc<Contexts>,
+        requests: Arc<ProcessRequests>,
+        jobs: Arc<Supervisor>,
+        fixture: Fixture,
+    }
+
+    impl Shell {
+        fn new() -> Shell {
+            let fixture = Fixture::new();
+            let launch_directory = fixture.path("launch");
+            std::fs::create_dir_all(&launch_directory).expect("launch directory");
+            let contexts = Arc::new(Contexts::new(""));
+            let jobs = Supervisor::start().expect("start the supervisor");
+            let requests = ProcessRequests::new(
+                Config {
+                    launch_directory,
+                    base_environment: Vec::new(),
+                    argument_prefix: Vec::new(),
+                },
+                Arc::clone(&contexts),
+                Arc::clone(&jobs),
+                Arc::new(|_: String| {}),
+            );
+            Shell {
+                stores: Stores {
+                    settings_path: fixture.path("settings.json"),
+                    settings: Mutex::new(Settings::default()),
+                    markers: Markers::open(&fixture.path("recovery")),
+                    trust: Trust::open(&fixture.path("trust")),
+                },
+                contexts,
+                requests,
+                jobs,
+                fixture,
+            }
+        }
+
+        fn folder(&self, name: &str) -> PathBuf {
+            let path = self.fixture.path(name);
+            std::fs::create_dir_all(&path).expect("folder");
+            path
+        }
+
+        fn prepare(
+            &self,
+            native: &Fake,
+            operation: &str,
+            payload: Value,
+        ) -> Result<Option<Prepared>, Code> {
+            prepare(&self.stores, native, &self.contexts, operation, &payload)
+        }
+
+        fn finish(
+            &self,
+            native: &Fake,
+            operation: &str,
+            prepared: &Prepared,
+            response: Value,
+        ) -> Value {
+            finish(
+                &self.stores,
+                native,
+                &self.requests,
+                operation,
+                prepared,
+                response,
+            )
+        }
+
+        fn mutation(&self, request: Value) -> Option<Value> {
+            mutation(
+                &self.stores.markers,
+                &self.requests,
+                request.as_object().expect("object"),
+            )
+        }
+
+        fn started(&self, operation: &str, worktree: &Path) -> Option<Value> {
+            self.mutation(json!({
+                "type": "started", "callId": CALL, "operationId": operation, "repositoryId": REPOSITORY,
+                "kind": "commit", "worktreeRoot": worktree, "commonDirectory": worktree.join(".git"),
+            }))
+        }
+
+        fn ended(&self, operation: &str) -> Option<Value> {
+            self.mutation(
+                json!({ "type": "ended", "operationId": operation, "endProcesses": false }),
+            )
+        }
+
+        fn marker_files(&self) -> usize {
+            std::fs::read_dir(self.fixture.path("recovery"))
+                .expect("recovery folder")
+                .count()
+        }
+    }
+
+    impl Drop for Shell {
+        fn drop(&mut self) {
+            self.jobs.close_all();
+            self.jobs.shutdown();
+        }
+    }
+
+    #[test]
+    fn a_refused_identity_read_rejects_with_its_code_and_a_canceled_picker_cancels() {
+        let shell = Shell::new();
+        let deleted = shell.fixture.path("deleted-after-pick");
+        let picked = Fake {
+            folder: Some(deleted.clone()),
+            ..Fake::default()
+        };
+        assert_eq!(
+            shell.prepare(&picked, "chooseRepository", json!({})),
+            Err("UNSUPPORTED_REPOSITORY")
+        );
+        lock(&shell.stores.settings).last_repository = Some(deleted);
+        assert_eq!(
+            shell.prepare(&Fake::default(), "restoreWorkspace", json!({})),
+            Err("UNSUPPORTED_REPOSITORY"),
+            "a deleted last repository"
+        );
+        assert_eq!(
+            shell.prepare(&Fake::default(), "chooseRepository", json!({})),
+            Ok(None),
+            "a canceled picker"
+        );
+        let repository = shell.folder("repo");
+        let picked = Fake {
+            folder: Some(repository.clone()),
+            ..Fake::default()
+        };
+        let prepared = shell
+            .prepare(&picked, "chooseRepository", json!({}))
+            .expect("prepare")
+            .expect("a context");
+        let bootstrap_id = prepared.payload["bootstrapId"]
+            .as_str()
+            .expect("bootstrapId");
+        assert_eq!(prepared.payload, json!({ "bootstrapId": bootstrap_id }));
+        assert_eq!(prepared.path, Some(repository));
+    }
+
+    #[test]
+    fn a_successful_choose_repository_saves_the_native_context_path() {
+        let shell = Shell::new();
+        let repository = shell.folder("repo");
+        let picked = Fake {
+            folder: Some(repository.clone()),
+            ..Fake::default()
+        };
+        let prepared = shell
+            .prepare(&picked, "chooseRepository", json!({}))
+            .expect("prepare")
+            .expect("a context");
+        let failed = json!({ "requestId": CALL, "state": "failed", "code": "NOT_A_REPOSITORY" });
+        assert_eq!(
+            shell.finish(&picked, "chooseRepository", &prepared, failed.clone()),
+            failed
+        );
+        assert_eq!(
+            settings::load(&shell.stores.settings_path).last_repository,
+            None,
+            "a failed result saves nothing"
+        );
+        // The service result never names the path that the shell saves.
+        let succeeded = json!({ "requestId": CALL, "state": "succeeded", "result": { "repositoryId": REPOSITORY, "worktreeRoot": "C:\\elsewhere" } });
+        assert_eq!(
+            shell.finish(&picked, "chooseRepository", &prepared, succeeded.clone()),
+            succeeded
+        );
+        assert_eq!(
+            lock(&shell.stores.settings).last_repository,
+            Some(repository.clone())
+        );
+        assert_eq!(
+            settings::load(&shell.stores.settings_path).last_repository,
+            Some(repository),
+            "the settings file holds the path"
+        );
+    }
+
+    #[test]
+    fn a_dismissal_of_a_deleted_repository_forwards_only_the_marker_id() {
+        let shell = Shell::new();
+        let worktree = shell.folder("repo");
+        shell.folder("repo\\.git");
+        let reply = shell.started(FIRST, &worktree).expect("started reply");
+        let marker_id = reply["markerId"].as_str().expect("markerId").to_string();
+        assert_eq!(shell.ended(FIRST), None);
+        let dismiss = json!({ "markerId": marker_id });
+        let prepared = shell
+            .prepare(&Fake::default(), "dismissRecoveryMarker", dismiss.clone())
+            .expect("prepare")
+            .expect("payload");
+        assert!(
+            prepared.payload["bootstrapId"].is_string(),
+            "an existing repository gets a discovery context"
+        );
+        std::fs::remove_dir_all(&worktree).expect("delete the repository");
+        let prepared = shell
+            .prepare(&Fake::default(), "dismissRecoveryMarker", dismiss.clone())
+            .expect("prepare")
+            .expect("payload");
+        assert_eq!(
+            prepared,
+            Prepared {
+                payload: dismiss,
+                path: None
+            }
+        );
+        let allowed = json!({ "requestId": CALL, "state": "succeeded", "result": {} });
+        let native = Fake::pressing(&[Press::Label("Dismiss")]);
+        assert_eq!(
+            shell.finish(&native, "dismissRecoveryMarker", &prepared, allowed.clone()),
+            allowed
+        );
+        assert_eq!(shell.marker_files(), 0, "Dismiss deletes the marker file");
+    }
+
+    #[test]
+    fn a_started_frame_without_a_readable_identity_gets_failure_other_and_starts_nothing() {
+        let shell = Shell::new();
+        assert_eq!(
+            shell.started(FIRST, &shell.fixture.path("gone")),
+            Some(
+                json!({ "type": "started", "callId": CALL, "failure": "other", "folder": shell.fixture.path("recovery") })
+            )
+        );
+        assert_eq!(shell.marker_files(), 0, "no marker");
+        assert_eq!(
+            shell.requests.ended(FIRST, false),
+            Err("INVALID_REQUEST"),
+            "no started mutation"
+        );
+    }
+
+    #[test]
+    fn only_an_ended_frame_after_a_marker_reply_releases_the_mutex() {
+        let shell = Shell::new();
+        let worktree = shell.folder("repo");
+        shell.folder("repo\\.git");
+        let busy = Some(json!({ "type": "started", "callId": CALL, "busy": true }));
+        assert!(shell.started(FIRST, &worktree).expect("reply")["markerId"].is_string());
+        assert_eq!(shell.started(SECOND, &worktree), busy, "the mutex is held");
+        assert_eq!(shell.ended(SECOND), None);
+        assert_eq!(
+            shell.started(THIRD, &worktree),
+            busy,
+            "a busy mutation ends nothing"
+        );
+        assert_eq!(shell.ended(FIRST), None);
+        assert!(
+            shell.started(THIRD, &worktree).expect("reply")["markerId"].is_string(),
+            "ended released the mutex"
+        );
+    }
 }

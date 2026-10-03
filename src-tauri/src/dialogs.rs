@@ -20,7 +20,7 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::WindowsAndMessaging::{IDCANCEL, PostMessageW};
 use windows::core::{HRESULT, HSTRING, PCWSTR, w};
 
-use crate::bootstrap::{ContextKind, Contexts};
+use crate::bootstrap::{ContextKind, Contexts, is_absent};
 use crate::ipc::MAIN_WINDOW;
 use crate::process_requests::{PATH_UNITS, is_identifier};
 use crate::settings::{Confirm, Marker, SavedGit, Settings};
@@ -90,33 +90,48 @@ pub enum Chosen {
     Canceled,
     /// A new bootstrap context for `path`.
     Context { bootstrap_id: String, path: PathBuf },
+    /// The shell cannot read the identity of the selected path. The renderer gets `rejected` with the code.
+    Refused(&'static str),
 }
 
-/// A path whose identity the shell cannot read gives no context.
-fn context(contexts: &Contexts, kind: ContextKind, path: PathBuf, now: Instant) -> Option<Chosen> {
-    let bootstrap_id = contexts.create(kind, &path, now).ok()?;
-    Some(Chosen::Context { bootstrap_id, path })
+/// A path whose identity the shell cannot read is refused with the code of that read (contract §6 "Registration bootstrap").
+fn context(contexts: &Contexts, kind: ContextKind, path: PathBuf, now: Instant) -> Chosen {
+    match contexts.create(kind, &path, now) {
+        Ok(bootstrap_id) => Chosen::Context { bootstrap_id, path },
+        Err(code) => Chosen::Refused(code),
+    }
 }
 
 fn pick_git(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
-    native
-        .pick_executable()
-        .and_then(|path| context(contexts, ContextKind::GitProbe, path, now))
-        .unwrap_or(Chosen::Canceled)
+    native.pick_executable().map_or(Chosen::Canceled, |path| {
+        context(contexts, ContextKind::GitProbe, path, now)
+    })
 }
 
 /// Creates a `gitProbe` context for the contract §3 "Git proposal" candidate: the saved path,
 /// then the `PATH` search result, then `%ProgramFiles%\Git\cmd\git.exe`. Without a candidate, it opens the picker.
+/// With a saved path, the candidate is that path, so an unreadable saved path is refused.
 pub fn choose_git(
     native: &dyn Native,
     saved: Option<&SavedGit>,
     contexts: &Contexts,
     now: Instant,
 ) -> Chosen {
-    let probe = |path: PathBuf| context(contexts, ContextKind::GitProbe, path, now);
-    saved
-        .and_then(|git| probe(git.executable_path.clone()))
-        .or_else(|| native.search_path().and_then(probe))
+    if let Some(git) = saved {
+        return context(
+            contexts,
+            ContextKind::GitProbe,
+            git.executable_path.clone(),
+            now,
+        );
+    }
+    let probe = |path: PathBuf| match context(contexts, ContextKind::GitProbe, path, now) {
+        chosen @ Chosen::Context { .. } => Some(chosen),
+        _ => None,
+    };
+    native
+        .search_path()
+        .and_then(probe)
         .or_else(|| {
             native
                 .program_files()
@@ -127,10 +142,9 @@ pub fn choose_git(
 
 /// Opens the folder picker and creates a `repositoryDiscovery` context.
 pub fn choose_repository(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
-    native
-        .pick_folder()
-        .and_then(|path| context(contexts, ContextKind::RepositoryDiscovery, path, now))
-        .unwrap_or(Chosen::Canceled)
+    native.pick_folder().map_or(Chosen::Canceled, |path| {
+        context(contexts, ContextKind::RepositoryDiscovery, path, now)
+    })
 }
 
 /// Creates a `repositoryDiscovery` context for the stored last repository.
@@ -138,8 +152,9 @@ pub fn restore_workspace(settings: &Settings, contexts: &Contexts, now: Instant)
     settings
         .last_repository
         .clone()
-        .and_then(|path| context(contexts, ContextKind::RepositoryDiscovery, path, now))
-        .unwrap_or(Chosen::Canceled)
+        .map_or(Chosen::Canceled, |path| {
+            context(contexts, ContextKind::RepositoryDiscovery, path, now)
+        })
 }
 
 /// The probed candidate of a `register` request with `confirm: true`.
@@ -220,7 +235,8 @@ pub fn confirm_git(
                 bootstrap_id,
                 executable_path: path,
             },
-            Chosen::Canceled => Registered::Declined,
+            // The `register` reply has no refusal form.
+            Chosen::Canceled | Chosen::Refused(_) => Registered::Declined,
         },
         _ => Registered::Declined,
     }
@@ -320,21 +336,24 @@ pub fn check_renderer_payload(operation: &str, payload: &Value) -> Result<(), &'
 }
 
 /// Binds a `repositoryDiscovery` context to the stored worktree path of the marker.
+/// A worktree path that does not exist gives no context (contract §6 "Dismissal").
 pub fn dismissal_context(
     marker: &Marker,
     contexts: &Contexts,
     now: Instant,
-) -> Result<String, &'static str> {
-    contexts.create(ContextKind::RepositoryDiscovery, &marker.worktree_root, now)
+) -> Result<Option<String>, &'static str> {
+    match contexts.create(ContextKind::RepositoryDiscovery, &marker.worktree_root, now) {
+        Ok(bootstrap_id) => Ok(Some(bootstrap_id)),
+        Err(_) if is_absent(&marker.worktree_root) => Ok(None),
+        Err(code) => Err(code),
+    }
 }
 
 /// The handshake `savedGit` object for the saved Git path (contract §6 "Startup contexts").
 /// Without a saved Git path, or without a readable file at it, there is no context.
 pub fn startup_context(settings: &Settings, contexts: &Contexts, now: Instant) -> Option<Value> {
     let git = settings.git.as_ref()?;
-    let bootstrap_id = contexts
-        .create(ContextKind::GitProbe, &git.executable_path, now)
-        .ok()?;
+    let bootstrap_id = contexts.create_startup(&git.executable_path, now).ok()?;
     Some(json!({
         "bootstrapId": bootstrap_id,
         "executablePath": git.executable_path.to_string_lossy(),
@@ -487,7 +506,7 @@ impl Native for Dialogs {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::cell::RefCell;
@@ -507,7 +526,7 @@ mod tests {
 
     /// How the injected confirmation answers.
     #[derive(Clone, Copy)]
-    enum Press {
+    pub(crate) enum Press {
         /// The button with this label.
         Label(&'static str),
         /// Enter on the default button.
@@ -528,17 +547,17 @@ mod tests {
     ];
 
     #[derive(Default)]
-    struct Fake {
-        executable: Option<PathBuf>,
-        folder: Option<PathBuf>,
-        search: Option<PathBuf>,
-        program_files: Option<PathBuf>,
-        presses: RefCell<Vec<Press>>,
-        calls: RefCell<Vec<&'static str>>,
+    pub(crate) struct Fake {
+        pub(crate) executable: Option<PathBuf>,
+        pub(crate) folder: Option<PathBuf>,
+        pub(crate) search: Option<PathBuf>,
+        pub(crate) program_files: Option<PathBuf>,
+        pub(crate) presses: RefCell<Vec<Press>>,
+        pub(crate) calls: RefCell<Vec<&'static str>>,
     }
 
     impl Fake {
-        fn pressing(presses: &[Press]) -> Fake {
+        pub(crate) fn pressing(presses: &[Press]) -> Fake {
             Fake {
                 presses: RefCell::new(presses.iter().rev().copied().collect()),
                 ..Fake::default()
@@ -625,7 +644,7 @@ mod tests {
                 assert_eq!(&context.path, path);
                 (context.kind, context.path)
             }
-            Chosen::Canceled => panic!("expected a context, got Canceled"),
+            other => panic!("expected a context, got {other:?}"),
         }
     }
 
@@ -1026,13 +1045,113 @@ mod tests {
         let fixture = Fixture::new();
         let contexts = Contexts::new(SESSION);
         let marker = marker(&fixture);
-        let bootstrap_id = dismissal_context(&marker, &contexts, Instant::now()).expect("context");
+        let bootstrap_id = dismissal_context(&marker, &contexts, Instant::now())
+            .expect("context")
+            .expect("an existing worktree gets a context");
         let context = contexts
             .get(&bootstrap_id, Instant::now())
             .expect("live context");
         assert_eq!(
             (context.kind, context.path),
             (ContextKind::RepositoryDiscovery, marker.worktree_root)
+        );
+    }
+
+    #[test]
+    fn a_dismissal_of_a_deleted_or_moved_worktree_needs_no_context() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let deleted = marker(&fixture);
+        std::fs::remove_dir_all(&deleted.worktree_root).expect("delete the worktree");
+        assert_eq!(
+            dismissal_context(&deleted, &contexts, Instant::now()),
+            Ok(None),
+            "a deleted worktree folder"
+        );
+        let moved = Marker {
+            worktree_root: fixture.path("moved\\repo"),
+            ..marker(&fixture)
+        };
+        assert_eq!(
+            dismissal_context(&moved, &contexts, Instant::now()),
+            Ok(None),
+            "a worktree whose parent folder is gone"
+        );
+        // ERROR_INVALID_NAME: the read fails, but not because the path is absent.
+        let unreadable = Marker {
+            worktree_root: fixture.path("bad<name"),
+            ..marker(&fixture)
+        };
+        assert_eq!(
+            dismissal_context(&unreadable, &contexts, Instant::now()),
+            Err("UNSUPPORTED_REPOSITORY"),
+            "another identity failure keeps the refusal"
+        );
+    }
+
+    // ---- Identity refusals ----
+
+    #[test]
+    fn a_missing_saved_git_path_is_refused_and_never_falls_back_to_the_path_candidate() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let native = Fake {
+            search: Some(file(&fixture, "path\\git.exe")),
+            program_files: Some(folder(&fixture, "pf")),
+            ..Fake::default()
+        };
+        file(&fixture, "pf\\Git\\cmd\\git.exe");
+        let missing = saved(&fixture.path("moved\\git.exe"));
+        assert_eq!(
+            choose_git(&native, Some(&missing), &contexts, Instant::now()),
+            Chosen::Refused("GIT_UNAVAILABLE")
+        );
+        assert_eq!(native.calls(), Vec::<&str>::new(), "no other candidate");
+    }
+
+    #[test]
+    fn a_picked_path_whose_identity_cannot_be_read_is_refused_not_canceled() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let native = Fake {
+            folder: Some(fixture.path("deleted-after-pick")),
+            executable: Some(fixture.path("deleted-after-pick.exe")),
+            program_files: Some(folder(&fixture, "pf-without-git")),
+            ..Fake::default()
+        };
+        assert_eq!(
+            choose_repository(&native, &contexts, Instant::now()),
+            Chosen::Refused("UNSUPPORTED_REPOSITORY")
+        );
+        assert_eq!(
+            choose_git(&native, None, &contexts, Instant::now()),
+            Chosen::Refused("GIT_UNAVAILABLE")
+        );
+    }
+
+    #[test]
+    fn restore_workspace_for_a_deleted_repository_is_refused_not_canceled() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let repository = folder(&fixture, "repo");
+        std::fs::remove_dir(&repository).expect("delete the repository");
+        let settings = Settings {
+            git: None,
+            last_repository: Some(repository),
+            window: None,
+        };
+        assert_eq!(
+            restore_workspace(&settings, &contexts, Instant::now()),
+            Chosen::Refused("UNSUPPORTED_REPOSITORY")
+        );
+        let none = Settings {
+            last_repository: None,
+            ..settings
+        };
+        assert_eq!(
+            restore_workspace(&none, &contexts, Instant::now()),
+            Chosen::Canceled,
+            "without a last repository"
         );
     }
 

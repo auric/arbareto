@@ -29,7 +29,7 @@ use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingl
 use windows::core::HSTRING;
 
 use crate::bootstrap::{Identity, read_identity};
-use crate::process_requests::{PATH_UNITS, VERSION_BYTES, is_identifier};
+use crate::process_requests::{PATH_UNITS, VERSION_BYTES, is_device_path, is_identifier};
 
 // ---- Settings file (data-model §1) ----
 
@@ -338,13 +338,13 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// A channel path (contract §6 "Channel frames"), as `src/git-service/git-runner.ts` `isChannelPath` checks it.
-/// A fully qualified path starts with a drive letter and a separator, or with two separators.
+/// A fully qualified path starts with a drive letter and a separator, or with two separators but no device prefix.
 fn channel_path(value: &Value) -> Option<PathBuf> {
     let text = value.as_str()?;
     let b = text.as_bytes();
     let separator = |byte: u8| byte == b'\\' || byte == b'/';
     let qualified = (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && separator(b[2]))
-        || (b.len() >= 2 && separator(b[0]) && separator(b[1]));
+        || (b.len() >= 2 && separator(b[0]) && separator(b[1]) && !is_device_path(text));
     (qualified && !text.contains('\0') && text.encode_utf16().count() <= PATH_UNITS)
         .then(|| PathBuf::from(text))
 }
@@ -562,7 +562,11 @@ pub struct Started<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum StartedReply {
-    Marker(String),
+    /// `identity` is the common-directory identity that named the mutex.
+    Marker {
+        marker_id: String,
+        identity: Identity,
+    },
     Busy,
     /// `failure` is `disk-full`, `access-denied`, or `other`. `folder` is the `recovery` folder.
     Failure {
@@ -574,7 +578,7 @@ pub enum StartedReply {
 impl StartedReply {
     pub fn reply(&self, call_id: &str) -> Value {
         match self {
-            StartedReply::Marker(marker_id) => {
+            StartedReply::Marker { marker_id, .. } => {
                 json!({ "type": "started", "callId": call_id, "markerId": marker_id })
             }
             StartedReply::Busy => json!({ "type": "started", "callId": call_id, "busy": true }),
@@ -767,7 +771,10 @@ impl Markers {
             Taken::Failed => return failure("other"),
         }
         match self.write(request, identity) {
-            Ok(marker_id) => StartedReply::Marker(marker_id),
+            Ok(marker_id) => StartedReply::Marker {
+                marker_id,
+                identity,
+            },
             Err(error) => {
                 self.release(Some(request.operation_id));
                 failure(failure_class(&error))
@@ -1667,7 +1674,7 @@ mod tests {
 
     fn marker_id(reply: StartedReply) -> String {
         match reply {
-            StartedReply::Marker(id) => id,
+            StartedReply::Marker { marker_id, .. } => marker_id,
             other => panic!("expected a marker ID, got {other:?}"),
         }
     }
@@ -1936,10 +1943,55 @@ mod tests {
     }
 
     #[test]
+    fn the_marker_reply_carries_the_identity_that_named_the_mutex() {
+        let fixture = Fixture::new();
+        let repository = repository(&fixture, "repo");
+        let markers = Markers::open(&fixture.path("recovery"));
+        let StartedReply::Marker { identity, .. } = markers.started(&started(&repository, "op-1"))
+        else {
+            panic!("expected a marker");
+        };
+        assert_eq!(
+            identity,
+            read_identity(&repository.common).expect("identity")
+        );
+        assert_eq!(mutex_name(&identity), name_of(&repository));
+        markers.ended("op-1");
+    }
+
+    #[test]
+    fn a_stored_path_with_a_device_prefix_is_refused() {
+        for device in [
+            r"\\.\pipe\git",
+            "//./pipe/git",
+            r"\/.\C:\repo",
+            r"\\?\C:\repo",
+            r"\\?\UNC\server\share\repo",
+        ] {
+            assert_eq!(channel_path(&json!(device)), None, "{device}");
+        }
+        for accepted in [
+            r"C:\repo",
+            "C:/repo",
+            r"\\server\share\repo",
+            "//server/share/repo",
+        ] {
+            assert!(channel_path(&json!(accepted)).is_some(), "{accepted}");
+        }
+    }
+
+    #[test]
     fn the_started_replies_have_the_contract_shapes() {
         let call = "0f0f0f0f-0000-4000-8000-0000000000aa";
         assert_eq!(
-            StartedReply::Marker("m-1".to_string()).reply(call),
+            StartedReply::Marker {
+                marker_id: "m-1".to_string(),
+                identity: Identity {
+                    volume_serial: 1,
+                    file_id: [2; 16]
+                }
+            }
+            .reply(call),
             json!({ "type": "started", "callId": call, "markerId": "m-1" })
         );
         assert_eq!(

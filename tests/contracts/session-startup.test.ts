@@ -38,12 +38,20 @@ const HANDSHAKE = {
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
 
 type Response = { requestId: string | null; state: string; code?: string; result?: { gitCode?: string } };
+type Progress = { requestId: string; operationId: string };
 
-function startSession(runner: Partial<GitRunner>) {
+function startSession(runner: Partial<GitRunner>, handshake: object = HANDSHAKE) {
   const responses: Response[] = [];
+  const progress: Progress[] = [];
   const calls = { closeJob: [] as string[], release: [] as unknown[] };
   const session = createSession({
-    writer: { write: (frame) => void ("response" in frame && responses.push(frame.response as Response)), flush: async () => {} },
+    writer: {
+      write: (frame) => {
+        if ("response" in frame) responses.push(frame.response as Response);
+        if ("progress" in frame) progress.push(frame.progress as Progress);
+      },
+      flush: async () => {},
+    },
     runner: {
       closeJob: (id: string) => void calls.closeJob.push(id),
       release: (target: unknown) => void calls.release.push(target),
@@ -54,7 +62,7 @@ function startSession(runner: Partial<GitRunner>) {
     startupDeadlineMs: DEADLINE_MS,
   });
   const send = (frame: object) => session.receive({ type: "frame", body: new TextEncoder().encode(JSON.stringify(frame)) });
-  send({ kind: "handshake", handshake: HANDSHAKE });
+  send({ kind: "handshake", handshake });
   const sessionId = session.sessionId as string;
   const getEnvironment = (requestId: string = crypto.randomUUID()) => {
     send({ kind: "public", request: { version: 1, sessionId, requestId, operation: "getEnvironment", payload: {} } });
@@ -69,7 +77,7 @@ function startSession(runner: Partial<GitRunner>) {
       await Bun.sleep(10);
     }
   };
-  return { responses, calls, send, sessionId, getEnvironment, responseFor };
+  return { responses, progress, calls, send, sessionId, getEnvironment, responseFor };
 }
 
 const never = () => new Promise<never>(() => {});
@@ -163,6 +171,48 @@ test(
     expect(calls.release).toEqual([{ gitInstallationId: registered[0] }]);
     const [later] = await responseFor(getEnvironment());
     expect(later).toMatchObject({ state: "succeeded", result: { gitCode: "DEADLINE" } });
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  "a chooseGit probe that registers after a cancel releases its gitInstallationId and ends canceled",
+  async () => {
+    let approve!: () => void;
+    const registered: string[] = [];
+    const { savedGit: _, ...withoutSavedGit } = HANDSHAKE;
+    const { calls, progress, send, sessionId, responseFor } = startSession(
+      {
+        identities: async () => [IDENTITY],
+        run: async (call) => {
+          call.stdout.push(new TextEncoder().encode("git version 2.55.0.windows.3\ncpu: x86_64\n"));
+          return { exitCode: 0, activeDescendants: 0 } as never;
+        },
+        register: (request) => {
+          registered.push(request.gitInstallationId);
+          return new Promise((resolve) => (approve = () => resolve({ result: "approved" })));
+        },
+      },
+      withoutSavedGit,
+    );
+    const request = (operation: string, payload: object) => {
+      const requestId = crypto.randomUUID();
+      send({ kind: "public", request: { version: 1, sessionId, requestId, operation, payload } });
+      return requestId;
+    };
+    const choose = request("chooseGit", { bootstrapId: SAVED_GIT.bootstrapId, executablePath: SAVED_GIT.executablePath });
+    const deadline = Date.now() + WAIT_MS;
+    while (registered.length === 0) {
+      if (Date.now() > deadline) throw new Error("no register request");
+      await Bun.sleep(10);
+    }
+    const operationId = progress.find((p) => p.requestId === choose)?.operationId as string;
+    const [canceled] = await responseFor(request("cancel", { operationId }));
+    expect(canceled).toMatchObject({ state: "succeeded", result: { state: "cancel-requested" } });
+    approve();
+    const [terminal] = await responseFor(choose);
+    expect(terminal).toMatchObject({ state: "canceled" });
+    expect(calls.release).toEqual([{ gitInstallationId: registered[0] }]);
   },
   TEST_TIMEOUT_MS,
 );

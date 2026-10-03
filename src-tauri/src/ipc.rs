@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use serde_json::{Value, json};
@@ -74,21 +75,30 @@ pub enum ToRenderer {
     Progress(serde_json::Value),
 }
 
-/// Writes one frame body to the service.
-pub type FrameSink = Arc<dyn Fn(String) + Send + Sync>;
+/// Writes one frame body to the service. False means that the service did not get the whole frame.
+pub type FrameSink = Arc<dyn Fn(String) -> bool + Send + Sync>;
+
+/// The result of the native step before the forward.
+#[derive(Debug, PartialEq)]
+pub struct Prepared {
+    /// The service payload.
+    pub payload: Value,
+    /// The path of the native context. The service result never supplies it.
+    pub path: Option<PathBuf>,
+}
 
 /// The native steps of a native-first operation (contract §3). Both steps can show a dialog, so they block.
 pub trait NativeFirst: Send + Sync {
-    /// Runs before the forward. `Ok(None)` is a canceled dialog. `Ok(Some(payload))` is the service payload.
-    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Value>, &'static str>;
+    /// Runs before the forward. `Ok(None)` is a canceled dialog.
+    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, &'static str>;
     /// Runs after the service response of a forwarded request. It returns the response for the renderer.
-    fn finish(&self, operation: &str, payload: &Value, response: Value) -> Value;
+    fn finish(&self, operation: &str, prepared: &Prepared, response: Value) -> Value;
 }
 
 /// A forwarded request waits here for the service response with its `requestId`.
 enum Submitted {
     Answer(Value),
-    Waiting(Receiver<Value>),
+    Waiting(Receiver<Value>, Option<Prepared>),
     Denied,
 }
 
@@ -145,7 +155,7 @@ impl Ipc {
     pub fn handle(&self, window_label: &str, url: &str, request: &serde_json::Value) -> Outcome {
         match self.submit(window_label, url, request, None) {
             Submitted::Answer(answer) => Outcome::Answer(answer),
-            Submitted::Waiting(_) => Outcome::Forwarded,
+            Submitted::Waiting(..) => Outcome::Forwarded,
             Submitted::Denied => Outcome::Denied,
         }
     }
@@ -207,33 +217,22 @@ impl Ipc {
                 None => reject("SERVICE_UNAVAILABLE"),
             };
         }
-        let mut encoded = encoded;
-        if NATIVE_FIRST.contains(&operation) {
+        let mut body = match frame(&encoded) {
+            Ok(body) => body,
+            Err(code) => return reject(code),
+        };
+        let native_first = NATIVE_FIRST.contains(&operation);
+        if native_first {
             if operation == "requestClose" {
                 return reject("SERVICE_UNAVAILABLE");
             }
             if let Err(code) = check_renderer_payload(operation, &request["payload"]) {
                 return reject(code);
             }
-            let native = self.native();
-            let (Some(native), true) = (native, self.session().session_id.is_some()) else {
-                return reject("SERVICE_UNAVAILABLE");
-            };
-            match native.prepare(operation, &request["payload"]) {
-                Err(code) => return reject(code),
-                Ok(None) => {
-                    return Submitted::Answer(
-                        json!({ "requestId": request_id, "state": "canceled", "code": "CANCELED" }),
-                    );
-                }
-                Ok(Some(payload)) => {
-                    let mut forwarded = request.clone();
-                    forwarded["payload"] = payload;
-                    encoded = forwarded.to_string();
-                }
-            }
         }
+        // The requestId is reserved before any native dialog shows.
         let (waiting, response) = channel(1);
+        let reserved = waiting.clone();
         {
             let mut session = self.session();
             if session.pending.contains_key(request_id) {
@@ -244,11 +243,58 @@ impl Ipc {
                 session.pending.insert(request_id.to_string(), waiting);
             }
         }
-        if let Ok(body) = public_request_body(&encoded) {
-            (self.forward)(body);
+        // Each answer from here on frees the reservation, so no request waits without a response.
+        let answer = |answer: Value| {
+            let mut session = self.session();
+            if session
+                .pending
+                .get(request_id)
+                .is_some_and(|sender| sender.same_channel(&reserved))
+            {
+                session.pending.remove(request_id);
+            }
+            Submitted::Answer(answer)
+        };
+        let rejected = |code: &str| {
+            answer(json!({ "requestId": request_id, "state": "rejected", "code": code }))
+        };
+        let mut prepared = None;
+        if native_first {
+            let native = self.native();
+            let (Some(native), true) = (native, self.session().session_id.is_some()) else {
+                return rejected("SERVICE_UNAVAILABLE");
+            };
+            match native.prepare(operation, &request["payload"]) {
+                Err(code) => return rejected(code),
+                Ok(None) => {
+                    return answer(
+                        json!({ "requestId": request_id, "state": "canceled", "code": "CANCELED" }),
+                    );
+                }
+                Ok(Some(native)) => {
+                    let mut forwarded = request.clone();
+                    forwarded["payload"] = native.payload.clone();
+                    body = match frame(&forwarded.to_string()) {
+                        Ok(body) => body,
+                        Err(code) => return rejected(code),
+                    };
+                    prepared = Some(native);
+                }
+            }
         }
-        Submitted::Waiting(response)
+        if !(self.forward)(body) {
+            return rejected("SERVICE_UNAVAILABLE");
+        }
+        Submitted::Waiting(response, prepared)
     }
+}
+
+/// The `public` frame body of an encoded envelope (contract §5 "Incoming public request").
+/// The service decodes the whole body strictly, and a body that it refuses would get no response with this `requestId` (contract §1).
+fn frame(envelope: &str) -> Result<String, &'static str> {
+    let body = public_request_body(envelope).map_err(|_| "FRAME_LIMIT")?;
+    decode_strict(&body).ok_or("INVALID_REQUEST")?;
+    Ok(body)
 }
 
 /// The local origin over `http` or `https`, without a port or user information.
@@ -326,25 +372,27 @@ async fn call(
 ) -> Result<Value, &'static str> {
     let label = webview.label().to_string();
     let url = webview.url().map_err(|_| DENIED)?.to_string();
-    let payload = request["payload"].clone();
     let submitter = Arc::clone(ipc);
     let submitted = tauri::async_runtime::spawn_blocking(move || {
         submitter.submit(&label, &url, &request, Some(operation))
     })
     .await
     .map_err(|_| DENIED)?;
-    let response = match submitted {
+    let (response, prepared) = match submitted {
         Submitted::Answer(answer) => return Ok(answer),
-        Submitted::Waiting(mut response) => response.recv().await.ok_or("SERVICE_UNAVAILABLE")?,
+        Submitted::Waiting(mut response, prepared) => (
+            response.recv().await.ok_or("SERVICE_UNAVAILABLE")?,
+            prepared,
+        ),
         Submitted::Denied => return Err(DENIED),
     };
-    match ipc.native().filter(|_| NATIVE_FIRST.contains(&operation)) {
-        Some(native) => tauri::async_runtime::spawn_blocking(move || {
-            native.finish(operation, &payload, response)
+    match (ipc.native(), prepared) {
+        (Some(native), Some(prepared)) => tauri::async_runtime::spawn_blocking(move || {
+            native.finish(operation, &prepared, response)
         })
         .await
         .map_err(|_| "SERVICE_UNAVAILABLE"),
-        None => Ok(response),
+        _ => Ok(response),
     }
 }
 
@@ -558,9 +606,148 @@ mod tests {
         let frames = Arc::new(Mutex::new(Vec::new()));
         let sink: FrameSink = {
             let frames = Arc::clone(&frames);
-            Arc::new(move |body: String| frames.lock().expect("frames").push(body))
+            Arc::new(move |body: String| {
+                frames.lock().expect("frames").push(body);
+                true
+            })
         };
         (Ipc::new(sink), frames)
+    }
+
+    type Prepare = Box<dyn Fn() -> Result<Option<Prepared>, &'static str> + Send + Sync>;
+
+    /// Counts each native step. `prepare` answers as the test sets it.
+    struct FakeNative {
+        prepare: Prepare,
+        prepares: Mutex<usize>,
+    }
+
+    impl NativeFirst for FakeNative {
+        fn prepare(&self, _: &str, _: &Value) -> Result<Option<Prepared>, &'static str> {
+            *self.prepares.lock().expect("prepares") += 1;
+            (self.prepare)()
+        }
+
+        fn finish(&self, _: &str, _: &Prepared, response: Value) -> Value {
+            response
+        }
+    }
+
+    /// An `Ipc` with a running session and the fake native steps. The caller keeps the returned native alive.
+    fn connected(prepare: Prepare) -> (Ipc, Arc<Mutex<Vec<String>>>, Arc<FakeNative>) {
+        let (ipc, frames) = ipc();
+        ipc.set_session(Some("0f0f0f0f-0000-4000-8000-0000000000aa".to_string()));
+        let native = Arc::new(FakeNative {
+            prepare,
+            prepares: Mutex::new(0),
+        });
+        let weak: Weak<FakeNative> = Arc::downgrade(&native);
+        ipc.set_native(weak);
+        (ipc, frames, native)
+    }
+
+    fn pending(ipc: &Ipc) -> usize {
+        ipc.session().pending.len()
+    }
+
+    /// `levels` nested arrays.
+    fn nested(levels: usize) -> Value {
+        (1..levels).fold(json!([]), |inner, _| json!([inner]))
+    }
+
+    #[test]
+    fn a_frame_that_the_service_strict_decoder_refuses_gets_invalid_request_and_is_never_forwarded()
+    {
+        let (ipc, frames) = ipc();
+        // The frame object, the envelope, and the payload are the first three levels.
+        let at_bound = request("readWorkspace", json!({ "pad": nested(13) }));
+        assert!(
+            decode_strict(&public_request_body(&at_bound.to_string()).expect("body")).is_some()
+        );
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &at_bound),
+            Outcome::Forwarded,
+            "a frame with 16 levels"
+        );
+        assert_eq!(
+            ipc.handle(
+                MAIN_WINDOW,
+                LOCAL,
+                &request("readWorkspace", json!({ "pad": nested(14) }))
+            ),
+            rejected("INVALID_REQUEST"),
+            "a frame with 17 levels"
+        );
+        let generation = |value: u64| {
+            let mut envelope = request("readWorkspace", json!({}));
+            envelope["repositoryGeneration"] = json!(value);
+            envelope
+        };
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &generation((1 << 53) - 1)),
+            Outcome::Forwarded,
+            "Number.MAX_SAFE_INTEGER"
+        );
+        for unsafe_integer in [1 << 53, (1 << 53) + 1] {
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &generation(unsafe_integer)),
+                rejected("INVALID_REQUEST"),
+                "{unsafe_integer}"
+            );
+        }
+        assert_eq!(frames.lock().expect("frames").len(), 2);
+    }
+
+    #[test]
+    fn a_prepared_request_above_1_mib_gets_frame_limit_and_leaves_no_pending_request() {
+        let (ipc, frames, _native) = connected(Box::new(|| {
+            Ok(Some(Prepared {
+                payload: json!({ "bootstrapId": "a".repeat(PUBLIC_REQUEST_BYTES) }),
+                path: None,
+            }))
+        }));
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &request("chooseRepository", json!({}))),
+            rejected("FRAME_LIMIT")
+        );
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn a_failed_forward_gets_service_unavailable_and_leaves_no_pending_request() {
+        let ipc = Ipc::new(Arc::new(|_| false));
+        ipc.set_session(Some("0f0f0f0f-0000-4000-8000-0000000000aa".to_string()));
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &request("getEnvironment", json!({}))),
+            rejected("SERVICE_UNAVAILABLE")
+        );
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn a_repeated_request_id_is_refused_before_any_native_dialog() {
+        let (ipc, frames, native) = connected(Box::new(|| Err("UNSUPPORTED_REPOSITORY")));
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &request("getEnvironment", json!({}))),
+            Outcome::Forwarded
+        );
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &request("chooseRepository", json!({}))),
+            rejected("INVALID_REQUEST"),
+            "the requestId is in flight"
+        );
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        let other = json!({ "version": 1, "sessionId": "0f0f0f0f-0000-4000-8000-0000000000aa", "requestId": OPERATION_ID, "operation": "chooseRepository", "payload": {} });
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &other),
+            Outcome::Answer(
+                json!({ "requestId": OPERATION_ID, "state": "rejected", "code": "UNSUPPORTED_REPOSITORY" })
+            ),
+            "a refused identity read"
+        );
+        assert_eq!(pending(&ipc), 1, "the refusal frees its requestId");
+        assert_eq!(frames.lock().expect("frames").len(), 1);
     }
 
     fn request(operation: &str, payload: Value) -> Value {

@@ -111,6 +111,8 @@ struct State {
     calls: HashMap<String, Call>,
     /// The count of shell Job closes per operation. A process that a Job close ended exits with `exitCode` null.
     job_closes: HashMap<String, u64>,
+    /// The mutations whose `started` reply carried a marker ID, until `ended`.
+    started: HashSet<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -143,6 +145,8 @@ struct Run {
     pipes: [File; 2],
     state: Mutex<Drain>,
     changed: Condvar,
+    /// True after `watch` removed the call. The input writer holds this lock while it sends `inputWritten`.
+    exited: Arc<Mutex<bool>>,
 }
 
 #[derive(Default)]
@@ -226,17 +230,22 @@ impl ProcessRequests {
         }
     }
 
-    /// Tags the Job of a mutation with the common-directory identity that the `started` frame read.
+    /// Records a `started` reply with a marker ID, and tags the Job of that mutation with the common-directory identity.
     /// `started` comes before the first process, so the Job opens here (contract §6 "Recovery markers").
     pub fn tag(&self, operation_id: &str, common_identity: Identity) {
+        self.state().started.insert(operation_id.to_string());
         if self.jobs.open(operation_id).is_ok() {
             self.jobs.tag(operation_id, common_identity);
         }
     }
 
     /// Handles the `mutation` frame `ended` (contract §6 "Lingering Jobs").
-    pub fn ended(&self, operation_id: &str, end_processes: bool) {
+    pub fn ended(&self, operation_id: &str, end_processes: bool) -> Result<(), Code> {
         let mut state = self.state();
+        // Contract §6: `ended` comes only after a `started` reply with a marker ID. Read Jobs never linger.
+        if !state.started.remove(operation_id) {
+            return Err(INVALID);
+        }
         if end_processes {
             *state
                 .job_closes
@@ -245,6 +254,7 @@ impl ProcessRequests {
         }
         self.jobs.ended(operation_id, end_processes);
         state.inactive.insert(operation_id.to_string());
+        Ok(())
     }
 
     /// Drops every pending call, and closes every operation Job outside the lingering set.
@@ -358,6 +368,10 @@ impl ProcessRequests {
             return Err(INVALID);
         }
         check_active(&state, operation_id)?;
+        // The marker and the mutex exist before the first side effect (contract §6 "Recovery markers").
+        if policy == "mutation" && !state.started.contains(operation_id) {
+            return Err(INVALID);
+        }
         let target = self.target(&mut state, request, kind, operation_id)?;
         if let Some(file) = &index_file {
             let named = file
@@ -400,10 +414,15 @@ impl ProcessRequests {
         .map_err(|_| OWNERSHIP)?;
 
         let generation = self.current();
+        let exited = Arc::new(Mutex::new(false));
         let streamed = match (input, spawned.stdin) {
-            (RunInput::Streamed(declared), Some(stdin)) => {
-                Some(Arc::clone(&me).write_input(call_id, generation, declared, stdin))
-            }
+            (RunInput::Streamed(declared), Some(stdin)) => Some(Arc::clone(&me).write_input(
+                call_id,
+                generation,
+                declared,
+                stdin,
+                Arc::clone(&exited),
+            )),
             _ => None,
         };
         state.calls.insert(
@@ -423,6 +442,7 @@ impl ProcessRequests {
             pipes: [spawned.stdout, spawned.stderr],
             state: Mutex::new(Drain::default()),
             changed: Condvar::new(),
+            exited,
         });
         for stream in 0..2 {
             let (me, run) = (Arc::clone(&me), Arc::clone(&run));
@@ -504,6 +524,7 @@ impl ProcessRequests {
         generation: u64,
         declared: u64,
         mut stdin: File,
+        exited: Arc<Mutex<bool>>,
     ) -> Streamed {
         let (chunks, received) = mpsc::channel::<Vec<u8>>();
         let unacknowledged = Arc::new(AtomicUsize::new(0));
@@ -518,12 +539,15 @@ impl ProcessRequests {
                 }
                 written += chunk.len() as u64;
                 pending.fetch_sub(1, Ordering::SeqCst);
-                if self.state().calls.contains_key(&call_id) {
+                // `exit` is the last reply of a `run` (contract §6 "Process replies").
+                let exited = lock(&exited);
+                if !*exited {
                     self.send(
                         generation,
                         json!({ "type": "inputWritten", "callId": call_id }),
                     );
                 }
+                drop(exited);
                 if written == declared {
                     return;
                 }
@@ -546,21 +570,21 @@ impl ProcessRequests {
         let Some(call) = state.calls.get_mut(call_id) else {
             return Ok(());
         };
-        let operation_id = call.operation_id.clone();
-        let fits = call.streamed.as_mut().is_some_and(|streamed| {
-            let fits = streamed.sent + data.len() as u64 <= streamed.declared
-                && streamed.unacknowledged.load(Ordering::SeqCst) < QUEUED_CHUNKS_PER_STREAM;
-            if fits {
-                streamed.sent += data.len() as u64;
-                streamed.unacknowledged.fetch_add(1, Ordering::SeqCst);
-                let _ = streamed.chunks.send(data);
-            }
-            fits
-        });
-        // A chunk past `inputBytes` or past 8 unacknowledged chunks closes the operation Job. The `exit` then follows.
-        if !fits {
-            close_job_of(&self.jobs, &mut state, &operation_id);
+        // A call without `inputBytes` refuses the frame, and its Job stays open (contract §6 "Errors").
+        let Some(streamed) = call.streamed.as_mut() else {
+            return Err(INVALID);
+        };
+        if streamed.sent + data.len() as u64 <= streamed.declared
+            && streamed.unacknowledged.load(Ordering::SeqCst) < QUEUED_CHUNKS_PER_STREAM
+        {
+            streamed.sent += data.len() as u64;
+            streamed.unacknowledged.fetch_add(1, Ordering::SeqCst);
+            let _ = streamed.chunks.send(data);
+            return Ok(());
         }
+        // A chunk past `inputBytes` or past 8 unacknowledged chunks closes the operation Job. The `exit` then follows.
+        let operation_id = call.operation_id.clone();
+        close_job_of(&self.jobs, &mut state, &operation_id);
         Ok(())
     }
 
@@ -671,6 +695,10 @@ impl ProcessRequests {
             let context = self.contexts.get(bootstrap_id, now)?;
             if context.kind != ContextKind::GitProbe {
                 return Err(UNKNOWN);
+            }
+            // Only the saved Git skips Use this Git (contract §3 "Git proposal", FR-003).
+            if !confirm && !context.startup {
+                return Err(INVALID);
             }
             own(&mut state, bootstrap_id, operation_id)?;
             self.contexts.revalidate(bootstrap_id, now)?;
@@ -795,6 +823,8 @@ impl ProcessRequests {
     fn read_stream(&self, run: &Run, stream: usize) {
         let pipe = &run.pipes[stream];
         let mut buffer = vec![0u8; CHUNK_BYTES];
+        // The chunks that this stream read and did not yet write to the service.
+        let mut queued = 0;
         let mut drain = lock(&run.state);
         while let Some(available) = peek(pipe) {
             let limit = match drain.budget[stream] {
@@ -822,7 +852,8 @@ impl ProcessRequests {
             }
             drop(drain);
             // A stream holds one chunk at a time, and its pipe waits while the frame write runs.
-            self.peak.fetch_max(1, Ordering::SeqCst);
+            queued += 1;
+            self.peak.fetch_max(queued, Ordering::SeqCst);
             self.send(
                 run.generation,
                 json!({
@@ -830,6 +861,7 @@ impl ProcessRequests {
                     "data": encode_base64(&buffer[..read]),
                 }),
             );
+            queued -= 1;
             drain = lock(&run.state);
         }
         drain.done[stream] = true;
@@ -881,6 +913,7 @@ impl ProcessRequests {
 
         // Removing the call drops its input channel, so later `input` and `cancel` frames are dropped.
         self.state().calls.remove(&run.call_id);
+        *lock(&run.exited) = true;
         let mut exit = json!({
             "type": "exit", "callId": run.call_id, "exitCode": exit_code, "activeDescendants": active,
         });
@@ -1036,15 +1069,32 @@ fn chunk(value: &Value, max: usize) -> Result<Vec<u8>, Code> {
         .ok_or(INVALID)
 }
 
-/// An absolute path with 1 to 32,767 UTF-16 units and no NUL. A lone surrogate never decodes to a string.
+/// An absolute path with 1 to 32,767 UTF-16 units, no NUL, and no device prefix. A lone surrogate never decodes to a string.
 pub(crate) fn path(value: &Value) -> Result<PathBuf, Code> {
     let text = value.as_str().ok_or(INVALID)?;
     let units = text.encode_utf16().count();
     let path = PathBuf::from(text);
-    if units == 0 || units > PATH_UNITS || text.contains('\0') || !Path::is_absolute(&path) {
+    if units == 0
+        || units > PATH_UNITS
+        || text.contains('\0')
+        || is_device_path(text)
+        || !Path::is_absolute(&path)
+    {
         return Err(INVALID);
     }
     Ok(path)
+}
+
+/// The device prefix `\\.\` or `\\?\` with either separator (contract §6 "Channel frames").
+/// A device such as a pipe can block a read without end.
+pub(crate) fn is_device_path(text: &str) -> bool {
+    let separator = |byte: &u8| matches!(byte, b'\\' | b'/');
+    match text.as_bytes() {
+        [first, second, b'.' | b'?', third, ..] => {
+            separator(first) && separator(second) && separator(third)
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn identifier(value: &Value) -> Result<&str, Code> {
@@ -1361,6 +1411,28 @@ mod strict_tests {
             assert_eq!(decode_base64(refused), None, "{refused:?}");
         }
     }
+
+    #[test]
+    fn a_channel_path_with_a_device_prefix_is_refused() {
+        for device in [
+            r"\\.\pipe\git",
+            "//./pipe/git",
+            r"\/.\C:\Git\cmd\git.exe",
+            r"\\?\C:\Git\cmd\git.exe",
+            r"\\?\UNC\server\share\git.exe",
+            "//?/C:/Git/cmd/git.exe",
+        ] {
+            assert_eq!(path(&json!(device)), Err(INVALID), "{device}");
+        }
+        for accepted in [
+            r"C:\repo",
+            "C:/repo",
+            r"\\server\share\repo",
+            "//server/share/repo",
+        ] {
+            assert!(path(&json!(accepted)).is_ok(), "{accepted}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1456,6 +1528,8 @@ mod tests {
         jobs: Arc<Supervisor>,
         replies: Replies,
         gate: Arc<Gate>,
+        /// Blocks only `inputWritten` replies while closed.
+        input_gate: Arc<Gate>,
         fixture: Fixture,
     }
 
@@ -1487,8 +1561,16 @@ mod tests {
                 open: Mutex::new(true),
                 changed: Condvar::new(),
             });
+            let input_gate = Arc::new(Gate {
+                open: Mutex::new(true),
+                changed: Condvar::new(),
+            });
             let sink: ReplySink = {
-                let (replies, gate) = (Arc::clone(&replies), Arc::clone(&gate));
+                let (replies, gate, input_gate) = (
+                    Arc::clone(&replies),
+                    Arc::clone(&gate),
+                    Arc::clone(&input_gate),
+                );
                 Arc::new(move |body: String| {
                     gate.pass();
                     let frame: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
@@ -1499,6 +1581,9 @@ mod tests {
                     } else {
                         json!({ "type": "BAD_FRAME", "body": body })
                     };
+                    if reply["type"] == "inputWritten" {
+                        input_gate.pass();
+                    }
                     let (list, changed) = &*replies;
                     list.lock().expect("replies").push((Instant::now(), reply));
                     changed.notify_all();
@@ -1519,6 +1604,7 @@ mod tests {
                 jobs,
                 replies,
                 gate,
+                input_gate,
                 fixture,
             }
         }
@@ -1615,11 +1701,12 @@ mod tests {
             );
         }
 
+        /// Registers `program` as the saved Git, which needs no confirmation.
         fn register_git(&self, program: &Path) -> String {
             let bootstrap_id = self
                 .contexts
-                .create(ContextKind::GitProbe, program, Instant::now())
-                .expect("gitProbe context");
+                .create_startup(program, Instant::now())
+                .expect("startup gitProbe context");
             let git = uuid();
             self.register(json!({ "bootstrapId": bootstrap_id, "gitInstallationId": git, "version": "2.55.0.windows.3", "confirm": false }));
             git
@@ -1664,11 +1751,21 @@ mod tests {
             ));
             call
         }
+
+        /// The shell side of a `started` reply with a marker ID for the workspace common directory.
+        fn started(&self, operation: &str, workspace: &Workspace) {
+            let common = workspace.worktree.join(".git");
+            self.requests.tag(
+                operation,
+                read_identity(&common).expect("common-directory identity"),
+            );
+        }
     }
 
     impl Drop for Harness {
         fn drop(&mut self) {
             self.gate.set(true);
+            self.input_gate.set(true);
             self.jobs.close_all();
             self.jobs.shutdown();
         }
@@ -2222,7 +2319,7 @@ mod tests {
         let register = |call: &str| {
             let bootstrap = harness
                 .contexts
-                .create(ContextKind::GitProbe, &test_exe(), Instant::now())
+                .create_startup(&test_exe(), Instant::now())
                 .expect("context");
             json!({ "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": bootstrap, "gitInstallationId": uuid(), "version": "2.55.0", "confirm": false })
         };
@@ -2293,6 +2390,42 @@ mod tests {
             harness.exit(&run, CLOSE_BOUND).is_some(),
             "a valid closeJob ends the run"
         );
+    }
+
+    #[test]
+    fn register_without_confirmation_binds_only_the_startup_context() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let plain = harness
+            .contexts
+            .create(ContextKind::GitProbe, &test_exe(), Instant::now())
+            .expect("context");
+        let call = uuid();
+        let git = uuid();
+        harness.send(json!({ "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": plain, "gitInstallationId": git, "version": "2.55.0.windows.3", "confirm": false }));
+        assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+        let unbound = Workspace {
+            git,
+            repository: workspace.repository.clone(),
+            worktree: workspace.worktree.clone(),
+        };
+        let run = uuid();
+        harness.send(run_body(
+            &run,
+            &uuid(),
+            &unbound,
+            &["sleep", "10"],
+            "read",
+            json!({ "deadlineMs": 30_000 }),
+        ));
+        assert_eq!(
+            harness.reply(&run),
+            refused(&run, "UNKNOWN_TARGET"),
+            "the gitInstallationId stays unbound"
+        );
+        // `child_workspace` bound its Git through a startup context with `confirm: false`.
+        let bound = harness.run(&uuid(), &workspace, &["sleep", "10"]);
+        assert_eq!(harness.exit(&bound, WAIT).expect("exit").1["exitCode"], 0);
     }
 
     #[test]
@@ -2460,6 +2593,69 @@ mod tests {
         assert_eq!(harness.exit(&call, WAIT).expect("exit").1["exitCode"], 0);
     }
 
+    #[test]
+    fn an_input_frame_for_a_call_without_streamed_input_is_refused_and_keeps_the_job() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let call = harness.run(&uuid(), &workspace, &["sleep", "2000"]);
+        harness.output_line(&call, "stdout", "PID");
+        harness.send(json!({ "type": "input", "callId": call, "data": encode(b"x") }));
+        assert_eq!(
+            harness
+                .wait_reply(WAIT, |v| v["callId"] == call && v["type"] == "refused")
+                .map(|r| r.1),
+            Some(refused(&call, "INVALID_REQUEST"))
+        );
+        assert_eq!(
+            harness.exit(&call, WAIT).expect("exit").1["exitCode"],
+            0,
+            "the Job stays open, so the child exits by itself"
+        );
+    }
+
+    #[test]
+    fn an_input_written_reply_never_follows_the_exit_reply() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let call = uuid();
+        let mut body = run_body(
+            &call,
+            &uuid(),
+            &workspace,
+            &["sleep", "500"],
+            "read",
+            json!({ "deadlineMs": 30_000 }),
+        );
+        body["inputBytes"] = json!(1);
+        harness.send(body);
+        harness.output_line(&call, "stdout", "PID");
+        harness.input_gate.set(false);
+        harness.send(json!({ "type": "input", "callId": call, "data": encode(b"x") }));
+        // The child exits while its `inputWritten` reply waits in the sink.
+        let _ = harness.exit(&call, Duration::from_secs(3));
+        harness.input_gate.set(true);
+        harness
+            .wait_reply(WAIT, |v| v["callId"] == call && v["type"] == "inputWritten")
+            .expect("inputWritten");
+        harness.exit(&call, WAIT).expect("exit");
+        let replies = harness.replies_for(&call);
+        let position = |kind: &str| {
+            replies
+                .iter()
+                .position(|(_, v)| v["type"] == kind)
+                .unwrap_or_else(|| panic!("no {kind} reply: {replies:?}"))
+        };
+        assert!(
+            position("inputWritten") < position("exit"),
+            "replies: {replies:?}"
+        );
+        assert_eq!(
+            position("exit"),
+            replies.len() - 1,
+            "exit is the last reply"
+        );
+    }
+
     // ---- Cancel, exit replies, and lingering Jobs ----
 
     #[test]
@@ -2534,7 +2730,8 @@ mod tests {
         let operation = uuid();
         let call = harness.run(&operation, &workspace, &["sleep", "10"]);
         harness.exit(&call, WAIT).expect("exit");
-        harness.requests.ended(&operation, false);
+        harness.started(&operation, &workspace);
+        assert_eq!(harness.requests.ended(&operation, false), Ok(()));
         assert!(!harness.jobs.is_lingering(&operation));
         assert!(
             harness.jobs.job_handle(&operation).is_none(),
@@ -2559,7 +2756,8 @@ mod tests {
                 .expect("pid"),
         );
         harness.exit(&call, WAIT).expect("exit");
-        harness.requests.ended(&operation, false);
+        harness.started(&operation, &workspace);
+        assert_eq!(harness.requests.ended(&operation, false), Ok(()));
         assert!(harness.jobs.is_lingering(&operation), "the Job lingers");
         assert!(
             !grandchild.exits_within(Duration::from_secs(1)),
@@ -2584,7 +2782,8 @@ mod tests {
                 .expect("pid"),
         );
         harness.exit(&call, WAIT).expect("exit");
-        harness.requests.ended(&lingering, false);
+        harness.started(&lingering, &workspace);
+        assert_eq!(harness.requests.ended(&lingering, false), Ok(()));
         let running = harness.run(&uuid(), &workspace, &["sleep", "60000"]);
         let child = Proc::open(
             harness
@@ -2602,6 +2801,71 @@ mod tests {
             "the lingering Job stays"
         );
         assert!(harness.jobs.is_lingering(&lingering));
+    }
+
+    #[test]
+    fn an_ended_frame_without_a_started_reply_changes_nothing() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        let call = harness.run(
+            &operation,
+            &workspace,
+            &["grandchild", "1", "60000", "exit"],
+        );
+        let grandchild = Proc::open(
+            harness
+                .output_line(&call, "stdout", "GRANDCHILD")
+                .parse()
+                .expect("pid"),
+        );
+        harness.exit(&call, WAIT).expect("exit");
+        assert_eq!(
+            harness.requests.ended(&operation, false),
+            Err("INVALID_REQUEST")
+        );
+        assert!(
+            !harness.jobs.is_lingering(&operation),
+            "a read Job never lingers"
+        );
+        harness.send(json!({ "type": "closeJob", "operationId": operation }));
+        assert!(
+            grandchild.exits_within(CLOSE_BOUND),
+            "closeJob still ends the read Job"
+        );
+    }
+
+    #[test]
+    fn a_mutation_run_needs_a_started_reply_with_a_marker() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        let mutation = |call: &str| {
+            run_body(
+                call,
+                &operation,
+                &workspace,
+                &["sleep", "10"],
+                "mutation",
+                json!({ "deadlineMs": 30_000 }),
+            )
+        };
+        let early = uuid();
+        harness.send(mutation(&early));
+        assert_eq!(
+            harness.reply(&early),
+            refused(&early, "INVALID_REQUEST"),
+            "no started reply"
+        );
+        harness.started(&operation, &workspace);
+        let call = uuid();
+        harness.send(mutation(&call));
+        assert_eq!(
+            harness.exit(&call, WAIT).expect("exit").1["exitCode"],
+            0,
+            "after the started reply"
+        );
+        assert_eq!(harness.requests.ended(&operation, false), Ok(()));
     }
 
     #[test]
@@ -2690,7 +2954,7 @@ mod tests {
             .requests
             .tag(&operation, read_identity(&common).expect("identity"));
         harness.exit(&call, WAIT).expect("exit");
-        harness.requests.ended(&operation, false);
+        assert_eq!(harness.requests.ended(&operation, false), Ok(()));
         let count = uuid();
         harness.send(json!({ "type": "lingeringCount", "callId": count, "operationId": uuid(), "commonDirectory": common }));
         assert_eq!(
@@ -2987,6 +3251,7 @@ mod tests {
         }
 
         fn commit(&self, operation: &str, deadline_ms: u64) -> String {
+            self.harness.started(operation, &self.workspace);
             let call = uuid();
             let mut body = run_body(
                 &call,

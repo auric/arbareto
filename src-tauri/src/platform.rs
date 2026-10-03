@@ -9,7 +9,15 @@
     )
 )]
 
-use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
+use windows::Wdk::System::SystemServices::RtlGetVersion;
+use windows::Win32::System::SystemInformation::{
+    IMAGE_FILE_MACHINE, IMAGE_FILE_MACHINE_AMD64, OSVERSIONINFOEXW, OSVERSIONINFOW,
+};
+use windows::Win32::System::SystemServices::VER_NT_WORKSTATION;
+use windows::Win32::System::Threading::{GetCurrentProcess, IsWow64Process2};
+
+/// The first Windows 11 build (plan.md "Provisional prerequisite admission").
+const WINDOWS_11_BUILD: u32 = 22000;
 
 /// The platform scope of contract §3 `getEnvironment`. No error code applies to either scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,13 +48,47 @@ pub struct Facts {
 }
 
 /// `qualification-target` for build 22000 or later, `VER_NT_WORKSTATION`, and a native AMD64 machine. Otherwise `other`.
-pub fn scope(_facts: Facts) -> Scope {
-    todo!("T057")
+pub fn scope(facts: Facts) -> Scope {
+    if facts.build >= WINDOWS_11_BUILD
+        && facts.product_type == VER_NT_WORKSTATION as u8
+        && facts.native_machine == IMAGE_FILE_MACHINE_AMD64
+    {
+        Scope::QualificationTarget
+    } else {
+        Scope::Other
+    }
 }
 
 /// Reads the facts of this host with `RtlGetVersion` and `IsWow64Process2`.
+/// `GetVersionExW` depends on the application manifest, so it is not used. A failed read gives zero values and scope `other`.
 pub fn read() -> Facts {
-    todo!("T057")
+    let mut version = OSVERSIONINFOEXW {
+        dwOSVersionInfoSize: size_of::<OSVERSIONINFOEXW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `version` is a live local, and its size field names the extended structure.
+    let status = unsafe { RtlGetVersion((&raw mut version).cast::<OSVERSIONINFOW>()) };
+    if status.is_err() {
+        version = OSVERSIONINFOEXW::default();
+    }
+    let mut process_machine = IMAGE_FILE_MACHINE::default();
+    let mut native_machine = IMAGE_FILE_MACHINE::default();
+    // SAFETY: the pseudo handle needs no close, and both outputs are live locals.
+    let machines = unsafe {
+        IsWow64Process2(
+            GetCurrentProcess(),
+            &mut process_machine,
+            Some(&mut native_machine),
+        )
+    };
+    if machines.is_err() {
+        native_machine = IMAGE_FILE_MACHINE::default();
+    }
+    Facts {
+        build: version.dwBuildNumber,
+        product_type: version.wProductType,
+        native_machine,
+    }
 }
 
 #[cfg(test)]

@@ -974,7 +974,9 @@ Each batch verification task passes only after one independent review of its bat
 
 ### Dependency reviews
 
-After T003 and T006, each dependency change gets one record here (plan.md, Tool and runtime boundaries). A record names the task and each added, removed, or changed package. It gives the old and new resolved versions, the licence, the reason, the reviewer, and the findings. It also lists the qualification checks that ran again. No dependency review exists yet.
+After T003 and T006, each dependency change gets one record here (plan.md, Tool and runtime boundaries). A record names the task and each added, removed, or changed package. It gives the old and new resolved versions, the licence, the reason, the reviewer, and the findings. It also lists the qualification checks that ran again.
+
+- T059, 2026-10-03: the `windows` crate gets the feature `Win32_Security_Cryptography`. The resolved version stays `0.62.2`, and `Cargo.lock` does not change. Licence: MIT OR Apache-2.0. Reason: the shell hashes the mutation mutex name with `BCryptHash` and `BCRYPT_SHA256_ALG_HANDLE` (contract §6 "Recovery markers"). It also takes marker IDs from `BCryptGenRandom`. The feature adds no crate. Reviewer: the T059 implementer; the main session reviews the diff. Findings: none. Checks that ran again: `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo fmt --check`.
 
 ## R11. Planning artifact checks
 

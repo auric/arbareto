@@ -8,19 +8,36 @@
         reason = "T059 implements the native settings and stores, and T063 wires them"
     )
 )]
-#![cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "the T059 stubs read no input until T059 implements them"
-    )
-)]
 
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Mutex, MutexGuard};
+use std::thread::JoinHandle;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{Map, Value, json};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_ABANDONED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows::Win32::Security::Cryptography::{
+    BCRYPT_SHA256_ALG_HANDLE, BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom, BCryptHash,
+};
+use windows::Win32::Storage::FileSystem::{
+    DELETE, FILE_DISPOSITION_INFO, FILE_RENAME_INFO, FILE_SHARE_READ, FileDispositionInfo,
+    FileRenameInfo, SetFileInformationByHandle,
+};
+use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
+use windows::core::HSTRING;
 
-use crate::bootstrap::Identity;
+use crate::bootstrap::{Identity, read_identity};
+use crate::process_requests::{PATH_UNITS, VERSION_BYTES, is_identifier};
 
 // ---- Settings file (data-model §1) ----
 
@@ -65,18 +82,111 @@ pub const DEFAULT_SIZE: (i32, i32) = (1280, 800);
 pub struct InsufficientWorkArea;
 
 /// Reads the settings file. A missing, unreadable, or unparseable file gives `Settings::default()`.
-pub fn load(_path: &Path) -> Settings {
-    todo!("T059")
+pub fn load(path: &Path) -> Settings {
+    let file = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let Some(Value::Object(file)) = file else {
+        return Settings::default();
+    };
+    Settings {
+        git: file.get("git").and_then(saved_git),
+        last_repository: file.get("lastRepository").and_then(channel_path),
+        window: file.get("window").and_then(bounds),
+    }
+}
+
+fn saved_git(value: &Value) -> Option<SavedGit> {
+    let version = value["version"].as_str().filter(|version| {
+        version.len() <= VERSION_BYTES && version.bytes().all(|b| (0x20..0x7f).contains(&b))
+    })?;
+    let digest = value["digest"]
+        .as_str()
+        .filter(|digest| is_hex(digest, 64))?;
+    Some(SavedGit {
+        executable_path: channel_path(&value["executablePath"])?,
+        version: version.to_string(),
+        digest: digest.to_string(),
+    })
+}
+
+fn bounds(value: &Value) -> Option<Bounds> {
+    let number = |key: &str| value[key].as_i64().and_then(|n| i32::try_from(n).ok());
+    Some(Bounds {
+        x: number("x")?,
+        y: number("y")?,
+        width: number("width")?,
+        height: number("height")?,
+    })
 }
 
 /// Replaces the whole file. A failed write leaves the previous file.
-pub fn save(_path: &Path, _settings: &Settings) -> std::io::Result<()> {
-    todo!("T059")
+pub fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
+    save_with(path, settings, None)
+}
+
+fn save_with(path: &Path, settings: &Settings, fault: Fault) -> io::Result<()> {
+    let mut file = Map::new();
+    if let Some(git) = &settings.git {
+        file.insert(
+            "git".to_string(),
+            json!({
+                "executablePath": text(&git.executable_path)?,
+                "version": git.version,
+                "digest": git.digest,
+            }),
+        );
+    }
+    if let Some(repository) = &settings.last_repository {
+        file.insert("lastRepository".to_string(), json!(text(repository)?));
+    }
+    if let Some(window) = settings.window {
+        file.insert(
+            "window".to_string(),
+            json!({ "x": window.x, "y": window.y, "width": window.width, "height": window.height }),
+        );
+    }
+    write_file(
+        path,
+        Value::Object(file).to_string().as_bytes(),
+        true,
+        fault,
+    )
+    .map(drop)
 }
 
 /// Clamps the stored bounds, or `DEFAULT_SIZE` without them, into `work_area` (plan.md "Chosen layout, sizes, and DPI").
-pub fn clamp(_stored: Option<Bounds>, _work_area: Bounds) -> Result<Bounds, InsufficientWorkArea> {
-    todo!("T059")
+pub fn clamp(stored: Option<Bounds>, work_area: Bounds) -> Result<Bounds, InsufficientWorkArea> {
+    let (minimum_width, minimum_height) = MINIMUM_SIZE;
+    if work_area.width < minimum_width || work_area.height < minimum_height {
+        return Err(InsufficientWorkArea);
+    }
+    let placed = match stored {
+        Some(stored) => Bounds {
+            width: stored.width.clamp(minimum_width, work_area.width),
+            height: stored.height.clamp(minimum_height, work_area.height),
+            ..stored
+        },
+        None => {
+            let width = DEFAULT_SIZE.0.min(work_area.width);
+            let height = DEFAULT_SIZE.1.min(work_area.height);
+            Bounds {
+                x: work_area.x + (work_area.width - width) / 2,
+                y: work_area.y + (work_area.height - height) / 2,
+                width,
+                height,
+            }
+        }
+    };
+    Ok(Bounds {
+        x: placed
+            .x
+            .clamp(work_area.x, work_area.x + work_area.width - placed.width),
+        y: placed
+            .y
+            .clamp(work_area.y, work_area.y + work_area.height - placed.height),
+        ..placed
+    })
 }
 
 // ---- Injected write faults ----
@@ -88,12 +198,320 @@ pub enum Stage {
     Flush,
 }
 
+type Fault = Option<(Stage, i32)>;
+
+fn inject(fault: Fault, stage: Stage) -> io::Result<()> {
+    match fault {
+        Some((at, os_error)) if at == stage => Err(io::Error::from_raw_os_error(os_error)),
+        _ => Ok(()),
+    }
+}
+
+// ---- File writes ----
+
+/// Writes `bytes` to a new temporary file beside `target`, flushes it, and renames it to `target` through the same handle.
+/// The returned handle shares only reading, so no other process can delete, rename, or write the file while it is open.
+/// On failure, the temporary file goes and `target` stays unchanged.
+fn write_file(target: &Path, bytes: &[u8], replace: bool, fault: Fault) -> io::Result<File> {
+    // ponytail: a crash between create and rename leaves the `.tmp` file; no scan reads it.
+    let temporary = target.with_file_name(format!("{}.tmp", random_id()?));
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0)
+        .share_mode(FILE_SHARE_READ.0)
+        .open(&temporary)?;
+    let written = inject(fault, Stage::Write)
+        .and_then(|()| file.write_all(bytes))
+        .and_then(|()| inject(fault, Stage::Flush))
+        .and_then(|()| file.sync_all())
+        .and_then(|()| rename(&file, target, replace));
+    match written {
+        Ok(()) => Ok(file),
+        Err(error) => {
+            let _ = delete(&file);
+            Err(error)
+        }
+    }
+}
+
+/// Renames the open file. Its handle needs `DELETE` access.
+fn rename(file: &File, target: &Path, replace: bool) -> io::Result<()> {
+    let name: Vec<u16> = std::path::absolute(target)?
+        .as_os_str()
+        .encode_wide()
+        .collect();
+    let name_bytes = name.len() * size_of::<u16>();
+    let size = size_of::<FILE_RENAME_INFO>() + name_bytes;
+    // `u64` units give the structure its 8-byte alignment.
+    let mut buffer = vec![0u64; size.div_ceil(size_of::<u64>())];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: `buffer` is zeroed, aligned, and holds the structure and the name. The handle stays open for the call.
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = replace;
+        (*info).FileNameLength = name_bytes as u32;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            (&raw mut (*info).FileName).cast::<u16>(),
+            name.len(),
+        );
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileRenameInfo,
+            info.cast_const().cast(),
+            (buffer.len() * size_of::<u64>()) as u32,
+        )
+    }
+    .map_err(io::Error::other)
+}
+
+/// Marks the open file for deletion. The file goes when its last handle closes. The handle needs `DELETE` access.
+fn delete(file: &File) -> io::Result<()> {
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: `info` is a live local of the passed size, and the handle stays open for the call.
+    unsafe {
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileDispositionInfo,
+            (&raw const info).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    }
+    .map_err(io::Error::other)
+}
+
+/// Opens an existing file without sharing, as contract §6 "Recovery markers" requires, and reads at most `limit` + 1 bytes.
+fn open_exclusive(path: &Path, limit: usize) -> io::Result<(File, Vec<u8>)> {
+    let file = OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ.0 | DELETE.0)
+        .share_mode(0)
+        .open(path)?;
+    let mut bytes = Vec::new();
+    (&file).take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    Ok((file, bytes))
+}
+
+/// Reads at most `limit` + 1 bytes with full sharing.
+fn read_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// The `.json` files of `folder`. A missing folder has none.
+fn json_files(folder: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let stem = name.strip_suffix(".json")?.to_string();
+            Some((stem, entry.path()))
+        })
+        .collect()
+}
+
+/// The failure class of contract §6 "Channel frames".
+fn failure_class(error: &io::Error) -> &'static str {
+    match error.kind() {
+        io::ErrorKind::StorageFull => "disk-full",
+        io::ErrorKind::PermissionDenied => "access-denied",
+        _ => "other",
+    }
+}
+
+fn text(path: &Path) -> io::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+}
+
+// ---- Shared value rules ----
+
+fn is_hex(text: &str, digits: usize) -> bool {
+    text.len() == digits
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A channel path (contract §6 "Channel frames"), as `src/git-service/git-runner.ts` `isChannelPath` checks it.
+/// A fully qualified path starts with a drive letter and a separator, or with two separators.
+fn channel_path(value: &Value) -> Option<PathBuf> {
+    let text = value.as_str()?;
+    let b = text.as_bytes();
+    let separator = |byte: u8| byte == b'\\' || byte == b'/';
+    let qualified = (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && separator(b[2]))
+        || (b.len() >= 2 && separator(b[0]) && separator(b[1]));
+    (qualified && !text.contains('\0') && text.encode_utf16().count() <= PATH_UNITS)
+        .then(|| PathBuf::from(text))
+}
+
+/// An identity reply (contract §6 "Process fields").
+fn identity(value: &Value) -> Option<Identity> {
+    let object = value.as_object().filter(|object| object.len() == 2)?;
+    let serial = object
+        .get("volumeSerial")?
+        .as_str()
+        .filter(|serial| is_hex(serial, 16))?;
+    let id = object.get("fileId")?.as_str().filter(|id| is_hex(id, 32))?;
+    let mut file_id = [0; 16];
+    for (i, byte) in file_id.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&id[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(Identity {
+        volume_serial: u64::from_str_radix(serial, 16).ok()?,
+        file_id,
+    })
+}
+
+/// The identity text `volumeSerial` then `fileId`, as the identity reply writes them, without a separator.
+fn identity_text(identity: &Identity) -> String {
+    format!("{:016x}{}", identity.volume_serial, hex(&identity.file_id))
+}
+
+/// A UTC time in RFC 3339 form, as `src/git-service/session.ts` `isUtcTime` checks it. Returns the sort key.
+fn utc_time(text: &str) -> Option<(&str, u32)> {
+    let b = text.as_bytes();
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let number = |at: usize, digits: usize| -> Option<u32> {
+        let part = &b[at..at + digits];
+        part.iter()
+            .all(u8::is_ascii_digit)
+            .then(|| part.iter().fold(0, |n, d| n * 10 + u32::from(d - b'0')))
+    };
+    let (year, month, day) = (number(0, 4)?, number(5, 2)?, number(8, 2)?);
+    let (hour, minute, second) = (number(11, 2)?, number(14, 2)?, number(17, 2)?);
+    let nanos = match text[19..].strip_suffix('Z')? {
+        "" => 0,
+        fraction => {
+            let digits = fraction.strip_prefix('.')?;
+            if digits.is_empty() || !digits.bytes().all(|d| d.is_ascii_digit()) {
+                return None;
+            }
+            let kept = &digits[..digits.len().min(9)];
+            kept.parse::<u32>().ok()? * 10u32.pow(9 - kept.len() as u32)
+        }
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    // `Date.UTC` maps the years 0 to 99 to 1900 to 1999, so the service refuses them. RFC 3339 §5.6 permits the leap second 60.
+    let valid = year >= 100
+        && (1..=12).contains(&month)
+        && (1..=days[month as usize - 1]).contains(&day)
+        && hour < 24
+        && minute < 60
+        && second <= 60;
+    valid.then_some((&text[..19], nanos))
+}
+
+/// The current UTC time in RFC 3339 form with nanoseconds.
+fn utc_now() -> String {
+    let since = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let seconds = since.as_secs();
+    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+    let time = seconds % 86_400;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:09}Z",
+        time / 3600,
+        time / 60 % 60,
+        time % 60,
+        since.subsec_nanos()
+    )
+}
+
+/// Howard Hinnant, "chrono-Compatible Low-Level Date Algorithms", `civil_from_days`: days since 1970-01-01 to a civil date.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(month <= 2), month, day)
+}
+
+/// The SHA-256 of `bytes` through Windows CNG.
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    let mut digest = [0; 32];
+    // SAFETY: the pseudo handle needs no open or close, and both slices are live.
+    let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, bytes, &mut digest) };
+    // The SHA-256 pseudo handle exists from Windows 10, and the output has the SHA-256 size, so no failure applies.
+    assert!(status.is_ok(), "BCryptHash SHA-256: {status:?}");
+    digest
+}
+
+/// A random UUID-shaped version 4 identifier from the system RNG.
+fn random_id() -> io::Result<String> {
+    let mut bytes = [0u8; 16];
+    // SAFETY: `bytes` is a live local.
+    let status = unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+    if status.is_err() {
+        return Err(io::Error::other(format!("BCryptGenRandom: {status:?}")));
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let h = hex(&bytes);
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    ))
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 // ---- Recovery markers (contract §6 "Recovery markers") ----
 
 /// At most 4 KiB per marker file (contract §5).
 pub const MARKER_BYTES: usize = 4096;
 /// At most 64 markers per handshake (contract §5).
 pub const MARKER_LIMIT: usize = 64;
+
+/// The mutation names of contract §3, as `src/contracts/operations.ts` `MUTATIONS` lists them.
+const MUTATIONS: [&str; 4] = ["applyHunk", "applyFile", "commit", "updateSubmodules"];
 
 /// One recovery marker. Its file is `<markerId>.json` in the `recovery` folder and holds the handshake form.
 #[derive(Clone, Debug, PartialEq)]
@@ -111,7 +529,34 @@ pub struct Marker {
 impl Marker {
     /// The handshake form: exactly `markerId`, `kind`, `startedAt`, `worktreeRoot`, `commonDirectory`, and `commonIdentity`.
     pub fn handshake(&self) -> Value {
-        todo!("T059")
+        json!({
+            "markerId": self.marker_id,
+            "kind": self.kind,
+            "startedAt": self.started_at,
+            "worktreeRoot": self.worktree_root.to_string_lossy(),
+            "commonDirectory": self.common_directory.to_string_lossy(),
+            "commonIdentity": self.common_identity.reply(),
+        })
+    }
+
+    /// The handshake form as `src/git-service/session.ts` `isMarker` checks it. Another value would fail the whole handshake.
+    fn parse(value: &Value) -> Option<Marker> {
+        let object = value.as_object().filter(|object| object.len() == 6)?;
+        let field = |key: &str| object.get(key).and_then(Value::as_str);
+        Some(Marker {
+            marker_id: field("markerId")
+                .filter(|id| is_identifier(id))?
+                .to_string(),
+            kind: field("kind")
+                .filter(|kind| MUTATIONS.contains(kind))?
+                .to_string(),
+            started_at: field("startedAt")
+                .filter(|time| utc_time(time).is_some())?
+                .to_string(),
+            worktree_root: channel_path(object.get("worktreeRoot")?)?,
+            common_directory: channel_path(object.get("commonDirectory")?)?,
+            common_identity: identity(object.get("commonIdentity")?)?,
+        })
     }
 }
 
@@ -135,8 +580,19 @@ pub enum StartedReply {
 }
 
 impl StartedReply {
-    pub fn reply(&self, _call_id: &str) -> Value {
-        todo!("T059")
+    pub fn reply(&self, call_id: &str) -> Value {
+        match self {
+            StartedReply::Marker(marker_id) => {
+                json!({ "type": "started", "callId": call_id, "markerId": marker_id })
+            }
+            StartedReply::Busy => json!({ "type": "started", "callId": call_id, "busy": true }),
+            StartedReply::Failure { failure, folder } => json!({
+                "type": "started",
+                "callId": call_id,
+                "failure": failure,
+                "folder": folder.to_string_lossy(),
+            }),
+        }
     }
 }
 
@@ -149,46 +605,313 @@ pub struct Scan {
 }
 
 /// The name `Local\Arbareto-mutation-<SHA-256 of the identity>` (contract §6 "Recovery markers").
-pub fn mutex_name(_identity: &Identity) -> String {
-    todo!("T059")
+pub fn mutex_name(identity: &Identity) -> String {
+    format!(
+        "Local\\Arbareto-mutation-{}",
+        hex(&sha256(identity_text(identity).as_bytes()))
+    )
+}
+
+enum Taken {
+    Yes,
+    Busy,
+    Failed,
+}
+
+enum Command {
+    Take {
+        operation_id: String,
+        name: String,
+        reply: Sender<Taken>,
+    },
+    /// `None` releases every held mutex.
+    Release {
+        operation_id: Option<String>,
+        done: Sender<()>,
+    },
+}
+
+/// A Windows mutex belongs to the thread that takes it, so this one thread takes and releases every mutex.
+fn mutex_thread(commands: Receiver<Command>) {
+    let mut held: HashMap<String, (String, HANDLE)> = HashMap::new();
+    for command in commands {
+        match command {
+            Command::Take {
+                operation_id,
+                name,
+                reply,
+            } => {
+                // This thread owns a held mutex already, and a second wait would succeed at once.
+                let taken = if held.contains_key(&operation_id)
+                    || held.values().any(|(held_name, _)| *held_name == name)
+                {
+                    Taken::Busy
+                } else {
+                    take_mutex(&name).map_or(Taken::Failed, |handle| match handle {
+                        Some(handle) => {
+                            held.insert(operation_id, (name, handle));
+                            Taken::Yes
+                        }
+                        None => Taken::Busy,
+                    })
+                };
+                let _ = reply.send(taken);
+            }
+            Command::Release { operation_id, done } => {
+                let released: Vec<String> = match operation_id {
+                    Some(operation_id) => vec![operation_id],
+                    None => held.keys().cloned().collect(),
+                };
+                for operation_id in released {
+                    if let Some((_, handle)) = held.remove(&operation_id) {
+                        release_mutex(handle);
+                    }
+                }
+                let _ = done.send(());
+            }
+        }
+    }
+    for (_, handle) in held.into_values() {
+        release_mutex(handle);
+    }
+}
+
+/// Takes the named mutex without waiting. `WAIT_ABANDONED` counts as taken. `Ok(None)` means that another owner holds it.
+fn take_mutex(name: &str) -> Result<Option<HANDLE>, ()> {
+    // SAFETY: the name is a live HSTRING for the call.
+    let handle = unsafe { CreateMutexW(None, false, &HSTRING::from(name)) }.map_err(drop)?;
+    // SAFETY: `handle` is a live mutex handle.
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
+        return Ok(Some(handle));
+    }
+    // SAFETY: `handle` is live, and this thread does not own the mutex.
+    let _ = unsafe { CloseHandle(handle) };
+    if wait == WAIT_TIMEOUT {
+        Ok(None)
+    } else {
+        Err(())
+    }
+}
+
+fn release_mutex(handle: HANDLE) {
+    // SAFETY: this thread owns the mutex, and `handle` is live until the close.
+    unsafe {
+        let _ = ReleaseMutex(handle);
+        let _ = CloseHandle(handle);
+    }
+}
+
+/// A marker file that this shell owns. The open handle denies delete sharing (contract §6 "Recovery markers").
+struct Owned {
+    file: File,
+    marker: Marker,
+}
+
+struct MarkerState {
+    owned: HashMap<String, Owned>,
+    fault: Fault,
 }
 
 /// The marker store of the `recovery` folder. One dedicated thread takes and releases every mutex.
-pub struct Markers {}
+pub struct Markers {
+    folder: PathBuf,
+    state: Mutex<MarkerState>,
+    mutexes: Option<Sender<Command>>,
+    thread: Option<JoinHandle<()>>,
+}
 
 impl Markers {
     /// Creates the folder when it is absent.
-    pub fn open(_folder: &Path) -> Markers {
-        todo!("T059")
+    pub fn open(folder: &Path) -> Markers {
+        let _ = std::fs::create_dir_all(folder);
+        let (sender, receiver) = mpsc::channel();
+        Markers {
+            folder: folder.to_path_buf(),
+            state: Mutex::new(MarkerState {
+                owned: HashMap::new(),
+                fault: None,
+            }),
+            mutexes: Some(sender),
+            thread: Some(std::thread::spawn(move || mutex_thread(receiver))),
+        }
     }
 
-    pub fn started(&self, _request: &Started) -> StartedReply {
-        todo!("T059")
+    fn take(&self, operation_id: &str, name: String) -> Taken {
+        let (reply, taken) = mpsc::channel();
+        let command = Command::Take {
+            operation_id: operation_id.to_string(),
+            name,
+            reply,
+        };
+        match self.mutexes.as_ref().map(|mutexes| mutexes.send(command)) {
+            Some(Ok(())) => taken.recv().unwrap_or(Taken::Failed),
+            _ => Taken::Failed,
+        }
+    }
+
+    fn release(&self, operation_id: Option<&str>) {
+        let (done, released) = mpsc::channel();
+        let command = Command::Release {
+            operation_id: operation_id.map(str::to_string),
+            done,
+        };
+        if let Some(Ok(())) = self.mutexes.as_ref().map(|mutexes| mutexes.send(command)) {
+            let _ = released.recv();
+        }
+    }
+
+    pub fn started(&self, request: &Started) -> StartedReply {
+        let failure = |failure| StartedReply::Failure {
+            failure,
+            folder: self.folder.clone(),
+        };
+        let Ok(identity) = read_identity(request.common_directory) else {
+            return failure("other");
+        };
+        match self.take(request.operation_id, mutex_name(&identity)) {
+            Taken::Yes => {}
+            Taken::Busy => return StartedReply::Busy,
+            Taken::Failed => return failure("other"),
+        }
+        match self.write(request, identity) {
+            Ok(marker_id) => StartedReply::Marker(marker_id),
+            Err(error) => {
+                self.release(Some(request.operation_id));
+                failure(failure_class(&error))
+            }
+        }
+    }
+
+    fn write(&self, request: &Started, identity: Identity) -> io::Result<String> {
+        let marker = Marker {
+            marker_id: random_id()?,
+            kind: request.kind.to_string(),
+            started_at: utc_now(),
+            worktree_root: request.worktree_root.to_path_buf(),
+            common_directory: request.common_directory.to_path_buf(),
+            common_identity: identity,
+        };
+        let form = marker.handshake();
+        let bytes = form.to_string().into_bytes();
+        // A marker that the next scan cannot load would block every mutation (contract §5).
+        if bytes.len() > MARKER_BYTES || Marker::parse(&form).as_ref() != Some(&marker) {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        let mut state = lock(&self.state);
+        let target = self.folder.join(format!("{}.json", marker.marker_id));
+        let file = write_file(&target, &bytes, false, state.fault.take())?;
+        let marker_id = marker.marker_id.clone();
+        state
+            .owned
+            .insert(marker_id.clone(), Owned { file, marker });
+        Ok(marker_id)
     }
 
     /// Releases the mutex of the operation. The marker file stays.
-    pub fn ended(&self, _operation_id: &str) {
-        todo!("T059")
+    pub fn ended(&self, operation_id: &str) {
+        self.release(Some(operation_id));
+    }
+
+    /// Releases every mutex after a service exit, when the operation Jobs close. The marker files stay.
+    pub fn service_exited(&self) {
+        self.release(None);
     }
 
     /// Deletes the marker file.
-    pub fn resolved(&self, _marker_id: &str) {
-        todo!("T059")
+    pub fn resolved(&self, marker_id: &str) {
+        let mut state = lock(&self.state);
+        if let Some(owned) = state.owned.remove(marker_id)
+            && delete(&owned.file).is_err()
+        {
+            state.owned.insert(marker_id.to_string(), owned);
+        }
     }
 
     /// Rescans the folder. Takes ownership of each file that no running instance holds.
     pub fn scan(&self) -> Scan {
-        todo!("T059")
+        let mut state = lock(&self.state);
+        let mut unloaded = 0;
+        let mut found = HashSet::new();
+        for (stem, path) in json_files(&self.folder) {
+            if state.owned.contains_key(&stem) {
+                continue;
+            }
+            match open_exclusive(&path, MARKER_BYTES) {
+                Ok((file, bytes)) => {
+                    let marker = (bytes.len() <= MARKER_BYTES)
+                        .then(|| serde_json::from_slice::<Value>(&bytes).ok())
+                        .flatten()
+                        .and_then(|value| Marker::parse(&value))
+                        .filter(|marker| marker.marker_id == stem);
+                    match marker {
+                        Some(marker) => {
+                            found.insert(stem.clone());
+                            state.owned.insert(stem, Owned { file, marker });
+                        }
+                        None => unloaded += 1,
+                    }
+                }
+                // A running instance owns the file.
+                Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION.0 as i32) => {}
+                Err(_) => unloaded += 1,
+            }
+        }
+        let mut markers: Vec<Marker> = state
+            .owned
+            .values()
+            .map(|owned| owned.marker.clone())
+            .collect();
+        markers.sort_by(|a, b| {
+            (utc_time(&a.started_at), &a.marker_id).cmp(&(utc_time(&b.started_at), &b.marker_id))
+        });
+        // Above the limit, the shell loads the 64 oldest markers (contract §5).
+        for newer in markers.split_off(markers.len().min(MARKER_LIMIT)) {
+            unloaded += 1;
+            if found.contains(&newer.marker_id) {
+                state.owned.remove(&newer.marker_id);
+            }
+        }
+        Scan { markers, unloaded }
     }
 
     /// Deletes the marker file only when `confirm` accepts. Returns true when the file is deleted.
-    pub fn dismiss(&self, _marker_id: &str, _confirm: impl FnOnce(&Marker) -> bool) -> bool {
-        todo!("T059")
+    pub fn dismiss(&self, marker_id: &str, confirm: impl FnOnce(&Marker) -> bool) -> bool {
+        let Some(marker) = lock(&self.state)
+            .owned
+            .get(marker_id)
+            .map(|owned| owned.marker.clone())
+        else {
+            return false;
+        };
+        // The confirmation is a native dialog, so the store stays unlocked while it shows.
+        if !confirm(&marker) {
+            return false;
+        }
+        let mut state = lock(&self.state);
+        let Some(owned) = state.owned.remove(marker_id) else {
+            return false;
+        };
+        if delete(&owned.file).is_ok() {
+            return true;
+        }
+        state.owned.insert(marker_id.to_string(), owned);
+        false
     }
 
     /// Fails the next marker write at `stage` with the OS error code `os_error`.
-    pub fn fail_next(&self, _stage: Stage, _os_error: i32) {
-        todo!("T059")
+    pub fn fail_next(&self, stage: Stage, os_error: i32) {
+        lock(&self.state).fault = Some((stage, os_error));
+    }
+}
+
+impl Drop for Markers {
+    fn drop(&mut self) {
+        // The closed channel ends the mutex thread, and the thread releases each held mutex.
+        self.mutexes.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -222,39 +945,248 @@ pub enum Confirmed {
 }
 
 impl Confirmed {
-    pub fn reply(&self, _call_id: &str) -> Value {
-        todo!("T059")
+    pub fn reply(&self, call_id: &str) -> Value {
+        match self {
+            Confirmed::Approved {
+                record: Some(record),
+            } => json!({
+                "type": "confirm",
+                "callId": call_id,
+                "result": "approved",
+                "stored": true,
+                "record": record,
+            }),
+            Confirmed::Approved { record: None } => json!({
+                "type": "confirm",
+                "callId": call_id,
+                "result": "approved",
+                "stored": false,
+            }),
+            Confirmed::Declined => {
+                json!({ "type": "confirm", "callId": call_id, "result": "declined" })
+            }
+        }
     }
 }
 
+/// The handshake record form, as `src/git-service/session.ts` `isTrustRecord` checks it. Another value would fail the whole handshake.
+fn is_trust_record(value: &Value) -> bool {
+    let Some(object) = value.as_object().filter(|object| object.len() == 8) else {
+        return false;
+    };
+    let path = |key: &str| object.get(key).and_then(channel_path).is_some();
+    let digest = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|digest| is_hex(digest, 64))
+    };
+    path("commonDirectory")
+        && path("worktreeRoot")
+        && path("gitDirectory")
+        && object.get("commonIdentity").and_then(identity).is_some()
+        && object
+            .get("worktreeIdentity")
+            .and_then(Value::as_array)
+            .is_some_and(|pair| pair.len() == 2 && pair.iter().all(|id| identity(id).is_some()))
+        && digest("configurationFingerprint")
+        && digest("gitInstallationDigest")
+        && object
+            .get("approvedAt")
+            .and_then(Value::as_str)
+            .is_some_and(|time| utc_time(time).is_some())
+}
+
+/// One stored record. `stem` is its file name without `.json`.
+struct Record {
+    stem: String,
+    value: Value,
+}
+
+impl Record {
+    fn order(&self) -> (Option<(&str, u32)>, &str) {
+        (
+            self.value["approvedAt"].as_str().and_then(utc_time),
+            &self.stem,
+        )
+    }
+}
+
+/// The common-directory identity and the worktree identity of one `confirm` frame, in the record form.
+struct Identities {
+    common: Value,
+    worktree: Value,
+    /// The record file name: the SHA-256 of the three identity texts.
+    stem: String,
+}
+
+impl Identities {
+    fn read(request: &Confirm) -> Option<Identities> {
+        let common = read_identity(&request.common_directory).ok()?;
+        let root = read_identity(&request.worktree_root).ok()?;
+        let git_directory = read_identity(&request.git_directory).ok()?;
+        let key = [common, root, git_directory].map(|identity| identity_text(&identity));
+        Some(Identities {
+            common: common.reply(),
+            worktree: json!([root.reply(), git_directory.reply()]),
+            stem: hex(&sha256(key.concat().as_bytes())),
+        })
+    }
+}
+
+/// A record of the same worktree: both identities match, or both paths match (contract §7 "Trust approval store").
+fn same_worktree(record: &Value, request: &Confirm, identities: Option<&Identities>) -> bool {
+    let paths = record["commonDirectory"].as_str() == request.common_directory.to_str()
+        && record["worktreeRoot"].as_str() == request.worktree_root.to_str();
+    paths
+        || identities.is_some_and(|ids| {
+            record["commonIdentity"] == ids.common && record["worktreeIdentity"] == ids.worktree
+        })
+}
+
+/// Loads every valid record, oldest first. Above the limit, it keeps the newest records.
+fn load_records(folder: &Path) -> Vec<Record> {
+    let mut records: Vec<Record> = json_files(folder)
+        .into_iter()
+        .filter_map(|(stem, path)| {
+            let bytes = read_bounded(&path, TRUST_RECORD_BYTES)
+                .ok()
+                .filter(|bytes| bytes.len() <= TRUST_RECORD_BYTES)?;
+            let value: Value = serde_json::from_slice(&bytes).ok()?;
+            is_trust_record(&value).then_some(Record { stem, value })
+        })
+        .collect();
+    records.sort_by(|a, b| a.order().cmp(&b.order()));
+    let excess = records.len().saturating_sub(TRUST_RECORD_LIMIT);
+    records.drain(..excess);
+    records
+}
+
+struct TrustState {
+    /// Oldest first.
+    records: Vec<Record>,
+    fault: Fault,
+}
+
 /// The record store of the `trust` folder.
-pub struct Trust {}
+pub struct Trust {
+    folder: PathBuf,
+    state: Mutex<TrustState>,
+}
 
 impl Trust {
     /// Creates the folder when it is absent.
-    pub fn open(_folder: &Path) -> Trust {
-        todo!("T059")
+    pub fn open(folder: &Path) -> Trust {
+        let _ = std::fs::create_dir_all(folder);
+        Trust {
+            folder: folder.to_path_buf(),
+            state: Mutex::new(TrustState {
+                records: load_records(folder),
+                fault: None,
+            }),
+        }
+    }
+
+    fn path(&self, stem: &str) -> PathBuf {
+        self.folder.join(format!("{stem}.json"))
+    }
+
+    /// Deletes each record that `matches` selects. A record whose file stays also stays in the store.
+    fn remove(&self, state: &mut TrustState, matches: impl Fn(&Record) -> bool) {
+        state.records.retain(|record| {
+            !matches(record) || std::fs::remove_file(self.path(&record.stem)).is_err()
+        });
     }
 
     /// Shows the confirmation through `accept`, then writes or deletes records.
-    pub fn confirm(&self, _request: &Confirm, _accept: impl FnOnce(&Confirm) -> bool) -> Confirmed {
-        todo!("T059")
+    pub fn confirm(&self, request: &Confirm, accept: impl FnOnce(&Confirm) -> bool) -> Confirmed {
+        if !accept(request) {
+            return Confirmed::Declined;
+        }
+        let identities = Identities::read(request);
+        let mut state = lock(&self.state);
+        if !request.persist {
+            self.remove(&mut state, |record| {
+                same_worktree(&record.value, request, identities.as_ref())
+            });
+            return Confirmed::Approved { record: None };
+        }
+        let record = identities
+            .as_ref()
+            .and_then(|identities| self.store(&mut state, request, identities));
+        Confirmed::Approved { record }
+    }
+
+    /// Writes the record, then deletes the other records of the same worktree. `None` leaves the stored records unchanged.
+    fn store(
+        &self,
+        state: &mut TrustState,
+        request: &Confirm,
+        identities: &Identities,
+    ) -> Option<Value> {
+        let record = json!({
+            "commonDirectory": request.common_directory.to_str()?,
+            "commonIdentity": identities.common,
+            "worktreeRoot": request.worktree_root.to_str()?,
+            "gitDirectory": request.git_directory.to_str()?,
+            "worktreeIdentity": identities.worktree,
+            "configurationFingerprint": request.fingerprint,
+            "approvedAt": utc_now(),
+            "gitInstallationDigest": request.git_installation_digest,
+        });
+        let bytes = record.to_string().into_bytes();
+        // A record above 4 KiB gets the reply of a failed write: the approval holds for the session only.
+        if bytes.len() > TRUST_RECORD_BYTES || !is_trust_record(&record) {
+            return None;
+        }
+        let fault = state.fault.take();
+        write_file(&self.path(&identities.stem), &bytes, true, fault).ok()?;
+        state.records.retain(|old| old.stem != identities.stem);
+        self.remove(state, |old| {
+            same_worktree(&old.value, request, Some(identities))
+        });
+        state.records.push(Record {
+            stem: identities.stem.clone(),
+            value: record.clone(),
+        });
+        while state.records.len() > TRUST_RECORD_LIMIT {
+            let oldest = state.records.remove(0);
+            let _ = std::fs::remove_file(self.path(&oldest.stem));
+        }
+        Some(record)
     }
 
     /// Deletes the records of every worktree of the common directory.
     /// `close` closes the lingering Jobs with that identity tag and returns the ended process count.
-    pub fn revoke(&self, _common_directory: &Path, _close: impl FnOnce(&Identity) -> u32) -> u32 {
-        todo!("T059")
+    pub fn revoke(&self, common_directory: &Path, close: impl FnOnce(&Identity) -> u32) -> u32 {
+        let identity = read_identity(common_directory).ok();
+        let common = identity.map(|identity| identity.reply());
+        {
+            let mut state = lock(&self.state);
+            self.remove(&mut state, |record| {
+                record.value["commonDirectory"].as_str() == common_directory.to_str()
+                    || common
+                        .as_ref()
+                        .is_some_and(|common| record.value["commonIdentity"] == *common)
+            });
+        }
+        identity.map_or(0, |identity| close(&identity))
     }
 
-    /// Every record in the handshake form.
+    /// Every record in the handshake form. Each call rereads the folder, so records of other instances also appear.
     pub fn records(&self) -> Vec<Value> {
-        todo!("T059")
+        let mut state = lock(&self.state);
+        state.records = load_records(&self.folder);
+        state
+            .records
+            .iter()
+            .map(|record| record.value.clone())
+            .collect()
     }
 
     /// Fails the next record write at `stage` with the OS error code `os_error`.
-    pub fn fail_next(&self, _stage: Stage, _os_error: i32) {
-        todo!("T059")
+    pub fn fail_next(&self, stage: Stage, os_error: i32) {
+        lock(&self.state).fault = Some((stage, os_error));
     }
 }
 
@@ -1400,5 +2332,85 @@ mod tests {
             roots(&reopened),
             sorted(&[&text(&main.root), &text(&linked.root)])
         );
+    }
+
+    // ---- Added with T059 ----
+
+    #[test]
+    fn an_injected_write_or_flush_failure_leaves_the_previous_settings_file() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        save(&path, &full_settings(&fixture)).expect("save");
+        let bytes = std::fs::read(&path).expect("read");
+        for stage in [Stage::Write, Stage::Flush] {
+            let result = save_with(&path, &Settings::default(), Some((stage, ERROR_DISK_FULL)));
+            assert!(result.is_err(), "{stage:?}");
+            assert_eq!(std::fs::read(&path).expect("read"), bytes, "{stage:?}");
+            assert_eq!(entries(&fixture.0), ["settings.json"], "{stage:?}");
+        }
+    }
+
+    #[test]
+    fn a_service_exit_releases_every_mutex_and_keeps_the_marker_files() {
+        let fixture = Fixture::new();
+        let first = repository(&fixture, "repo");
+        let second = repository(&fixture, "other");
+        let recovery = fixture.path("recovery");
+        let markers = Markers::open(&recovery);
+        let a = marker_id(markers.started(&started(&first, "op-1")));
+        let b = marker_id(markers.started(&started(&second, "op-2")));
+        markers.service_exited();
+        assert!(mutex_is_free(&name_of(&first)));
+        assert!(mutex_is_free(&name_of(&second)));
+        assert_eq!(
+            entries(&recovery),
+            sorted(&[&format!("{a}.json"), &format!("{b}.json")])
+        );
+    }
+
+    #[test]
+    fn a_marker_that_the_handshake_decoder_refuses_stays_unloaded() {
+        let fixture = Fixture::new();
+        let repository = repository(&fixture, "repo");
+        let recovery = folder(&fixture, "recovery");
+        let id = write_marker(&recovery, &repository, 1, 0);
+        let path = recovery.join(format!("{id}.json"));
+        let valid: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        let cases: [(&str, &str, Value); 6] = [
+            (
+                "a day that does not exist",
+                "startedAt",
+                json!("2026-02-29T00:00:00Z"),
+            ),
+            ("an offset", "startedAt", json!("2026-01-01T00:00:00+00:00")),
+            (
+                "a two-digit year",
+                "startedAt",
+                json!("0099-01-01T00:00:00Z"),
+            ),
+            ("an unknown kind", "kind", json!("merge")),
+            ("a root-relative path", "worktreeRoot", json!("\\repo")),
+            (
+                "an uppercase identity",
+                "commonIdentity",
+                json!({ "volumeSerial": "00000000000000AB", "fileId": "0".repeat(32) }),
+            ),
+        ];
+        for (name, key, value) in cases {
+            let mut marker = valid.clone();
+            marker[key] = value;
+            std::fs::write(&path, marker.to_string()).expect("write");
+            let scan = Markers::open(&recovery).scan();
+            assert_eq!((scan.markers.len(), scan.unloaded), (0, 1), "{name}");
+        }
+    }
+
+    #[test]
+    fn civil_from_days_gives_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+        assert_eq!(civil_from_days(20_729), (2026, 10, 3));
+        assert!(is_utc_time(&utc_now()));
     }
 }

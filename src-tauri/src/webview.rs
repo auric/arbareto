@@ -8,25 +8,93 @@
         reason = "T058 implements the WebView2 checks, and T063 runs them"
     )
 )]
-#![cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "the T058 stubs read no input until T058 implements them"
-    )
-)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND, COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO,
+    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE,
+    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT,
+    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO, GetAvailableCoreWebView2BrowserVersionString,
+    ICoreWebView2, ICoreWebView2_11, ICoreWebView2AcceleratorKeyPressedEventArgs,
+    ICoreWebView2AcceleratorKeyPressedEventArgs2, ICoreWebView2ContextMenuRequestedEventArgs,
+    ICoreWebView2Controller, ICoreWebView2Settings3,
+};
+use webview2_com::{
+    AcceleratorKeyPressedEventHandler, ContextMenuRequestedEventHandler, take_pwstr,
+};
+use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+use windows::core::{BOOL, HSTRING, Interface, PCWSTR, PWSTR};
 
 /// The provisional WebView2 minimum: the reference host version (plan.md "Provisional prerequisite admission").
 pub const MINIMUM: &str = "154.0.4258.37";
 
+/// The handshake carries at most 64 ASCII bytes of version text (contract §5).
+const VERSION_BYTES: usize = 64;
+
 /// Compares the four numeric parts of `version` with `MINIMUM`.
 /// `None` is a missing runtime and gives `WEBVIEW_UNAVAILABLE`. A lower or unparseable version gives `WEBVIEW_UNSUPPORTED`.
-pub fn admission(_version: Option<&str>) -> Result<(), &'static str> {
-    todo!("T058")
+pub fn admission(version: Option<&str>) -> Result<(), &'static str> {
+    let version = version.ok_or("WEBVIEW_UNAVAILABLE")?;
+    match (parts(version), parts(MINIMUM)) {
+        (Some(found), Some(minimum)) if found >= minimum => Ok(()),
+        _ => Err("WEBVIEW_UNSUPPORTED"),
+    }
+}
+
+/// Four dot-separated parts of decimal digits. `u32::from_str` also accepts a sign, so each byte is checked first.
+fn parts(version: &str) -> Option<[u32; 4]> {
+    if version.len() > VERSION_BYTES {
+        return None;
+    }
+    let mut split = version.split('.');
+    let mut parts = [0; 4];
+    for part in &mut parts {
+        let digits = split
+            .next()
+            .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))?;
+        *part = digits.parse().ok()?;
+    }
+    split.next().is_none().then_some(parts)
+}
+
+/// The installed runtime version, read before any webview exists. `None` is a missing runtime.
+pub fn installed_version() -> Option<String> {
+    let mut version = PWSTR::null();
+    // SAFETY: `version` is a live local. On success it holds a CoTaskMem string or null, and `take_pwstr` frees it.
+    unsafe { GetAvailableCoreWebView2BrowserVersionString(PCWSTR::null(), &mut version) }.ok()?;
+    (!version.is_null()).then(|| take_pwstr(version))
+}
+
+/// Admits the installed runtime and returns its version text for the handshake.
+/// On rejection, shows a native message and returns the error code. The caller then creates no window.
+#[cfg_attr(test, expect(dead_code, reason = "T063 calls it at startup"))]
+pub fn check() -> Result<String, &'static str> {
+    let version = installed_version();
+    if let Err(code) = admission(version.as_deref()) {
+        let text = format!(
+            "Arbareto cannot start. It needs the WebView2 Runtime {MINIMUM} or later.\nDetected version: {}.\nError code: {code}.",
+            version.as_deref().unwrap_or("none")
+        );
+        // SAFETY: both strings are live for the call, and the message has no owner window.
+        unsafe {
+            MessageBoxW(
+                None,
+                &HSTRING::from(text),
+                &HSTRING::from("Arbareto"),
+                MB_OK | MB_ICONERROR,
+            )
+        };
+        return Err(code);
+    }
+    Ok(version.unwrap_or_default())
 }
 
 /// One `AcceleratorKeyPressed` event: the `VirtualKey` and the modifier state.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    dead_code,
+    reason = "the decision is the same for every key (research.md R7)"
+)]
 pub struct Key {
     pub virtual_key: u32,
     pub ctrl: bool,
@@ -45,7 +113,10 @@ pub struct Accelerator {
 
 /// The accelerator decision. It has no fallback path (research.md R7).
 pub fn accelerator(_key: Key) -> Accelerator {
-    todo!("T058")
+    Accelerator {
+        browser_action_enabled: false,
+        handled: false,
+    }
 }
 
 /// `COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND`.
@@ -68,8 +139,139 @@ pub enum Menu {
 }
 
 /// Filters the default menu by the target kind, `IsEditable`, `HasSelection`, and the item `Name` values.
-pub fn page_menu(_kind: TargetKind, _editable: bool, _selection: bool, _items: &[&str]) -> Menu {
-    todo!("T058")
+/// An editable target keeps the editing items. A selected-text target keeps `copy` and `selectAll`. Any other target shows no menu.
+pub fn page_menu(kind: TargetKind, editable: bool, selection: bool, items: &[&str]) -> Menu {
+    let allowed: &[&str] = if editable {
+        &["cut", "copy", "paste", "selectAll"]
+    } else if kind == TargetKind::SelectedText || selection {
+        &["copy", "selectAll"]
+    } else {
+        &[]
+    };
+    let kept: Vec<String> = items
+        .iter()
+        .filter(|item| allowed.contains(item))
+        .map(|item| item.to_string())
+        .collect();
+    if kept.is_empty() {
+        Menu::NoMenu
+    } else {
+        Menu::Keep(kept)
+    }
+}
+
+/// Logs the first failed `ICoreWebView2AcceleratorKeyPressedEventArgs2` cast only.
+static ARGS2_CAST_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Runs inside the one `with_webview` call on the hidden main window, before the window shows (research.md R7).
+/// Keeps `AreDefaultContextMenusEnabled` true, because `ContextMenuRequested` fires only then.
+#[cfg_attr(test, expect(dead_code, reason = "T063 calls it in `with_webview`"))]
+pub fn attach(controller: &ICoreWebView2Controller) -> windows::core::Result<()> {
+    let mut token = 0;
+    // SAFETY: `with_webview` runs on the UI thread of the webview, and `controller` is live.
+    unsafe {
+        controller.add_AcceleratorKeyPressed(
+            &AcceleratorKeyPressedEventHandler::create(Box::new(on_accelerator_key)),
+            &mut token,
+        )?;
+        let webview = controller.CoreWebView2()?;
+        webview
+            .cast::<ICoreWebView2_11>()?
+            .add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(on_context_menu)),
+                &mut token,
+            )?;
+        webview
+            .Settings()?
+            .cast::<ICoreWebView2Settings3>()?
+            .SetAreBrowserAcceleratorKeysEnabled(false)
+    }
+}
+
+fn on_accelerator_key(
+    _: Option<ICoreWebView2Controller>,
+    args: Option<ICoreWebView2AcceleratorKeyPressedEventArgs>,
+) -> windows::core::Result<()> {
+    let Some(args) = args else {
+        return Ok(());
+    };
+    let mut virtual_key = 0;
+    // SAFETY: WebView2 calls the handler on the UI thread with live arguments.
+    unsafe { args.VirtualKey(&mut virtual_key) }?;
+    // The decision reads no key field (research.md R7), so the handler reads no modifier state.
+    let decision = accelerator(Key {
+        virtual_key,
+        ctrl: false,
+        shift: false,
+        alt: false,
+    });
+    let Ok(args) = args.cast::<ICoreWebView2AcceleratorKeyPressedEventArgs2>() else {
+        // Every admitted runtime provides the interface, so a failure is an admission defect (research.md R7).
+        if !ARGS2_CAST_FAILED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "WebView2 AcceleratorKeyPressed: ICoreWebView2AcceleratorKeyPressedEventArgs2 is missing"
+            );
+        }
+        return Ok(());
+    };
+    // SAFETY: as above. `Handled` stays false, so every key reaches the page.
+    unsafe { args.SetIsBrowserAcceleratorKeyEnabled(decision.browser_action_enabled) }
+}
+
+fn on_context_menu(
+    _: Option<ICoreWebView2>,
+    args: Option<ICoreWebView2ContextMenuRequestedEventArgs>,
+) -> windows::core::Result<()> {
+    let Some(args) = args else {
+        return Ok(());
+    };
+    if filter_menu(&args).is_err() {
+        // SAFETY: WebView2 calls the handler on the UI thread with live arguments.
+        unsafe { args.SetHandled(true) }?;
+    }
+    Ok(())
+}
+
+fn filter_menu(args: &ICoreWebView2ContextMenuRequestedEventArgs) -> windows::core::Result<()> {
+    // SAFETY: WebView2 calls the handler on the UI thread with live arguments. `take_pwstr` frees each name.
+    unsafe {
+        let target = args.ContextMenuTarget()?;
+        let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND::default();
+        target.Kind(&mut kind)?;
+        let mut editable = BOOL::default();
+        target.IsEditable(&mut editable)?;
+        let mut selection = BOOL::default();
+        target.HasSelection(&mut selection)?;
+        let items = args.MenuItems()?;
+        let mut count = 0;
+        items.Count(&mut count)?;
+        let mut names = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let mut name = PWSTR::null();
+            items.GetValueAtIndex(index)?.Name(&mut name)?;
+            names.push(take_pwstr(name));
+        }
+        let kind = match kind {
+            COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE => TargetKind::Image,
+            COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT => TargetKind::SelectedText,
+            COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO => TargetKind::Audio,
+            COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO => TargetKind::Video,
+            // `COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE`, and any kind that a later runtime adds, get the page rule.
+            _ => TargetKind::Page,
+        };
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        match page_menu(kind, editable.as_bool(), selection.as_bool(), &refs) {
+            Menu::NoMenu => args.SetHandled(true),
+            Menu::Keep(kept) => {
+                for index in (0..count).rev() {
+                    if !kept.contains(&names[index as usize]) {
+                        items.RemoveValueAtIndex(index)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +386,13 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// Host test: the loader reads and frees the version text of the installed runtime.
+    #[test]
+    fn the_host_runtime_reports_a_parseable_version() {
+        let version = installed_version().expect("an installed WebView2 Runtime");
+        assert!(parts(&version).is_some(), "{version:?}");
     }
 
     const ALL_ITEMS: [&str; 10] = [

@@ -43,6 +43,14 @@ describe("boot view", () => {
     }
   });
 
+  test("any other Git code shows as plain text with Select Git", () => {
+    for (const gitCode of ["DEADLINE", "OUTPUT_LIMIT", "UNKNOWN_TARGET", "PROCESS_OWNERSHIP_FAILED", "UNSUPPORTED_REPOSITORY", "GIT_FAILED"]) {
+      const html = render(environment({ gitCode }));
+      expect(html).toContain(gitCode);
+      expect(html).toContain("Select Git");
+    }
+  });
+
   test("each recovery marker shows its facts and a Dismiss action", () => {
     const marker = { markerId: crypto.randomUUID(), kind: "commit", startedAt: "2026-10-02T10:00:00Z", worktreeRoot: "C:\\repo" };
     const html = render(environment({ platformScope: "qualification-target", markers: [marker], markerLimit: 64, unloadedMarkers: 3 }));

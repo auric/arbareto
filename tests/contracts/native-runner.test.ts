@@ -481,8 +481,8 @@ describe("native runner identity, lingering count, and registration", () => {
     const another = id();
     const asked = channel.runner.register(git);
     expect(channel.last("register")).toEqual({ type: "register", callId: channel.last("register").callId, ...git });
-    channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: another });
-    expect(await asked).toEqual({ result: "another", bootstrapId: another });
+    channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: another, executablePath: "D:\\Git\\cmd\\git.exe" });
+    expect(await asked).toEqual({ result: "another", bootstrapId: another, executablePath: "D:\\Git\\cmd\\git.exe" });
     const declined = channel.runner.register(git);
     channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "declined" });
     expect(await declined).toEqual({ result: "declined" });
@@ -506,6 +506,17 @@ describe("native runner identity, lingering count, and registration", () => {
 
     for (const bad of [{ ...git, version: "2.55\u00e9" }, { ...git, version: "v".repeat(65) }, { ...git, repositoryId: id() }, { ...repository, worktreeRoot: "repo" }]) {
       await expect(channel.runner.register(bad as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    }
+  });
+
+  test("a register reply another needs a fully qualified executablePath", async () => {
+    const channel = createChannelDouble();
+    const git = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), version: "2.55.0.windows.1", confirm: true };
+    for (const path of [undefined, "git.exe", "\\Git\\git.exe", "C:\\Git\u0000\\git.exe"]) {
+      const asked = channel.runner.register(git);
+      const reply = { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: id(), ...(path === undefined ? {} : { executablePath: path }) };
+      expect(channel.reply("process", reply)).toBe(false);
+      await expect(asked).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
     }
   });
 

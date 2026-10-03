@@ -159,6 +159,8 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
         const { gitCode, ok: _ok, ...versions } = result;
         return registry.apply(operationId, { type: "read-complete", result: "failed", code: gitCode }, versions);
       }
+      // Contract §3 `chooseGit`: a new `gitInstallationId` releases the previous one.
+      if (git?.ok && git.installation.gitInstallationId !== result.installation.gitInstallationId) runner.release({ gitInstallationId: git.installation.gitInstallationId });
       git = result;
       const { gitInstallationId, executablePath, version, executableIdentity } = result.installation;
       // The shell persists the path, the version text, and the digest after this result (data-model §1).

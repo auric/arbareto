@@ -51,7 +51,7 @@ export function BootView(props: BootProps) {
   }
 
   const env = props.environment;
-  const blocked = env.gitCode === undefined ? undefined : GIT_BLOCKED[env.gitCode];
+  const blocked = env.gitCode === undefined ? undefined : (GIT_BLOCKED[env.gitCode] ?? "Git check failed");
   return (
     <main>
       <h1>Arbareto</h1>

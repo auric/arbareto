@@ -2,17 +2,20 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, copyFileSync, existsSync, ftruncateSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
+import { GIT_EXECUTABLE_DIGEST_BYTES } from "../../src/contracts/limits";
 import { probeGit, revalidateGit } from "../../src/git-service/git-installation";
 import type { GitCall, GitRunner, RegisterRequest } from "../../src/git-service/git-runner";
+import { createSession, type SessionOptions } from "../../src/git-service/session";
 import { createBunRunner, type BunRunner } from "./bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { readIdentity } from "./win32";
 
 printOrigin("../../src/git-service/git-installation.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
+printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
 const MINIMUM = "2.55.0.windows.3";
 const COMPILE_TIMEOUT_MS = 120_000;
@@ -71,6 +74,7 @@ describe("Git installation probe (T053)", () => {
   let launchDirectory = "";
   const runs: GitCall[] = [];
   const registers: RegisterRequest[] = [];
+  const releases: unknown[] = [];
   let counted: GitRunner;
 
   // Each stub copy gets its own folder, version file, and call log.
@@ -107,6 +111,10 @@ describe("Git installation probe (T053)", () => {
       register(request) {
         registers.push(request);
         return runner.register(request);
+      },
+      release(target) {
+        releases.push(target);
+        runner.release(target);
       },
     };
   }, COMPILE_TIMEOUT_MS + 10_000);
@@ -187,6 +195,132 @@ describe("Git installation probe (T053)", () => {
       expect(stubCalls(exe)).toHaveLength(callsBefore);
       // The service never selects another executable.
       expect(registers).toEqual([]);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a Git file one byte above the digest bound gives GIT_UNSUPPORTED and runs nothing",
+    async () => {
+      const exe = join(fixtureDir("oversize"), "git.exe");
+      // NTFS extends the file without writing its bytes, so the fixture costs no disk writes.
+      const fd = openSync(exe, "w");
+      ftruncateSync(fd, GIT_EXECUTABLE_DIGEST_BYTES + 1);
+      closeSync(fd);
+      try {
+        const bootstrapId = runner.addContext("gitProbe", exe);
+        const spawnedBefore = runner.spawned;
+        runs.length = 0;
+        registers.length = 0;
+        const result = await probeGit(counted, { bootstrapId, executablePath: exe });
+        expect(result).toMatchObject({ ok: false, gitCode: "GIT_UNSUPPORTED", minimumVersion: MINIMUM });
+        expect(runs).toEqual([]);
+        expect(registers).toEqual([]);
+        expect(runner.spawned).toBe(spawnedBefore);
+      } finally {
+        rmSync(exe);
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a register reply another probes, digests, admits, and registers the new candidate",
+    async () => {
+      const first = stub("another-first", MINIMUM);
+      const second = stub("another-second", MINIMUM);
+      const bootstrapId = runner.addContext("gitProbe", first);
+      const next = runner.addContext("gitProbe", second);
+      runs.length = 0;
+      registers.length = 0;
+      runner.inject.registerResult = { result: "another", bootstrapId: next, executablePath: second };
+      const once: GitRunner = {
+        ...counted,
+        async register(request) {
+          const reply = await counted.register(request);
+          runner.inject.registerResult = { result: "approved" };
+          return reply;
+        },
+      };
+      try {
+        const result = await probeGit(once, { bootstrapId, executablePath: first });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const installation = result.installation;
+        expect(installation.executablePath).toBe(second);
+        expect(installation.executableIdentity.file).toEqual(readIdentity(second));
+        expect(installation.executableIdentity.digest).toBe(sha256(second));
+        expect(runs.map((call) => call.context)).toEqual([
+          { contextKind: "gitProbe", bootstrapId },
+          { contextKind: "gitProbe", bootstrapId: next },
+        ]);
+        expect(stubCalls(first)).toEqual([{ args: ["version", "--build-options"], cwd: launchDirectory }]);
+        expect(stubCalls(second)).toEqual([{ args: ["version", "--build-options"], cwd: launchDirectory }]);
+        expect(registers.map((request) => request.bootstrapId)).toEqual([bootstrapId, next]);
+        expect(registers[0].gitInstallationId).not.toBe(registers[1].gitInstallationId);
+        expect(registers[1].gitInstallationId).toBe(installation.gitInstallationId);
+      } finally {
+        runner.inject.registerResult = { result: "approved" };
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a chooseGit success with a new gitInstallationId releases the previous one once, and a failed or canceled one releases nothing",
+    async () => {
+      const frames: { response?: Record<string, unknown> }[] = [];
+      const session = createSession({
+        writer: { write: (frame) => void frames.push(frame as never), flush: async () => {} },
+        runner: { ...counted, receive: () => false } as SessionOptions["runner"],
+        fail: () => {},
+      });
+      const handshake = {
+        version: 1,
+        restarted: false,
+        platformScope: "other",
+        osBuild: 26200,
+        webView2Version: "140.0.0.0",
+        buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
+        markers: [],
+        unloadedMarkers: 0,
+        trustRecords: [],
+      };
+      const send = (frame: object) => session.receive({ type: "frame", body: new TextEncoder().encode(JSON.stringify(frame)) });
+      send({ kind: "handshake", handshake });
+      const sessionId = session.sessionId as string;
+      const choose = async (exe: string) => {
+        const requestId = crypto.randomUUID();
+        const payload = { bootstrapId: runner.addContext("gitProbe", exe), executablePath: exe };
+        send({ kind: "public", request: { version: 1, sessionId, requestId, operation: "chooseGit", payload } });
+        const deadline = Date.now() + TEST_TIMEOUT_MS / 2;
+        for (;;) {
+          const response = frames.find((f) => f.response?.requestId === requestId)?.response;
+          if (response) return response;
+          if (Date.now() > deadline) throw new Error("no chooseGit response");
+          await Bun.sleep(10);
+        }
+      };
+      releases.length = 0;
+
+      const a = await choose(stub("release-a", MINIMUM));
+      expect(a).toMatchObject({ state: "succeeded" });
+      expect(releases).toEqual([]);
+
+      const b = await choose(stub("release-b", MINIMUM));
+      expect(b).toMatchObject({ state: "succeeded" });
+      const previous = (a.result as { gitInstallationId: string }).gitInstallationId;
+      expect((b.result as { gitInstallationId: string }).gitInstallationId).not.toBe(previous);
+      expect(releases).toEqual([{ gitInstallationId: previous }]);
+
+      expect(await choose(stub("release-old", "2.43.0"))).toMatchObject({ state: "failed", code: "GIT_UNSUPPORTED" });
+      runner.inject.registerResult = { result: "declined" };
+      try {
+        expect(await choose(stub("release-declined", MINIMUM))).toMatchObject({ state: "canceled" });
+      } finally {
+        runner.inject.registerResult = { result: "approved" };
+      }
+      expect(releases).toEqual([{ gitInstallationId: previous }]);
     },
     TEST_TIMEOUT_MS,
   );

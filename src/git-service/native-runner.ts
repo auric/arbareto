@@ -234,7 +234,9 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & { receive(f
         // Contract §6 "Process replies": only a Git registration with `confirm: true` gets another result.
         if (!confirm) return undefined;
         if (exact(r, { ...head, result: oneOf("declined") })) return { result: "declined" };
-        if (exact(r, { ...head, result: oneOf("another"), bootstrapId: isIdentifier })) return { result: "another", bootstrapId: r.bootstrapId as string };
+        if (exact(r, { ...head, result: oneOf("another"), bootstrapId: isIdentifier, executablePath: isChannelPath })) {
+          return { result: "another", bootstrapId: r.bootstrapId as string, executablePath: r.executablePath as string };
+        }
         return undefined;
       });
     },

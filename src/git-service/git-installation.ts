@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { ErrorCode } from "../contracts/errors";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_EXECUTABLE_DIGEST_BYTES, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
 import { admitGitProbe, MINIMUM_GIT_VERSION } from "./admission";
 import { createCollector, RunnerRefusal, type GitRunner, type IdentityReply, type ProcessContext } from "./git-runner";
 
@@ -43,23 +43,44 @@ const failure = (gitCode: ErrorCode, detectedVersion?: string): GitProbeResult =
   minimumVersion: MINIMUM_GIT_VERSION,
 });
 
-// Contract §3: the service reads the executable to compute its SHA-256. No §5 bound covers this read, so it streams the file. `null`: the file cannot be read.
-async function fileDigest(path: string): Promise<string | null> {
+// Contract §5 "Git executable digest input": a file above the bound gives GIT_UNSUPPORTED. An unreadable file gives GIT_UNAVAILABLE.
+async function fileDigest(path: string): Promise<{ digest: string } | { gitCode: ErrorCode }> {
   try {
     const hasher = new Bun.CryptoHasher("sha256");
-    for await (const chunk of Bun.file(path).stream()) hasher.update(chunk);
-    return hasher.digest("hex");
+    let bytes = 0;
+    for await (const chunk of Bun.file(path).stream()) {
+      bytes += chunk.byteLength;
+      if (bytes > GIT_EXECUTABLE_DIGEST_BYTES) return { gitCode: "GIT_UNSUPPORTED" };
+      hasher.update(chunk);
+    }
+    return { digest: hasher.digest("hex") };
   } catch {
-    return null;
+    return { gitCode: "GIT_UNAVAILABLE" };
+  }
+}
+
+// Contract §6 `register` reply `another` names a new candidate. The same operation probes it.
+export async function probeGit(runner: GitRunner, target: GitProbeTarget, options: GitProbeOptions = {}): Promise<GitProbeResult | GitProbeCanceled> {
+  const operationId = options.operationId ?? crypto.randomUUID();
+  for (;;) {
+    const step = await probeCandidate(runner, target, operationId, options);
+    if (!("another" in step)) return step;
+    if (options.signal?.aborted) return { ok: false, canceled: true };
+    target = step.another;
   }
 }
 
 // Contract §6 "Registration bootstrap" `gitProbe`: identity, version, architecture, and admission before `gitInstallationId`.
-export async function probeGit(runner: GitRunner, target: GitProbeTarget, options: GitProbeOptions = {}): Promise<GitProbeResult | GitProbeCanceled> {
-  const operationId = options.operationId ?? crypto.randomUUID();
+async function probeCandidate(
+  runner: GitRunner,
+  target: GitProbeTarget,
+  operationId: string,
+  options: GitProbeOptions,
+): Promise<GitProbeResult | GitProbeCanceled | { another: GitProbeTarget }> {
   const context: ProcessContext = { contextKind: "gitProbe", bootstrapId: target.bootstrapId };
-  const digest = await fileDigest(target.executablePath);
-  if (digest === null) return failure("GIT_UNAVAILABLE");
+  const read = await fileDigest(target.executablePath);
+  if ("gitCode" in read) return failure(read.gitCode);
+  const digest = read.digest;
   try {
     const [file] = await runner.identities(operationId, context, [target.executablePath]);
     // Contract §6 "Registration bootstrap": a failed identity call refuses registration with UNSUPPORTED_REPOSITORY.
@@ -86,6 +107,7 @@ export async function probeGit(runner: GitRunner, target: GitProbeTarget, option
     const gitInstallationId = crypto.randomUUID();
     const version = admitted.detectedVersion;
     const reply = await runner.register({ operationId, bootstrapId: target.bootstrapId, gitInstallationId, version, confirm: options.confirm ?? true });
+    if (reply.result === "another") return { another: { bootstrapId: reply.bootstrapId, executablePath: reply.executablePath } };
     if (reply.result !== "approved") return { ok: false, canceled: true };
     return {
       ok: true,
@@ -99,16 +121,16 @@ export async function probeGit(runner: GitRunner, target: GitProbeTarget, option
 
 // A file rewritten in place keeps its file ID, so the digest decides (contract §6 "Startup contexts"). A change runs nothing.
 export async function revalidateGit(_runner: GitRunner, installation: GitInstallation): Promise<GitProbeResult> {
-  const digest = await fileDigest(installation.executablePath);
-  if (digest === null) return failure("GIT_UNAVAILABLE");
-  return digest === installation.executableIdentity.digest ? { ok: true, installation } : failure("GIT_CHANGED");
+  const read = await fileDigest(installation.executablePath);
+  if ("gitCode" in read) return failure(read.gitCode);
+  return read.digest === installation.executableIdentity.digest ? { ok: true, installation } : failure("GIT_CHANGED");
 }
 
 // Contract §6 "Startup contexts": the handshake `savedGit`. An equal digest runs the probe in the startup `gitProbe` context.
 export async function revalidateSavedGit(runner: GitRunner, saved: GitProbeTarget & { digest: string }, operationId: string): Promise<GitProbeResult> {
-  const digest = await fileDigest(saved.executablePath);
-  if (digest === null) return failure("GIT_UNAVAILABLE");
-  if (digest !== saved.digest) return failure("GIT_CHANGED");
+  const read = await fileDigest(saved.executablePath);
+  if ("gitCode" in read) return failure(read.gitCode);
+  if (read.digest !== saved.digest) return failure("GIT_CHANGED");
   const result = await probeGit(runner, saved, { operationId, confirm: false });
   // Contract §6: a register without `confirm` always replies `approved`.
   if ("canceled" in result) throw new Error("startup Git registration was not approved");

@@ -130,7 +130,7 @@ export type RegisterRequest =
   | (RegisterIds & { version: string; confirm: boolean })
   | (RegisterIds & { repositoryId: string; worktreeRoot: string; gitDirectory: string; commonDirectory: string });
 
-export type RegisterReply = { result: "approved" | "declined" } | { result: "another"; bootstrapId: string };
+export type RegisterReply = { result: "approved" | "declined" } | { result: "another"; bootstrapId: string; executablePath: string };
 
 export interface GitRunner {
   run(call: GitCall): Promise<GitExit>;

@@ -472,7 +472,7 @@ describe("service boundary", () => {
   test(
     "an admitted request gets one accepted event before its terminal response, and a forged request gets none",
     async () => {
-      // No service handler admits a request yet, so this half drives the session registry in process.
+      // This half drives the session registry in process, so the event order does not depend on a Git process.
       const frames: Frame[] = [];
       const session = createSession({
         writer: { write: (frame) => void frames.push(frame as Frame), flush: async () => {} },

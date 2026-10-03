@@ -216,7 +216,9 @@ impl Contexts {
         now: Instant,
     ) -> Result<(), &'static str> {
         let permitted = match self.get(bootstrap_id, now)?.kind {
-            ContextKind::GitProbe => arguments == ["version", "--build-options"],
+            ContextKind::GitProbe => {
+                arguments == ["--exec-path"] || arguments == ["version", "--build-options"]
+            }
             ContextKind::RepositoryDiscovery => match arguments {
                 [prefix, command, rest @ ..] if prefix == "--no-lazy-fetch" => {
                     match command.as_str() {
@@ -494,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn a_git_probe_context_permits_only_version_build_options() {
+    fn a_git_probe_context_permits_only_the_exec_path_and_version_probes() {
         let fixture = Fixture::new();
         let git = file(&fixture, "git.exe");
         let contexts = Contexts::new(SESSION);
@@ -506,11 +508,18 @@ mod tests {
             contexts.permits(&id, &strings(&["version", "--build-options"]), now),
             Ok(())
         );
+        assert_eq!(
+            contexts.permits(&id, &strings(&["--exec-path"]), now),
+            Ok(())
+        );
         for refused in [
             &["version"][..],
             &["version", "--build-options", "--verbose"],
             &["--no-lazy-fetch", "version", "--build-options"],
             &["--build-options", "version"],
+            &["--exec-path=C:\\other"],
+            &["--exec-path", "version"],
+            &["--no-lazy-fetch", "--exec-path"],
             &["--no-lazy-fetch", "rev-parse", "--show-toplevel"],
             &[],
         ] {

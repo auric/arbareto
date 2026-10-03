@@ -5,18 +5,19 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use std::path::Path;
 
 use windows::Wdk::System::SystemServices::RtlUpcaseUnicodeChar;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
+use windows::Win32::Foundation::{HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
     DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
     InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_CREATION_FLAGS,
+    PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    UpdateProcThreadAttribute,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -35,11 +36,12 @@ pub enum SpawnError {
     CommandLineTooLong,
     /// An argument holds NUL. No process starts.
     InvalidArgument,
-    /// The start or the Job assignment failed, and no owned process runs. The reply code is `PROCESS_OWNERSHIP_FAILED`.
+    /// The start in the Job or the resume failed, and no owned process runs. The reply code is `PROCESS_OWNERSHIP_FAILED`.
     OwnershipFailed,
 }
 
 /// The stdin of the child (contract §6 "Console and input").
+#[derive(Clone, Copy)]
 pub enum Input<'a> {
     /// The parent end closes at once.
     Closed,
@@ -185,11 +187,29 @@ fn raw(handle: &OwnedHandle) -> HANDLE {
     HANDLE(handle.as_raw_handle())
 }
 
-/// Starts the child suspended, calls `assign` with its process handle, then resumes it.
-pub fn spawn(
-    request: &SpawnRequest,
-    assign: &mut dyn FnMut(HANDLE) -> windows::core::Result<()>,
-) -> Result<Spawned, SpawnError> {
+/// A child that `create_suspended` started. Its Job holds it, and it runs no code before `resume`.
+/// A drop without `resume` closes the handles. The child then ends when its Job closes.
+pub struct Suspended<'a> {
+    process: OwnedHandle,
+    thread: OwnedHandle,
+    pub(crate) pid: u32,
+    input: Input<'a>,
+    stdin: File,
+    stdout: File,
+    stderr: File,
+}
+
+/// Starts the child suspended in `job`, then resumes it.
+pub fn spawn(request: &SpawnRequest, job: HANDLE) -> Result<Spawned, SpawnError> {
+    create_suspended(request, job)?.resume()
+}
+
+/// Creates the child suspended and already in `job` (Microsoft Learn `UpdateProcThreadAttribute` `PROC_THREAD_ATTRIBUTE_JOB_LIST`).
+/// The caller keeps `job` open for the call.
+pub fn create_suspended<'a>(
+    request: &SpawnRequest<'a>,
+    job: HANDLE,
+) -> Result<Suspended<'a>, SpawnError> {
     let mut command_line = command_line(request.program, request.arguments)?;
     let application = null_terminated(request.program.as_os_str())?;
     let directory = null_terminated(request.current_dir.as_os_str())?;
@@ -205,15 +225,16 @@ pub fn spawn(
             .map_err(|_| SpawnError::OwnershipFailed)?;
     }
 
+    let jobs = [job];
     let mut size = 0;
     // SAFETY: a size query without a list. It fails with ERROR_INSUFFICIENT_BUFFER and sets `size`.
-    let _ = unsafe { InitializeProcThreadAttributeList(None, 1, None, &mut size) };
+    let _ = unsafe { InitializeProcThreadAttributeList(None, 2, None, &mut size) };
     let mut storage = vec![0usize; size.div_ceil(size_of::<usize>())];
     let list = LPPROC_THREAD_ATTRIBUTE_LIST(storage.as_mut_ptr().cast());
     // SAFETY: `storage` is pointer-aligned and holds at least `size` bytes.
-    unsafe { InitializeProcThreadAttributeList(Some(list), 1, None, &mut size) }
+    unsafe { InitializeProcThreadAttributeList(Some(list), 2, None, &mut size) }
         .map_err(|_| SpawnError::OwnershipFailed)?;
-    // SAFETY: `inherited` outlives the list use in CreateProcessW below. The size is that of the array.
+    // SAFETY: `inherited` and `jobs` outlive the list use in CreateProcessW below. Each size is that of its array.
     let updated = unsafe {
         UpdateProcThreadAttribute(
             list,
@@ -224,6 +245,17 @@ pub fn spawn(
             None,
             None,
         )
+        .and_then(|()| {
+            UpdateProcThreadAttribute(
+                list,
+                0,
+                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+                Some(jobs.as_ptr().cast()),
+                size_of_val(&jobs),
+                None,
+                None,
+            )
+        })
     };
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
@@ -256,44 +288,57 @@ pub fn spawn(
     drop((child_stdin, child_stdout, child_stderr));
     created.map_err(|_| SpawnError::OwnershipFailed)?;
 
-    // SAFETY: CreateProcessW returned the thread handle, and this function owns it.
-    let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread.0) };
-    let owned = assign(info.hProcess).is_ok()
-        // SAFETY: `thread` is the open primary thread handle of the suspended child.
-        && unsafe { ResumeThread(raw(&thread)) } != u32::MAX;
-    drop(thread);
-    if !owned {
-        // SAFETY: this function owns the process handle and closes it once.
-        unsafe {
-            let _ = TerminateProcess(info.hProcess, 1);
-            let _ = CloseHandle(info.hProcess);
-        }
-        return Err(SpawnError::OwnershipFailed);
-    }
-
-    let mut parent_stdin = File::from(parent_stdin);
-    let stdin = match request.input {
-        Input::Closed => {
-            drop(parent_stdin);
-            None
-        }
-        Input::Bytes(bytes) => {
-            // A child that reads late must not block the caller. The write ends when the child reads or exits.
-            let bytes = bytes.to_vec();
-            std::thread::spawn(move || {
-                let _ = parent_stdin.write_all(&bytes);
-            });
-            None
-        }
-        Input::Stream => Some(parent_stdin),
+    // SAFETY: CreateProcessW returned both handles, and this function owns them.
+    let (process, thread) = unsafe {
+        (
+            OwnedHandle::from_raw_handle(info.hProcess.0),
+            OwnedHandle::from_raw_handle(info.hThread.0),
+        )
     };
-    Ok(Spawned {
-        process: info.hProcess,
+    Ok(Suspended {
+        process,
+        thread,
         pid: info.dwProcessId,
-        stdin,
+        input: request.input,
+        stdin: File::from(parent_stdin),
         stdout: File::from(parent_stdout),
         stderr: File::from(parent_stderr),
     })
+}
+
+impl Suspended<'_> {
+    /// A failed resume terminates the child.
+    pub fn resume(self) -> Result<Spawned, SpawnError> {
+        // SAFETY: `thread` is the open primary thread handle of the suspended child.
+        if unsafe { ResumeThread(raw(&self.thread)) } == u32::MAX {
+            // SAFETY: `process` is open. Its drop closes it.
+            let _ = unsafe { TerminateProcess(raw(&self.process), 1) };
+            return Err(SpawnError::OwnershipFailed);
+        }
+        let mut parent_stdin = self.stdin;
+        let stdin = match self.input {
+            Input::Closed => {
+                drop(parent_stdin);
+                None
+            }
+            Input::Bytes(bytes) => {
+                // A child that reads late must not block the caller. The write ends when the child reads or exits.
+                let bytes = bytes.to_vec();
+                std::thread::spawn(move || {
+                    let _ = parent_stdin.write_all(&bytes);
+                });
+                None
+            }
+            Input::Stream => Some(parent_stdin),
+        };
+        Ok(Spawned {
+            process: HANDLE(self.process.into_raw_handle()),
+            pid: self.pid,
+            stdin,
+            stdout: self.stdout,
+            stderr: self.stderr,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -304,14 +349,22 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use windows::Win32::Foundation::{E_FAIL, HANDLE_FLAG_INHERIT, SetHandleInformation};
-    use windows::Win32::System::Threading::{
-        CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS, GetProcessId,
+    use windows::Win32::Foundation::{
+        DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, HANDLE_FLAG_INHERIT, SetHandleInformation,
     };
+    use windows::Win32::System::JobObjects::IsProcessInJob;
+    use windows::Win32::System::SystemServices::JOB_OBJECT_QUERY;
+    use windows::Win32::System::Threading::{
+        CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS,
+        GetCurrentProcess, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    use windows::core::BOOL;
 
     use crate::jobs::Job;
     use crate::jobs::tests::{
-        CLOSE_BOUND, Fixture, Lines, Proc, WAIT, child_arguments, final_path, same_path, test_exe,
+        CLOSE_BOUND, Fixture, Lines, Proc, WAIT, child_arguments, eventually, final_path,
+        same_path, start_child, test_exe,
     };
 
     struct Run {
@@ -351,7 +404,7 @@ mod tests {
         let environment = environment();
         let spawned = spawn(
             &request(&program, &arguments, &environment, wsl, input),
-            &mut |process| job.assign(process),
+            job.handle(),
         )
         .expect("spawn");
         Run {
@@ -447,20 +500,21 @@ mod tests {
             Err(SpawnError::CommandLineTooLong)
         );
         let environment = environment();
-        let mut assigned = false;
+        let job = Job::create().expect("Job");
         let result = spawn(
             &request(program, &units_above, &environment, false, Input::Closed),
-            &mut |_| {
-                assigned = true;
-                Ok(())
-            },
+            job.handle(),
         );
         // An attempted start of the absent program would give `OwnershipFailed` instead.
         assert!(
             matches!(result, Err(SpawnError::CommandLineTooLong)),
             "refused before process creation"
         );
-        assert!(!assigned, "no process reached the Job assignment");
+        assert_eq!(
+            job.total_processes(),
+            Ok(0),
+            "no process ever joined the Job"
+        );
     }
 
     #[test]
@@ -487,33 +541,39 @@ mod tests {
     }
 
     #[test]
-    fn the_child_starts_suspended_joins_its_job_and_then_resumes() {
+    fn the_child_starts_suspended_in_its_job_and_then_resumes() {
         let fixture = Fixture::new();
         let started = fixture.path("started.txt");
         let job = Job::create().expect("Job");
         let program = test_exe();
         let arguments = child_arguments(&["started", started.to_str().expect("path")]);
         let environment = environment();
-        let mut ran_before_assignment = None;
-        let spawned = spawn(
+        let suspended = create_suspended(
             &request(&program, &arguments, &environment, false, Input::Closed),
-            &mut |process| {
-                std::thread::sleep(Duration::from_secs(1));
-                ran_before_assignment = Some(started.exists());
-                job.assign(process)
-            },
+            job.handle(),
         )
-        .expect("spawn");
+        .expect("create");
+        // A failed assertion must not leave the suspended child outside every Job.
+        let _child = Proc::open(suspended.pid);
+        let mut member = BOOL(0);
+        // SAFETY: `suspended` keeps the process handle open, and `job` keeps the Job handle open.
+        unsafe { IsProcessInJob(raw(&suspended.process), Some(job.handle()), &mut member) }
+            .expect("IsProcessInJob");
+        assert!(
+            member.as_bool(),
+            "the Job holds the child from its creation, before the resume"
+        );
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(
+            !started.exists(),
+            "the child runs no code before the resume"
+        );
+        let spawned = suspended.resume().expect("resume");
         let _process = Proc {
             handle: spawned.process,
             pid: spawned.pid,
         };
         let _stderr = Lines::new(spawned.stderr);
-        assert_eq!(
-            ran_before_assignment,
-            Some(false),
-            "the child runs no code before its Job assignment"
-        );
         let report: serde_json::Value =
             serde_json::from_str(&Lines::new(spawned.stdout).wait("STARTED", WAIT)).expect("JSON");
         assert_eq!(
@@ -524,26 +584,51 @@ mod tests {
     }
 
     #[test]
-    fn an_injected_job_assignment_failure_terminates_the_suspended_child() {
+    fn an_injected_job_assignment_failure_starts_no_process() {
         let program = test_exe();
         let arguments = child_arguments(&["sleep", "60000"]);
         let environment = environment();
-        let mut seen = None;
+        let job = Job::create().expect("Job");
+        // A handle without JOB_OBJECT_ASSIGN_PROCESS makes the start in the Job fail.
+        let mut query_only = HANDLE::default();
+        // SAFETY: both process handles are the current-process pseudo handle, and `job` keeps the source open.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                job.handle(),
+                GetCurrentProcess(),
+                &mut query_only,
+                JOB_OBJECT_QUERY,
+                false,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        }
+        .expect("DuplicateHandle");
+        // SAFETY: DuplicateHandle returned a new handle that nothing else owns.
+        let query_only = unsafe { OwnedHandle::from_raw_handle(query_only.0) };
         let result = spawn(
             &request(&program, &arguments, &environment, false, Input::Closed),
-            &mut |process| {
-                seen = Some(Proc::open(unsafe { GetProcessId(process) }));
-                Err(windows::core::Error::from_hresult(E_FAIL))
-            },
+            raw(&query_only),
         );
         assert!(
             matches!(result, Err(SpawnError::OwnershipFailed)),
             "PROCESS_OWNERSHIP_FAILED"
         );
-        let child = seen.expect("the hook saw the suspended child");
+        assert_eq!(
+            job.total_processes(),
+            Ok(0),
+            "no process ever joined the Job"
+        );
+    }
+
+    #[test]
+    fn a_child_whose_parent_dies_before_the_resume_ends_within_5_seconds() {
+        let helper = start_child(&["suspended"]);
+        let grandchild = Proc::open(helper.lines.wait("GRANDCHILD", WAIT).parse().expect("pid"));
+        drop(helper);
         assert!(
-            child.exits_within(CLOSE_BOUND),
-            "the suspended child is terminated"
+            grandchild.exits_within(CLOSE_BOUND),
+            "the suspended child ends with the Job of its dead parent"
         );
     }
 
@@ -587,6 +672,184 @@ mod tests {
         let (_, report) = report(&job, &["report"], true, Input::Closed);
         // A probe on 2026-10-03 saw CONOUT$ open under CREATE_NO_WINDOW and fail under DETACHED_PROCESS.
         assert_eq!(report["conout"], true, "CREATE_NO_WINDOW gives a console");
+    }
+
+    // ---- Git for Windows wrapper (contract §6 "Console and input", research R14 S17) ----
+
+    /// The Git for Windows wrapper `cmd\git.exe`, found at test time.
+    fn find_wrapper() -> Option<PathBuf> {
+        let found = std::env::var_os("ProgramFiles")
+            .map(|folder| PathBuf::from(folder).join(r"Git\cmd\git.exe"))
+            .into_iter()
+            .chain([PathBuf::from(r"C:\Git\cmd\git.exe")])
+            .find(|path| path.is_file());
+        match &found {
+            Some(wrapper) => println!("GIT_WRAPPER {}", wrapper.display()),
+            None => println!(
+                r"SKIP: capability git-for-windows-wrapper absent (no %ProgramFiles%\Git\cmd\git.exe or C:\Git\cmd\git.exe)"
+            ),
+        }
+        found
+    }
+
+    /// No user or system configuration, and no repository above the fixture folder.
+    fn git_environment(fixture: &Fixture) -> Vec<(OsString, OsString)> {
+        let mut environment: Vec<(OsString, OsString)> = std::env::vars_os()
+            .filter(|(name, _)| {
+                !name
+                    .to_string_lossy()
+                    .to_ascii_uppercase()
+                    .starts_with("GIT_")
+            })
+            .collect();
+        let ceiling = fixture.0.parent().expect("fixture parent").as_os_str();
+        for (name, value) in [
+            ("GIT_CONFIG_NOSYSTEM", OsStr::new("1")),
+            ("GIT_CONFIG_GLOBAL", OsStr::new("NUL")),
+            ("GIT_TERMINAL_PROMPT", OsStr::new("0")),
+            ("GIT_CEILING_DIRECTORIES", ceiling),
+        ] {
+            environment.push((name.into(), value.to_owned()));
+        }
+        environment
+    }
+
+    /// The image file name of a process, without closing or ending it.
+    fn image_name(pid: u32) -> Option<String> {
+        // SAFETY: the call returns a new handle or fails.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        // SAFETY: OpenProcess returned a new handle that nothing else owns.
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle.0) };
+        let mut buffer = vec![0u16; COMMAND_LINE_UNITS];
+        let mut size = buffer.len() as u32;
+        // SAFETY: `buffer` holds `size` UTF-16 units, and `handle` stays open for the call.
+        unsafe {
+            QueryFullProcessImageNameW(
+                raw(&handle),
+                PROCESS_NAME_WIN32,
+                PWSTR(buffer.as_mut_ptr()),
+                &mut size,
+            )
+        }
+        .ok()?;
+        let path = PathBuf::from(String::from_utf16_lossy(&buffer[..size as usize]));
+        Some(path.file_name()?.to_string_lossy().into_owned())
+    }
+
+    /// Runs `<wrapper> --exec-path` with the shell flags. Returns the Git `git.exe` in that folder.
+    fn resolve(wrapper: &Path, fixture: &Fixture) -> PathBuf {
+        let job = Job::create().expect("Job");
+        let arguments = ["--exec-path".to_string()];
+        let environment = git_environment(fixture);
+        let spawned = spawn(
+            &SpawnRequest {
+                program: wrapper,
+                arguments: &arguments,
+                environment: &environment,
+                current_dir: &fixture.0,
+                wsl: false,
+                input: Input::Closed,
+            },
+            job.handle(),
+        )
+        .expect("spawn");
+        let _process = Proc {
+            handle: spawned.process,
+            pid: spawned.pid,
+        };
+        let _stderr = Lines::new(spawned.stderr);
+        let folder = Lines::new(spawned.stdout)
+            .line(WAIT)
+            .expect("an --exec-path line");
+        PathBuf::from(folder.trim_end().replace('/', r"\")).join("git.exe")
+    }
+
+    struct Hashing {
+        job: Job,
+        process: Proc,
+        stdin: File,
+    }
+
+    /// Starts `hash-object --stdin-paths` with the shell flags and waits for one hash. Git then waits for the next path.
+    fn hash_object(program: &Path, fixture: &Fixture) -> Hashing {
+        let job = Job::create().expect("Job");
+        let arguments = ["hash-object".to_string(), "--stdin-paths".to_string()];
+        let environment = git_environment(fixture);
+        let spawned = spawn(
+            &SpawnRequest {
+                program,
+                arguments: &arguments,
+                environment: &environment,
+                current_dir: &fixture.0,
+                wsl: false,
+                input: Input::Stream,
+            },
+            job.handle(),
+        )
+        .expect("spawn");
+        let process = Proc {
+            handle: spawned.process,
+            pid: spawned.pid,
+        };
+        let _stderr = Lines::new(spawned.stderr);
+        let stdout = Lines::new(spawned.stdout);
+        let mut stdin = spawned.stdin.expect("stdin");
+        writeln!(stdin, "{}", fixture.path("a.txt").display()).expect("write a path");
+        stdin.flush().expect("flush");
+        let hash = stdout.line(WAIT).expect("a hash line");
+        assert!(
+            hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+            "hash: {hash}"
+        );
+        Hashing {
+            job,
+            process,
+            stdin,
+        }
+    }
+
+    #[test]
+    fn the_exec_path_git_has_no_console_and_the_wrapper_child_has_one() {
+        let Some(wrapper) = find_wrapper() else {
+            return;
+        };
+        let fixture = Fixture::new();
+        std::fs::write(fixture.path("a.txt"), "a\n").expect("write a file");
+        let resolved = resolve(&wrapper, &fixture);
+        println!("GIT_RESOLVED {}", resolved.display());
+        assert!(resolved.is_file(), "the exec-path folder holds git.exe");
+
+        let direct = hash_object(&resolved, &fixture);
+        assert_eq!(
+            direct.job.process_ids(),
+            vec![direct.process.pid],
+            "the resolved Git runs alone in its Job, without conhost.exe"
+        );
+        drop(direct.stdin);
+        assert!(direct.process.exits_within(WAIT), "Git ends at end-of-file");
+
+        let wrapped = hash_object(&wrapper, &fixture);
+        let mut names = Vec::new();
+        let console = eventually(WAIT, || {
+            names = wrapped
+                .job
+                .process_ids()
+                .into_iter()
+                .filter_map(image_name)
+                .collect();
+            names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("conhost.exe"))
+        });
+        assert!(
+            console,
+            "the wrapper starts Git with a hidden console: {names:?}"
+        );
+        drop(wrapped.stdin);
+        assert!(
+            wrapped.process.exits_within(WAIT),
+            "the wrapper ends at end-of-file"
+        );
     }
 
     #[test]

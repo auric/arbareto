@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { statSync } from "node:fs";
+import { win32 } from "node:path";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_EXECUTABLE_DIGEST_BYTES, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
 import { admitGitProbe, MINIMUM_GIT_VERSION } from "./admission";
-import { createCollector, RunnerRefusal, type GitRunner, type IdentityReply, type ProcessContext } from "./git-runner";
+import { createCollector, isChannelPath, RunnerRefusal, type GitRunner, type IdentityReply, type ProcessContext } from "./git-runner";
 
 // Data-model §1 "Git installation".
 export interface GitInstallation {
@@ -70,14 +72,42 @@ export async function probeGit(runner: GitRunner, target: GitProbeTarget, option
   }
 }
 
-// Contract §6 "Registration bootstrap" `gitProbe`: identity, version, architecture, and admission before `gitInstallationId`.
+// Runs one fixed `gitProbe` command. Contract §7 "Missing objects": a probe runs without `--no-lazy-fetch`.
+async function runProbe(
+  runner: GitRunner,
+  operationId: string,
+  context: ProcessContext,
+  args: ["--exec-path"] | ["version", "--build-options"],
+  signal: AbortSignal,
+): Promise<string | GitProbeResult> {
+  const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+  const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+  const exit = await runner.run({ operationId, context, arguments: args, environmentPolicy: "probe", limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS }, stdout, stderr, signal });
+  // Contract §5: a bootstrap probe deadline gives DEADLINE.
+  if (exit.deadline) return failure("DEADLINE");
+  if (exit.diagnosticLimit || stdout.limited) return failure("OUTPUT_LIMIT");
+  return exit.exitCode === 0 ? new TextDecoder().decode(stdout.take()) : "";
+}
+
+// Contract §3 "Git proposal": `git.exe` in the folder that `--exec-path` prints, as a fully qualified path with backslashes.
+// A missing or non-regular file gives `null`. The service never falls back to the candidate.
+function execPathGit(output: string): string | null {
+  const folder = /^([^\r\n]+)\r?\n$/.exec(output)?.[1];
+  const git = folder === undefined ? null : win32.join(folder, "git.exe");
+  return isChannelPath(git) && statSync(git, { throwIfNoEntry: false })?.isFile() ? git : null;
+}
+
+// Contract §6 "Registration bootstrap" `gitProbe`: identity, exec-path, version, architecture, and admission before `gitInstallationId`.
+// `moved` marks a context that `resolveGit` created. Its exec-path probe must name its own file.
 async function probeCandidate(
   runner: GitRunner,
   target: GitProbeTarget,
   operationId: string,
   options: GitProbeOptions,
+  moved = false,
 ): Promise<GitProbeResult | GitProbeCanceled | { another: GitProbeTarget }> {
   const context: ProcessContext = { contextKind: "gitProbe", bootstrapId: target.bootstrapId };
+  const signal = options.signal ?? new AbortController().signal;
   const read = await fileDigest(target.executablePath);
   if ("gitCode" in read) return failure(read.gitCode);
   const digest = read.digest;
@@ -85,23 +115,19 @@ async function probeCandidate(
     const [file] = await runner.identities(operationId, context, [target.executablePath]);
     // Contract §6 "Registration bootstrap": a failed identity call refuses registration with UNSUPPORTED_REPOSITORY.
     if ("code" in file) return failure(file.code);
-    const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-    const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-    const exit = await runner.run({
-      operationId,
-      context,
-      // Contract §7 "Missing objects": the version probe runs without `--no-lazy-fetch`.
-      arguments: ["version", "--build-options"],
-      environmentPolicy: "probe",
-      limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
-      stdout,
-      stderr,
-      signal: options.signal ?? new AbortController().signal,
-    });
-    // Contract §5: a bootstrap probe deadline gives DEADLINE.
-    if (exit.deadline) return failure("DEADLINE");
-    if (exit.diagnosticLimit || stdout.limited) return failure("OUTPUT_LIMIT");
-    const versionOutput = exit.exitCode === 0 ? new TextDecoder().decode(stdout.take()) : "";
+    const execPath = await runProbe(runner, operationId, context, ["--exec-path"], signal);
+    if (typeof execPath !== "string") return execPath;
+    const git = execPathGit(execPath);
+    if (git === null) return failure("GIT_UNSUPPORTED");
+    if (git !== target.executablePath) {
+      // Contract §6 "Startup contexts": the saved path must be the resolved file. Only Use this Git selects another file (FR-003).
+      if (!(options.confirm ?? true)) return failure("GIT_CHANGED");
+      if (moved) return failure("GIT_UNSUPPORTED");
+      const resolved = await runner.resolveGit({ operationId, bootstrapId: target.bootstrapId, executablePath: git });
+      return await probeCandidate(runner, { bootstrapId: resolved.bootstrapId, executablePath: git }, operationId, options, true);
+    }
+    const versionOutput = await runProbe(runner, operationId, context, ["version", "--build-options"], signal);
+    if (typeof versionOutput !== "string") return versionOutput;
     const admitted = admitGitProbe(versionOutput);
     if (!("admission" in admitted) || admitted.admission !== "admitted") return failure(admitted.gitCode, "detectedVersion" in admitted ? admitted.detectedVersion : undefined);
     const gitInstallationId = crypto.randomUUID();

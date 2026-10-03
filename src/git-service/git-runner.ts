@@ -132,11 +132,16 @@ export type RegisterRequest =
 
 export type RegisterReply = { result: "approved" | "declined" } | { result: "another"; bootstrapId: string; executablePath: string };
 
+// Contract §6 "Channel frames" `resolveGit`: `executablePath` is `git.exe` in the folder that `--exec-path` printed.
+export type ResolveGitRequest = { operationId: string; bootstrapId: string; executablePath: string };
+
 export interface GitRunner {
   run(call: GitCall): Promise<GitExit>;
   identities(operationId: string, context: ProcessContext, paths: readonly string[]): Promise<IdentityReply[]>;
   lingeringCount(operationId: string, commonDirectory: string): Promise<number>;
   register(request: RegisterRequest): Promise<RegisterReply>;
+  // Replies with the `bootstrapId` of the new `gitProbe` context for `executablePath`.
+  resolveGit(request: ResolveGitRequest): Promise<{ bootstrapId: string }>;
   release(target: { repositoryId: string } | { gitInstallationId: string }): void;
   closeJob(operationId: string): void;
   started(frame: MutationStarted): Promise<StartedReply>;
@@ -225,7 +230,8 @@ export function checkCall(call: GitCall): void {
   if (commandLineUnits("", args) > WINDOWS_COMMAND_LINE_UNITS) refuse("command line");
   const bootstrap = context.contextKind !== "registeredOperation";
   if (context.contextKind === "gitProbe") {
-    if (args.length !== 2 || args[0] !== "version" || args[1] !== "--build-options") refuse("gitProbe permits only the version probe");
+    const probe = args.length === 1 ? args[0] === "--exec-path" : args.length === 2 && args[0] === "version" && args[1] === "--build-options";
+    if (!probe) refuse("gitProbe permits only the exec-path and version probes");
   } else if (args[0] !== "--no-lazy-fetch") {
     refuse("first argument must be --no-lazy-fetch");
   }
@@ -264,6 +270,11 @@ export function checkRegister(request: RegisterRequest): boolean {
   if (exact(request, { ...ids, version: isVersion, confirm: isBoolean })) return (request as { confirm: boolean }).confirm;
   const repository = { ...ids, repositoryId: isIdentifier, worktreeRoot: isChannelPath, gitDirectory: isChannelPath, commonDirectory: isChannelPath };
   return exact(request, repository) ? false : refuse("register");
+}
+
+export function checkResolveGit(request: ResolveGitRequest): void {
+  const isGitFile = (v: unknown) => isChannelPath(v) && /[\\/]git\.exe$/i.test(v);
+  if (!exact(request, { operationId: isIdentifier, bootstrapId: isIdentifier, executablePath: isGitFile })) refuse("resolveGit");
 }
 
 export function checkRelease(target: { repositoryId: string } | { gitInstallationId: string }): void {

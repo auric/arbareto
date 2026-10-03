@@ -518,6 +518,47 @@ describe("native runner identity, lingering count, and registration", () => {
     }
   });
 
+  test("resolveGit sends the resolved git.exe and returns the new gitProbe bootstrapId", async () => {
+    const channel = createChannelDouble();
+    const request = { operationId: id(), bootstrapId: id(), executablePath: "C:\\Git\\mingw64\\libexec\\git-core\\git.exe" };
+    const moved = id();
+    const asked = channel.runner.resolveGit(request);
+    const { callId } = channel.last("resolveGit");
+    expect(channel.last("resolveGit")).toEqual({ type: "resolveGit", callId, ...request });
+    expect(channel.reply("process", { type: "resolveGit", callId, bootstrapId: moved })).toBe(true);
+    expect(await asked).toEqual({ bootstrapId: moved });
+
+    const refused = channel.runner.resolveGit(request);
+    expect(channel.reply("process", { type: "refused", callId: channel.last("resolveGit").callId, code: "INVALID_REQUEST" })).toBe(true);
+    await expect(refused).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    const malformed = channel.runner.resolveGit(request);
+    expect(channel.reply("process", { type: "resolveGit", callId: channel.last("resolveGit").callId, bootstrapId: "short" })).toBe(false);
+    await expect(malformed).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+
+    const sent = channel.sent.length;
+    for (const bad of [
+      { ...request, executablePath: "git.exe" },
+      { ...request, executablePath: "C:\\Git\\cmd\\git.cmd" },
+      { ...request, executablePath: "\\\\?\\C:\\Git\\git.exe" },
+      { ...request, bootstrapId: "short" },
+      { ...request, extra: 1 },
+    ]) {
+      await expect(channel.runner.resolveGit(bad as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    }
+    expect(channel.sent.length).toBe(sent);
+  });
+
+  test("a gitProbe run permits only --exec-path and version --build-options", async () => {
+    const channel = createChannelDouble();
+    const probe: ProcessContext = { contextKind: "gitProbe", bootstrapId: id() };
+    for (const args of [["--exec-path", "version"], ["--exec-path=C:\\x"], ["--no-lazy-fetch", "--exec-path"]]) {
+      await expect(channel.runner.run(call({ context: probe, environmentPolicy: "probe", arguments: args }))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    }
+    expect(channel.sent).toEqual([]);
+    void channel.runner.run(call({ context: probe, environmentPolicy: "probe", arguments: ["--exec-path"] }));
+    expect(channel.last("run").arguments).toEqual(["--exec-path"]);
+  });
+
   test("release and closeJob carry no callId and get no reply", () => {
     const channel = createChannelDouble();
     const repositoryId = id();

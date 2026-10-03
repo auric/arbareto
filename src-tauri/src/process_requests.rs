@@ -296,6 +296,7 @@ impl ProcessRequests {
             Some("identity") => self.identity(request, call()?),
             Some("lingeringCount") => self.lingering_count(request, call()?),
             Some("register") => self.register(request, call()?),
+            Some("resolveGit") => self.resolve_git(request, call()?),
             Some("release") => self.release(request),
             Some("closeJob") => self.close_job(request),
             _ => Err(INVALID),
@@ -395,23 +396,23 @@ impl ProcessRequests {
 
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
-        let jobs = &self.jobs;
-        let spawned = spawn(
-            &SpawnRequest {
-                program: &target.program,
-                arguments: &full,
-                environment: &environment,
-                current_dir: &target.current_dir,
-                wsl: false,
-                input: match &input {
-                    RunInput::Closed => Input::Closed,
-                    RunInput::Bytes(bytes) => Input::Bytes(bytes),
-                    RunInput::Streamed(_) => Input::Stream,
-                },
+        let request = SpawnRequest {
+            program: &target.program,
+            arguments: &full,
+            environment: &environment,
+            current_dir: &target.current_dir,
+            wsl: false,
+            input: match &input {
+                RunInput::Closed => Input::Closed,
+                RunInput::Bytes(bytes) => Input::Bytes(bytes),
+                RunInput::Streamed(_) => Input::Stream,
             },
-            &mut |process| jobs.assign(operation_id, process),
-        )
-        .map_err(|_| OWNERSHIP)?;
+        };
+        let spawned = self
+            .jobs
+            .with_job(operation_id, |job| spawn(&request, job))
+            .map_err(|_| OWNERSHIP)?
+            .map_err(|_| OWNERSHIP)?;
 
         let generation = self.current();
         let exited = Arc::new(Mutex::new(false));
@@ -752,6 +753,54 @@ impl ProcessRequests {
         self.send(
             self.current(),
             json!({ "type": "register", "callId": call_id, "result": result }),
+        );
+        Ok(())
+    }
+
+    /// Replaces a `gitProbe` context with one for `<exec-path>\git.exe` (contract §6 "Channel frames" `resolveGit`).
+    /// A startup context never moves, because only Use this Git selects another file (FR-003).
+    fn resolve_git(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        keys(
+            request,
+            &[
+                "type",
+                "callId",
+                "operationId",
+                "bootstrapId",
+                "executablePath",
+            ],
+            &[],
+        )?;
+        let operation_id = identifier(&request["operationId"])?;
+        let bootstrap_id = identifier(&request["bootstrapId"])?;
+        let resolved = path(&request["executablePath"])?;
+        let named = resolved
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("git.exe"));
+        if !named || !std::fs::metadata(&resolved).is_ok_and(|file| file.is_file()) {
+            return Err(INVALID);
+        }
+        let now = Instant::now();
+        let mut state = self.state();
+        check_active(&state, operation_id)?;
+        let context = self.contexts.get(bootstrap_id, now)?;
+        if context.kind != ContextKind::GitProbe {
+            return Err(UNKNOWN);
+        }
+        if context.startup {
+            return Err(INVALID);
+        }
+        own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+        let moved = self
+            .contexts
+            .create(ContextKind::GitProbe, &resolved, now)
+            .map_err(|_| INVALID)?;
+        self.contexts.destroy(bootstrap_id);
+        own(&mut state, &self.contexts, &moved, operation_id, now)?;
+        drop(state);
+        self.send(
+            self.current(),
+            json!({ "type": "resolveGit", "callId": call_id, "bootstrapId": moved }),
         );
         Ok(())
     }
@@ -2068,6 +2117,15 @@ mod tests {
             String::from_utf8_lossy(&harness.output(&call, "stdout"))
                 .contains("git version 2.55.0.windows.3")
         );
+        let call = uuid();
+        let mut exec_path = probe(&call, &uuid(), &new_probe());
+        exec_path["arguments"] = json!(["--exec-path"]);
+        harness.send(exec_path);
+        assert_eq!(harness.exit(&call, WAIT).expect("exit").1["exitCode"], 0);
+        assert!(
+            String::from_utf8_lossy(&harness.output(&call, "stdout")).contains("EXEC_PATH"),
+            "the --exec-path probe runs"
+        );
         let probe_cases: Vec<(&str, Edit)> = vec![
             (
                 "probe with --no-lazy-fetch",
@@ -2450,6 +2508,117 @@ mod tests {
         // `child_workspace` bound its Git through a startup context with `confirm: false`.
         let bound = harness.run(&uuid(), &workspace, &["sleep", "10"]);
         assert_eq!(harness.exit(&bound, WAIT).expect("exit").1["exitCode"], 0);
+    }
+
+    #[test]
+    fn resolve_git_moves_a_git_probe_context_to_the_resolved_file() {
+        let harness = Harness::child();
+        let wrapper = harness.fixture.path("cmd").join("git.exe");
+        let resolved = harness.fixture.path("git-core").join("git.exe");
+        for file in [&wrapper, &resolved] {
+            std::fs::create_dir_all(file.parent().expect("folder")).expect("mkdir");
+            std::fs::copy(test_exe(), file).expect("copy");
+        }
+        let now = Instant::now();
+        let candidate = harness
+            .contexts
+            .create(ContextKind::GitProbe, &wrapper, now)
+            .expect("context");
+        let operation = uuid();
+        let call = uuid();
+        harness.send(json!({ "type": "resolveGit", "callId": call, "operationId": operation, "bootstrapId": candidate, "executablePath": resolved }));
+        let reply = harness.reply(&call);
+        assert_eq!(reply["type"], "resolveGit", "{reply}");
+        let moved = reply["bootstrapId"]
+            .as_str()
+            .expect("bootstrapId")
+            .to_string();
+        assert_eq!(
+            reply,
+            json!({ "type": "resolveGit", "callId": call, "bootstrapId": moved })
+        );
+        let context = harness.contexts.get(&moved, now).expect("new context");
+        assert_eq!(
+            context.path, resolved,
+            "the new context binds the resolved file"
+        );
+        assert_eq!(context.kind, ContextKind::GitProbe);
+        assert!(!context.startup, "the new context needs Use this Git");
+        assert_eq!(
+            harness.contexts.get(&candidate, now).err(),
+            Some("UNKNOWN_TARGET"),
+            "the candidate context is gone"
+        );
+        let probe = |call: &str, operation: &str, bootstrap: &str| {
+            json!({
+                "type": "run", "callId": call, "operationId": operation, "contextKind": "gitProbe", "bootstrapId": bootstrap,
+                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+            })
+        };
+        let other = uuid();
+        harness.send(probe(&other, &uuid(), &moved));
+        assert_eq!(
+            harness.reply(&other),
+            refused(&other, "UNKNOWN_TARGET"),
+            "the operation that resolved it owns the new context"
+        );
+        let run = uuid();
+        harness.send(probe(&run, &operation, &moved));
+        assert_eq!(harness.exit(&run, WAIT).expect("exit").1["exitCode"], 0);
+    }
+
+    #[test]
+    fn resolve_git_refuses_a_startup_context_and_a_file_that_is_not_a_regular_git_exe() {
+        let harness = Harness::child();
+        let resolved = harness.fixture.path("git-core").join("git.exe");
+        std::fs::create_dir_all(resolved.parent().expect("folder")).expect("mkdir");
+        std::fs::copy(test_exe(), &resolved).expect("copy");
+        let other_name = harness.fixture.path("git-core").join("other.exe");
+        std::fs::copy(test_exe(), &other_name).expect("copy");
+        let folder = harness.fixture.path("folder").join("git.exe");
+        std::fs::create_dir_all(&folder).expect("mkdir");
+        let missing = harness.fixture.path("missing").join("git.exe");
+        let directory = harness.fixture.path("selected");
+        std::fs::create_dir(&directory).expect("mkdir");
+        let now = Instant::now();
+        let plain = || {
+            harness
+                .contexts
+                .create(ContextKind::GitProbe, &test_exe(), now)
+                .expect("context")
+        };
+        let cases: Vec<(&str, String, &Path, &str)> = vec![
+            (
+                "startup context",
+                harness
+                    .contexts
+                    .create_startup(&test_exe(), now)
+                    .expect("startup context"),
+                &resolved,
+                "INVALID_REQUEST",
+            ),
+            ("another file name", plain(), &other_name, "INVALID_REQUEST"),
+            ("a folder", plain(), &folder, "INVALID_REQUEST"),
+            ("a missing file", plain(), &missing, "INVALID_REQUEST"),
+            (
+                "a discovery context",
+                harness
+                    .contexts
+                    .create(ContextKind::RepositoryDiscovery, &directory, now)
+                    .expect("context"),
+                &resolved,
+                "UNKNOWN_TARGET",
+            ),
+        ];
+        for (name, bootstrap, path, code) in cases {
+            let call = uuid();
+            harness.send(json!({ "type": "resolveGit", "callId": call, "operationId": uuid(), "bootstrapId": bootstrap, "executablePath": path }));
+            assert_eq!(harness.reply(&call), refused(&call, code), "{name}");
+            assert!(
+                harness.contexts.get(&bootstrap, now).is_ok(),
+                "{name}: the context stays"
+            );
+        }
     }
 
     #[test]

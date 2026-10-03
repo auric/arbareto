@@ -148,7 +148,7 @@ impl Service {
                 wsl: false,
                 input: Input::Stream,
             },
-            &mut |process| job.assign(process),
+            job.handle(),
         ) else {
             return;
         };

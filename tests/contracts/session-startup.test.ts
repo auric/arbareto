@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES } from "../../src/contracts/limits";
-import type { GitRunner } from "../../src/git-service/git-runner";
+import type { GitCall, GitExit, GitRunner } from "../../src/git-service/git-runner";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -16,13 +18,24 @@ const DEADLINE_MS = 100;
 const WAIT_MS = 5_000;
 const TEST_TIMEOUT_MS = 10_000;
 
-// The saved Git is this test file: a small file with a fully qualified Windows path.
+// The saved Git is a small `git.exe` in an owned folder. The probe resolves `<exec-path>\git.exe`, so the name matters.
+const SAVED_FOLDER = mkdtempSync(join(tmpdir(), "arbareto-session-startup-"));
+afterAll(() => rmSync(SAVED_FOLDER, { recursive: true, force: true }));
+const SAVED_PATH = join(SAVED_FOLDER, "git.exe");
+writeFileSync(SAVED_PATH, "saved Git stub");
 const SAVED_GIT = {
   bootstrapId: "00000000-0000-4000-8000-0000000000aa",
-  executablePath: import.meta.path,
+  executablePath: SAVED_PATH,
   version: "2.55.0.windows.3",
-  digest: new Bun.CryptoHasher("sha256").update(readFileSync(import.meta.path)).digest("hex"),
+  digest: new Bun.CryptoHasher("sha256").update(readFileSync(SAVED_PATH)).digest("hex"),
 };
+
+// The shell answers the exec-path probe with the saved folder and the version probe with an admitted version.
+async function probeRun(call: GitCall): Promise<GitExit> {
+  const output = call.arguments[0] === "--exec-path" ? `${SAVED_FOLDER}\n` : "git version 2.55.0.windows.3\ncpu: x86_64\n";
+  call.stdout.push(new TextEncoder().encode(output));
+  return { exitCode: 0, activeDescendants: 0 };
+}
 const HANDSHAKE = {
   version: 1,
   restarted: false,
@@ -155,10 +168,7 @@ test(
     const registered: string[] = [];
     const { calls, getEnvironment, responseFor } = startSession({
       identities: async () => [IDENTITY],
-      run: async (call) => {
-        call.stdout.push(new TextEncoder().encode("git version 2.55.0.windows.3\ncpu: x86_64\n"));
-        return { exitCode: 0, activeDescendants: 0 } as never;
-      },
+      run: probeRun,
       register: (request) => {
         registered.push(request.gitInstallationId);
         return new Promise((resolve) => (approve = () => resolve({ result: "approved" })));
@@ -185,10 +195,7 @@ test(
     const { calls, progress, send, sessionId, responseFor } = startSession(
       {
         identities: async () => [IDENTITY],
-        run: async (call) => {
-          call.stdout.push(new TextEncoder().encode("git version 2.55.0.windows.3\ncpu: x86_64\n"));
-          return { exitCode: 0, activeDescendants: 0 } as never;
-        },
+        run: probeRun,
         register: (request) => {
           registered.push(request.gitInstallationId);
           return new Promise((resolve) => (approve = () => resolve({ result: "approved" })));

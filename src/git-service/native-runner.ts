@@ -9,6 +9,7 @@ import {
   checkIdentityPaths,
   checkRegister,
   checkRelease,
+  checkResolveGit,
   checkStarted,
   checkTrust,
   createDiagnosticCounter,
@@ -240,6 +241,13 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & { receive(f
         }
         return undefined;
       });
+    },
+
+    async resolveGit(request) {
+      checkResolveGit(request);
+      return ask<{ bootstrapId: string }>("process", { type: "resolveGit", ...request }, (r) =>
+        exact(r, { ...head, bootstrapId: isIdentifier }) ? { bootstrapId: r.bootstrapId as string } : undefined,
+      );
     },
 
     release(target) {

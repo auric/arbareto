@@ -4,7 +4,7 @@
 // A test double of the shell end of `src/git-service/git-runner.ts`. It runs real Git through `Bun.spawn` argument arrays.
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
 
-import { mkdirSync, readdirSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
@@ -16,6 +16,7 @@ import {
   checkIdentityPaths,
   checkRegister,
   checkRelease,
+  checkResolveGit,
   checkStarted,
   checkTrust,
   commandLineUnits,
@@ -335,6 +336,18 @@ export function createBunRunner(options: BunRunnerOptions) {
       return { result: "approved" };
     },
 
+    // The double has no startup context, so it skips the native startup refusal.
+    async resolveGit(request) {
+      checkResolveGit(request);
+      const bound = contexts.get(request.bootstrapId);
+      if (inactive.has(request.operationId) || bound?.kind !== "gitProbe" || (bound.owner ?? request.operationId) !== request.operationId) throw unknownTarget();
+      if (!statSync(request.executablePath, { throwIfNoEntry: false })?.isFile()) throw new RunnerRefusal("INVALID_REQUEST", "resolved file");
+      contexts.delete(request.bootstrapId);
+      const bootstrapId = crypto.randomUUID();
+      contexts.set(bootstrapId, { kind: "gitProbe", path: request.executablePath, owner: request.operationId });
+      return { bootstrapId };
+    },
+
     release(target) {
       checkRelease(target);
       if ("repositoryId" in target) repositories.delete(target.repositoryId);
@@ -424,6 +437,10 @@ export function createBunRunner(options: BunRunnerOptions) {
       const bootstrapId = crypto.randomUUID();
       contexts.set(bootstrapId, { kind, path });
       return bootstrapId;
+    },
+    // The path of a live native context, or `undefined` after its end.
+    contextPath(bootstrapId: string): string | undefined {
+      return contexts.get(bootstrapId)?.path;
     },
     // Test barrier: no process starts until the returned function runs.
     holdStart(): () => void {

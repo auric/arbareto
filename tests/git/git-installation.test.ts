@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, closeSync, copyFileSync, existsSync, ftruncateSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, copyFileSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { GIT_EXECUTABLE_DIGEST_BYTES } from "../../src/contracts/limits";
-import { probeGit, revalidateGit } from "../../src/git-service/git-installation";
+import { probeGit, revalidateGit, revalidateSavedGit } from "../../src/git-service/git-installation";
 import type { GitCall, GitRunner, RegisterRequest } from "../../src/git-service/git-runner";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import { createBunRunner, type BunRunner } from "./bun-runner";
@@ -25,8 +25,9 @@ const TEST_TIMEOUT_MS = 30_000;
 // The stub Git is compiled at test time under the owned root, so no executable enters the repository.
 // It reads its version from `version.txt` beside itself and appends each call to `calls.jsonl` there.
 // Like Git before 2.45.0, it rejects `--no-lazy-fetch` with "unknown option" (contract §7 "Missing objects").
+// `--exec-path` prints the text of `exec-path.txt` beside it, or else its own folder. Like Git for Windows, it prints forward slashes.
 const STUB_SOURCE = `
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 const dir = dirname(process.execPath);
 const args = process.argv.slice(2);
@@ -34,6 +35,11 @@ appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd
 if (args.includes("--no-lazy-fetch")) {
   process.stderr.write("unknown option: --no-lazy-fetch\\nusage: git [-v | --version] [-h | --help] <command> [<args>]\\n");
   process.exit(129);
+}
+if (args.length === 1 && args[0] === "--exec-path") {
+  const execPath = join(dir, "exec-path.txt");
+  process.stdout.write((existsSync(execPath) ? readFileSync(execPath, "utf8") : dir).replaceAll("\\\\", "/") + "\\n");
+  process.exit(0);
 }
 if (args.length === 2 && args[0] === "version" && args[1] === "--build-options") {
   const version = readFileSync(join(dir, "version.txt"), "utf8").trim();
@@ -134,11 +140,17 @@ describe("Git installation probe (T053)", () => {
       const result = await probeGit(counted, { bootstrapId, executablePath: exe });
       expect(result).toMatchObject({ ok: false, gitCode: "GIT_UNSUPPORTED", detectedVersion: "2.43.0", minimumVersion: MINIMUM });
       // Contract §6 `gitProbe`: fixed arguments without `--no-lazy-fetch`, the `probe` policy, from the owned launch directory.
-      expect(runs).toHaveLength(1);
-      expect(runs[0].context).toEqual({ contextKind: "gitProbe", bootstrapId });
-      expect([...runs[0].arguments]).toEqual(["version", "--build-options"]);
-      expect(runs[0].environmentPolicy).toBe("probe");
-      expect(stubCalls(exe)).toEqual([{ args: ["version", "--build-options"], cwd: launchDirectory }]);
+      // The exec-path probe names the folder of this file, so the version probe runs in the same context.
+      expect(runs).toHaveLength(2);
+      for (const run of runs) {
+        expect(run.context).toEqual({ contextKind: "gitProbe", bootstrapId });
+        expect(run.environmentPolicy).toBe("probe");
+      }
+      expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"], ["version", "--build-options"]]);
+      expect(stubCalls(exe)).toEqual([
+        { args: ["--exec-path"], cwd: launchDirectory },
+        { args: ["version", "--build-options"], cwd: launchDirectory },
+      ]);
       // The service never selects another executable.
       expect(registers).toEqual([]);
     },
@@ -163,7 +175,10 @@ describe("Git installation probe (T053)", () => {
       expect(installation.executableIdentity.file).toEqual(readIdentity(exe));
       expect(installation.executableIdentity.versionOutput).toContain(`git version ${MINIMUM}`);
       expect(installation.executableIdentity.digest).toBe(sha256(exe));
-      expect(stubCalls(exe)).toEqual([{ args: ["version", "--build-options"], cwd: launchDirectory }]);
+      expect(stubCalls(exe)).toEqual([
+        { args: ["--exec-path"], cwd: launchDirectory },
+        { args: ["version", "--build-options"], cwd: launchDirectory },
+      ]);
       // Contract §6 `register`: the issued ID binds to the probed context.
       expect(registers).toHaveLength(1);
       expect(registers[0]).toMatchObject({ bootstrapId, gitInstallationId: installation.gitInstallationId, version: MINIMUM });
@@ -253,16 +268,113 @@ describe("Git installation probe (T053)", () => {
         expect(installation.executableIdentity.digest).toBe(sha256(second));
         expect(runs.map((call) => call.context)).toEqual([
           { contextKind: "gitProbe", bootstrapId },
+          { contextKind: "gitProbe", bootstrapId },
+          { contextKind: "gitProbe", bootstrapId: next },
           { contextKind: "gitProbe", bootstrapId: next },
         ]);
-        expect(stubCalls(first)).toEqual([{ args: ["version", "--build-options"], cwd: launchDirectory }]);
-        expect(stubCalls(second)).toEqual([{ args: ["version", "--build-options"], cwd: launchDirectory }]);
+        const probes = [
+          { args: ["--exec-path"], cwd: launchDirectory },
+          { args: ["version", "--build-options"], cwd: launchDirectory },
+        ];
+        expect(stubCalls(first)).toEqual(probes);
+        expect(stubCalls(second)).toEqual(probes);
         expect(registers.map((request) => request.bootstrapId)).toEqual([bootstrapId, next]);
         expect(registers[0].gitInstallationId).not.toBe(registers[1].gitInstallationId);
         expect(registers[1].gitInstallationId).toBe(installation.gitInstallationId);
       } finally {
         runner.inject.registerResult = { result: "approved" };
       }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  // A Git for Windows layout: the wrapper `cmd\git.exe` names `mingw64\libexec\git-core` in its exec-path output.
+  function wrapperLayout(name: string, realName = "git.exe"): { wrapper: string; real: string } {
+    const root = fixtureDir(name);
+    const cmd = join(root, "cmd");
+    const core = join(root, "mingw64", "libexec", "git-core");
+    mkdirSync(cmd, { recursive: true });
+    mkdirSync(core, { recursive: true });
+    const wrapper = join(cmd, "git.exe");
+    copyFileSync(compiled, wrapper);
+    writeFileSync(join(cmd, "version.txt"), MINIMUM);
+    writeFileSync(join(cmd, "exec-path.txt"), core);
+    const real = join(core, realName);
+    copyFileSync(compiled, real);
+    writeFileSync(join(core, "version.txt"), MINIMUM);
+    return { wrapper, real: join(core, "git.exe") };
+  }
+
+  test(
+    "a wrapper candidate resolves to <exec-path>\\git.exe, and only that file is digested, probed, and registered",
+    async () => {
+      const { wrapper, real } = wrapperLayout("wrapper");
+      const bootstrapId = runner.addContext("gitProbe", wrapper);
+      runs.length = 0;
+      registers.length = 0;
+      const result = await probeGit(counted, { bootstrapId, executablePath: wrapper });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const installation = result.installation;
+      expect(installation.executablePath).toBe(real);
+      expect(installation.executableIdentity.file).toEqual(readIdentity(real));
+      expect(installation.executableIdentity.digest).toBe(sha256(real));
+      // The wrapper runs only the exec-path probe. Every later process runs the resolved file.
+      expect(stubCalls(wrapper)).toEqual([{ args: ["--exec-path"], cwd: launchDirectory }]);
+      expect(stubCalls(real)).toEqual([
+        { args: ["--exec-path"], cwd: launchDirectory },
+        { args: ["version", "--build-options"], cwd: launchDirectory },
+      ]);
+      expect(registers).toHaveLength(1);
+      expect(registers[0].bootstrapId).not.toBe(bootstrapId);
+      expect(runs.at(-1)?.context).toEqual({ contextKind: "gitProbe", bootstrapId: registers[0].bootstrapId });
+      // The candidate context is gone. Its wrapper can no longer run.
+      expect(runner.contextPath(bootstrapId)).toBeUndefined();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a missing or non-regular <exec-path>\\git.exe gives GIT_UNSUPPORTED and never falls back to the wrapper",
+    async () => {
+      const missing = wrapperLayout("resolved-missing", "other.exe");
+      const folder = wrapperLayout("resolved-folder", "other.exe");
+      mkdirSync(folder.real);
+      for (const { wrapper, real } of [missing, folder]) {
+        const bootstrapId = runner.addContext("gitProbe", wrapper);
+        runs.length = 0;
+        registers.length = 0;
+        const result = await probeGit(counted, { bootstrapId, executablePath: wrapper });
+        expect(result).toMatchObject({ ok: false, gitCode: "GIT_UNSUPPORTED", minimumVersion: MINIMUM });
+        expect("detectedVersion" in result).toBe(false);
+        expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"]]);
+        expect(stubCalls(wrapper)).toEqual([{ args: ["--exec-path"], cwd: launchDirectory }]);
+        expect(stubCalls(join(real, "..", "other.exe"))).toEqual([]);
+        expect(registers).toEqual([]);
+        // The candidate context stays bound to the wrapper. It is never moved.
+        expect(runner.contextPath(bootstrapId)).toBe(wrapper);
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a saved wrapper path gives GIT_CHANGED at startup and registers nothing",
+    async () => {
+      const { wrapper, real } = wrapperLayout("saved-wrapper");
+      const bootstrapId = runner.addContext("gitProbe", wrapper);
+      runs.length = 0;
+      registers.length = 0;
+      const result = await revalidateSavedGit(counted, { bootstrapId, executablePath: wrapper, digest: sha256(wrapper) }, crypto.randomUUID());
+      expect(result).toMatchObject({ ok: false, gitCode: "GIT_CHANGED" });
+      expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"]]);
+      expect(stubCalls(real)).toEqual([]);
+      expect(registers).toEqual([]);
+
+      // A saved resolved path passes the same check.
+      const saved = runner.addContext("gitProbe", real);
+      const again = await revalidateSavedGit(counted, { bootstrapId: saved, executablePath: real, digest: sha256(real) }, crypto.randomUUID());
+      expect(again).toMatchObject({ ok: true, installation: { executablePath: real } });
     },
     TEST_TIMEOUT_MS,
   );

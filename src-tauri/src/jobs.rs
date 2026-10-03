@@ -70,7 +70,7 @@ impl Job {
         unsafe { AssignProcessToJobObject(self.handle, process) }
     }
 
-    pub fn active_processes(&self) -> windows::core::Result<u32> {
+    fn accounting(&self) -> windows::core::Result<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION> {
         let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
         // SAFETY: `info` matches the information class and the passed size.
         unsafe {
@@ -82,7 +82,17 @@ impl Job {
                 None,
             )
         }?;
-        Ok(info.ActiveProcesses)
+        Ok(info)
+    }
+
+    pub fn active_processes(&self) -> windows::core::Result<u32> {
+        Ok(self.accounting()?.ActiveProcesses)
+    }
+
+    /// The count of every process that was ever in the Job.
+    #[cfg(test)]
+    pub fn total_processes(&self) -> windows::core::Result<u32> {
+        Ok(self.accounting()?.TotalProcesses)
     }
 
     fn associate(&self, port: HANDLE, key: usize) -> windows::core::Result<()> {
@@ -101,7 +111,7 @@ impl Job {
         }
     }
 
-    fn process_ids(&self) -> Vec<u32> {
+    pub(crate) fn process_ids(&self) -> Vec<u32> {
         let first = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
             / size_of::<usize>();
         let mut slots = 64;
@@ -333,7 +343,24 @@ impl Supervisor {
         }
     }
 
+    /// Runs `start` with the handle of a running operation Job. The held lock keeps that Job open and out of the lingering set.
+    pub fn with_job<T>(
+        &self,
+        operation_id: &str,
+        start: impl FnOnce(HANDLE) -> T,
+    ) -> windows::core::Result<T> {
+        let state = self.shared.state();
+        match state.jobs.get(operation_id) {
+            Some(entry) if !entry.lingering => Ok(start(entry.job.handle())),
+            _ => Err(windows::core::Error::from_hresult(E_INVALIDARG)),
+        }
+    }
+
     /// Only a running operation Job takes a process.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only tests assign a process that std starts")
+    )]
     pub fn assign(&self, operation_id: &str, process: HANDLE) -> windows::core::Result<()> {
         match self.shared.state().jobs.get(operation_id) {
             Some(entry) if !entry.lingering => entry.job.assign(process),
@@ -623,6 +650,11 @@ pub(crate) mod tests {
                 }
             });
             Lines(receiver)
+        }
+
+        /// The next line, or `None` after `timeout`.
+        pub(crate) fn line(&self, timeout: Duration) -> Option<String> {
+            self.0.recv_timeout(timeout).ok()
         }
 
         /// Returns the text after the first `<prefix> ` marker. libtest can print its own text before the marker on the same line.
@@ -950,6 +982,10 @@ pub(crate) mod tests {
             "version" => {
                 print_line("git version 2.55.0.windows.3");
             }
+            // --exec-path: marks the output of a Git exec-path probe.
+            "--exec-path" => {
+                print_line("EXEC_PATH");
+            }
             // late-writer <delay ms> <bytes> <result file>: writes to both inherited streams, records the result, then stays.
             "late-writer" => {
                 std::thread::sleep(Duration::from_millis(args[0].parse().expect("ms")));
@@ -962,6 +998,26 @@ pub(crate) mod tests {
                     Err(error) => format!("err {error}"),
                 };
                 std::fs::write(&args[2], text).expect("write result file");
+                std::thread::sleep(Duration::from_secs(60));
+            }
+            // suspended: starts a sleeping grandchild in its own Job, reports its PID, and stops before the resume.
+            "suspended" => {
+                let job = Job::create().expect("Job");
+                let program = test_exe();
+                let arguments = child_arguments(&["sleep", "60000"]);
+                let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+                let current_dir = std::env::temp_dir();
+                let request = crate::spawn::SpawnRequest {
+                    program: &program,
+                    arguments: &arguments,
+                    environment: &environment,
+                    current_dir: &current_dir,
+                    wsl: false,
+                    input: crate::spawn::Input::Closed,
+                };
+                let suspended =
+                    crate::spawn::create_suspended(&request, job.handle()).expect("create");
+                print_line(&format!("GRANDCHILD {}", suspended.pid));
                 std::thread::sleep(Duration::from_secs(60));
             }
             // slow-stdin <ms>: reads stdin only after the delay.

@@ -12,6 +12,8 @@ import {
 import { isFingerprint, isIdentifier, MUTATIONS, REPOSITORY_BOUND, type OperationName } from "../contracts/operations";
 import { decodeStrictJson } from "../contracts/strict-json";
 import { isChannelPath, type GitRunner } from "./git-runner";
+import { getEnvironment } from "./environment";
+import { probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createSessionLog } from "./log";
 import { createOperationRegistry, type Response } from "./operations";
 import { isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
@@ -118,6 +120,10 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
   const seenRequests = new Set<string>();
   const repositories = new Set<string>();
   const log = createSessionLog();
+  // Null until the startup revalidation or a `chooseGit` gives a result.
+  let git: GitProbeResult | null = null;
+  // Contract §6 "Startup contexts": public requests wait for the revalidation of `savedGit`.
+  let startup: Promise<void> | null = null;
 
   const respond = (response: Response) => {
     if (response.state === "rejected" && !codeFitsState("rejected", response.code)) throw new Error("rejected response needs an error code");
@@ -140,10 +146,35 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
     answer(view);
   };
 
+  const chooseGit = (request: RequestEnvelope) => {
+    const { operationId, signal } = registry.start("chooseGit", request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    const target = request.payload as { bootstrapId: string; executablePath: string };
+    const finish = (result: Awaited<ReturnType<typeof probeGit>> | { ok: false; gitCode: ErrorCode }) => {
+      if (registry.get(operationId)?.state === "cancel-requested" || (!result.ok && "canceled" in result)) {
+        if (registry.get(operationId)?.state === "running") registry.apply(operationId, { type: "cancel" });
+        return registry.apply(operationId, { type: "processes-stopped" });
+      }
+      if (!result.ok) {
+        const { gitCode, ok: _ok, ...versions } = result;
+        return registry.apply(operationId, { type: "read-complete", result: "failed", code: gitCode }, versions);
+      }
+      git = result;
+      const { gitInstallationId, executablePath, version, executableIdentity } = result.installation;
+      // The shell persists the path, the version text, and the digest after this result (data-model §1).
+      registry.apply(operationId, { type: "read-complete", result: "succeeded" }, { gitInstallationId, executablePath, version, digest: executableIdentity.digest });
+    };
+    probeGit(runner, target, { operationId, signal, confirm: true }).then(finish, () => finish({ ok: false, gitCode: "GIT_FAILED" }));
+  };
+
   // `undefined`: a later task adds the handler. The request then gets SERVICE_UNAVAILABLE.
   const handlers: Record<ServiceOperation, ((request: RequestEnvelope) => void) | undefined> = {
-    getEnvironment: undefined,
-    chooseGit: undefined,
+    getEnvironment: (request) => {
+      const { operationId } = registry.start("getEnvironment", request.requestId);
+      registry.apply(operationId, { type: "valid-read" });
+      registry.apply(operationId, { type: "read-complete", result: "succeeded" }, getEnvironment(handshake as Handshake, git));
+    },
+    chooseGit,
     chooseRepository: undefined,
     restoreWorkspace: undefined,
     readWorkspace: undefined,
@@ -174,7 +205,21 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
     if (Object.keys(frame).length === 2 && isHandshake(body)) {
       handshake = body as unknown as Handshake;
       sessionId = crypto.randomUUID();
-      return reply({ sessionId });
+      reply({ sessionId });
+      const saved = handshake.savedGit;
+      if (!saved) return;
+      // Contract §6 "Context rules": the startup `gitProbe` context has no public operation.
+      const operationId = crypto.randomUUID();
+      startup = revalidateSavedGit(runner, saved, operationId)
+        .then(
+          (result) => void (git = result),
+          () => {},
+        )
+        .finally(() => {
+          runner.closeJob(operationId);
+          startup = null;
+        });
+      return;
     }
     const version = isObject(body) && Object.hasOwn(body, "version") && body.version !== 1;
     reply({ code: version ? "PROTOCOL_VERSION" : "INVALID_REQUEST" });
@@ -209,7 +254,10 @@ export function createSession({ writer, runner, fail }: SessionOptions) {
         return reject(requestId, "INVALID_REQUEST");
       }
       if (frame.kind === "handshake") return receiveHandshake(frame);
-      if (frame.kind === "public") return receivePublic(frame, incoming.body.length);
+      if (frame.kind === "public") {
+        const size = incoming.body.length;
+        return void (startup ? startup.then(() => receivePublic(frame, size)) : receivePublic(frame, size));
+      }
       if (!runner.receive(frame as Frame)) reject(null, "INVALID_REQUEST");
     },
     get sessionId() {

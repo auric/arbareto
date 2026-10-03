@@ -623,3 +623,27 @@ describe("startup handshake failures", () => {
     TEST_TIMEOUT_MS,
   );
 });
+
+describe("getEnvironment through the service", () => {
+  test(
+    "after a handshake without savedGit, getEnvironment succeeds with GIT_UNAVAILABLE and the handshake facts",
+    async () => {
+      const service = start();
+      const sessionId = await service.handshake();
+      const frame = request(sessionId, "getEnvironment");
+      service.sendJson(frame);
+      const response = (await service.responseFor(frame.request.requestId as string)) as Frame["response"] & { result?: Record<string, unknown> };
+      expect(response.state).toBe("succeeded");
+      expect(response.result).toMatchObject({
+        gitCode: "GIT_UNAVAILABLE",
+        buildIdentity: HANDSHAKE_FIELDS.buildIdentity,
+        platformScope: HANDSHAKE_FIELDS.platformScope,
+        markers: [],
+      });
+      expect(response.result?.selectedGit).toBeUndefined();
+      const accepted = service.frames.filter((f) => f.progress?.requestId === frame.request.requestId);
+      expect(accepted.map((f) => f.progress?.state)).toEqual(["accepted"]);
+    },
+    TEST_TIMEOUT_MS,
+  );
+});

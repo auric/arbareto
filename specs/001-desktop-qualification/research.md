@@ -1049,7 +1049,7 @@ Future records must identify scenario, build/package digest, environment, fixtur
 - Both mutated files are byte-identical to HEAD after the undo.
 - Build identity: with the untracked probe file, the debug build printed `ARBARETO_BUILD_IDENTITY=0f92bd7206ab78556e99535e8603e3f087c847fc-dirty`. After its removal, the next build printed the value without `-dirty`. Cargo reported the missing `arbareto-build-identity.always-rerun` file.
 - Release binary boot, not installed: the release `arbareto.exe` opened the `Arbareto` window with the children `arbareto-git.exe` and `msedgewebview2.exe`. The view showed this text, line by line, and a Select Git action: "Build: 0.1.0 0f92bd7206ab78556e99535e8603e3f087c847fc"; "Unsigned local test package"; "Platform scope: qualification-target"; "Detected Git version: none"; "Minimum Git version: 2.55.0.windows.3"; "Qualification: unverified"; "Git changed: GIT_CHANGED". The saved Git is the wrapper `C:\Git\cmd\git.exe`, so `GIT_CHANGED` is the expected result. `CloseMainWindow()` closed the app with exit code 0, and no process stayed.
-- Pending for the user: install the `0f92bd7` package, and check the boot view again.
+- Installed-package check, 2026-10-03: the user installed the 0f92bd7 package as the current user. The saved Git was the wrapper C:\Git\cmd\git.exe, so the boot view showed GIT_CHANGED. Select Git proposed C:\Git\mingw64\libexec\git-core\git.exe, version 2.55.0.windows.3, and the user chose Use this Git. The boot view then showed the selected Git as admitted. After a restart, the app kept the selection without a prompt, so the saved path and digest revalidated. T065 passes.
 
 ### Batch reviews
 

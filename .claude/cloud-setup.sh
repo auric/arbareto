@@ -1,9 +1,11 @@
 #!/bin/bash
 # Cloud environment setup script for Arbareto. Paste it into the environment's "Setup script" field.
 # It installs Git 2.55 or newer from the git-core PPA and Bun 1.4.2, then runs "bun install --frozen-lockfile".
+# It installs specify-cli 1.0.12 from PyPI with "uv tool install", or with "pip install --user" when uv is absent. A failed install does not stop the session.
+# It writes .specify/feature.json, which Git ignores, when the file is absent. The Spec Kit scripts read the active feature from it.
 # It is not verified locally, because the development host is Windows.
 # It does not install a Rust shell toolchain. The Tauri shell uses Win32 APIs and builds only on Windows.
-# Hosts on the default Trusted allowlist: archive.ubuntu.com, keyserver.ubuntu.com, ppa.launchpad.net, github.com, release-assets.githubusercontent.com, registry.npmjs.org.
+# Hosts on the default Trusted allowlist: archive.ubuntu.com, keyserver.ubuntu.com, ppa.launchpad.net, github.com, release-assets.githubusercontent.com, registry.npmjs.org, pypi.org, files.pythonhosted.org.
 # The PPA source uses http://ppa.launchpad.net. add-apt-repository writes ppa.launchpadcontent.net, which is not on the allowlist. Apt verifies the PPA signature with the pinned key.
 set -euo pipefail
 
@@ -42,6 +44,15 @@ test "$(/usr/local/bin/bun --version)" = "$BUN_VERSION"
 # The docs report Bun proxy problems with package fetching. A failed install must not block the session.
 if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
   (cd "$repo_root" && /usr/local/bin/bun install --frozen-lockfile) || echo "bun install failed. Run 'bun install --frozen-lockfile' in the session." >&2
+  if [ ! -e "$repo_root/.specify/feature.json" ]; then
+    printf '%s\n' '{"feature_directory": "specs/001-desktop-qualification"}' > "$repo_root/.specify/feature.json" || echo "Could not write .specify/feature.json." >&2
+  fi
 else
   echo "Repository root not found from $(pwd). Run 'bun install --frozen-lockfile' in the session." >&2
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  uv tool install specify-cli==1.0.12 || echo "uv tool install specify-cli==1.0.12 failed. Install it in the session." >&2
+else
+  python3 -m pip install --user specify-cli==1.0.12 || echo "pip install --user specify-cli==1.0.12 failed. Install it in the session." >&2
 fi

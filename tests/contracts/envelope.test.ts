@@ -4,9 +4,11 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { decodeRequest } from "../../src/contracts/envelope";
+import { isWindows } from "../../src/contracts/native-path";
 import { OPERATIONS } from "../../src/contracts/operations";
 
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
+printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/contracts/operations.ts", import.meta.dir);
 
 type Side = "renderer" | "service";
@@ -15,7 +17,7 @@ type Json = Record<string, unknown>;
 const MIB = 1024 * 1024;
 const id = () => crypto.randomUUID();
 const FINGERPRINT = "a".repeat(64);
-const GIT_PATH = "C:\\Program Files\\Git\\cmd\\git.exe";
+const GIT_PATH = isWindows ? "C:\\Program Files\\Git\\cmd\\git.exe" : "/usr/bin/git";
 
 // Contract §3 names the payload values. Field names that the contract does not fix are test choices.
 const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> = {
@@ -437,12 +439,19 @@ describe("native bootstrap operations", () => {
 
   test("chooseGit service payload holds exactly bootstrapId and executablePath", () => {
     expectAccepted(envelope("chooseGit", "service", { bootstrapId: id(), executablePath: GIT_PATH }), "service");
-    expectAccepted(envelope("chooseGit", "service", { bootstrapId: id(), executablePath: "\\\\server\\share\\git.exe" }), "service");
     expectCode(envelope("chooseGit", "service", {}), "INVALID_REQUEST", "service");
     expectCode(envelope("chooseGit", "service", { bootstrapId: id() }), "INVALID_REQUEST", "service");
     expectCode(envelope("chooseGit", "service", { executablePath: GIT_PATH }), "INVALID_REQUEST", "service");
     expectCode(envelope("chooseGit", "service", { bootstrapId: "x", executablePath: GIT_PATH }), "INVALID_REQUEST", "service");
     expectCode(envelope("chooseGit", "service", { bootstrapId: id(), executablePath: GIT_PATH, path: "C:\\repo" }), "INVALID_REQUEST", "service");
+  });
+
+  test.skipIf(!isWindows)("windows-path-rules: chooseGit service executablePath accepts a UNC path", () => {
+    expectAccepted(envelope("chooseGit", "service", { bootstrapId: id(), executablePath: "\\\\server\\share\\git.exe" }), "service");
+  });
+
+  test.skipIf(!isWindows)("windows-path-rules: chooseGit service executablePath: a device path with slashes gives INVALID_REQUEST", () => {
+    expectCode(envelope("chooseGit", "service", { bootstrapId: id(), executablePath: "//./pipe/git" }), "INVALID_REQUEST", "service");
   });
 
   test.each([
@@ -455,7 +464,6 @@ describe("native bootstrap operations", () => {
     ["a path above 32,767 UTF-16 units", `C:\\${"a".repeat(32_765)}`],
     ["a non-string path", 1],
     ["a device path", "\\\\.\\pipe\\git"],
-    ["a device path with slashes", "//./pipe/git"],
     ["a device path with mixed separators", "\\/.\\C:\\Git\\cmd\\git.exe"],
     ["a Win32 file namespace path", "\\\\?\\C:\\Git\\cmd\\git.exe"],
     ["a Win32 file namespace UNC path", "\\\\?\\UNC\\server\\share\\git.exe"],

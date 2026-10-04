@@ -22,6 +22,7 @@ import {
   TRUST_RECORDS,
   WEBVIEW2_VERSION_BYTES,
 } from "./limits";
+import { NATIVE } from "./native-path";
 import { ChannelPath, Count, Fingerprint, Identifier, MutationKind, Text } from "./operations";
 
 // Contract §6 "Startup handshake" and "Channel frames". Each union branch has a title, because typify names its types from titles.
@@ -171,8 +172,8 @@ const run = {
 };
 const identity = { type: z.literal("identity"), ...call, operationId: Identifier, paths: z.array(ChannelPath).min(1).max(IDENTITY_PATHS) };
 
-// Contract §6 "Channel frames": `executablePath` is `git.exe` in the folder that `--exec-path` printed.
-export const GitExecutable = ChannelPath.regex(/[\\/]git\.exe$/i);
+// Contract §6 "Channel frames": `executablePath` is the native Git file name in the folder that `--exec-path` printed.
+export const GitExecutable = ChannelPath.refine(NATIVE.isGitExecutable);
 
 const registerIds = { operationId: Identifier, bootstrapId: Identifier, gitInstallationId: Identifier };
 export const RegisterGitCall = z.strictObject({ ...registerIds, version: VersionText, digest: Fingerprint, confirm: z.boolean() });

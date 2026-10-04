@@ -4,26 +4,28 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { RECOVERY_MARKERS_PER_HANDSHAKE } from "../../src/contracts/limits";
+import { isWindows } from "../../src/contracts/native-path";
 import { getEnvironment, QUALIFIED_VERSION_SETS } from "../../src/git-service/environment";
 import type { GitProbeResult } from "../../src/git-service/git-installation";
 import type { Handshake } from "../../src/git-service/session";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
+printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/environment.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-installation.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
 const MINIMUM = "2.55.0.windows.3";
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
-const GIT_PATH = "C:\\arbareto-test-fixture\\git\\cmd\\git.exe";
-const RESOLVED_PATH = "C:\\arbareto-test-fixture\\git\\mingw64\\libexec\\git-core\\git.exe";
+const GIT_PATH = isWindows ? "C:\\arbareto-test-fixture\\git\\cmd\\git.exe" : "/arbareto-test-fixture/git/bin/git";
+const RESOLVED_PATH = isWindows ? "C:\\arbareto-test-fixture\\git\\mingw64\\libexec\\git-core\\git.exe" : "/arbareto-test-fixture/git/libexec/git-core/git";
 
 const marker = (n: number) => ({
   markerId: `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`,
   kind: "commit" as const,
   startedAt: "2026-10-02T08:00:00Z",
-  worktreeRoot: `C:\\repo${n}`,
-  commonDirectory: `C:\\repo${n}\\.git`,
+  worktreeRoot: isWindows ? `C:\\repo${n}` : `/repo${n}`,
+  commonDirectory: isWindows ? `C:\\repo${n}\\.git` : `/repo${n}/.git`,
   commonIdentity: IDENTITY,
 });
 
@@ -111,7 +113,7 @@ describe("getEnvironment (T054)", () => {
   });
 
   test("a startup failure gives its reason and its path", () => {
-    const path = "C:\\Git\\cmd\\git.exe";
+    const path = isWindows ? "C:\\Git\\cmd\\git.exe" : "/usr/bin/git";
     const env = getEnvironment(handshake(), { ok: false, gitCode: "GIT_UNAVAILABLE", reason: "selected-missing", path, minimumVersion: MINIMUM });
     expect(env).toMatchObject({ gitCode: "GIT_UNAVAILABLE", reason: "selected-missing", path });
     const outside = getEnvironment(handshake(), { ok: false, gitCode: "GIT_UNAVAILABLE", reason: "outside-installation", minimumVersion: MINIMUM });

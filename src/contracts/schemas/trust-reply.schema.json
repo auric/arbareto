@@ -82,7 +82,7 @@
             "commonDirectory": {
               "type": "string",
               "maxLength": 32767,
-              "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+              "pattern": "^[^\\u0000]*$"
             },
             "commonIdentity": {
               "type": "object",
@@ -106,12 +106,12 @@
             "worktreeRoot": {
               "type": "string",
               "maxLength": 32767,
-              "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+              "pattern": "^[^\\u0000]*$"
             },
             "gitDirectory": {
               "type": "string",
               "maxLength": 32767,
-              "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+              "pattern": "^[^\\u0000]*$"
             },
             "worktreeIdentity": {
               "minItems": 2,
@@ -148,7 +148,7 @@
             "gitSelectedPath": {
               "type": "string",
               "maxLength": 32767,
-              "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+              "pattern": "^[^\\u0000]*$"
             }
           },
           "required": [

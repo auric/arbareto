@@ -28,7 +28,7 @@ use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingl
 use windows::core::HSTRING;
 
 use crate::bootstrap::{Identity, read_identity};
-use crate::process_requests::{PATH_UNITS, VERSION_BYTES, is_device_path, is_identifier};
+use crate::process_requests::{VERSION_BYTES, is_identifier, path};
 use crate::schema;
 
 // ---- Settings file (data-model §1) ----
@@ -457,16 +457,9 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A channel path (contract §6 "Channel frames"), as `src/contracts/operations.ts` `ChannelPath` checks it.
-/// A fully qualified path starts with a drive letter and a separator, or with two separators but no device prefix.
+/// A channel path (contract §6 "Channel frames"), with the rule of every path key in a channel frame.
 fn channel_path(value: &Value) -> Option<PathBuf> {
-    let text = value.as_str()?;
-    let b = text.as_bytes();
-    let separator = |byte: u8| byte == b'\\' || byte == b'/';
-    let qualified = (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && separator(b[2]))
-        || (b.len() >= 2 && separator(b[0]) && separator(b[1]) && !is_device_path(text));
-    (qualified && !text.contains('\0') && text.encode_utf16().count() <= PATH_UNITS)
-        .then(|| PathBuf::from(text))
+    path(value).ok()
 }
 
 /// An identity reply (contract §6 "Process fields").
@@ -2358,6 +2351,9 @@ mod tests {
             r"\/.\C:\repo",
             r"\\?\C:\repo",
             r"\\?\UNC\server\share\repo",
+            r"\\server",
+            r"\\server\",
+            r"\\.",
         ] {
             assert_eq!(channel_path(&json!(device)), None, "{device}");
         }

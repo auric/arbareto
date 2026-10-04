@@ -34,6 +34,7 @@ import {
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
+import { NATIVE } from "../contracts/native-path";
 import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operations";
 
 export { isChannelPath } from "../contracts/operations";
@@ -137,13 +138,14 @@ const fits = (schema: z.ZodType, value: unknown) => schema.safeParse(value).succ
 const CANDIDATE_PREFIX = "arbareto-candidate-";
 const Transaction = z.strictObject({
   transactionId: Identifier,
-  indexFile: ChannelPath.refine((path) => (path.split(/[\\/]/).at(-1) ?? "").startsWith(CANDIDATE_PREFIX)),
+  indexFile: ChannelPath.refine((path) => (path.split(NATIVE.separator).at(-1) ?? "").startsWith(CANDIDATE_PREFIX)),
 });
 const IdentityPaths = z.array(ChannelPath).min(1).max(IDENTITY_PATHS);
 
 export const checkContext = (context: ProcessContext): boolean => fits(ProcessContext, context);
 
 // The UTF-16 units of the command line that the shell builds (src-tauri/src/spawn.rs `command_line`), with the terminating null.
+// Every platform keeps this Windows bound. It is stricter than the Linux and macOS `execve` bounds, such as 128 KiB for each Linux argument.
 export function commandLineUnits(program: string, args: readonly string[]): number {
   let units = program.length + 3;
   for (const arg of args) {

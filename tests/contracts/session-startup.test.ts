@@ -31,7 +31,8 @@ const WRAPPER_PATH = join(SAVED_FOLDER, "cmd", NATIVE.gitName);
 mkdirSync(join(SAVED_FOLDER, "cmd"));
 writeFileSync(WRAPPER_PATH, "wrapper Git stub");
 // The handshake refuses a temporary folder that is not a native absolute path. A faked platform on another host gives such a folder.
-const startupTest = test.skipIf(!isChannelPath(SAVED_PATH));
+// A Windows host never skips.
+const startupTest = test.skipIf(process.platform !== "win32" && !isChannelPath(SAVED_PATH));
 const SAVED_GIT = {
   bootstrapId: "00000000-0000-4000-8000-0000000000aa",
   selectedPath: SAVED_PATH,

@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 const CHILD_TIMEOUT_MS = 60_000;
 
@@ -31,11 +31,29 @@ const PLATFORM_FILES = ["contracts/native-path.ts", "contracts/remedy-command.ts
 const BANNED: [string, RegExp][] = [
   ["win32", /win32/g],
   ["git.exe", /git\\?\.exe/gi],
-  ["[A-Za-z]:", /\[A-Za-z\]:/g],
+  ["drive-letter class", /\[(?:A-Za-z|a-zA-Z|A-Z|a-z)\]:/g],
   ["process.platform", /process\.platform/g],
   ["fold-ascii import", /["'][^"'\n]*fold-ascii(?:\.ts)?["']/g],
 ];
-const FRONTEND_CONTRACTS = /(?:\bfrom|\bimport)\s*\(?\s*["'][^"'\n]*\bcontracts\//g;
+// The renderer runs in WebView2, which has no `process`. Any other runtime import can load `native-path.ts`.
+const SPECIFIER = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["']([^"'\n]+)["']/g;
+const FRONTEND_PACKAGES = /^(?:@tauri-apps\/|react(?:-dom)?(?:\/|$))/;
+const leavesFrontend = (file: string, specifier: string) =>
+  specifier.startsWith(".") ? !posix.join(posix.dirname(file), specifier).startsWith("frontend/") : !FRONTEND_PACKAGES.test(specifier);
+
+// `file` is the path below `src/` with slashes.
+function scanHits(file: string, source: string): string[] {
+  const output = new Bun.Transpiler({ loader: file.endsWith(".tsx") ? "tsx" : "ts" }).transformSync(source);
+  const hits: string[] = [];
+  for (const [name, pattern] of PLATFORM_FILES.includes(file) ? [] : BANNED) {
+    const count = output.match(pattern)?.length ?? 0;
+    if (count > 0) hits.push(`src/${file}: ${name} x${count}`);
+  }
+  if (file.startsWith("frontend/")) {
+    for (const [, specifier] of output.matchAll(SPECIFIER)) if (leavesFrontend(file, specifier)) hits.push(`src/${file}: runtime import ${specifier}`);
+  }
+  return hits;
+}
 
 test("shared source outside the platform files holds no native path rule", () => {
   console.log(`ORIGIN ${SRC}`);
@@ -43,16 +61,37 @@ test("shared source outside the platform files holds no native path rule", () =>
   let scanned = 0;
   for (const found of new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd: SRC })) {
     const file = found.replaceAll("\\", "/");
-    const output = new Bun.Transpiler({ loader: file.endsWith(".tsx") ? "tsx" : "ts" }).transformSync(readFileSync(join(SRC, file), "utf8"));
+    hits.push(...scanHits(file, readFileSync(join(SRC, file), "utf8")));
     scanned += 1;
-    const rules: [string, RegExp][] = PLATFORM_FILES.includes(file) ? [] : [...BANNED];
-    if (file.startsWith("frontend/")) rules.push(["contracts import", FRONTEND_CONTRACTS]);
-    for (const [name, pattern] of rules) {
-      const count = output.match(pattern)?.length ?? 0;
-      if (count > 0) hits.push(`src/${file}: ${name} x${count}`);
-    }
   }
   console.log(hits.map((hit) => `SCAN_HIT ${hit}`).join("\n"));
   expect(scanned).toBeGreaterThan(0);
   expect(hits).toEqual([]);
+});
+
+// Control fixtures: each source must give a hit.
+test.each([
+  ["frontend/bridge.ts", 'import { checkContext } from "../git-service/git-runner";\ncheckContext;'],
+  ["frontend/boot/BootView.tsx", 'import { z } from "zod";\nz;'],
+  ["frontend/main.tsx", 'void import("../git-service/main");'],
+  ["git-service/x.ts", "export const drive = /^[a-zA-Z]:[\\\\/]/;"],
+  ["git-service/x.ts", "export const drive = /^[A-Z]:/i;"],
+  ["git-service/x.ts", "export const drive = /^[a-z]:/i;"],
+  ["git-service/x.ts", "export const drive = /^[A-Za-z]:/;"],
+])("the scan finds the rule break in %s: %s", (file, source) => {
+  expect(scanHits(file, source)).not.toEqual([]);
+});
+
+// Control fixture: type-only imports and the permitted runtime imports give no hit.
+test("the scan permits type-only imports, the Tauri API, React, and frontend modules in the frontend", () => {
+  const source = [
+    'import type { Environment } from "../../contracts/envelope";',
+    'import { invoke } from "@tauri-apps/api/core";',
+    'import { useState } from "react";',
+    'import { createRoot } from "react-dom/client";',
+    'import { request } from "../bridge";',
+    "export const used: [unknown, unknown, unknown, unknown] = [invoke, useState, createRoot, request];",
+    "export type Shown = Environment;",
+  ].join("\n");
+  expect(scanHits("frontend/boot/BootView.tsx", source)).toEqual([]);
 });

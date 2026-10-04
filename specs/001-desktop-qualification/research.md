@@ -462,6 +462,51 @@ Verdict for T080: drop the 28 `hook list` runs, and derive the registrations fro
 
 Limit: the classification covers the program that Git starts. A protected command such as `sh ./x.sh` can still run repository files through its arguments. Whether `sh` searches an empty `PATH` entry on Git for Windows is unverified.
 
+**T281 record (2026-10-05)**: The evidence allows one trust listing per workspace generation for `readWorkspace` and `readHistory`. It also allows `rev-list` and `cat-file` to run in parallel with that listing, with their result held until the gate passes. No canary ran before the gate, and no held result reached a refused response. Until a contract §7 change accepts this evidence, T080 and T086 keep the current §7 order.
+
+The probe `tests/git/probe-shared-trust.ts` ran Git `2.56.0.windows.1` (`C:/Git/ucrt64/bin/git.exe`, built from `49d759b698127791a5f3f2759c69b983846711dd`). This is not the R2 candidate `2.55.0.windows.3`. The listing used the `commands.ts` builders `configListArgs` and `hooksPathArgs`. The history read used `shallowPathArgs`, `revListArgs`, and `batchCommandArgs`, and the full read used `statusArgs`. No builder captures HEAD yet, so `symbolic-ref -q HEAD` and `rev-parse --verify HEAD` used the T067 read options. All calls ran under `LC_ALL=C` with the owned fixture environment. `cat-file` got one `contents <oid>` command per `rev-list` row, without `--filters` or `--textconv`.
+
+Method:
+
+- One generation runs one listing. The full read and the history read take the same listing result.
+- The history read starts `cat-file`, then runs `symbolic-ref`, `rev-parse`, `rev-parse --git-path shallow`, and `rev-list`. These run beside the listing, so HEAD capture also runs before the gate.
+- The probe gate is the contract §7 blocking class for these reads: `filter.<driver>.clean`, `filter.<driver>.process`, and a command-valued `core.fsmonitor` at `local` or `worktree` scope. It checks scope only, because every F17 canary key has local scope. It is not the T080 resolution rule.
+- Approval stores the digest of the listing bytes and the hooks path. A refused gate builds the response from the gate code only. The probe then searches both responses for each held commit ID.
+- F17 `trust` has the F17 canaries, with `data.dat` and `data.prc` made stat-dirty. Each partial-clone variant got local canaries for `filter.<driver>.clean`, `filter.<driver>.process`, and `core.fsmonitor`, with both files stat-dirty. Its `cat-file` input also held `info <oid>` for the two missing blobs.
+
+| Case | Canaries before approval: listing and held history | Gated full read | History response | Canaries after approval: listing and held history | Gated full read | History response |
+| --- | --- | --- | --- | --- | --- | --- |
+| F17 trust | none | none | rejected TRUST_REQUIRED, 1 row held, none in a response | none | clean, process, fsmonitor | succeeded, 1 row delivered |
+| F17 partial-reset-soft | none | none | rejected TRUST_REQUIRED, 1 row held, none in a response | none | clean, process, fsmonitor | succeeded, 1 row delivered |
+| F17 partial-read-tree | none | none | rejected TRUST_REQUIRED, 4 rows held, none in a response | none | clean, process, fsmonitor | succeeded, 4 rows delivered |
+
+- Every held history process exited 0 before and after approval. With `--no-lazy-fetch`, `cat-file` reported the missing blobs, and the `uploadpack` canary did not run.
+- Control: after approval, the gated `status` ran the clean, process, and `fsmonitor` canaries in each case. In each partial clone, `cat-file --batch-check` without `--no-lazy-fetch` ran the `uploadpack` canary for a missing blob.
+- Stale listing: after approval, a local `core.fsmonitor` edit changed the configuration. A history read with the earlier shared listing passed its gate and ran no canary. A fresh listing gave `TRUST_CHANGED`. Contract §8 puts each configuration origin file in the change tuple, so the next full read starts a new generation.
+- Diagnostic only: `diff.external`, `textconv`, and the `pre-commit` hook never ran.
+
+Process counts per read, counted from the started processes on each M and L copy:
+
+- A history read with its own listing starts 7 Git processes: the listing (2) and the history steps (5). The parallel order starts the same 7.
+- A full read and a history read in one generation start 10 processes with two listings, and 8 with one shared listing. The probe full read is the `status` step only. So the shared listing removes the 2 listing processes from the second read of a generation.
+
+Informal timings, not qualification evidence (median of 10 interleaved runs on owned copies of the T164 fixtures; both orders returned the same 100 rows):
+
+| Fixture | Listing (ms) | History, §7 order (ms) | History, parallel order (ms) |
+| --- | --- | --- | --- |
+| M with commit-graph | 37.3 | 123.6 | 91.7 |
+| M without commit-graph | 36.7 | 151.1 | 114.7 |
+| L with commit-graph | 37.2 | 123.1 | 90.9 |
+| L without commit-graph | 36.5 | 581.6 | 559.5 |
+
+- The parallel order saves at most the listing time, about 22 to 37 ms. On L without a commit-graph, the walk dominates, and the saving is 22 ms of 582 ms.
+- The cached M with commit-graph carried the CRLF builder digest of another checkout. The probe accepted the builder bytes with LF or CRLF line ends and checked the semantic digest of each copy. All four copies matched.
+- This probe is not qualification evidence, and no Arbareto build ran.
+
+Verdict for T080: one trust listing can serve `readWorkspace` and `readHistory` of the same generation. This saves 2 Git processes for the second read. T080 keeps one listing per read until contract §7 accepts this evidence.
+
+Verdict for T086: `rev-list` and `cat-file` can run in parallel with the trust listing, with their result held until the gate passes. No gated program started, and a refused gate delivered no held row. The process count stays 7, and the wall time drops by at most the listing time. T086 keeps the current §7 order until contract §7 accepts this evidence.
+
 **Decision**: Trust approval persists across launches (spec Clarifications, 2026-09-30). The shell stores one record for each worktree, because the fingerprint is per worktree. The record binds the common-directory identity, the worktree identity, the selected Git path, and the fingerprint. A change of any of them gives `TRUST_CHANGED` and needs renewed approval. A Git upgrade behind the same selected path keeps the approval (user decision, 2026-10-04). The record holds no configuration value or credential. A native confirmation with a Cancel default precedes each stored approval (R7). Revoke trust deletes the records of every worktree of that common directory. Over a digest bound, approval lasts for the service session only (contract §7). That session ends when Arbareto closes or at Restart service, and the native confirmation names both.
 
 Closed question, 2026-09-30: the fingerprint covered integration locations, not the contents of program files. A stored approval would survive an edit of a repository hook file. The fingerprint now adds the SHA-256 digest of each repository-controlled program or hook file with a resolved path. Only files inside the worktree root, the Git directory, or the common directory get a digest. So the service never opens an attacker-named UNC or device path. Contract §7 "Program file digests" defines the rule. The bounds are 64 files, 1 MiB per file, and 8 MiB in total. Closed question, 2026-09-30: overflow first blocked approval, so an over-bound repository could never get approval. Now an over-bound repository can get an explicit approval for the service session only. The shell writes no record, and the native confirmation says why (contract §7). Files beyond a bound enter the fingerprint as `unchecked`. The next session reports `untrusted`. T071 and T098 edit an approved hook file and expect `TRUST_CHANGED`. T071 also covers the session-only approval.

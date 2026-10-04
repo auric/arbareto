@@ -7,7 +7,7 @@
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { FIXTURE_ROOT, fixturePath, ownedGit, ownedPath, removeTree, type OwnedGitOptions } from "../git/fixture-root";
+import { FIXTURE_ROOT, fixtureEnv, fixturePath, ownedGit, ownedPath, removeTree, type OwnedGitOptions } from "../git/fixture-root";
 import { fiCommit } from "../git/fixtures";
 import { indexEntries, refState, sha256, workingFileDigests } from "../git/git-oracle";
 
@@ -41,6 +41,8 @@ export interface PerfCounts {
 export interface PerfFacts {
   seed: number;
   spec: PerfSpec;
+  // The maintained variant has a commit-graph file (plan.md "Commit-graph variants").
+  commitGraph: boolean;
   tip: string;
   staged: string[];
   unstaged: string[];
@@ -102,12 +104,19 @@ export function builderDigest(): string {
   return sha256(readFileSync(import.meta.path));
 }
 
+// A single file or a split chain (git-commit-graph(1) "FILES").
+export function hasCommitGraph(git: string, repo: string): boolean {
+  const proc = Bun.spawnSync([git, "rev-parse", "--path-format=absolute", "--git-path", "objects/info/commit-graph", "--git-path", "objects/info/commit-graphs"], { cwd: repo, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  if (proc.exitCode !== 0) throw new Error(`git rev-parse --git-path exited ${proc.exitCode}: ${proc.stderr.toString()}`);
+  return proc.stdout.toString().trim().split(/\r?\n/).some((p) => existsSync(p));
+}
+
 export function semanticDigest(git: string, repo: string): string {
-  return sha256(Buffer.from(JSON.stringify({ refs: refState(git, repo), entries: indexEntries(git, repo), files: workingFileDigests(repo) })));
+  return sha256(Buffer.from(JSON.stringify({ refs: refState(git, repo), entries: indexEntries(git, repo), files: workingFileDigests(repo), commitGraph: hasCommitGraph(git, repo) })));
 }
 
 // Builds `spec` into `repo` under `root` through `git fast-import`. Writes the stream to `streamPath` and keeps it when `keepStream` holds.
-export function buildPerfRepo(git: string, root: string, repo: string, spec: PerfSpec, streamPath: string, keepStream: boolean): PerfFacts {
+export function buildPerfRepo(git: string, root: string, repo: string, spec: PerfSpec, streamPath: string, keepStream: boolean, commitGraph: boolean): PerfFacts {
   const g = (args: string[], options?: OwnedGitOptions) => ownedGit(git, root, repo, args, options).toString();
   mkdirSync(ownedPath(root, relative(root, repo)), { recursive: true });
   g(["init", "-q", "-b", "main"]);
@@ -143,6 +152,8 @@ export function buildPerfRepo(git: string, root: string, repo: string, spec: Per
   // ponytail: the whole stream goes through memory (about 330 MB for L); stream it from the file if memory matters.
   g(["fast-import", "--quiet"], { input: readFileSync(streamPath) });
   if (!keepStream) rmSync(streamPath);
+  if (commitGraph) g(["commit-graph", "write", "--reachable"]);
+  if (hasCommitGraph(git, repo) !== commitGraph) throw new Error(`commit-graph presence is not ${commitGraph} in ${repo}`);
   g(["reset", "-q", "--hard"]);
 
   const chosen = new Set<number>();
@@ -178,6 +189,7 @@ export function buildPerfRepo(git: string, root: string, repo: string, spec: Per
   return {
     seed: PERF_SEED,
     spec,
+    commitGraph,
     tip: g(["rev-parse", "HEAD"]).trim(),
     staged: [...staged.map(generatedPath), MIXED_PATH].sort(),
     unstaged: [...unstaged.map(generatedPath), MIXED_PATH, C8_PATH].sort(),
@@ -200,28 +212,30 @@ export interface CachedPerfFixture {
   repo: string;
   manifest: PerfManifest;
   reused: boolean;
-  // The M stream for T245, or null for L.
+  // The maintained M stream for T245, or null for the other fixtures.
   stream: string | null;
 }
 
-// Builds `spec` once per seed under the cache root. Reuses it only when the seed, the builder digest, and a recomputed semantic digest match.
-export function ensurePerfFixture(git: string, spec: PerfSpec): CachedPerfFixture {
+// Builds `spec` once per seed and variant under the cache root. Reuses it only when the seed, the builder digest, and a recomputed semantic digest match.
+// Budgets count the maintained variant, which is the default.
+export function ensurePerfFixture(git: string, spec: PerfSpec, commitGraph = true): CachedPerfFixture {
   mkdirSync(PERF_CACHE_ROOT, { recursive: true });
-  const folder = ownedPath(PERF_CACHE_ROOT, `${spec.name}-seed${PERF_SEED}`);
+  const folder = ownedPath(PERF_CACHE_ROOT, `${spec.name}-seed${PERF_SEED}-${commitGraph ? "commit-graph" : "no-commit-graph"}`);
   const repo = join(folder, "repo");
   const manifestPath = join(folder, "manifest.json");
   const streamPath = join(folder, `${spec.name}.fast-import`);
-  const keepStream = spec.name === PERF_M.name;
+  // T245 builds W-M from the maintained M stream.
+  const keepStream = spec.name === PERF_M.name && commitGraph;
   const digest = builderDigest();
   if (existsSync(manifestPath)) {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as PerfManifest;
-    if (manifest.seed === PERF_SEED && manifest.builderDigest === digest && semanticDigest(git, repo) === manifest.facts.semanticDigest) {
+    if (manifest.seed === PERF_SEED && manifest.builderDigest === digest && manifest.facts.commitGraph === commitGraph && semanticDigest(git, repo) === manifest.facts.semanticDigest) {
       return { folder, repo, manifest, reused: true, stream: keepStream ? streamPath : null };
     }
   }
   if (existsSync(folder)) removeTree(folder);
   mkdirSync(folder);
-  const facts = buildPerfRepo(git, PERF_CACHE_ROOT, repo, spec, streamPath, keepStream);
+  const facts = buildPerfRepo(git, PERF_CACHE_ROOT, repo, spec, streamPath, keepStream, commitGraph);
   const manifest: PerfManifest = { seed: PERF_SEED, builderDigest: digest, facts };
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return { folder, repo, manifest, reused: false, stream: keepStream ? streamPath : null };
@@ -237,9 +251,9 @@ export function copyPerfFixture(git: string, cached: CachedPerfFixture, name: st
   return dest;
 }
 
-// M-D: a copy of M whose 10,000-line file has lines 501 to 9,500 changed.
+// M-D: a copy of the maintained M whose 10,000-line file has lines 501 to 9,500 changed.
 export function copyPerfMD(git: string, cachedM: CachedPerfFixture, name: string): string {
-  if (!cachedM.manifest.facts.spec.largeText) throw new Error("M-D needs the M fixture");
+  if (!cachedM.manifest.facts.spec.largeText || !cachedM.manifest.facts.commitGraph) throw new Error("M-D needs the maintained M fixture");
   const dest = copyPerfFixture(git, cachedM, name);
   writeFileSync(join(dest, MD_PATH), mdText(true));
   return dest;

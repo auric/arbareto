@@ -12,7 +12,7 @@ This document defines planned state, not implemented types. Git remains authorit
 | `selectedPath` | Absolute path that the user selected, such as the Git for Windows wrapper `cmd\git.exe`. Only the `--exec-path` probe runs it (contract §3 "Git proposal"). |
 | `executablePath` | Native absolute, resolved executable path: the Git executable in the folder that `--exec-path` prints (`git.exe` on Windows). Never a renderer-supplied command string. |
 | `executableIdentity` | Resolved file identity, version output, and executable digest. In a session, a changed identity gives `GIT_CHANGED`. At startup, the service admits an upgrade inside the installation root of `selectedPath`. It needs no new confirmation (contract §6 "Startup contexts"). Trust approvals bind `selectedPath`, so such an upgrade keeps them (contract §7). |
-| `version` | Parsed Git for Windows version, plus bounded original version output. |
+| `version` | Parsed Git version (Git for Windows on Windows), plus bounded original version output. |
 | `admission` | `admitted` or `unsupported`, according to the local qualification package's minimum version: `2.55.0.windows.3` or later. On other platforms, the service admits `2.55.0` or later from upstream version text without a `.windows.` part. This makes no support claim. |
 | `qualification` | `unverified`, `passed`, or `failed`. A pass requires recorded qualification evidence, not admission or installation presence. The source is a build-time list of version sets with recorded passing evidence. A version set is the Git version, the WebView2 version, and the OS build of one recorded passing packaged run. `passed` requires an exact match. This slice ships the list empty, so the value stays `unverified`. |
 
@@ -139,7 +139,7 @@ Custom filters remain outside hunk support and file staging even after trust app
 | `workingVersions` | Selected-path existence, type, mode, raw-byte digest, and normalized content identity. For a file approval in direction `stage`, the digest covers the whole working file within the contract §5 whole-file bound. |
 | `policyFingerprint` | Relevant attributes, trust approval, configuration, and Git installation identity. |
 | `operationState` | Freshly observed mutation blockers. |
-| `completeness` | `complete`, `limited`, or `failed`, with a specific reason. A missing object in a partial clone gives `limited` with `OBJECT_MISSING`; the app never fetches it (contract §7 "Missing objects"). |
+| `completeness` | `complete`, `limited`, or `failed`, with a specific reason. A missing object in a partial clone gives `limited` with `OBJECT_MISSING`; the app never fetches it (contract §7 "Missing objects"). A working file that changes during both `readWorkspace` read attempts gives `limited` with `WORKTREE_CHANGING` (contract §8 "Changing working file"). |
 | `entryCount` | Number of status entries in the snapshot, all pages included. `readWorkspace` returns it with the first page (contract §3). T284 adds this field. |
 | `observedAt` | Observation time. It is not a transaction timestamp. |
 

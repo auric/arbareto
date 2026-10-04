@@ -18,6 +18,11 @@ const OID_PATTERNS: Record<ObjectFormat, RegExp> = {
   sha256: /^[0-9a-f]{64}$/,
 };
 
+export function isObjectId(value: string, objectFormat: ObjectFormat): boolean {
+  const pattern = Object.hasOwn(OID_PATTERNS, objectFormat) ? OID_PATTERNS[objectFormat] : undefined;
+  return pattern !== undefined && pattern.test(value);
+}
+
 // Research R2: the 28 traditional hook names of githooks(5) in Git 2.55.0.
 const HOOK_EVENTS: ReadonlySet<string> = new Set([
   "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit",

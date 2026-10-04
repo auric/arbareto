@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/app-icon.png" alt="Arbareto app icon" width="128"></p>
+
 # Arbareto
 
 Cross-platform, local-first Git client. Deliver and qualify Windows first; target macOS and Linux later. See [the project brief](docs/project-brief.md) for scope and architecture.

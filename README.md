@@ -42,6 +42,8 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml`
 - Run the app for development: `bun run dev`
 
+Cloud sessions: paste [.claude/cloud-setup.sh](.claude/cloud-setup.sh) into the cloud environment's setup script field. The cloud runs Bun and TypeScript work only.
+
 ## License
 
 Arbareto is free software under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`). See [LICENSE](LICENSE). [NOTICE.md](NOTICE.md) states the copyright and the section 7 additional terms. These terms require attribution and marked, renamed modified versions. They grant no trademark rights to the name "Arbareto". Third-party material listed above keeps its own license.

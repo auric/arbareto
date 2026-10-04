@@ -11,7 +11,7 @@ This document defines planned state, not implemented types. Git remains authorit
 | `gitInstallationId` | Opaque, session-scoped identifier for the explicitly selected executable. |
 | `selectedPath` | Absolute path that the user selected, such as the Git for Windows wrapper `cmd\git.exe`. Only the `--exec-path` probe runs it (contract §3 "Git proposal"). |
 | `executablePath` | Absolute, resolved executable path: `git.exe` in the folder that `--exec-path` prints. Never a renderer-supplied command string. |
-| `executableIdentity` | Resolved file identity, version output, and executable digest. Replacement invalidates approval. |
+| `executableIdentity` | Resolved file identity, version output, and executable digest. In a session, a changed identity gives `GIT_CHANGED`. At startup, the service admits an upgrade inside the installation root of `selectedPath`. It needs no new confirmation (contract §6 "Startup contexts"). Trust approvals bind `selectedPath`, so such an upgrade keeps them (contract §7). |
 | `version` | Parsed Git for Windows version, plus bounded original version output. |
 | `admission` | `admitted` or `unsupported`, according to the local qualification package's minimum version: `2.55.0.windows.3` or later. |
 | `qualification` | `unverified`, `passed`, or `failed`. A pass requires recorded qualification evidence, not admission or installation presence. The source is a build-time list of version sets with recorded passing evidence. A version set is the Git version, the WebView2 version, and the OS build of one recorded passing packaged run. `passed` requires an exact match. This slice ships the list empty, so the value stays `unverified`. |

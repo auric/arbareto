@@ -22,9 +22,54 @@ The brief supplies hypotheses, not qualification evidence. Release assets establ
 
 **Rationale**: The installed executable reports build revision `52ca1113d651127f89477a8763f86ab20f645e1d`. Its exact source supports the inspected protocols.
 
-**Alternatives considered**: Bundled Git, libgit2, and a custom Git implementation. They add distribution or semantic differences without a qualification requirement.
+**Alternatives considered**: Bundled Git, libgit2, and a custom Git implementation. They add distribution or semantic differences without a qualification requirement. "Git engine decision" below compares in-process libraries and records the user decisions of 2026-10-04.
 
 The observed executable is `C:/Git/cmd/git.exe`. This machine observation is not a fixed path requirement. Git is GPL-2.0 licensed and is not redistributed by this feature.
+
+### Git engine decision
+
+**Decision (user, 2026-10-04)**: The Git CLI is the only Git engine. The user rejected git2-rs, because libgit2 runs no hooks.
+
+**Decision (user, 2026-10-04)**: Git logic stays in TypeScript in the Bun service. The user stated: "I want almost all possible logic to be in TypeScript".
+
+**Rationale**: Option A keeps Constitution I, Constitution II, and the Architecture Constraints unchanged. No committed work becomes obsolete.
+
+Option comparison, 2026-10-04:
+
+| Option | Verdict | Reason |
+| --- | --- | --- |
+| A. Git CLI, logic in the Bun service | Selected | The user prefers it. It keeps Constitution I (hooks, selected Git) and Constitution II (TypeScript and Bun by default). No committed work becomes obsolete. |
+| B. Git CLI, logic in the Rust shell | Rejected (user) | It breaks Constitution II and the thin-shell Architecture Constraint. It needs a MAJOR amendment. It deletes `src/git-service` (1,606 lines), `service.rs`, `framing.rs`, and `env_sanitize.rs`. It also deletes the Bun half of the contract §6 channel and most of `tests/contracts` (4,193 lines). |
+| C. git2-rs for all work | Rejected (user) | libgit2 runs no hooks (DeepWiki answer on libgit2, 2026-10-04). So it breaks Constitution I: "Operations MUST NOT bypass Git hooks." |
+| D. gix for all work | Rejected | gix 0.88.0 (2026-09-25) runs no hooks. It has no reftable and no promisor support (gitoxide `crate-status.md` on main, read 2026-10-04). Its status can start external filter drivers. That conflicts with the contract §7 read gate. |
+| E. Git CLI plus an in-process read library | Fallback only | It needs an amendment of Constitution I ("use the selected Git executable"). It also needs a new contract §7 clause. Only history could move. Diffs must equal the `git add -p` hunks (contract §4), and status runs filters. Under TypeScript first, the library would be a Node-API addon. Bun marks `bun:ffi` experimental (bun.com/docs/runtime/ffi, read 2026-10-04). |
+
+Capabilities, 2026-10-04. Only option E uses this table.
+
+| Capability | Git CLI 2.56 | libgit2 1.9.7 / git2 0.21.0 | gix 0.88.0 | isomorphic-git 1.43.0 |
+| --- | --- | --- | --- | --- |
+| Hooks | Yes | Missing | Missing | Missing |
+| External clean and process filters | Yes, behind the contract §7 gate | Missing; built-in and registered filters only | Yes; status can start drivers | Missing |
+| Reftable | Yes | On main since 2026-05-06 (PR #7117), not in 1.9.x | Missing | Missing |
+| SHA-256 | Yes | Partial (`EXPERIMENTAL_SHA256`) | Partial | Missing |
+| Missing objects (partial clone) | Error with `--no-lazy-fetch` | Error, no lazy fetch | Error | Error |
+| Commit-graph in the revision walk | Yes | Yes, since 1.2 | Yes | Missing |
+| Patches that `git apply` accepts | Yes | xdiff; parity unverified | Missing | Missing |
+| Licence | GPL-2.0, not shipped | GPLv2 with linking exception | MIT or Apache-2.0 | MIT |
+
+WSL work still needs the distro Git CLI (contract §11). R13 recorded status through the UNC path at 379 ms, against 165 ms with Linux Git. isomorphic-git also fails F08, F18, and sparse checkouts (isomorphic-git issue #1735). So no pure-TypeScript reader is planned.
+
+Client survey, 2026-10-04:
+
+- Git Extensions: the Git CLI. It runs `git log -z` with `--author-date-order` or `--topo-order`, by its `RevisionSortOrder` setting. It shows rows while `git log` runs.
+- GitHub Desktop: dugite, a bundled Git CLI.
+- lazygit: the Git CLI only.
+- Zed: the Git CLI only since PR #53453 (zed-industries/zed), merged 2026-06-02. That PR removed libgit2. It cited reftable and about 30,000 lines of vendored C.
+- GitButler: gix 0.87.1 and a forked git2 0.21.0. `git2-hooks` 0.7.0 runs hooks outside Git. Fetch and push use the Git CLI.
+- Sublime Merge: a custom reading library, and "Real Git" for commands.
+- Fork and Tower: unverified.
+
+Engine sources: DeepWiki answer on libgit2 (2026-10-04), gitoxide `crate-status.md` on main (read 2026-10-04), libgit2 PR #7117, zed-industries/zed PR #53453, isomorphic-git issue #1735, and bun.com/docs/runtime/ffi (read 2026-10-04). These sources have no pinned revision. The other client facts are research notes of 2026-10-04 without a pinned source. Do not use them for a product claim before T180 confirms the Git Extensions facts.
 
 ### Machine-readable reads
 
@@ -429,6 +474,26 @@ The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Ki
 - In the Verbose trace, the mark appears on the renderer main thread. That thread emits `RendererMain.START_MSG_LOOP`.
 - The `toplevel` task events appear on that thread with Begin and End phases. Their name is `ThreadControllerImpl::RunTask`. The `Edge_RunTask` events carry the same name in their name field.
 - Each probe through the wrapper also started a `conhost.exe` about 11 ms after the inner `git.exe`. This finding led to the wrapper fix in 0f92bd7 (R10 "Batch reviews").
+
+**Informal Git process timings, 2026-10-04.** These timings are informal. They are not qualification evidence, and they change no budget. The method used PowerShell `Process.Start` with `CreateNoWindow`, with Defender on. Each value is the median of 20 runs. The host ran Git `2.56.0.windows.1`, not the reference version `2.55.0.windows.3`.
+
+| Measurement | Median |
+| --- | --- |
+| A trivial process | 36 ms |
+| `git.exe --version`, started directly | 55 ms |
+| `git --version` through the `cmd\git.exe` wrapper | 74 ms |
+| L without a commit-graph file: `rev-list --date-order --max-count=100` | 523 ms |
+| L without a commit-graph file: `rev-list --max-count=100`, unordered | 60 ms |
+| L without a commit-graph file: `rev-list --count`, a full walk of 100,000 commits | 505 ms |
+
+- Without a commit-graph file, Git prints no `--date-order` row before the walk ends. Contract §3 keeps the date order, so a read cannot drop it.
+- Cold start is WebView2-bound (T193 table above). Warm reopen and the 0.5 history ratio are Git-process-bound.
+- Process estimate, unverified until T192 counts the processes: discovery starts about 4 processes. `readHistory` starts about 7 + k. These are `config list`, `rev-parse --git-path hooks`, k `hook list` runs, `symbolic-ref`, `rev-parse`, the shallow path, `rev-list`, and `cat-file`.
+- `git hook list` takes one hook name, so k is 0 to 7. `readWorkspace` runs in parallel and repeats the trust listing (contract §7).
+- About 11 + k serial processes run at up to 55 ms each. They exceed the 500 ms warm budget before any parsing.
+- Unverified: the process count per read, k, the pack-handle risk of a persistent `cat-file`, and the fsmonitor daemon lifetime. The L history time with a commit-graph file is also unverified. It is expected near the 60 ms unordered floor. T192 and the probes T280 to T283 settle these items.
+
+**Fixture L commit-graph decision (user, 2026-10-04).** T164 records L in two variants: with and without a commit-graph file. The budgets and comparisons count the maintained variant, which has the commit-graph file. When a history read must walk the whole graph, the app shows a copyable `git commit-graph write --reachable` remedy. The app never runs it. The reviewer defaults add no repair action (spec Clarifications), and the app never runs maintenance (plan.md "Selected mutation protocols"). The trigger rule, its contract clause, and its task stay open. They follow the contract §6 and §7 changes after the probes T280 to T283.
 
 Git Extensions `v7.2.1` resolves to `0aea2d6df4c120806c46f1797ba6a45f5d14b345`. Its Windows release includes x64 MSI and portable artifacts. Its release notes require .NET Desktop `10.0.9` or later `10.x` and recommend Git `2.53.0` or later.
 

@@ -589,6 +589,8 @@ describe("startup handshake bounds", () => {
     ["256 trust records", { trustRecords: trustRecords(256) }],
     // Positive control for the `savedGit` failures.
     ["a savedGit", { savedGit: SAVED_GIT }],
+    // Contract §6 `savedGit`: without a readable selected file, the shell sends no `bootstrapId`.
+    ["a savedGit without bootstrapId", { savedGit: Object.fromEntries(Object.entries(SAVED_GIT).filter(([k]) => k !== "bootstrapId")) }],
     // Positive controls for the version text and record size failures.
     ["64-byte printable versions", { buildIdentity: { ...HANDSHAKE_FIELDS.buildIdentity, version: "~".repeat(64) }, savedGit: { ...SAVED_GIT, version: " ".repeat(64) } }],
     ["a 4096-byte trust record and marker", { trustRecords: [sized(TRUST_RECORD, RECORD_BYTES)], markers: [sized(MARKER, RECORD_BYTES)] }],
@@ -624,7 +626,7 @@ describe("startup handshake failures", () => {
     ["a damaged file name with a slash", { ...HANDSHAKE_FIELDS, damagedMarkers: [{ ...DAMAGED, fileName: "../settings.json" }] }, "INVALID_REQUEST"],
     ["257 trust records", { ...HANDSHAKE_FIELDS, trustRecords: trustRecords(257) }, "INVALID_REQUEST"],
     ["a top-level bootstrapId", { ...HANDSHAKE_FIELDS, bootstrapId: crypto.randomUUID() }, "INVALID_REQUEST"],
-    ...Object.keys(SAVED_GIT).map((field): [string, unknown, string] => [
+    ...Object.keys(SAVED_GIT).filter((field) => field !== "bootstrapId").map((field): [string, unknown, string] => [
       `a savedGit without ${field}`,
       { ...HANDSHAKE_FIELDS, savedGit: Object.fromEntries(Object.entries(SAVED_GIT).filter(([k]) => k !== field)) },
       "INVALID_REQUEST",

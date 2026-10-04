@@ -127,7 +127,7 @@ export type TrustReply =
 type RegisterIds = { operationId: string; bootstrapId: string; gitInstallationId: string };
 
 export type RegisterRequest =
-  | (RegisterIds & { version: string; confirm: boolean })
+  | (RegisterIds & { version: string; digest: string; confirm: boolean })
   | (RegisterIds & { repositoryId: string; worktreeRoot: string; gitDirectory: string; commonDirectory: string });
 
 export type RegisterReply = { result: "approved" | "declined" } | { result: "another"; bootstrapId: string; executablePath: string };
@@ -267,7 +267,7 @@ const isBoolean: Check = (v) => typeof v === "boolean";
 // Returns true for a Git registration with `confirm: true`. Only that request can reply `declined` or `another`.
 export function checkRegister(request: RegisterRequest): boolean {
   const ids = { operationId: isIdentifier, bootstrapId: isIdentifier, gitInstallationId: isIdentifier };
-  if (exact(request, { ...ids, version: isVersion, confirm: isBoolean })) return (request as { confirm: boolean }).confirm;
+  if (exact(request, { ...ids, version: isVersion, digest: isFingerprint, confirm: isBoolean })) return (request as { confirm: boolean }).confirm;
   const repository = { ...ids, repositoryId: isIdentifier, worktreeRoot: isChannelPath, gitDirectory: isChannelPath, commonDirectory: isChannelPath };
   return exact(request, repository) ? false : refuse("register");
 }

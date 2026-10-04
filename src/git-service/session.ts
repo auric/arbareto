@@ -105,7 +105,8 @@ const isHandshake = exact(
     unloadedMarkers: isCount,
     damagedMarkers: arrayOf(DAMAGED_MARKERS_PER_HANDSHAKE, isDamagedMarker),
     trustRecords: arrayOf(TRUST_RECORDS, isTrustRecord),
-    savedGit: exact({ bootstrapId: isIdentifier, selectedPath: isChannelPath, executablePath: isChannelPath, version: isPrintable, digest: isFingerprint }),
+    // Without a readable selected file, the shell sends no `bootstrapId` (contract §6 "Startup contexts").
+    savedGit: exact({ bootstrapId: isIdentifier, selectedPath: isChannelPath, executablePath: isChannelPath, version: isPrintable, digest: isFingerprint }, ["bootstrapId"]),
   },
   ["savedGit"],
 );
@@ -121,7 +122,7 @@ export interface Handshake {
   unloadedMarkers: number;
   damagedMarkers: { markerId: string; fileName: string }[];
   trustRecords: Fields[];
-  savedGit?: { bootstrapId: string; selectedPath: string; executablePath: string; version: string; digest: string };
+  savedGit?: { bootstrapId?: string; selectedPath: string; executablePath: string; version: string; digest: string };
 }
 
 // Contract §3 without the shell-only `requestClose` and `currentSession`.

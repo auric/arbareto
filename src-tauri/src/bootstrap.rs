@@ -101,9 +101,9 @@ pub struct Context {
     pub expires_at: Instant,
     /// The path that the user selected. A `resolveGit` move keeps it (contract §3 "Git proposal").
     pub selected: PathBuf,
-    /// A startup `gitProbe` context holds the saved resolved path (contract §6 "Startup contexts").
-    /// It registers without Use this Git, so it can move only to that path (FR-003).
-    pub startup: Option<PathBuf>,
+    /// A startup `gitProbe` context registers without Use this Git (contract §6 "Startup contexts").
+    /// The service admits only a resolved file inside the installation root of the selected path.
+    pub startup: bool,
 }
 
 /// The options that a discovery `symbolic-ref` permits besides the one name `HEAD` (contract §6 "Registration bootstrap").
@@ -172,23 +172,12 @@ impl Contexts {
         path: &Path,
         now: Instant,
     ) -> Result<String, &'static str> {
-        self.insert(kind, path, path, None, now)
+        self.insert(kind, path, path, false, now)
     }
 
-    /// Creates the startup `gitProbe` context for the saved selected path and the saved resolved path.
-    pub fn create_startup(
-        &self,
-        selected: &Path,
-        resolved: &Path,
-        now: Instant,
-    ) -> Result<String, &'static str> {
-        self.insert(
-            ContextKind::GitProbe,
-            selected,
-            selected,
-            Some(resolved.to_path_buf()),
-            now,
-        )
+    /// Creates the startup `gitProbe` context for the saved selected path.
+    pub fn create_startup(&self, selected: &Path, now: Instant) -> Result<String, &'static str> {
+        self.insert(ContextKind::GitProbe, selected, selected, true, now)
     }
 
     /// Creates the `gitProbe` context of a `resolveGit` move. It keeps the selected path and the startup state of `from`.
@@ -202,7 +191,7 @@ impl Contexts {
             ContextKind::GitProbe,
             resolved,
             &from.selected,
-            from.startup.clone(),
+            from.startup,
             now,
         )
     }
@@ -212,7 +201,7 @@ impl Contexts {
         kind: ContextKind,
         path: &Path,
         selected: &Path,
-        startup: Option<PathBuf>,
+        startup: bool,
         now: Instant,
     ) -> Result<String, &'static str> {
         let identity = read_identity(path).map_err(|code| match kind {

@@ -73,7 +73,7 @@ describeGit("bun runner", (git) => {
     });
     const gitInstallationId = id();
     const probe = runner.addContext("gitProbe", git);
-    expect(await runner.register({ operationId: id(), bootstrapId: probe, gitInstallationId, version: "2.55.0", confirm: false })).toEqual({ result: "approved" });
+    expect(await runner.register({ operationId: id(), bootstrapId: probe, gitInstallationId, version: "2.55.0", digest: "c".repeat(64), confirm: false })).toEqual({ result: "approved" });
     const discovery = runner.addContext("repositoryDiscovery", repo);
     repositoryId = id();
     const registration = { operationId: id(), bootstrapId: discovery, gitInstallationId, repositoryId, worktreeRoot: repo, gitDirectory: commonDirectory, commonDirectory };

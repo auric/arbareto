@@ -475,7 +475,7 @@ describe("native runner identity, lingering count, and registration", () => {
 
   test("register binds an issued ID and parses each reply form", async () => {
     const channel = createChannelDouble();
-    const git = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), version: "2.55.0.windows.1", confirm: true };
+    const git = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), version: "2.55.0.windows.1", digest: "c".repeat(64), confirm: true };
     const another = id();
     const asked = channel.runner.register(git);
     expect(channel.last("register")).toEqual({ type: "register", callId: channel.last("register").callId, ...git });
@@ -502,14 +502,15 @@ describe("native runner identity, lingering count, and registration", () => {
     expect(channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "declined" })).toBe(false);
     await expect(wrong).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
 
-    for (const bad of [{ ...git, version: "2.55\u00e9" }, { ...git, version: "v".repeat(65) }, { ...git, repositoryId: id() }, { ...repository, worktreeRoot: "repo" }]) {
+    const { digest: _, ...withoutDigest } = git;
+    for (const bad of [{ ...git, version: "2.55\u00e9" }, { ...git, version: "v".repeat(65) }, { ...git, digest: "C".repeat(64) }, withoutDigest, { ...git, repositoryId: id() }, { ...repository, worktreeRoot: "repo" }]) {
       await expect(channel.runner.register(bad as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     }
   });
 
   test("a register reply another needs a fully qualified executablePath", async () => {
     const channel = createChannelDouble();
-    const git = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), version: "2.55.0.windows.1", confirm: true };
+    const git = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), version: "2.55.0.windows.1", digest: "c".repeat(64), confirm: true };
     for (const path of [undefined, "git.exe", "\\Git\\git.exe", "C:\\Git\u0000\\git.exe", "\\\\.\\pipe\\git", "//?/C:/Git/git.exe"]) {
       const asked = channel.runner.register(git);
       const reply = { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: id(), ...(path === undefined ? {} : { executablePath: path }) };

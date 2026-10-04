@@ -156,7 +156,7 @@ pub struct Proposal<'a> {
     /// The file that runs (contract §3 "Git proposal").
     pub executable_path: &'a Path,
     pub version: &'a str,
-    /// The stored version after `GIT_CHANGED` at the saved resolved path (data-model §1).
+    /// The stored version when the probed file is the saved resolved path (data-model §1).
     pub stored_version: Option<&'a str>,
 }
 
@@ -362,19 +362,20 @@ pub fn dismissal_context(
 }
 
 /// The handshake `savedGit` object for the saved Git selection (contract §6 "Startup contexts").
-/// The context binds the selected path. Without a saved Git, or without a readable file at the selected path, there is no context.
+/// The context binds the selected path. Without a saved Git, there is no object.
+/// Without a readable file at the selected path, the object has no `bootstrapId`, and the service reports the path.
 pub fn startup_context(settings: &Settings, contexts: &Contexts, now: Instant) -> Option<Value> {
     let git = settings.git.as_ref()?;
-    let bootstrap_id = contexts
-        .create_startup(&git.selected_path, &git.executable_path, now)
-        .ok()?;
-    Some(json!({
-        "bootstrapId": bootstrap_id,
+    let mut saved = json!({
         "selectedPath": git.selected_path.to_string_lossy(),
         "executablePath": git.executable_path.to_string_lossy(),
         "version": git.version,
         "digest": git.digest,
-    }))
+    });
+    if let Ok(bootstrap_id) = contexts.create_startup(&git.selected_path, now) {
+        saved["bootstrapId"] = json!(bootstrap_id);
+    }
+    Some(saved)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1273,8 +1274,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_saved_wrapper_selection_gives_a_startup_context_for_the_wrapper_that_can_move_only_to_the_saved_resolved_path()
-     {
+    fn a_saved_wrapper_selection_gives_a_startup_context_for_the_wrapper() {
         let fixture = Fixture::new();
         let contexts = Contexts::new(SESSION);
         let wrapper = file(&fixture, "Git\\cmd\\git.exe");
@@ -1298,7 +1298,28 @@ pub(crate) mod tests {
             .expect("live context");
         assert_eq!(context.path, wrapper);
         assert_eq!(context.selected, wrapper);
-        assert_eq!(context.startup, Some(resolved));
+        assert!(
+            context.startup,
+            "the context registers without Use this Git"
+        );
+    }
+
+    #[test]
+    fn a_missing_selected_file_gives_a_saved_git_without_a_bootstrap_id_and_no_context() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let missing = fixture.path("Git\\mingw64\\bin\\git.exe");
+        let settings = Settings {
+            git: Some(saved(&missing)),
+            last_repository: None,
+            window: None,
+        };
+        assert_eq!(
+            startup_context(&settings, &contexts, Instant::now()),
+            Some(
+                json!({ "selectedPath": missing, "executablePath": missing, "version": "2.55.0.windows.3", "digest": DIGEST })
+            )
+        );
     }
 
     #[test]

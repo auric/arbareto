@@ -269,17 +269,51 @@ test(
 );
 
 test(
-  "a startup selectedPath that resolves to itself, not to the stored executablePath, gives GIT_CHANGED and registers nothing",
+  "a startup selectedPath that resolves outside its installation root gives GIT_UNAVAILABLE with reason outside-installation and registers nothing",
   async () => {
-    const otherPath = join(SAVED_FOLDER, "other", "git.exe");
-    mkdirSync(join(SAVED_FOLDER, "other"));
-    writeFileSync(otherPath, readFileSync(SAVED_PATH));
+    // The root of `deep\cmd\git.exe` is `deep`. The exec-path probe names the saved folder above it.
+    const deepPath = join(SAVED_FOLDER, "deep", "cmd", "git.exe");
+    mkdirSync(join(SAVED_FOLDER, "deep", "cmd"), { recursive: true });
+    writeFileSync(deepPath, readFileSync(SAVED_PATH));
     const registers: unknown[] = [];
     const runner = { ...wrapperRunner([]), register: async (request: unknown) => (registers.push(request), { result: "approved" as const }) };
-    const { getEnvironment, responseFor } = startSession(runner, { ...HANDSHAKE, savedGit: { ...SAVED_GIT, executablePath: otherPath } });
+    const { getEnvironment, responseFor } = startSession(runner, { ...HANDSHAKE, savedGit: { ...SAVED_GIT, selectedPath: deepPath } });
     const [response] = await responseFor(getEnvironment());
-    expect(response).toMatchObject({ state: "succeeded", result: { gitCode: "GIT_CHANGED" } });
+    expect(response).toMatchObject({ state: "succeeded", result: { gitCode: "GIT_UNAVAILABLE", reason: "outside-installation" } });
     expect(registers).toEqual([]);
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  "a startup Git with another version than the saved one gives getEnvironment previousVersion and registers without confirm",
+  async () => {
+    const registers: unknown[] = [];
+    const runner = { ...wrapperRunner([]), register: async (request: unknown) => (registers.push(request), { result: "approved" as const }) };
+    const { getEnvironment, responseFor } = startSession(runner, { ...HANDSHAKE, savedGit: { ...SAVED_GIT, version: "2.54.0.windows.1" } });
+    const [response] = await responseFor(getEnvironment());
+    expect(response).toMatchObject({ state: "succeeded", result: { detectedVersion: SAVED_GIT.version, previousVersion: "2.54.0.windows.1", admission: "admitted" } });
+    expect(response.result?.gitCode).toBeUndefined();
+    expect(registers).toEqual([expect.objectContaining({ version: SAVED_GIT.version, digest: SAVED_GIT.digest, confirm: false })]);
+
+    // The same version gives no previousVersion.
+    const same = startSession(wrapperRunner([]));
+    const [again] = await same.responseFor(same.getEnvironment());
+    expect(again.result).toMatchObject({ admission: "admitted" });
+    expect(again.result && "previousVersion" in again.result).toBe(false);
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  "a savedGit without bootstrapId for a missing selected file gives GIT_UNAVAILABLE with reason selected-missing and the path",
+  async () => {
+    const missing = join(SAVED_FOLDER, "gone", "git.exe");
+    const { bootstrapId: _, ...unbound } = SAVED_GIT;
+    const { calls, getEnvironment, responseFor } = startSession({}, { ...HANDSHAKE, savedGit: { ...unbound, selectedPath: missing } });
+    const [response] = await responseFor(getEnvironment());
+    expect(response).toMatchObject({ state: "succeeded", result: { gitCode: "GIT_UNAVAILABLE", reason: "selected-missing", path: missing } });
+    expect(calls.release).toEqual([]);
   },
   TEST_TIMEOUT_MS,
 );

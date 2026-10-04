@@ -21,8 +21,8 @@ use crate::ipc::{
 };
 use crate::jobs::{Job, Supervisor};
 use crate::process_requests::{
-    CHUNK_BYTES, Code, Config, Fields, Owned, ProcessRequests, ReplySink, decode_strict,
-    identifier, is_identifier, keys, path, wait,
+    CHUNK_BYTES, Code, Config, ConfirmedGit, Fields, Owned, ProcessRequests, ReplySink,
+    decode_strict, identifier, is_identifier, keys, path, wait,
 };
 use crate::settings::{
     self, Confirm, Damaged, MUTATIONS, Marker, Markers, SavedGit, Settings, Started, StartedReply,
@@ -129,6 +129,12 @@ impl Service {
                     me.confirm_git(selected, path, version)
                 })
             }));
+        let me = Arc::downgrade(&service);
+        service.requests.set_startup_git(Box::new(move |git| {
+            if let Some(stores) = me.upgrade().as_ref().and_then(|me| me.stores.get()) {
+                save_startup_git(stores, git);
+            }
+        }));
         service.launch(&launch_directory, &environment);
         Ok(service)
     }
@@ -549,21 +555,35 @@ fn save_git(stores: &Stores, requests: &ProcessRequests, result: &Value) {
     let Some(git_id) = result["gitInstallationId"].as_str() else {
         return;
     };
-    let Some(digest) = result["digest"]
-        .as_str()
-        .filter(|digest| is_hex(digest, 64))
-    else {
-        return;
-    };
-    let Some(confirmed) = requests.take_confirmed_git(git_id) else {
-        return;
-    };
+    if let Some(confirmed) = requests.take_confirmed_git(git_id) {
+        store_git(stores, confirmed);
+    }
+}
+
+/// Persists the Git that a startup context registered (contract §6 "Startup contexts").
+/// It keeps the saved selected path. An unchanged Git writes nothing.
+fn save_startup_git(stores: &Stores, git: ConfirmedGit) {
+    let saved = lock(&stores.settings).git.clone();
+    let unchanged = saved.is_some_and(|saved| {
+        (saved.executable_path, saved.version, saved.digest)
+            == (
+                git.executable_path.clone(),
+                git.version.clone(),
+                git.digest.clone(),
+            )
+    });
+    if !unchanged {
+        store_git(stores, git);
+    }
+}
+
+fn store_git(stores: &Stores, git: ConfirmedGit) {
     let mut settings = lock(&stores.settings);
     settings.git = Some(SavedGit {
-        selected_path: confirmed.selected_path,
-        executable_path: confirmed.executable_path,
-        version: confirmed.version,
-        digest: digest.to_string(),
+        selected_path: git.selected_path,
+        executable_path: git.executable_path,
+        version: git.version,
+        digest: git.digest,
     });
     let _ = settings::save(&stores.settings_path, &settings);
 }
@@ -898,6 +918,73 @@ mod tests {
             .expect("bootstrapId");
         assert_eq!(prepared.payload, json!({ "bootstrapId": bootstrap_id }));
         assert_eq!(prepared.path, Some(repository));
+    }
+
+    #[test]
+    fn a_startup_registration_saves_the_new_resolved_file_version_and_digest_and_keeps_the_selected_path()
+     {
+        let shell = Shell::new();
+        let wrapper = shell.folder("Git\\cmd").join("git.exe");
+        std::fs::write(&wrapper, "wrapper").expect("wrapper");
+        let old = shell
+            .fixture
+            .path("Git\\mingw64\\libexec\\git-core\\git.exe");
+        let new = shell
+            .fixture
+            .path("Git\\ucrt64\\libexec\\git-core\\git.exe");
+        let (old_digest, new_digest) = ("a".repeat(64), "b".repeat(64));
+        lock(&shell.stores.settings).git = Some(SavedGit {
+            selected_path: wrapper.clone(),
+            executable_path: old,
+            version: "2.55.0.windows.3".to_string(),
+            digest: old_digest,
+        });
+        let upgraded = ConfirmedGit {
+            selected_path: wrapper.clone(),
+            executable_path: new.clone(),
+            version: "2.56.0.windows.1".to_string(),
+            digest: new_digest.clone(),
+        };
+        save_startup_git(&shell.stores, upgraded.clone());
+        let expected = SavedGit {
+            selected_path: wrapper.clone(),
+            executable_path: new.clone(),
+            version: "2.56.0.windows.1".to_string(),
+            digest: new_digest.clone(),
+        };
+        assert_eq!(
+            settings::load(&shell.stores.settings_path).git,
+            Some(expected.clone())
+        );
+        assert_eq!(lock(&shell.stores.settings).git, Some(expected));
+        // The next handshake carries the saved fields, so the next start reports no update.
+        let saved = dialogs::startup_context(
+            &lock(&shell.stores.settings).clone(),
+            &shell.contexts,
+            Instant::now(),
+        )
+        .expect("savedGit");
+        assert_eq!(
+            (
+                &saved["selectedPath"],
+                &saved["executablePath"],
+                &saved["version"],
+                &saved["digest"]
+            ),
+            (
+                &json!(wrapper),
+                &json!(new),
+                &json!("2.56.0.windows.1"),
+                &json!(new_digest)
+            )
+        );
+        // An unchanged Git writes nothing.
+        std::fs::remove_file(&shell.stores.settings_path).expect("remove settings");
+        save_startup_git(&shell.stores, upgraded);
+        assert!(
+            !shell.stores.settings_path.exists(),
+            "an unchanged Git writes no file"
+        );
     }
 
     #[test]

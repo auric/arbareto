@@ -11,10 +11,13 @@ export interface Environment {
   selectedPath?: string;
   executablePath?: string;
   detectedVersion?: string;
+  previousVersion?: string;
   minimumVersion: string;
   admission?: string;
   qualification: string;
   gitCode?: string;
+  reason?: string;
+  path?: string;
   markers: { markerId: string; kind: string; startedAt: string; worktreeRoot: string }[];
   markerLimit?: number;
   unloadedMarkers?: number;
@@ -78,6 +81,7 @@ export function BootView(props: BootProps) {
       {env.selectedPath !== undefined && <p>Selected Git: {env.selectedPath}</p>}
       {env.executablePath !== undefined && env.executablePath !== env.selectedPath && <p>Runs: {env.executablePath}</p>}
       <p>Detected Git version: {env.detectedVersion ?? "none"}</p>
+      {env.previousVersion !== undefined && <p>{`Git updated: ${env.previousVersion} → ${env.detectedVersion}`}</p>}
       <p>Minimum Git version: {env.minimumVersion}</p>
       {env.admission !== undefined && <p>Admission: {env.admission}</p>}
       <p>Qualification: {env.qualification}</p>
@@ -86,6 +90,8 @@ export function BootView(props: BootProps) {
           <p>
             {blocked}: {env.gitCode}
           </p>
+          {env.reason !== undefined && <p>Reason: {env.reason}</p>}
+          {env.path !== undefined && <p>Path: {env.path}</p>}
           <button type="button" onClick={props.onSelectGit}>
             Select Git
           </button>

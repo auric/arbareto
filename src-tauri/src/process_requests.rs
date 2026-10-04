@@ -21,6 +21,7 @@ use crate::bootstrap::{ContextKind, Contexts, Identity, read_identity};
 use crate::dialogs::Registered;
 use crate::git_env::child_environment;
 use crate::jobs::Supervisor;
+use crate::settings::is_hex;
 use crate::spawn::{Input, SpawnRequest, command_line, spawn};
 
 /// Contract §5 "Native stdout/stderr chunk": decoded bytes in one `output` or `input` frame.
@@ -66,13 +67,18 @@ pub type ReplySink = Arc<dyn Fn(String) + Send + Sync>;
 /// Shows the Git selection confirmation for the selected path, the probed path, and the version (contract §3 "Git proposal").
 pub type GitConfirmation = Box<dyn Fn(&Path, &Path, &str) -> Registered + Send + Sync>;
 
-/// A Git that the user approved with Use this Git.
+/// A Git that the user approved with Use this Git, or that a startup context registered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfirmedGit {
     pub selected_path: PathBuf,
     pub executable_path: PathBuf,
     pub version: String,
+    /// The SHA-256 of `executable_path` that the service sent with `register`.
+    pub digest: String,
 }
+
+/// Saves the Git that a startup context registered without Use this Git (contract §6 "Startup contexts").
+pub type StartupGit = Box<dyn Fn(ConfirmedGit) + Send + Sync>;
 
 pub struct Config {
     /// The application-owned launch directory of a `gitProbe` run (contract §6 "Channel frames").
@@ -183,6 +189,7 @@ pub struct ProcessRequests {
     peak: AtomicUsize,
     /// Without it, a `register` with `confirm: true` gets `declined`.
     git_confirmation: OnceLock<GitConfirmation>,
+    startup_git: OnceLock<StartupGit>,
 }
 
 impl ProcessRequests {
@@ -202,11 +209,16 @@ impl ProcessRequests {
             generation: AtomicU64::new(0),
             peak: AtomicUsize::new(0),
             git_confirmation: OnceLock::new(),
+            startup_git: OnceLock::new(),
         })
     }
 
     pub fn set_git_confirmation(&self, confirmation: GitConfirmation) {
         let _ = self.git_confirmation.set(confirmation);
+    }
+
+    pub fn set_startup_git(&self, save: StartupGit) {
+        let _ = self.startup_git.set(save);
     }
 
     /// The Git that Use this Git approved for `git_id`. Each approval is taken once.
@@ -663,7 +675,7 @@ impl ProcessRequests {
     }
 
     fn register(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
-        const GIT: [&str; 2] = ["version", "confirm"];
+        const GIT: [&str; 3] = ["version", "digest", "confirm"];
         const REPOSITORY: [&str; 4] = [
             "repositoryId",
             "worktreeRoot",
@@ -686,7 +698,7 @@ impl ProcessRequests {
         let git_id = identifier(&request["gitInstallationId"])?;
         let has = |names: &[&str]| names.iter().filter(|&&n| request.contains_key(n)).count();
         let git_form = match (has(&GIT), has(&REPOSITORY)) {
-            (2, 0) => true,
+            (3, 0) => true,
             (0, 4) => false,
             _ => return Err(INVALID),
         };
@@ -698,6 +710,10 @@ impl ProcessRequests {
             {
                 return Err(INVALID);
             }
+            let digest = request["digest"]
+                .as_str()
+                .filter(|digest| is_hex(digest, 64))
+                .ok_or(INVALID)?;
             let confirm = request["confirm"].as_bool().ok_or(INVALID)?;
             if state.issued.contains(git_id) {
                 return Err(INVALID);
@@ -707,8 +723,8 @@ impl ProcessRequests {
             if context.kind != ContextKind::GitProbe {
                 return Err(UNKNOWN);
             }
-            // Only the saved resolved file skips Use this Git (contract §3 "Git proposal", FR-003).
-            if !confirm && context.startup.as_ref() != Some(&context.path) {
+            // Only a startup context skips Use this Git (contract §6 "Startup contexts", FR-003).
+            if !confirm && !context.startup {
                 return Err(INVALID);
             }
             own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
@@ -717,11 +733,14 @@ impl ProcessRequests {
             if confirm {
                 drop(state);
                 self.confirm_git(
-                    context.selected,
-                    context.path,
+                    ConfirmedGit {
+                        selected_path: context.selected,
+                        executable_path: context.path,
+                        version: version.to_string(),
+                        digest: digest.to_string(),
+                    },
                     context.identity,
                     git_id,
-                    version,
                     call_id,
                 );
                 return Ok(());
@@ -730,11 +749,24 @@ impl ProcessRequests {
             state.gits.insert(
                 git_id.to_string(),
                 Git {
-                    program: context.path,
+                    program: context.path.clone(),
                     identity: context.identity,
                 },
             );
-            "approved"
+            drop(state);
+            if let Some(save) = self.startup_git.get() {
+                save(ConfirmedGit {
+                    selected_path: context.selected,
+                    executable_path: context.path,
+                    version: version.to_string(),
+                    digest: digest.to_string(),
+                });
+            }
+            self.send(
+                self.current(),
+                json!({ "type": "register", "callId": call_id, "result": "approved" }),
+            );
+            return Ok(());
         } else {
             let repository_id = identifier(&request["repositoryId"])?;
             let worktree_root = path(&request["worktreeRoot"])?;
@@ -773,7 +805,6 @@ impl ProcessRequests {
     }
 
     /// Replaces a `gitProbe` context with one for `<exec-path>\git.exe` (contract §6 "Channel frames" `resolveGit`).
-    /// A startup context moves only to its saved resolved path, because only Use this Git selects another file (FR-003).
     fn resolve_git(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
         keys(
             request,
@@ -802,13 +833,6 @@ impl ProcessRequests {
         if context.kind != ContextKind::GitProbe {
             return Err(UNKNOWN);
         }
-        if context
-            .startup
-            .as_ref()
-            .is_some_and(|saved| *saved != resolved)
-        {
-            return Err(INVALID);
-        }
         own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
         let moved = self
             .contexts
@@ -826,42 +850,31 @@ impl ProcessRequests {
 
     /// Shows the Git selection confirmation on its own thread, so the frame reader keeps running.
     /// Only Use this Git binds the ID. A reply after a service exit is dropped and binds nothing.
-    fn confirm_git(
-        &self,
-        selected: PathBuf,
-        program: PathBuf,
-        identity: Identity,
-        git_id: &str,
-        version: &str,
-        call_id: &str,
-    ) {
+    fn confirm_git(&self, proposal: ConfirmedGit, identity: Identity, git_id: &str, call_id: &str) {
         let Some(me) = self.me.upgrade() else {
             return;
         };
         let generation = self.current();
-        let (git_id, version, call_id) =
-            (git_id.to_string(), version.to_string(), call_id.to_string());
+        let (git_id, call_id) = (git_id.to_string(), call_id.to_string());
         std::thread::spawn(move || {
-            let mut registered = me
-                .git_confirmation
-                .get()
-                .map_or(Registered::Declined, |confirm| {
-                    confirm(&selected, &program, &version)
-                });
+            let mut registered =
+                me.git_confirmation
+                    .get()
+                    .map_or(Registered::Declined, |confirm| {
+                        confirm(
+                            &proposal.selected_path,
+                            &proposal.executable_path,
+                            &proposal.version,
+                        )
+                    });
             if registered == Registered::Approved {
                 let mut state = me.state();
                 if generation != me.current() || state.issued.contains(&git_id) {
                     registered = Registered::Declined;
                 } else {
                     state.issued.insert(git_id.clone());
-                    state.confirmed.insert(
-                        git_id.clone(),
-                        ConfirmedGit {
-                            selected_path: selected,
-                            executable_path: program.clone(),
-                            version,
-                        },
-                    );
+                    let program = proposal.executable_path.clone();
+                    state.confirmed.insert(git_id.clone(), proposal);
                     state.gits.insert(git_id, Git { program, identity });
                 }
             }
@@ -1553,6 +1566,9 @@ mod tests {
         CHILD_PREFIX, CLOSE_BOUND, Fixture, Proc, WAIT, eventually, test_exe, wait_file,
     };
 
+    /// The `register` digest of a test Git. The shell checks only its form.
+    const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     // ---- Standard base64 with padding ----
 
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1805,10 +1821,10 @@ mod tests {
         fn register_git(&self, program: &Path) -> String {
             let bootstrap_id = self
                 .contexts
-                .create_startup(program, program, Instant::now())
+                .create_startup(program, Instant::now())
                 .expect("startup gitProbe context");
             let git = uuid();
-            self.register(json!({ "bootstrapId": bootstrap_id, "gitInstallationId": git, "version": "2.55.0.windows.3", "confirm": false }));
+            self.register(json!({ "bootstrapId": bootstrap_id, "gitInstallationId": git, "version": "2.55.0.windows.3", "digest": DIGEST, "confirm": false }));
             git
         }
 
@@ -2428,9 +2444,9 @@ mod tests {
         let register = |call: &str| {
             let bootstrap = harness
                 .contexts
-                .create_startup(&test_exe(), &test_exe(), Instant::now())
+                .create_startup(&test_exe(), Instant::now())
                 .expect("context");
-            json!({ "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": bootstrap, "gitInstallationId": uuid(), "version": "2.55.0", "confirm": false })
+            json!({ "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": bootstrap, "gitInstallationId": uuid(), "version": "2.55.0", "digest": DIGEST, "confirm": false })
         };
         let register_cases: Vec<(&str, Edit)> = vec![
             (
@@ -2448,6 +2464,15 @@ mod tests {
             (
                 "register with a non-boolean confirm",
                 set("confirm", json!("no")),
+            ),
+            ("register without digest", remove("digest")),
+            (
+                "register with an uppercase digest",
+                set("digest", json!(DIGEST.to_uppercase())),
+            ),
+            (
+                "register with a 63-digit digest",
+                set("digest", json!(&DIGEST[1..])),
             ),
             ("register without bootstrapId", remove("bootstrapId")),
         ];
@@ -2511,7 +2536,7 @@ mod tests {
             .expect("context");
         let call = uuid();
         let git = uuid();
-        harness.send(json!({ "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": plain, "gitInstallationId": git, "version": "2.55.0.windows.3", "confirm": false }));
+        harness.send(json!({ "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": plain, "gitInstallationId": git, "version": "2.55.0.windows.3", "digest": DIGEST, "confirm": false }));
         assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
         let unbound = Workspace {
             git,
@@ -2570,7 +2595,7 @@ mod tests {
             "the new context binds the resolved file"
         );
         assert_eq!(context.kind, ContextKind::GitProbe);
-        assert_eq!(context.startup, None, "the new context needs Use this Git");
+        assert!(!context.startup, "the new context needs Use this Git");
         assert_eq!(
             context.selected, wrapper,
             "the new context keeps the selected path"
@@ -2599,7 +2624,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_git_refuses_a_startup_context_and_a_file_that_is_not_a_regular_git_exe() {
+    fn resolve_git_refuses_a_file_that_is_not_a_regular_git_exe_also_for_a_startup_context() {
         let harness = Harness::child();
         let resolved = harness.fixture.path("git-core").join("git.exe");
         std::fs::create_dir_all(resolved.parent().expect("folder")).expect("mkdir");
@@ -2618,14 +2643,23 @@ mod tests {
                 .create(ContextKind::GitProbe, &test_exe(), now)
                 .expect("context")
         };
+        let startup = || {
+            harness
+                .contexts
+                .create_startup(&test_exe(), now)
+                .expect("startup context")
+        };
         let cases: Vec<(&str, String, &Path, &str)> = vec![
             (
-                "a startup context and a file other than its saved resolved path",
-                harness
-                    .contexts
-                    .create_startup(&test_exe(), &test_exe(), now)
-                    .expect("startup context"),
-                &resolved,
+                "a startup context and another file name",
+                startup(),
+                &other_name,
+                "INVALID_REQUEST",
+            ),
+            (
+                "a startup context and a folder",
+                startup(),
+                &folder,
                 "INVALID_REQUEST",
             ),
             ("another file name", plain(), &other_name, "INVALID_REQUEST"),
@@ -2661,44 +2695,26 @@ mod tests {
     }
 
     #[test]
-    fn a_startup_context_registers_without_use_this_git_only_at_its_saved_resolved_path() {
+    fn a_startup_context_moves_to_a_new_resolved_git_exe_and_registers_and_saves_it_without_use_this_git()
+     {
         let harness = Harness::child();
-        let wrapper = git_copy(&harness, "cmd");
-        let resolved = git_copy(&harness, "git-core");
-        let startup = harness
-            .contexts
-            .create_startup(&wrapper, &resolved, Instant::now())
-            .expect("startup context");
-        let call = uuid();
-        harness.send(json!({ "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": startup, "gitInstallationId": uuid(), "version": "2.55.0.windows.3", "confirm": false }));
-        assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
-    }
-
-    #[test]
-    fn resolve_git_moves_a_startup_context_only_to_its_saved_resolved_path() {
-        let harness = Harness::child();
-        let wrapper = git_copy(&harness, "cmd");
-        let resolved = git_copy(&harness, "git-core");
-        let other = git_copy(&harness, "other-core");
+        let wrapper = git_copy(&harness, "Git\\cmd");
+        // Git for Windows 2.56 moved from `mingw64` to `ucrt64`. The settings still name the old file.
+        let upgraded = git_copy(&harness, "Git\\ucrt64\\libexec\\git-core");
+        let saved = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&saved);
+        harness.requests.set_startup_git(Box::new(move |git| {
+            seen.lock().expect("saved").push(git);
+        }));
         let now = Instant::now();
         let startup = harness
             .contexts
-            .create_startup(&wrapper, &resolved, now)
+            .create_startup(&wrapper, now)
             .expect("startup context");
         let operation = uuid();
-        let resolve = |path: &Path| {
-            let call = uuid();
-            harness.send(json!({ "type": "resolveGit", "callId": call, "operationId": operation, "bootstrapId": startup, "executablePath": path }));
-            let reply = harness.reply(&call);
-            (call, reply)
-        };
-        let (call, reply) = resolve(&other);
-        assert_eq!(reply, refused(&call, "INVALID_REQUEST"), "an unsaved file");
-        assert!(
-            harness.contexts.get(&startup, now).is_ok(),
-            "the context stays"
-        );
-        let (_, reply) = resolve(&resolved);
+        let call = uuid();
+        harness.send(json!({ "type": "resolveGit", "callId": call, "operationId": operation, "bootstrapId": startup, "executablePath": upgraded }));
+        let reply = harness.reply(&call);
         let moved = reply["bootstrapId"]
             .as_str()
             .unwrap_or_else(|| panic!("{reply}"))
@@ -2706,15 +2722,61 @@ mod tests {
         let context = harness.contexts.get(&moved, now).expect("new context");
         assert_eq!(
             (context.path, context.selected, context.startup),
-            (resolved.clone(), wrapper, Some(resolved))
+            (upgraded.clone(), wrapper.clone(), true)
         );
+        let git = uuid();
         let register = uuid();
-        harness.send(json!({ "type": "register", "callId": register, "operationId": operation, "bootstrapId": moved, "gitInstallationId": uuid(), "version": "2.55.0.windows.3", "confirm": false }));
+        harness.send(json!({ "type": "register", "callId": register, "operationId": operation, "bootstrapId": moved, "gitInstallationId": git, "version": "2.56.0.windows.1", "digest": DIGEST, "confirm": false }));
         assert_eq!(
             harness.reply(&register),
             json!({ "type": "register", "callId": register, "result": "approved" }),
             "the moved startup context registers without Use this Git"
         );
+        assert_eq!(
+            *saved.lock().expect("saved"),
+            [ConfirmedGit {
+                selected_path: wrapper,
+                executable_path: upgraded,
+                version: "2.56.0.windows.1".to_string(),
+                digest: DIGEST.to_string(),
+            }]
+        );
+        assert_eq!(
+            harness.requests.take_confirmed_git(&git),
+            None,
+            "a startup registration is no Use this Git approval"
+        );
+    }
+
+    #[test]
+    fn a_context_moved_from_a_plain_context_still_needs_use_this_git() {
+        let harness = Harness::child();
+        let wrapper = git_copy(&harness, "Git\\cmd");
+        let resolved = git_copy(&harness, "Git\\ucrt64\\libexec\\git-core");
+        let saved = Arc::new(Mutex::new(0));
+        let seen = Arc::clone(&saved);
+        harness.requests.set_startup_git(Box::new(move |_| {
+            *seen.lock().expect("saved") += 1;
+        }));
+        let candidate = harness
+            .contexts
+            .create(ContextKind::GitProbe, &wrapper, Instant::now())
+            .expect("context");
+        let operation = uuid();
+        let call = uuid();
+        harness.send(json!({ "type": "resolveGit", "callId": call, "operationId": operation, "bootstrapId": candidate, "executablePath": resolved }));
+        let reply = harness.reply(&call);
+        let moved = reply["bootstrapId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .to_string();
+        let register = uuid();
+        harness.send(json!({ "type": "register", "callId": register, "operationId": operation, "bootstrapId": moved, "gitInstallationId": uuid(), "version": "2.56.0.windows.1", "digest": DIGEST, "confirm": false }));
+        assert_eq!(
+            harness.reply(&register),
+            refused(&register, "INVALID_REQUEST")
+        );
+        assert_eq!(*saved.lock().expect("saved"), 0, "nothing is saved");
     }
 
     #[test]
@@ -2748,7 +2810,7 @@ mod tests {
             .to_string();
         let git = uuid();
         let register = uuid();
-        harness.send(json!({ "type": "register", "callId": register, "operationId": operation, "bootstrapId": moved, "gitInstallationId": git, "version": "2.55.0.windows.3", "confirm": true }));
+        harness.send(json!({ "type": "register", "callId": register, "operationId": operation, "bootstrapId": moved, "gitInstallationId": git, "version": "2.55.0.windows.3", "digest": DIGEST, "confirm": true }));
         assert_eq!(
             harness.reply(&register),
             json!({ "type": "register", "callId": register, "result": "approved" })
@@ -2764,6 +2826,7 @@ mod tests {
                 selected_path: wrapper,
                 executable_path: resolved,
                 version,
+                digest: DIGEST.to_string(),
             })
         );
     }

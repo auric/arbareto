@@ -104,6 +104,21 @@ describe("getEnvironment (T054)", () => {
     expect(env.executablePath).toBeUndefined();
   });
 
+  test("a startup upgrade gives previousVersion beside the detected version", () => {
+    const env = getEnvironment(handshake(), { ok: true, installation: { ...installation, previousVersion: "2.55.0.windows.2" } });
+    expect(env).toMatchObject({ detectedVersion: MINIMUM, previousVersion: "2.55.0.windows.2", admission: "admitted" });
+    expect("previousVersion" in getEnvironment(handshake(), admitted)).toBe(false);
+  });
+
+  test("a startup failure gives its reason and its path", () => {
+    const path = "C:\\Git\\cmd\\git.exe";
+    const env = getEnvironment(handshake(), { ok: false, gitCode: "GIT_UNAVAILABLE", reason: "selected-missing", path, minimumVersion: MINIMUM });
+    expect(env).toMatchObject({ gitCode: "GIT_UNAVAILABLE", reason: "selected-missing", path });
+    const outside = getEnvironment(handshake(), { ok: false, gitCode: "GIT_UNAVAILABLE", reason: "outside-installation", minimumVersion: MINIMUM });
+    expect(outside).toMatchObject({ reason: "outside-installation" });
+    expect("path" in outside).toBe(false);
+  });
+
   test("a handshake without a startup Git context leaves Git unselected with GIT_UNAVAILABLE", () => {
     const env = getEnvironment(handshake(), null);
     expect(env).toMatchObject({ gitCode: "GIT_UNAVAILABLE", minimumVersion: MINIMUM, qualification: "unverified" });

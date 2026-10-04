@@ -19,11 +19,16 @@ export interface GitInstallation {
   executableIdentity: { file: IdentityReply; versionOutput: string; digest: string };
   version: string;
   admission: "admitted";
+  // Contract §6 "Startup contexts": the saved version when this startup admitted another version.
+  previousVersion?: string;
 }
+
+// Contract §3 `getEnvironment` `reason`: why the startup check found no Git.
+export type GitReason = "selected-missing" | "resolution-failed" | "resolved-missing" | "outside-installation";
 
 export type GitProbeResult =
   | { ok: true; installation: GitInstallation }
-  | { ok: false; gitCode: ErrorCode; detectedVersion?: string; minimumVersion: string };
+  | { ok: false; gitCode: ErrorCode; detectedVersion?: string; reason?: GitReason; path?: string; minimumVersion: string };
 
 // The user chose Cancel or Choose another Git in the Git selection confirmation.
 export type GitProbeCanceled = { ok: false; canceled: true };
@@ -38,9 +43,25 @@ export interface GitProbeOptions {
   operationId?: string;
   // Contract §6 `register`: `true` shows the native Git selection confirmation.
   confirm?: boolean;
-  // Contract §6 "Startup contexts": the stored resolved path. Without the confirmation, a probe can move only to it.
-  savedExecutablePath?: string;
   signal?: AbortSignal;
+}
+
+// Contract §6 "Startup contexts": a startup failure without a Git file to probe.
+const unavailable = (reason: GitReason, path?: string): GitProbeResult => ({
+  ok: false,
+  gitCode: "GIT_UNAVAILABLE",
+  reason,
+  ...(path === undefined ? {} : { path }),
+  minimumVersion: MINIMUM_GIT_VERSION,
+});
+
+const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
+
+// Contract §6 "Startup contexts": the installation root is the folder two levels above the selected file.
+// Windows paths compare without case.
+function insideInstallation(selected: string, resolved: string): boolean {
+  const relative = win32.relative(win32.dirname(win32.dirname(selected)).toLowerCase(), resolved.toLowerCase());
+  return relative !== "" && !relative.startsWith("..") && !win32.isAbsolute(relative);
 }
 
 export const failure = (gitCode: ErrorCode, detectedVersion?: string): GitProbeResult => ({
@@ -95,11 +116,11 @@ async function runProbe(
 }
 
 // Contract §3 "Git proposal": `git.exe` in the folder that `--exec-path` prints, as a fully qualified path with backslashes.
-// A missing or non-regular file gives `null`. The service never falls back to the candidate.
+// Output without one folder line gives `null`. The service never falls back to the candidate.
 function execPathGit(output: string): string | null {
   const folder = /^([^\r\n]+)\r?\n$/.exec(output)?.[1];
   const git = folder === undefined ? null : win32.join(folder, "git.exe");
-  return isChannelPath(git) && statSync(git, { throwIfNoEntry: false })?.isFile() ? git : null;
+  return isChannelPath(git) ? git : null;
 }
 
 // Contract §6 "Registration bootstrap" `gitProbe`: identity, exec-path, version, architecture, and admission before `gitInstallationId`.
@@ -124,9 +145,12 @@ async function probeCandidate(
     const execPath = await runProbe(runner, operationId, context, ["--exec-path"], signal);
     if (typeof execPath !== "string") return execPath;
     const git = execPathGit(execPath);
-    if (git === null) return failure("GIT_UNSUPPORTED");
-    // Contract §6 "Startup contexts": the saved selection must resolve to the stored file. Only Use this Git selects another file (FR-003).
-    if (!(options.confirm ?? true) && git !== options.savedExecutablePath) return failure("GIT_CHANGED");
+    // Contract §6 "Startup contexts" gives each startup failure a reason. `chooseGit` keeps GIT_UNSUPPORTED (§3 "Git proposal").
+    const startup = !(options.confirm ?? true);
+    if (git === null) return startup ? unavailable("resolution-failed") : failure("GIT_UNSUPPORTED");
+    if (!isFile(git)) return startup ? unavailable("resolved-missing", git) : failure("GIT_UNSUPPORTED");
+    // Without Use this Git, a Git upgrade can move the resolved file only inside the installation root of the selected file.
+    if (startup && git !== selected && !insideInstallation(selected, git)) return unavailable("outside-installation");
     if (git !== target.executablePath) {
       if (moved) return failure("GIT_UNSUPPORTED");
       const resolved = await runner.resolveGit({ operationId, bootstrapId: target.bootstrapId, executablePath: git });
@@ -138,7 +162,7 @@ async function probeCandidate(
     if (!("admission" in admitted) || admitted.admission !== "admitted") return failure(admitted.gitCode, "detectedVersion" in admitted ? admitted.detectedVersion : undefined);
     const gitInstallationId = crypto.randomUUID();
     const version = admitted.detectedVersion;
-    const reply = await runner.register({ operationId, bootstrapId: target.bootstrapId, gitInstallationId, version, confirm: options.confirm ?? true });
+    const reply = await runner.register({ operationId, bootstrapId: target.bootstrapId, gitInstallationId, version, digest, confirm: options.confirm ?? true });
     if (reply.result === "another") return { another: { bootstrapId: reply.bootstrapId, executablePath: reply.executablePath } };
     if (reply.result !== "approved") return { ok: false, canceled: true };
     return {
@@ -151,7 +175,7 @@ async function probeCandidate(
   }
 }
 
-// A file rewritten in place keeps its file ID, so the digest decides (contract §6 "Startup contexts"). A change runs nothing.
+// A file rewritten in place keeps its file ID, so the digest decides (data-model §1). A change runs nothing.
 export async function revalidateGit(_runner: GitRunner, installation: GitInstallation): Promise<GitProbeResult> {
   const read = await fileDigest(installation.executablePath);
   if ("gitCode" in read) return failure(read.gitCode);
@@ -159,18 +183,17 @@ export async function revalidateGit(_runner: GitRunner, installation: GitInstall
 }
 
 // Contract §6 "Startup contexts": the handshake `savedGit`. The startup `gitProbe` context binds `selectedPath`.
-// An equal digest of the stored `executablePath` runs the probe. A change runs nothing.
+// The probe resolves the selected file again, so a Git upgrade behind it needs no new confirmation.
+// Without a readable selected file, the shell sends no `bootstrapId`.
 export async function revalidateSavedGit(
   runner: GitRunner,
-  saved: { bootstrapId: string; selectedPath: string; executablePath: string; digest: string },
+  saved: { bootstrapId?: string; selectedPath: string; version: string },
   operationId: string,
 ): Promise<GitProbeResult> {
-  const read = await fileDigest(saved.executablePath);
-  if ("gitCode" in read) return failure(read.gitCode);
-  if (read.digest !== saved.digest) return failure("GIT_CHANGED");
-  const target = { bootstrapId: saved.bootstrapId, executablePath: saved.selectedPath };
-  const result = await probeGit(runner, target, { operationId, confirm: false, savedExecutablePath: saved.executablePath });
+  if (saved.bootstrapId === undefined || !isFile(saved.selectedPath)) return unavailable("selected-missing", saved.selectedPath);
+  const result = await probeGit(runner, { bootstrapId: saved.bootstrapId, executablePath: saved.selectedPath }, { operationId, confirm: false });
   // Contract §6: a register without `confirm` always replies `approved`.
   if ("canceled" in result) throw new Error("startup Git registration was not approved");
-  return result;
+  if (!result.ok || result.installation.version === saved.version) return result;
+  return { ok: true, installation: { ...result.installation, previousVersion: saved.version } };
 }

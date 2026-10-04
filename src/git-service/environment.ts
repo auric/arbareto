@@ -4,7 +4,7 @@
 import type { ErrorCode } from "../contracts/errors";
 import { RECOVERY_MARKERS_PER_HANDSHAKE } from "../contracts/limits";
 import { MINIMUM_GIT_VERSION } from "./admission";
-import type { GitProbeResult } from "./git-installation";
+import type { GitProbeResult, GitReason } from "./git-installation";
 import type { Handshake } from "./session";
 
 // Data-model §1 `qualification`: version sets of recorded passing packaged runs. This slice ships the list empty.
@@ -17,10 +17,14 @@ export interface Environment {
   selectedPath?: string;
   executablePath?: string;
   detectedVersion?: string;
+  // The saved version when this startup admitted another version.
+  previousVersion?: string;
   minimumVersion: string;
   admission?: "admitted" | "unsupported";
   qualification: "unverified" | "passed";
   gitCode?: ErrorCode;
+  reason?: GitReason;
+  path?: string;
   markers: { markerId: string; kind: string; startedAt: string; worktreeRoot: string }[];
   markerLimit?: number;
   unloadedMarkers?: number;
@@ -44,10 +48,13 @@ export function getEnvironment(handshake: Handshake, git: GitProbeResult | null)
     platformScope: handshake.platformScope,
     ...(git?.ok ? { selectedPath: git.installation.selectedPath, executablePath: git.installation.executablePath } : {}),
     ...(detectedVersion === undefined ? {} : { detectedVersion }),
+    ...(git?.ok && git.installation.previousVersion !== undefined ? { previousVersion: git.installation.previousVersion } : {}),
     minimumVersion: MINIMUM_GIT_VERSION,
     ...(git?.ok ? { admission: "admitted" as const } : git?.gitCode === "GIT_UNSUPPORTED" ? { admission: "unsupported" as const } : {}),
     qualification: qualified ? "passed" : "unverified",
     ...(git === null ? { gitCode: "GIT_UNAVAILABLE" as const } : git.ok ? {} : { gitCode: git.gitCode }),
+    ...(git?.ok === false && git.reason !== undefined ? { reason: git.reason } : {}),
+    ...(git?.ok === false && git.path !== undefined ? { path: git.path } : {}),
     markers,
     // Contract §5 "Recovery markers": above 64 marker files, the shell loads 64 and counts the rest.
     ...(handshake.unloadedMarkers > 0 ? { markerLimit: RECOVERY_MARKERS_PER_HANDSHAKE, unloadedMarkers: handshake.unloadedMarkers } : {}),

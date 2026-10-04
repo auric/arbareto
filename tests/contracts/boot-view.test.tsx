@@ -56,6 +56,19 @@ describe("boot view", () => {
     }
   });
 
+  test("a Git reason and its path show in the blocked state", () => {
+    const path = "C:\\Git\\mingw64\\bin\\git.exe";
+    const html = render(environment({ gitCode: "GIT_UNAVAILABLE", reason: "selected-missing", path }));
+    for (const text of ["GIT_UNAVAILABLE", "selected-missing", path, "Select Git"]) expect(html).toContain(text);
+  });
+
+  test("a startup upgrade shows a non-blocking update line, and no line without previousVersion", () => {
+    const html = render(environment({ detectedVersion: "2.56.0.windows.1", previousVersion: "2.55.0.windows.3", admission: "admitted" }));
+    expect(html).toContain("Git updated: 2.55.0.windows.3 → 2.56.0.windows.1");
+    expect(html).not.toContain("Select Git");
+    expect(render(environment({ detectedVersion: "2.56.0.windows.1", admission: "admitted" }))).not.toContain("Git updated");
+  });
+
   test("any other Git code shows as plain text with Select Git", () => {
     for (const gitCode of ["DEADLINE", "OUTPUT_LIMIT", "UNKNOWN_TARGET", "PROCESS_OWNERSHIP_FAILED", "UNSUPPORTED_REPOSITORY", "GIT_FAILED"]) {
       const html = render(environment({ gitCode }));

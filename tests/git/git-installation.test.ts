@@ -358,83 +358,154 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
     TEST_TIMEOUT_MS,
   );
 
-  test(
-    "a saved wrapper path gives GIT_CHANGED at startup and registers nothing",
-    async () => {
-      const { wrapper, real } = wrapperLayout("saved-wrapper");
-      const bootstrapId = runner.addContext("gitProbe", wrapper);
-      runs.length = 0;
-      registers.length = 0;
-      const result = await revalidateSavedGit(counted, { bootstrapId, selectedPath: wrapper, executablePath: wrapper, digest: sha256(wrapper) }, crypto.randomUUID());
-      expect(result).toMatchObject({ ok: false, gitCode: "GIT_CHANGED" });
-      expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"]]);
-      expect(stubCalls(real)).toEqual([]);
-      expect(registers).toEqual([]);
+  // Contract §6 "Startup contexts": the saved Git fields that the handshake carries.
+  const savedOf = (selectedPath: string, executablePath: string, version = MINIMUM) => ({ selectedPath, executablePath, version, digest: sha256(executablePath) });
+  const NEW_VERSION = "2.56.0.windows.1";
 
-      // A saved resolved path passes the same check.
-      const saved = runner.addContext("gitProbe", real);
-      const again = await revalidateSavedGit(counted, { bootstrapId: saved, selectedPath: real, executablePath: real, digest: sha256(real) }, crypto.randomUUID());
-      expect(again).toMatchObject({ ok: true, installation: { executablePath: real } });
-    },
-    TEST_TIMEOUT_MS,
-  );
+  // Git for Windows 2.56 moved from `mingw64` to `ucrt64`. The wrapper then names the new folder.
+  function upgrade(wrapper: string, version: string): string {
+    const root = join(wrapper, "..", "..");
+    const core = join(root, "ucrt64", "libexec", "git-core");
+    mkdirSync(core, { recursive: true });
+    const real = join(core, "git.exe");
+    copyFileSync(compiled, real);
+    writeFileSync(join(core, "version.txt"), version);
+    writeFileSync(join(root, "cmd", "exec-path.txt"), core);
+    rmSync(join(root, "mingw64"), { recursive: true });
+    return real;
+  }
 
   test(
-    "startup revalidation of a wrapper selectedPath that resolves to the stored executablePath gives admitted, not GIT_CHANGED",
+    "a startup upgrade from a mingw64 to a ucrt64 layout behind the same wrapper is admitted with previousVersion, and the next start has none",
     async () => {
-      const { wrapper, real } = wrapperLayout("saved-selected-wrapper");
-      const bootstrapId = runner.addContext("gitProbe", wrapper);
+      const { wrapper, real } = wrapperLayout("upgrade");
+      const saved = savedOf(wrapper, real);
+      const upgraded = upgrade(wrapper, NEW_VERSION);
       runs.length = 0;
       registers.length = 0;
-      const result = await revalidateSavedGit(counted, { bootstrapId, selectedPath: wrapper, executablePath: real, digest: sha256(real) }, crypto.randomUUID());
-      expect(result).toMatchObject({ ok: true, installation: { selectedPath: wrapper, executablePath: real, version: MINIMUM } });
-      // The wrapper runs only the exec-path probe. The version probe and the registration use the resolved file.
+      const result = await revalidateSavedGit(counted, { bootstrapId: runner.addContext("gitProbe", wrapper), ...saved }, crypto.randomUUID());
+      expect(result).toMatchObject({
+        ok: true,
+        installation: { selectedPath: wrapper, executablePath: upgraded, version: NEW_VERSION, previousVersion: MINIMUM, executableIdentity: { digest: sha256(upgraded) } },
+      });
       expect(stubCalls(wrapper)).toEqual([{ args: ["--exec-path"], cwd: launchDirectory }]);
-      expect(stubCalls(real)).toEqual([
+      expect(stubCalls(upgraded)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
         { args: ["version", "--build-options"], cwd: launchDirectory },
       ]);
+      // The shell saves these register fields without a confirmation.
       expect(registers).toHaveLength(1);
-      expect(registers[0]).toMatchObject({ version: MINIMUM, confirm: false });
-      expect(registers[0].bootstrapId).not.toBe(bootstrapId);
+      expect(registers[0]).toMatchObject({ version: NEW_VERSION, digest: sha256(upgraded), confirm: false });
+
+      // The shell saved the new fields, so the next start reports no update.
+      const next = await revalidateSavedGit(counted, { bootstrapId: runner.addContext("gitProbe", wrapper), ...savedOf(wrapper, upgraded, NEW_VERSION) }, crypto.randomUUID());
+      expect(next).toMatchObject({ ok: true, installation: { executablePath: upgraded, version: NEW_VERSION } });
+      expect(next.ok && "previousVersion" in next.installation).toBe(false);
     },
     TEST_TIMEOUT_MS,
   );
 
   test(
-    "startup revalidation of a selectedPath that resolves to another file gives GIT_CHANGED and runs nothing from either file",
+    "a startup Git rewritten in place with the same version is admitted without previousVersion",
     async () => {
-      const saved = wrapperLayout("saved-elsewhere");
-      const moved = wrapperLayout("moved-elsewhere");
+      const { wrapper, real } = wrapperLayout("rewritten");
+      const saved = savedOf(wrapper, real);
+      await changeBytes(real);
+      const result = await revalidateSavedGit(counted, { bootstrapId: runner.addContext("gitProbe", wrapper), ...saved }, crypto.randomUUID());
+      expect(result).toMatchObject({ ok: true, installation: { executablePath: real, version: MINIMUM, executableIdentity: { digest: sha256(real) } } });
+      expect(result.ok && "previousVersion" in result.installation).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a saved wrapper as executablePath resolves at startup and is admitted",
+    async () => {
+      const { wrapper, real } = wrapperLayout("saved-wrapper");
+      const result = await revalidateSavedGit(counted, { bootstrapId: runner.addContext("gitProbe", wrapper), ...savedOf(wrapper, wrapper) }, crypto.randomUUID());
+      expect(result).toMatchObject({ ok: true, installation: { selectedPath: wrapper, executablePath: real } });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a missing selected file gives GIT_UNAVAILABLE with reason selected-missing and the path, and runs nothing",
+    async () => {
+      const { wrapper, real } = wrapperLayout("selected-missing");
+      const saved = savedOf(wrapper, real);
+      rmSync(wrapper);
+      const spawnedBefore = runner.spawned;
+      runs.length = 0;
+      registers.length = 0;
+      // Without a readable selected file, the shell binds no context and sends no `bootstrapId`.
+      const result = await revalidateSavedGit(counted, saved, crypto.randomUUID());
+      expect(result).toEqual({ ok: false, gitCode: "GIT_UNAVAILABLE", reason: "selected-missing", path: wrapper, minimumVersion: MINIMUM });
+      expect(runs).toEqual([]);
+      expect(registers).toEqual([]);
+      expect(runner.spawned).toBe(spawnedBefore);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "an exec-path probe without a folder gives GIT_UNAVAILABLE with reason resolution-failed and registers nothing",
+    async () => {
+      const { wrapper, real } = wrapperLayout("resolution-failed");
+      writeFileSync(join(wrapper, "..", "exec-path.txt"), "");
+      registers.length = 0;
+      const result = await revalidateSavedGit(counted, { bootstrapId: runner.addContext("gitProbe", wrapper), ...savedOf(wrapper, real) }, crypto.randomUUID());
+      expect(result).toEqual({ ok: false, gitCode: "GIT_UNAVAILABLE", reason: "resolution-failed", minimumVersion: MINIMUM });
+      expect(stubCalls(real)).toEqual([]);
+      expect(registers).toEqual([]);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a missing or non-regular resolved git.exe gives GIT_UNAVAILABLE with reason resolved-missing and the path",
+    async () => {
+      const missing = wrapperLayout("startup-resolved-missing", "other.exe");
+      const folder = wrapperLayout("startup-resolved-folder", "other.exe");
+      mkdirSync(folder.real);
+      for (const { wrapper, real } of [missing, folder]) {
+        registers.length = 0;
+        const result = await revalidateSavedGit(counted, { bootstrapId: runner.addContext("gitProbe", wrapper), ...savedOf(wrapper, wrapper) }, crypto.randomUUID());
+        expect(result).toEqual({ ok: false, gitCode: "GIT_UNAVAILABLE", reason: "resolved-missing", path: real, minimumVersion: MINIMUM });
+        expect(registers).toEqual([]);
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a resolved file outside the installation root of the selected file gives GIT_UNAVAILABLE with reason outside-installation and runs nothing from it",
+    async () => {
+      const saved = wrapperLayout("outside-saved");
+      const moved = wrapperLayout("outside-moved");
+      writeFileSync(join(moved.wrapper, "..", "exec-path.txt"), join(saved.real, ".."));
       const bootstrapId = runner.addContext("gitProbe", moved.wrapper);
       runs.length = 0;
       registers.length = 0;
-      const result = await revalidateSavedGit(counted, { bootstrapId, selectedPath: moved.wrapper, executablePath: saved.real, digest: sha256(saved.real) }, crypto.randomUUID());
-      expect(result).toMatchObject({ ok: false, gitCode: "GIT_CHANGED" });
+      const result = await revalidateSavedGit(counted, { bootstrapId, ...savedOf(moved.wrapper, moved.real) }, crypto.randomUUID());
+      expect(result).toEqual({ ok: false, gitCode: "GIT_UNAVAILABLE", reason: "outside-installation", minimumVersion: MINIMUM });
       expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"]]);
-      expect(stubCalls(moved.real)).toEqual([]);
       expect(stubCalls(saved.real)).toEqual([]);
       expect(registers).toEqual([]);
-      // The startup context never moves to an unsaved file.
+      // The startup context never moves outside the installation root.
       expect(runner.contextPath(bootstrapId)).toBe(moved.wrapper);
     },
     TEST_TIMEOUT_MS,
   );
 
   test(
-    "startup revalidation with a changed digest of the stored executablePath gives GIT_CHANGED and runs not even the wrapper",
+    "a startup upgrade to a version below the minimum gives GIT_UNSUPPORTED with the found version",
     async () => {
-      const { wrapper, real } = wrapperLayout("saved-changed-real");
-      const digest = sha256(real);
-      await changeBytes(real);
-      const bootstrapId = runner.addContext("gitProbe", wrapper);
-      const spawnedBefore = runner.spawned;
-      runs.length = 0;
+      const { wrapper, real } = wrapperLayout("upgrade-old");
+      const saved = savedOf(wrapper, real);
+      upgrade(wrapper, "2.43.0.windows.1");
       registers.length = 0;
-      const result = await revalidateSavedGit(counted, { bootstrapId, selectedPath: wrapper, executablePath: real, digest }, crypto.randomUUID());
-      expect(result).toMatchObject({ ok: false, gitCode: "GIT_CHANGED" });
-      expect(runs).toEqual([]);
-      expect(runner.spawned).toBe(spawnedBefore);
+      const result = await revalidateSavedGit(counted, { bootstrapId: runner.addContext("gitProbe", wrapper), ...saved }, crypto.randomUUID());
+      expect(result).toMatchObject({ ok: false, gitCode: "GIT_UNSUPPORTED", detectedVersion: "2.43.0.windows.1", minimumVersion: MINIMUM });
       expect(registers).toEqual([]);
     },
     TEST_TIMEOUT_MS,

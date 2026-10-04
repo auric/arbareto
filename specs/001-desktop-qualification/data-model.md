@@ -10,7 +10,7 @@ This document defines planned state, not implemented types. Git remains authorit
 | --- | --- |
 | `gitInstallationId` | Opaque, session-scoped identifier for the explicitly selected executable. |
 | `selectedPath` | Absolute path that the user selected, such as the Git for Windows wrapper `cmd\git.exe`. Only the `--exec-path` probe runs it (contract §3 "Git proposal"). |
-| `executablePath` | Absolute, resolved executable path: `git.exe` in the folder that `--exec-path` prints. Never a renderer-supplied command string. |
+| `executablePath` | Native absolute, resolved executable path: the Git executable in the folder that `--exec-path` prints (`git.exe` on Windows). Never a renderer-supplied command string. |
 | `executableIdentity` | Resolved file identity, version output, and executable digest. In a session, a changed identity gives `GIT_CHANGED`. At startup, the service admits an upgrade inside the installation root of `selectedPath`. It needs no new confirmation (contract §6 "Startup contexts"). Trust approvals bind `selectedPath`, so such an upgrade keeps them (contract §7). |
 | `version` | Parsed Git for Windows version, plus bounded original version output. |
 | `admission` | `admitted` or `unsupported`, according to the local qualification package's minimum version: `2.55.0.windows.3` or later. |
@@ -109,7 +109,7 @@ Each write is one atomic `readwrite` transaction with the durability hint `stric
 | `repositoryId` | Approved workspace. |
 | `commonIdentity` | Common-directory identity and Git-resolved path that the stored record binds. |
 | `worktreeIdentity` | Worktree identity (§2) and Git-resolved worktree root and administration-directory paths that the stored record binds. The store keeps one record per worktree. Approving one linked worktree never changes the record of another. |
-| `gitSelectedPath` | Selected Git path (`selectedPath`, §1) that the stored record binds. It is a fully qualified Windows path. The record does not bind the Git executable digest. |
+| `gitSelectedPath` | Selected Git path (`selectedPath`, §1) that the stored record binds. It is a native absolute path (contract §6 "Channel frames"). The record does not bind the Git executable digest. |
 | `configurationFingerprint` | Digest of relevant effective configuration, include origins, attribute policy, and executable integration locations. It also covers the SHA-256 digest of each program or hook file that a repository-controlled integration names. Only files inside the worktree root, the Git directory, or the common directory count. A bare-name program that relative `PATH` entries resolve to a repository file counts too. The bounds are 64 files, 1 MiB per file, and 8 MiB in total (contract §7 "Program file digests"). A file beyond a bound enters as `unchecked`. It is a SHA-256 digest as 64 lowercase hex digits. `readTrust` returns the fingerprint, and a stored record binds it. |
 | `persistence` | `stored` or `session`. It is `session` when a digest bound is reached. A session approval lasts until the service session ends: Arbareto closes, or Restart service starts a new session. It writes no record. |
 | `approvedExecution` | Explicit approval for repository-controlled hooks, filters, and configured tools. |

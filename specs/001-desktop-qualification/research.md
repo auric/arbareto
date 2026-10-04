@@ -201,7 +201,7 @@ Support ordinary full indexes and the specified UTF-8 LF/CRLF text cases. Refuse
 
 Refuse any registered `post-index-change` hook and any executable filesystem-monitor integration for hunk mutations. Refuse custom filters, LFS, encoding conversion, unsupported entry types, conflicts, unfinished operations, and incomplete observations.
 
-`git hook list` includes disabled configured registrations. Initially refuse every `post-index-change` registration rather than infer an executable subset incorrectly. Ordinary commit hooks do not trigger this refusal unless they also register an index-change event.
+The derived hook registrations (T280 record) include disabled configured registrations, as `git hook list` does. Initially refuse every `post-index-change` registration rather than infer an executable subset incorrectly. Ordinary commit hooks do not trigger this refusal unless they also register an index-change event.
 
 Refusal does not bypass a hook or change configuration. Trust approval alone does not make an index-change hook safe for exact hunk publication.
 
@@ -398,7 +398,7 @@ Sources: [index lock release](https://github.com/git-for-windows/git/blob/52ca11
 
 Git `2.55.0.windows.3` supports configured hook commands and events, including parallel execution settings. Trust discovery must inspect these settings, not only `.git/hooks` and `core.hooksPath`.
 
-Use bounded `git hook list -z --show-scope` discovery for relevant events. Inspect conditional includes, worktree configuration, filters, signers, executable monitors, and diff tools.
+Superseded by the T280 record below. Derive hook registrations from the configuration listing and the hooks folder. Run no `git hook list`. Inspect conditional includes, worktree configuration, filters, signers, executable monitors, and diff tools.
 
 Disable executable preview paths for inspection. Missing trust must block operations that could execute repository-controlled code. Custom filters remain unsupported for hunk mutation after approval.
 
@@ -430,7 +430,7 @@ Derivation rules that the probe confirmed (hook.c `hook_config_lookup_all` and `
 - `hook.<x>.enabled=false` is an event switch when `<x>` has no `command`, `event`, or valid `parallel` entry (`is_friendly_name`, hook.c:322).
 - A disabled hook without a command stays in the list with a warning. An enabled hook without a command, or a friendly name that equals a known event, makes every `hook list` call exit 128. `hook.jobs`, `hook.<event>.jobs`, and `hook.<name>.parallel` do not change the listing.
 - Hooks folder: `resolve(<directory where Git ran>, <rev-parse --git-path hooks output>)` joined with the event name. Git lists the entry when `access(path, X_OK)` succeeds (`find_hook`, hook.c:26-64). Git for Windows drops `X_OK` (`mingw_access`, compat/mingw.c:1171-1180), and Bun `accessSync` with `X_OK` also tests only existence on Windows (Bun 1.4.2, checked on this host). So a folder named `pre-commit` and a mode 0644 `commit-msg` were listed on Windows. On POSIX, `X_OK` decides (source rule, not run by this probe).
-- Unverified: Git for Windows also tries `<name>.exe` (`STRIP_EXTENSION`, config.mak.uname:541 and :738). The probe has no case for that name, because `tests/git/` stays portable. T080 adds that name from the source rule.
+- Unverified: Git for Windows also tries `<name>.exe` (`STRIP_EXTENSION`, config.mak.uname:541 and :738). The probe has no case for that name, because `tests/git/` stays portable. T080 adds that name from the source rule. `find_hook` tries `<name>` first, then `<name>.exe` (hook.c:35-46).
 
 | Case | Events with hooks | Derivation against oracle | Canaries (derivation / oracle) | Processes (derivation / oracle) |
 | --- | --- | --- | --- | --- |
@@ -602,10 +602,10 @@ The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Ki
 
 - Without a commit-graph file, Git prints no `--date-order` row before the walk ends. Contract §3 keeps the date order, so a read cannot drop it.
 - Cold start is WebView2-bound (T193 table above). Warm reopen and the 0.5 history ratio are Git-process-bound.
-- Process estimate, unverified until T192 counts the processes: discovery starts about 4 processes. `readHistory` starts about 7 + k. These are `config list`, `rev-parse --git-path hooks`, k `hook list` runs, `symbolic-ref`, `rev-parse`, the shallow path, `rev-list`, and `cat-file`.
-- `git hook list` takes one hook name, so k is 0 to 7. `readWorkspace` runs in parallel and repeats the trust listing (contract §7).
-- About 11 + k serial processes run at up to 55 ms each. They exceed the 500 ms warm budget before any parsing.
-- Unverified: the process count per read, k, the pack-handle risk of a persistent `cat-file`, and the fsmonitor daemon lifetime. The L history time with a commit-graph file is also unverified. It is expected near the 60 ms unordered floor. T192 and the probes T280 to T283 settle these items.
+- Process estimate, unverified until T192 counts the processes: discovery starts about 4 processes. `readHistory` starts about 7. These are `config list`, `rev-parse --git-path hooks`, `symbolic-ref`, `rev-parse`, the shallow path, `rev-list`, and `cat-file`.
+- The trust listing runs no `hook list` (T280 record in R5). `readWorkspace` runs in parallel and repeats the trust listing (contract §7).
+- About 11 serial processes run at up to 55 ms each. They exceed the 500 ms warm budget before any parsing.
+- Unverified: the process count per read, the pack-handle risk of a persistent `cat-file`, and the fsmonitor daemon lifetime. The L history time with a commit-graph file is also unverified. It is expected near the 60 ms unordered floor. T192 and the probes T281 to T283 settle these items.
 
 **Fixture L commit-graph decision (user, 2026-10-04).** T164 records L in two variants: with and without a commit-graph file. The budgets and comparisons count the maintained variant, which has the commit-graph file. When a history read must walk the whole graph, the app shows a copyable `git commit-graph write --reachable` remedy. The app never runs it. The reviewer defaults add no repair action (spec Clarifications), and the app never runs maintenance (plan.md "Selected mutation protocols"). The trigger rule, its contract clause, and its task stay open. They follow the contract §6 and §7 changes after the probes T280 to T283.
 

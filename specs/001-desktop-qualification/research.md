@@ -497,7 +497,7 @@ Verdict for T080: drop the 28 `hook list` runs, and derive the registrations fro
 
 Limit: the classification covers the program that Git starts. A protected command such as `sh ./x.sh` can still run repository files through its arguments. Whether `sh` searches an empty `PATH` entry on Git for Windows is unverified.
 
-**T281 record (2026-10-05)**: The evidence allows one trust listing per workspace generation for `readWorkspace` and `readHistory`. It also allows `rev-list` and `cat-file` to run in parallel with that listing, with their result held until the gate passes. No canary ran before the gate, and no held result reached a refused response. Until a contract §7 change accepts this evidence, T080 and T086 keep the current §7 order.
+**T281 record (2026-10-05)**: The evidence allows one trust listing per workspace generation for `readWorkspace` and `readHistory`. It also allows `rev-list` and `cat-file` to run in parallel with that listing, with their result held until the gate passes. No canary ran before the gate, and no held result reached a refused response. Both results are adopted in contract §7 (2026-10-05).
 
 The probe `tests/git/probe-shared-trust.ts` ran Git `2.56.0.windows.1` (`C:/Git/ucrt64/bin/git.exe`, built from `49d759b698127791a5f3f2759c69b983846711dd`). This is not the R2 candidate `2.55.0.windows.3`. The listing used the `commands.ts` builders `configListArgs` and `hooksPathArgs`. The history read used `shallowPathArgs`, `revListArgs`, and `batchCommandArgs`, and the full read used `statusArgs`. No builder captures HEAD yet, so `symbolic-ref -q HEAD` and `rev-parse --verify HEAD` used the T067 read options. All calls ran under `LC_ALL=C` with the owned fixture environment. `cat-file` got one `contents <oid>` command per `rev-list` row, without `--filters` or `--textconv`.
 
@@ -538,9 +538,9 @@ Informal timings, not qualification evidence (median of 10 interleaved runs on o
 - The cached M with commit-graph carried the CRLF builder digest of another checkout. The probe accepted the builder bytes with LF or CRLF line ends and checked the semantic digest of each copy. All four copies matched.
 - This probe is not qualification evidence, and no Arbareto build ran.
 
-Verdict for T080: one trust listing can serve `readWorkspace` and `readHistory` of the same generation. This saves 2 Git processes for the second read. T080 keeps one listing per read until contract §7 accepts this evidence.
+Verdict for T080: one trust listing can serve `readWorkspace` and `readHistory` of the same generation. This saves 2 Git processes for the second read. Adopted in contract §7 "Shared listing" (2026-10-05).
 
-Verdict for T086: `rev-list` and `cat-file` can run in parallel with the trust listing, with their result held until the gate passes. No gated program started, and a refused gate delivered no held row. The process count stays 7, and the wall time drops by at most the listing time. T086 keeps the current §7 order until contract §7 accepts this evidence.
+Verdict for T086: `rev-list` and `cat-file` can run in parallel with the trust listing, with their result held until the gate passes. No gated program started, and a refused gate delivered no held row. The process count stays 7, and the wall time drops by at most the listing time. Adopted in contract §7 "Held history steps" (2026-10-05).
 
 **Decision**: Trust approval persists across launches (spec Clarifications, 2026-09-30). The shell stores one record for each worktree, because the fingerprint is per worktree. The record binds the common-directory identity, the worktree identity, the selected Git path, and the fingerprint. A change of any of them gives `TRUST_CHANGED` and needs renewed approval. A Git upgrade behind the same selected path keeps the approval (user decision, 2026-10-04). The record holds no configuration value or credential. A native confirmation with a Cancel default precedes each stored approval (R7). Revoke trust deletes the records of every worktree of that common directory. Over a digest bound, approval lasts for the service session only (contract §7). That session ends when Arbareto closes or at Restart service, and the native confirmation names both.
 
@@ -682,7 +682,7 @@ The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Ki
 
 - Without a commit-graph file, Git prints no `--date-order` row before the walk ends. Contract §3 keeps the date order, so a read cannot drop it.
 - Cold start is WebView2-bound (T193 table above). Warm reopen and the 0.5 history ratio are Git-process-bound.
-- Process estimate, unverified until T192 counts the processes: discovery starts about 4 processes. `readHistory` starts about 7. These are `config list`, `rev-parse --git-path hooks`, `symbolic-ref`, `rev-parse`, the shallow path, `rev-list`, and `cat-file`.
+- Process estimate, unverified until T192 counts the processes: discovery starts about 4 processes. `readHistory` starts about 7 with its own trust listing, and about 5 with a shared listing (contract §7 "Shared listing"). These are `config list`, `rev-parse --git-path hooks`, `symbolic-ref`, `rev-parse`, the shallow path, `rev-list`, and `cat-file`.
 - The trust listing runs no `hook list` (T280 record in R5). `readWorkspace` runs in parallel and repeats the trust listing (contract §7).
 - About 11 serial processes run at up to 55 ms each. They exceed the 500 ms warm budget before any parsing.
 - Unverified: the process count per read, the pack-handle risk of a persistent `cat-file`, and the fsmonitor daemon lifetime. The L history time with a commit-graph file is also unverified. It is expected near the 60 ms unordered floor. T192 and the probes T281 to T283 settle these items.

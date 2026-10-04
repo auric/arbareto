@@ -175,7 +175,11 @@ mod tests {
         schema: String,
         text: String,
         expected: String,
+        platform: Option<String>,
     }
+
+    /// The `platform` value of the vectors that run on this host.
+    const HOST_PLATFORM: &str = if cfg!(windows) { "windows" } else { "posix" };
 
     /// The vector schemas that the shell never reads. The renderer and the service check them.
     const NOT_READ: [&str; 2] = ["process-reply", "renderer-envelope"];
@@ -218,6 +222,12 @@ mod tests {
                     "{}",
                     path.display()
                 );
+                match vector.platform.as_deref() {
+                    None => {}
+                    Some(platform) if platform == HOST_PLATFORM => {}
+                    Some("windows" | "posix") => continue,
+                    Some(other) => panic!("{}: unknown platform {other}", path.display()),
+                }
                 let Some(result) = check(&vector.schema, &vector.text) else {
                     continue;
                 };
@@ -232,7 +242,11 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{wrong:#?}");
-        assert_eq!(checked, 46, "shell-read vectors");
+        assert_eq!(
+            checked,
+            if cfg!(windows) { 49 } else { 48 },
+            "shell-read vectors"
+        );
     }
 
     #[test]

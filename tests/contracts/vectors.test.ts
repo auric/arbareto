@@ -14,11 +14,16 @@ printOrigin("../../src/contracts/export-schemas.ts", import.meta.dir);
 printOrigin("../../src/contracts/strict-json.ts", import.meta.dir);
 
 // The same files run in `src-tauri/src/schema.rs`. Each holds `schema` (a file stem of `src/contracts/schemas/`), `text`, and `expected`.
+// An optional `platform` (`windows` or `posix`) limits a vector to the hosts of that platform.
 interface Vector {
   schema: string;
   text: string;
   expected: string;
+  platform?: string;
 }
+
+const PLATFORMS = ["windows", "posix"];
+const HOST_PLATFORM = process.platform === "win32" ? "windows" : "posix";
 
 const ROOT = join(import.meta.dir, "..", "vectors");
 const vectors = (["valid", "invalid"] as const).flatMap((kind) =>
@@ -52,7 +57,15 @@ describe("golden vectors", () => {
     for (const { kind, vector } of vectors) expect(vector.expected === "valid").toBe(kind === "valid");
   });
 
-  test.each(vectors.map((v) => [`${v.kind}/${v.name}`, v.vector] as const))("%s", (_name, vector) => {
+  test("each platform field names windows or posix", () => {
+    const wrong = vectors.filter(({ vector }) => vector.platform !== undefined && !PLATFORMS.includes(vector.platform));
+    expect(wrong.map(({ kind, name }) => `${kind}/${name}`)).toEqual([]);
+  });
+
+  const runs = (vector: Vector) => vector.platform === undefined || vector.platform === HOST_PLATFORM;
+  const rows = (on: boolean) => vectors.filter((v) => runs(v.vector) === on).map((v) => [`${v.kind}/${v.name}`, v.vector] as const);
+  test.each(rows(true))("%s", (_name, vector) => {
     expect(check(vector)).toBe(vector.expected);
   });
+  test.skip.each(rows(false))("%s (other platform)", () => {});
 });

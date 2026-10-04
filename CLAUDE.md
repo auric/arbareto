@@ -12,7 +12,6 @@
 - Validate the selected architecture through packaged Windows tests first. Record concrete failures and their causes.
 - Consider another shell only when a blocking requirement cannot reasonably be satisfied by the current architecture.
 - Do not claim Tauri is faster than Electrobun without measurements.
-- Do not scaffold or implement the application during repository preparation.
 
 ## Spec Kit
 
@@ -27,6 +26,16 @@
 - Do not add Superpowers or OpenSpec planning trees, custom workflows, or orchestration runners.
 - Do not add memory ledgers, duplicate plan hierarchies, or automatic multi-agent review loops.
 - Preserve the upstream skills, scripts, and templates unless an approved requirement needs a change.
+
+## Skills
+
+- Frontend React work: dispatch `frontend-implementer`. It preloads `vercel-react-best-practices` and `web-design-guidelines`.
+- shadcn work: invoke the `shadcn` skill. Run the generator (`init`, `add`) only with the version pinned in tasks.md, never `@latest`.
+- After any tasks.md edit, run `/speckit-analyze`.
+- At the end of each batch, run `/speckit-converge`.
+- Batch review: dispatch `reviewer`. It runs `code-review` and `security-review` in report-only mode, plus `web-design-guidelines` for UI diffs.
+- Change any `CLAUDE.md` or `.claude/rules/*.md` file only through `claude-md-management:claude-md-improver`: report first, then apply the approved edit (local sessions only; plugins do not load in the cloud).
+- To start the app, use the `run` skill with the README "Development" commands only.
 
 ## Git and platform safety
 
@@ -48,3 +57,4 @@
 - Verify CodeGraph's installed upstream identity before using product-specific instructions.
 - Create a CodeGraph index only after meaningful source exists and the user approves indexing.
 - Use only the verified commands in README.md "Development". Add a command only after it runs green.
+- Cloud sessions run on Linux and use `.claude/cloud-setup.sh`. Rust shell work and packaged Windows checks stay local.

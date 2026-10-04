@@ -139,16 +139,21 @@ function gitAtLeastFloor(version: string | null): boolean {
   return true;
 }
 
+// The default distro, or "" without one. Without `--distribution`, wsl.exe runs the default distro.
+let defaultName: string | undefined;
+function defaultDistro(): string {
+  if (defaultName === undefined) {
+    const named = existsSync(WSL_EXE) ? wslExec(["--exec", "/usr/bin/printenv", "WSL_DISTRO_NAME"], { timeoutMs: START_TIMEOUT_MS }) : null;
+    defaultName = named?.exitCode === 0 ? named.stdout.trim() : "";
+  }
+  return defaultName;
+}
+
 function detect(): WslHost | { missing: WslCapability } {
   if (process.platform !== "win32" || !existsSync(WSL_EXE)) return { missing: "wsl" };
   const listed = listDistros(false);
   if (listed === null) return { missing: "wsl" };
-  let distro = process.env.ARBARETO_WSL_DISTRO;
-  if (!distro) {
-    // Without `--distribution`, wsl.exe runs the default distro.
-    const named = wslExec(["--exec", "/usr/bin/printenv", "WSL_DISTRO_NAME"], { timeoutMs: START_TIMEOUT_MS });
-    distro = named.exitCode === 0 ? named.stdout.trim() : "";
-  }
+  const distro = process.env.ARBARETO_WSL_DISTRO || defaultDistro();
   const key = registryKeys().find((k) => k.name === distro);
   if (!distro || !listed.includes(distro) || !key || key.version !== 2) return { missing: "wsl2-distro" };
   const probe = wslExec(["--distribution", distro, "--cd", "/", "--exec", "/bin/sh", "-c", PROBE_TEXT, "sh"], { timeoutMs: START_TIMEOUT_MS });
@@ -208,24 +213,24 @@ export function wslTest(name: string, needs: readonly WslCapability[], body: (ho
 
 // ---- Owned fixture folder ----
 
-function assertOwned(host: WslHost, linuxPath: string): void {
+export function assertOwned(host: Pick<WslHost, "home">, linuxPath: string): void {
   const prefix = `${host.home}/`;
   if (!linuxPath.startsWith(prefix) || !OWNED.test(linuxPath.slice(prefix.length))) throw new Error(`not an owned WSL fixture folder: ${linuxPath}`);
 }
 
 // Research R13 P7: only type ef53 gives a stable file-system ID, so the app refuses other folders (contract §11).
-function fileSystemType(host: WslHost, linuxPath: string): string {
+export function fileSystemType(host: Pick<WslHost, "distro">, linuxPath: string): string {
   return inDistro(host.distro, ["/usr/bin/stat", "--file-system", "--format=%t", "--", linuxPath]).trim();
 }
 
-export function createOwnedFolder(host: WslHost, linuxPath = host.folder): void {
+export function createOwnedFolder(host: Pick<WslHost, "distro" | "home" | "folder">, linuxPath = host.folder): void {
   assertOwned(host, linuxPath);
   // `mkdir` without `-p` fails when the name exists.
   inDistro(host.distro, ["/usr/bin/mkdir", "--", linuxPath]);
   console.log(`WSL_FIXTURE_ROOT ${host.distro} ${linuxPath}`);
 }
 
-export function removeOwnedFolder(host: WslHost, linuxPath = host.folder): void {
+export function removeOwnedFolder(host: Pick<WslHost, "distro" | "home" | "folder">, linuxPath = host.folder): void {
   assertOwned(host, linuxPath);
   inDistro(host.distro, ["/usr/bin/rm", "-rf", "--one-file-system", "--", linuxPath]);
   const left = wslExec(["--distribution", host.distro, "--cd", "/", "--exec", "/usr/bin/test", "-e", linuxPath]);
@@ -256,12 +261,11 @@ export function useWslFolder(): void {
     if (fileSystemType(host, host.folder) !== "ef53") throw new Error("the folder type changed");
   });
   afterAll(() => {
-    endScopes(host);
     removeOwnedFolder(host);
   });
 }
 
-export function folderInode(host: WslHost, linuxPath: string): string {
+export function folderInode(host: Pick<WslHost, "distro">, linuxPath: string): string {
   return inDistro(host.distro, ["/usr/bin/stat", "--format=%i", "--", linuxPath]).trim();
 }
 
@@ -273,7 +277,7 @@ export function checkFolderInode(host: WslHost, linuxPath: string, inode: string
 
 // ---- Paths ----
 
-export function uncPath(host: WslHost, linuxPath: string, prefix = "wsl.localhost", distro = host.distro): string {
+export function uncPath(host: Pick<WslHost, "distro">, linuxPath: string, prefix = "wsl.localhost", distro = host.distro): string {
   const segments = linuxPath.split("/").filter((s) => s !== "");
   return [`\\\\${prefix}\\${distro}`, ...segments].join("\\");
 }
@@ -285,21 +289,6 @@ export function listScopes(host: WslHost, pattern = "arbareto-*"): string[] {
   return out.split("\n").filter((l) => l.trim() !== "").map((l) => l.trim().split(/\s+/)[0]!);
 }
 
-// Ends every scope of the operations that this process started. Each operation ID is a fresh UUID.
-const started = new Set<string>();
-export function recordOperation(operationId: string): void {
-  started.add(operationId);
-}
-
-export function endScopes(host: WslHost): void {
-  const systemctl = host.probe.paths.systemctl;
-  if (!systemctl) return;
-  for (const operationId of started) {
-    inDistro(host.distro, [systemctl, "--user", "kill", "--signal=SIGKILL", "--", `arbareto-${operationId}-*.scope`], { allowExit: [0, 1] });
-  }
-  started.clear();
-}
-
 export function pgrep(host: WslHost, pattern: string): string[] {
   const out = inDistro(host.distro, ["/usr/bin/pgrep", "-a", "-f", "--", pattern], { allowExit: [0, 1] });
   return out.split("\n").filter((l) => l.trim() !== "");
@@ -307,9 +296,12 @@ export function pgrep(host: WslHost, pattern: string): string[] {
 
 // ---- T252 start order ----
 
+// The two dedicated distros are never the reference distro or the default distro. `wsl.exe` ignores letter case in a distro name.
 export function orderDistros(): [string, string] | null {
   const names = (process.env.ARBARETO_WSL_ORDER_DISTROS ?? "").split(",").map((n) => n.trim()).filter((n) => n !== "");
-  if (names.length !== 2 || names[0] === names[1]) return null;
+  if (names.length !== 2 || names[0]!.toLowerCase() === names[1]!.toLowerCase()) return null;
+  const reserved = [wslHost()?.distro, process.env.ARBARETO_WSL_DISTRO, defaultDistro()].filter((n) => n).map((n) => n!.toLowerCase());
+  if (names.some((n) => reserved.includes(n.toLowerCase()))) return null;
   const listed = listDistros(false) ?? [];
   return names.every((n) => listed.includes(n)) ? [names[0]!, names[1]!] : null;
 }

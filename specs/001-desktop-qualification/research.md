@@ -508,7 +508,7 @@ The `windows` Git tag metadata did not match the published package. The publishe
 
 ### Win32 binding features
 
-On 2026-09-30, a source inspection read the published `windows-0.62.0.crate`, whose SHA-256 equals the checksum above. Each call in the tasks lives in one feature module. Some calls need a second feature for a parameter type. T006 enables exactly this list.
+On 2026-09-30, a source inspection read the published `windows-0.62.0.crate`, whose SHA-256 equals the checksum above. Each call in the tasks lives in one feature module. Some calls need a second feature for a parameter type. T006 enables exactly this list. Later tasks add rows, and each addition has a record in R10 "Dependency reviews".
 
 | Feature | Calls and types in the tasks | Evidence in the crate |
 | --- | --- | --- |
@@ -522,6 +522,7 @@ On 2026-09-30, a source inspection read the published `windows-0.62.0.crate`, wh
 | `Win32_System_SystemInformation` | `OSVERSIONINFOEXW`, `OSVERSIONINFOW`, `IMAGE_FILE_MACHINE`, `IMAGE_FILE_MACHINE_AMD64`. It gates `IsWow64Process2` and `RtlGetVersion`. | Threading `mod.rs:1130`; Wdk SystemServices `mod.rs:5328`. |
 | `Win32_System_SystemServices` | `VER_NT_WORKSTATION`, `VER_NT_DOMAIN_CONTROLLER`, `VER_NT_SERVER`. | `Win32/System/SystemServices/mod.rs:5294-5296`. |
 | `Wdk_System_SystemServices` | `RtlGetVersion`. | `Wdk/System/SystemServices/mod.rs:5330`. It takes `*mut OSVERSIONINFOW`. The crate has no `RTL_OSVERSIONINFOEXW` name, so T057 passes a cast `OSVERSIONINFOEXW`. |
+| `Win32_System_Registry` | T211 adds it. `RegOpenKeyExW`, `RegEnumKeyExW`, `RegGetValueW`, `RegCloseKey`, `HKEY`, `HKEY_CURRENT_USER`, `KEY_READ`, `RRF_RT_REG_SZ`, `RRF_RT_REG_DWORD`. | The resolved `windows-0.62.2` source, `Win32/System/Registry/mod.rs`: `RegCloseKey` `:12`, `RegEnumKeyExW` `:249`, `RegGetValueW` `:289`, `RegOpenKeyExW` `:376`, `HKEY` `:713`, `HKEY_CURRENT_USER` `:737`, `KEY_READ` `:756`, `RRF_RT_REG_DWORD` `:1817`, `RRF_RT_REG_SZ` `:1822`. No name carries a second-feature `cfg`. The crate `Cargo.toml:629` gives `Win32_System_Registry = ["Win32_System"]`. |
 | `Win32_UI_Controls` | `TaskDialogIndirect`, `TASKDIALOGCONFIG`, `TASKDIALOG_BUTTON`. | `Win32/UI/Controls/mod.rs:1267`, `:9116`. |
 | `Win32_UI_WindowsAndMessaging` | It gates `TaskDialogIndirect` and `TASKDIALOGCONFIG`. | Controls `mod.rs:1265`, `:9114`. |
 
@@ -1084,6 +1085,7 @@ Open items and reasons:
 After T003 and T006, each dependency change gets one record here (plan.md, Tool and runtime boundaries). A record names the task and each added, removed, or changed package. It gives the old and new resolved versions, the licence, the reason, the reviewer, and the findings. It also lists the qualification checks that ran again.
 
 - T059, 2026-10-03: the `windows` crate gets the feature `Win32_Security_Cryptography`. The resolved version stays `0.62.2`, and `Cargo.lock` does not change. Licence: MIT OR Apache-2.0. Reason: the shell hashes the mutation mutex name with `BCryptHash` and `BCRYPT_SHA256_ALG_HANDLE` (contract §6 "Recovery markers"). It also takes marker IDs from `BCryptGenRandom`. The feature adds no crate. Reviewer: the T059 implementer; the main session reviews the diff. Findings: none. Checks that ran again: `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo fmt --check`.
+- T211, 2026-10-04: the `windows` crate gets the feature `Win32_System_Registry`. The resolved version stays `0.62.2`, and `Cargo.lock` does not change. Licence: MIT OR Apache-2.0. Reason: the shell reads the `DistributionName` and `Version` values under `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` (contract §11 "Distro checks"). R7 "Win32 binding features" lists the calls. The feature adds no crate. Reviewer: an independent branch review; the main session reviews the diff. Findings: the record and the R7 row were missing, and this record adds them. Checks that ran again: `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo fmt --check`.
 
 ## R11. Planning artifact checks
 

@@ -119,7 +119,7 @@ fn saved_wsl_gits(value: &Value) -> Vec<SavedWslGit> {
             && !distro.is_empty()
             && !distro.chars().any(char::is_control)
             && git.starts_with('/')
-            && !git.contains('\0')
+            && !git.chars().any(char::is_control)
             && is_version(version)
             && is_git_identity(identity);
         if valid && !gits.iter().any(|saved| saved.guid == guid) {
@@ -1759,13 +1759,17 @@ mod tests {
             "version": "2.55.0",
             "identity": "fedc9aa3bd65bc57:1:2:3",
         });
-        let cases: [(&str, Value); 9] = [
+        let cases: [(&str, Value); 12] = [
             ("guid", json!("c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00")),
             ("guid", json!("{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea0}")),
             ("distro", json!("")),
             ("distro", json!("Ubu\u{1}ntu")),
             ("git", json!("usr/bin/git")),
             ("git", json!("/usr/bin/g\u{0}it")),
+            // `dialogs.rs` prints the path into the confirmation.
+            ("git", json!("/usr/bin/g\u{1b}it")),
+            ("git", json!("/usr/bin/git\nUse this Git")),
+            ("git", json!("/usr/bin/g\u{85}it")),
             ("version", json!("2".repeat(65))),
             ("identity", json!("fedc9aa3bd65bc57:1:2")),
             ("identity", json!("xyz:1:2:3")),

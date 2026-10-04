@@ -8,7 +8,10 @@
 //! - `wslDistros` with a `repositoryDiscovery` context: the context path, `distros` facts, and the saved Git of each listed GUID.
 //!   The service holds only the bootstrap ID, so it routes that path.
 //! - `wslProbe` with that context and a listed `distro`: `probe_command`, deadline at most 60 seconds.
-//! - `register` Git form with that context and a `wsl` object: `Installation` plus the Git identity.
+//!   The shell parses the probe output itself and binds the `Installation` and the Git identity to the context.
+//!   Output that fails a §11 rule binds nothing. The service still gets the output for its own §11 refusals.
+//! - `register` WSL form: only the context ID, the issued `gitInstallationId`, and `confirm`.
+//!   The shell issues the ID only from the bound facts. The service never names a Linux program.
 //! - `run` and `identity` against a WSL Git: `git_command` and `identity`. A mutation starts its anchor first.
 
 // No frame handler calls this module yet. T212 wires the WSL frames into `process_requests.rs` and `bootstrap.rs`.
@@ -36,7 +39,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{HSTRING, PWSTR, w};
 
-use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code};
+use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, is_identifier};
 use crate::spawn::{Input, SpawnError, SpawnRequest, spawn};
 
 /// Contract §11 "Paths and file access": the identity probes run this fixed path.
@@ -321,8 +324,12 @@ impl Mode {
     }
 }
 
-pub fn unit_name(operation_id: &str, n: u32) -> String {
-    format!("arbareto-{operation_id}-{n}.scope")
+/// The anchor matches `arbareto-<operation ID>-*.scope`, so the ID must hold no glob character.
+pub fn unit_name(operation_id: &str, n: u32) -> Result<String, Code> {
+    if !is_identifier(operation_id) {
+        return Err(INVALID);
+    }
+    Ok(format!("arbareto-{operation_id}-{n}.scope"))
 }
 
 /// The bootstrap Git probe. It runs without the wrapper (contract §11 "Git per distro").
@@ -371,7 +378,11 @@ pub fn git_command(
     let [first, rest @ ..] = arguments else {
         return Err(INVALID);
     };
-    if first != "--no-lazy-fetch" || (index.is_some() && mode != Mode::Mutation) {
+    // A directory that starts with `-` would become a Git option.
+    if first != "--no-lazy-fetch"
+        || !directory.starts_with('/')
+        || (index.is_some() && mode != Mode::Mutation)
+    {
         return Err(INVALID);
     }
     let mut git = strings(&["--no-lazy-fetch", "-C", directory]);
@@ -393,14 +404,17 @@ pub fn anchor_command(
     installation: &Installation,
     operation_id: &str,
     base: &[(OsString, OsString)],
-) -> Command {
-    shell_command(
+) -> Result<Command, Code> {
+    if !is_identifier(operation_id) {
+        return Err(INVALID);
+    }
+    Ok(shell_command(
         &installation.distro,
         &texts().anchor,
         &[&installation.systemctl, operation_id],
         base,
         Stdin::Open,
-    )
+    ))
 }
 
 /// A request for another distro or Git path than the registered installation is refused.
@@ -442,6 +456,8 @@ pub enum Refusal {
     MixedLocation,
     /// A failed or malformed probe, as a failed `FileIdInfo` call (contract §6).
     Failed,
+    /// An operation ID or a path that the request rules refuse.
+    Invalid,
 }
 
 impl Refusal {
@@ -454,6 +470,7 @@ impl Refusal {
                 json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "mixed-location" })
             }
             Refusal::Failed => json!({ "code": "UNSUPPORTED_REPOSITORY" }),
+            Refusal::Invalid => json!({ "code": INVALID }),
         }
     }
 }
@@ -504,13 +521,18 @@ pub fn identity(
     path: &str,
     base: &[(OsString, OsString)],
 ) -> Result<WslIdentity, Refusal> {
+    // A path that starts with `-` would become a `stat` option.
+    if !path.starts_with('/') {
+        return Err(Refusal::Invalid);
+    }
     let probe = |unit: u32, options: &[&str]| {
+        let unit = unit_name(operation_id, unit).map_err(|_| Refusal::Invalid)?;
         let mut arguments = strings(options);
         arguments.push(path.to_string());
         let command = wrapped(
             installation,
             Mode::Probe,
-            &unit_name(operation_id, unit),
+            &unit,
             None,
             STAT,
             &arguments,
@@ -1007,7 +1029,7 @@ mod tests {
                 &base(),
                 Stdin::Closed,
             ),
-            anchor_command(&inst, OPERATION, &base()),
+            anchor_command(&inst, OPERATION, &base()).expect("anchor"),
         ]
     }
 
@@ -1374,7 +1396,7 @@ mod tests {
             without.spawn_request(&directory).input,
             Input::Closed
         ));
-        let anchor = anchor_command(&inst, OPERATION, &base());
+        let anchor = anchor_command(&inst, OPERATION, &base()).expect("anchor");
         assert!(matches!(
             anchor.spawn_request(&directory).input,
             Input::Stream
@@ -1390,19 +1412,52 @@ mod tests {
     fn the_unit_name_counts_the_processes_of_the_operation() {
         assert_eq!(
             unit_name(OPERATION, 1),
-            format!("arbareto-{OPERATION}-1.scope")
+            Ok(format!("arbareto-{OPERATION}-1.scope"))
         );
         assert_eq!(
             unit_name(OPERATION, 27),
-            format!("arbareto-{OPERATION}-27.scope")
+            Ok(format!("arbareto-{OPERATION}-27.scope"))
         );
+    }
+
+    #[test]
+    fn the_unit_name_the_anchor_and_the_identity_refuse_an_operation_id_that_is_not_an_identifier()
+    {
+        let inst = installation();
+        for operation in [
+            "*",
+            "0f0f0f0f-0000-4000-8000-0000000000a*",
+            "0F0F0F0F-0000-4000-8000-0000000000AA",
+            "--all",
+            "",
+        ] {
+            assert_eq!(
+                unit_name(operation, 1),
+                Err("INVALID_REQUEST"),
+                "{operation:?}"
+            );
+            assert!(
+                matches!(
+                    anchor_command(&inst, operation, &base()),
+                    Err("INVALID_REQUEST")
+                ),
+                "{operation:?}"
+            );
+            let host = FakeHost::new(Vec::new(), Vec::new());
+            assert_eq!(
+                identity(&host, &inst, operation, 1, "/r", &base()).err(),
+                Some(Refusal::Invalid),
+                "{operation:?}"
+            );
+            assert!(host.commands.borrow().is_empty());
+        }
     }
 
     // ---- T205: the anchor ----
 
     #[test]
     fn the_anchor_runs_without_the_wrapper_and_answers_each_line_with_the_count_and_the_io_sum() {
-        let command = anchor_command(&installation(), OPERATION, &base());
+        let command = anchor_command(&installation(), OPERATION, &base()).expect("anchor");
         let anchor = json_text("anchor");
         assert_eq!(
             command.arguments,
@@ -1488,7 +1543,7 @@ mod tests {
     fn stand_in_anchor(file: &Path) -> Command {
         let mut arguments: Vec<String> = ANCHOR_CHILD.iter().map(|s| s.to_string()).collect();
         arguments.push(file.to_string_lossy().into_owned());
-        let mut command = anchor_command(&installation(), OPERATION, &base());
+        let mut command = anchor_command(&installation(), OPERATION, &base()).expect("anchor");
         command.program = test_exe();
         command.arguments = arguments;
         command.environment = std::env::vars_os().collect();
@@ -1590,7 +1645,7 @@ mod tests {
             wrapped(
                 &inst,
                 Mode::Probe,
-                &unit_name(OPERATION, unit),
+                &unit_name(OPERATION, unit).expect("unit"),
                 None,
                 "/usr/bin/stat",
                 &strings(stat),
@@ -1690,6 +1745,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_directory_or_an_identity_path_without_a_leading_slash_is_refused_before_any_process() {
+        let inst = installation();
+        let arguments = strings(&["--no-lazy-fetch", "status"]);
+        for directory in ["-x", "r", "", "--version", "\\r", "~/r"] {
+            assert_eq!(
+                git_command(
+                    &inst,
+                    Mode::Read,
+                    "arbareto-op-1.scope",
+                    None,
+                    directory,
+                    &arguments,
+                    &base(),
+                    Stdin::Closed
+                )
+                .err(),
+                Some("INVALID_REQUEST"),
+                "{directory:?}"
+            );
+            let host = FakeHost::new(Vec::new(), Vec::new());
+            assert_eq!(
+                identity(&host, &inst, OPERATION, 1, directory, &base()).err(),
+                Some(Refusal::Invalid),
+                "{directory:?}"
+            );
+            assert!(
+                host.commands.borrow().is_empty(),
+                "no stat for {directory:?}"
+            );
+        }
+        assert_eq!(
+            Refusal::Invalid.reply(),
+            json!({ "code": "INVALID_REQUEST" })
+        );
+    }
+
     // ---- T205: the Git probe ----
 
     #[test]
@@ -1755,6 +1847,15 @@ mod tests {
 
     // ---- Reference distro checks. They skip without WSL. ----
 
+    /// A skipped check passes in libtest, so it prints the fixed line `SKIP <capability>` with the `tests/wsl` capability name.
+    /// libtest shows that line only with `--nocapture`. The batch check runs
+    /// `cargo test --locked --manifest-path src-tauri/Cargo.toml -- wsl::tests::the_real --nocapture --test-threads=1`
+    /// and counts the lines that match `^SKIP `.
+    fn skip(capability: &str) {
+        // libtest can print the test name without a line end before this output.
+        println!("\nSKIP {capability}");
+    }
+
     /// The host Job and the distro of the WSL tests (test harness rules: `ARBARETO_WSL_DISTRO` or the default distro).
     struct Reference {
         job: Job,
@@ -1773,7 +1874,7 @@ mod tests {
 
     fn reference() -> Option<Reference> {
         if !wsl_program().is_file() {
-            println!("SKIP: wsl (no {})", wsl_program().display());
+            skip("wsl");
             return None;
         }
         let reference = Reference {
@@ -1796,7 +1897,7 @@ mod tests {
                         .trim()
                         .to_string(),
                     None => {
-                        println!("SKIP: wsl2-distro (no default distro)");
+                        skip("wsl2-distro");
                         return None;
                     }
                 }
@@ -1829,11 +1930,11 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         if probe_fact(&text, "scope ") != Some("0") {
-            println!("SKIP: systemd-user-manager");
+            skip("systemd-user-manager");
             return None;
         }
         let Some(setsid) = probe_fact(&text, "path setsid ") else {
-            println!("SKIP: setsid");
+            skip("setsid");
             return None;
         };
         Some(Installation {
@@ -1888,7 +1989,7 @@ mod tests {
                 assert_eq!(found.inode, "2");
                 assert_eq!(found.file_system_type, "ef53");
             }
-            Err(Refusal::NoFsUuid) => println!("SKIP: wsl-fixture-fs-id (the root is not ext4)"),
+            Err(Refusal::NoFsUuid) => skip("wsl-fixture-fs-id"),
             Err(other) => panic!("identity refused: {other:?}"),
         }
     }
@@ -1908,7 +2009,7 @@ mod tests {
         mutation
             .before_execution(|| {
                 Anchor::start(
-                    &anchor_command(&inst, &operation, &environment),
+                    &anchor_command(&inst, &operation, &environment).expect("anchor"),
                     job.handle(),
                     &reference.directory,
                 )
@@ -1921,7 +2022,7 @@ mod tests {
         let child = wrapped(
             &inst,
             Mode::Mutation,
-            &unit_name(&operation, 1),
+            &unit_name(&operation, 1).expect("unit"),
             None,
             "/bin/sh",
             &strings(&["-c", "sleep 60 & echo started"]),

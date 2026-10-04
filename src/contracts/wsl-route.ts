@@ -5,9 +5,7 @@
 
 import { buildRemedyCommand, type RemedyCommand, type RemedyValue } from "./remedy-command";
 
-// Contract §9: the reasons of `WSL_UNAVAILABLE`.
-export const WSL_UNAVAILABLE_REASONS = ["wsl-missing", "distro-missing", "not-wsl2", "no-user-manager", "no-setsid", "no-coreutils", "start-failed"] as const;
-export type WslUnavailableReason = (typeof WSL_UNAVAILABLE_REASONS)[number];
+export { WSL_UNAVAILABLE_REASONS, type WslUnavailableReason } from "./errors";
 
 // Contract §11 "Git per distro".
 export const WSL_MINIMUM_GIT_VERSION = "2.55.0";
@@ -48,7 +46,7 @@ export function routeWslPath(path: string, facts: WslDistroFacts): WslRoute {
   const prefix = PREFIX.exec(path);
   if (!prefix) return { kind: "windows" };
   const rest = path.slice(prefix[0].length);
-  const end = rest.indexOf("\\");
+  const end = rest.search(/[\\/]/);
   const segment = end < 0 ? rest : rest.slice(0, end);
   // An exact match wins. Without one, one match that ignores letter case counts.
   const exact = facts.listed.find((name) => name === segment);
@@ -129,7 +127,11 @@ const MINIMUM_PARTS = WSL_MINIMUM_GIT_VERSION.split(".").map(BigInt);
 export function checkWslGit(git: { path: string; mz: boolean; versionText: string }): WslGitCheck {
   if (isWindowsProgram(git.path, git.mz) || git.versionText.includes(".windows.")) return { ok: false, code: "GIT_UNSUPPORTED", reason: "windows-git" };
   const m = /^git version ((\d+)\.(\d+)\.(\d+)\S*)$/.exec(git.versionText);
-  if (!m) return { ok: false, code: "GIT_UNSUPPORTED", reason: "version", minimumVersion: WSL_MINIMUM_GIT_VERSION };
+  if (!m) {
+    // Contract §11: the text names the found version, also an unparseable one.
+    const found = git.versionText.replace(/^git version /, "");
+    return { ok: false, code: "GIT_UNSUPPORTED", reason: "version", ...(found === "" ? {} : { detectedVersion: found }), minimumVersion: WSL_MINIMUM_GIT_VERSION };
+  }
   const parts = m.slice(2, 5).map(BigInt);
   const index = parts.findIndex((part, i) => part !== MINIMUM_PARTS[i]);
   if (index >= 0 && parts[index]! < MINIMUM_PARTS[index]!) {

@@ -232,6 +232,46 @@ describe("WSL registration seams (T207)", () => {
     },
     CASE_TIMEOUT_MS,
   );
+
+  wslTest(
+    "the WSL register carries only the context ID, the issued ID, and confirm, and the shell takes the Git from its own probe parse",
+    ["systemd-user-manager", "setsid"],
+    async (host) => {
+      const { runner } = setup(host);
+      const path = uncPath(host, host.folder);
+      const probe = async (bootstrapId: string, operationId: string) => {
+        const output = { stdout: createCollector({ maxBytes: 65536 }), stderr: createCollector({ maxBytes: 65536 }) };
+        return runner.wslProbe({ operationId, bootstrapId, distro: host.distro, limits: { deadlineMs: 60_000 }, ...output, signal: new AbortController().signal });
+      };
+      const operationId = crypto.randomUUID();
+      const bootstrapId = runner.addContext("repositoryDiscovery", path);
+      // A register before any probe has no bound facts.
+      await expect(runner.register({ operationId, bootstrapId, gitInstallationId: crypto.randomUUID(), confirm: true } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      runner.inject.wslProbe = { stdout: seamProbe(host) };
+      expect(await probe(bootstrapId, operationId)).toMatchObject({ exitCode: 0 });
+      // A Linux program path from the service is refused.
+      const programs = { distro: host.distro, git: "/tmp/evil", systemdRun: "/tmp/evil", systemctl: "/tmp/evil", setsid: "/tmp/evil" };
+      await expect(runner.register({ operationId, bootstrapId, gitInstallationId: crypto.randomUUID(), confirm: true, wsl: programs } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      expect(runner.wslConfirmations).toEqual([]);
+      const gitInstallationId = crypto.randomUUID();
+      expect(await runner.register({ operationId, bootstrapId, gitInstallationId, confirm: true } as never)).toEqual({ result: "approved" });
+      expect(runner.wslConfirmations).toEqual([{ distro: host.distro, path: host.probe.paths.git, version: host.gitVersion ?? "" }]);
+      expect(runner.wslSaved.get(host.guid)).toEqual({
+        distro: host.distro,
+        git: host.probe.paths.git,
+        version: host.gitVersion ?? "",
+        gitIdentity: `${host.probe.gitfs?.split(":")[1]}:${host.probe.gitfile}`,
+      });
+      // A probe that fails a contract §11 rule binds nothing.
+      const other = crypto.randomUUID();
+      const unbound = runner.addContext("repositoryDiscovery", path);
+      runner.inject.wslProbe = { stdout: seamProbe(host, { absent: ["setsid"] }) };
+      expect(await probe(unbound, other)).toMatchObject({ exitCode: 0 });
+      await expect(runner.register({ operationId: other, bootstrapId: unbound, gitInstallationId: crypto.randomUUID(), confirm: true } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      expect(runner.wslConfirmations).toHaveLength(1);
+    },
+    CASE_TIMEOUT_MS,
+  );
 });
 
 describe("WSL registration with Git 2.55.0 (T207)", () => {

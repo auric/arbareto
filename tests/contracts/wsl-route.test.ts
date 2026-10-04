@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { ERROR_CODES } from "../../src/contracts/errors";
+import { ERROR_CODES, WSL_UNAVAILABLE_REASONS as ERROR_REASONS } from "../../src/contracts/errors";
 import {
   buildWslRemedy,
   checkWslGit,
@@ -69,6 +69,11 @@ describe("WSL route (T204, contract §11 Route)", () => {
     expect([...identities]).toEqual([unc("wsl.localhost", "Ubuntu-24.04", "home", "user", "r")]);
     const root = routeWslPath(unc("wsl$", "Ubuntu-24.04", ""), FACTS);
     expect(root).toMatchObject({ kind: "wsl", identityPath: unc("wsl.localhost", "Ubuntu-24.04") });
+  });
+
+  test("a / after the distro segment also ends the segment", () => {
+    expect(routeWslPath(`${BS}${BS}wsl$${BS}Ubuntu/home`, FACTS)).toEqual({ kind: "wsl", distro: "Ubuntu", guid: OTHER_GUID, identityPath: unc("wsl.localhost", "Ubuntu", "home"), linuxPath: "/home" });
+    expect(routeWslPath(`${BS}${BS}wsl.localhost${BS}Ubuntu-24.04/home${BS}user/r`, FACTS)).toMatchObject({ kind: "wsl", distro: "Ubuntu-24.04", linuxPath: "/home/user/r" });
   });
 
   test("an exact distro match wins, then one match that ignores letter case", () => {
@@ -153,6 +158,10 @@ describe("WSL_UNAVAILABLE (T204, contract §9)", () => {
     expect(ERROR_CODES).toContain("WSL_UNAVAILABLE");
     expect([...WSL_UNAVAILABLE_REASONS]).toEqual(["wsl-missing", "distro-missing", "not-wsl2", "no-user-manager", "no-setsid", "no-coreutils", "start-failed"]);
   });
+
+  test("the reasons live in the contract error types (T210)", () => {
+    expect(ERROR_REASONS).toBe(WSL_UNAVAILABLE_REASONS);
+  });
 });
 
 describe("WSL remedy commands (T204, contract §11 Remedy commands)", () => {
@@ -223,6 +232,14 @@ describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
     for (const text of ["", "git version", "git version two", "version 2.55.0", "git version 2.55"]) {
       expect(git(text)).toMatchObject({ ok: false, code: "GIT_UNSUPPORTED", reason: "version" });
     }
+  });
+
+  test("an unparseable version carries its raw text as the detected version", () => {
+    const refused = { ok: false, code: "GIT_UNSUPPORTED", reason: "version", minimumVersion: "2.55.0" } as const;
+    expect(git("git version two")).toEqual({ ...refused, detectedVersion: "two" });
+    expect(git("git version 2.55")).toEqual({ ...refused, detectedVersion: "2.55" });
+    expect(git("version 2.55.0")).toEqual({ ...refused, detectedVersion: "version 2.55.0" });
+    expect(git("")).toEqual(refused);
   });
 
   test("a .windows. version, a path under /mnt/, and a file that starts with MZ give reason windows-git", () => {

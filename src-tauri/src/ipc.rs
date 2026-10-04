@@ -187,7 +187,7 @@ impl Ipc {
     }
 
     /// The steps of contract §1 "Renderer request body", in that order.
-    /// Only the service strict decoder checks duplicate keys, nesting, and unsafe integers.
+    /// The service strict decoder checks duplicate keys, nesting, and unsafe integers. The shell also runs it on a native-first body.
     fn submit(&self, label: &str, url: &str, body: &InvokeBody, command: &str) -> Submitted {
         if label != MAIN_WINDOW || !is_local(url) {
             return Submitted::Denied;
@@ -240,13 +240,18 @@ impl Ipc {
             };
         }
         let native_first = NATIVE_FIRST.contains(&operation);
+        let mut envelope = Value::Null;
         if native_first {
             if operation == "requestClose" {
                 return reject("SERVICE_UNAVAILABLE");
             }
-            if let Err(code) = schema::native_first(&request) {
+            let Some(strict) = decode_strict(text) else {
+                return reject(INVALID);
+            };
+            if let Err(code) = schema::native_first(&strict) {
                 return reject(code);
             }
+            envelope = strict;
         }
         // The requestId is reserved before any native dialog shows.
         let (waiting, response) = channel(1);
@@ -282,7 +287,7 @@ impl Ipc {
             let (Some(native), true) = (native, self.session().session_id.is_some()) else {
                 return rejected("SERVICE_UNAVAILABLE");
             };
-            match native.prepare(operation, &request["payload"]) {
+            match native.prepare(operation, &envelope["payload"]) {
                 Err(code) => return rejected(code),
                 Ok(None) => {
                     return answer(
@@ -290,10 +295,9 @@ impl Ipc {
                     );
                 }
                 Ok(Some(native)) => {
-                    let mut forwarded = request.clone();
-                    forwarded["payload"] = native.payload.clone();
+                    envelope["payload"] = native.payload.clone();
                     prepared = Some(native);
-                    public_request_body(&forwarded.to_string())
+                    public_request_body(&envelope.to_string())
                 }
             }
         } else {
@@ -831,6 +835,21 @@ mod tests {
         ] {
             assert_eq!(send(&ipc, &envelope), rejected(code), "{envelope}");
         }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn a_native_first_body_with_a_duplicate_key_gets_invalid_request_before_any_dialog() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let body = format!(
+            r#"{{"version":1,"sessionId":"{SESSION_ID}","requestId":"{REQUEST_ID}","operation":"chooseRepository","payload":{{"path":"C:\\repo"}},"payload":{{}}}}"#
+        );
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), "chooseRepository"),
+            rejected("INVALID_REQUEST")
+        );
         assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
         assert!(frames.lock().expect("frames").is_empty());
         assert_eq!(pending(&ipc), 0, "no request waits for a response");

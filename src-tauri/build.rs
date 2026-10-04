@@ -61,7 +61,8 @@ fn main() {
     .expect("failed to run the Tauri build script");
 }
 
-/// Writes the serde types of each schema file to `OUT_DIR` with typify. A missing or stale file fails the build.
+/// Writes the serde types of each schema file to `OUT_DIR` with typify. A missing file fails the build.
+/// `schemas.test.ts` and `bun run export:schemas --check` find a stale file.
 fn generate_schema_types(out_dir: &Path) {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR");
     let folder = Path::new(&manifest).join("../src/contracts/schemas");

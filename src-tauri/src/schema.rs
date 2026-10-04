@@ -177,6 +177,9 @@ mod tests {
         expected: String,
     }
 
+    /// The vector schemas that the shell never reads. The renderer and the service check them.
+    const NOT_READ: [&str; 2] = ["process-reply", "renderer-envelope"];
+
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
     fn check(schema: &str, text: &str) -> Option<String> {
         let ok = |checked: Result<(), Code>| {
@@ -185,16 +188,16 @@ mod tests {
         let strict = |text: &str| decode_strict(text).ok_or(INVALID);
         let valid = |valid: bool| if valid { Ok(()) } else { Err(INVALID) };
         Some(ok(match schema {
-            // The shell parses a renderer body as plain JSON (contract §1 step 4).
-            "native-first-envelope" => serde_json::from_str::<Value>(text)
-                .map_err(|_| INVALID)
-                .and_then(|value| native_first(&value).map(drop)),
+            "native-first-envelope" => {
+                strict(text).and_then(|value| native_first(&value).map(drop))
+            }
             "mutation-request" => strict(text).and_then(|value| mutation_request(&value).map(drop)),
             "trust-request" => strict(text).and_then(|value| trust_request(&value).map(drop)),
             "trust-record" => strict(text).and_then(|value| valid(trust_record(&value))),
             "handshake" => strict(text).and_then(|value| handshake(&value).map(drop)),
             "progress" => strict(text).and_then(|value| valid(progress(&value))),
-            _ => return None,
+            other if NOT_READ.contains(&other) => return None,
+            other => panic!("unknown vector schema {other}"),
         }))
     }
 
@@ -229,7 +232,7 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{wrong:#?}");
-        assert!(checked >= 40, "only {checked} shell-read vectors");
+        assert_eq!(checked, 46, "shell-read vectors");
     }
 
     #[test]

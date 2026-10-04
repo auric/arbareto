@@ -241,6 +241,7 @@ describe("frontend bridge", () => {
     h.emit("operation-progress", { requestId, operationId: id(), state: "running", counters: {} });
     h.emit("operation-progress", { requestId: id(), operationId: id(), state: "accepted", counters: {} });
     h.emit("operation-progress", null);
+    await settle();
     expect(events).toEqual([]);
   });
 

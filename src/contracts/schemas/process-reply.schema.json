@@ -298,7 +298,7 @@
         "executablePath": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "required": [

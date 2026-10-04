@@ -1,0 +1,6 @@
+{
+  "schema": "trust-request",
+  "expected": "INVALID_REQUEST",
+  "platform": "windows",
+  "text": "{\"type\":\"revoke\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000009\",\"commonDirectory\":\"\\\\\\\\server\\\\\"}"
+}

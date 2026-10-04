@@ -177,6 +177,20 @@ mod tests {
         expected: String,
     }
 
+    /// The `platform` value of the vectors that run on this host.
+    const HOST_PLATFORM: &str = if cfg!(windows) { "windows" } else { "posix" };
+
+    /// Whether the vector file runs on this host. serde reads `null` as an absent `Option`, so the raw value decides.
+    fn runs_here(file: &str, path: &Path) -> bool {
+        let file: Value = serde_json::from_str(file).expect("vector form");
+        match file.get("platform") {
+            None => true,
+            Some(Value::String(platform)) if platform == HOST_PLATFORM => true,
+            Some(Value::String(platform)) if platform == "windows" || platform == "posix" => false,
+            Some(other) => panic!("{}: unknown platform {other}", path.display()),
+        }
+    }
+
     /// The vector schemas that the shell never reads. The renderer and the service check them.
     const NOT_READ: [&str; 2] = ["process-reply", "renderer-envelope"];
 
@@ -218,6 +232,9 @@ mod tests {
                     "{}",
                     path.display()
                 );
+                if !runs_here(&text, &path) {
+                    continue;
+                }
                 let Some(result) = check(&vector.schema, &vector.text) else {
                     continue;
                 };
@@ -232,7 +249,17 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{wrong:#?}");
-        assert_eq!(checked, 46, "shell-read vectors");
+        assert_eq!(
+            checked,
+            if cfg!(windows) { 51 } else { 48 },
+            "shell-read vectors"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown platform null")]
+    fn a_vector_with_a_null_platform_is_refused() {
+        runs_here(r#"{"platform":null}"#, Path::new("null-platform.json"));
     }
 
     #[test]

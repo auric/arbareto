@@ -105,6 +105,64 @@ Use `--is-bare-repository` and `--is-inside-git-dir` before registration. Either
 
 A folder outside every repository fails that first query. Discovery stops at the file system root or at a mount point. Then `setup.c` dies with one of two messages (setup.c:2004-2015). The first is "not a git repository (or any of the parent directories)". The second is "not a git repository (or any parent up to mount point". `die` prints the prefix `fatal: ` and exits with status 128 (usage.c:74, :87). A `.git` file with a missing target dies with "not a git repository: <path>" instead (setup.c:940). So the prefix `fatal: not a git repository (or any` under the fixed C locale separates `NOT_A_REPOSITORY` from the missing-target case, which stays `REPOSITORY_UNAVAILABLE`. No probe ran this case; T068 verifies it.
 
+**T283 record (2026-10-04)**: T076 must not build the full combined discovery `rev-parse` form. T076 and T082 may build the two-call form below instead of the separate profiles. The two-call form saves five Git processes in each success case and none in a refusal case.
+
+The probe `tests/git/probe-discovery.ts` ran Git `2.56.0.windows.1` (`C:/Git/ucrt64/bin/git.exe`, the Git that `tests/git/git-binary.ts` selects). This is not the R2 candidate `2.55.0.windows.3`. Each call passed `--no-lazy-fetch` and ran under `LC_ALL=C` with the owned fixture environment. The separate form is seven calls in the T082 order: `--is-bare-repository --is-inside-git-dir`, then one call each for `--show-toplevel`, `--absolute-git-dir`, `--git-common-dir`, `--git-path index`, `--show-object-format`, and `--show-ref-format`. The combined form is one `rev-parse` call with these eight options in the same order. `symbolic-ref` and `show-ref` are separate commands, and the combined form does not replace them.
+
+Each repository got local canaries before the probe: command-valued `core.fsmonitor`, `filter.<driver>.clean`, `.smudge`, and `.process`, and `diff.<driver>.textconv`. It also got `gpg.program`, `gpg.openpgp.program`, `gpg.x509.program`, `gpg.ssh.program`, and `gpg.ssh.defaultKeyCommand`. It also got one configured hook and the 28 traditional hook names. `info/attributes` assigned the filter and diff drivers, and every tracked file was stat-dirty. The canaries were in the common directory, so the linked worktrees and the administration folder used them too. The submodule got its own canaries.
+
+Control: in the ordinary repository, the same canaries ran for commands that must run them. `status` ran `fsmonitor`, `filter-clean`, and the `post-index-change` hook. `rev-parse --shared-index-path` ran `fsmonitor`. `show --textconv HEAD` ran `filter-smudge` and `textconv`. `hook run pre-commit` ran the configured hook and the `pre-commit` hook. `hash-object --stdin --path=control.md` ran `filter-process`, and `tag -s` ran `gpg-openpgp-program`.
+
+| Case | Separate exits | Combined exit | Output | Stderr | Separate class | Combined class | Separate canaries | Combined canaries |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ordinary (F07 main) | 0 | 0 | equal | equal | ok | ok | none | none |
+| linked worktree (F07 wt-a) | 0 | 0 | equal | equal | ok | ok | none | none |
+| separate Git directory (F07 separate) | 0 | 0 | equal | equal | ok | ok | none | none |
+| bare (F07 bare.git) | 0/128 | 128 | differs | differs | UNSUPPORTED_REPOSITORY | REPOSITORY_UNAVAILABLE | none | none |
+| administration folder (F07 main/.git) | 0/128 | 128 | differs | differs | UNSUPPORTED_REPOSITORY | REPOSITORY_UNAVAILABLE | none | none |
+| submodule opened directly (F07 super/sub) | 0 | 0 | equal | equal | ok | ok | none | none |
+| missing gitdir target (F07 broken) | 128 | 128 | equal | equal | REPOSITORY_UNAVAILABLE | REPOSITORY_UNAVAILABLE | none | none |
+| SHA-256 (F08 sha256) | 0 | 0 | equal | equal | ok | ok | none | none |
+| reftable (F18 reftable repo) | 0 | 0 | equal | equal | ok | ok | none | none |
+| reftable linked worktree (F18 reftable wt) | 0 | 0 | equal | equal | ok | ok | none | none |
+| plain folder (F15 plain) | 128 | 128 | equal | equal | NOT_A_REPOSITORY | NOT_A_REPOSITORY | none | none |
+| removed path (F15) | spawn failed, ENOENT | spawn failed, ENOENT | equal | equal | REPOSITORY_UNAVAILABLE | REPOSITORY_UNAVAILABLE | none | none |
+| F15 repo | 0 | 0 | equal | equal | ok | ok | none | none |
+| dubious ownership (F15 repo, `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`) | 128 | 128 | equal | equal | DUBIOUS_OWNERSHIP | DUBIOUS_OWNERSHIP | none | none |
+| dubious ownership (the eight F15 hostile names, same knob) | 128 | 128 | equal | equal | DUBIOUS_OWNERSHIP | DUBIOUS_OWNERSHIP | none | none |
+
+- "Output" compares the joined stdout of the separate calls with the combined stdout. "Separate exits" lists each distinct exit status of the seven calls. The class column applies contract §6 to the first separate call and to the combined call.
+- Order: in every success case, the combined stdout holds one line per option in the option order. The lines equal the separate lines byte for byte.
+- Bare and administration folder: the combined call prints `true` `true` (bare) or `false` `true` (administration folder) on stdout. Then `--show-toplevel` dies with `fatal: this operation must be run in a work tree` and exit status 128. The separate first call exits 0 with the same two lines, so it keeps `UNSUPPORTED_REPOSITORY`. Classification by exit status and stderr prefix gives `REPOSITORY_UNAVAILABLE` for the combined call. So the combined form loses the contract §6 refusal class.
+- Other refusal cases fail in setup before any option runs. Both forms give the same exit status and the same stderr there.
+- No form ran a canary in any case.
+- Missing gitdir target: Git `2.56.0.windows.1` printed `fatal: gitfile does not point to a valid repository: <path>`, not `not a git repository: <path>`. The class stays `REPOSITORY_UNAVAILABLE`.
+Two-call form: call 1 is the flags call `--is-bare-repository --is-inside-git-dir`. Call 2 runs only when call 1 exits 0 and gives no refusal under the T082 rules. Call 2 is one `rev-parse` with the six remaining options in the T082 order. Both calls pass `--no-lazy-fetch` and run under `LC_ALL=C`. The probe compares it with the separate form under the T082 rules: the later separate calls run only when the flags call gives no refusal.
+
+| Case | Separate exits | Two-call exits | Output | Stderr | Separate class | Two-call class | Two-call canaries | Separate processes | Combined processes | Two-call processes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ordinary (F07 main) | 0 | 0 | equal | equal | ok | ok | none | 7 | 1 | 2 |
+| linked worktree (F07 wt-a) | 0 | 0 | equal | equal | ok | ok | none | 7 | 1 | 2 |
+| separate Git directory (F07 separate) | 0 | 0 | equal | equal | ok | ok | none | 7 | 1 | 2 |
+| bare (F07 bare.git) | 0 | 0 | equal | equal | UNSUPPORTED_REPOSITORY | UNSUPPORTED_REPOSITORY | none | 1 | 1 | 1 |
+| administration folder (F07 main/.git) | 0 | 0 | equal | equal | UNSUPPORTED_REPOSITORY | UNSUPPORTED_REPOSITORY | none | 1 | 1 | 1 |
+| submodule opened directly (F07 super/sub) | 0 | 0 | equal | equal | ok | ok | none | 7 | 1 | 2 |
+| missing gitdir target (F07 broken) | 128 | 128 | equal | equal | REPOSITORY_UNAVAILABLE | REPOSITORY_UNAVAILABLE | none | 1 | 1 | 1 |
+| SHA-256 (F08 sha256) | 0 | 0 | equal | equal | ok | ok | none | 7 | 1 | 2 |
+| reftable (F18 reftable repo) | 0 | 0 | equal | equal | ok | ok | none | 7 | 1 | 2 |
+| reftable linked worktree (F18 reftable wt) | 0 | 0 | equal | equal | ok | ok | none | 7 | 1 | 2 |
+| plain folder (F15 plain) | 128 | 128 | equal | equal | NOT_A_REPOSITORY | NOT_A_REPOSITORY | none | 1 | 1 | 1 |
+| removed path (F15) | spawn failed, ENOENT | spawn failed, ENOENT | equal | equal | REPOSITORY_UNAVAILABLE | REPOSITORY_UNAVAILABLE | none | 0 | 0 | 0 |
+| F15 repo | 0 | 0 | equal | equal | ok | ok | none | 7 | 1 | 2 |
+| dubious ownership (F15 repo, `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`) | 128 | 128 | equal | equal | DUBIOUS_OWNERSHIP | DUBIOUS_OWNERSHIP | none | 1 | 1 | 1 |
+| dubious ownership (the eight F15 hostile names, same knob) | 128 | 128 | equal | equal | DUBIOUS_OWNERSHIP | DUBIOUS_OWNERSHIP | none | 1 | 1 | 1 |
+
+- "Output" and "Stderr" compare the joined bytes of each form. The process columns count started Git processes. A spawn failure starts no process.
+- In every success case, call 2 printed the six remaining lines byte for byte equal to the separate calls. Each refusal case kept its contract §6 class, because call 1 decides it and call 2 does not run.
+- No two-call run ran a canary.
+- Informal timings, not qualification evidence: the ordinary case (F07 main) gave these medians of 20 runs each. The separate form (7 processes) took 160.5 ms. The full combined form (1 process) took 25.8 ms. The two-call form (2 processes) took 42.9 ms.
+- This probe is not qualification evidence, and no Arbareto build ran.
+
 Refusal sources: [discovery refusal](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/setup.c#L2004-L2015), [gitfile refusal](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/setup.c#L940), [die prefix and status](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/usage.c#L74-L87).
 
 Keep worktree identity separate from common-directory identity. Resolve physical directory identity after Git discovery. Windows junctions must not create separate mutation exclusion groups.
@@ -122,6 +180,8 @@ The 64-bit ID is not a safe identity. ReFS maps only a subset of 128-bit IDs to 
 Refusing the 64-bit sentinel alone would exclude Dev Drive repositories. It would still miss FAT and exFAT, because Bun cannot read the file system type. `bun:ffi` could read `FileIdInfo`, but Bun marks it experimental and not for production. Tests may use it as a test double.
 
 A probe on 2026-09-29 used Bun `1.4.2` on the reference host (NTFS). `fs.stat` gave `dev` `0x74214650`, and `FileIdInfo` gave serial `0x4474215074214650`. The low 64 bits of the 128-bit ID equaled `ino`. A junction alias gave the same `FileIdInfo` identity as its target. No ReFS volume was available, so ReFS and Dev Drive stay unverified.
+
+**T077 junction and ReFS record (2026-10-05)**: The T077 test ran the Windows shell double with real `FILE_ID_INFO` reads. Git came from `tests/git/git-binary.ts`. The F07 fixture root was on C: (NTFS, `volumeSerial` `4474215074214650`). Git ran in each junction alias. It resolved `--show-toplevel`, `--absolute-git-dir`, and `--git-common-dir` to the target paths, not the alias paths. The identity of the alias path equals the identity of its target. For `alias-main` and `main`, and for `alias-wt-a` and `wt-a`, all four identities are equal. So a junction alias gives equal identities (F07). The T068 junction case did not run, because `discovery.ts` and `registration.ts` do not exist yet. The T077 runner case is its direct equivalent. The host has no ReFS volume and no Dev Drive. C: and D: are NTFS, H: is a network share, and O: and P: are removable volumes (`PS4_FS`, `PS5_FS`). `fsutil fsinfo volumeinfo` needs elevation on C: and D:, so `System.IO.DriveInfo` gave the file system names. The ReFS case is `unverified`.
 
 Identity sources: [Bun Windows stat](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/sys/lib.rs#L3694-L3695), [Bun uv_fs_stat call](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/sys/sys_uv.rs#L506-L509), [libuv volume serial](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/fs.c#L1806-L1827), [libuv st_dev](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/fs.c#L1871), [libuv st_ino](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/fs.c#L1934), [64-bit file ID on ReFS](https://learn.microsoft.com/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information), [FILE_ID_INFO](https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_id_info), [MS-FSCC file ID behavior](https://learn.microsoft.com/openspecs/windows_protocols/ms-fscc/d4bc551b-7aaf-4b4f-ba0e-3a75e7c528f0), [libuv fast stat path](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/fs.c#L1729-L1765), [libuv slow stat path](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/fs.c#L1767-L1830), [FILE_STAT_BASIC_INFORMATION](https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-file_stat_basic_information), [64-bit file ID sentinels](https://learn.microsoft.com/openspecs/windows_protocols/ms-fscc/2d3333fe-fc98-4a6f-98a2-4bb805aff407), [128-bit file ID sentinels](https://learn.microsoft.com/openspecs/windows_protocols/ms-fscc/98860416-1caf-4c80-a9ab-8d61e1ccf5a5), [bun:ffi status](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/docs/runtime/ffi.mdx).
 
@@ -1710,6 +1770,7 @@ The probes ran on 2026-09-30 on the host above. They used only session scratch f
 - The candidate time rule of contract §4 steps 100 ns back. So a rounded UNC time cannot fall after the Linux time.
 - A distro without a systemd user manager is refused with reason `no-user-manager`. Closed question, 2026-09-30: the user chose this refusal over an ownership limit (spec Clarifications, 2026-09-30). The remedy tells the user to set `systemd=true` under `[boot]` in `/etc/wsl.conf` and restart the distro (contract §11).
 - WSL rows stay `unverified` until a WSL2 distro with Git 2.55.0 or later exists. The reference distro has Git 2.43.0. The user must install a newer Git; the app and its tests never install it. The Git floor refusal can run on the reference distro now.
+- Git PPA remedy (user decision, 2026-10-04): on an Ubuntu distro, the reason `version` refusal carries a copyable command. The command adds `ppa:git-core/ppa` and installs its Git (contract §11 "Git per distro"). The app never runs it. On 2026-10-04, the PPA offered `1:2.55.0-0ppa1~ubuntu24.04.2` for noble. Ubuntu's own `git` package reports `2.43.0`, also with backported CVE fixes. The version check cannot see backports, so the floor stays 2.55.0. Unverified: that every Ubuntu WSL image holds `add-apt-repository` (package `software-properties-common`). No probe ran the command.
 - P1 proved ownership: a single-scope `cgroup.procs` count, a glob kill, the anchor exit after stdin closes, and the Job-close kill. The anchor count protocol is a design, not a probe result: one count for each stdin line, summed over `arbareto-<operationId>-*.scope`. The I/O sum on the same line is a design too, based on P6. T205 and T209 test both.
 - Unverified: a stopped-distro start time (the probes started no distro), a WSL1 distro, and a distro without systemd. Also unverified: `virtiofs` drive mounts, the atomicity of a replace over the WSL file share, and packaged behavior.
 - Design change, 2026-10-01 (spec Clarifications): every wrapper mode now runs its program through `setsid --wait`, not only `network` mode. Reason: a WSL hook in `mutation` mode could open `/dev/tty` on the hidden console and wait until the commit deadline. R14 probe S10 showed that `setsid --wait` under `CREATE_NO_WINDOW` blocks the `/dev/tty` open and passes the exit status. Consequence: Git's children get no `SIGHUP` at the wrapper exit, so the P1 S6 result no longer describes the product. A plain background child now lingers in its scope, as on Windows. The anchor counts it, and the Job close ends it. A distro without `setsid` is refused with reason `no-setsid`.

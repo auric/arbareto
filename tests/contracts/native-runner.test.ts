@@ -11,10 +11,12 @@ import {
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../../src/contracts/limits";
+import { isWindows } from "../../src/contracts/native-path";
 import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, type GitCall, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
 import { createNativeRunner } from "../../src/git-service/native-runner";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
+printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 printOrigin("../../src/git-service/native-runner.ts", import.meta.dir);
 
@@ -23,16 +25,19 @@ type Sent = Record<string, unknown> & { kind: string };
 
 const MIB = 1024 * 1024;
 const id = () => crypto.randomUUID();
+const REPO = isWindows ? "C:\\repo" : "/repo";
+const GIT_DIR = isWindows ? "C:\\repo\\.git" : "/repo/.git";
+const GIT_PATH = isWindows ? "C:\\Program Files\\Git\\cmd\\git.exe" : "/usr/bin/git";
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
 const RECORD: TrustRecord = {
-  commonDirectory: "C:\\repo\\.git",
+  commonDirectory: GIT_DIR,
   commonIdentity: IDENTITY,
-  worktreeRoot: "C:\\repo",
-  gitDirectory: "C:\\repo\\.git",
+  worktreeRoot: REPO,
+  gitDirectory: GIT_DIR,
   worktreeIdentity: [IDENTITY, IDENTITY],
   configurationFingerprint: "a".repeat(64),
   approvedAt: "2026-10-02T08:00:00Z",
-  gitSelectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
+  gitSelectedPath: GIT_PATH,
 };
 
 // The shell end of the private channel. It sends contract §6 replies and never invents Git output beyond the bytes a test sets.
@@ -177,7 +182,7 @@ describe("native runner run requests", () => {
       expect(channel.bodies("cancel")).toEqual([]);
     }
     const channel = createChannelDouble();
-    const result = channel.runner.identities(id(), registered(), ["C:\\repo"]);
+    const result = channel.runner.identities(id(), registered(), [REPO]);
     expect(channel.reply("process", { type: "refused", callId: channel.last("identity").callId, code: "UNKNOWN_TARGET" })).toBe(true);
     await expect(result).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
   });
@@ -422,9 +427,9 @@ describe("native runner input", () => {
 
   test("a transaction carries its candidate index file only with the mutation policy", async () => {
     const channel = createChannelDouble();
-    const transaction = { transactionId: id(), indexFile: "C:\\repo\\.git\\arbareto-candidate-1" };
+    const transaction = { transactionId: id(), indexFile: isWindows ? "C:\\repo\\.git\\arbareto-candidate-1" : "/repo/.git/arbareto-candidate-1" };
     await expect(channel.runner.run(call({ transaction }))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-    const badName = { ...transaction, indexFile: "C:\\repo\\.git\\index" };
+    const badName = { ...transaction, indexFile: isWindows ? "C:\\repo\\.git\\index" : "/repo/.git/index" };
     await expect(channel.runner.run(call({ environmentPolicy: "mutation", transaction: badName }))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     void channel.runner.run(call({ environmentPolicy: "mutation", transaction }));
     expect(channel.last("run")).toMatchObject({ environmentPolicy: "mutation", ...transaction });
@@ -448,27 +453,27 @@ describe("native runner identity, lingering count, and registration", () => {
     const channel = createChannelDouble();
     const context = { contextKind: "repositoryDiscovery", bootstrapId: id(), gitInstallationId: id() } as const;
     const operationId = id();
-    const result = channel.runner.identities(operationId, context, ["C:\\repo", "C:\\repo\\.git"]);
+    const result = channel.runner.identities(operationId, context, [REPO, GIT_DIR]);
     const request = channel.last("identity");
-    expect(request).toEqual({ type: "identity", callId: request.callId, operationId, ...context, paths: ["C:\\repo", "C:\\repo\\.git"] });
+    expect(request).toEqual({ type: "identity", callId: request.callId, operationId, ...context, paths: [REPO, GIT_DIR] });
     channel.reply("process", { type: "identity", callId: request.callId, identities: [IDENTITY, { code: "UNSUPPORTED_REPOSITORY" }] });
     expect(await result).toEqual([IDENTITY, { code: "UNSUPPORTED_REPOSITORY" }]);
 
     for (const entry of [{ code: "INVALID_REQUEST" }, { code: "UNSUPPORTED_REPOSITORY", extra: 1 }, { ...IDENTITY, fileId: "0".repeat(31) }]) {
-      const bad = channel.runner.identities(operationId, context, ["C:\\repo"]);
+      const bad = channel.runner.identities(operationId, context, [REPO]);
       expect(channel.reply("process", { type: "identity", callId: channel.last("identity").callId, identities: [entry] })).toBe(false);
       await expect(bad).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
     }
-    await expect(channel.runner.identities(operationId, context, Array(9).fill("C:\\repo"))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(channel.runner.identities(operationId, context, Array(9).fill(REPO))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     await expect(channel.runner.identities(operationId, context, [])).rejects.toMatchObject({ code: "INVALID_REQUEST" });
   });
 
   test("lingeringCount replies with a count", async () => {
     const channel = createChannelDouble();
     const operationId = id();
-    const result = channel.runner.lingeringCount(operationId, "C:\\repo\\.git");
+    const result = channel.runner.lingeringCount(operationId, GIT_DIR);
     const request = channel.last("lingeringCount");
-    expect(request).toEqual({ type: "lingeringCount", callId: request.callId, operationId, commonDirectory: "C:\\repo\\.git" });
+    expect(request).toEqual({ type: "lingeringCount", callId: request.callId, operationId, commonDirectory: GIT_DIR });
     channel.reply("process", { type: "lingeringCount", callId: request.callId, count: 3 });
     expect(await result).toBe(3);
   });
@@ -479,8 +484,9 @@ describe("native runner identity, lingering count, and registration", () => {
     const another = id();
     const asked = channel.runner.register(git);
     expect(channel.last("register")).toEqual({ type: "register", callId: channel.last("register").callId, ...git });
-    channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: another, executablePath: "D:\\Git\\cmd\\git.exe" });
-    expect(await asked).toEqual({ result: "another", bootstrapId: another, executablePath: "D:\\Git\\cmd\\git.exe" });
+    const otherGit = isWindows ? "D:\\Git\\cmd\\git.exe" : "/opt/git/bin/git";
+    channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: another, executablePath: otherGit });
+    expect(await asked).toEqual({ result: "another", bootstrapId: another, executablePath: otherGit });
     const declined = channel.runner.register(git);
     channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "declined" });
     expect(await declined).toEqual({ result: "declined" });
@@ -490,9 +496,9 @@ describe("native runner identity, lingering count, and registration", () => {
       bootstrapId: id(),
       gitInstallationId: id(),
       repositoryId: id(),
-      worktreeRoot: "C:\\repo",
-      gitDirectory: "C:\\repo\\.git",
-      commonDirectory: "C:\\repo\\.git",
+      worktreeRoot: REPO,
+      gitDirectory: GIT_DIR,
+      commonDirectory: GIT_DIR,
     };
     const approved = channel.runner.register(repository);
     channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "approved" });
@@ -508,20 +514,25 @@ describe("native runner identity, lingering count, and registration", () => {
     }
   });
 
-  test("a register reply another needs a fully qualified executablePath", async () => {
+  const refusesAnother = async (paths: (string | undefined)[]) => {
     const channel = createChannelDouble();
     const git = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), version: "2.55.0.windows.1", digest: "c".repeat(64), confirm: true };
-    for (const path of [undefined, "git.exe", "\\Git\\git.exe", "C:\\Git\u0000\\git.exe", "\\\\.\\pipe\\git", "//?/C:/Git/git.exe"]) {
+    for (const path of paths) {
       const asked = channel.runner.register(git);
       const reply = { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: id(), ...(path === undefined ? {} : { executablePath: path }) };
       expect(channel.reply("process", reply)).toBe(false);
       await expect(asked).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
     }
-  });
+  };
+
+  test("a register reply another needs a fully qualified executablePath", () =>
+    refusesAnother([undefined, "git.exe", "\\Git\\git.exe", "C:\\Git\u0000\\git.exe", "\\\\.\\pipe\\git"]));
+
+  test.skipIf(!isWindows)("windows-path-rules: a register reply another refuses a device executablePath with slashes", () => refusesAnother(["//?/C:/Git/git.exe"]));
 
   test("resolveGit sends the resolved git.exe and returns the new gitProbe bootstrapId", async () => {
     const channel = createChannelDouble();
-    const request = { operationId: id(), bootstrapId: id(), executablePath: "C:\\Git\\mingw64\\libexec\\git-core\\git.exe" };
+    const request = { operationId: id(), bootstrapId: id(), executablePath: isWindows ? "C:\\Git\\mingw64\\libexec\\git-core\\git.exe" : "/usr/libexec/git-core/git" };
     const moved = id();
     const asked = channel.runner.resolveGit(request);
     const { callId } = channel.last("resolveGit");
@@ -585,7 +596,7 @@ describe("native runner identity, lingering count, and registration", () => {
 });
 
 describe("native runner mutation and trust frames", () => {
-  const started = { operationId: id(), repositoryId: id(), kind: "commit", worktreeRoot: "C:\\repo", commonDirectory: "C:\\repo\\.git" } as const;
+  const started = { operationId: id(), repositoryId: id(), kind: "commit", worktreeRoot: REPO, commonDirectory: GIT_DIR } as const;
 
   test("started parses the marker, busy, and failure replies", async () => {
     const channel = createChannelDouble();
@@ -600,8 +611,9 @@ describe("native runner mutation and trust frames", () => {
     channel.reply("mutation", { type: "started", callId: channel.last("started").callId, busy: true });
     expect(await busy).toEqual({ busy: true });
     const failed = channel.runner.started(started);
-    channel.reply("mutation", { type: "started", callId: channel.last("started").callId, failure: "disk-full", folder: "C:\\data\\recovery" });
-    expect(await failed).toEqual({ failure: "disk-full", folder: "C:\\data\\recovery" });
+    const folder = isWindows ? "C:\\data\\recovery" : "/data/recovery";
+    channel.reply("mutation", { type: "started", callId: channel.last("started").callId, failure: "disk-full", folder });
+    expect(await failed).toEqual({ failure: "disk-full", folder });
     const noFolder = channel.runner.started(started);
     expect(channel.reply("mutation", { type: "started", callId: channel.last("started").callId, failure: "other" })).toBe(false);
     await expect(noFolder).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
@@ -624,10 +636,10 @@ describe("native runner mutation and trust frames", () => {
 
   const confirm = {
     type: "confirm",
-    worktreeRoot: "C:\\repo",
-    gitDirectory: "C:\\repo\\.git",
-    commonDirectory: "C:\\repo\\.git",
-    gitSelectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
+    worktreeRoot: REPO,
+    gitDirectory: GIT_DIR,
+    commonDirectory: GIT_DIR,
+    gitSelectedPath: GIT_PATH,
     fingerprint: "a".repeat(64),
     persist: true,
   } as const;
@@ -676,10 +688,10 @@ describe("native runner mutation and trust frames", () => {
 
   test("revoke and confirmRun parse their replies", async () => {
     const channel = createChannelDouble();
-    const revoked = channel.runner.trust({ type: "revoke", commonDirectory: "C:\\repo\\.git" });
+    const revoked = channel.runner.trust({ type: "revoke", commonDirectory: GIT_DIR });
     channel.reply("trust", { type: "revoke", callId: channel.last("revoke").callId, endedProcesses: 2 });
     expect(await revoked).toEqual({ endedProcesses: 2 });
-    const run: TrustRequest & { type: "confirmRun" } = { type: "confirmRun", worktreeRoot: "C:\\repo", submodulePaths: ["C:\\repo\\sub"], programCount: 2, uncheckedCount: 1 };
+    const run: TrustRequest & { type: "confirmRun" } = { type: "confirmRun", worktreeRoot: REPO, submodulePaths: [isWindows ? "C:\\repo\\sub" : "/repo/sub"], programCount: 2, uncheckedCount: 1 };
     const approved = channel.runner.trust(run);
     channel.reply("trust", { type: "confirmRun", callId: channel.last("confirmRun").callId, result: "approved" });
     expect(await approved).toEqual({ result: "approved" });

@@ -51,7 +51,7 @@
         "indexFile": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "limits": {
           "anyOf": [
@@ -175,7 +175,7 @@
         "indexFile": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "limits": {
           "anyOf": [
@@ -305,7 +305,7 @@
         "indexFile": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "limits": {
           "anyOf": [
@@ -454,7 +454,7 @@
           "items": {
             "type": "string",
             "maxLength": 32767,
-            "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+            "pattern": "^[^\\u0000]*$"
           }
         },
         "contextKind": {
@@ -502,7 +502,7 @@
           "items": {
             "type": "string",
             "maxLength": 32767,
-            "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+            "pattern": "^[^\\u0000]*$"
           }
         },
         "contextKind": {
@@ -556,7 +556,7 @@
           "items": {
             "type": "string",
             "maxLength": 32767,
-            "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+            "pattern": "^[^\\u0000]*$"
           }
         },
         "contextKind": {
@@ -606,7 +606,7 @@
         "commonDirectory": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "required": [
@@ -706,17 +706,17 @@
         "worktreeRoot": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "gitDirectory": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "commonDirectory": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "required": [
@@ -758,16 +758,7 @@
         "executablePath": {
           "type": "string",
           "maxLength": 32767,
-          "allOf": [
-            {
-              "type": "string",
-              "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
-            },
-            {
-              "type": "string",
-              "pattern": "[\\\\/]git\\.exe$"
-            }
-          ]
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "required": [

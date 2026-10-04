@@ -2,11 +2,10 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { statSync } from "node:fs";
-import { win32 } from "node:path";
 import type { GitReason } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { foldAscii } from "../contracts/fold-ascii";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_EXECUTABLE_DIGEST_BYTES, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
+import { NATIVE } from "../contracts/native-path";
 import { admitGitProbe, MINIMUM_GIT_VERSION } from "./admission";
 import { createCollector, isChannelPath, RunnerRefusal, type GitRunner, type IdentityReply, type ProcessContext } from "./git-runner";
 
@@ -58,8 +57,9 @@ const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFi
 
 // Contract §6 "Startup contexts": the installation root is the folder two levels above the selected file.
 export function insideInstallation(selected: string, resolved: string): boolean {
-  const relative = win32.relative(foldAscii(win32.dirname(win32.dirname(selected))), foldAscii(resolved));
-  return relative !== "" && !relative.startsWith("..") && !win32.isAbsolute(relative);
+  const { path, fold } = NATIVE;
+  const relative = path.relative(fold(path.dirname(path.dirname(selected))), fold(resolved));
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 export const failure = (gitCode: ErrorCode, detectedVersion?: string): GitProbeResult => ({
@@ -113,11 +113,11 @@ async function runProbe(
   return exit.exitCode === 0 ? new TextDecoder().decode(stdout.take()) : "";
 }
 
-// Contract §3 "Git proposal": `git.exe` in the folder that `--exec-path` prints, as a fully qualified path with backslashes.
+// Contract §3 "Git proposal": the native Git file in the folder that `--exec-path` prints. On Windows, the path has backslashes.
 // Output without one folder line gives `null`. The service never falls back to the candidate.
 function execPathGit(output: string): string | null {
   const folder = /^([^\r\n]+)\r?\n$/.exec(output)?.[1];
-  const git = folder === undefined ? null : win32.join(folder, "git.exe");
+  const git = folder === undefined ? null : NATIVE.path.join(folder, NATIVE.gitName);
   return isChannelPath(git) ? git : null;
 }
 

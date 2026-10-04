@@ -36,6 +36,7 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `bun install --frozen-lockfile`
 - `bun run build`
 - `bun run typecheck`
+- `bun run export:schemas` writes the JSON Schema files in `src/contracts/schemas/` after a zod schema change. `bun run export:schemas --check` fails on a stale file.
 - `bun run test:contracts`
 - `bun run test:git`
 - `bun run test:windows` (needs `bun run build:service` first; skips without the service binary)

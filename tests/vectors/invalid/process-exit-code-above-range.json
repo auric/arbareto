@@ -1,0 +1,5 @@
+{
+  "schema": "process-reply",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"type\":\"exit\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000003\",\"exitCode\":4294967296,\"activeDescendants\":0}"
+}

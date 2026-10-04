@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use serde_json::{Value, json};
 use tauri::async_runtime::{Receiver, Sender, channel};
+use tauri::ipc::{InvokeBody, Request};
 use tauri::{State, Webview};
 
-use crate::dialogs::check_renderer_payload;
 use crate::framing::{PUBLIC_REQUEST_BYTES, public_request_body};
 use crate::process_requests::{decode_strict, is_identifier};
+use crate::schema;
 
 /// The label of the only window that may call the public operations (contract §1).
 pub const MAIN_WINDOW: &str = "main";
@@ -52,6 +53,8 @@ const NATIVE_FIRST: [&str; 5] = [
 
 /// Pinned Tauri serves the bundled frontend on Windows at this host (manager/mod.rs:335-338, webview/mod.rs:1966-1974).
 const LOCAL_HOST: &str = "tauri.localhost";
+
+const INVALID: &str = "INVALID_REQUEST";
 
 /// What the shell does with one renderer request.
 #[cfg_attr(
@@ -146,14 +149,20 @@ impl Ipc {
         session.session_id = session_id;
     }
 
-    /// Checks the caller, the operation, and the encoded size, then answers or forwards one renderer request.
-    /// `url` is the URL of the calling webview. The encoded size is the length of `serde_json::to_string(request)`.
+    /// Runs the contract §1 "Renderer request body" steps for one renderer request.
+    /// `url` is the URL of the calling webview. `operation` is the operation of the invoked command.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the commands call submit, which handle wraps")
     )]
-    pub fn handle(&self, window_label: &str, url: &str, request: &serde_json::Value) -> Outcome {
-        match self.submit(window_label, url, request, None) {
+    pub fn handle(
+        &self,
+        window_label: &str,
+        url: &str,
+        body: &InvokeBody,
+        operation: &str,
+    ) -> Outcome {
+        match self.submit(window_label, url, body, operation) {
             Submitted::Answer(answer) => Outcome::Answer(answer),
             Submitted::Waiting(..) => Outcome::Forwarded,
             Submitted::Denied => Outcome::Denied,
@@ -177,11 +186,30 @@ impl Ipc {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// `command` names the operation of the invoked command. Another operation in the envelope is refused.
-    fn submit(&self, label: &str, url: &str, request: &Value, command: Option<&str>) -> Submitted {
+    /// The steps of contract §1 "Renderer request body", in that order.
+    /// Only the service strict decoder checks duplicate keys, nesting, and unsafe integers.
+    fn submit(&self, label: &str, url: &str, body: &InvokeBody, command: &str) -> Submitted {
         if label != MAIN_WINDOW || !is_local(url) {
             return Submitted::Denied;
         }
+        let without_id = |code: &str| {
+            Submitted::Answer(json!({ "requestId": null, "state": "rejected", "code": code }))
+        };
+        // Pinned Tauri parses a JSON body before command code runs (tauri-2.12.1 ipc/protocol.rs:520-530).
+        // The postMessage fallback sends a `Uint8Array` as a JSON number array (protocol.rs:294).
+        let InvokeBody::Raw(bytes) = body else {
+            return without_id(INVALID);
+        };
+        if bytes.len() > PUBLIC_REQUEST_BYTES {
+            return without_id("FRAME_LIMIT");
+        }
+        let Some((text, request)) = std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| Some((text, serde_json::from_str::<Value>(text).ok()?)))
+            .filter(|(_, request)| request.is_object())
+        else {
+            return without_id(INVALID);
+        };
         let request_id = request
             .get("requestId")
             .and_then(Value::as_str)
@@ -189,9 +217,6 @@ impl Ipc {
         let reject = |code: &str| {
             Submitted::Answer(json!({ "requestId": request_id, "state": "rejected", "code": code }))
         };
-        if !request.is_object() {
-            return reject("INVALID_REQUEST");
-        }
         let Some(operation) = request
             .get("operation")
             .and_then(Value::as_str)
@@ -199,15 +224,12 @@ impl Ipc {
         else {
             return reject("UNKNOWN_OPERATION");
         };
-        let encoded = request.to_string();
-        if encoded.len() > PUBLIC_REQUEST_BYTES {
-            return reject("FRAME_LIMIT");
-        }
         let Some(request_id) = request_id else {
-            return reject("INVALID_REQUEST");
+            return without_id(INVALID);
         };
-        if command.is_some_and(|command| command != operation) {
-            return reject("INVALID_REQUEST");
+        // A body of another operation would skip the native step of its own command.
+        if operation != command {
+            return reject(INVALID);
         }
         if operation == "currentSession" {
             return match &self.session().session_id {
@@ -217,16 +239,12 @@ impl Ipc {
                 None => reject("SERVICE_UNAVAILABLE"),
             };
         }
-        let mut body = match frame(&encoded) {
-            Ok(body) => body,
-            Err(code) => return reject(code),
-        };
         let native_first = NATIVE_FIRST.contains(&operation);
         if native_first {
             if operation == "requestClose" {
                 return reject("SERVICE_UNAVAILABLE");
             }
-            if let Err(code) = check_renderer_payload(operation, &request["payload"]) {
+            if let Err(code) = schema::native_first(&request) {
                 return reject(code);
             }
         }
@@ -236,7 +254,7 @@ impl Ipc {
         {
             let mut session = self.session();
             if session.pending.contains_key(request_id) {
-                return reject("INVALID_REQUEST");
+                return reject(INVALID);
             }
             // Without a session the sender drops at once, so the invoke fails with SERVICE_UNAVAILABLE in the bridge.
             if session.session_id.is_some() {
@@ -259,7 +277,7 @@ impl Ipc {
             answer(json!({ "requestId": request_id, "state": "rejected", "code": code }))
         };
         let mut prepared = None;
-        if native_first {
+        let body = if native_first {
             let native = self.native();
             let (Some(native), true) = (native, self.session().session_id.is_some()) else {
                 return rejected("SERVICE_UNAVAILABLE");
@@ -274,27 +292,21 @@ impl Ipc {
                 Ok(Some(native)) => {
                     let mut forwarded = request.clone();
                     forwarded["payload"] = native.payload.clone();
-                    body = match frame(&forwarded.to_string()) {
-                        Ok(body) => body,
-                        Err(code) => return rejected(code),
-                    };
                     prepared = Some(native);
+                    public_request_body(&forwarded.to_string())
                 }
             }
-        }
+        } else {
+            public_request_body(text)
+        };
+        let Ok(body) = body else {
+            return rejected("FRAME_LIMIT");
+        };
         if !(self.forward)(body) {
             return rejected("SERVICE_UNAVAILABLE");
         }
         Submitted::Waiting(response, prepared)
     }
-}
-
-/// The `public` frame body of an encoded envelope (contract §5 "Incoming public request").
-/// The service decodes the whole body strictly, and a body that it refuses would get no response with this `requestId` (contract §1).
-fn frame(envelope: &str) -> Result<String, &'static str> {
-    let body = public_request_body(envelope).map_err(|_| "FRAME_LIMIT")?;
-    decode_strict(&body).ok_or("INVALID_REQUEST")?;
-    Ok(body)
 }
 
 /// The local origin over `http` or `https`, without a port or user information.
@@ -309,6 +321,7 @@ fn is_local(url: &str) -> bool {
 }
 
 /// The renderer message of a service frame. A `process`, `mutation`, `trust`, or `handshake` frame gives `None`.
+/// A progress event outside the contract §2 shape gives `None` too.
 pub fn renderer_message(frame_body: &str) -> Option<ToRenderer> {
     let Value::Object(mut frame) = decode_strict(frame_body)? else {
         return None;
@@ -318,47 +331,11 @@ pub fn renderer_message(frame_body: &str) -> Option<ToRenderer> {
     }
     match (frame.remove("response"), frame.remove("progress")) {
         (Some(response @ Value::Object(_)), None) => Some(ToRenderer::Response(response)),
-        (None, Some(progress)) if is_progress(&progress) => Some(ToRenderer::Progress(progress)),
+        (None, Some(progress)) if schema::progress(&progress) => {
+            Some(ToRenderer::Progress(progress))
+        }
         _ => None,
     }
-}
-
-/// Contract §2: the fields of a progress event. The shell drops any other shape.
-const PROGRESS_FIELDS: [&str; 6] = [
-    "requestId",
-    "operationId",
-    "state",
-    "phase",
-    "counters",
-    "stalled",
-];
-const PROGRESS_STATES: [&str; 4] = ["accepted", "running", "cancel-requested", "reconciling"];
-
-fn is_progress(progress: &Value) -> bool {
-    let Value::Object(event) = progress else {
-        return false;
-    };
-    let identifier = |key| {
-        event
-            .get(key)
-            .and_then(Value::as_str)
-            .is_some_and(is_identifier)
-    };
-    identifier("requestId")
-        && identifier("operationId")
-        && event
-            .get("state")
-            .and_then(Value::as_str)
-            .is_some_and(|state| PROGRESS_STATES.contains(&state))
-        && event
-            .get("counters")
-            .and_then(Value::as_object)
-            .is_some_and(|counters| counters.values().all(|count| count.as_u64().is_some()))
-        && event.get("phase").is_none_or(Value::is_string)
-        && event.get("stalled").is_none_or(Value::is_boolean)
-        && event
-            .keys()
-            .all(|key| PROGRESS_FIELDS.contains(&key.as_str()))
 }
 
 const DENIED: &str = "denied";
@@ -368,13 +345,13 @@ async fn call(
     webview: Webview,
     ipc: &Arc<Ipc>,
     operation: &'static str,
-    request: Value,
+    body: InvokeBody,
 ) -> Result<Value, &'static str> {
     let label = webview.label().to_string();
     let url = webview.url().map_err(|_| DENIED)?.to_string();
     let submitter = Arc::clone(ipc);
     let submitted = tauri::async_runtime::spawn_blocking(move || {
-        submitter.submit(&label, &url, &request, Some(operation))
+        submitter.submit(&label, &url, &body, operation)
     })
     .await
     .map_err(|_| DENIED)?;
@@ -397,194 +374,201 @@ async fn call(
 }
 
 // One command per contract §3 operation. Each name equals its entry in `COMMANDS` of `src-tauri/build.rs`.
+// Each takes the raw invoke body (contract §1 "Renderer request body").
 
 #[tauri::command]
 pub async fn get_environment(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "getEnvironment", request).await
+    call(webview, &ipc, "getEnvironment", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn choose_git(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "chooseGit", request).await
+    call(webview, &ipc, "chooseGit", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn choose_repository(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "chooseRepository", request).await
+    call(webview, &ipc, "chooseRepository", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn restore_workspace(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "restoreWorkspace", request).await
+    call(webview, &ipc, "restoreWorkspace", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn read_workspace(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "readWorkspace", request).await
+    call(webview, &ipc, "readWorkspace", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn read_history(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "readHistory", request).await
+    call(webview, &ipc, "readHistory", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn read_comparison(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "readComparison", request).await
+    call(webview, &ipc, "readComparison", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn read_trust(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "readTrust", request).await
+    call(webview, &ipc, "readTrust", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn approve_trust(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "approveTrust", request).await
+    call(webview, &ipc, "approveTrust", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn revoke_trust(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "revokeTrust", request).await
+    call(webview, &ipc, "revokeTrust", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn apply_hunk(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "applyHunk", request).await
+    call(webview, &ipc, "applyHunk", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn apply_file(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "applyFile", request).await
+    call(webview, &ipc, "applyFile", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn review_commit(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "reviewCommit", request).await
+    call(webview, &ipc, "reviewCommit", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn commit(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "commit", request).await
+    call(webview, &ipc, "commit", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn review_submodules(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "reviewSubmodules", request).await
+    call(webview, &ipc, "reviewSubmodules", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn update_submodules(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "updateSubmodules", request).await
+    call(webview, &ipc, "updateSubmodules", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn cancel(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "cancel", request).await
+    call(webview, &ipc, "cancel", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn get_operation(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "getOperation", request).await
+    call(webview, &ipc, "getOperation", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn request_close(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "requestClose", request).await
+    call(webview, &ipc, "requestClose", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn current_session(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "currentSession", request).await
+    call(webview, &ipc, "currentSession", request.body().clone()).await
 }
 
 #[tauri::command]
 pub async fn dismiss_recovery_marker(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
-    request: Value,
+    request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "dismissRecoveryMarker", request).await
+    call(
+        webview,
+        &ipc,
+        "dismissRecoveryMarker",
+        request.body().clone(),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -594,6 +578,7 @@ mod tests {
     use std::sync::Mutex;
 
     use serde_json::{Value, json};
+    use tauri::ipc::InvokeBody;
 
     use crate::framing::{PUBLIC_FRAME_BODY_BYTES, PUBLIC_REQUEST_BYTES};
 
@@ -601,6 +586,7 @@ mod tests {
     const LOCAL: &str = "http://tauri.localhost/";
     const REQUEST_ID: &str = "0f0f0f0f-0000-4000-8000-000000000001";
     const OPERATION_ID: &str = "0f0f0f0f-0000-4000-8000-000000000002";
+    const SESSION_ID: &str = "0f0f0f0f-0000-4000-8000-0000000000aa";
 
     fn ipc() -> (Ipc, Arc<Mutex<Vec<String>>>) {
         let frames = Arc::new(Mutex::new(Vec::new()));
@@ -636,7 +622,7 @@ mod tests {
     /// An `Ipc` with a running session and the fake native steps. The caller keeps the returned native alive.
     fn connected(prepare: Prepare) -> (Ipc, Arc<Mutex<Vec<String>>>, Arc<FakeNative>) {
         let (ipc, frames) = ipc();
-        ipc.set_session(Some("0f0f0f0f-0000-4000-8000-0000000000aa".to_string()));
+        ipc.set_session(Some(SESSION_ID.to_string()));
         let native = Arc::new(FakeNative {
             prepare,
             prepares: Mutex::new(0),
@@ -655,47 +641,220 @@ mod tests {
         (1..levels).fold(json!([]), |inner, _| json!([inner]))
     }
 
+    fn request(operation: &str, payload: Value) -> Value {
+        json!({ "version": 1, "sessionId": SESSION_ID, "requestId": REQUEST_ID, "operation": operation, "payload": payload })
+    }
+
+    /// The bridge body: the UTF-8 bytes of `JSON.stringify(envelope)` (contract §1 "Renderer request body").
+    fn raw(text: &str) -> InvokeBody {
+        InvokeBody::Raw(text.as_bytes().to_vec())
+    }
+
+    /// Calls the command of the envelope operation with the raw body of `envelope`.
+    fn send(ipc: &Ipc, envelope: &Value) -> Outcome {
+        let operation = envelope["operation"].as_str().unwrap_or("getEnvironment");
+        ipc.handle(MAIN_WINDOW, LOCAL, &raw(&envelope.to_string()), operation)
+    }
+
+    fn rejected(code: &str) -> Outcome {
+        Outcome::Answer(json!({ "requestId": REQUEST_ID, "state": "rejected", "code": code }))
+    }
+
+    fn rejected_without_id(code: &str) -> Outcome {
+        Outcome::Answer(json!({ "requestId": null, "state": "rejected", "code": code }))
+    }
+
+    /// The `public` frame body that carries `envelope` unchanged.
+    fn frame_of(envelope: &str) -> String {
+        format!("{{\"kind\":\"public\",\"request\":{envelope}}}")
+    }
+
     #[test]
-    fn a_frame_that_the_service_strict_decoder_refuses_gets_invalid_request_and_is_never_forwarded()
-    {
-        let (ipc, frames) = ipc();
-        // The frame object, the envelope, and the payload are the first three levels.
-        let at_bound = request("readWorkspace", json!({ "pad": nested(13) }));
-        assert!(
-            decode_strict(&public_request_body(&at_bound.to_string()).expect("body")).is_some()
-        );
-        assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &at_bound),
-            Outcome::Forwarded,
-            "a frame with 16 levels"
-        );
+    fn a_json_invoke_body_is_refused_and_nothing_is_forwarded() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let envelope = request("getEnvironment", json!({}));
+        // The postMessage fallback sends a `Uint8Array` as a JSON number array.
+        let numbers = json!(envelope.to_string().bytes().collect::<Vec<u8>>());
+        for body in [InvokeBody::Json(envelope), InvokeBody::Json(numbers)] {
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &body, "getEnvironment"),
+                rejected_without_id("INVALID_REQUEST")
+            );
+        }
+        let native_first = request("chooseRepository", json!({}));
         assert_eq!(
             ipc.handle(
                 MAIN_WINDOW,
                 LOCAL,
-                &request("readWorkspace", json!({ "pad": nested(14) }))
+                &InvokeBody::Json(native_first),
+                "chooseRepository"
             ),
-            rejected("INVALID_REQUEST"),
-            "a frame with 17 levels"
+            rejected_without_id("INVALID_REQUEST")
         );
-        let generation = |value: u64| {
-            let mut envelope = request("readWorkspace", json!({}));
-            envelope["repositoryGeneration"] = json!(value);
-            envelope
-        };
-        assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &generation((1 << 53) - 1)),
-            Outcome::Forwarded,
-            "Number.MAX_SAFE_INTEGER"
-        );
-        for unsafe_integer in [1 << 53, (1 << 53) + 1] {
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn a_raw_body_above_1_mib_gets_frame_limit_before_any_parse() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        // Not JSON: a parse first would give INVALID_REQUEST.
+        let above = InvokeBody::Raw(vec![b'x'; PUBLIC_REQUEST_BYTES + 1]);
+        for operation in ["getEnvironment", "chooseGit", "currentSession"] {
             assert_eq!(
-                ipc.handle(MAIN_WINDOW, LOCAL, &generation(unsafe_integer)),
-                rejected("INVALID_REQUEST"),
-                "{unsafe_integer}"
+                ipc.handle(MAIN_WINDOW, LOCAL, &above, operation),
+                rejected_without_id("FRAME_LIMIT"),
+                "{operation}"
             );
         }
-        assert_eq!(frames.lock().expect("frames").len(), 2);
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn a_raw_body_of_exactly_1_mib_is_forwarded_byte_for_byte() {
+        let (ipc, frames) = ipc();
+        // Spaces and key order that a parse and a new encoding would not keep.
+        let head = format!(
+            r#"{{ "payload" : {{ }} , "operation" : "getEnvironment" , "requestId" : "{REQUEST_ID}" , "sessionId" : "{SESSION_ID}" , "version" : 1"#
+        );
+        let body = format!(
+            "{head}{}}}",
+            " ".repeat(PUBLIC_REQUEST_BYTES - head.len() - 1)
+        );
+        assert_eq!(body.len(), PUBLIC_REQUEST_BYTES);
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), "getEnvironment"),
+            Outcome::Forwarded
+        );
+        let frames = frames.lock().expect("frames");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0], frame_of(&body));
+        assert_eq!(frames[0].len(), PUBLIC_FRAME_BODY_BYTES);
+    }
+
+    #[test]
+    fn a_body_that_is_not_utf8_json_or_has_no_valid_request_id_gets_invalid_request_without_an_id()
+    {
+        let (ipc, frames) = ipc();
+        let mut no_id = request("getEnvironment", json!({}));
+        no_id["requestId"] = json!("request-1");
+        for body in [
+            InvokeBody::Raw(b"{".to_vec()),
+            InvokeBody::Raw(b"{\"a\":\"\xff\"}".to_vec()),
+            InvokeBody::Raw(b"[]".to_vec()),
+            raw(&no_id.to_string()),
+        ] {
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &body, "getEnvironment"),
+                rejected_without_id("INVALID_REQUEST"),
+                "{body:?}"
+            );
+        }
+        assert!(frames.lock().expect("frames").is_empty());
+    }
+
+    #[test]
+    fn an_operation_other_than_the_command_operation_gets_invalid_request_and_no_dialog() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let body = request("chooseGit", json!({})).to_string();
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), "getEnvironment"),
+            rejected("INVALID_REQUEST"),
+            "a chooseGit envelope through get_environment skips no native step"
+        );
+        let body = request("getEnvironment", json!({})).to_string();
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), "readWorkspace"),
+            rejected("INVALID_REQUEST")
+        );
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn duplicate_keys_deep_nesting_and_unsafe_integers_reach_the_service_unchanged() {
+        let (ipc, frames) = ipc();
+        let envelope = |payload: &str, generation: &str| {
+            format!(
+                r#"{{"version":1,"sessionId":"{SESSION_ID}","requestId":"{REQUEST_ID}","operation":"readWorkspace","repositoryId":"{OPERATION_ID}"{generation},"payload":{payload}}}"#
+            )
+        };
+        let bodies = [
+            envelope(r#"{"refresh":false,"refresh":true,"check":"full"}"#, ""),
+            envelope(&json!({ "pad": nested(17) }).to_string(), ""),
+            envelope("{}", r#","repositoryGeneration":9007199254740992"#),
+        ];
+        for body in &bodies {
+            // Only the service strict decoder refuses these bodies (contract §1).
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &raw(body), "readWorkspace"),
+                Outcome::Forwarded,
+                "{body}"
+            );
+        }
+        let frames = frames.lock().expect("frames");
+        let expected: Vec<String> = bodies.iter().map(|body| frame_of(body)).collect();
+        assert_eq!(*frames, expected);
+    }
+
+    #[test]
+    fn a_native_first_envelope_outside_its_generated_type_gets_its_code_before_any_dialog() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let mut version = request("chooseGit", json!({}));
+        version["version"] = json!(2);
+        for (envelope, code) in [
+            (
+                request("chooseRepository", json!({ "path": "C:\\repo" })),
+                "INVALID_REQUEST",
+            ),
+            (
+                request("restoreWorkspace", json!({ "bootstrapId": OPERATION_ID })),
+                "INVALID_REQUEST",
+            ),
+            (
+                request("chooseGit", json!({ "executablePath": "C:\\evil.exe" })),
+                "INVALID_REQUEST",
+            ),
+            (
+                request("dismissRecoveryMarker", json!({ "markerId": "marker-1" })),
+                "INVALID_REQUEST",
+            ),
+            (
+                request("dismissRecoveryMarker", json!({})),
+                "INVALID_REQUEST",
+            ),
+            (version, "PROTOCOL_VERSION"),
+        ] {
+            assert_eq!(send(&ipc, &envelope), rejected(code), "{envelope}");
+        }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn a_native_first_request_forwards_the_envelope_with_the_native_payload() {
+        let (ipc, frames, native) = connected(Box::new(|| {
+            Ok(Some(Prepared {
+                payload: json!({ "bootstrapId": OPERATION_ID }),
+                path: None,
+            }))
+        }));
+        assert_eq!(
+            send(&ipc, &request("chooseRepository", json!({}))),
+            Outcome::Forwarded
+        );
+        assert_eq!(*native.prepares.lock().expect("prepares"), 1);
+        let frames = frames.lock().expect("frames");
+        let frame: Value = serde_json::from_str(&frames[0]).expect("frame");
+        assert_eq!(
+            frame,
+            json!({ "kind": "public", "request": request("chooseRepository", json!({ "bootstrapId": OPERATION_ID })) })
+        );
     }
 
     #[test]
@@ -707,7 +866,7 @@ mod tests {
             }))
         }));
         assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &request("chooseRepository", json!({}))),
+            send(&ipc, &request("chooseRepository", json!({}))),
             rejected("FRAME_LIMIT")
         );
         assert!(frames.lock().expect("frames").is_empty());
@@ -717,9 +876,9 @@ mod tests {
     #[test]
     fn a_failed_forward_gets_service_unavailable_and_leaves_no_pending_request() {
         let ipc = Ipc::new(Arc::new(|_| false));
-        ipc.set_session(Some("0f0f0f0f-0000-4000-8000-0000000000aa".to_string()));
+        ipc.set_session(Some(SESSION_ID.to_string()));
         assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &request("getEnvironment", json!({}))),
+            send(&ipc, &request("getEnvironment", json!({}))),
             rejected("SERVICE_UNAVAILABLE")
         );
         assert_eq!(pending(&ipc), 0, "no request waits for a response");
@@ -729,18 +888,18 @@ mod tests {
     fn a_repeated_request_id_is_refused_before_any_native_dialog() {
         let (ipc, frames, native) = connected(Box::new(|| Err("UNSUPPORTED_REPOSITORY")));
         assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &request("getEnvironment", json!({}))),
+            send(&ipc, &request("getEnvironment", json!({}))),
             Outcome::Forwarded
         );
         assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &request("chooseRepository", json!({}))),
+            send(&ipc, &request("chooseRepository", json!({}))),
             rejected("INVALID_REQUEST"),
             "the requestId is in flight"
         );
         assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
-        let other = json!({ "version": 1, "sessionId": "0f0f0f0f-0000-4000-8000-0000000000aa", "requestId": OPERATION_ID, "operation": "chooseRepository", "payload": {} });
+        let other = json!({ "version": 1, "sessionId": SESSION_ID, "requestId": OPERATION_ID, "operation": "chooseRepository", "payload": {} });
         assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &other),
+            send(&ipc, &other),
             Outcome::Answer(
                 json!({ "requestId": OPERATION_ID, "state": "rejected", "code": "UNSUPPORTED_REPOSITORY" })
             ),
@@ -750,25 +909,22 @@ mod tests {
         assert_eq!(frames.lock().expect("frames").len(), 1);
     }
 
-    fn request(operation: &str, payload: Value) -> Value {
-        json!({ "version": 1, "sessionId": "0f0f0f0f-0000-4000-8000-0000000000aa", "requestId": REQUEST_ID, "operation": operation, "payload": payload })
-    }
-
-    fn rejected(code: &str) -> Outcome {
-        Outcome::Answer(json!({ "requestId": REQUEST_ID, "state": "rejected", "code": code }))
-    }
-
     #[test]
     fn a_request_from_a_remote_webview_or_another_window_is_denied() {
         let (ipc, frames) = ipc();
-        let valid = request("getEnvironment", json!({}));
+        let valid = raw(&request("getEnvironment", json!({})).to_string());
         assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &valid),
+            ipc.handle(MAIN_WINDOW, LOCAL, &valid, "getEnvironment"),
             Outcome::Forwarded,
             "the main local window"
         );
         assert_eq!(
-            ipc.handle(MAIN_WINDOW, "https://tauri.localhost/index.html", &valid),
+            ipc.handle(
+                MAIN_WINDOW,
+                "https://tauri.localhost/index.html",
+                &valid,
+                "getEnvironment"
+            ),
             Outcome::Forwarded,
             "the HTTPS form of the local origin"
         );
@@ -780,18 +936,24 @@ mod tests {
             "file:///C:/index.html",
         ] {
             assert_eq!(
-                ipc.handle(MAIN_WINDOW, url, &valid),
+                ipc.handle(MAIN_WINDOW, url, &valid, "getEnvironment"),
                 Outcome::Denied,
                 "remote webview {url}"
             );
         }
         for label in ["settings", "Main", ""] {
             assert_eq!(
-                ipc.handle(label, LOCAL, &valid),
+                ipc.handle(label, LOCAL, &valid, "getEnvironment"),
                 Outcome::Denied,
                 "window {label:?}"
             );
         }
+        let json_body = InvokeBody::Json(request("getEnvironment", json!({})));
+        assert_eq!(
+            ipc.handle("settings", LOCAL, &json_body, "getEnvironment"),
+            Outcome::Denied,
+            "the caller check comes first"
+        );
         assert_eq!(
             frames.lock().expect("frames").len(),
             2,
@@ -811,8 +973,9 @@ mod tests {
             "process",
             "handshake",
         ] {
+            let body = request(operation, json!({})).to_string();
             assert_eq!(
-                ipc.handle(MAIN_WINDOW, LOCAL, &request(operation, json!({}))),
+                ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), "getEnvironment"),
                 rejected("UNKNOWN_OPERATION"),
                 "{operation}"
             );
@@ -821,78 +984,6 @@ mod tests {
             frames.lock().expect("frames").is_empty(),
             "nothing is forwarded"
         );
-    }
-
-    #[test]
-    fn an_encoded_request_above_1_mib_gets_frame_limit_before_forwarding() {
-        let (ipc, frames) = ipc();
-        let empty = request("readWorkspace", json!({ "pad": "" }));
-        let overhead = serde_json::to_string(&empty).expect("encode").len();
-        let at_bound = request(
-            "readWorkspace",
-            json!({ "pad": "a".repeat(PUBLIC_REQUEST_BYTES - overhead) }),
-        );
-        assert_eq!(
-            serde_json::to_string(&at_bound).expect("encode").len(),
-            PUBLIC_REQUEST_BYTES
-        );
-        assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &at_bound),
-            Outcome::Forwarded,
-            "exactly 1 MiB"
-        );
-        let above = request(
-            "readWorkspace",
-            json!({ "pad": "a".repeat(PUBLIC_REQUEST_BYTES - overhead + 1) }),
-        );
-        assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &above),
-            rejected("FRAME_LIMIT"),
-            "1 MiB plus 1 byte"
-        );
-        let frames = frames.lock().expect("frames");
-        assert_eq!(frames.len(), 1, "the oversized request is never forwarded");
-        assert_eq!(frames[0].len(), PUBLIC_FRAME_BODY_BYTES);
-        assert!(frames[0].starts_with(r#"{"kind":"public","request":"#));
-    }
-
-    #[test]
-    fn an_envelope_above_1_mib_gets_frame_limit_before_any_other_check_or_native_step() {
-        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
-        let pad = "a".repeat(PUBLIC_REQUEST_BYTES);
-        for operation in ["chooseGit", "chooseRepository"] {
-            assert_eq!(
-                ipc.handle(
-                    MAIN_WINDOW,
-                    LOCAL,
-                    &request(operation, json!({ "pad": pad }))
-                ),
-                rejected("FRAME_LIMIT"),
-                "{operation}"
-            );
-        }
-        let mut without_id = request("chooseGit", json!({}));
-        without_id["pad"] = json!(pad);
-        without_id
-            .as_object_mut()
-            .expect("object")
-            .remove("requestId");
-        assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &without_id),
-            Outcome::Answer(
-                json!({ "requestId": null, "state": "rejected", "code": "FRAME_LIMIT" })
-            ),
-            "an envelope without a requestId"
-        );
-        let current = json!({ "version": 1, "requestId": REQUEST_ID, "operation": "currentSession", "payload": { "pad": pad } });
-        assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &current),
-            rejected("FRAME_LIMIT"),
-            "currentSession"
-        );
-        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
-        assert!(frames.lock().expect("frames").is_empty());
-        assert_eq!(pending(&ipc), 0, "no request waits for a response");
     }
 
     #[test]
@@ -957,6 +1048,10 @@ mod tests {
             ("a missing counters object", without("counters")),
             ("a non-boolean stalled", with("stalled", json!("yes"))),
             ("a non-string phase", with("phase", json!(1))),
+            (
+                "a phase outside data-model §7",
+                with("phase", json!("push")),
+            ),
         ] {
             assert_eq!(
                 renderer_message(&json!({ "kind": "public", "progress": event }).to_string()),
@@ -970,20 +1065,17 @@ mod tests {
     fn current_session_is_answered_natively_and_no_startup_script_carries_a_session() {
         let (ipc, frames) = ipc();
         let current = json!({ "version": 1, "requestId": REQUEST_ID, "operation": "currentSession", "payload": {} });
-        ipc.set_session(Some("0f0f0f0f-0000-4000-8000-0000000000aa".to_string()));
-        let Outcome::Answer(first) = ipc.handle(MAIN_WINDOW, LOCAL, &current) else {
+        ipc.set_session(Some(SESSION_ID.to_string()));
+        let Outcome::Answer(first) = send(&ipc, &current) else {
             panic!("an answer")
         };
         assert_eq!(
             (first["requestId"].as_str(), first["state"].as_str()),
             (Some(REQUEST_ID), Some("succeeded"))
         );
-        assert_eq!(
-            first["result"]["sessionId"],
-            "0f0f0f0f-0000-4000-8000-0000000000aa"
-        );
+        assert_eq!(first["result"]["sessionId"], SESSION_ID);
         ipc.set_session(Some("0f0f0f0f-0000-4000-8000-0000000000bb".to_string()));
-        let Outcome::Answer(after) = ipc.handle(MAIN_WINDOW, LOCAL, &current) else {
+        let Outcome::Answer(after) = send(&ipc, &current) else {
             panic!("an answer")
         };
         assert_eq!(
@@ -992,7 +1084,7 @@ mod tests {
         );
         ipc.set_session(None);
         assert_eq!(
-            ipc.handle(MAIN_WINDOW, LOCAL, &current),
+            send(&ipc, &current),
             rejected("SERVICE_UNAVAILABLE"),
             "without a service session"
         );

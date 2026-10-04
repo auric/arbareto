@@ -3,6 +3,7 @@
 
 import { statSync } from "node:fs";
 import { win32 } from "node:path";
+import type { GitReason } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_EXECUTABLE_DIGEST_BYTES, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
 import { admitGitProbe, MINIMUM_GIT_VERSION } from "./admission";
@@ -22,9 +23,6 @@ export interface GitInstallation {
   // Contract §6 "Startup contexts": the saved version when this startup admitted another version.
   previousVersion?: string;
 }
-
-// Contract §3 `getEnvironment` `reason`: why the startup check found no Git.
-export type GitReason = "selected-missing" | "resolution-failed" | "resolved-missing" | "outside-installation";
 
 export type GitProbeResult =
   | { ok: true; installation: GitInstallation }

@@ -21,12 +21,12 @@ use crate::ipc::{
 };
 use crate::jobs::{Job, Supervisor};
 use crate::process_requests::{
-    CHUNK_BYTES, Code, Config, ConfirmedGit, Fields, Owned, ProcessRequests, ReplySink,
-    decode_strict, identifier, is_identifier, keys, path, wait,
+    CHUNK_BYTES, Code, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, decode_strict,
+    is_identifier, wait,
 };
+use crate::schema::{self, mutation_request::MutationRequest, trust_request::TrustRequest};
 use crate::settings::{
-    self, Confirm, Damaged, MUTATIONS, Marker, Markers, SavedGit, Settings, Started, StartedReply,
-    Trust, is_hex,
+    self, Confirm, Damaged, Marker, Markers, SavedGit, Settings, Started, StartedReply, Trust,
 };
 use crate::spawn::{Input, SpawnRequest, spawn};
 
@@ -263,33 +263,49 @@ impl Service {
         let Some(call_id) = call_id(request) else {
             return;
         };
-        let handled = match request.get("type").and_then(Value::as_str) {
-            Some("confirm") => {
-                confirm_request(request).map(|confirm| self.confirm_trust(confirm, call_id))
-            }
-            Some("revoke") => {
-                keys(request, &["type", "callId", "commonDirectory"], &[]).and_then(|()| {
-                    let common_directory = path(&request["commonDirectory"])?;
-                    let ended = stores
-                        .trust
-                        .revoke(&common_directory, |tag| self.jobs.revoke(tag));
-                    self.send(
-                        "trust",
-                        json!({ "type": "revoke", "callId": call_id, "endedProcesses": ended }),
-                    );
-                    Ok(())
-                })
+        let handled = schema::trust_request(request).map(|request| match request {
+            TrustRequest::Confirm {
+                worktree_root,
+                git_directory,
+                common_directory,
+                git_selected_path,
+                fingerprint,
+                persist,
+                bound,
+                ..
+            } => self.confirm_trust(
+                Confirm {
+                    worktree_root: PathBuf::from(worktree_root.as_str()),
+                    git_directory: PathBuf::from(git_directory.as_str()),
+                    common_directory: PathBuf::from(common_directory.as_str()),
+                    git_selected_path: PathBuf::from(git_selected_path.as_str()),
+                    fingerprint: fingerprint.to_string(),
+                    persist,
+                    bound: bound.map(|bound| bound.to_string()),
+                },
+                call_id,
+            ),
+            TrustRequest::Revoke {
+                common_directory, ..
+            } => {
+                let ended = stores
+                    .trust
+                    .revoke(Path::new(common_directory.as_str()), |tag| {
+                        self.jobs.revoke(tag)
+                    });
+                self.send(
+                    "trust",
+                    json!({ "type": "revoke", "callId": call_id, "endedProcesses": ended }),
+                );
             }
             // T228 builds the `confirmRun` dialog. Until then, the shell answers as Cancel.
-            Some("confirmRun") => {
+            TrustRequest::ConfirmRun { .. } => {
                 self.send(
                     "trust",
                     json!({ "type": "confirmRun", "callId": call_id, "result": "declined" }),
                 );
-                Ok(())
             }
-            _ => Err(INVALID),
-        };
+        });
         if let Err(code) = handled {
             self.send("trust", refused(call_id, code));
         }
@@ -589,28 +605,39 @@ fn store_git(stores: &Stores, git: ConfirmedGit) {
 }
 
 /// The `mutation` frames of contract §6 "Channel frames". Returns the reply. `ended` and `resolved` get none.
-fn mutation(markers: &Markers, requests: &ProcessRequests, request: &Fields) -> Option<Value> {
+fn mutation(markers: &Markers, requests: &ProcessRequests, request: &Value) -> Option<Value> {
     let call_id = call_id(request);
-    let handled = match request.get("type").and_then(Value::as_str) {
-        Some("started") => call_id
-            .ok_or(INVALID)
-            .and_then(|call_id| started(markers, requests, request, call_id))
-            .map(Some),
-        Some("ended") => {
-            keys(request, &["type", "operationId", "endProcesses"], &[]).and_then(|()| {
-                let operation_id = identifier(&request["operationId"])?;
-                let end_processes = request["endProcesses"].as_bool().ok_or(INVALID)?;
-                requests.ended(operation_id, end_processes)?;
-                markers.ended(operation_id);
-                Ok(None)
-            })
+    let handled = schema::mutation_request(request).and_then(|request| match request {
+        MutationRequest::Started {
+            operation_id,
+            kind,
+            worktree_root,
+            common_directory,
+            ..
+        } => {
+            let call_id = call_id.ok_or(INVALID)?;
+            let kind = kind.to_string();
+            let started = Started {
+                operation_id: &operation_id,
+                kind: &kind,
+                worktree_root: Path::new(worktree_root.as_str()),
+                common_directory: Path::new(common_directory.as_str()),
+            };
+            Ok(Some(self::started(markers, requests, &started, call_id)))
         }
-        Some("resolved") => keys(request, &["type", "markerId"], &[]).and_then(|()| {
-            markers.resolved(identifier(&request["markerId"])?);
+        MutationRequest::Ended {
+            operation_id,
+            end_processes,
+        } => {
+            requests.ended(&operation_id, end_processes)?;
+            markers.ended(&operation_id);
             Ok(None)
-        }),
-        _ => Err(INVALID),
-    };
+        }
+        MutationRequest::Resolved { marker_id } => {
+            markers.resolved(&marker_id);
+            Ok(None)
+        }
+    });
     match (handled, call_id) {
         (Ok(reply), _) => reply,
         (Err(code), Some(call_id)) => Some(refused(call_id, code)),
@@ -622,41 +649,15 @@ fn mutation(markers: &Markers, requests: &ProcessRequests, request: &Fields) -> 
 fn started(
     markers: &Markers,
     requests: &ProcessRequests,
-    request: &Fields,
+    started: &Started,
     call_id: &str,
-) -> Result<Value, Code> {
-    keys(
-        request,
-        &[
-            "type",
-            "callId",
-            "operationId",
-            "repositoryId",
-            "kind",
-            "worktreeRoot",
-            "commonDirectory",
-        ],
-        &[],
-    )?;
-    let operation_id = identifier(&request["operationId"])?;
-    identifier(&request["repositoryId"])?;
-    let kind = request["kind"]
-        .as_str()
-        .filter(|kind| MUTATIONS.contains(kind))
-        .ok_or(INVALID)?;
-    let worktree_root = path(&request["worktreeRoot"])?;
-    let common_directory = path(&request["commonDirectory"])?;
-    let reply = markers.started(&Started {
-        operation_id,
-        kind,
-        worktree_root: &worktree_root,
-        common_directory: &common_directory,
-    });
+) -> Value {
+    let reply = markers.started(started);
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
     if let StartedReply::Marker { identity, .. } = &reply {
-        requests.tag(operation_id, *identity);
+        requests.tag(started.operation_id, *identity);
     }
-    Ok(reply.reply(call_id))
+    reply.reply(call_id)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -687,14 +688,14 @@ fn session_id(frame: &Value) -> Option<String> {
 }
 
 /// The inner object of a `{"kind":"<kind>","<kind>":{…}}` frame.
-fn body<'a>(frame: &'a Value, kind: &str) -> Option<&'a Fields> {
+fn body<'a>(frame: &'a Value, kind: &str) -> Option<&'a Value> {
     if frame.as_object()?.len() != 2 {
         return None;
     }
-    frame.get(kind)?.as_object()
+    frame.get(kind).filter(|body| body.is_object())
 }
 
-fn call_id(request: &Fields) -> Option<&str> {
+fn call_id(request: &Value) -> Option<&str> {
     request
         .get("callId")
         .and_then(Value::as_str)
@@ -703,52 +704,6 @@ fn call_id(request: &Fields) -> Option<&str> {
 
 fn refused(call_id: &str, code: Code) -> Value {
     json!({ "type": "refused", "callId": call_id, "code": code })
-}
-
-/// The `confirm` trust frame. `bound` comes only with `persist: false`.
-fn confirm_request(request: &Fields) -> Result<Confirm, Code> {
-    keys(
-        request,
-        &[
-            "type",
-            "callId",
-            "worktreeRoot",
-            "gitDirectory",
-            "commonDirectory",
-            "gitInstallationDigest",
-            "fingerprint",
-            "persist",
-        ],
-        &["bound"],
-    )?;
-    let digest = |key: &str| {
-        request[key]
-            .as_str()
-            .filter(|digest| is_hex(digest, 64))
-            .map(str::to_string)
-            .ok_or(INVALID)
-    };
-    let persist = request["persist"].as_bool().ok_or(INVALID)?;
-    let bound = match (persist, request.get("bound")) {
-        (true, None) => None,
-        (false, Some(bound)) => Some(
-            bound
-                .as_str()
-                .filter(|bound| dialogs::is_bound(bound))
-                .ok_or(INVALID)?
-                .to_string(),
-        ),
-        _ => return Err(INVALID),
-    };
-    Ok(Confirm {
-        worktree_root: path(&request["worktreeRoot"])?,
-        git_directory: path(&request["gitDirectory"])?,
-        common_directory: path(&request["commonDirectory"])?,
-        git_installation_digest: digest("gitInstallationDigest")?,
-        fingerprint: digest("fingerprint")?,
-        persist,
-        bound,
-    })
 }
 
 /// The renderer form of a marker: exactly `markerId`, `kind`, `startedAt`, and `worktreeRoot` (contract §3 `getEnvironment`).
@@ -847,11 +802,7 @@ mod tests {
         }
 
         fn mutation(&self, request: Value) -> Option<Value> {
-            mutation(
-                &self.stores.markers,
-                &self.requests,
-                request.as_object().expect("object"),
-            )
+            mutation(&self.stores.markers, &self.requests, &request)
         }
 
         fn started(&self, operation: &str, worktree: &Path) -> Option<Value> {
@@ -1106,6 +1057,24 @@ mod tests {
         assert_eq!(damaged[0]["fileName"], json!("broken.json"));
         assert!(damaged[0]["markerId"].as_str().is_some_and(is_identifier));
         assert_eq!(damaged[0].as_object().map(|fields| fields.len()), Some(2));
+    }
+
+    #[test]
+    fn the_handshake_frame_fits_the_generated_handshake_type() {
+        let shell = Shell::new();
+        std::fs::write(shell.folder("recovery").join("broken.json"), "{").expect("write");
+        let facts = Facts {
+            platform_scope: "qualification-target",
+            os_build: 26200,
+            webview2_version: "154.0.4258.53".to_string(),
+        };
+        let frame: Value =
+            serde_json::from_str(&handshake_frame(&facts, &shell.stores, &shell.contexts))
+                .expect("JSON");
+        assert_eq!(
+            crate::schema::handshake(&frame["handshake"]).map(drop),
+            Ok(())
+        );
     }
 
     #[test]

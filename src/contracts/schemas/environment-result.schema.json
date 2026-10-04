@@ -1,0 +1,209 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "buildIdentity": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "signing": {
+          "type": "string",
+          "const": "unsigned"
+        }
+      },
+      "required": [
+        "version",
+        "commit",
+        "signing"
+      ],
+      "additionalProperties": false
+    },
+    "platformScope": {
+      "type": "string",
+      "enum": [
+        "qualification-target",
+        "other"
+      ]
+    },
+    "selectedPath": {
+      "type": "string"
+    },
+    "executablePath": {
+      "type": "string"
+    },
+    "detectedVersion": {
+      "type": "string"
+    },
+    "previousVersion": {
+      "type": "string"
+    },
+    "minimumVersion": {
+      "type": "string"
+    },
+    "admission": {
+      "type": "string",
+      "enum": [
+        "admitted",
+        "unsupported"
+      ]
+    },
+    "qualification": {
+      "type": "string",
+      "enum": [
+        "unverified",
+        "passed"
+      ]
+    },
+    "gitCode": {
+      "type": "string",
+      "enum": [
+        "INVALID_REQUEST",
+        "PROTOCOL_VERSION",
+        "UNKNOWN_OPERATION",
+        "UNKNOWN_TARGET",
+        "FRAME_LIMIT",
+        "BUSY",
+        "WORKSPACE_LIMIT",
+        "GIT_UNAVAILABLE",
+        "GIT_CHANGED",
+        "GIT_UNSUPPORTED",
+        "WEBVIEW_UNAVAILABLE",
+        "WEBVIEW_UNSUPPORTED",
+        "WSL_UNAVAILABLE",
+        "REPOSITORY_UNAVAILABLE",
+        "REPOSITORY_CHANGED",
+        "UNSUPPORTED_REPOSITORY",
+        "DUBIOUS_OWNERSHIP",
+        "NOT_A_REPOSITORY",
+        "OPERATION_IN_PROGRESS",
+        "CONFLICTED",
+        "LOCKED",
+        "UNSUPPORTED_SUBMODULE",
+        "TRUST_REQUIRED",
+        "TRUST_CHANGED",
+        "STALE_SELECTION",
+        "STALE_REVIEW",
+        "APPROVAL_EXPIRED",
+        "UNSUPPORTED_HUNK_PROFILE",
+        "MALFORMED_GIT_OUTPUT",
+        "OUTPUT_LIMIT",
+        "OBJECT_MISSING",
+        "UNSUPPORTED_COMPARISON",
+        "DISPLAY_MAPPING_FAILED",
+        "GRAPH_LAYOUT_LIMITED",
+        "IDENTITY_REQUIRED",
+        "HOOK_FAILED",
+        "SIGNING_FAILED",
+        "GIT_FAILED",
+        "PROCESS_OWNERSHIP_FAILED",
+        "DEADLINE",
+        "CANCELED",
+        "COMMIT_ENCODING_UNSUPPORTED",
+        "COMPLETED_WITH_EFFECTS",
+        "FAILED_WITH_EFFECTS",
+        "STATE_UNKNOWN",
+        "SERVICE_UNAVAILABLE",
+        "RECOVERY_MARKER_FAILED"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "selected-missing",
+        "resolution-failed",
+        "resolved-missing",
+        "outside-installation"
+      ]
+    },
+    "path": {
+      "type": "string"
+    },
+    "markers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "markerId": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "applyHunk",
+              "applyFile",
+              "commit",
+              "updateSubmodules"
+            ]
+          },
+          "startedAt": {
+            "type": "string",
+            "pattern": "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(\\.\\d+)?Z$"
+          },
+          "worktreeRoot": {
+            "type": "string",
+            "maxLength": 32767,
+            "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          }
+        },
+        "required": [
+          "markerId",
+          "kind",
+          "startedAt",
+          "worktreeRoot"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "markerLimit": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "unloadedMarkers": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "damagedMarkers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "markerId": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "fileName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^\\\\/]*$"
+          }
+        },
+        "required": [
+          "markerId",
+          "fileName"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "buildIdentity",
+    "platformScope",
+    "minimumVersion",
+    "qualification",
+    "markers",
+    "damagedMarkers"
+  ],
+  "additionalProperties": false,
+  "title": "EnvironmentResult"
+}

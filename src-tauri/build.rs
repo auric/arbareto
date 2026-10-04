@@ -29,6 +29,17 @@ const COMMANDS: &[&str] = &[
     "dismiss_recovery_marker",
 ];
 
+/// The exported JSON Schema files of the values that the shell reads (contract §1 "Schemas").
+/// `bun run export:schemas` writes them. Each file becomes one module of `src/schema.rs`.
+const SCHEMAS: [&str; 6] = [
+    "native-first-envelope.schema.json",
+    "mutation-request.schema.json",
+    "trust-request.schema.json",
+    "trust-record.schema.json",
+    "handshake.schema.json",
+    "progress.schema.json",
+];
+
 fn main() {
     println!(
         "cargo:rustc-env=ARBARETO_BUILD_IDENTITY={}",
@@ -36,6 +47,7 @@ fn main() {
     );
     // Cargo treats a missing `rerun-if-changed` path as stale, so the script runs in every build (T063).
     let out_dir = std::env::var("OUT_DIR").expect("Cargo sets OUT_DIR for build scripts");
+    generate_schema_types(Path::new(&out_dir));
     println!(
         "cargo:rerun-if-changed={}",
         Path::new(&out_dir)
@@ -47,6 +59,31 @@ fn main() {
             .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),
     )
     .expect("failed to run the Tauri build script");
+}
+
+/// Writes the serde types of each schema file to `OUT_DIR` with typify. A missing or stale file fails the build.
+fn generate_schema_types(out_dir: &Path) {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR");
+    let folder = Path::new(&manifest).join("../src/contracts/schemas");
+    for file in SCHEMAS {
+        let path = folder.join(file);
+        println!("cargo:rerun-if-changed={}", path.display());
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("read {}; run bun run export:schemas", path.display()));
+        let schema: schemars::schema::RootSchema =
+            serde_json::from_str(&text).expect("a JSON Schema file");
+        let mut space =
+            typify::TypeSpace::new(typify::TypeSpaceSettings::default().with_struct_builder(false));
+        space
+            .add_root_schema(schema)
+            .unwrap_or_else(|error| panic!("typify {file}: {error}"));
+        let module = file.trim_end_matches(".schema.json").replace('-', "_");
+        std::fs::write(
+            out_dir.join(format!("{module}.rs")),
+            space.to_stream().to_string(),
+        )
+        .expect("write the generated types");
+    }
 }
 
 /// The full commit ID of `HEAD`, with `-dirty` when Git lists any change or untracked file (plan.md "About window").

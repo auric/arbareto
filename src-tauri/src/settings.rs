@@ -29,6 +29,7 @@ use windows::core::HSTRING;
 
 use crate::bootstrap::{Identity, read_identity};
 use crate::process_requests::{PATH_UNITS, VERSION_BYTES, is_device_path, is_identifier};
+use crate::schema;
 
 // ---- Settings file (data-model §1) ----
 
@@ -346,7 +347,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A channel path (contract §6 "Channel frames"), as `src/git-service/git-runner.ts` `isChannelPath` checks it.
+/// A channel path (contract §6 "Channel frames"), as `src/contracts/operations.ts` `ChannelPath` checks it.
 /// A fully qualified path starts with a drive letter and a separator, or with two separators but no device prefix.
 fn channel_path(value: &Value) -> Option<PathBuf> {
     let text = value.as_str()?;
@@ -381,8 +382,8 @@ fn identity_text(identity: &Identity) -> String {
     format!("{:016x}{}", identity.volume_serial, hex(&identity.file_id))
 }
 
-/// A UTC time in RFC 3339 form, as `src/git-service/session.ts` `isUtcTime` checks it. Returns the sort key.
-fn utc_time(text: &str) -> Option<(&str, u32)> {
+/// A UTC time in RFC 3339 form, as `src/contracts/channel.ts` `UtcTime` checks it. Returns the sort key.
+pub(crate) fn utc_time(text: &str) -> Option<(&str, u32)> {
     let b = text.as_bytes();
     if b.len() < 20
         || b[4] != b'-'
@@ -540,7 +541,7 @@ impl Marker {
         })
     }
 
-    /// The handshake form as `src/git-service/session.ts` `isMarker` checks it. Another value would fail the whole handshake.
+    /// The handshake form as `src/contracts/channel.ts` `Marker` checks it. Another value would fail the whole handshake.
     fn parse(value: &Value) -> Option<Marker> {
         let object = value.as_object().filter(|object| object.len() == 6)?;
         let field = |key: &str| object.get(key).and_then(Value::as_str);
@@ -1019,7 +1020,7 @@ pub struct Confirm {
     pub worktree_root: PathBuf,
     pub git_directory: PathBuf,
     pub common_directory: PathBuf,
-    pub git_installation_digest: String,
+    pub git_selected_path: PathBuf,
     pub fingerprint: String,
     pub persist: bool,
     /// `file-count`, `file-bytes`, or `total-bytes`. Present only with `persist: false`.
@@ -1058,34 +1059,6 @@ impl Confirmed {
             }
         }
     }
-}
-
-/// The handshake record form, as `src/git-service/session.ts` `isTrustRecord` checks it. Another value would fail the whole handshake.
-fn is_trust_record(value: &Value) -> bool {
-    let Some(object) = value.as_object().filter(|object| object.len() == 8) else {
-        return false;
-    };
-    let path = |key: &str| object.get(key).and_then(channel_path).is_some();
-    let digest = |key: &str| {
-        object
-            .get(key)
-            .and_then(Value::as_str)
-            .is_some_and(|digest| is_hex(digest, 64))
-    };
-    path("commonDirectory")
-        && path("worktreeRoot")
-        && path("gitDirectory")
-        && object.get("commonIdentity").and_then(identity).is_some()
-        && object
-            .get("worktreeIdentity")
-            .and_then(Value::as_array)
-            .is_some_and(|pair| pair.len() == 2 && pair.iter().all(|id| identity(id).is_some()))
-        && digest("configurationFingerprint")
-        && digest("gitInstallationDigest")
-        && object
-            .get("approvedAt")
-            .and_then(Value::as_str)
-            .is_some_and(|time| utc_time(time).is_some())
 }
 
 /// One stored record. `stem` is its file name without `.json`.
@@ -1144,7 +1117,7 @@ fn load_records(folder: &Path) -> Vec<Record> {
                 .ok()
                 .filter(|bytes| bytes.len() <= TRUST_RECORD_BYTES)?;
             let value: Value = serde_json::from_slice(&bytes).ok()?;
-            is_trust_record(&value).then_some(Record { stem, value })
+            schema::trust_record(&value).then_some(Record { stem, value })
         })
         .collect();
     records.sort_by(|a, b| a.order().cmp(&b.order()));
@@ -1223,11 +1196,11 @@ impl Trust {
             "worktreeIdentity": identities.worktree,
             "configurationFingerprint": request.fingerprint,
             "approvedAt": utc_now(),
-            "gitInstallationDigest": request.git_installation_digest,
+            "gitSelectedPath": request.git_selected_path.to_str()?,
         });
         let bytes = record.to_string().into_bytes();
         // A record above 4 KiB gets the reply of a failed write: the approval holds for the session only.
-        if bytes.len() > TRUST_RECORD_BYTES || !is_trust_record(&record) {
+        if !schema::trust_record(&record) {
             return None;
         }
         let fault = state.fault.take();
@@ -1302,6 +1275,7 @@ mod tests {
 
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     const FINGERPRINT: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    const GIT_PATH: &str = "C:\\Program Files\\Git\\cmd\\git.exe";
 
     // Win32 error codes (winerror.h). Rust std maps 39 and 112 to `StorageFull` and 5 to `PermissionDenied`.
     const ERROR_ACCESS_DENIED: i32 = 5;
@@ -2259,7 +2233,7 @@ mod tests {
             worktree_root: worktree.root.clone(),
             git_directory: worktree.git_directory.clone(),
             common_directory: worktree.common.clone(),
-            git_installation_digest: DIGEST.to_string(),
+            git_selected_path: PathBuf::from(GIT_PATH),
             fingerprint: fingerprint.to_string(),
             persist,
             bound: (!persist).then(|| "file-count".to_string()),
@@ -2322,7 +2296,7 @@ mod tests {
                 "worktreeIdentity",
                 "configurationFingerprint",
                 "approvedAt",
-                "gitInstallationDigest",
+                "gitSelectedPath",
             ])
         );
         assert_eq!(record["commonDirectory"], json!(worktree.common));
@@ -2337,7 +2311,7 @@ mod tests {
             ])
         );
         assert_eq!(record["configurationFingerprint"], json!(FINGERPRINT));
-        assert_eq!(record["gitInstallationDigest"], json!(DIGEST));
+        assert_eq!(record["gitSelectedPath"], json!(GIT_PATH));
         assert!(is_utc_time(
             record["approvedAt"].as_str().expect("approvedAt")
         ));

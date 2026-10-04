@@ -20,7 +20,7 @@ const RESOLVED_PATH = "C:\\arbareto-test-fixture\\git\\mingw64\\libexec\\git-cor
 
 const marker = (n: number) => ({
   markerId: `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`,
-  kind: "commit",
+  kind: "commit" as const,
   startedAt: "2026-10-02T08:00:00Z",
   worktreeRoot: `C:\\repo${n}`,
   commonDirectory: `C:\\repo${n}\\.git`,

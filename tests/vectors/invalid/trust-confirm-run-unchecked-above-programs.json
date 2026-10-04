@@ -1,0 +1,5 @@
+{
+  "schema": "trust-request",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"type\":\"confirmRun\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000008\",\"worktreeRoot\":\"C:\\\\repo\",\"submodulePaths\":[\"C:\\\\repo\\\\sub\"],\"programCount\":2,\"uncheckedCount\":3}"
+}

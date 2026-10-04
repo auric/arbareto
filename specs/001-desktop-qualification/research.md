@@ -406,6 +406,60 @@ A Git-behavior probe on 2026-09-29 used Git `2.55.0.windows.3` in throwaway repo
 
 A second probe on 2026-09-29 used an owned global configuration and a throwaway repository. A global `core.hooksPath=.githooks` ran the committed `.githooks/pre-commit`. A global `hook.<name>.command=./tools/h.sh` ran the committed script. A global `filter.<driver>.clean=./tools/clean.sh` ran during `diff-files -p`. A global `core.fsmonitor=./tools/fsm.sh` ran during `status`. Each ran with the worktree root as its directory, also when Git started in a subdirectory. `rev-parse --git-path hooks` printed `.githooks` at the root and `../.githooks` in the subdirectory. `git hook list --show-scope` printed `hook from hookdir` without a path. This probe is not qualification evidence.
 
+**T280 record (2026-10-05)**: T080 drops the `hook list` runs. It derives the hook registrations in TypeScript from `config list --show-scope --show-origin -z` and the `rev-parse --git-path hooks` folder. The derivation equals the oracle in every case below, and k = 28 `hook list` runs are saved for each trust listing.
+
+The probe `tests/git/probe-hooks.ts` ran Git `2.56.0.windows.1` (`C:/Git/ucrt64/bin/git.exe`, built from `49d759b698127791a5f3f2759c69b983846711dd`, the peeled tag `v2.56.0.windows.1`). This is not the R2 candidate `2.55.0.windows.3`. Each derivation call and each oracle call for a known event used the `src/git-service/commands.ts` builders `configListArgs`, `hooksPathArgs`, and `hookListArgs`. The arity checks and the unknown-event oracle used the same global options with raw arguments. All calls ran under `LC_ALL=C` with the owned fixture environment. Each case had its own repository and its own global file under the fixture root. The oracle is `git hook list -z --show-scope <event>` for each of the 28 events, compared byte for byte with the derivation, with exit status 0 for a listing and 1 for none.
+
+Event set and arity:
+
+- `hook list` accepted all 28 names of `HOOK_EVENTS` in `commands.ts`. `tools/generate-hooklist.sh` at the build revision makes the same 28 names from `githooks.adoc`. `hook.c` `is_known_hook` checks this list.
+- One call lists one event. Two names or no name exit 129 with `fatal: you must specify a hook event name to list` (builtin/hook.c:59-61).
+- An unknown name exits 1 with `error: unknown hook event`. A configured hook can name an unknown event. Only `hook list --allow-unknown-hook-name` shows it, and the derivation shows it from the listing.
+
+Output format (builtin/hook.c:72-112):
+
+- Configured hooks come first, then the hooks-folder hook (`list_hooks`, hook.c:535-552). A configured hook prints `<scope>\t<name>`, `<scope>\tdisabled\t<name>`, or `<scope>\tevent-disabled\t<name>`. `event-disabled` wins over `disabled`.
+- A hooks-folder hook prints `hook from hookdir` and no path. An empty result exits 1 with `warning: no hooks found for event`.
+- The scope is the scope of the last `hook.<name>.event` entry for that event, not of `hook.<name>.command`. The command is the last `hook.<name>.command` value from any scope (hook.c:190-237).
+
+Derivation rules that the probe confirmed (hook.c `hook_config_lookup_all` and `build_hook_config_map`, hook.c:154-450):
+
+- Order: a repeated `hook.<name>.event` removes the earlier entry with `unsorted_string_list_delete_item`, which moves the last entry into the free slot (string-list.c:274-282). Then it appends the name. So the order is not plain last-seen order. A first derivation with plain last-seen order differed for `pre-commit` in the configured case.
+- An empty `hook.<name>.event` value removes the name from every event seen so far.
+- `hook.<name>.enabled` uses `git_parse_maybe_bool`, and the last value wins. `false`, `0`, and `off` disable. A later `true` enables again.
+- `hook.<x>.enabled=false` is an event switch when `<x>` has no `command`, `event`, or valid `parallel` entry (`is_friendly_name`, hook.c:322).
+- A disabled hook without a command stays in the list with a warning. An enabled hook without a command, or a friendly name that equals a known event, makes every `hook list` call exit 128. `hook.jobs`, `hook.<event>.jobs`, and `hook.<name>.parallel` do not change the listing.
+- Hooks folder: `resolve(<directory where Git ran>, <rev-parse --git-path hooks output>)` joined with the event name. Git lists the entry when `access(path, X_OK)` succeeds (`find_hook`, hook.c:26-64). Git for Windows drops `X_OK` (`mingw_access`, compat/mingw.c:1171-1180), and Bun `accessSync` with `X_OK` also tests only existence on Windows (Bun 1.4.2, checked on this host). So a folder named `pre-commit` and a mode 0644 `commit-msg` were listed on Windows. On POSIX, `X_OK` decides (source rule, not run by this probe).
+- Unverified: Git for Windows also tries `<name>.exe` (`STRIP_EXTENSION`, config.mak.uname:541 and :738). The probe has no case for that name, because `tests/git/` stays portable. T080 adds that name from the source rule.
+
+| Case | Events with hooks | Derivation against oracle | Canaries (derivation / oracle) | Processes (derivation / oracle) |
+| --- | --- | --- | --- | --- |
+| fresh repository, sample hooks only | 0 | equal | none / none | 2 / 28 |
+| every traditional name in `.git/hooks`, plus samples and an unknown name | 28 | equal | none / none | 2 / 28 |
+| configured hooks from global, local, worktree, and command scopes, and one unknown event | 5 | equal | none / none | 2 / 29 |
+| disabled registrations: per hook (`false`, `0`, `off`), without a command, re-enabled, and per event | 3 | equal | none / none | 2 / 28 |
+| global absolute `core.hooksPath` | 2 | equal | none / none | 2 / 28 |
+| global relative `core.hooksPath=.githooks`, at the worktree root | 2 | equal | none / none | 2 / 28 |
+| the same, in a subdirectory (`../.githooks`) | 2 | equal | none / none | 2 / 28 |
+| the same, in a linked worktree | 3 | equal | none / none | 2 / 28 |
+| local relative `core.hooksPath=hooks-local` | 1 | equal | none / none | 2 / 28 |
+| hooks folder: a folder named `pre-commit`, a mode 0644 `commit-msg` | 2 | equal | none / none | 2 / 28 |
+| fatal: `hook.orphan.event` without a command | all exit 128 | equal | none / none | 2 / 28 |
+| fatal: friendly name `pre-commit` | all exit 128 | equal | none / none | 2 / 28 |
+
+- The derivation processes are `config list` and `rev-parse --git-path hooks`. T080 needs both for other trust rules. The oracle processes are the `hook list` runs; the configured case adds one run for the unknown event.
+- Per trust listing: the `hook list` form starts 30 Git processes (1 + 1 + 28). The derived form starts 2. So k = 28 when T080 lists every known event. The `hook list` form needs one run for each listed event.
+- Informal timings, not qualification evidence: in the configured case, 28 `hook list` runs took a median of 548.6 ms, and the two derivation calls took 38.9 ms (10 runs each).
+- Control: `hook run pre-commit` ran the canaries in each case that has a control. In the configured case it ran `l1`, `shared`, `g1`, `w`, `c1`, and the hooks-folder hook. Global and relative `core.hooksPath` ran their folder hooks, also from the subdirectory and the linked worktree.
+- Disabled control: `hook run pre-commit` ran only the re-enabled hook `d5`. With `hook.pre-push.enabled=false` and `hook.post-merge.enabled=false`, `hook run` still ran the hooks-folder `pre-push` and `post-merge` hooks. The event switch stops only configured hooks.
+- Scope control: global `hook.shared.event` with a local `hook.shared.command` listed `global\tshared`, but `hook run` ran the local command. So the `hook list` scope does not classify the command. T080 takes the scope and origin of the `command` entry from the listing.
+- No `config list`, `rev-parse --git-path hooks`, or `hook list` call ran a canary.
+- This probe is not qualification evidence, and no Arbareto build ran.
+
+Hook sources: [hook list output](https://github.com/git-for-windows/git/blob/49d759b698127791a5f3f2759c69b983846711dd/builtin/hook.c#L59-L112), [hook configuration and hooks folder](https://github.com/git-for-windows/git/blob/49d759b698127791a5f3f2759c69b983846711dd/hook.c#L26-L552), [list removal](https://github.com/git-for-windows/git/blob/49d759b698127791a5f3f2759c69b983846711dd/string-list.c#L274-L282), [mingw_access](https://github.com/git-for-windows/git/blob/49d759b698127791a5f3f2759c69b983846711dd/compat/mingw.c#L1171-L1180), [hook configuration keys](https://github.com/git-for-windows/git/blob/49d759b698127791a5f3f2759c69b983846711dd/Documentation/config/hook.adoc).
+
+Verdict for T080: drop the 28 `hook list` runs, and derive the registrations from the listing and the hooks folder by the rules above (k = 28).
+
 Limit: the classification covers the program that Git starts. A protected command such as `sh ./x.sh` can still run repository files through its arguments. Whether `sh` searches an empty `PATH` entry on Git for Windows is unverified.
 
 **Decision**: Trust approval persists across launches (spec Clarifications, 2026-09-30). The shell stores one record for each worktree, because the fingerprint is per worktree. The record binds the common-directory identity, the worktree identity, the selected Git path, and the fingerprint. A change of any of them gives `TRUST_CHANGED` and needs renewed approval. A Git upgrade behind the same selected path keeps the approval (user decision, 2026-10-04). The record holds no configuration value or credential. A native confirmation with a Cancel default precedes each stored approval (R7). Revoke trust deletes the records of every worktree of that common directory. Over a digest bound, approval lasts for the service session only (contract §7). That session ends when Arbareto closes or at Restart service, and the native confirmation names both.

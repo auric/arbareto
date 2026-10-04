@@ -22,7 +22,7 @@ use windows::core::{HRESULT, HSTRING, PCWSTR, w};
 
 use crate::bootstrap::{ContextKind, Contexts, is_absent};
 use crate::ipc::MAIN_WINDOW;
-use crate::process_requests::{PATH_UNITS, is_identifier};
+use crate::process_requests::PATH_UNITS;
 use crate::settings::{Confirm, Damaged, Marker, SavedGit, Settings};
 
 /// Escape, Alt+F4, and the close button return `IDCANCEL`, so the Cancel button carries that ID.
@@ -247,11 +247,6 @@ fn bound_text(bound: &str) -> Option<&'static str> {
     }
 }
 
-/// True for a `bound` name of contract §6 "Channel frames".
-pub fn is_bound(bound: &str) -> bool {
-    bound_text(bound).is_some()
-}
-
 /// The trust confirmation: Approve and Cancel.
 pub fn trust_confirmation(request: &Confirm) -> Confirmation {
     let mut text = format!(
@@ -320,30 +315,6 @@ pub fn service_stopped() -> Confirmation {
         }],
         default_button: ACCEPT,
         accept_button: ACCEPT,
-    }
-}
-
-/// The renderer payload of a native-first operation. `dismissRecoveryMarker` holds exactly `markerId`; the others are empty.
-/// Any other field gives `INVALID_REQUEST`.
-pub fn check_renderer_payload(operation: &str, payload: &Value) -> Result<(), &'static str> {
-    let expected: &[&str] = if operation == "dismissRecoveryMarker" {
-        &["markerId"]
-    } else {
-        &[]
-    };
-    let exact = payload.as_object().is_some_and(|fields| {
-        fields.len() == expected.len()
-            && expected.iter().all(|key| {
-                fields
-                    .get(*key)
-                    .and_then(Value::as_str)
-                    .is_some_and(is_identifier)
-            })
-    });
-    if exact {
-        Ok(())
-    } else {
-        Err("INVALID_REQUEST")
     }
 }
 
@@ -683,7 +654,7 @@ pub(crate) mod tests {
             worktree_root: folder(fixture, "repo"),
             git_directory: folder(fixture, "repo\\.git"),
             common_directory: fixture.path("repo\\.git"),
-            git_installation_digest: DIGEST.to_string(),
+            git_selected_path: PathBuf::from("C:\\Program Files\\Git\\cmd\\git.exe"),
             fingerprint: FINGERPRINT.to_string(),
             persist,
             bound: bound.map(str::to_string),
@@ -1090,48 +1061,6 @@ pub(crate) mod tests {
                 &Fake::pressing(&[press]),
                 &damaged
             ));
-        }
-    }
-
-    // ---- Renderer input ----
-
-    #[test]
-    fn a_renderer_payload_with_any_field_is_rejected() {
-        for operation in ["chooseGit", "chooseRepository", "restoreWorkspace"] {
-            assert_eq!(
-                check_renderer_payload(operation, &json!({})),
-                Ok(()),
-                "{operation}"
-            );
-            for payload in [
-                json!({ "executablePath": "C:\\Git\\cmd\\git.exe" }),
-                json!({ "path": "C:\\repo" }),
-                json!({ "fingerprint": FINGERPRINT }),
-                json!([]),
-                json!(null),
-            ] {
-                assert_eq!(
-                    check_renderer_payload(operation, &payload),
-                    Err("INVALID_REQUEST"),
-                    "{operation} {payload}"
-                );
-            }
-        }
-        let marker_id = "0f0f0f0f-0000-4000-8000-000000000001";
-        assert_eq!(
-            check_renderer_payload("dismissRecoveryMarker", &json!({ "markerId": marker_id })),
-            Ok(())
-        );
-        for payload in [
-            json!({ "markerId": marker_id, "worktreeRoot": "C:\\elsewhere" }),
-            json!({ "markerId": marker_id, "bootstrapId": marker_id }),
-            json!({}),
-        ] {
-            assert_eq!(
-                check_renderer_payload("dismissRecoveryMarker", &payload),
-                Err("INVALID_REQUEST"),
-                "{payload}"
-            );
         }
     }
 

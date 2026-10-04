@@ -47,7 +47,7 @@ describe("boot view", () => {
   });
 
   test("each Git code shows a blocked state with both versions and Select Git", () => {
-    for (const gitCode of ["GIT_UNAVAILABLE", "GIT_UNSUPPORTED", "GIT_CHANGED"]) {
+    for (const gitCode of ["GIT_UNAVAILABLE", "GIT_UNSUPPORTED", "GIT_CHANGED"] as const) {
       const html = render(environment({ gitCode }));
       expect(html).toContain(gitCode);
       expect(html).toContain("2.43.0.windows.1");
@@ -70,7 +70,7 @@ describe("boot view", () => {
   });
 
   test("any other Git code shows as plain text with Select Git", () => {
-    for (const gitCode of ["DEADLINE", "OUTPUT_LIMIT", "UNKNOWN_TARGET", "PROCESS_OWNERSHIP_FAILED", "UNSUPPORTED_REPOSITORY", "GIT_FAILED"]) {
+    for (const gitCode of ["DEADLINE", "OUTPUT_LIMIT", "UNKNOWN_TARGET", "PROCESS_OWNERSHIP_FAILED", "UNSUPPORTED_REPOSITORY", "GIT_FAILED"] as const) {
       const html = render(environment({ gitCode }));
       expect(html).toContain(gitCode);
       expect(html).toContain("Select Git");
@@ -78,7 +78,7 @@ describe("boot view", () => {
   });
 
   test("each recovery marker shows its facts and a Dismiss action", () => {
-    const marker = { markerId: crypto.randomUUID(), kind: "commit", startedAt: "2026-10-02T10:00:00Z", worktreeRoot: "C:\\repo" };
+    const marker = { markerId: crypto.randomUUID(), kind: "commit" as const, startedAt: "2026-10-02T10:00:00Z", worktreeRoot: "C:\\repo" };
     const html = render(environment({ platformScope: "qualification-target", markers: [marker], markerLimit: 64, unloadedMarkers: 3 }));
     expect(html).not.toContain("Unqualified platform");
     for (const text of ["commit", "C:\\repo", "2026-10-02T10:00:00Z", "Dismiss", "Marker limit: 64", "Unloaded marker files: 3"]) expect(html).toContain(text);
@@ -93,7 +93,7 @@ describe("boot view", () => {
   });
 
   test("each button calls its action with the marker ID", () => {
-    const markers = ["a", "b"].map((markerId) => ({ markerId, kind: "commit", startedAt: "2026-10-02T10:00:00Z", worktreeRoot: "C:\\repo" }));
+    const markers = ["a", "b"].map((markerId) => ({ markerId, kind: "commit" as const, startedAt: "2026-10-02T10:00:00Z", worktreeRoot: "C:\\repo" }));
     const calls: string[] = [];
     const damagedMarkers = [{ markerId: "c", fileName: "broken.json" }];
     const props: BootProps = { state: "facts", environment: environment({ gitCode: "GIT_UNAVAILABLE", markers, damagedMarkers }), onSelectGit: () => calls.push("select"), onDismissMarker: (id) => calls.push(`dismiss ${id}`) };

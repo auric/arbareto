@@ -10,6 +10,7 @@ mod ipc;
 mod jobs;
 mod platform;
 mod process_requests;
+mod schema;
 mod service;
 mod settings;
 mod spawn;

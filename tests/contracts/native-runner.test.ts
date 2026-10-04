@@ -32,7 +32,7 @@ const RECORD: TrustRecord = {
   worktreeIdentity: [IDENTITY, IDENTITY],
   configurationFingerprint: "a".repeat(64),
   approvedAt: "2026-10-02T08:00:00Z",
-  gitInstallationDigest: "b".repeat(64),
+  gitSelectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
 };
 
 // The shell end of the private channel. It sends contract §6 replies and never invents Git output beyond the bytes a test sets.
@@ -627,7 +627,7 @@ describe("native runner mutation and trust frames", () => {
     worktreeRoot: "C:\\repo",
     gitDirectory: "C:\\repo\\.git",
     commonDirectory: "C:\\repo\\.git",
-    gitInstallationDigest: "b".repeat(64),
+    gitSelectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
     fingerprint: "a".repeat(64),
     persist: true,
   } as const;

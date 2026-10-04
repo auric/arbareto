@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { CHANNEL_PATH_UNITS, COMMIT_MESSAGE_BYTES, IDENTIFIER_BYTES } from "./limits";
+import { z } from "zod";
+import { CHANNEL_PATH_UNITS, IDENTIFIER_BYTES } from "./limits";
 
 // Contract §3: the closed list of public operations.
-const OPERATION_NAMES = [
+export const OPERATION_NAMES = [
   "getEnvironment",
   "chooseGit",
   "chooseRepository",
@@ -36,112 +37,37 @@ export function isOperationName(value: unknown): value is OperationName {
 }
 
 // Contract §2: these operations carry a one-use approval as their repeat key.
-export const MUTATIONS: readonly OperationName[] = ["applyHunk", "applyFile", "commit", "updateSubmodules"];
+const MUTATION_NAMES = ["applyHunk", "applyFile", "commit", "updateSubmodules"] as const;
+export const MUTATIONS: readonly OperationName[] = MUTATION_NAMES;
+export const MutationKind = z.enum(MUTATION_NAMES);
 
 // Contract §3: the shell answers these natively and never forwards them to the service.
 export const SHELL_ONLY: readonly OperationName[] = ["requestClose", "currentSession"];
 
-// Contract §2 envelope field rules.
-export const REPOSITORY_BOUND: readonly OperationName[] = [
-  "readWorkspace",
-  "readHistory",
-  "readComparison",
-  "readTrust",
-  "approveTrust",
-  "revokeTrust",
-  "applyHunk",
-  "applyFile",
-  "reviewCommit",
-  "commit",
-  "reviewSubmodules",
-  "updateSubmodules",
-];
-export const GENERATION_REQUIRED: readonly OperationName[] = [
-  "readHistory",
-  "readComparison",
-  "applyHunk",
-  "applyFile",
-  "reviewCommit",
-  "commit",
-  "reviewSubmodules",
-  "updateSubmodules",
-  "approveTrust",
-];
-export const GENERATION_OPTIONAL: readonly OperationName[] = ["readWorkspace"];
-export const SELECTION_REQUIRED: readonly OperationName[] = ["readComparison"];
-export const SESSIONLESS: readonly OperationName[] = ["currentSession"];
-
+// Contract §2: UUID-shaped ASCII identifiers.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const Identifier = z.string().max(IDENTIFIER_BYTES).regex(UUID);
+export const isIdentifier = (value: unknown): value is string => Identifier.safeParse(value).success;
 
-export function isIdentifier(value: unknown): value is string {
-  return typeof value === "string" && value.length <= IDENTIFIER_BYTES && UUID.test(value);
-}
+// Contract §6: `configurationFingerprint`, `fingerprint`, and `digest` are 64 lowercase hex digits.
+export const Fingerprint = z.string().regex(/^[0-9a-f]{64}$/);
+export const isFingerprint = (value: unknown): value is string => Fingerprint.safeParse(value).success;
 
-// Contract §6: `configurationFingerprint` is 64 lowercase hex digits.
-export const isFingerprint = (value: unknown) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
-// Contract §3 `chooseGit`: the §6 channel path rule. Microsoft Learn "File path formats on Windows systems": a fully qualified path starts with a drive letter and a separator, or with two separators.
-const isWindowsPath = (value: unknown) =>
-  typeof value === "string" && value.length <= CHANNEL_PATH_UNITS && !value.includes("\u0000") && value.isWellFormed() && /^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![.?][\\/]))/.test(value);
-const isTrue = (value: unknown) => value === true;
-const isBoolean = (value: unknown) => typeof value === "boolean";
-const oneOf =
-  (...allowed: string[]) =>
-  (value: unknown) =>
-    typeof value === "string" && allowed.includes(value);
+// A nonnegative safe integer.
+export const Count = z.int().nonnegative();
 
-// Git 2.55.0 rejects a `commit -F` message that holds only U+0020, U+0009, U+000A, and U+000D. U+000B, U+000C, U+00A0, and U+3000 commit.
-function isCommitMessage(value: unknown): boolean {
-  if (typeof value !== "string" || !value.isWellFormed()) return false;
-  if (value.includes("\u0000") || /^[ \t\n\r]*$/.test(value)) return false;
-  return new TextEncoder().encode(value).length <= COMMIT_MESSAGE_BYTES;
-}
+// Contract §6 "Process fields": no string holds NUL or a lone surrogate. A Rust `String` cannot hold a lone surrogate.
+export const Text = z
+  .string()
+  .regex(/^[^\u0000]*$/)
+  .refine((value) => value.isWellFormed());
 
-type Check = (value: unknown) => boolean;
-export type PayloadValidator = (payload: Record<string, unknown>) => boolean;
-
-function exact(fields: Record<string, Check>, extra: PayloadValidator = () => true): PayloadValidator {
-  const names = Object.keys(fields);
-  return (payload) => {
-    const keys = Object.keys(payload);
-    if (keys.length !== names.length) return false;
-    for (const key of keys) {
-      if (!Object.hasOwn(fields, key) || !fields[key](payload[key])) return false;
-    }
-    return extra(payload);
-  };
-}
-
-const empty = exact({});
-const bootstrap = exact({ bootstrapId: isIdentifier });
-const markerOnly = exact({ markerId: isIdentifier });
-const markerWithBootstrap = exact({ markerId: isIdentifier, bootstrapId: isIdentifier });
-
-// Contract §3 names the values. The field names `snapshotId`, `entryId`, `trustId`, `comparisonId`, `hunkId`, `operationId`, `choice`, and `markerId` follow test T012.
-export const PAYLOAD_VALIDATORS: Record<OperationName, { renderer: PayloadValidator; service: PayloadValidator }> = {
-  getEnvironment: { renderer: empty, service: empty },
-  chooseGit: { renderer: empty, service: exact({ bootstrapId: isIdentifier, executablePath: isWindowsPath }) },
-  chooseRepository: { renderer: empty, service: bootstrap },
-  restoreWorkspace: { renderer: empty, service: bootstrap },
-  readWorkspace: same(exact({ refresh: isBoolean, check: oneOf("full", "changes") }, (p) => !(p.refresh === true && p.check !== "full"))),
-  readHistory: same(empty),
-  readComparison: same(exact({ snapshotId: isIdentifier, entryId: isIdentifier })),
-  readTrust: same(empty),
-  approveTrust: same(exact({ fingerprint: isFingerprint, approve: isTrue })),
-  revokeTrust: same(exact({ trustId: isIdentifier })),
-  applyHunk: same(exact({ comparisonId: isIdentifier, hunkId: isIdentifier, snapshotId: isIdentifier, direction: oneOf("stage", "unstage") })),
-  applyFile: same(exact({ comparisonId: isIdentifier, snapshotId: isIdentifier, direction: oneOf("stage", "unstage") })),
-  reviewCommit: same(exact({ snapshotId: isIdentifier })),
-  commit: same(exact({ reviewToken: isIdentifier, message: isCommitMessage, confirmFullScope: isTrue })),
-  reviewSubmodules: same(exact({ snapshotId: isIdentifier })),
-  updateSubmodules: same(exact({ submoduleReviewToken: isIdentifier, start: isTrue })),
-  cancel: same(exact({ operationId: isIdentifier })),
-  getOperation: same(exact({ operationId: isIdentifier })),
-  requestClose: same(exact({ choice: oneOf("stay", "closeIfIdle", "interruptAndClose") })),
-  currentSession: same(empty),
-  // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
-  dismissRecoveryMarker: { renderer: markerOnly, service: (p) => markerWithBootstrap(p) || markerOnly(p) },
-};
-
-function same(validator: PayloadValidator) {
-  return { renderer: validator, service: validator };
-}
+// Contract §6 "Channel frames": 1 to 32,767 UTF-16 units. Microsoft Learn "File path formats on Windows systems": a fully qualified path starts with a drive letter and a separator, or with two separators.
+// The same page names `\\.\` and `\\?\` device paths. A device such as a pipe can block a read without end.
+export const ChannelPath = z
+  .string()
+  .max(CHANNEL_PATH_UNITS)
+  .regex(/^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![.?][\\/]))[^\u0000]*$/)
+  // zod `max` and JSON Schema `maxLength` count code points. This check counts the UTF-16 units.
+  .refine((value) => value.length <= CHANNEL_PATH_UNITS && value.isWellFormed());
+export const isChannelPath = (value: unknown): value is string => ChannelPath.safeParse(value).success;

@@ -279,7 +279,7 @@ describeGit("bun runner", (git) => {
       worktreeRoot,
       gitDirectory: commonDirectory,
       commonDirectory,
-      gitInstallationDigest: "b".repeat(64),
+      gitSelectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
       fingerprint: "a".repeat(64),
       ...(persist ? { persist: true as const } : { persist: false as const, bound: "file-count" as const }),
     });

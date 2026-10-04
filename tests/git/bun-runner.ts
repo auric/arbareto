@@ -415,7 +415,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         worktreeIdentity,
         configurationFingerprint: request.fingerprint,
         approvedAt: new Date().toISOString(),
-        gitInstallationDigest: request.gitInstallationDigest,
+        gitSelectedPath: request.gitSelectedPath,
       } as TrustRecord;
       trustStore.records.push(record);
       return { result: "approved", stored: true, record };

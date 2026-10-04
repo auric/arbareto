@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Suspense, use, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createBridge, type BridgeResponse } from "./bridge";
@@ -10,7 +8,7 @@ import { BootView, bootActions, type Environment } from "./boot/BootView";
 
 let sessionChanged = () => {};
 // The capability grants no `unlisten`, so the bridge must exist once for the page life, outside React.
-const bridge = createBridge(invoke, listen, () => sessionChanged());
+const bridge = createBridge(() => sessionChanged());
 const load = () => ({
   environment: bridge.getEnvironment(),
   hasSession: bridge.currentSession().then((response) => response.state === "succeeded"),

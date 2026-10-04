@@ -3,7 +3,9 @@
 
 import { statSync } from "node:fs";
 import { win32 } from "node:path";
+import type { GitReason } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
+import { foldAscii } from "../contracts/fold-ascii";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_EXECUTABLE_DIGEST_BYTES, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
 import { admitGitProbe, MINIMUM_GIT_VERSION } from "./admission";
 import { createCollector, isChannelPath, RunnerRefusal, type GitRunner, type IdentityReply, type ProcessContext } from "./git-runner";
@@ -22,9 +24,6 @@ export interface GitInstallation {
   // Contract §6 "Startup contexts": the saved version when this startup admitted another version.
   previousVersion?: string;
 }
-
-// Contract §3 `getEnvironment` `reason`: why the startup check found no Git.
-export type GitReason = "selected-missing" | "resolution-failed" | "resolved-missing" | "outside-installation";
 
 export type GitProbeResult =
   | { ok: true; installation: GitInstallation }
@@ -58,9 +57,8 @@ const unavailable = (reason: GitReason, path?: string): GitProbeResult => ({
 const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
 
 // Contract §6 "Startup contexts": the installation root is the folder two levels above the selected file.
-// Windows paths compare without case.
-function insideInstallation(selected: string, resolved: string): boolean {
-  const relative = win32.relative(win32.dirname(win32.dirname(selected)).toLowerCase(), resolved.toLowerCase());
+export function insideInstallation(selected: string, resolved: string): boolean {
+  const relative = win32.relative(foldAscii(win32.dirname(win32.dirname(selected))), foldAscii(resolved));
   return relative !== "" && !relative.startsWith("..") && !win32.isAbsolute(relative);
 }
 

@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "started"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "applyHunk",
+            "applyFile",
+            "commit",
+            "updateSubmodules"
+          ]
+        },
+        "worktreeRoot": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+        },
+        "commonDirectory": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "operationId",
+        "repositoryId",
+        "kind",
+        "worktreeRoot",
+        "commonDirectory"
+      ],
+      "additionalProperties": false,
+      "title": "Started"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "ended"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "endProcesses": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "operationId",
+        "endProcesses"
+      ],
+      "additionalProperties": false,
+      "title": "Ended"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "resolved"
+        },
+        "markerId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "type",
+        "markerId"
+      ],
+      "additionalProperties": false,
+      "title": "Resolved"
+    }
+  ],
+  "title": "MutationRequest"
+}

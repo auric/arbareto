@@ -1,0 +1,167 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "chooseGit"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false,
+          "title": "ChooseGitPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ChooseGitRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "chooseRepository"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false,
+          "title": "ChooseRepositoryPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ChooseRepositoryRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "restoreWorkspace"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false,
+          "title": "RestoreWorkspacePayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "RestoreWorkspaceRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "dismissRecoveryMarker"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "markerId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "markerId"
+          ],
+          "additionalProperties": false,
+          "title": "DismissRecoveryMarkerPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "DismissRecoveryMarkerRequest"
+    }
+  ],
+  "title": "NativeFirstEnvelope"
+}

@@ -1,0 +1,5 @@
+{
+  "schema": "mutation-request",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"type\":\"started\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000003\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000005\",\"kind\":\"readWorkspace\",\"worktreeRoot\":\"C:\\\\repo\",\"commonDirectory\":\"C:\\\\repo\\\\.git\"}"
+}

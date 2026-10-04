@@ -117,7 +117,7 @@ const decode = (value: unknown, side: Side = "renderer") => decodeRequest(encode
 function expectCode(value: unknown, code: string, side: Side = "renderer") {
   const result = decode(value, side);
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.code).toBe(code);
+  if (!result.ok) expect<string>(result.code).toBe(code);
 }
 
 function expectAccepted(value: unknown, side: Side = "renderer") {
@@ -139,7 +139,7 @@ describe("operation list", () => {
       test(`valid ${name} decodes on the ${side} side`, () => {
         const result = decode(envelope(name, side), side);
         expect(result.ok).toBe(true);
-        if (result.ok) expect(result.request.operation).toBe(name);
+        if (result.ok) expect<string>(result.request.operation).toBe(name);
       });
     }
   }

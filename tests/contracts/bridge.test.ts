@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { emit } from "@tauri-apps/api/event";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { printOrigin } from "../origin";
 import * as bridgeModule from "../../src/frontend/bridge";
 import { validateRequest } from "../../src/contracts/envelope";
 import { OPERATIONS } from "../../src/contracts/operations";
+
+// `@tauri-apps/api` reads `window` only when a function runs, so this assignment comes in time.
+(globalThis as { window?: unknown }).window ??= globalThis;
 
 printOrigin("../../src/frontend/bridge.ts", import.meta.dir);
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
@@ -15,9 +20,10 @@ printOrigin("../../src/contracts/operations.ts", import.meta.dir);
 const { createBridge } = bridgeModule;
 type Bridge = ReturnType<typeof createBridge>;
 type Envelope = Record<string, unknown>;
-type Handler = (event: { payload: unknown }) => void;
+type Invoke = (command: string, args: unknown, options?: unknown) => Promise<unknown>;
 
 const id = () => crypto.randomUUID();
+const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 // `src-tauri/build.rs` is the source of the command names.
 const COMMANDS = [...readFileSync(new URL("../../src-tauri/build.rs", import.meta.url), "utf8").matchAll(/^\s+"([a-z_]+)",$/gm)].map((m) => m[1]);
@@ -53,54 +59,64 @@ interface Options {
   // Return undefined to keep the request without a response.
   answer?: (command: string, request: Envelope) => unknown;
   reject?: (command: string) => boolean;
-  // Replaces the resolved subscription result of the double.
+  // Replaces the result of an event subscription.
   listen?: (event: string) => Promise<unknown>;
   onSessionChange?: () => void;
 }
 
+// `mockIPC` answers each command. A spy on the mocked internals records the event subscriptions of the bridge.
 function harness(options: Options = {}) {
   let sessionId = id();
-  const calls: { command: string; request: Envelope }[] = [];
+  const calls: { command: string; request: Envelope; body: Uint8Array }[] = [];
   const listens: string[] = [];
-  const handlers = new Map<string, Handler>();
   const timeline: string[] = [];
   let unlistens = 0;
 
-  const invoke = (command: string, args?: unknown): Promise<unknown> => {
-    const request = (args as { request: Envelope }).request;
-    calls.push({ command, request });
-    timeline.push(`invoke ${command}`);
-    if (options.reject?.(command)) return Promise.reject(new Error(`command ${command} not found`));
-    if (command === "current_session") return Promise.resolve({ requestId: request.requestId, state: "succeeded", result: { sessionId } });
-    const answer = options.answer ? options.answer(command, request) : defaultAnswer(request);
-    return answer === undefined ? new Promise(() => {}) : Promise.resolve(answer);
-  };
   const defaultAnswer = (request: Envelope) =>
     request.sessionId === sessionId
       ? { requestId: request.requestId, operationId: id(), state: "succeeded", result: {} }
       : { requestId: request.requestId, state: "rejected", code: "UNKNOWN_TARGET" };
-  const listen = (event: string, handler: Handler) => {
-    listens.push(event);
-    timeline.push(`listen ${event}`);
-    handlers.set(event, handler);
-    if (options.listen) return options.listen(event);
-    return Promise.resolve(() => {
-      unlistens++;
-    });
+  mockIPC(
+    (command, args) => {
+      // Contract §1 "Renderer request body": one raw UTF-8 JSON body for each invoke.
+      if (!(args instanceof Uint8Array)) throw new TypeError(`invoke ${command} without a Uint8Array body`);
+      const request = JSON.parse(utf8.decode(args)) as Envelope;
+      calls.push({ command, request, body: args });
+      timeline.push(`invoke ${command}`);
+      if (options.reject?.(command)) return Promise.reject(new Error(`command ${command} not found`));
+      if (command === "current_session") return { requestId: request.requestId, state: "succeeded", result: { sessionId } };
+      const answer = options.answer ? options.answer(command, request) : defaultAnswer(request);
+      return answer === undefined ? new Promise(() => {}) : answer;
+    },
+    { shouldMockEvents: true },
+  );
+  const internals = (globalThis as unknown as { __TAURI_INTERNALS__: { invoke: Invoke } }).__TAURI_INTERNALS__;
+  const mocked = internals.invoke;
+  internals.invoke = (command, args, invokeOptions) => {
+    if (command === "plugin:event|listen") {
+      const event = (args as { event: string }).event;
+      listens.push(event);
+      timeline.push(`listen ${event}`);
+      if (options.listen) return options.listen(event);
+    }
+    if (command === "plugin:event|unlisten") unlistens++;
+    return mocked(command, args, invokeOptions);
   };
 
-  const bridge = createBridge(invoke, listen, options.onSessionChange);
+  const bridge = createBridge(options.onSessionChange);
   return {
     bridge,
     calls,
     listens,
     timeline,
     unlistens: () => unlistens,
-    emit: (event: string, payload: unknown = {}) => handlers.get(event)?.({ payload }),
+    emit: (event: string, payload: unknown = {}) => void emit(event, payload),
     newSession: () => (sessionId = id()),
     session: () => sessionId,
   };
 }
+
+afterEach(() => clearMocks());
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -127,6 +143,8 @@ describe("frontend bridge", () => {
       const call = h.calls.at(-1)!;
       expect(h.calls.length).toBe(before + 1);
       expect(call.command).toBe(commandOf(operation));
+      expect(call.body).toBeInstanceOf(Uint8Array);
+      expect(utf8.decode(call.body)).toBe(JSON.stringify(call.request));
       expect(COMMANDS).toContain(call.command);
       expect(call.request.operation).toBe(operation);
       const checked = validateRequest(call.request, "renderer");
@@ -223,6 +241,7 @@ describe("frontend bridge", () => {
     h.emit("operation-progress", { requestId, operationId: id(), state: "running", counters: {} });
     h.emit("operation-progress", { requestId: id(), operationId: id(), state: "accepted", counters: {} });
     h.emit("operation-progress", null);
+    await settle();
     expect(events).toEqual([]);
   });
 

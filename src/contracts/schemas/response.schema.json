@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "requestId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operationId": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "succeeded",
+        "limited",
+        "failed",
+        "canceled",
+        "completed-with-effects",
+        "failed-with-effects",
+        "unknown",
+        "rejected"
+      ]
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "INVALID_REQUEST",
+        "PROTOCOL_VERSION",
+        "UNKNOWN_OPERATION",
+        "UNKNOWN_TARGET",
+        "FRAME_LIMIT",
+        "BUSY",
+        "WORKSPACE_LIMIT",
+        "GIT_UNAVAILABLE",
+        "GIT_CHANGED",
+        "GIT_UNSUPPORTED",
+        "WEBVIEW_UNAVAILABLE",
+        "WEBVIEW_UNSUPPORTED",
+        "WSL_UNAVAILABLE",
+        "REPOSITORY_UNAVAILABLE",
+        "REPOSITORY_CHANGED",
+        "UNSUPPORTED_REPOSITORY",
+        "DUBIOUS_OWNERSHIP",
+        "NOT_A_REPOSITORY",
+        "OPERATION_IN_PROGRESS",
+        "CONFLICTED",
+        "LOCKED",
+        "UNSUPPORTED_SUBMODULE",
+        "TRUST_REQUIRED",
+        "TRUST_CHANGED",
+        "STALE_SELECTION",
+        "STALE_REVIEW",
+        "APPROVAL_EXPIRED",
+        "UNSUPPORTED_HUNK_PROFILE",
+        "MALFORMED_GIT_OUTPUT",
+        "OUTPUT_LIMIT",
+        "OBJECT_MISSING",
+        "UNSUPPORTED_COMPARISON",
+        "DISPLAY_MAPPING_FAILED",
+        "GRAPH_LAYOUT_LIMITED",
+        "IDENTITY_REQUIRED",
+        "HOOK_FAILED",
+        "SIGNING_FAILED",
+        "GIT_FAILED",
+        "PROCESS_OWNERSHIP_FAILED",
+        "DEADLINE",
+        "CANCELED",
+        "COMMIT_ENCODING_UNSUPPORTED",
+        "COMPLETED_WITH_EFFECTS",
+        "FAILED_WITH_EFFECTS",
+        "STATE_UNKNOWN",
+        "SERVICE_UNAVAILABLE",
+        "RECOVERY_MARKER_FAILED"
+      ]
+    },
+    "result": {}
+  },
+  "required": [
+    "requestId",
+    "state"
+  ],
+  "additionalProperties": false,
+  "title": "Response"
+}

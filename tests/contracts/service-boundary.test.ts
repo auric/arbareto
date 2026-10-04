@@ -74,7 +74,7 @@ const TRUST_RECORD = {
   worktreeIdentity: [IDENTITY, IDENTITY],
   configurationFingerprint: "a".repeat(64),
   approvedAt: "2026-10-02T08:00:00Z",
-  gitInstallationDigest: "b".repeat(64),
+  gitSelectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
 };
 
 type Frame = {
@@ -330,6 +330,28 @@ describe("service boundary", () => {
       const response = await service.responseFor([null, requestId]);
       expect(response.state).toBe("rejected");
       expect(response.code).toBe("INVALID_REQUEST");
+      await expectStillServing(service, sessionId);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a body that the strict decoder refuses gets INVALID_REQUEST with its own requestId",
+    async () => {
+      const service = start();
+      const sessionId = await service.handshake();
+      // Contract §1: the shell forwards these bodies unchanged, so each invoke needs a response with its requestId.
+      const bodies = [
+        (requestId: string) => `{"version":1,"sessionId":"${sessionId}","requestId":"${requestId}","operation":"getEnvironment","payload":{"a":1,"a":1}}`,
+        (requestId: string) => `{"version":1,"sessionId":"${sessionId}","requestId":"${requestId}","operation":"getEnvironment","payload":{"a":${"[".repeat(17)}${"]".repeat(17)}}}`,
+        (requestId: string) => `{"version":1,"sessionId":"${sessionId}","requestId":"${requestId}","operation":"readWorkspace","repositoryGeneration":9007199254740992,"payload":{}}`,
+      ];
+      for (const body of bodies) {
+        const requestId = crypto.randomUUID();
+        service.send(frameBytes(encoder.encode(`{"kind":"public","request":${body(requestId)}}`)));
+        const response = await service.responseFor([null, requestId]);
+        expect(response).toEqual({ requestId, state: "rejected", code: "INVALID_REQUEST" });
+      }
       await expectStillServing(service, sessionId);
     },
     TEST_TIMEOUT_MS,

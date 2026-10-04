@@ -2,27 +2,11 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { useEffect } from "react";
+import type { Environment } from "../../contracts/envelope";
 import type { createBridge } from "../bridge";
 
-// T054 and T062 fix the `getEnvironment` result. These names follow the contract §6 handshake and data-model §1.
-export interface Environment {
-  buildIdentity: { version: string; commit: string; signing: string };
-  platformScope: "qualification-target" | "other";
-  selectedPath?: string;
-  executablePath?: string;
-  detectedVersion?: string;
-  previousVersion?: string;
-  minimumVersion: string;
-  admission?: string;
-  qualification: string;
-  gitCode?: string;
-  reason?: string;
-  path?: string;
-  markers: { markerId: string; kind: string; startedAt: string; worktreeRoot: string }[];
-  markerLimit?: number;
-  unloadedMarkers?: number;
-  damagedMarkers: { markerId: string; fileName: string }[];
-}
+// Contract §3 `getEnvironment`. A type-only import keeps zod out of the renderer bundle.
+export type { Environment };
 
 export type BootProps =
   | { state: "loading" }

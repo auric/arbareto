@@ -1,0 +1,5 @@
+{
+  "schema": "native-first-envelope",
+  "expected": "PROTOCOL_VERSION",
+  "text": "{\"version\":2,\"sessionId\":\"0f0f0f0f-0000-4000-8000-0000000000aa\",\"requestId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operation\":\"chooseGit\",\"payload\":{}}"
+}

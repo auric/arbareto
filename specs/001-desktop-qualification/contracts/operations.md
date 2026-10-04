@@ -46,7 +46,7 @@ The public bridge is not a generic message bus. Its operation discriminator is a
 | `sessionId` | Opaque service-session identifier. The service issues it in the shell-service startup handshake. The page receives it as the session paragraph below states. |
 | `requestId` | Bounded identifier for response correlation. It is unique within the last 65,536 requests of the service session (§5 "Recorded request IDs"). The service records each valid `requestId` of a decoded envelope, also when it rejects the request. A repeated `requestId` gives `INVALID_REQUEST` and starts nothing. |
 | `operation` | One exact operation name from the table below. It equals the operation of the invoked command (§1 "Renderer request body"). |
-| `repositoryId` | Registered workspace identifier. Required for `readWorkspace`, `readHistory`, `readComparison`, `readTrust`, `approveTrust`, `revokeTrust`, `applyHunk`, `applyFile`, `reviewCommit`, `commit`, `reviewSubmodules`, and `updateSubmodules`. Other operations omit it. |
+| `repositoryId` | Registered workspace identifier. Required for `readWorkspace`, `readEntries`, `readHistory`, `readComparison`, `readTrust`, `approveTrust`, `revokeTrust`, `applyHunk`, `applyFile`, `reviewCommit`, `commit`, `reviewSubmodules`, and `updateSubmodules`. Other operations omit it. |
 | `repositoryGeneration` | Nonnegative safe integer for snapshot-bound operations. It must match the supplied snapshot, review, or trust fingerprint. For `readHistory`, it must equal the current workspace generation. |
 | `selectionId` | Renderer selection generation. `readComparison` requires it, and other operations omit it. The renderer issues it, so the service checks only its format. Never a mutation approval. |
 | `payload` | Exact operation-specific object. Reject unknown fields. |
@@ -55,7 +55,7 @@ The bridge sends each envelope as a raw UTF-8 JSON `Uint8Array` body (§1 "Rende
 
 Identifiers are UUID-shaped ASCII strings issued by the owning boundary. Validate format and session membership. Format alone never grants access. A malformed identifier gives `INVALID_REQUEST`. A well-formed identifier that this session did not issue gives `UNKNOWN_TARGET`. This includes a `sessionId` of another session, a released identifier, and an identifier of another workspace.
 
-Require `repositoryGeneration` for `readHistory`, `readComparison`, `applyHunk`, `applyFile`, `reviewCommit`, `commit`, `reviewSubmodules`, `updateSubmodules`, and `approveTrust`. Match trust approval against its issued fingerprint generation.
+Require `repositoryGeneration` for `readEntries`, `readHistory`, `readComparison`, `applyHunk`, `applyFile`, `reviewCommit`, `commit`, `reviewSubmodules`, `updateSubmodules`, and `approveTrust`. Match trust approval against its issued fingerprint generation.
 
 `readWorkspace` may include the last observed generation, but a mismatch must not prevent refresh. Other operations omit this field. Cancellation, revocation, and closure must remain available after a repository generation changes.
 

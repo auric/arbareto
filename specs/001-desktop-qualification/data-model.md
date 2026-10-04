@@ -140,7 +140,10 @@ Custom filters remain outside hunk support and file staging even after trust app
 | `policyFingerprint` | Relevant attributes, trust approval, configuration, and Git installation identity. |
 | `operationState` | Freshly observed mutation blockers. |
 | `completeness` | `complete`, `limited`, or `failed`, with a specific reason. A missing object in a partial clone gives `limited` with `OBJECT_MISSING`; the app never fetches it (contract §7 "Missing objects"). |
+| `entryCount` | Number of status entries in the snapshot, all pages included. `readWorkspace` returns it with the first page (contract §3). T284 adds this field. |
 | `observedAt` | Observation time. It is not a transaction timestamp. |
+
+**Status snapshot retention.** The service retains one status snapshot for each registered workspace. `readEntries` pages only from this snapshot (contract §3). A full read replaces it. A `check: "changes"` read with an equal tuple and no hint keeps it (contract §8 "Change check"). A workspace release releases it (contract §6 "Registration reuse and release"). A new service session releases all snapshots (contract §8 "Service restart"). `readEntries` checks the envelope `repositoryGeneration` first, and a stale value gives `REPOSITORY_CHANGED`. Then it checks `snapshotId`, and a released or replaced snapshot gives `UNKNOWN_TARGET`. Each page stays within the contract §5 "Status page" bound of 8 MiB.
 
 Git reads can span external changes. Admit a mutation token only after consistency checks complete.
 

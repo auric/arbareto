@@ -19,6 +19,7 @@ import {
 import { Handshake, MutationRequest, ProcessReply, ProcessRequest, TrustRecord, TrustReply, TrustRequest } from "../../src/contracts/channel";
 import { EXPORTED, renderSchemas, staleSchemaFiles } from "../../src/contracts/export-schemas";
 import { COMMIT_MESSAGE_BYTES } from "../../src/contracts/limits";
+import { isWindows } from "../../src/contracts/native-path";
 import { OPERATIONS, SHELL_ONLY } from "../../src/contracts/operations";
 import { getEnvironment } from "../../src/git-service/environment";
 import { createSessionLog } from "../../src/git-service/log";
@@ -27,17 +28,20 @@ import { createOperationRegistry } from "../../src/git-service/operations";
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
 printOrigin("../../src/contracts/channel.ts", import.meta.dir);
 printOrigin("../../src/contracts/export-schemas.ts", import.meta.dir);
+printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/environment.ts", import.meta.dir);
 
 const id = () => crypto.randomUUID();
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
-const GIT_PATH = "C:\\Program Files\\Git\\cmd\\git.exe";
+const REPO = isWindows ? "C:\\repo" : "/repo";
+const GIT_DIR = isWindows ? "C:\\repo\\.git" : "/repo/.git";
+const GIT_PATH = isWindows ? "C:\\Program Files\\Git\\cmd\\git.exe" : "/usr/bin/git";
 const RECORD = {
-  commonDirectory: "C:\\repo\\.git",
+  commonDirectory: GIT_DIR,
   commonIdentity: IDENTITY,
-  worktreeRoot: "C:\\repo",
-  gitDirectory: "C:\\repo\\.git",
+  worktreeRoot: REPO,
+  gitDirectory: GIT_DIR,
   worktreeIdentity: [IDENTITY, IDENTITY],
   configurationFingerprint: "a".repeat(64),
   approvedAt: "2026-10-04T08:00:00Z",
@@ -139,9 +143,9 @@ describe("channel schemas", () => {
     const confirm = {
       type: "confirm",
       callId: id(),
-      worktreeRoot: "C:\\repo",
-      gitDirectory: "C:\\repo\\.git",
-      commonDirectory: "C:\\repo\\.git",
+      worktreeRoot: REPO,
+      gitDirectory: GIT_DIR,
+      commonDirectory: GIT_DIR,
       gitSelectedPath: GIT_PATH,
       fingerprint: "a".repeat(64),
       persist: true,
@@ -172,7 +176,7 @@ describe("channel schemas", () => {
     expect(ProcessRequest.safeParse({ ...run, arguments: ["a\u0000b"] }).success).toBe(false);
     expect(ProcessReply.safeParse({ type: "exit", callId: id(), exitCode: 4_294_967_295, activeDescendants: 0 }).success).toBe(true);
     expect(ProcessReply.safeParse({ type: "exit", callId: id(), exitCode: 4_294_967_296, activeDescendants: 0 }).success).toBe(false);
-    const started = { type: "started", callId: id(), operationId: id(), repositoryId: id(), kind: "commit", worktreeRoot: "C:\\repo", commonDirectory: "C:\\repo\\.git" };
+    const started = { type: "started", callId: id(), operationId: id(), repositoryId: id(), kind: "commit", worktreeRoot: REPO, commonDirectory: GIT_DIR };
     expect(MutationRequest.safeParse(started).success).toBe(true);
     expect(MutationRequest.safeParse({ ...started, kind: "readWorkspace" }).success).toBe(false);
     expect(MutationRequest.safeParse({ type: "ended", operationId: id(), endProcesses: false }).success).toBe(true);

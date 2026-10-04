@@ -11,22 +11,22 @@
         "worktreeRoot": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "gitDirectory": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "commonDirectory": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "gitSelectedPath": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "fingerprint": {
           "type": "string",
@@ -72,7 +72,7 @@
         "commonDirectory": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "callId": {
           "type": "string",
@@ -98,7 +98,7 @@
         "worktreeRoot": {
           "type": "string",
           "maxLength": 32767,
-          "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+          "pattern": "^[^\\u0000]*$"
         },
         "submodulePaths": {
           "minItems": 1,
@@ -107,7 +107,7 @@
           "items": {
             "type": "string",
             "maxLength": 32767,
-            "pattern": "^(?:[A-Za-z]:[\\\\/]|[\\\\/]{2}(?![.?][\\\\/]))[^\\u0000]*$"
+            "pattern": "^[^\\u0000]*$"
           }
         },
         "programCount": {

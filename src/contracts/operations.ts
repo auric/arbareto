@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { CHANNEL_PATH_UNITS, IDENTIFIER_BYTES } from "./limits";
+import { NATIVE } from "./native-path";
 
 // Contract §3: the closed list of public operations.
 export const OPERATION_NAMES = [
@@ -62,12 +63,11 @@ export const Text = z
   .regex(/^[^\u0000]*$/)
   .refine((value) => value.isWellFormed());
 
-// Contract §6 "Channel frames": 1 to 32,767 UTF-16 units. Microsoft Learn "File path formats on Windows systems": a fully qualified path starts with a drive letter and a separator, or with two separators.
-// The same page names `\\.\` and `\\?\` device paths. A device such as a pipe can block a read without end.
+// Contract §6 "Channel frames": a native absolute path with 1 to 32,767 UTF-16 units. JSON Schema gets only the rules of every platform.
 export const ChannelPath = z
   .string()
   .max(CHANNEL_PATH_UNITS)
-  .regex(/^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![.?][\\/]))[^\u0000]*$/)
+  .regex(/^[^\u0000]*$/)
   // zod `max` and JSON Schema `maxLength` count code points. This check counts the UTF-16 units.
-  .refine((value) => value.length <= CHANNEL_PATH_UNITS && value.isWellFormed());
+  .refine((value) => value.length <= CHANNEL_PATH_UNITS && value.isWellFormed() && NATIVE.isAbsolute(value));
 export const isChannelPath = (value: unknown): value is string => ChannelPath.safeParse(value).success;

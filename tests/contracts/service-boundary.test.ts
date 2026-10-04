@@ -7,9 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { printOrigin } from "../origin";
+import { isWindows } from "../../src/contracts/native-path";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 
 const SERVICE_PATH = printOrigin("../../src/git-service/main.ts", import.meta.dir);
+printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
 const READ_TIMEOUT_MS = 5_000;
@@ -48,10 +50,14 @@ const HANDSHAKE_FIELDS = {
   trustRecords: [] as unknown[],
 };
 const HANDSHAKE = { kind: "handshake", handshake: HANDSHAKE_FIELDS };
+const ROOT = isWindows ? "C:\\" : "/";
+const REPO = isWindows ? "C:\\repo" : "/repo";
+const GIT_DIR = isWindows ? "C:\\repo\\.git" : "/repo/.git";
+const GIT_PATH = isWindows ? "C:\\Program Files\\Git\\cmd\\git.exe" : "/usr/bin/git";
 const SAVED_GIT = {
   bootstrapId: "00000000-0000-4000-8000-0000000000aa",
-  selectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
-  executablePath: "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe",
+  selectedPath: GIT_PATH,
+  executablePath: isWindows ? "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe" : "/usr/libexec/git-core/git",
   version: "2.55.0.windows.3",
   digest: "c".repeat(64),
 };
@@ -62,19 +68,19 @@ const MARKER = {
   markerId: "00000000-0000-4000-8000-000000000000",
   kind: "commit",
   startedAt: "2026-10-02T08:00:00Z",
-  worktreeRoot: "C:\\repo",
-  commonDirectory: "C:\\repo\\.git",
+  worktreeRoot: REPO,
+  commonDirectory: GIT_DIR,
   commonIdentity: IDENTITY,
 };
 const TRUST_RECORD = {
-  commonDirectory: "C:\\repo\\.git",
+  commonDirectory: GIT_DIR,
   commonIdentity: IDENTITY,
-  worktreeRoot: "C:\\repo",
-  gitDirectory: "C:\\repo\\.git",
+  worktreeRoot: REPO,
+  gitDirectory: GIT_DIR,
   worktreeIdentity: [IDENTITY, IDENTITY],
   configurationFingerprint: "a".repeat(64),
   approvedAt: "2026-10-02T08:00:00Z",
-  gitSelectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
+  gitSelectedPath: GIT_PATH,
 };
 
 type Frame = {
@@ -596,8 +602,8 @@ const markers = (count: number) => Array.from({ length: count }, (_, i) => marke
 const trustRecords = (count: number) => Array.from({ length: count }, () => ({ ...TRUST_RECORD }));
 // Contract §5: 4 KiB per trust record and per recovery marker. The path field pads the JSON encoding to `bytes`.
 const sized = <T extends { worktreeRoot: string }>(item: T, bytes: number): T => {
-  const base = encoder.encode(JSON.stringify({ ...item, worktreeRoot: "C:\\" })).length;
-  return { ...item, worktreeRoot: "C:\\" + "a".repeat(bytes - base) };
+  const base = encoder.encode(JSON.stringify({ ...item, worktreeRoot: ROOT })).length;
+  return { ...item, worktreeRoot: ROOT + "a".repeat(bytes - base) };
 };
 const RECORD_BYTES = 4096;
 

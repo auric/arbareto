@@ -4,29 +4,34 @@
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES } from "../../src/contracts/limits";
+import { NATIVE } from "../../src/contracts/native-path";
+import { isChannelPath } from "../../src/contracts/operations";
 import type { GitCall, GitExit, GitRunner } from "../../src/git-service/git-runner";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
+printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
 const DEADLINE_MS = 100;
 const WAIT_MS = 5_000;
 const TEST_TIMEOUT_MS = 10_000;
+const { join } = NATIVE.path;
 
-// The saved Git is a small `git.exe` in an owned folder. The probe resolves `<exec-path>\git.exe`, so the name matters.
+// The saved Git is a small stub with the native Git file name in an owned folder. The probe resolves `<exec-path>/<name>`, so the name matters.
 const SAVED_FOLDER = mkdtempSync(join(tmpdir(), "arbareto-session-startup-"));
 afterAll(() => rmSync(SAVED_FOLDER, { recursive: true, force: true }));
-const SAVED_PATH = join(SAVED_FOLDER, "git.exe");
+const SAVED_PATH = join(SAVED_FOLDER, NATIVE.gitName);
 writeFileSync(SAVED_PATH, "saved Git stub");
 // A wrapper in a subfolder. The exec-path probe of `probeRun` names the saved folder, so the wrapper resolves to `SAVED_PATH`.
-const WRAPPER_PATH = join(SAVED_FOLDER, "cmd", "git.exe");
+const WRAPPER_PATH = join(SAVED_FOLDER, "cmd", NATIVE.gitName);
 mkdirSync(join(SAVED_FOLDER, "cmd"));
 writeFileSync(WRAPPER_PATH, "wrapper Git stub");
+// The handshake refuses a temporary folder that is not a native absolute path. A faked platform on another host gives such a folder.
+const startupTest = test.skipIf(!isChannelPath(SAVED_PATH));
 const SAVED_GIT = {
   bootstrapId: "00000000-0000-4000-8000-0000000000aa",
   selectedPath: SAVED_PATH,
@@ -101,7 +106,7 @@ function startSession(runner: Partial<GitRunner>, handshake: object = HANDSHAKE)
 
 const never = () => new Promise<never>(() => {});
 
-test(
+startupTest(
   "a startup revalidation that never settles ends at the deadline with DEADLINE",
   async () => {
     const { calls, getEnvironment, responseFor } = startSession({ identities: never });
@@ -117,7 +122,7 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   `the startup gate holds ${PENDING_READS_GLOBAL} public frames and rejects the rest with SERVICE_UNAVAILABLE after the requestId claim`,
   async () => {
     const { responses, getEnvironment, responseFor } = startSession({ identities: never });
@@ -136,7 +141,7 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   "a held oversize frame counts toward the cap and gets FRAME_LIMIT when the gate opens",
   async () => {
     const { responses, send, sessionId, getEnvironment, responseFor } = startSession({ identities: never });
@@ -152,7 +157,7 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   "a startup revalidation that throws reports GIT_FAILED, not GIT_UNAVAILABLE",
   async () => {
     const { getEnvironment, responseFor } = startSession({
@@ -166,7 +171,7 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   "a startup registration that approves after the deadline releases its gitInstallationId",
   async () => {
     let approve!: () => void;
@@ -191,7 +196,7 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   "a chooseGit probe that registers after a cancel releases its gitInstallationId and ends canceled",
   async () => {
     let approve!: () => void;
@@ -238,7 +243,7 @@ const wrapperRunner = (resolved: unknown[]): Partial<GitRunner> => ({
   register: async () => ({ result: "approved" }),
 });
 
-test(
+startupTest(
   "a startup wrapper selectedPath that resolves to the stored executablePath gives getEnvironment both paths and no gitCode",
   async () => {
     const resolved: unknown[] = [];
@@ -251,7 +256,7 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   "a chooseGit success through a wrapper returns selectedPath and executablePath",
   async () => {
     const { savedGit: _, ...withoutSavedGit } = HANDSHAKE;
@@ -268,11 +273,11 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   "a startup selectedPath that resolves outside its installation root gives GIT_UNAVAILABLE with reason outside-installation and registers nothing",
   async () => {
-    // The root of `deep\cmd\git.exe` is `deep`. The exec-path probe names the saved folder above it.
-    const deepPath = join(SAVED_FOLDER, "deep", "cmd", "git.exe");
+    // The root of `deep/cmd/<name>` is `deep`. The exec-path probe names the saved folder above it.
+    const deepPath = join(SAVED_FOLDER, "deep", "cmd", NATIVE.gitName);
     mkdirSync(join(SAVED_FOLDER, "deep", "cmd"), { recursive: true });
     writeFileSync(deepPath, readFileSync(SAVED_PATH));
     const registers: unknown[] = [];
@@ -285,7 +290,7 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   "a startup Git with another version than the saved one gives getEnvironment previousVersion and registers without confirm",
   async () => {
     const registers: unknown[] = [];
@@ -305,10 +310,10 @@ test(
   TEST_TIMEOUT_MS,
 );
 
-test(
+startupTest(
   "a savedGit without bootstrapId for a missing selected file gives GIT_UNAVAILABLE with reason selected-missing and the path",
   async () => {
-    const missing = join(SAVED_FOLDER, "gone", "git.exe");
+    const missing = join(SAVED_FOLDER, "gone", NATIVE.gitName);
     const { bootstrapId: _, ...unbound } = SAVED_GIT;
     const { calls, getEnvironment, responseFor } = startSession({}, { ...HANDSHAKE, savedGit: { ...unbound, selectedPath: missing } });
     const [response] = await responseFor(getEnvironment());

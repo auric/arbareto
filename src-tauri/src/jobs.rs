@@ -21,9 +21,9 @@ use windows::Win32::System::JobObjects::{
     JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
     SetInformationJobObject,
 };
-use windows::Win32::System::SystemServices::{
-    JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO, JOB_OBJECT_MSG_NEW_PROCESS,
-};
+use windows::Win32::System::SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO;
+#[cfg(test)]
+use windows::Win32::System::SystemServices::JOB_OBJECT_MSG_NEW_PROCESS;
 use windows::core::{HRESULT, PCWSTR};
 
 use crate::bootstrap::Identity;
@@ -179,6 +179,7 @@ struct Entry {
     key: usize,
     tag: Option<Identity>,
     lingering: bool,
+    #[cfg(test)]
     new_processes: Vec<u32>,
     /// The anchor of a WSL mutation (contract §11 "Process ownership").
     wsl: wsl::Mutation,
@@ -266,12 +267,14 @@ impl Shared {
     }
 
     /// A Job message carries the process ID in the `lpOverlapped` value.
+    #[cfg_attr(not(test), expect(unused_variables, reason = "test hook"))]
     fn message(&self, message: u32, key: usize, process_id: u32) {
         let mut state = self.state();
         let Some(operation_id) = state.operations.get(&key).cloned() else {
             return;
         };
         match message {
+            #[cfg(test)]
             JOB_OBJECT_MSG_NEW_PROCESS => {
                 if let Some(entry) = state.jobs.get_mut(&operation_id) {
                     entry.new_processes.push(process_id);
@@ -347,6 +350,7 @@ impl Supervisor {
                 key,
                 tag: None,
                 lingering: false,
+                #[cfg(test)]
                 new_processes: Vec::new(),
                 wsl: wsl::Mutation::default(),
             },
@@ -520,7 +524,7 @@ impl Supervisor {
     }
 
     /// Test hook: the process IDs of the `JOB_OBJECT_MSG_NEW_PROCESS` messages of a Job.
-    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
+    #[cfg(test)]
     pub fn observed_new_processes(&self, operation_id: &str) -> Vec<u32> {
         self.shared
             .state()

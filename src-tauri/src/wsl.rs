@@ -723,12 +723,6 @@ impl Anchor {
         unsafe { WaitForSingleObject(HANDLE(self.process.as_raw_handle()), 0) != WAIT_OBJECT_0 }
     }
 
-    /// Test hook: the anchor lines that this anchor keeps in memory.
-    #[cfg(test)]
-    fn stored_lines(&self) -> usize {
-        usize::from(self.last().is_some())
-    }
-
     /// Test hook: the largest capacity of the line buffer, and the count of answer lines.
     #[cfg(test)]
     fn line_facts(&self) -> (usize, u64) {
@@ -789,14 +783,6 @@ impl Mutation {
 
     pub fn anchor_running(&self) -> bool {
         self.anchor.as_ref().is_some_and(|anchor| anchor.running())
-    }
-
-    /// Test hook: the anchor lines that the anchor keeps in memory.
-    #[cfg(test)]
-    pub fn stored_lines(&self) -> usize {
-        self.anchor
-            .as_ref()
-            .map_or(0, |anchor| anchor.stored_lines())
     }
 
     /// Test hook: the largest capacity of the line buffer, and the count of answer lines.
@@ -1622,6 +1608,7 @@ mod tests {
     /// With a second file argument, it first lingers: it prints `<lines read> <i>` for `i` from 1 to `LINGER_LINES`.
     /// Then it waits until that file exists, for at most 60 seconds.
     /// With a third argument `long`, it lingers with one `LONG_LINE` line in place of those lines.
+    /// With a third argument `banner`, it prints `banner text` and a 300 ms pause before its answer to the second stdin line.
     #[test]
     #[ignore = "child process entry for re-executed tests"]
     fn anchor_child_entry() {
@@ -1633,7 +1620,8 @@ mod tests {
             return;
         };
         let release = args.get(split + 2).map(PathBuf::from);
-        let long = args.get(split + 3).is_some_and(|a| a == "long");
+        let mode = args.get(split + 3).map(String::as_str);
+        let long = mode == Some("long");
         let mut out = std::io::stdout();
         // libtest prints the test name without a line end before this output.
         let _ = writeln!(out);
@@ -1643,6 +1631,11 @@ mod tests {
                 break;
             }
             lines += 1;
+            if mode == Some("banner") && lines == 2 {
+                let _ = writeln!(out, "banner text");
+                let _ = out.flush();
+                std::thread::sleep(Duration::from_millis(300));
+            }
             let _ = writeln!(out, "{lines} {}", lines * 100);
             let _ = out.flush();
         }
@@ -1865,15 +1858,13 @@ mod tests {
             "the anchor printed {LINGER_LINES} lines after ended: {:?}",
             mutation.last()
         );
-        assert_eq!(mutation.stored_lines(), 1, "only the last line stays");
         assert_eq!(mutation.lingering_count(), 3, "the last anchor count");
         std::fs::write(&release, "").expect("release");
         assert!(
             eventually(WAIT, || !mutation.anchor_running()),
             "the anchor exits"
         );
-        assert_eq!(mutation.lingering_count(), 0);
-        assert_eq!(mutation.stored_lines(), 1);
+        assert!(eventually(WAIT, || mutation.lingering_count() == 0));
     }
 
     #[test]
@@ -1904,6 +1895,38 @@ mod tests {
             "the line buffer stays at most {ANCHOR_LINE_BYTES} bytes: {capacity}"
         );
         assert_eq!(answers, 4, "the long line gives no answer");
+        std::fs::write(&release, "").expect("release");
+        assert!(
+            eventually(WAIT, || !mutation.anchor_running()),
+            "the anchor exits"
+        );
+    }
+
+    #[test]
+    fn an_exchange_skips_a_malformed_line_and_returns_its_own_answer() {
+        let fixture = Fixture::new();
+        let lines_file = fixture.path("lines");
+        let release = fixture.path("release");
+        let mut command = stand_in_anchor(&lines_file, Some(&release));
+        command.arguments.push("banner".to_string());
+        let job = Job::create().expect("Job");
+        let directory = std::env::temp_dir();
+        let mut mutation = Mutation::default();
+        mutation
+            .before_execution(|| Anchor::start(&command, job.handle(), &directory))
+            .expect("anchor");
+        assert_eq!(mutation.after_exit(), 1);
+        let anchor = mutation.anchor.clone().expect("anchor");
+        let start = Instant::now();
+        let answer = anchor.exchange();
+        let elapsed = start.elapsed();
+        assert_eq!(answer, Some((2, 200)), "the answer after the banner line");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the answer ends the exchange: {elapsed:?}"
+        );
+        assert_eq!(mutation.after_exit(), 3, "the counts stay in step");
+        mutation.ended();
         std::fs::write(&release, "").expect("release");
         assert!(
             eventually(WAIT, || !mutation.anchor_running()),

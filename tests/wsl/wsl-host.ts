@@ -260,9 +260,13 @@ export function useWslFolder(): void {
     createOwnedFolder(host);
     if (fileSystemType(host, host.folder) !== "ef53") throw new Error("the folder type changed");
   });
-  afterAll(() => {
-    removeOwnedFolder(host);
-  });
+  // The removal makes two wsl.exe calls of up to CALL_TIMEOUT_MS each. The 5-second default hook timeout leaves the folder.
+  afterAll(
+    () => {
+      removeOwnedFolder(host);
+    },
+    { timeout: 2 * CALL_TIMEOUT_MS + 10_000 },
+  );
 }
 
 export function folderInode(host: Pick<WslHost, "distro">, linuxPath: string): string {

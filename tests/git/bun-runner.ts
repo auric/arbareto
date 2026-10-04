@@ -66,6 +66,23 @@ export interface BunRunnerOptions {
   trustStore?: TrustStore;
 }
 
+// One `run` request, recorded before the checks. `refused` names the error of a request that started nothing.
+export interface RecordedCall {
+  at: number;
+  operationId: string;
+  contextKind: string;
+  repositoryId?: string;
+  arguments: readonly string[];
+  environmentPolicy: string;
+  input?: Uint8Array;
+  refused?: string;
+  exit?: GitExit;
+  // Microseconds from `Subprocess.resourceUsage()`. A call without a process has none.
+  cpuMicros?: number;
+}
+
+export type CallMatch = (call: { operationId: string; arguments: readonly string[] }) => boolean;
+
 interface ProcessRecord {
   pid: number;
   created: bigint;
@@ -82,8 +99,33 @@ function gate(): NonNullable<Gate> {
   return { promise, open };
 }
 
+// A barrier without a match holds every call, and a new one replaces it. Barriers with a match add up.
+type Barriers = { every: Gate; matched: (NonNullable<Gate> & { match: CallMatch })[] };
+
+function hold(barriers: Barriers, match?: CallMatch): () => void {
+  const held = gate();
+  if (match === undefined) {
+    barriers.every = held;
+    return () => {
+      if (barriers.every === held) barriers.every = null;
+      held.open();
+    };
+  }
+  const barrier = { ...held, match };
+  barriers.matched.push(barrier);
+  return () => {
+    barriers.matched = barriers.matched.filter((b) => b !== barrier);
+    held.open();
+  };
+}
+
+const holding = (barriers: Barriers, call: GitCall): Gate => barriers.every ?? barriers.matched.find((b) => b.match(call)) ?? null;
+const text = (value: unknown) => (typeof value === "string" ? value : "");
+
 const unknownTarget = () => new RunnerRefusal("UNKNOWN_TARGET");
 const sameIdentity = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+// The `confirm` fields of contract §6 "Trust frames" that the stored record sets by name or drops.
+const CONFIRM_FIELDS = new Set(["type", "worktreeRoot", "gitDirectory", "commonDirectory", "fingerprint", "persist", "bound"]);
 
 export function createBunRunner(options: BunRunnerOptions) {
   const launchDirectory = join(options.directory, "launch");
@@ -103,6 +145,10 @@ export function createBunRunner(options: BunRunnerOptions) {
   const tags = new Map<string, string>();
   const markers = new Map<string, MutationStarted>();
   const frames: Record<string, unknown>[] = [];
+  const calls: RecordedCall[] = [];
+  const identityCalls: { at: number; operationId: string; paths: string[]; replies: unknown[] }[] = [];
+  // The functions that stop the running calls of each operation.
+  const halts = new Map<string, Set<() => void>>();
   const drains = new Set<Promise<void>>();
   const diagnostics = createDiagnosticCounter();
   const inject = {
@@ -114,9 +160,11 @@ export function createBunRunner(options: BunRunnerOptions) {
     identities: new Map<string, IdentityReply>(),
     // File IDs by path, such as all zeros or all ones, that replace the `FileIdInfo` result.
     fileIds: new Map<string, Uint8Array>(),
+    // Bytes replace the process of a call. No process starts, and the bytes go to stdout in 64 KiB chunks. The exit code is 0, or null after abort or closeJob.
+    stdout: undefined as ((call: { arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
   };
-  let startGate: Gate = null;
-  let stdoutGate: Gate = null;
+  const startBarriers: Barriers = { every: null, matched: [] };
+  const stdoutBarriers: Barriers = { every: null, matched: [] };
   let spawned = 0;
   let disposed = false;
 
@@ -171,7 +219,8 @@ export function createBunRunner(options: BunRunnerOptions) {
   }
 
   // Contract §6 "Completion signal". Until `exit`, the drain forwards every byte. At `exit`, it forwards the bytes that the pipe holds, then discards the rest until end-of-file.
-  function drain(pipe: InboundPipe, forward: (chunk: Uint8Array) => void, stdout: boolean) {
+  // `held` returns a promise while a barrier holds the stream.
+  function drain(pipe: InboundPipe, forward: (chunk: Uint8Array) => void, held: () => Promise<unknown> | null) {
     // `exit` sets the budget from a closure, so the type stays wide.
     let budget = null as number | null;
     let forwarded = () => {};
@@ -185,8 +234,9 @@ export function createBunRunner(options: BunRunnerOptions) {
             forwarding = false;
             forwarded();
           }
-          if (forwarding && stdout && stdoutGate) {
-            await stdoutGate.promise;
+          const barrier = forwarding ? held() : null;
+          if (barrier) {
+            await barrier;
             continue;
           }
           const available = peekPipe(pipe);
@@ -220,90 +270,158 @@ export function createBunRunner(options: BunRunnerOptions) {
     };
   }
 
+  async function start(call: GitCall, recorded: RecordedCall): Promise<GitExit> {
+    checkCall(call);
+    const target = resolveTarget(call.operationId, call.context);
+    const env = environment(call);
+    if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
+    for (let held = holding(startBarriers, call); held; held = holding(startBarriers, call)) await held.promise;
+    call.signal.throwIfAborted();
+    // Abort, a kill, and closeJob stop the call. A stopped call leaves the stdout barrier.
+    const stopped = gate();
+    let halted = false;
+    const halt = () => {
+      halted = true;
+      stopped.open();
+    };
+    const own = halts.get(call.operationId) ?? new Set<() => void>();
+    halts.set(call.operationId, own.add(halt));
+    call.signal.addEventListener("abort", halt, { once: true });
+    const heldStdout = () => {
+      const barrier = halted ? null : holding(stdoutBarriers, call);
+      return barrier && Promise.race([barrier.promise, stopped.promise]);
+    };
+    try {
+      const injected = inject.stdout?.({ arguments: call.arguments, input: call.input });
+      if (injected === undefined) return await spawn(call, target, env, recorded, halt, heldStdout);
+      // Contract §5 "Native stdout/stderr chunk": at most 64 KiB in one chunk.
+      for (let at = 0; at < injected.length && !halted; at += NATIVE_CHUNK_BYTES) {
+        for (let barrier = heldStdout(); barrier; barrier = heldStdout()) await barrier;
+        if (halted) break;
+        call.stdout.push(injected.subarray(at, at + NATIVE_CHUNK_BYTES));
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      return { exitCode: halted ? null : 0, activeDescendants: 0 };
+    } finally {
+      call.signal.removeEventListener("abort", halt);
+      own.delete(halt);
+    }
+  }
+
+  async function spawn(
+    call: GitCall,
+    target: { program: string; cwd: string },
+    env: Record<string, string>,
+    recorded: RecordedCall,
+    halt: () => void,
+    heldStdout: () => Promise<unknown> | null,
+  ): Promise<GitExit> {
+    const pipes = [createInboundPipe(NATIVE_CHUNK_BYTES), createInboundPipe(NATIVE_CHUNK_BYTES)];
+    let proc: Subprocess<"pipe", "ignore", "ignore">;
+    try {
+      proc = Bun.spawn([target.program, ...call.arguments], {
+        cwd: target.cwd,
+        env,
+        stdin: "pipe",
+        stdout: Bun.file(pipes[0].name),
+        stderr: Bun.file(pipes[1].name),
+      }) as unknown as Subprocess<"pipe", "ignore", "ignore">;
+    } catch {
+      pipes.forEach(closePipe);
+      throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED");
+    }
+    spawned++;
+    const own = running.get(call.operationId) ?? new Set();
+    running.set(call.operationId, own.add(proc));
+    // Contract §6 "Console and input": stdin closes after the bounded input, or at once.
+    void (async () => {
+      if (call.input?.length) proc.stdin.write(call.input);
+      await proc.stdin.end();
+    })().catch(() => {});
+
+    let killed = false;
+    let expired = false;
+    // The double ends only the spawned process.
+    const kill = () => {
+      halt();
+      if (killed) return;
+      killed = true;
+      proc.kill();
+    };
+    const deadlineMs = "deadlineMs" in call.limits ? call.limits.deadlineMs : call.limits.ceilingMs;
+    const timer = setTimeout(() => {
+      expired = true;
+      kill();
+    }, deadlineMs);
+    call.signal.addEventListener("abort", kill, { once: true });
+    const streams = [
+      drain(
+        pipes[0],
+        (chunk) => {
+          call.stdout.push(chunk);
+          if (call.stdout.limited) kill();
+        },
+        heldStdout,
+      ),
+      drain(
+        pipes[1],
+        (chunk) => {
+          call.stderr.push(chunk);
+          if (diagnostics.add(call, chunk.length)) kill();
+        },
+        () => null,
+      ),
+    ];
+
+    await proc.exited;
+    clearTimeout(timer);
+    call.signal.removeEventListener("abort", kill);
+    own.delete(proc);
+    const usage = proc.resourceUsage();
+    if (usage) recorded.cpuMicros = usage.cpuTime.total;
+    for (const stream of streams) stream.exit();
+    await Promise.all(streams.map((s) => s.done));
+    scan(call.operationId);
+    return {
+      exitCode: killed ? null : proc.exitCode,
+      activeDescendants: live((r) => r.operationId === call.operationId).length,
+      ...(expired ? { deadline: "deadline" as const } : {}),
+      ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}),
+    };
+  }
+
   const runner: GitRunner = {
     async run(call: GitCall): Promise<GitExit> {
-      checkCall(call);
-      const target = resolveTarget(call.operationId, call.context);
-      const env = environment(call);
-      if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
-      while (startGate) await startGate.promise;
-      call.signal.throwIfAborted();
-      const pipes = [createInboundPipe(NATIVE_CHUNK_BYTES), createInboundPipe(NATIVE_CHUNK_BYTES)];
-      let proc: Subprocess<"pipe", "ignore", "ignore">;
+      const context: Record<string, unknown> = typeof call.context === "object" && call.context !== null ? call.context : {};
+      const recorded: RecordedCall = {
+        at: performance.now(),
+        operationId: text(call.operationId),
+        contextKind: text(context.contextKind),
+        ...(typeof context.repositoryId === "string" ? { repositoryId: context.repositoryId } : {}),
+        arguments: Array.isArray(call.arguments) ? [...call.arguments] : [],
+        environmentPolicy: text(call.environmentPolicy),
+        ...(call.input instanceof Uint8Array ? { input: call.input } : {}),
+      };
+      calls.push(recorded);
       try {
-        proc = Bun.spawn([target.program, ...call.arguments], {
-          cwd: target.cwd,
-          env,
-          stdin: "pipe",
-          stdout: Bun.file(pipes[0].name),
-          stderr: Bun.file(pipes[1].name),
-        }) as unknown as Subprocess<"pipe", "ignore", "ignore">;
-      } catch {
-        pipes.forEach(closePipe);
-        throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED");
+        recorded.exit = await start(call, recorded);
+        return recorded.exit;
+      } catch (error) {
+        recorded.refused = error instanceof RunnerRefusal ? error.code : error instanceof Error ? error.name : "unknown";
+        throw error;
       }
-      spawned++;
-      const own = running.get(call.operationId) ?? new Set();
-      running.set(call.operationId, own.add(proc));
-      // Contract §6 "Console and input": stdin closes after the bounded input, or at once.
-      void (async () => {
-        if (call.input?.length) proc.stdin.write(call.input);
-        await proc.stdin.end();
-      })().catch(() => {});
-
-      let killed = false;
-      let expired = false;
-      // The double ends only the spawned process.
-      const kill = () => {
-        if (killed) return;
-        killed = true;
-        proc.kill();
-      };
-      const deadlineMs = "deadlineMs" in call.limits ? call.limits.deadlineMs : call.limits.ceilingMs;
-      const timer = setTimeout(() => {
-        expired = true;
-        kill();
-      }, deadlineMs);
-      call.signal.addEventListener("abort", kill, { once: true });
-      const streams = [
-        drain(
-          pipes[0],
-          (chunk) => {
-            call.stdout.push(chunk);
-            if (call.stdout.limited) kill();
-          },
-          true,
-        ),
-        drain(
-          pipes[1],
-          (chunk) => {
-            call.stderr.push(chunk);
-            if (diagnostics.add(call, chunk.length)) kill();
-          },
-          false,
-        ),
-      ];
-
-      await proc.exited;
-      clearTimeout(timer);
-      call.signal.removeEventListener("abort", kill);
-      own.delete(proc);
-      for (const stream of streams) stream.exit();
-      await Promise.all(streams.map((s) => s.done));
-      scan(call.operationId);
-      return {
-        exitCode: killed ? null : proc.exitCode,
-        activeDescendants: live((r) => r.operationId === call.operationId).length,
-        ...(expired ? { deadline: "deadline" as const } : {}),
-        ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}),
-      };
     },
 
+    // A refused request keeps an empty `replies` list.
     async identities(operationId, context, paths) {
+      const recorded = { at: performance.now(), operationId: text(operationId), paths: Array.isArray(paths) ? [...paths] : [], replies: [] as unknown[] };
+      identityCalls.push(recorded);
       if (!isIdentifier(operationId) || !checkContext(context)) throw new RunnerRefusal("INVALID_REQUEST", "identity context");
       checkIdentityPaths(paths);
       resolveTarget(operationId, context);
-      return paths.map(identityOf);
+      const replies = paths.map(identityOf);
+      recorded.replies = replies;
+      return replies;
     },
 
     async lingeringCount(operationId, commonDirectory) {
@@ -358,6 +476,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!isIdentifier(operationId)) throw new RunnerRefusal("INVALID_REQUEST", "closeJob");
       frames.push({ type: "closeJob", operationId });
       for (const proc of running.get(operationId) ?? []) proc.kill();
+      for (const halt of halts.get(operationId) ?? []) halt();
       end((r) => r.operationId === operationId);
       inactive.add(operationId);
       diagnostics.clear(operationId);
@@ -407,6 +526,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       );
       const readable = [commonIdentity, ...worktreeIdentity].every((i) => !("code" in i));
       if (!request.persist || !readable) return { result: "approved", stored: false };
+      // The record copies the Git field of the request unchanged, so it follows the field name of `git-runner.ts`.
+      const git = Object.fromEntries(Object.entries(request).filter(([key]) => !CONFIRM_FIELDS.has(key)));
       const record = {
         commonDirectory: request.commonDirectory,
         commonIdentity,
@@ -415,7 +536,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         worktreeIdentity,
         configurationFingerprint: request.fingerprint,
         approvedAt: new Date().toISOString(),
-        gitInstallationDigest: request.gitInstallationDigest,
+        ...git,
       } as TrustRecord;
       trustStore.records.push(record);
       return { result: "approved", stored: true, record };
@@ -429,6 +550,9 @@ export function createBunRunner(options: BunRunnerOptions) {
     markers,
     trustStore,
     recordsDirectory,
+    // Every `run` and identity request in arrival order.
+    calls,
+    identityCalls,
     get spawned() {
       return spawned;
     },
@@ -442,32 +566,24 @@ export function createBunRunner(options: BunRunnerOptions) {
     contextPath(bootstrapId: string): string | undefined {
       return contexts.get(bootstrapId)?.path;
     },
-    // Test barrier: no process starts until the returned function runs.
-    holdStart(): () => void {
-      const held = gate();
-      startGate = held;
-      return () => {
-        if (startGate === held) startGate = null;
-        held.open();
-      };
+    // Test barrier: no matching process starts until the returned function runs. Without `match`, it holds every call.
+    holdStart(match?: CallMatch): () => void {
+      return hold(startBarriers, match);
     },
-    // Test barrier: stdout draining stops until the returned function runs. A full pipe then blocks the child.
-    pauseStdout(): () => void {
-      const held = gate();
-      stdoutGate = held;
-      return () => {
-        if (stdoutGate === held) stdoutGate = null;
-        held.open();
-      };
+    // Test barrier: stdout draining of each matching call stops until the returned function runs. A full pipe then blocks the child.
+    // Without `match`, it holds every call. Abort, a kill, or closeJob releases the stopped call.
+    pauseStdout(match?: CallMatch): () => void {
+      return hold(stdoutBarriers, match);
     },
     // Ends every recorded live process by PID and every running process, then waits a bounded time for the drains.
     async dispose(): Promise<void> {
       end(() => true);
       for (const set of running.values()) for (const proc of set) proc.kill();
-      startGate?.open();
-      startGate = null;
-      stdoutGate?.open();
-      stdoutGate = null;
+      for (const barriers of [startBarriers, stdoutBarriers]) {
+        barriers.every?.open();
+        barriers.every = null;
+        for (const barrier of barriers.matched.splice(0)) barrier.open();
+      }
       await Promise.race([Promise.all([...drains]), Bun.sleep(DISPOSE_WAIT_MS)]);
       disposed = true;
       await Promise.race([Promise.all([...drains]), Bun.sleep(DISPOSE_WAIT_MS)]);

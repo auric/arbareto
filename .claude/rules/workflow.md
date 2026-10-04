@@ -38,6 +38,13 @@ This file is the cloud copy of the user's global rules. Locally, the user's glob
 - Never export `CLAUDE_CODE_EFFORT_LEVEL`. It overrides the agent `effort:` field.
 - The pinned agents carry the standing rules: no git mutation, no live or shared database, no service restarts unless the task is exactly that, and the report format. Each dispatch prompt adds only the task-specific rules.
 
+## CodeGraph
+
+- In a repository with `.codegraph/codegraph.db`, use the `codegraph_explore` MCP tool before Grep or file reads to find or understand code.
+- The shell form is `codegraph explore "<symbols or question>"`.
+- `.claude/cloud-setup.sh` installs CodeGraph and builds the index. `.mcp.json` registers the `codegraph` server.
+- If `.codegraph/codegraph.db` is absent, run `codegraph init -y`.
+
 ## Local only
 
-- The RTK command rewrite hook, the CodeGraph index, the model choice for the main session, user memory, and plugin skills exist only on the user's machine. Cloud sessions skip these rules.
+- The RTK command rewrite hook, the model choice for the main session, user memory, and plugin skills exist only on the user's machine. Cloud sessions skip these rules.

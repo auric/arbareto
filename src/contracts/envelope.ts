@@ -46,6 +46,8 @@ const ReadWorkspacePayload = z
 // Contract §3 names the values. The field names `snapshotId`, `entryId`, `trustId`, `comparisonId`, `hunkId`, `operationId`, `choice`, and `markerId` follow test T012.
 const GetEnvironment = op("getEnvironment", {}, empty());
 const ReadWorkspace = op("readWorkspace", { ...repository, repositoryGeneration: Generation.optional() }, ReadWorkspacePayload);
+// Contract §3 fixes no cursor form. The service issues each cursor, so it is a contract §2 identifier.
+const ReadEntries = op("readEntries", snapshot, z.strictObject({ snapshotId: Identifier, cursor: Identifier }));
 const ReadHistory = op("readHistory", snapshot, empty());
 const ReadComparison = op("readComparison", { ...snapshot, selectionId: Identifier }, z.strictObject({ snapshotId: Identifier, entryId: Identifier }));
 const ReadTrust = op("readTrust", repository, empty());
@@ -79,6 +81,7 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   ChooseRepository,
   RestoreWorkspace,
   ReadWorkspace,
+  ReadEntries,
   ReadHistory,
   ReadComparison,
   ReadTrust,
@@ -109,6 +112,7 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   op("chooseRepository", {}, z.strictObject({ bootstrapId: Identifier })),
   op("restoreWorkspace", {}, z.strictObject({ bootstrapId: Identifier })),
   ReadWorkspace,
+  ReadEntries,
   ReadHistory,
   ReadComparison,
   ReadTrust,

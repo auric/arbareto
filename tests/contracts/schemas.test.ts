@@ -70,7 +70,7 @@ const commit = (message: string) => ({
 });
 
 describe("envelope schemas", () => {
-  test("the renderer envelope is a union of the 21 operations, and the service envelope of 19", () => {
+  test("the renderer envelope is a union of the 22 operations, and the service envelope of 20", () => {
     const names = (schema: { options: readonly { shape: { operation: { value: string } } }[] }) => schema.options.map((o) => o.shape.operation.value);
     expect(names(RendererEnvelope)).toEqual([...OPERATIONS]);
     expect(names(ServiceEnvelope)).toEqual(OPERATIONS.filter((name) => !(SHELL_ONLY as readonly string[]).includes(name)));

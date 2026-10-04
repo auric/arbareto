@@ -11,6 +11,7 @@ const COMMANDS: &[&str] = &[
     "choose_repository",
     "restore_workspace",
     "read_workspace",
+    "read_entries",
     "read_history",
     "read_comparison",
     "read_trust",

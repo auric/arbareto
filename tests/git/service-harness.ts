@@ -7,7 +7,7 @@
 import { test } from "bun:test";
 import { dirname } from "node:path";
 import type { Handshake } from "../../src/contracts/channel";
-import { READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
+import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import { printOrigin } from "../origin";
 import { createBunRunner, createTrustStore, type BunRunner, type CallMatch, type TrustStore } from "./bun-runner";
@@ -165,7 +165,17 @@ export interface WorkspaceResult {
   recoveryState: string;
   completeness: Completeness;
   hunkEligibility: { eligible: true } | { eligible: false; reason: "sparse-index" | "split-index" | "index-change-hook" | "executable-monitor" | "unqualified-monitor" };
+  // Contract §3: all pages of the snapshot. `entries` holds the first page.
+  entryCount: number;
   entries: ChangeEntry[];
+  // The `readEntries` cursor of the next page, or null after the last page.
+  cursor: string | null;
+}
+
+// Contract §3 `readEntries`: one later page of the retained snapshot.
+export interface EntriesResult {
+  entries: ChangeEntry[];
+  cursor: string | null;
 }
 
 export interface HistoryResult {
@@ -221,6 +231,7 @@ export interface Service {
   restoreWorkspace(path: string): Promise<Registration>;
   register(path: string): Promise<RegistrationResult>;
   readWorkspace(id: string, payload?: { refresh: boolean; check: "full" | "changes" }, generation?: number): Promise<ServiceResponse<WorkspaceResult>>;
+  readEntries(id: string, generation: number, snapshotId: string, cursor: string): Promise<ServiceResponse<EntriesResult>>;
   readHistory(id: string, generation: number): Promise<ServiceResponse<HistoryResult>>;
   readTrust(id: string): Promise<ServiceResponse<TrustResult>>;
   approveTrust(id: string, fingerprint: string, generation: number): Promise<ServiceResponse<ApproveResult>>;
@@ -235,8 +246,14 @@ export interface Service {
 // Contract §5: a read ends by its 30-second deadline, and its outcome follows within the 5-second reconciliation target.
 const RESPONSE_WAIT_MS = READ_DEADLINE_MS + RECONCILIATION_TARGET_MS;
 
+// Contract §5 "Private/reply frame": a pipe frame body holds at most 16 MiB of encoded JSON.
+export function checkFrame(frame: object): void {
+  const bytes = Buffer.byteLength(JSON.stringify(frame));
+  if (bytes > PIPE_FRAME_BYTES) throw new RangeError(`a service frame of ${bytes} bytes is above the ${PIPE_FRAME_BYTES}-byte frame bound`);
+}
+
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const isResponse = (value: unknown): value is ServiceResponse => isObject(value) && typeof value.state === "string" && (value.requestId === null || typeof value.requestId === "string");
+const isResponse =(value: unknown): value is ServiceResponse => isObject(value) && typeof value.state === "string" && (value.requestId === null || typeof value.requestId === "string");
 
 export async function openService(options: OpenOptions): Promise<Service> {
   const trustStore = options.trustStore ?? createTrustStore();
@@ -251,6 +268,8 @@ export async function openService(options: OpenOptions): Promise<Service> {
   let handshakeReply: unknown = null;
   let failed = false;
   let closed = false;
+  // The first frame above the frame bound. It fails every wait and `dispose`.
+  let frameError: Error | null = null;
 
   const notify = () => {
     for (const listener of [...listeners]) listener();
@@ -264,6 +283,9 @@ export async function openService(options: OpenOptions): Promise<Service> {
         if (value !== undefined) {
           done();
           resolve(value);
+        } else if (frameError !== null) {
+          done();
+          reject(frameError);
         } else if (closed) {
           done();
           reject(new Error(`${what}: the service is disposed`));
@@ -284,6 +306,13 @@ export async function openService(options: OpenOptions): Promise<Service> {
 
   const writer: SessionOptions["writer"] = {
     write(frame) {
+      try {
+        checkFrame(frame);
+      } catch (error) {
+        frameError ??= error as Error;
+        notify();
+        throw error;
+      }
       if (frame.kind === "handshake") handshakeReply = frame.handshake;
       const response = frame.kind === "public" ? frame.response : undefined;
       if (isResponse(response)) {
@@ -397,6 +426,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     // Contract §3 `readWorkspace`: the first read sends `refresh: false` with `check: "full"`.
     readWorkspace: (id, payload = { refresh: false, check: "full" }, generation) =>
       service.request("readWorkspace", payload, { repositoryId: id, ...(generation === undefined ? {} : { repositoryGeneration: generation }) }),
+    readEntries: (id, generation, snapshotId, cursor) => service.request("readEntries", { snapshotId, cursor }, { repositoryId: id, repositoryGeneration: generation }),
     readHistory: (id, generation) => service.request("readHistory", {}, { repositoryId: id, repositoryGeneration: generation }),
     readTrust: (id) => service.request("readTrust", {}, { repositoryId: id }),
     approveTrust: (id, fingerprint, generation) => service.request("approveTrust", { fingerprint, approve: true }, { repositoryId: id, repositoryGeneration: generation }),
@@ -411,6 +441,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
       closed = true;
       notify();
       await runner.dispose();
+      if (frameError !== null) throw frameError;
     },
   };
 

@@ -4,10 +4,12 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { decodeRequest } from "../../src/contracts/envelope";
+import { PIPE_FRAME_BYTES, STATUS_PAGE_BYTES } from "../../src/contracts/limits";
 import { isWindows } from "../../src/contracts/native-path";
 import { OPERATIONS } from "../../src/contracts/operations";
 
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
+printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/contracts/operations.ts", import.meta.dir);
 
@@ -28,6 +30,10 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   readWorkspace: {
     renderer: () => ({ refresh: false, check: "full" }),
     service: () => ({ refresh: false, check: "full" }),
+  },
+  readEntries: {
+    renderer: () => ({ snapshotId: id(), cursor: id() }),
+    service: () => ({ snapshotId: id(), cursor: id() }),
   },
   readHistory: { renderer: () => ({}), service: () => ({}) },
   readComparison: {
@@ -71,6 +77,7 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
 const NAMES = Object.keys(PAYLOADS);
 
 const GENERATION_REQUIRED = [
+  "readEntries",
   "readHistory",
   "readComparison",
   "applyHunk",
@@ -85,6 +92,7 @@ const GENERATION_ABSENT = NAMES.filter((n) => !GENERATION_REQUIRED.includes(n) &
 
 const REPOSITORY_BOUND = [
   "readWorkspace",
+  "readEntries",
   "readHistory",
   "readComparison",
   "readTrust",
@@ -131,9 +139,9 @@ const sidesOf = (name: string) =>
   (["renderer", "service"] as const).filter((side) => PAYLOADS[name][side] !== undefined);
 
 describe("operation list", () => {
-  test("holds exactly the 21 contract §3 operations", () => {
+  test("holds exactly the 22 contract §3 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(21);
+    expect(OPERATIONS.length).toBe(22);
   });
 
   for (const name of NAMES) {
@@ -552,6 +560,24 @@ describe("readWorkspace", () => {
   ])("payload %j gives INVALID_REQUEST", (payload) =>
     expectCode(envelope("readWorkspace", "renderer", payload), "INVALID_REQUEST"),
   );
+});
+
+describe("readEntries", () => {
+  // Contract §3: `readWorkspace` returns the first page, so each `readEntries` names a later page by its service-issued cursor.
+  test.each([["snapshotId"], ["cursor"]])("a payload without %s gives INVALID_REQUEST", (field) => {
+    const request = envelope("readEntries");
+    const payload = { ...(request.payload as Json) };
+    delete payload[field];
+    expectCode({ ...request, payload }, "INVALID_REQUEST");
+  });
+  test.each([...BAD_IDS, 0, 1, null, id().toUpperCase()].map((v) => [v]))("cursor %j gives INVALID_REQUEST", (cursor) => {
+    const request = envelope("readEntries");
+    expectCode({ ...request, payload: { ...(request.payload as Json), cursor } }, "INVALID_REQUEST");
+  });
+  test("contract §5: the Status page bound is 8 MiB, below the 16 MiB private/reply frame", () => {
+    expect(STATUS_PAGE_BYTES).toBe(8 * MIB);
+    expect(STATUS_PAGE_BYTES).toBeLessThan(PIPE_FRAME_BYTES);
+  });
 });
 
 describe("other exact payloads", () => {

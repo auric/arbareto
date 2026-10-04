@@ -9,6 +9,7 @@
     "allow-choose-repository",
     "allow-restore-workspace",
     "allow-read-workspace",
+    "allow-read-entries",
     "allow-read-history",
     "allow-read-comparison",
     "allow-read-trust",

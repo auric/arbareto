@@ -38,6 +38,7 @@ pub fn run() {
             ipc::choose_repository,
             ipc::restore_workspace,
             ipc::read_workspace,
+            ipc::read_entries,
             ipc::read_history,
             ipc::read_comparison,
             ipc::read_trust,

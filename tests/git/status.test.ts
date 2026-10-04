@@ -9,15 +9,18 @@ import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, buildF16Status, F16_STATUS_RECORDS, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
+import type { CallMatch } from "./bun-runner";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
-import { caseTest, openService, type ChangeEntry, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { caseTest, once, openService, type ChangeEntry, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/status.ts", import.meta.dir);
 
 const TASK = "T069";
+const PAGING = "T284";
 const TIMEOUT_MS = 120_000;
 const F16_TIMEOUT_MS = 600_000;
+const HELD_WAIT_MS = 30_000;
 
 useFixtureRoot();
 
@@ -57,6 +60,41 @@ async function approve(service: Service, repositoryId: string): Promise<void> {
 }
 
 const b64 = (bytes: Uint8Array | string) => Buffer.from(bytes).toString("base64");
+const outcome = (response: ServiceResponse) => ({ state: response.state, code: response.code });
+
+// Contract §5 "Status page": the encoded result of one page.
+const pageBytes = (result: unknown) => Buffer.byteLength(JSON.stringify(result));
+
+// Contract §3: `readWorkspace` returns the first page, and `readEntries` serves each later page from the retained snapshot.
+// Each page must hold an entry, so the loop ends after at most `entryCount` pages.
+async function allEntries(service: Service, repositoryId: string, first: WorkspaceResult, pageStates: readonly string[]): Promise<ChangeEntry[]> {
+  expect(pageBytes(first)).toBeLessThanOrEqual(LIMITS.STATUS_PAGE_BYTES);
+  const entries = [...first.entries];
+  for (let cursor = first.cursor; cursor !== null; ) {
+    const page = await service.readEntries(repositoryId, first.generation, first.snapshotId, cursor);
+    expect(pageStates).toContain(page.state);
+    expect(page.result!.entries.length).toBeGreaterThan(0);
+    expect(pageBytes(page.result)).toBeLessThanOrEqual(LIMITS.STATUS_PAGE_BYTES);
+    entries.push(...page.result!.entries);
+    expect(entries.length).toBeLessThanOrEqual(first.entryCount);
+    cursor = page.result!.cursor;
+  }
+  expect(entries.length).toBe(first.entryCount);
+  expect(new Set(entries.map((e) => e.entryId)).size).toBe(entries.length);
+  return entries;
+}
+
+const statusCall: CallMatch = (call) => call.arguments.includes("status");
+const revListCall: CallMatch = (call) => call.arguments.includes("rev-list");
+
+// Waits until the double records a call of `operationId` that `match` accepts.
+async function heldCall(service: Service, operationId: string, match: CallMatch): Promise<void> {
+  const until = performance.now() + HELD_WAIT_MS;
+  while (!service.runner.calls.some((c) => c.operationId === operationId && match(c))) {
+    if (performance.now() > until) throw new Error(`no held call of ${operationId} within ${HELD_WAIT_MS} ms`);
+    await Bun.sleep(10);
+  }
+}
 
 type Category = ChangeEntry["category"];
 
@@ -344,32 +382,60 @@ describe("F05 submodules (contract §7)", () => {
 describe("F16 status bounds (contract §5)", () => {
   caseTest(
     TASK,
-    `F16: more than ${LIMITS.STATUS_LISTING_RECORDS} records give completeness limited with reason STATUS_LISTING_RECORDS, never an empty success`,
+    `F16: more than ${LIMITS.STATUS_LISTING_RECORDS} records give completeness limited with reason STATUS_LISTING_RECORDS, never an empty success, in pages within the Status page bound`,
     ["windows-shell-double"],
     () =>
       withService("t069-f16-over", async (service) => {
         const built = buildF16Status(gitPath(), "t069-f16-over", "over-limit");
         expect(built.facts.notes.records).toBe(LIMITS.STATUS_LISTING_RECORDS + 1);
-        const response = await read(service, f(built));
-        expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "OUTPUT_LIMIT" });
+        const { repositoryId } = await service.register(f(built));
+        const response = await service.readWorkspace(repositoryId);
+        expect(outcome(response)).toEqual({ state: "limited", code: "OUTPUT_LIMIT" });
         expect(response.result!.completeness).toMatchObject({ state: "limited", reason: limitName("STATUS_LISTING_RECORDS") });
-        expect(response.result!.entries.length).toBeGreaterThan(0);
-        expect(response.result!.entries.length).toBeLessThanOrEqual(LIMITS.STATUS_LISTING_RECORDS);
+        // Contract §3 fixes no page state for a limited snapshot.
+        const entries = await allEntries(service, repositoryId, response.result!, ["succeeded", "limited"]);
+        expect(entries.length).toBeGreaterThan(0);
+        expect(entries.length).toBeLessThanOrEqual(LIMITS.STATUS_LISTING_RECORDS);
       }),
     F16_TIMEOUT_MS,
   );
 
   caseTest(
     TASK,
-    `F16: exactly ${LIMITS.STATUS_LISTING_RECORDS} records give a complete result`,
+    `F16: exactly ${LIMITS.STATUS_LISTING_RECORDS} records give a complete result in pages within the Status page bound; each readEntries page ends succeeded while a readHistory and a readWorkspace of the workspace wait at the stdout barrier`,
     ["windows-shell-double"],
     () =>
       withService("t069-f16-at", async (service) => {
         const built = buildF16Status(gitPath(), "t069-f16-at", "at-limit");
         expect(F16_STATUS_RECORDS).toBe(LIMITS.STATUS_LISTING_RECORDS);
-        const result = await readSucceeded(service, f(built));
-        expect(result.completeness.state).toBe("complete");
-        expect(result.entries.length).toBe(LIMITS.STATUS_LISTING_RECORDS);
+        const { repositoryId } = await service.register(f(built));
+        const first = await service.readWorkspace(repositoryId);
+        expect(outcome(first)).toEqual({ state: "succeeded", code: undefined });
+        const result = first.result!;
+        expect({ completeness: result.completeness.state, entryCount: result.entryCount }).toEqual({ completeness: "complete", entryCount: LIMITS.STATUS_LISTING_RECORDS });
+        // Contract §5 "Concurrent reads": the two held reads take both read slots of the workspace. `readEntries` takes no slot and never waits in the pending queue.
+        const releaseStatus = service.runner.pauseStdout(once(statusCall));
+        const releaseHistory = service.runner.pauseStdout(once(revListCall));
+        let held: string[] = [];
+        try {
+          held = [
+            service.send("readHistory", {}, { repositoryId, repositoryGeneration: result.generation }),
+            service.send("readWorkspace", { refresh: false, check: "full" }, { repositoryId }),
+          ];
+          const [history, workspace] = await Promise.all(held.map((requestId) => service.operationId(requestId)));
+          await heldCall(service, history!, revListCall);
+          await heldCall(service, workspace!, statusCall);
+          const calls = service.runner.calls.length;
+          const entries = await allEntries(service, repositoryId, result, ["succeeded"]);
+          expect(entries.length).toBe(LIMITS.STATUS_LISTING_RECORDS);
+          // Contract §3: `readEntries` starts no Git process.
+          expect(service.runner.calls.slice(calls).filter((c) => c.operationId !== history && c.operationId !== workspace)).toEqual([]);
+          expect(held.map((requestId) => service.responseAt.has(requestId))).toEqual([false, false]);
+        } finally {
+          releaseStatus();
+          releaseHistory();
+        }
+        for (const requestId of held) expect(outcome(await service.response(requestId))).toEqual({ state: "succeeded", code: undefined });
       }),
     F16_TIMEOUT_MS,
   );
@@ -436,6 +502,47 @@ describe("F16 status bounds (contract §5)", () => {
       TIMEOUT_MS,
     );
   }
+});
+
+describe("readEntries (contract §3, data-model §4)", () => {
+  caseTest(
+    PAGING,
+    "readEntries checks the generation first, then the snapshot, then the cursor, and starts no Git process",
+    ["windows-shell-double"],
+    () =>
+      withService("t284-checks", async (service) => {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t284-checks"));
+        const { repositoryId } = await service.register(repo);
+        const fullRead = async () => {
+          const response = await service.readWorkspace(repositoryId);
+          expect(outcome(response)).toEqual({ state: "succeeded", code: undefined });
+          return response.result!;
+        };
+        const old = await fullRead();
+        expect({ cursor: old.cursor, entryCount: old.entryCount }).toEqual({ cursor: null, entryCount: old.entries.length });
+        const entries = async (generation: number, snapshotId: string) => {
+          const calls = service.runner.calls.length;
+          const response = await service.readEntries(repositoryId, generation, snapshotId, crypto.randomUUID());
+          expect(service.runner.calls.length).toBe(calls);
+          return response.code;
+        };
+        // An equal full read replaces the retained snapshot and keeps the generation.
+        const same = await fullRead();
+        expect(same.generation).toBe(old.generation);
+        expect(await entries(same.generation, old.snapshotId)).toBe("UNKNOWN_TARGET");
+        // Contract §2: a well-formed cursor that this snapshot did not issue.
+        expect(await entries(same.generation, same.snapshotId)).toBe("UNKNOWN_TARGET");
+        // A staged change advances the generation. The generation check comes before the snapshot check.
+        writeFileSync(join(repo, "keep.txt"), "keep staged\n");
+        ownedGit(git, FIXTURE_ROOT, repo, ["add", "--", "keep.txt"]);
+        const changed = await fullRead();
+        expect(changed.generation).toBe(same.generation + 1);
+        expect(await entries(same.generation, changed.snapshotId)).toBe("REPOSITORY_CHANGED");
+        expect(await entries(same.generation, crypto.randomUUID())).toBe("REPOSITORY_CHANGED");
+      }),
+    TIMEOUT_MS,
+  );
 });
 
 describe("index bytes (contract §7)", () => {

@@ -15,6 +15,7 @@
         "chooseRepository",
         "restoreWorkspace",
         "readWorkspace",
+        "readEntries",
         "readHistory",
         "readComparison",
         "readTrust",

@@ -111,6 +111,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     chooseRepository: undefined,
     restoreWorkspace: undefined,
     readWorkspace: undefined,
+    readEntries: undefined,
     readHistory: undefined,
     readComparison: undefined,
     readTrust: undefined,

@@ -12,6 +12,7 @@ export const OPERATION_NAMES = [
   "chooseRepository",
   "restoreWorkspace",
   "readWorkspace",
+  "readEntries",
   "readHistory",
   "readComparison",
   "readTrust",

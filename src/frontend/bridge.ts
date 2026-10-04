@@ -83,6 +83,7 @@ export function createBridge(onSessionChange?: () => void) {
     chooseRepository: (onProgress?: OnProgress) => call("chooseRepository", {}, {}, onProgress),
     restoreWorkspace: (onProgress?: OnProgress) => call("restoreWorkspace", {}, {}, onProgress),
     readWorkspace: (target: Target<"readWorkspace">, payload: Payload<"readWorkspace">, onProgress?: OnProgress) => call("readWorkspace", target, payload, onProgress),
+    readEntries: (target: Target<"readEntries">, payload: Payload<"readEntries">, onProgress?: OnProgress) => call("readEntries", target, payload, onProgress),
     readHistory: (target: Target<"readHistory">, onProgress?: OnProgress) => call("readHistory", target, {}, onProgress),
     readComparison: (target: Target<"readComparison">, payload: Payload<"readComparison">, onProgress?: OnProgress) =>
       call("readComparison", target, payload, onProgress),

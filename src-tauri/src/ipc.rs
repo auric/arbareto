@@ -18,12 +18,13 @@ use crate::schema;
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 21] = [
+pub const OPERATIONS: [&str; 22] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
     "restoreWorkspace",
     "readWorkspace",
+    "readEntries",
     "readHistory",
     "readComparison",
     "readTrust",
@@ -426,6 +427,15 @@ pub async fn read_workspace(
 }
 
 #[tauri::command]
+pub async fn read_entries(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readEntries", request.body().clone()).await
+}
+
+#[tauri::command]
 pub async fn read_history(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
@@ -579,6 +589,7 @@ pub async fn dismiss_recovery_marker(
 mod tests {
     use super::*;
 
+    use std::path::Path;
     use std::sync::Mutex;
 
     use serde_json::{Value, json};
@@ -737,6 +748,57 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0], frame_of(&body));
         assert_eq!(frames[0].len(), PUBLIC_FRAME_BODY_BYTES);
+    }
+
+    #[test]
+    fn a_read_entries_request_is_forwarded_byte_for_byte() {
+        let (ipc, frames) = ipc();
+        let mut envelope = request(
+            "readEntries",
+            json!({ "snapshotId": OPERATION_ID, "cursor": OPERATION_ID }),
+        );
+        envelope["repositoryId"] = json!(OPERATION_ID);
+        envelope["repositoryGeneration"] = json!(0);
+        let body = envelope.to_string();
+        assert_eq!(
+            ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), "readEntries"),
+            Outcome::Forwarded
+        );
+        assert_eq!(*frames.lock().expect("frames"), vec![frame_of(&body)]);
+    }
+
+    /// Contract §3: each operation of `src/contracts/operations.ts` has its handler in `lib.rs` and its grant in the capability.
+    #[test]
+    fn each_contract_operation_has_its_handler_and_its_grant() {
+        let read = |path: &str| {
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).expect(path)
+        };
+        let contract = read("../src/contracts/operations.ts");
+        let (list, _) = contract
+            .split_once("OPERATION_NAMES = [")
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .expect("OPERATION_NAMES");
+        let names: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        assert_eq!(names, OPERATIONS);
+        let lib = read("src/lib.rs");
+        let capability: Value =
+            serde_json::from_str(&read("capabilities/main.json")).expect("capability");
+        let grants = capability["permissions"].as_array().expect("permissions");
+        for operation in OPERATIONS {
+            let command: String = operation
+                .chars()
+                .flat_map(|c| {
+                    let word = c.is_ascii_uppercase().then_some('_');
+                    word.into_iter().chain([c.to_ascii_lowercase()])
+                })
+                .collect();
+            assert!(
+                lib.contains(&format!("ipc::{command},")),
+                "handler of {operation}"
+            );
+            let grant = format!("allow-{}", command.replace('_', "-"));
+            assert!(grants.contains(&json!(grant)), "grant of {operation}");
+        }
     }
 
     #[test]

@@ -22,6 +22,8 @@ export const CANONICAL_DIFF_LINES = 20_000;
 export const CANONICAL_DIFF_BYTES = 4 * MIB;
 export const STATUS_LISTING_BYTES = 32 * MIB;
 export const STATUS_LISTING_RECORDS = 100_000;
+// The encoded result of each `readWorkspace` first page and each `readEntries` page.
+export const STATUS_PAGE_BYTES = 8 * MIB;
 export const MUTATION_RAW_INDEX_BYTES = 64 * MIB;
 export const ATTRIBUTION_EVIDENCE_BYTES = 4 * MIB;
 export const ATTRIBUTION_EVIDENCE_RECORDS = 10_000;

@@ -37,6 +37,7 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   chooseRepository: (b) => b.chooseRepository(),
   restoreWorkspace: (b) => b.restoreWorkspace(),
   readWorkspace: (b) => b.readWorkspace(repo(), { refresh: false, check: "full" }),
+  readEntries: (b) => b.readEntries(gen(), { snapshotId: id(), cursor: id() }),
   readHistory: (b) => b.readHistory(gen()),
   readComparison: (b) => b.readComparison({ ...gen(), selectionId: id() }, { snapshotId: id(), entryId: id() }),
   readTrust: (b) => b.readTrust(repo()),
@@ -154,6 +155,20 @@ describe("frontend bridge", () => {
     }
     const requestIds = h.calls.map((c) => c.request.requestId);
     expect(new Set(requestIds).size).toBe(requestIds.length);
+  });
+
+  test("readEntries sends the repository target, the snapshot ID, and the cursor to read_entries, and returns the page", async () => {
+    const page = { entries: [], cursor: null };
+    const h = harness({ answer: (_command, request) => ({ requestId: request.requestId, operationId: id(), state: "succeeded", result: page }) });
+    const target = { repositoryId: id(), repositoryGeneration: 4 };
+    const payload = { snapshotId: id(), cursor: id() };
+    const response = (await h.bridge.readEntries(target, payload)) as Record<string, unknown>;
+    const call = h.calls.at(-1)!;
+    expect(call.command).toBe("read_entries");
+    // Contract §2: `readEntries` carries `repositoryId` and `repositoryGeneration`, and no `selectionId`.
+    expect(call.request).toEqual({ version: 1, sessionId: h.session(), requestId: call.request.requestId, operation: "readEntries", ...target, payload });
+    expect(validateRequest(call.request, "renderer").ok).toBe(true);
+    expect(response).toMatchObject({ requestId: call.request.requestId, state: "succeeded", result: page });
   });
 
   test("a service-session event refreshes the session without a reload", async () => {

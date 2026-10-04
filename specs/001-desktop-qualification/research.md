@@ -85,6 +85,41 @@ Engine sources: DeepWiki answer on libgit2 (2026-10-04), gitoxide `crate-status.
 - Uppercase `-Z` terminates input and output. Lowercase `-z` is not an equivalent output protocol.
 - Bound commit objects before reading their content. Render author and subject text without interpreting markup.
 
+**T282 record (2026-10-05)**: T086 keeps one `cat-file --batch-command -Z` process per read. The pack-handle risk did not occur: `repack -a -d` beside an open `cat-file` exited 0 and removed the old pack files. So the T282 condition holds. But a persistent process does not fit contract §6 and §5 (below). It needs a contract change first. It saves 20 to 25 ms and one Git process per history page.
+
+The probe `tests/git/probe-cat-file.ts` ran Git `2.56.0.windows.1` (`C:/Git/ucrt64/bin/git.exe`, the Git that `tests/git/git-binary.ts` selects) on Windows 10.0.26200 (NTFS). This is not the R2 candidate `2.55.0.windows.3`. It used two copies of the maintained M (T164, commit-graph variant) under the owned fixture root. Before `repack`, `count-objects -v` gave one pack (`.idx` and `.pack`) with 39,884 objects, and 11 loose objects from the staged files. Every Git call ran under `LC_ALL=C` with the owned fixture environment. `cat-file` and `rev-list` used the T076 builders, so they passed `--no-lazy-fetch` and `--no-optional-locks`.
+
+Pages: the probe read 30 consecutive history pages of 100 rows. Each page used the T076 `rev-list` form. The next page started at the first parent of the last row. Each page then read its 100 commits with `contents <oid>` commands. The per-read method started one `cat-file` for each page and closed its stdin. The persistent method kept one `cat-file` open for all 30 pages and read exactly 100 frames per page. The methods alternated their order on each page.
+
+Control: both methods gave byte-equal frames on 30 of 30 pages, with no `missing` frame. No page commit was a loose object.
+
+| Method | Git processes per page | Informal median per page (30 pages, range of 3 runs) |
+| --- | --- | --- |
+| Per read | 2 (`rev-list`, `cat-file`) | `rev-list` 25.1 to 30.7 ms, `cat-file` 21.8 to 26.1 ms |
+| Persistent | 1 (`rev-list`), plus 1 `cat-file` per workspace | `rev-list` 25.1 to 30.7 ms, `cat-file` 1.2 to 1.4 ms. The first page, spawn included, took 12.5 to 13.5 ms. |
+
+Repack arms: each copy got a new persistent `cat-file` with `GIT_TRACE_PACK_ACCESS`. Each process read 200 commits (the first and the last page). The trace showed 200 reads from the old pack in each copy. In copy A, the process stayed open. In copy B, the process exited with 0 before `repack`. Then `repack -a -d` ran in each copy with stdin closed.
+
+| Process during `repack -a -d` | Exit | Stderr | Old pack files kept | New pack files |
+| --- | --- | --- | --- | --- |
+| Open, with the old pack read | 0 | empty | 0 of 2 | `.idx`, `.pack`, `.rev` |
+| Closed (control) | 0 | empty | 0 of 2 | `.idx`, `.pack`, `.rev` |
+
+- Each `repack` took 0.7 to 1.4 s. After it, `count-objects -v` gave 0 loose objects, 1 pack with 39,895 objects, and 0 garbage in both copies.
+- The open process still read objects after `repack`. It gave the 200 commits byte-equal to its reads before `repack`. The trace showed that these reads used the old, removed pack. It also read the formerly loose blob from the new pack.
+- A new `cat-file` after `repack` gave the same bytes in both copies.
+- So an open `cat-file` did not block `repack -a -d` and did not make it fail. The control gives the same outcome without the open process.
+- Limits: one host and one Git build. The probe did not run `gc`, a second concurrent writer, or another file system. Linux and macOS are not verified.
+
+Contract fit of a persistent process:
+
+- Contract §6 gives each operation its own Job. A read Job closes when the read ends, and read Jobs never linger. A persistent `cat-file` outlives the read that started it. So it can live in no operation Job, and keeping the read Job open breaks the read Job rule.
+- Contract §5 gives every Git process a deadline, and a read has 30 seconds. A persistent process lives for the workspace, so the 30-second process deadline cannot apply to it.
+- One process reads one command stream. Contract §5 allows 2 concurrent reads per workspace, so two history reads would have to share or wait for it.
+- A contract change would need a workspace Job that closes at workspace release, at Revoke trust, and at application close. It would also need a deadline for each page and a new process after a failure or a deadline.
+- The saving is one process and 20 to 25 ms per page. T192 measures the full process count of `readHistory` (plan.md "Git processes per read").
+- This probe is not qualification evidence, and no Arbareto build ran.
+
 Sources: [status format and optional locks](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-status.adoc), [cat-file framing](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-cat-file.adoc#L143-L175), [NUL options](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-cat-file.adoc#L266-L275).
 
 ### Repository identity

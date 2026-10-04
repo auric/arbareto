@@ -105,7 +105,7 @@ const isHandshake = exact(
     unloadedMarkers: isCount,
     damagedMarkers: arrayOf(DAMAGED_MARKERS_PER_HANDSHAKE, isDamagedMarker),
     trustRecords: arrayOf(TRUST_RECORDS, isTrustRecord),
-    savedGit: exact({ bootstrapId: isIdentifier, executablePath: isChannelPath, version: isPrintable, digest: isFingerprint }),
+    savedGit: exact({ bootstrapId: isIdentifier, selectedPath: isChannelPath, executablePath: isChannelPath, version: isPrintable, digest: isFingerprint }),
   },
   ["savedGit"],
 );
@@ -121,7 +121,7 @@ export interface Handshake {
   unloadedMarkers: number;
   damagedMarkers: { markerId: string; fileName: string }[];
   trustRecords: Fields[];
-  savedGit?: { bootstrapId: string; executablePath: string; version: string; digest: string };
+  savedGit?: { bootstrapId: string; selectedPath: string; executablePath: string; version: string; digest: string };
 }
 
 // Contract §3 without the shell-only `requestClose` and `currentSession`.
@@ -188,9 +188,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       // Contract §3 `chooseGit`: a new `gitInstallationId` releases the previous one.
       if (git?.ok && git.installation.gitInstallationId !== result.installation.gitInstallationId) runner.release({ gitInstallationId: git.installation.gitInstallationId });
       git = result;
-      const { gitInstallationId, executablePath, version, executableIdentity } = result.installation;
-      // The shell persists the path, the version text, and the digest after this result (data-model §1).
-      registry.apply(operationId, { type: "read-complete", result: "succeeded" }, { gitInstallationId, executablePath, version, digest: executableIdentity.digest });
+      const { gitInstallationId, selectedPath, executablePath, version, executableIdentity } = result.installation;
+      // The shell persists this digest with the paths and the version that Use this Git approved (data-model §1).
+      registry.apply(operationId, { type: "read-complete", result: "succeeded" }, { gitInstallationId, selectedPath, executablePath, version, digest: executableIdentity.digest });
     };
     probeGit(runner, target, { operationId, signal, confirm: true }).then(finish, () => finish({ ok: false, gitCode: "GIT_FAILED" }));
   };

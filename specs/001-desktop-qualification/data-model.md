@@ -9,13 +9,14 @@ This document defines planned state, not implemented types. Git remains authorit
 | Field | Meaning and validation |
 | --- | --- |
 | `gitInstallationId` | Opaque, session-scoped identifier for the explicitly selected executable. |
-| `executablePath` | Absolute, resolved executable path. Never a renderer-supplied command string. |
+| `selectedPath` | Absolute path that the user selected, such as the Git for Windows wrapper `cmd\git.exe`. Only the `--exec-path` probe runs it (contract §3 "Git proposal"). |
+| `executablePath` | Absolute, resolved executable path: `git.exe` in the folder that `--exec-path` prints. Never a renderer-supplied command string. |
 | `executableIdentity` | Resolved file identity, version output, and executable digest. Replacement invalidates approval. |
 | `version` | Parsed Git for Windows version, plus bounded original version output. |
 | `admission` | `admitted` or `unsupported`, according to the local qualification package's minimum version: `2.55.0.windows.3` or later. |
 | `qualification` | `unverified`, `passed`, or `failed`. A pass requires recorded qualification evidence, not admission or installation presence. The source is a build-time list of version sets with recorded passing evidence. A version set is the Git version, the WebView2 version, and the OS build of one recorded passing packaged run. `passed` requires an exact match. This slice ships the list empty, so the value stays `unverified`. |
 
-Persist the selected Git path, its approved version text, and its SHA-256 digest in application-owned settings. The digest is 64 lowercase hex digits. A file rewritten in place keeps its file ID, so revalidation compares digests. Revalidate the path after restart: a different digest gives `GIT_CHANGED` (contract §6 "Startup contexts"). Never silently select another executable. `GIT_CHANGED` carries no new version. The next `chooseGit` probe reports it. The Git selection confirmation then shows the stored and the new version (contract §3 `chooseGit`).
+Persist `selectedPath`, `executablePath`, the approved version text, and the SHA-256 digest of `executablePath` in application-owned settings. A settings entry without `selectedPath` uses `executablePath` as the selected path. The digest is 64 lowercase hex digits. A file rewritten in place keeps its file ID, so revalidation compares digests. Revalidate after restart: a different digest, or a `selectedPath` that resolves to another file, gives `GIT_CHANGED` (contract §6 "Startup contexts"). Never silently select another executable. `GIT_CHANGED` carries no new version. The next `chooseGit` probe reports it. The Git selection confirmation then shows the stored and the new version (contract §3 `chooseGit`).
 
 A WSL Git installation is one Linux Git per distro (contract §11 "Git per distro"). It adds these fields:
 

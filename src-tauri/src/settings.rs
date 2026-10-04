@@ -45,7 +45,9 @@ pub struct Settings {
 /// The selected Git. Unknown or invalid values give no saved Git.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SavedGit {
-    /// An absolute path.
+    /// The absolute path that the user selected, such as the Git for Windows wrapper `cmd\git.exe`.
+    pub selected_path: PathBuf,
+    /// The absolute path of the file that runs: `git.exe` in the folder that `--exec-path` printed (contract §3 "Git proposal").
     pub executable_path: PathBuf,
     /// The approved parsed version text: printable ASCII, at most 64 bytes (contract §6 "Context rules").
     pub version: String,
@@ -94,8 +96,15 @@ fn saved_git(value: &Value) -> Option<SavedGit> {
     let digest = value["digest"]
         .as_str()
         .filter(|digest| is_hex(digest, 64))?;
+    let executable_path = channel_path(&value["executablePath"])?;
+    // A file from before `selectedPath` existed holds only the resolved path.
+    let selected_path = match value.get("selectedPath") {
+        Some(selected) => channel_path(selected)?,
+        None => executable_path.clone(),
+    };
     Some(SavedGit {
-        executable_path: channel_path(&value["executablePath"])?,
+        selected_path,
+        executable_path,
         version: version.to_string(),
         digest: digest.to_string(),
     })
@@ -122,6 +131,7 @@ fn save_with(path: &Path, settings: &Settings, fault: Fault) -> io::Result<()> {
         file.insert(
             "git".to_string(),
             json!({
+                "selectedPath": text(&git.selected_path)?,
                 "executablePath": text(&git.executable_path)?,
                 "version": git.version,
                 "digest": git.digest,
@@ -1487,6 +1497,7 @@ mod tests {
     fn full_settings(fixture: &Fixture) -> Settings {
         Settings {
             git: Some(SavedGit {
+                selected_path: fixture.path("cmd\\git.exe"),
                 executable_path: fixture.path("git.exe"),
                 version: "2.55.0.windows.3".to_string(),
                 digest: DIGEST.to_string(),
@@ -1501,10 +1512,11 @@ mod tests {
         }
     }
 
-    /// The file form: `git` with `executablePath`, `version`, and `digest`; `lastRepository`; `window` with `x`, `y`, `width`, and `height`.
+    /// The file form: `git` with `selectedPath`, `executablePath`, `version`, and `digest`; `lastRepository`; `window` with `x`, `y`, `width`, and `height`.
     fn settings_json(fixture: &Fixture) -> Value {
         json!({
             "git": {
+                "selectedPath": fixture.path("cmd\\git.exe"),
                 "executablePath": fixture.path("git.exe"),
                 "version": "2.55.0.windows.3",
                 "digest": DIGEST,
@@ -1532,6 +1544,32 @@ mod tests {
     }
 
     #[test]
+    fn the_saved_git_round_trips_the_selected_path_beside_the_resolved_path() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        save(&path, &full_settings(&fixture)).expect("save");
+        let file: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        assert_eq!(file["git"], settings_json(&fixture)["git"]);
+        assert_eq!(load(&path), full_settings(&fixture));
+    }
+
+    #[test]
+    fn a_git_entry_without_a_selected_path_loads_with_the_resolved_path_as_the_selected_path() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        let mut file = settings_json(&fixture);
+        file["git"]
+            .as_object_mut()
+            .expect("git")
+            .remove("selectedPath");
+        std::fs::write(&path, file.to_string()).expect("write");
+        let git = load(&path).git.expect("saved Git");
+        assert_eq!(git.selected_path, fixture.path("git.exe"));
+        assert_eq!(git.executable_path, fixture.path("git.exe"));
+    }
+
+    #[test]
     fn a_missing_or_unparseable_file_gives_the_defaults() {
         let fixture = Fixture::new();
         let path = fixture.path("settings.json");
@@ -1546,7 +1584,7 @@ mod tests {
     fn an_invalid_git_entry_gives_no_saved_git_and_keeps_the_other_settings() {
         let fixture = Fixture::new();
         let path = fixture.path("settings.json");
-        let cases: [(&str, &str, Value); 7] = [
+        let cases: [(&str, &str, Value); 10] = [
             (
                 "an uppercase digest",
                 "digest",
@@ -1566,6 +1604,13 @@ mod tests {
                 json!("2.55.0\u{1}"),
             ),
             ("a number path", "executablePath", json!(7)),
+            ("a relative selected path", "selectedPath", json!("git.exe")),
+            ("a number selected path", "selectedPath", json!(7)),
+            (
+                "a device selected path",
+                "selectedPath",
+                json!(r"\\.\pipe\git.exe"),
+            ),
         ];
         for (name, key, value) in cases {
             let mut file = settings_json(&fixture);

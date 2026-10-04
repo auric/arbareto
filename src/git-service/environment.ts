@@ -14,7 +14,8 @@ export const QUALIFIED_VERSION_SETS: readonly { git: string; webView2: string; o
 export interface Environment {
   buildIdentity: { version: string; commit: string; signing: "unsigned" };
   platformScope: "qualification-target" | "other";
-  selectedGit?: string;
+  selectedPath?: string;
+  executablePath?: string;
   detectedVersion?: string;
   minimumVersion: string;
   admission?: "admitted" | "unsupported";
@@ -41,7 +42,7 @@ export function getEnvironment(handshake: Handshake, git: GitProbeResult | null)
   return {
     buildIdentity: { version, commit, signing },
     platformScope: handshake.platformScope,
-    ...(git?.ok ? { selectedGit: git.installation.executablePath } : {}),
+    ...(git?.ok ? { selectedPath: git.installation.selectedPath, executablePath: git.installation.executablePath } : {}),
     ...(detectedVersion === undefined ? {} : { detectedVersion }),
     minimumVersion: MINIMUM_GIT_VERSION,
     ...(git?.ok ? { admission: "admitted" as const } : git?.gitCode === "GIT_UNSUPPORTED" ? { admission: "unsupported" as const } : {}),

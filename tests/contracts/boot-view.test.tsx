@@ -35,6 +35,17 @@ describe("boot view", () => {
     expect(html).not.toContain("Select Git");
   });
 
+  test("the selected Git shows the selected path, and a Runs line only for another resolved path", () => {
+    const wrapper = "C:\\Git\\cmd\\git.exe";
+    const resolved = "C:\\Git\\mingw64\\libexec\\git-core\\git.exe";
+    const viaWrapper = render(environment({ selectedPath: wrapper, executablePath: resolved }));
+    expect(viaWrapper).toContain(`<p>Selected Git: ${wrapper}</p><p>Runs: ${resolved}</p>`);
+    const direct = render(environment({ selectedPath: resolved, executablePath: resolved }));
+    expect(direct).toContain(`<p>Selected Git: ${resolved}</p>`);
+    expect(direct).not.toContain("Runs:");
+    expect(render(environment())).not.toContain("Selected Git");
+  });
+
   test("each Git code shows a blocked state with both versions and Select Git", () => {
     for (const gitCode of ["GIT_UNAVAILABLE", "GIT_UNSUPPORTED", "GIT_CHANGED"]) {
       const html = render(environment({ gitCode }));

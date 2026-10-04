@@ -16,6 +16,7 @@ printOrigin("../../src/git-service/session.ts", import.meta.dir);
 const MINIMUM = "2.55.0.windows.3";
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
 const GIT_PATH = "C:\\arbareto-test-fixture\\git\\cmd\\git.exe";
+const RESOLVED_PATH = "C:\\arbareto-test-fixture\\git\\mingw64\\libexec\\git-core\\git.exe";
 
 const marker = (n: number) => ({
   markerId: `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`,
@@ -43,16 +44,15 @@ function handshake(extra: Partial<Handshake> = {}): Handshake {
   };
 }
 
-const admitted: GitProbeResult = {
-  ok: true,
-  installation: {
-    gitInstallationId: "11111111-1111-4111-8111-111111111111",
-    executablePath: GIT_PATH,
-    executableIdentity: { file: IDENTITY, versionOutput: `git version ${MINIMUM}\ncpu: x86_64\n`, digest: "c".repeat(64) },
-    version: MINIMUM,
-    admission: "admitted",
-  },
+const installation = {
+  gitInstallationId: "11111111-1111-4111-8111-111111111111",
+  selectedPath: GIT_PATH,
+  executablePath: GIT_PATH,
+  executableIdentity: { file: IDENTITY, versionOutput: `git version ${MINIMUM}\ncpu: x86_64\n`, digest: "c".repeat(64) },
+  version: MINIMUM,
+  admission: "admitted" as const,
 };
+const admitted: GitProbeResult = { ok: true, installation };
 
 describe("getEnvironment (T054)", () => {
   const canaryName = `ARBARETO_CANARY_${crypto.randomUUID().replaceAll("-", "_")}`;
@@ -70,7 +70,8 @@ describe("getEnvironment (T054)", () => {
     expect(env).toEqual({
       buildIdentity: { version: "0.1.0", commit: `${"a".repeat(40)}-dirty`, signing: "unsigned" },
       platformScope: "qualification-target",
-      selectedGit: GIT_PATH,
+      selectedPath: GIT_PATH,
+      executablePath: GIT_PATH,
       detectedVersion: MINIMUM,
       minimumVersion: MINIMUM,
       admission: "admitted",
@@ -80,6 +81,11 @@ describe("getEnvironment (T054)", () => {
     });
   });
 
+  test("a wrapper selection gives the selected path and the resolved executablePath", () => {
+    const env = getEnvironment(handshake(), { ok: true, installation: { ...installation, executablePath: RESOLVED_PATH } });
+    expect(env).toMatchObject({ selectedPath: GIT_PATH, executablePath: RESOLVED_PATH, admission: "admitted" });
+  });
+
   test("the platform scope comes from the handshake", () => {
     expect(getEnvironment(handshake({ platformScope: "other" }), admitted).platformScope).toBe("other");
   });
@@ -87,19 +93,22 @@ describe("getEnvironment (T054)", () => {
   test("an unsupported Git gives GIT_UNSUPPORTED with the detected and minimum versions", () => {
     const env = getEnvironment(handshake(), { ok: false, gitCode: "GIT_UNSUPPORTED", detectedVersion: "2.54.0.windows.1", minimumVersion: MINIMUM });
     expect(env).toMatchObject({ gitCode: "GIT_UNSUPPORTED", admission: "unsupported", detectedVersion: "2.54.0.windows.1", minimumVersion: MINIMUM, qualification: "unverified" });
-    expect(env.selectedGit).toBeUndefined();
+    expect(env.selectedPath).toBeUndefined();
+    expect(env.executablePath).toBeUndefined();
   });
 
   test("a changed Git gives GIT_CHANGED with the new version", () => {
     const env = getEnvironment(handshake(), { ok: false, gitCode: "GIT_CHANGED", detectedVersion: "2.56.0.windows.1", minimumVersion: MINIMUM });
     expect(env).toMatchObject({ gitCode: "GIT_CHANGED", detectedVersion: "2.56.0.windows.1", minimumVersion: MINIMUM, qualification: "unverified" });
-    expect(env.selectedGit).toBeUndefined();
+    expect(env.selectedPath).toBeUndefined();
+    expect(env.executablePath).toBeUndefined();
   });
 
   test("a handshake without a startup Git context leaves Git unselected with GIT_UNAVAILABLE", () => {
     const env = getEnvironment(handshake(), null);
     expect(env).toMatchObject({ gitCode: "GIT_UNAVAILABLE", minimumVersion: MINIMUM, qualification: "unverified" });
-    expect(env.selectedGit).toBeUndefined();
+    expect(env.selectedPath).toBeUndefined();
+    expect(env.executablePath).toBeUndefined();
     expect(env.detectedVersion).toBeUndefined();
     expect(env.admission).toBeUndefined();
   });

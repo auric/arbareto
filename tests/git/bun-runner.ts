@@ -336,7 +336,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       return { result: "approved" };
     },
 
-    // The double has no startup context, so it skips the native startup refusal.
+    // The double has no startup context. So it skips the native rule that limits a startup context move.
     async resolveGit(request) {
       checkResolveGit(request);
       const bound = contexts.get(request.bootstrapId);

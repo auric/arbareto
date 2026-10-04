@@ -11,6 +11,9 @@ import { createCollector, isChannelPath, RunnerRefusal, type GitRunner, type Ide
 // Data-model §1 "Git installation".
 export interface GitInstallation {
   gitInstallationId: string;
+  // The candidate that the user selected, such as the Git for Windows wrapper `cmd\git.exe`.
+  selectedPath: string;
+  // The file that runs: `git.exe` in the folder that `--exec-path` printed (contract §3 "Git proposal").
   executablePath: string;
   // `file` is always an identity: a `code` reply refuses registration. T053 compares it with the wider test type.
   executableIdentity: { file: IdentityReply; versionOutput: string; digest: string };
@@ -35,6 +38,8 @@ export interface GitProbeOptions {
   operationId?: string;
   // Contract §6 `register`: `true` shows the native Git selection confirmation.
   confirm?: boolean;
+  // Contract §6 "Startup contexts": the stored resolved path. Without the confirmation, a probe can move only to it.
+  savedExecutablePath?: string;
   signal?: AbortSignal;
 }
 
@@ -65,7 +70,7 @@ async function fileDigest(path: string): Promise<{ digest: string } | { gitCode:
 export async function probeGit(runner: GitRunner, target: GitProbeTarget, options: GitProbeOptions = {}): Promise<GitProbeResult | GitProbeCanceled> {
   const operationId = options.operationId ?? crypto.randomUUID();
   for (;;) {
-    const step = await probeCandidate(runner, target, operationId, options);
+    const step = await probeCandidate(runner, target, operationId, options, target.executablePath);
     if (!("another" in step)) return step;
     if (options.signal?.aborted) return { ok: false, canceled: true };
     target = step.another;
@@ -98,12 +103,13 @@ function execPathGit(output: string): string | null {
 }
 
 // Contract §6 "Registration bootstrap" `gitProbe`: identity, exec-path, version, architecture, and admission before `gitInstallationId`.
-// `moved` marks a context that `resolveGit` created. Its exec-path probe must name its own file.
+// `selected` is the candidate before a `resolveGit` move. `moved` marks a context that `resolveGit` created. Its exec-path probe must name its own file.
 async function probeCandidate(
   runner: GitRunner,
   target: GitProbeTarget,
   operationId: string,
   options: GitProbeOptions,
+  selected: string,
   moved = false,
 ): Promise<GitProbeResult | GitProbeCanceled | { another: GitProbeTarget }> {
   const context: ProcessContext = { contextKind: "gitProbe", bootstrapId: target.bootstrapId };
@@ -119,12 +125,12 @@ async function probeCandidate(
     if (typeof execPath !== "string") return execPath;
     const git = execPathGit(execPath);
     if (git === null) return failure("GIT_UNSUPPORTED");
+    // Contract §6 "Startup contexts": the saved selection must resolve to the stored file. Only Use this Git selects another file (FR-003).
+    if (!(options.confirm ?? true) && git !== options.savedExecutablePath) return failure("GIT_CHANGED");
     if (git !== target.executablePath) {
-      // Contract §6 "Startup contexts": the saved path must be the resolved file. Only Use this Git selects another file (FR-003).
-      if (!(options.confirm ?? true)) return failure("GIT_CHANGED");
       if (moved) return failure("GIT_UNSUPPORTED");
       const resolved = await runner.resolveGit({ operationId, bootstrapId: target.bootstrapId, executablePath: git });
-      return await probeCandidate(runner, { bootstrapId: resolved.bootstrapId, executablePath: git }, operationId, options, true);
+      return await probeCandidate(runner, { bootstrapId: resolved.bootstrapId, executablePath: git }, operationId, options, selected, true);
     }
     const versionOutput = await runProbe(runner, operationId, context, ["version", "--build-options"], signal);
     if (typeof versionOutput !== "string") return versionOutput;
@@ -137,7 +143,7 @@ async function probeCandidate(
     if (reply.result !== "approved") return { ok: false, canceled: true };
     return {
       ok: true,
-      installation: { gitInstallationId, executablePath: target.executablePath, executableIdentity: { file, versionOutput, digest }, version, admission: "admitted" },
+      installation: { gitInstallationId, selectedPath: selected, executablePath: target.executablePath, executableIdentity: { file, versionOutput, digest }, version, admission: "admitted" },
     };
   } catch (error) {
     if (error instanceof RunnerRefusal) return failure(error.code);
@@ -152,12 +158,18 @@ export async function revalidateGit(_runner: GitRunner, installation: GitInstall
   return read.digest === installation.executableIdentity.digest ? { ok: true, installation } : failure("GIT_CHANGED");
 }
 
-// Contract §6 "Startup contexts": the handshake `savedGit`. An equal digest runs the probe in the startup `gitProbe` context.
-export async function revalidateSavedGit(runner: GitRunner, saved: GitProbeTarget & { digest: string }, operationId: string): Promise<GitProbeResult> {
+// Contract §6 "Startup contexts": the handshake `savedGit`. The startup `gitProbe` context binds `selectedPath`.
+// An equal digest of the stored `executablePath` runs the probe. A change runs nothing.
+export async function revalidateSavedGit(
+  runner: GitRunner,
+  saved: { bootstrapId: string; selectedPath: string; executablePath: string; digest: string },
+  operationId: string,
+): Promise<GitProbeResult> {
   const read = await fileDigest(saved.executablePath);
   if ("gitCode" in read) return failure(read.gitCode);
   if (read.digest !== saved.digest) return failure("GIT_CHANGED");
-  const result = await probeGit(runner, saved, { operationId, confirm: false });
+  const target = { bootstrapId: saved.bootstrapId, executablePath: saved.selectedPath };
+  const result = await probeGit(runner, target, { operationId, confirm: false, savedExecutablePath: saved.executablePath });
   // Contract §6: a register without `confirm` always replies `approved`.
   if ("canceled" in result) throw new Error("startup Git registration was not approved");
   return result;

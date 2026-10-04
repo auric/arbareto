@@ -50,7 +50,8 @@ const HANDSHAKE_FIELDS = {
 const HANDSHAKE = { kind: "handshake", handshake: HANDSHAKE_FIELDS };
 const SAVED_GIT = {
   bootstrapId: "00000000-0000-4000-8000-0000000000aa",
-  executablePath: "C:\\Program Files\\Git\\cmd\\git.exe",
+  selectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
+  executablePath: "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe",
   version: "2.55.0.windows.3",
   digest: "c".repeat(64),
 };
@@ -634,6 +635,9 @@ describe("startup handshake failures", () => {
     ["a savedGit with an uppercase digest", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, digest: "C".repeat(64) } }, "INVALID_REQUEST"],
     ["a savedGit with a short digest", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, digest: "c".repeat(63) } }, "INVALID_REQUEST"],
     ["a savedGit with a relative executablePath", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, executablePath: "git.exe" } }, "INVALID_REQUEST"],
+    ["a savedGit with a relative selectedPath", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, selectedPath: "cmd\\git.exe" } }, "INVALID_REQUEST"],
+    ["a savedGit with a device selectedPath", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, selectedPath: "\\\\.\\pipe\\git.exe" } }, "INVALID_REQUEST"],
+    ["a savedGit with a number selectedPath", { ...HANDSHAKE_FIELDS, savedGit: { ...SAVED_GIT, selectedPath: 7 } }, "INVALID_REQUEST"],
     ["a savedGit that is not an object", { ...HANDSHAKE_FIELDS, savedGit: null }, "INVALID_REQUEST"],
     ["a 65-byte buildIdentity version", { ...HANDSHAKE_FIELDS, buildIdentity: { ...HANDSHAKE_FIELDS.buildIdentity, version: "1".repeat(65) } }, "INVALID_REQUEST"],
     ["a buildIdentity version with a control character", { ...HANDSHAKE_FIELDS, buildIdentity: { ...HANDSHAKE_FIELDS.buildIdentity, version: "0.1.0\u0000" } }, "INVALID_REQUEST"],
@@ -726,7 +730,8 @@ describe("getEnvironment through the service", () => {
         markers: [],
         damagedMarkers: [],
       });
-      expect(response.result?.selectedGit).toBeUndefined();
+      expect(response.result?.selectedPath).toBeUndefined();
+      expect(response.result?.executablePath).toBeUndefined();
       const accepted = service.frames.filter((f) => f.progress?.requestId === frame.request.requestId);
       expect(accepted.map((f) => f.progress?.state)).toEqual(["accepted"]);
     },

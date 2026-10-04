@@ -18,12 +18,13 @@ function findGit(): string | null {
 
 export const GIT: string | null = findGit();
 
-// Runs `body` with the Git path. Skips the block when no Git exists.
-export function describeGit(name: string, body: (git: string) => void): void {
+// Runs `body` with the Git path. Skips the block when no Git exists, and off Windows when `windowsCapability` names a Windows feature that it needs.
+export function describeGit(name: string, body: (git: string) => void, windowsCapability?: string): void {
   if (GIT === null) {
     describe.skip(`${name} (SKIP: Git executable absent)`, () => {});
     return;
   }
   const git = GIT;
-  describe(name, () => body(git));
+  if (windowsCapability === undefined) return describe(name, () => body(git));
+  describe.skipIf(process.platform !== "win32")(`${name} (needs ${windowsCapability})`, () => body(git));
 }

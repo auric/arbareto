@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
@@ -23,8 +23,13 @@ const SAVED_FOLDER = mkdtempSync(join(tmpdir(), "arbareto-session-startup-"));
 afterAll(() => rmSync(SAVED_FOLDER, { recursive: true, force: true }));
 const SAVED_PATH = join(SAVED_FOLDER, "git.exe");
 writeFileSync(SAVED_PATH, "saved Git stub");
+// A wrapper in a subfolder. The exec-path probe of `probeRun` names the saved folder, so the wrapper resolves to `SAVED_PATH`.
+const WRAPPER_PATH = join(SAVED_FOLDER, "cmd", "git.exe");
+mkdirSync(join(SAVED_FOLDER, "cmd"));
+writeFileSync(WRAPPER_PATH, "wrapper Git stub");
 const SAVED_GIT = {
   bootstrapId: "00000000-0000-4000-8000-0000000000aa",
+  selectedPath: SAVED_PATH,
   executablePath: SAVED_PATH,
   version: "2.55.0.windows.3",
   digest: new Bun.CryptoHasher("sha256").update(readFileSync(SAVED_PATH)).digest("hex"),
@@ -221,6 +226,60 @@ test(
     const [terminal] = await responseFor(choose);
     expect(terminal).toMatchObject({ state: "canceled" });
     expect(calls.release).toEqual([{ gitInstallationId: registered[0] }]);
+  },
+  TEST_TIMEOUT_MS,
+);
+
+// Contract §6 "Startup contexts": the startup probe resolves `selectedPath` and compares the result with the stored `executablePath`.
+const wrapperRunner = (resolved: unknown[]): Partial<GitRunner> => ({
+  identities: async () => [IDENTITY],
+  run: probeRun,
+  resolveGit: async (request) => (resolved.push(request), { bootstrapId: crypto.randomUUID() }),
+  register: async () => ({ result: "approved" }),
+});
+
+test(
+  "a startup wrapper selectedPath that resolves to the stored executablePath gives getEnvironment both paths and no gitCode",
+  async () => {
+    const resolved: unknown[] = [];
+    const { getEnvironment, responseFor } = startSession(wrapperRunner(resolved), { ...HANDSHAKE, savedGit: { ...SAVED_GIT, selectedPath: WRAPPER_PATH } });
+    const [response] = await responseFor(getEnvironment());
+    expect(response).toMatchObject({ state: "succeeded", result: { selectedPath: WRAPPER_PATH, executablePath: SAVED_PATH, admission: "admitted" } });
+    expect(response.result?.gitCode).toBeUndefined();
+    expect(resolved).toEqual([{ operationId: expect.any(String), bootstrapId: SAVED_GIT.bootstrapId, executablePath: SAVED_PATH }]);
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  "a chooseGit success through a wrapper returns selectedPath and executablePath",
+  async () => {
+    const { savedGit: _, ...withoutSavedGit } = HANDSHAKE;
+    const { send, sessionId, responseFor } = startSession(wrapperRunner([]), withoutSavedGit);
+    const requestId = crypto.randomUUID();
+    const payload = { bootstrapId: crypto.randomUUID(), executablePath: WRAPPER_PATH };
+    send({ kind: "public", request: { version: 1, sessionId, requestId, operation: "chooseGit", payload } });
+    const [terminal] = await responseFor(requestId);
+    expect(terminal).toMatchObject({
+      state: "succeeded",
+      result: { selectedPath: WRAPPER_PATH, executablePath: SAVED_PATH, version: SAVED_GIT.version, digest: SAVED_GIT.digest },
+    });
+  },
+  TEST_TIMEOUT_MS,
+);
+
+test(
+  "a startup selectedPath that resolves to itself, not to the stored executablePath, gives GIT_CHANGED and registers nothing",
+  async () => {
+    const otherPath = join(SAVED_FOLDER, "other", "git.exe");
+    mkdirSync(join(SAVED_FOLDER, "other"));
+    writeFileSync(otherPath, readFileSync(SAVED_PATH));
+    const registers: unknown[] = [];
+    const runner = { ...wrapperRunner([]), register: async (request: unknown) => (registers.push(request), { result: "approved" as const }) };
+    const { getEnvironment, responseFor } = startSession(runner, { ...HANDSHAKE, savedGit: { ...SAVED_GIT, executablePath: otherPath } });
+    const [response] = await responseFor(getEnvironment());
+    expect(response).toMatchObject({ state: "succeeded", result: { gitCode: "GIT_CHANGED" } });
+    expect(registers).toEqual([]);
   },
   TEST_TIMEOUT_MS,
 );

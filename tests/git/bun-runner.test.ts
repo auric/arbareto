@@ -309,4 +309,4 @@ describeGit("bun runner", (git) => {
     await runner.dispose();
     for (const [pid, created] of records) expect(processCreationTime(Number(pid)) === created).toBe(false);
   });
-});
+}, "Windows named pipes and FILE_ID_INFO");

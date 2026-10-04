@@ -75,7 +75,7 @@ async function changeBytes(path: string): Promise<void> {
 
 useFixtureRoot();
 
-describe("Git installation probe (T053)", () => {
+describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (needs the Git for Windows layout, named pipes, and FILE_ID_INFO)", () => {
   let compiled = "";
   let runner: BunRunner;
   let launchDirectory = "";
@@ -365,7 +365,7 @@ describe("Git installation probe (T053)", () => {
       const bootstrapId = runner.addContext("gitProbe", wrapper);
       runs.length = 0;
       registers.length = 0;
-      const result = await revalidateSavedGit(counted, { bootstrapId, executablePath: wrapper, digest: sha256(wrapper) }, crypto.randomUUID());
+      const result = await revalidateSavedGit(counted, { bootstrapId, selectedPath: wrapper, executablePath: wrapper, digest: sha256(wrapper) }, crypto.randomUUID());
       expect(result).toMatchObject({ ok: false, gitCode: "GIT_CHANGED" });
       expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"]]);
       expect(stubCalls(real)).toEqual([]);
@@ -373,8 +373,82 @@ describe("Git installation probe (T053)", () => {
 
       // A saved resolved path passes the same check.
       const saved = runner.addContext("gitProbe", real);
-      const again = await revalidateSavedGit(counted, { bootstrapId: saved, executablePath: real, digest: sha256(real) }, crypto.randomUUID());
+      const again = await revalidateSavedGit(counted, { bootstrapId: saved, selectedPath: real, executablePath: real, digest: sha256(real) }, crypto.randomUUID());
       expect(again).toMatchObject({ ok: true, installation: { executablePath: real } });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "startup revalidation of a wrapper selectedPath that resolves to the stored executablePath gives admitted, not GIT_CHANGED",
+    async () => {
+      const { wrapper, real } = wrapperLayout("saved-selected-wrapper");
+      const bootstrapId = runner.addContext("gitProbe", wrapper);
+      runs.length = 0;
+      registers.length = 0;
+      const result = await revalidateSavedGit(counted, { bootstrapId, selectedPath: wrapper, executablePath: real, digest: sha256(real) }, crypto.randomUUID());
+      expect(result).toMatchObject({ ok: true, installation: { selectedPath: wrapper, executablePath: real, version: MINIMUM } });
+      // The wrapper runs only the exec-path probe. The version probe and the registration use the resolved file.
+      expect(stubCalls(wrapper)).toEqual([{ args: ["--exec-path"], cwd: launchDirectory }]);
+      expect(stubCalls(real)).toEqual([
+        { args: ["--exec-path"], cwd: launchDirectory },
+        { args: ["version", "--build-options"], cwd: launchDirectory },
+      ]);
+      expect(registers).toHaveLength(1);
+      expect(registers[0]).toMatchObject({ version: MINIMUM, confirm: false });
+      expect(registers[0].bootstrapId).not.toBe(bootstrapId);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "startup revalidation of a selectedPath that resolves to another file gives GIT_CHANGED and runs nothing from either file",
+    async () => {
+      const saved = wrapperLayout("saved-elsewhere");
+      const moved = wrapperLayout("moved-elsewhere");
+      const bootstrapId = runner.addContext("gitProbe", moved.wrapper);
+      runs.length = 0;
+      registers.length = 0;
+      const result = await revalidateSavedGit(counted, { bootstrapId, selectedPath: moved.wrapper, executablePath: saved.real, digest: sha256(saved.real) }, crypto.randomUUID());
+      expect(result).toMatchObject({ ok: false, gitCode: "GIT_CHANGED" });
+      expect(runs.map((run) => [...run.arguments])).toEqual([["--exec-path"]]);
+      expect(stubCalls(moved.real)).toEqual([]);
+      expect(stubCalls(saved.real)).toEqual([]);
+      expect(registers).toEqual([]);
+      // The startup context never moves to an unsaved file.
+      expect(runner.contextPath(bootstrapId)).toBe(moved.wrapper);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "startup revalidation with a changed digest of the stored executablePath gives GIT_CHANGED and runs not even the wrapper",
+    async () => {
+      const { wrapper, real } = wrapperLayout("saved-changed-real");
+      const digest = sha256(real);
+      await changeBytes(real);
+      const bootstrapId = runner.addContext("gitProbe", wrapper);
+      const spawnedBefore = runner.spawned;
+      runs.length = 0;
+      registers.length = 0;
+      const result = await revalidateSavedGit(counted, { bootstrapId, selectedPath: wrapper, executablePath: real, digest }, crypto.randomUUID());
+      expect(result).toMatchObject({ ok: false, gitCode: "GIT_CHANGED" });
+      expect(runs).toEqual([]);
+      expect(runner.spawned).toBe(spawnedBefore);
+      expect(registers).toEqual([]);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "an admitted wrapper candidate keeps the wrapper as selectedPath, and a direct candidate is its own selectedPath",
+    async () => {
+      const { wrapper, real } = wrapperLayout("selected-wrapper");
+      const viaWrapper = await probeGit(counted, { bootstrapId: runner.addContext("gitProbe", wrapper), executablePath: wrapper });
+      expect(viaWrapper).toMatchObject({ ok: true, installation: { selectedPath: wrapper, executablePath: real } });
+      const direct = stub("selected-direct", MINIMUM);
+      const viaFile = await probeGit(counted, { bootstrapId: runner.addContext("gitProbe", direct), executablePath: direct });
+      expect(viaFile).toMatchObject({ ok: true, installation: { selectedPath: direct, executablePath: direct } });
     },
     TEST_TIMEOUT_MS,
   );

@@ -108,7 +108,7 @@ fn pick_git(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
     })
 }
 
-/// Creates a `gitProbe` context for the contract §3 "Git proposal" candidate: the saved path,
+/// Creates a `gitProbe` context for the contract §3 "Git proposal" candidate: the saved selected path,
 /// then the `PATH` search result, then `%ProgramFiles%\Git\cmd\git.exe`. Without a candidate, it opens the picker.
 /// A path whose identity cannot be read is no candidate.
 pub fn choose_git(
@@ -122,7 +122,7 @@ pub fn choose_git(
         _ => None,
     };
     saved
-        .and_then(|git| probe(git.executable_path.clone()))
+        .and_then(|git| probe(git.selected_path.clone()))
         .or_else(|| native.search_path().and_then(probe))
         .or_else(|| {
             native
@@ -151,19 +151,22 @@ pub fn restore_workspace(settings: &Settings, contexts: &Contexts, now: Instant)
 
 /// The probed candidate of a `register` request with `confirm: true`.
 pub struct Proposal<'a> {
+    /// The path that the user selected. `resolveGit` can move the probe to another file.
+    pub selected_path: &'a Path,
+    /// The file that runs (contract §3 "Git proposal").
     pub executable_path: &'a Path,
     pub version: &'a str,
-    /// The stored version after `GIT_CHANGED` at the saved path (data-model §1).
+    /// The stored version after `GIT_CHANGED` at the saved resolved path (data-model §1).
     pub stored_version: Option<&'a str>,
 }
 
 /// The Git selection confirmation: Use this Git, Choose another Git, and Cancel.
 pub fn git_confirmation(proposal: &Proposal) -> Confirmation {
-    let mut text = format!(
-        "Use this Git?\nPath: {}\nVersion: {}",
-        proposal.executable_path.display(),
-        proposal.version
-    );
+    let mut text = format!("Use this Git?\nPath: {}", proposal.selected_path.display());
+    if proposal.executable_path != proposal.selected_path {
+        text.push_str(&format!("\nRuns: {}", proposal.executable_path.display()));
+    }
+    text.push_str(&format!("\nVersion: {}", proposal.version));
     if let Some(stored) = proposal.stored_version {
         text.push_str(&format!("\nStored version: {stored}"));
     }
@@ -358,13 +361,16 @@ pub fn dismissal_context(
     }
 }
 
-/// The handshake `savedGit` object for the saved Git path (contract §6 "Startup contexts").
-/// Without a saved Git path, or without a readable file at it, there is no context.
+/// The handshake `savedGit` object for the saved Git selection (contract §6 "Startup contexts").
+/// The context binds the selected path. Without a saved Git, or without a readable file at the selected path, there is no context.
 pub fn startup_context(settings: &Settings, contexts: &Contexts, now: Instant) -> Option<Value> {
     let git = settings.git.as_ref()?;
-    let bootstrap_id = contexts.create_startup(&git.executable_path, now).ok()?;
+    let bootstrap_id = contexts
+        .create_startup(&git.selected_path, &git.executable_path, now)
+        .ok()?;
     Some(json!({
         "bootstrapId": bootstrap_id,
+        "selectedPath": git.selected_path.to_string_lossy(),
         "executablePath": git.executable_path.to_string_lossy(),
         "version": git.version,
         "digest": git.digest,
@@ -638,6 +644,7 @@ pub(crate) mod tests {
 
     fn saved(path: &Path) -> SavedGit {
         SavedGit {
+            selected_path: path.to_path_buf(),
             executable_path: path.to_path_buf(),
             version: "2.55.0.windows.3".to_string(),
             digest: DIGEST.to_string(),
@@ -706,6 +713,23 @@ pub(crate) mod tests {
         assert!(
             !native.calls().contains(&"confirm"),
             "the confirmation follows the probe"
+        );
+    }
+
+    #[test]
+    fn the_saved_selected_path_is_the_candidate_not_the_saved_resolved_path() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let wrapper = file(&fixture, "Git\\cmd\\git.exe");
+        let saved_git = SavedGit {
+            selected_path: wrapper.clone(),
+            ..saved(&file(&fixture, "Git\\mingw64\\libexec\\git-core\\git.exe"))
+        };
+        let native = Fake::default();
+        let chosen = choose_git(&native, Some(&saved_git), &contexts, Instant::now());
+        assert_eq!(
+            context(&contexts, &chosen),
+            (ContextKind::GitProbe, wrapper)
         );
     }
 
@@ -804,6 +828,7 @@ pub(crate) mod tests {
         let fixture = Fixture::new();
         let path = file(&fixture, "path\\git.exe");
         let confirmation = git_confirmation(&Proposal {
+            selected_path: &path,
             executable_path: &path,
             version: "2.55.0.windows.3",
             stored_version: None,
@@ -826,10 +851,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_git_confirmation_names_the_selected_path_and_a_runs_line_only_for_another_resolved_path()
+    {
+        let wrapper = Path::new(r"C:\Git\cmd\git.exe");
+        let resolved = Path::new(r"C:\Git\mingw64\libexec\git-core\git.exe");
+        let text = |selected_path, stored_version| {
+            git_confirmation(&Proposal {
+                selected_path,
+                executable_path: resolved,
+                version: "2.56.0.windows.1",
+                stored_version,
+            })
+            .text
+        };
+        assert_eq!(
+            text(wrapper, None),
+            "Use this Git?\nPath: C:\\Git\\cmd\\git.exe\nRuns: C:\\Git\\mingw64\\libexec\\git-core\\git.exe\nVersion: 2.56.0.windows.1"
+        );
+        assert_eq!(
+            text(resolved, None),
+            "Use this Git?\nPath: C:\\Git\\mingw64\\libexec\\git-core\\git.exe\nVersion: 2.56.0.windows.1"
+        );
+        assert_eq!(
+            text(wrapper, Some("2.55.0.windows.3")),
+            "Use this Git?\nPath: C:\\Git\\cmd\\git.exe\nRuns: C:\\Git\\mingw64\\libexec\\git-core\\git.exe\nVersion: 2.56.0.windows.1\nStored version: 2.55.0.windows.3"
+        );
+    }
+
+    #[test]
     fn after_git_changed_the_confirmation_also_names_the_stored_version() {
         let fixture = Fixture::new();
         let path = file(&fixture, "saved\\git.exe");
         let confirmation = git_confirmation(&Proposal {
+            selected_path: &path,
             executable_path: &path,
             version: "2.56.0.windows.1",
             stored_version: Some("2.55.0.windows.3"),
@@ -844,6 +898,7 @@ pub(crate) mod tests {
         let contexts = Contexts::new(SESSION);
         let path = file(&fixture, "path\\git.exe");
         let proposal = Proposal {
+            selected_path: &path,
             executable_path: &path,
             version: "2.55.0.windows.3",
             stored_version: None,
@@ -870,6 +925,7 @@ pub(crate) mod tests {
         let path = file(&fixture, "path\\git.exe");
         let picked = file(&fixture, "picked\\git.exe");
         let proposal = Proposal {
+            selected_path: &path,
             executable_path: &path,
             version: "2.55.0.windows.3",
             stored_version: None,
@@ -906,6 +962,7 @@ pub(crate) mod tests {
         let contexts = Contexts::new(SESSION);
         let path = file(&fixture, "path\\git.exe");
         let proposal = Proposal {
+            selected_path: &path,
             executable_path: &path,
             version: "2.55.0.windows.3",
             stored_version: None,
@@ -1207,12 +1264,41 @@ pub(crate) mod tests {
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
         assert_eq!(
             saved_git,
-            json!({ "bootstrapId": bootstrap_id, "executablePath": git, "version": "2.55.0.windows.3", "digest": DIGEST })
+            json!({ "bootstrapId": bootstrap_id, "selectedPath": git, "executablePath": git, "version": "2.55.0.windows.3", "digest": DIGEST })
         );
         let context = contexts
             .get(bootstrap_id, Instant::now())
             .expect("live context");
         assert_eq!((context.kind, context.path), (ContextKind::GitProbe, git));
+    }
+
+    #[test]
+    fn a_saved_wrapper_selection_gives_a_startup_context_for_the_wrapper_that_can_move_only_to_the_saved_resolved_path()
+     {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let wrapper = file(&fixture, "Git\\cmd\\git.exe");
+        let resolved = file(&fixture, "Git\\mingw64\\libexec\\git-core\\git.exe");
+        let settings = Settings {
+            git: Some(SavedGit {
+                selected_path: wrapper.clone(),
+                ..saved(&resolved)
+            }),
+            last_repository: None,
+            window: None,
+        };
+        let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
+        let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
+        assert_eq!(
+            saved_git,
+            json!({ "bootstrapId": bootstrap_id, "selectedPath": wrapper, "executablePath": resolved, "version": "2.55.0.windows.3", "digest": DIGEST })
+        );
+        let context = contexts
+            .get(bootstrap_id, Instant::now())
+            .expect("live context");
+        assert_eq!(context.path, wrapper);
+        assert_eq!(context.selected, wrapper);
+        assert_eq!(context.startup, Some(resolved));
     }
 
     #[test]

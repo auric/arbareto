@@ -29,6 +29,9 @@ export function realGlobalConfigDigests(git: string): string[] {
   return paths.map((p) => `${p} ${digest(p)}`);
 }
 
+// The removal of two T164 M copies takes longer than the 5-second default of Bun hooks.
+const REMOVE_TIMEOUT_MS = 120_000;
+
 // Bun test runs no process exit handler, so each test file owns the root from its first test to its last.
 // The non-recursive `mkdirSync` fails when another process holds the name.
 export function useFixtureRoot(): void {
@@ -50,11 +53,13 @@ export function useFixtureRoot(): void {
     const after = realGlobalConfigDigests(GIT);
     for (const line of after) console.log(`GLOBAL_CONFIG_SHA256 after ${line}`);
     if (after.join("\n") !== before.join("\n")) throw new Error("the real global Git configuration changed");
-  });
+  }, REMOVE_TIMEOUT_MS);
 }
 
+// Windows paths ignore case. Other platforms can have case-sensitive file systems.
 function canonical(path: string): string {
-  return path.replaceAll("\\", "/").toLowerCase();
+  const slashed = path.replaceAll("\\", "/");
+  return process.platform === "win32" ? slashed.toLowerCase() : slashed;
 }
 
 // Resolves the deepest existing ancestor through the file system, so `..` segments and junctions resolve before the check.

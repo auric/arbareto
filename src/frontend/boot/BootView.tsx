@@ -8,7 +8,8 @@ import type { createBridge } from "../bridge";
 export interface Environment {
   buildIdentity: { version: string; commit: string; signing: string };
   platformScope: "qualification-target" | "other";
-  selectedGit?: string;
+  selectedPath?: string;
+  executablePath?: string;
   detectedVersion?: string;
   minimumVersion: string;
   admission?: string;
@@ -74,7 +75,8 @@ export function BootView(props: BootProps) {
       {env.buildIdentity.signing === "unsigned" && <p>Unsigned local test package</p>}
       <p>Platform scope: {env.platformScope}</p>
       {env.platformScope === "other" && <p>Unqualified platform</p>}
-      {env.selectedGit !== undefined && <p>Selected Git: {env.selectedGit}</p>}
+      {env.selectedPath !== undefined && <p>Selected Git: {env.selectedPath}</p>}
+      {env.executablePath !== undefined && env.executablePath !== env.selectedPath && <p>Runs: {env.executablePath}</p>}
       <p>Detected Git version: {env.detectedVersion ?? "none"}</p>
       <p>Minimum Git version: {env.minimumVersion}</p>
       {env.admission !== undefined && <p>Admission: {env.admission}</p>}

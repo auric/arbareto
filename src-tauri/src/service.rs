@@ -124,9 +124,10 @@ impl Service {
         let me = Arc::downgrade(&service);
         service
             .requests
-            .set_git_confirmation(Box::new(move |path, version| {
-                me.upgrade()
-                    .map_or(Registered::Declined, |me| me.confirm_git(path, version))
+            .set_git_confirmation(Box::new(move |selected, path, version| {
+                me.upgrade().map_or(Registered::Declined, |me| {
+                    me.confirm_git(selected, path, version)
+                })
             }));
         service.launch(&launch_directory, &environment);
         Ok(service)
@@ -309,8 +310,13 @@ impl Service {
     }
 
     /// The Git selection confirmation of a `register` request with `confirm: true`.
-    /// It names the stored version when the candidate is the saved path (contract §3 "Git proposal").
-    fn confirm_git(&self, executable_path: &Path, version: &str) -> Registered {
+    /// It names the stored version when the probed file is the saved resolved path (contract §3 "Git proposal").
+    fn confirm_git(
+        &self,
+        selected_path: &Path,
+        executable_path: &Path,
+        version: &str,
+    ) -> Registered {
         let saved = self
             .stores
             .get()
@@ -322,6 +328,7 @@ impl Service {
         dialogs::confirm_git(
             &*self.dialogs,
             &Proposal {
+                selected_path,
                 executable_path,
                 version,
                 stored_version,
@@ -548,13 +555,14 @@ fn save_git(stores: &Stores, requests: &ProcessRequests, result: &Value) {
     else {
         return;
     };
-    let Some((executable_path, version)) = requests.take_confirmed_git(git_id) else {
+    let Some(confirmed) = requests.take_confirmed_git(git_id) else {
         return;
     };
     let mut settings = lock(&stores.settings);
     settings.git = Some(SavedGit {
-        executable_path,
-        version,
+        selected_path: confirmed.selected_path,
+        executable_path: confirmed.executable_path,
+        version: confirmed.version,
         digest: digest.to_string(),
     });
     let _ = settings::save(&stores.settings_path, &settings);

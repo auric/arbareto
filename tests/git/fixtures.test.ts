@@ -149,8 +149,9 @@ describeGit("fixture builders", (git) => {
   test("F15", () =>
     check(git, "F15", (n) => F.buildF15(git, n), (_g, b) => {
       expect(existsSync(join(b.root, "plain", ".git"))).toBe(false);
-      expect((b.facts.notes.hostile as string[]).length).toBe(F.POWERSHELL_QUOTES.length);
-      expect(readdirSync(join(b.root, "hostile")).sort()).toEqual([...(b.facts.notes.hostile as string[])].sort());
+      const hostile = b.facts.notes.hostile as string[];
+      expect(hostile.length).toBe(process.platform === "win32" ? F.POWERSHELL_QUOTES.length : 0);
+      if (hostile.length > 0) expect(readdirSync(join(b.root, "hostile")).sort()).toEqual([...hostile].sort());
     }), TIMEOUT);
 
   for (const variant of ["at-limit", "over-limit"] as const) {

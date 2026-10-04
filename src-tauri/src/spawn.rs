@@ -703,9 +703,12 @@ mod tests {
             })
             .collect();
         let ceiling = fixture.0.parent().expect("fixture parent").as_os_str();
+        // Git 2.56 fails with "unable to access 'NUL'" when GIT_CONFIG_GLOBAL names NUL.
+        let global = fixture.path("global.gitconfig");
+        std::fs::write(&global, "").expect("write an empty global configuration");
         for (name, value) in [
             ("GIT_CONFIG_NOSYSTEM", OsStr::new("1")),
-            ("GIT_CONFIG_GLOBAL", OsStr::new("NUL")),
+            ("GIT_CONFIG_GLOBAL", global.as_os_str()),
             ("GIT_TERMINAL_PROMPT", OsStr::new("0")),
             ("GIT_CEILING_DIRECTORIES", ceiling),
         ] {

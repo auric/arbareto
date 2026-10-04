@@ -5,6 +5,7 @@
 
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { FIXTURE_ROOT, fixtureDir, fixturePath, ownedGit, type OwnedGitOptions } from "./fixture-root";
 import { indexEntries } from "./git-oracle";
 
@@ -72,7 +73,6 @@ export function put(dir: string, rel: string, content: string | Uint8Array): str
   return path;
 }
 
-const fileUrl = (dir: string) => `file://${dir.startsWith("/") ? "" : "/"}${dir.replaceAll("\\", "/")}`;
 const FIXED_EPOCH = Date.UTC(2026, 0, 1) / 1000;
 const sorted = (paths: Iterable<string>) => [...new Set(paths)].sort();
 const lines = (count: number, f: (n: number) => string) => Array.from({ length: count }, (_, i) => f(i + 1)).join("");
@@ -620,7 +620,8 @@ export function buildF15(git: string, name: string): Built {
     facts.repos[rel] = repoFacts(r, { refs: { "refs/heads/main": oid } });
   };
   simple("repo");
-  const hostile = POWERSHELL_QUOTES.map((q) => `x${q}$(ni ${F15_MARKER})${q}`);
+  // The hostile names test the PowerShell remedy of the Windows slice (contract §4 "Quoting rule").
+  const hostile = process.platform === "win32" ? POWERSHELL_QUOTES.map((q) => `x${q}$(ni ${F15_MARKER})${q}`) : [];
   for (const folder of hostile) simple(`hostile/${folder}`);
   facts.notes.plain = "plain";
   facts.notes.hostile = hostile;
@@ -806,7 +807,7 @@ export function buildF17(git: string, name: string, variant: F17Variant): Built 
     add(src, "data.txt", "other.txt");
     tips.push(commit(src, `version ${i}`));
   }
-  const url = fileUrl(src.dir);
+  const url = pathToFileURL(src.dir).href;
   run({ git, dir: root, pre: [] }, ["clone", "-q", "--filter=blob:none", url, "clone"]);
   const c: Repo = { git, dir: join(root, "clone"), pre: ["--no-lazy-fetch"] };
   lineEndings(c);
@@ -927,7 +928,7 @@ export function buildF19(git: string, name: string, variant: F19Variant): Built 
   facts.notes.tip = tip;
   if (variant === "shallow") {
     const depth = 3;
-    run({ git, dir: root, pre: [] }, ["clone", "-q", `--depth=${depth}`, fileUrl(r.dir), "repo"]);
+    run({ git, dir: root, pre: [] }, ["clone", "-q", `--depth=${depth}`, pathToFileURL(r.dir).href, "repo"]);
     const c: Repo = { git, dir: join(root, "repo"), pre: [] };
     lineEndings(c);
     normalizeIndex(c);

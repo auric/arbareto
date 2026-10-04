@@ -99,8 +99,11 @@ pub struct Context {
     )]
     pub session_id: String,
     pub expires_at: Instant,
-    /// The startup `gitProbe` context of the saved Git path (contract §6 "Startup contexts").
-    pub startup: bool,
+    /// The path that the user selected. A `resolveGit` move keeps it (contract §3 "Git proposal").
+    pub selected: PathBuf,
+    /// A startup `gitProbe` context holds the saved resolved path (contract §6 "Startup contexts").
+    /// It registers without Use this Git, so it can move only to that path (FR-003).
+    pub startup: Option<PathBuf>,
 }
 
 /// The options that a discovery `symbolic-ref` permits besides the one name `HEAD` (contract §6 "Registration bootstrap").
@@ -169,20 +172,48 @@ impl Contexts {
         path: &Path,
         now: Instant,
     ) -> Result<String, &'static str> {
-        self.insert(kind, path, now, false)
+        self.insert(kind, path, path, None, now)
     }
 
-    /// Creates the startup `gitProbe` context for the saved Git path.
-    pub fn create_startup(&self, path: &Path, now: Instant) -> Result<String, &'static str> {
-        self.insert(ContextKind::GitProbe, path, now, true)
+    /// Creates the startup `gitProbe` context for the saved selected path and the saved resolved path.
+    pub fn create_startup(
+        &self,
+        selected: &Path,
+        resolved: &Path,
+        now: Instant,
+    ) -> Result<String, &'static str> {
+        self.insert(
+            ContextKind::GitProbe,
+            selected,
+            selected,
+            Some(resolved.to_path_buf()),
+            now,
+        )
+    }
+
+    /// Creates the `gitProbe` context of a `resolveGit` move. It keeps the selected path and the startup state of `from`.
+    pub fn create_moved(
+        &self,
+        from: &Context,
+        resolved: &Path,
+        now: Instant,
+    ) -> Result<String, &'static str> {
+        self.insert(
+            ContextKind::GitProbe,
+            resolved,
+            &from.selected,
+            from.startup.clone(),
+            now,
+        )
     }
 
     fn insert(
         &self,
         kind: ContextKind,
         path: &Path,
+        selected: &Path,
+        startup: Option<PathBuf>,
         now: Instant,
-        startup: bool,
     ) -> Result<String, &'static str> {
         let identity = read_identity(path).map_err(|code| match kind {
             ContextKind::GitProbe => "GIT_UNAVAILABLE",
@@ -197,6 +228,7 @@ impl Contexts {
             identity,
             session_id: state.session_id.clone(),
             expires_at: now + CONTEXT_LIFETIME,
+            selected: selected.to_path_buf(),
             startup,
         };
         state.contexts.insert(id.clone(), context);

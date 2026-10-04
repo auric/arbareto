@@ -14,7 +14,8 @@
 //!   The shell issues the ID only from the bound facts. The service never names a Linux program.
 //! - `run` and `identity` against a WSL Git: `git_command` and `identity`. A mutation starts its anchor first.
 
-// No frame handler calls this module yet. T212 wires the WSL frames into `process_requests.rs` and `bootstrap.rs`.
+// No frame handler calls this module yet. `jobs.rs` routes the anchor counts of a WSL mutation Job.
+// T212 wires the WSL frames into `process_requests.rs` and `bootstrap.rs`, and starts the anchor through `Supervisor::start_anchor`.
 #![cfg_attr(not(test), expect(dead_code, reason = "T212 wires the WSL frames"))]
 
 use std::ffi::OsString;
@@ -23,8 +24,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -600,13 +600,31 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// An anchor line holds two decimal numbers: at most 31 bytes. A longer line is malformed, and the reader keeps no more.
+const ANCHOR_LINE_BYTES: usize = 64;
+
+/// The answer state of an anchor. It keeps only the last line, so a lingering anchor uses fixed memory.
+#[derive(Default)]
+struct Answers {
+    /// The count of answer lines. `exchange` waits for a change.
+    lines: u64,
+    last: Option<(u32, u64)>,
+    /// The stdout of the anchor reached end-of-file.
+    closed: bool,
+    /// Test hook: the largest capacity of the line buffer.
+    #[cfg(test)]
+    line_capacity: usize,
+}
+
 /// The anchor process of one WSL mutation. Its Job holds it, and its stdin stays open until `close`.
+/// `exchange` waits up to the probe deadline, so `close` and `last` do not take its lock.
 pub struct Anchor {
     process: OwnedHandle,
-    stdin: Option<File>,
-    answers: Receiver<(u32, u64)>,
-    /// The last line. After `close`, the anchor prints one line each second, so it is at most 1 second old.
-    last: Arc<Mutex<Option<(u32, u64)>>>,
+    stdin: Mutex<Option<File>>,
+    /// Lets one exchange run at a time.
+    exchange: Mutex<()>,
+    /// After `close`, the anchor prints one line each second, so `last` is at most 1 second old.
+    answers: Arc<(Mutex<Answers>, Condvar)>,
 }
 
 impl Anchor {
@@ -614,56 +632,116 @@ impl Anchor {
         let spawned = spawn(&command.spawn_request(current_dir), job)?;
         // SAFETY: `spawn` returned an open process handle that the caller owns.
         let process = unsafe { OwnedHandle::from_raw_handle(spawned.process.0) };
-        let (sender, answers) = mpsc::channel();
-        let last = Arc::new(Mutex::new(None));
-        let shared = Arc::clone(&last);
+        let answers = Arc::new((Mutex::new(Answers::default()), Condvar::new()));
+        let shared = Arc::clone(&answers);
         let stdout = spawned.stdout;
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if let Some(answer) = parse_anchor_line(&line) {
-                    *lock(&shared) = Some(answer);
-                    let _ = sender.send(answer);
+            let (state, changed) = &*shared;
+            let mut reader = BufReader::new(stdout);
+            let mut line = Vec::with_capacity(ANCHOR_LINE_BYTES);
+            let mut malformed = false;
+            loop {
+                let (used, ends) = match reader.fill_buf() {
+                    Ok([]) | Err(_) => break,
+                    Ok(bytes) => {
+                        let end = bytes.iter().position(|&b| b == b'\n');
+                        let part = &bytes[..end.unwrap_or(bytes.len())];
+                        if line.len() + part.len() > ANCHOR_LINE_BYTES {
+                            malformed = true;
+                        }
+                        if !malformed {
+                            line.extend_from_slice(part);
+                        }
+                        (end.map_or(bytes.len(), |end| end + 1), end.is_some())
+                    }
+                };
+                reader.consume(used);
+                #[cfg(test)]
+                {
+                    let mut state = lock(state);
+                    state.line_capacity = state.line_capacity.max(line.capacity());
                 }
+                if !ends {
+                    continue;
+                }
+                let text = std::str::from_utf8(&line).ok();
+                let answer = text
+                    .filter(|_| !malformed)
+                    .and_then(|text| parse_anchor_line(text.strip_suffix('\r').unwrap_or(text)));
+                if let Some(answer) = answer {
+                    let mut state = lock(state);
+                    state.lines += 1;
+                    state.last = Some(answer);
+                    changed.notify_all();
+                }
+                line.clear();
+                malformed = false;
             }
+            lock(state).closed = true;
+            changed.notify_all();
         });
         let mut stderr = spawned.stderr;
         std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
         Ok(Anchor {
             process,
-            stdin: spawned.stdin,
+            stdin: Mutex::new(spawned.stdin),
+            exchange: Mutex::new(()),
             answers,
-            last,
         })
     }
 
     /// Writes one line and waits for its answer.
-    pub fn exchange(&mut self) -> Option<(u32, u64)> {
-        while self.answers.try_recv().is_ok() {}
-        let stdin = self.stdin.as_mut()?;
-        stdin.write_all(b"\n").ok()?;
-        self.answers.recv_timeout(PROBE_DEADLINE).ok()
+    pub fn exchange(&self) -> Option<(u32, u64)> {
+        let _one = lock(&self.exchange);
+        let (state, changed) = &*self.answers;
+        let before = lock(state).lines;
+        lock(&self.stdin).as_mut()?.write_all(b"\n").ok()?;
+        let state = changed
+            .wait_timeout_while(lock(state), PROBE_DEADLINE, |s| {
+                s.lines == before && !s.closed
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .0;
+        if state.lines == before {
+            None
+        } else {
+            state.last
+        }
     }
 
     pub fn last(&self) -> Option<(u32, u64)> {
-        *lock(&self.last)
+        lock(&self.answers.0).last
     }
 
     /// `ended` closes the stdin of the anchor.
-    pub fn close(&mut self) {
-        self.stdin = None;
+    pub fn close(&self) {
+        *lock(&self.stdin) = None;
     }
 
     pub fn running(&self) -> bool {
         // SAFETY: `process` keeps the handle open for the call.
         unsafe { WaitForSingleObject(HANDLE(self.process.as_raw_handle()), 0) != WAIT_OBJECT_0 }
     }
+
+    /// Test hook: the anchor lines that this anchor keeps in memory.
+    #[cfg(test)]
+    fn stored_lines(&self) -> usize {
+        usize::from(self.last().is_some())
+    }
+
+    /// Test hook: the largest capacity of the line buffer, and the count of answer lines.
+    #[cfg(test)]
+    fn line_facts(&self) -> (usize, u64) {
+        let state = lock(&self.answers.0);
+        (state.line_capacity, state.lines)
+    }
 }
 
 /// The anchor state of one WSL mutation (contract §11 "Process ownership").
-#[derive(Default)]
+/// A clone shares the anchor, so a caller can wait for `after_exit` without the lock of its owner.
+#[derive(Clone, Default)]
 pub struct Mutation {
-    anchor: Option<Anchor>,
+    anchor: Option<Arc<Anchor>>,
 }
 
 impl Mutation {
@@ -673,14 +751,19 @@ impl Mutation {
         start: impl FnOnce() -> Result<Anchor, SpawnError>,
     ) -> Result<(), SpawnError> {
         if self.anchor.is_none() {
-            self.anchor = Some(start()?);
+            self.anchor = Some(Arc::new(start()?));
         }
         Ok(())
     }
 
+    /// A Job with an anchor takes its counts from the anchor, not from the Job accounting.
+    pub fn has_anchor(&self) -> bool {
+        self.anchor.is_some()
+    }
+
     /// The anchor count after an execution process exits. It becomes `activeDescendants`.
-    pub fn after_exit(&mut self) -> u32 {
-        let Some(anchor) = self.anchor.as_mut() else {
+    pub fn after_exit(&self) -> u32 {
+        let Some(anchor) = self.anchor.as_ref() else {
             return 0;
         };
         anchor
@@ -695,17 +778,33 @@ impl Mutation {
     }
 
     pub fn last(&self) -> Option<(u32, u64)> {
-        self.anchor.as_ref().and_then(Anchor::last)
+        self.anchor.as_ref().and_then(|anchor| anchor.last())
     }
 
-    pub fn ended(&mut self) {
-        if let Some(anchor) = self.anchor.as_mut() {
+    pub fn ended(&self) {
+        if let Some(anchor) = self.anchor.as_ref() {
             anchor.close();
         }
     }
 
     pub fn anchor_running(&self) -> bool {
-        self.anchor.as_ref().is_some_and(Anchor::running)
+        self.anchor.as_ref().is_some_and(|anchor| anchor.running())
+    }
+
+    /// Test hook: the anchor lines that the anchor keeps in memory.
+    #[cfg(test)]
+    pub fn stored_lines(&self) -> usize {
+        self.anchor
+            .as_ref()
+            .map_or(0, |anchor| anchor.stored_lines())
+    }
+
+    /// Test hook: the largest capacity of the line buffer, and the count of answer lines.
+    #[cfg(test)]
+    pub fn line_facts(&self) -> (usize, u64) {
+        self.anchor
+            .as_ref()
+            .map_or((0, 0), |anchor| anchor.line_facts())
     }
 }
 
@@ -896,8 +995,9 @@ mod tests {
     use serde_json::{Value, json};
     use windows::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
 
-    use crate::jobs::Job;
-    use crate::jobs::tests::{Fixture, test_exe};
+    use crate::bootstrap::Identity;
+    use crate::jobs::tests::{Fixture, eventually, start_child, test_exe, wait_file};
+    use crate::jobs::{Job, Supervisor};
     use crate::spawn::{Input, creation_flags};
 
     const OPERATION: &str = "0f0f0f0f-0000-4000-8000-0000000000aa";
@@ -1510,8 +1610,18 @@ mod tests {
         "--",
     ];
 
+    /// The lines that the stand-in anchor prints after `ended` while it lingers.
+    const LINGER_LINES: u64 = 1000;
+
+    /// The long line of the stand-in anchor: 1 MiB of `x`, then `3 999` and a 300 ms pause before its line end.
+    /// A reader that restarts a line at each 64-byte cap would read `3 999` as an answer.
+    const LONG_LINE_BYTES: usize = 1 << 20;
+
     /// A stand-in anchor: each stdin line gets `<lines read> <lines read * 100>`.
     /// At end-of-file, it writes the line count to the file argument, prints `0 0`, and exits.
+    /// With a second file argument, it first lingers: it prints `<lines read> <i>` for `i` from 1 to `LINGER_LINES`.
+    /// Then it waits until that file exists, for at most 60 seconds.
+    /// With a third argument `long`, it lingers with one `LONG_LINE` line in place of those lines.
     #[test]
     #[ignore = "child process entry for re-executed tests"]
     fn anchor_child_entry() {
@@ -1522,6 +1632,8 @@ mod tests {
         let Some(file) = args.get(split + 1) else {
             return;
         };
+        let release = args.get(split + 2).map(PathBuf::from);
+        let long = args.get(split + 3).is_some_and(|a| a == "long");
         let mut out = std::io::stdout();
         // libtest prints the test name without a line end before this output.
         let _ = writeln!(out);
@@ -1535,14 +1647,34 @@ mod tests {
             let _ = out.flush();
         }
         std::fs::write(file, lines.to_string()).expect("write line count");
+        if let Some(release) = release {
+            if long {
+                let _ = out.write_all(&vec![b'x'; LONG_LINE_BYTES]);
+                let _ = out.write_all(b"3 999");
+                let _ = out.flush();
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = writeln!(out);
+                let _ = writeln!(out, "{lines} 777");
+            } else {
+                for i in 1..=LINGER_LINES {
+                    let _ = writeln!(out, "{lines} {i}");
+                }
+            }
+            let _ = out.flush();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !release.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
         let _ = writeln!(out, "0 0");
         let _ = out.flush();
         std::process::exit(0);
     }
 
-    fn stand_in_anchor(file: &Path) -> Command {
+    fn stand_in_anchor(file: &Path, release: Option<&Path>) -> Command {
         let mut arguments: Vec<String> = ANCHOR_CHILD.iter().map(|s| s.to_string()).collect();
         arguments.push(file.to_string_lossy().into_owned());
+        arguments.extend(release.map(|path| path.to_string_lossy().into_owned()));
         let mut command = anchor_command(&installation(), OPERATION, &base()).expect("anchor");
         command.program = test_exe();
         command.arguments = arguments;
@@ -1564,7 +1696,11 @@ mod tests {
             mutation
                 .before_execution(|| {
                     starts += 1;
-                    Anchor::start(&stand_in_anchor(&lines_file), job.handle(), &directory)
+                    Anchor::start(
+                        &stand_in_anchor(&lines_file, None),
+                        job.handle(),
+                        &directory,
+                    )
                 })
                 .expect("anchor");
             assert!(
@@ -1607,7 +1743,7 @@ mod tests {
     fn a_mutation_without_an_anchor_reports_zero_and_a_failed_start_is_refused() {
         let mut mutation = Mutation::default();
         assert_eq!(mutation.after_exit(), 0);
-        let mut missing = stand_in_anchor(Path::new("unused"));
+        let mut missing = stand_in_anchor(Path::new("unused"), None);
         missing.program = PathBuf::from(r"C:\arbareto-absent\wsl.exe");
         let job = Job::create().expect("Job");
         let directory = std::env::temp_dir();
@@ -1618,6 +1754,161 @@ mod tests {
         );
         assert!(!mutation.anchor_running());
         mutation.ended();
+    }
+
+    // ---- T211: the anchor in the operation Job ----
+
+    fn wsl_tag() -> Identity {
+        Identity {
+            volume_serial: 0x5753_4c00_0000_0211,
+            file_id: [0x21; 16],
+        }
+    }
+
+    /// A WSL mutation Job with its anchor and three injected Git processes.
+    /// After each exit, the Job holds the anchor and its console host, so the Job accounting would give 2.
+    fn three_git_processes(supervisor: &Supervisor, anchor: &Command) {
+        let directory = std::env::temp_dir();
+        supervisor.open(OPERATION).expect("open");
+        supervisor.tag(OPERATION, wsl_tag());
+        for n in 1..=3u32 {
+            supervisor
+                .start_anchor(OPERATION, anchor, &directory)
+                .expect("anchor");
+            let mut git = start_child(&["sleep", "50"]);
+            supervisor.assign(OPERATION, git.handle()).expect("assign");
+            let _ = git.child.wait();
+            // One anchor answers every line, so its count reaches 3.
+            assert_eq!(
+                supervisor.active_processes(OPERATION),
+                Some(n),
+                "activeDescendants after process {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wsl_mutation_job_takes_active_descendants_and_the_lingering_count_from_its_anchor() {
+        let fixture = Fixture::new();
+        let lines_file = fixture.path("lines");
+        let release = fixture.path("release");
+        let supervisor = Supervisor::start().expect("start");
+        three_git_processes(&supervisor, &stand_in_anchor(&lines_file, Some(&release)));
+        assert!(!lines_file.exists(), "stdin stays open until ended");
+        assert_eq!(
+            supervisor.lingering_count(&wsl_tag()),
+            0,
+            "no lingering Job"
+        );
+        supervisor.ended(OPERATION, false);
+        assert_eq!(
+            wait_file(&lines_file, "3", WAIT).as_deref(),
+            Some("3"),
+            "ended closes the stdin of the anchor"
+        );
+        assert!(supervisor.is_lingering(OPERATION), "the anchor counts 3");
+        assert_eq!(
+            supervisor.lingering_count(&wsl_tag()),
+            3,
+            "the last anchor count"
+        );
+        std::fs::write(&release, "").expect("release");
+        assert!(
+            eventually(WAIT, || supervisor.job_handle(OPERATION).is_none()),
+            "the anchor exits at count 0, and the empty Job closes"
+        );
+        assert_eq!(supervisor.lingering_count(&wsl_tag()), 0);
+        supervisor.shutdown();
+    }
+
+    #[test]
+    fn revoke_reports_the_last_anchor_count_and_closes_the_wsl_job() {
+        let fixture = Fixture::new();
+        let lines_file = fixture.path("lines");
+        let never = fixture.path("never");
+        let supervisor = Supervisor::start().expect("start");
+        three_git_processes(&supervisor, &stand_in_anchor(&lines_file, Some(&never)));
+        supervisor.ended(OPERATION, false);
+        wait_file(&lines_file, "3", WAIT).expect("ended closes the stdin of the anchor");
+        assert_eq!(supervisor.revoke(&wsl_tag()), 3);
+        assert!(
+            supervisor.job_handle(OPERATION).is_none(),
+            "revoke closes the Job"
+        );
+        supervisor.shutdown();
+    }
+
+    #[test]
+    fn after_ended_a_lingering_anchor_keeps_only_its_last_line() {
+        let fixture = Fixture::new();
+        let lines_file = fixture.path("lines");
+        let release = fixture.path("release");
+        let job = Job::create().expect("Job");
+        let directory = std::env::temp_dir();
+        let mut mutation = Mutation::default();
+        mutation
+            .before_execution(|| {
+                Anchor::start(
+                    &stand_in_anchor(&lines_file, Some(&release)),
+                    job.handle(),
+                    &directory,
+                )
+            })
+            .expect("anchor");
+        for n in 1..=3u32 {
+            assert_eq!(mutation.after_exit(), n);
+        }
+        mutation.ended();
+        // The stream keeps its order, so the last lingering line arrives after every other line.
+        assert!(
+            eventually(WAIT, || mutation.last() == Some((3, LINGER_LINES))),
+            "the anchor printed {LINGER_LINES} lines after ended: {:?}",
+            mutation.last()
+        );
+        assert_eq!(mutation.stored_lines(), 1, "only the last line stays");
+        assert_eq!(mutation.lingering_count(), 3, "the last anchor count");
+        std::fs::write(&release, "").expect("release");
+        assert!(
+            eventually(WAIT, || !mutation.anchor_running()),
+            "the anchor exits"
+        );
+        assert_eq!(mutation.lingering_count(), 0);
+        assert_eq!(mutation.stored_lines(), 1);
+    }
+
+    #[test]
+    fn an_anchor_line_above_the_cap_is_dropped_and_the_next_line_is_read() {
+        let fixture = Fixture::new();
+        let lines_file = fixture.path("lines");
+        let release = fixture.path("release");
+        let mut command = stand_in_anchor(&lines_file, Some(&release));
+        command.arguments.push("long".to_string());
+        let job = Job::create().expect("Job");
+        let directory = std::env::temp_dir();
+        let mut mutation = Mutation::default();
+        mutation
+            .before_execution(|| Anchor::start(&command, job.handle(), &directory))
+            .expect("anchor");
+        for n in 1..=3u32 {
+            assert_eq!(mutation.after_exit(), n);
+        }
+        mutation.ended();
+        assert!(
+            eventually(WAIT, || mutation.last() == Some((3, 777))),
+            "the line after the long line is read: {:?}",
+            mutation.last()
+        );
+        let (capacity, answers) = mutation.line_facts();
+        assert!(
+            capacity <= ANCHOR_LINE_BYTES,
+            "the line buffer stays at most {ANCHOR_LINE_BYTES} bytes: {capacity}"
+        );
+        assert_eq!(answers, 4, "the long line gives no answer");
+        std::fs::write(&release, "").expect("release");
+        assert!(
+            eventually(WAIT, || !mutation.anchor_running()),
+            "the anchor exits"
+        );
     }
 
     // ---- T205: identity requests ----

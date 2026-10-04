@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -26,6 +27,8 @@ use windows::Win32::System::SystemServices::{
 use windows::core::{HRESULT, PCWSTR};
 
 use crate::bootstrap::Identity;
+use crate::spawn::SpawnError;
+use crate::wsl;
 
 /// The port thread waits at most 1 second per call (contract §6 "Lingering Jobs").
 const PORT_WAIT_MS: u32 = 1000;
@@ -177,6 +180,20 @@ struct Entry {
     tag: Option<Identity>,
     lingering: bool,
     new_processes: Vec<u32>,
+    /// The anchor of a WSL mutation (contract §11 "Process ownership").
+    wsl: wsl::Mutation,
+}
+
+impl Entry {
+    /// The lingering count. The accounting of a WSL Job counts `wsl.exe` processes, not Linux processes.
+    /// So the last anchor count replaces it (contract §11 "Process ownership").
+    fn count(&self) -> u32 {
+        if self.wsl.has_anchor() {
+            self.wsl.lingering_count()
+        } else {
+            self.job.active_processes().unwrap_or(0)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -331,6 +348,7 @@ impl Supervisor {
                 tag: None,
                 lingering: false,
                 new_processes: Vec::new(),
+                wsl: wsl::Mutation::default(),
             },
         );
         Ok(())
@@ -356,6 +374,26 @@ impl Supervisor {
         }
     }
 
+    /// Starts the anchor of a WSL mutation in its running Job before the first execution process. A later call keeps that anchor.
+    #[cfg_attr(not(test), expect(dead_code, reason = "T212 wires the WSL run frame"))]
+    pub fn start_anchor(
+        &self,
+        operation_id: &str,
+        command: &wsl::Command,
+        current_dir: &Path,
+    ) -> Result<(), SpawnError> {
+        let mut state = self.shared.state();
+        match state.jobs.get_mut(operation_id) {
+            Some(entry) if !entry.lingering => {
+                let job = entry.job.handle();
+                entry
+                    .wsl
+                    .before_execution(|| wsl::Anchor::start(command, job, current_dir))
+            }
+            _ => Err(SpawnError::OwnershipFailed),
+        }
+    }
+
     /// Only a running operation Job takes a process.
     #[cfg_attr(
         not(test),
@@ -378,10 +416,20 @@ impl Supervisor {
             .map(|entry| entry.job.handle())
     }
 
-    /// The active process count from `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`.
+    /// The `activeDescendants` count after an execution process exits: the active process count from
+    /// `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`, or the anchor count of a WSL mutation (contract §11 "Process ownership").
     pub fn active_processes(&self, operation_id: &str) -> Option<u32> {
-        let state = self.shared.state();
-        state.jobs.get(operation_id)?.job.active_processes().ok()
+        let (count, wsl) = {
+            let state = self.shared.state();
+            let entry = state.jobs.get(operation_id)?;
+            (entry.job.active_processes().ok(), entry.wsl.clone())
+        };
+        // The anchor answer can take up to the probe deadline, so the state lock is released first.
+        if wsl.has_anchor() {
+            Some(wsl.after_exit())
+        } else {
+            count
+        }
     }
 
     /// The IDs of the processes in the Job. Only tests read process IDs.
@@ -407,6 +455,8 @@ impl Supervisor {
             None => false,
             Some(entry) if end_processes || is_empty(&entry.job) => true,
             Some(entry) => {
+                // The anchor exits at count 0 after its stdin closes. Its Job then empties.
+                entry.wsl.ended();
                 entry.lingering = true;
                 is_empty(&entry.job)
             }
@@ -432,19 +482,13 @@ impl Supervisor {
     /// The sum of the active process counts of the lingering Jobs with this tag.
     pub fn lingering_count(&self, tag: &Identity) -> u32 {
         let state = self.shared.state();
-        state
-            .lingering_with(tag)
-            .map(|entry| entry.job.active_processes().unwrap_or(0))
-            .sum()
+        state.lingering_with(tag).map(Entry::count).sum()
     }
 
     /// Closes the lingering Jobs with this tag. Returns their active process count before the close.
     pub fn revoke(&self, tag: &Identity) -> u32 {
         let mut state = self.shared.state();
-        let count = state
-            .lingering_with(tag)
-            .map(|entry| entry.job.active_processes().unwrap_or(0))
-            .sum();
+        let count = state.lingering_with(tag).map(Entry::count).sum();
         state.remove_where(|entry| entry.lingering && entry.tag.as_ref() == Some(tag));
         count
     }

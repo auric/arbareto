@@ -454,7 +454,7 @@ The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Ki
 - T058, 2026-10-03: WebView2 runtime `154.0.4258.53` is admitted. The plan.md reference value is `154.0.4258.37`.
 - T027, 2026-10-03: a tty hook commit ended after 117 ms (95 ms on a second run). A credential hook commit ended after 369 ms (302 ms). A PowerShell console wait ended at the 5 s deadline (5028 ms). An ssh-keygen console wait ended at the 5 s deadline (5018 ms). The T065 runs printed 139 ms and 120 ms (tty), 355 ms and 331 ms (credential), 5018 ms and 5015 ms (PowerShell), and 5019 ms and 5023 ms (ssh-keygen).
 
-**T193 recordings, 2026-10-03.** The user recorded the installed package of build `ef77081` in an elevated session. Each recording used WPR with `-filemode`. The analysis used `xperf -a process -withcmdline`, `xperf -a tracestats`, and a CSV filter of the dumped events. Times are relative to the creation of `arbareto.exe`. These are observations; no budget applies.
+**T193 recordings, 2026-10-03.** The user recorded the installed package of build `9eaa7d1` in an elevated session. Each recording used WPR with `-filemode`. The analysis used `xperf -a process -withcmdline`, `xperf -a tracestats`, and a CSV filter of the dumped events. Times are relative to the creation of `arbareto.exe`. These are observations; no budget applies.
 
 | Observation | Light: `GPU` and `arbareto.wprp!Arbareto.Light` | Verbose: `arbareto.wprp!Arbareto.Verbose` |
 | --- | --- | --- |
@@ -473,7 +473,7 @@ The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Ki
 - The first `git.exe` is the startup probe of the saved Git: `C:\Git\cmd\git.exe version --build-options`. In the Light trace, it started a child `git.exe` at +123.5 ms.
 - In the Verbose trace, the mark appears on the renderer main thread. That thread emits `RendererMain.START_MSG_LOOP`.
 - The `toplevel` task events appear on that thread with Begin and End phases. Their name is `ThreadControllerImpl::RunTask`. The `Edge_RunTask` events carry the same name in their name field.
-- Each probe through the wrapper also started a `conhost.exe` about 11 ms after the inner `git.exe`. This finding led to the wrapper fix in 0f92bd7 (R10 "Batch reviews").
+- Each probe through the wrapper also started a `conhost.exe` about 11 ms after the inner `git.exe`. This finding led to the wrapper fix in 744b19b (R10 "Batch reviews").
 
 **Informal Git process timings, 2026-10-04.** These timings are informal. They are not qualification evidence, and they change no budget. The method used PowerShell `Process.Start` with `CreateNoWindow`, with Defender on. Each value is the median of 20 runs. The host ran Git `2.56.0.windows.1`, not the reference version `2.55.0.windows.3`.
 
@@ -1073,7 +1073,7 @@ The initial constitutional scope conflict and former mutation design blockers ar
 
 Future records must identify scenario, build/package digest, environment, fixtures, steps, actual result, failure cause, attempted remedy, and retest. Keep those records here. Do not add a separate qualification report.
 
-**T065 batch 1 verification, 2026-10-03.** The run used commit `ef77081d971f3baa200c4cc59a7d889a213fa2f5` on a clean tree. Every command exited with code 0. Every version meets its plan.md minimum.
+**T065 batch 1 verification, 2026-10-03.** The run used commit `9eaa7d1e253cf845c5e6129f9a632180e34c6c8a` on a clean tree. Every command exited with code 0. Every version meets its plan.md minimum.
 
 | Tool | Source | Value | Minimum | Result |
 | --- | --- | --- | --- | --- |
@@ -1091,51 +1091,51 @@ Future records must identify scenario, build/package digest, environment, fixtur
 - `bun test tests/contracts tests/git tests/windows`: 976 pass, 0 fail, 0 skip. All 40 `ORIGIN` lines point into `D:\dev\rozvio\src` or to the sidecar `D:\dev\rozvio\src-tauri\binaries\arbareto-git-x86_64-pc-windows-msvc.exe`.
 - `cargo test`: 193 pass, 0 fail, 2 ignored. The ignored tests are the `child_entry` re-execution entries in `jobs` and `settings`, not capability skips. `ORIGIN` is `D:\dev\rozvio\src-tauri`.
 - Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 32838528 bytes, SHA-256 `9e3623af445a4e00b5191e18333c0af64e458da4b7ab6c5f79551a3a259f60a9`. `package.json` and `src-tauri/Cargo.toml` hold version `0.1.0`.
-- The release `arbareto.exe` holds the identity `ef77081d971f3baa200c4cc59a7d889a213fa2f5` and no `-dirty` string. A byte search of the binary found it.
+- The release `arbareto.exe` holds the identity `9eaa7d1e253cf845c5e6129f9a632180e34c6c8a` and no `-dirty` string. A byte search of the binary found it.
 - Header checks for the SPDX line and the copyright line printed nothing.
-- Manifest changes since T003 and T006: five script-only `package.json` edits, and the T059 feature record below. Commit 734cf79 wrote `tauri` and `tauri-build` in table form with `features = []`. The versions stayed `2.12.0` and `2.7.0`, and `Cargo.lock` did not change. So that edit is not a dependency change.
+- Manifest changes since T003 and T006: five script-only `package.json` edits, and the T059 feature record below. Commit b564d14 wrote `tauri` and `tauri-build` in table form with `features = []`. The versions stayed `2.12.0` and `2.7.0`, and `Cargo.lock` did not change. So that edit is not a dependency change.
 - Control mutation: without the duplicate-key check in `strict-json.ts`, `bun test tests/contracts` failed in 7 `strict-json.test.ts` cases and 1 `service-boundary.test.ts` case. The undone run passed 947 tests.
 - Native control mutation: removing only the check before `frame()` in `ipc.rs` left `cargo test` green. `frame()` runs before `prepare` and checks the same bound through `framing::public_request_body`. So an oversized native-first request with a valid `requestId` never reached a dialog. The early check alone gives `FRAME_LIMIT` to an oversized envelope without a valid `requestId` and to an oversized `currentSession`. No test covered these two cases. With both checks removed, both T029 `FRAME_LIMIT` tests failed. The undone run passed 193 tests. Both files are byte-identical to HEAD.
 - Gap fix, 2026-10-03: the `ipc.rs` test `an_envelope_above_1_mib_gets_frame_limit_before_any_other_check_or_native_step` covers these two cases. It also checks oversized `chooseGit` and `chooseRepository` requests: `FRAME_LIMIT`, no `prepare` call, no frame, and no pending request. With only the early check removed, the test fails: the envelope without a `requestId` gets `INVALID_REQUEST`. With that assertion also removed, the oversized `currentSession` gets `succeeded`. The undone run passes.
-- Build identity: with an untracked `src/build-identity-probe.txt`, the debug build printed `ARBARETO_BUILD_IDENTITY=ef77081d971f3baa200c4cc59a7d889a213fa2f5-dirty`. After its removal, the next build printed the value without `-dirty`. Cargo reported the missing `arbareto-build-identity.always-rerun` file and ran the script again.
-- Installed-package boot check, build `ef77081`: passed. The user installed the package as the current user. The boot view showed a service session, the admitted Git, scope `qualification-target`, and "Unsigned local test package". It showed the identity `ef77081d971f3baa200c4cc59a7d889a213fa2f5` without `-dirty`. No console window opened. The sidecar exited within 100 ms.
+- Build identity: with an untracked `src/build-identity-probe.txt`, the debug build printed `ARBARETO_BUILD_IDENTITY=9eaa7d1e253cf845c5e6129f9a632180e34c6c8a-dirty`. After its removal, the next build printed the value without `-dirty`. Cargo reported the missing `arbareto-build-identity.always-rerun` file and ran the script again.
+- Installed-package boot check, build `9eaa7d1`: passed. The user installed the package as the current user. The boot view showed a service session, the admitted Git, scope `qualification-target`, and "Unsigned local test package". It showed the identity `9eaa7d1e253cf845c5e6129f9a632180e34c6c8a` without `-dirty`. No console window opened. The sidecar exited within 100 ms.
 - The user ran the elevated T193 recordings at both levels on that package. R6 "T193 recordings, 2026-10-03" holds the observations.
 
-**T065 rerun, 2026-10-03.** The rerun used commit `0f92bd7206ab78556e99535e8603e3f087c847fc` on a clean tree. Every command exited with code 0. The tree was clean again after the run.
+**T065 rerun, 2026-10-03.** The rerun used commit `744b19bb91555fd2313902e5e266148b0e5941ed` on a clean tree. Every command exited with code 0. The tree was clean again after the run.
 
 - `bun install --frozen-lockfile` changed nothing. `bunx --bun tsc --noEmit` and `bun run build` passed.
 - `bun test tests/contracts tests/git tests/windows`: 1005 pass, 0 fail, 0 skip, in 18 files. 40 `ORIGIN` lines point into `D:\dev\rozvio\src` or to the sidecar. 8 `GLOBAL_ORIGIN` lines point to the fixture home `.gitconfig` under the temporary directory.
 - The Bun run printed `git version 2.55.0.windows.3` at `C:\Git\cmd\git.exe`.
 - `cargo test`: 206 pass, 0 fail, 2 ignored. The ignored tests are the same two `child_entry` entries. `ORIGIN` is `D:\dev\rozvio\src-tauri`.
 - Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 32851738 bytes, SHA-256 `9d13c479d31bc1537f74c5161d97caf45d006846c30989ffd88a3b16a31f9959`. NSIS is `v3.11`. `package.json` and `src-tauri/Cargo.toml` hold version `0.1.0`.
-- A byte search of the release `arbareto.exe` found `0f92bd7206ab78556e99535e8603e3f087c847fc` and no `-dirty` string.
+- A byte search of the release `arbareto.exe` found `744b19bb91555fd2313902e5e266148b0e5941ed` and no `-dirty` string.
 - Both header checks printed nothing.
 - Control mutation: without the duplicate-key check in `strict-json.ts`, `bun test tests/contracts` failed in 7 `strict-json.test.ts` cases and 1 `service-boundary.test.ts` case. The undone run passed 973 tests.
 - Native control mutation: the run removed only the `if` block of the early 1 MiB check in `ipc.rs`. The test `an_envelope_above_1_mib_gets_frame_limit_before_any_other_check_or_native_step` failed alone; 205 tests passed. The two older T029 `FRAME_LIMIT` tests stayed green, because `frame()` checks the same bound. The undone run passed 206 tests.
 - Both mutated files are byte-identical to HEAD after the undo.
-- Build identity: with the untracked probe file, the debug build printed `ARBARETO_BUILD_IDENTITY=0f92bd7206ab78556e99535e8603e3f087c847fc-dirty`. After its removal, the next build printed the value without `-dirty`. Cargo reported the missing `arbareto-build-identity.always-rerun` file.
-- Release binary boot, not installed: the release `arbareto.exe` opened the `Arbareto` window with the children `arbareto-git.exe` and `msedgewebview2.exe`. The view showed this text, line by line, and a Select Git action: "Build: 0.1.0 0f92bd7206ab78556e99535e8603e3f087c847fc"; "Unsigned local test package"; "Platform scope: qualification-target"; "Detected Git version: none"; "Minimum Git version: 2.55.0.windows.3"; "Qualification: unverified"; "Git changed: GIT_CHANGED". The saved Git is the wrapper `C:\Git\cmd\git.exe`, so `GIT_CHANGED` is the expected result. `CloseMainWindow()` closed the app with exit code 0, and no process stayed.
-- Installed-package check, 2026-10-03: the user installed the 0f92bd7 package as the current user. The saved Git was the wrapper C:\Git\cmd\git.exe, so the boot view showed GIT_CHANGED. Select Git proposed C:\Git\mingw64\libexec\git-core\git.exe, version 2.55.0.windows.3, and the user chose Use this Git. The boot view then showed the selected Git as admitted. After a restart, the app kept the selection without a prompt, so the saved path and digest revalidated. T065 passes.
+- Build identity: with the untracked probe file, the debug build printed `ARBARETO_BUILD_IDENTITY=744b19bb91555fd2313902e5e266148b0e5941ed-dirty`. After its removal, the next build printed the value without `-dirty`. Cargo reported the missing `arbareto-build-identity.always-rerun` file.
+- Release binary boot, not installed: the release `arbareto.exe` opened the `Arbareto` window with the children `arbareto-git.exe` and `msedgewebview2.exe`. The view showed this text, line by line, and a Select Git action: "Build: 0.1.0 744b19bb91555fd2313902e5e266148b0e5941ed"; "Unsigned local test package"; "Platform scope: qualification-target"; "Detected Git version: none"; "Minimum Git version: 2.55.0.windows.3"; "Qualification: unverified"; "Git changed: GIT_CHANGED". The saved Git is the wrapper `C:\Git\cmd\git.exe`, so `GIT_CHANGED` is the expected result. `CloseMainWindow()` closed the app with exit code 0, and no process stayed.
+- Installed-package check, 2026-10-03: the user installed the 744b19b package as the current user. The saved Git was the wrapper C:\Git\cmd\git.exe, so the boot view showed GIT_CHANGED. Select Git proposed C:\Git\mingw64\libexec\git-core\git.exe, version 2.55.0.windows.3, and the user chose Use this Git. The boot view then showed the selected Git as admitted. After a restart, the app kept the selection without a prompt, so the saved path and digest revalidated. T065 passes.
 
 ### Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here (plan.md, Constitution Check). A record names the batch, the reviewer, the reviewed scope, and the findings. It also names the causes, corrections, and unverified claims. T116 records the batch 3 review here. One review runs per batch; no automatic review loop runs.
 
-**Batch 1, 2026-10-03.** Two independent subagent reviewers checked batch 1. Neither reviewer wrote the reviewed code. The TypeScript review covered `src/`, `tests/`, and the build files at commit 8d95f02. The shell review covered `src-tauri/` at commit bdb083f. Both reviews ran the test suites and printed ORIGIN lines for the code under test. The TypeScript review turned one control mutation red.
+**Batch 1, 2026-10-03.** Two independent subagent reviewers checked batch 1. Neither reviewer wrote the reviewed code. The TypeScript review covered `src/`, `tests/`, and the build files at commit 3b6fe62. The shell review covered `src-tauri/` at commit a1ad44e. Both reviews ran the test suites and printed ORIGIN lines for the code under test. The TypeScript review turned one control mutation red.
 
 | Finding | Failure and cause | Remedy |
 | --- | --- | --- |
-| TS B1 (blocker) | Fixture Git kept `GIT_DIR`, `GIT_INDEX_FILE`, and other repository-location variables. A probe committed into a foreign repository. | 5b1014b: fixture Git removes the `git-environment.json` probe list and `GIT_TEST_*`. |
-| TS M1 | The startup Git check had no deadline. Queued public frames grew without a bound. | 5b1014b: a 30 s deadline, and at most 8 queued frames. |
-| TS M2 | A cancel during the Git confirmation left a bound `gitInstallationId` without `release`. | 943316c: the service releases an ID that the user approved after a cancel. |
-| Shell B1 | A marker of a deleted repository could not be dismissed. The context needed the identity of a missing folder. | 943316c: dismissal of a missing worktree path needs no context. |
-| Shell B2 | Some forwarded requests never got a response. The shell skipped the strict decode and the size check after `prepare`. | 943316c: strict decode and bound before the forward, and every failure gives an answer. |
-| Shell B3 | A refused identity read showed as `canceled`. | 943316c: the refusal keeps its code. The next commit makes a missing or unreadable saved Git path no candidate, so the next contract §3 source follows. |
-| Shell B4 | Nothing saved `lastRepository`, so `restoreWorkspace` never restored. | 943316c: a succeeded `chooseRepository` saves its native context path. |
-| Shell B13 | One damaged marker file counted as unloaded and blocked mutations. | b48bb6c: the boot view lists each damaged marker. It blocks nothing, and the user can dismiss it. |
-| TS m1 | `seenRequests` and the session log had no bound. | b48bb6c: the service keeps the last 65,536 request IDs and at most 1,000 log entries. |
-| Qualification: Job gap | A suspended debug sidecar stayed outside its kill-on-close Job. The parent ended between `CreateProcessW` and `AssignProcessToJobObject`. | 0f92bd7: each child starts inside its Job through `PROC_THREAD_ATTRIBUTE_JOB_LIST`. Two crash tests of the installed app after the assignment ended the sidecar within 77 ms. |
-| Qualification: Git wrapper | The Git for Windows wrapper `cmd\git.exe` gave Git a hidden console. A prompt would then wait and not fail fast. | 0f92bd7: resolution reads `--exec-path` and runs the real `git.exe`. |
+| TS B1 (blocker) | Fixture Git kept `GIT_DIR`, `GIT_INDEX_FILE`, and other repository-location variables. A probe committed into a foreign repository. | d395070: fixture Git removes the `git-environment.json` probe list and `GIT_TEST_*`. |
+| TS M1 | The startup Git check had no deadline. Queued public frames grew without a bound. | d395070: a 30 s deadline, and at most 8 queued frames. |
+| TS M2 | A cancel during the Git confirmation left a bound `gitInstallationId` without `release`. | 2d8afee: the service releases an ID that the user approved after a cancel. |
+| Shell B1 | A marker of a deleted repository could not be dismissed. The context needed the identity of a missing folder. | 2d8afee: dismissal of a missing worktree path needs no context. |
+| Shell B2 | Some forwarded requests never got a response. The shell skipped the strict decode and the size check after `prepare`. | 2d8afee: strict decode and bound before the forward, and every failure gives an answer. |
+| Shell B3 | A refused identity read showed as `canceled`. | 2d8afee: the refusal keeps its code. The next commit makes a missing or unreadable saved Git path no candidate, so the next contract §3 source follows. |
+| Shell B4 | Nothing saved `lastRepository`, so `restoreWorkspace` never restored. | 2d8afee: a succeeded `chooseRepository` saves its native context path. |
+| Shell B13 | One damaged marker file counted as unloaded and blocked mutations. | 56ac9c2: the boot view lists each damaged marker. It blocks nothing, and the user can dismiss it. |
+| TS m1 | `seenRequests` and the session log had no bound. | 56ac9c2: the service keeps the last 65,536 request IDs and at most 1,000 log entries. |
+| Qualification: Job gap | A suspended debug sidecar stayed outside its kill-on-close Job. The parent ended between `CreateProcessW` and `AssignProcessToJobObject`. | 744b19b: each child starts inside its Job through `PROC_THREAD_ATTRIBUTE_JOB_LIST`. Two crash tests of the installed app after the assignment ended the sidecar within 77 ms. |
+| Qualification: Git wrapper | The Git for Windows wrapper `cmd\git.exe` gave Git a hidden console. A prompt would then wait and not fail fast. | 744b19b: resolution reads `--exec-path` and runs the real `git.exe`. |
 
 Open items and reasons:
 

@@ -823,6 +823,8 @@ Changes invalidate approvals before replacement views arrive. A pending read can
 
 The check starts no Git process. Without a watcher hint and with an equal tuple, the read returns the last snapshot. Its `snapshotId` and `generation` stay unchanged. Otherwise it runs a full read. A change check is a hint, not validation. Every mutation checkpoint still reads Git state (§4). This stat compares change hints only. Physical identity still comes from the §6 identity request.
 
+**Changing working file.** An atomic save can replace a working file while `readWorkspace` reads it. When a working-file read reports a change during the read, the service discards the partial result. It then runs the full read once more, and that result gets a new generation. Both attempts share one §5 "Ordinary read deadline". A change during the second read ends the read `limited` with `WORKTREE_CHANGING`. That result keeps the entries and working files that did read. A `limited` read is not a complete read, so the next `check: "changes"` poll runs in full. A token that binds the changed working file becomes invalid ("Token invalidation" above). `readWorkspace` never fails with `REPOSITORY_CHANGED` for this cause.
+
 Cancellation means stopping further owned work, not undoing completed work. The terminal result can still be successful if the intended operation completed first.
 
 After any mutation outcome, inspect actual HEAD target/OID, index, relevant working bytes, and operation markers. Unknown state blocks further mutations in the affected workspace.
@@ -872,14 +874,14 @@ A recovery marker survives a service restart, application close, and crash (§6)
 | Prerequisites | `GIT_UNAVAILABLE`, `GIT_CHANGED`, `GIT_UNSUPPORTED`, `WEBVIEW_UNAVAILABLE`, `WEBVIEW_UNSUPPORTED`, `WSL_UNAVAILABLE` |
 | Repository state | `REPOSITORY_UNAVAILABLE`, `REPOSITORY_CHANGED`, `UNSUPPORTED_REPOSITORY`, `DUBIOUS_OWNERSHIP`, `NOT_A_REPOSITORY`, `OPERATION_IN_PROGRESS`, `CONFLICTED`, `LOCKED`, `UNSUPPORTED_SUBMODULE` |
 | Trust and approval | `TRUST_REQUIRED`, `TRUST_CHANGED`, `STALE_SELECTION`, `STALE_REVIEW`, `APPROVAL_EXPIRED`, `UNSUPPORTED_HUNK_PROFILE` |
-| Data and display | `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `OBJECT_MISSING`, `UNSUPPORTED_COMPARISON`, `DISPLAY_MAPPING_FAILED`, `GRAPH_LAYOUT_LIMITED` |
+| Data and display | `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `OBJECT_MISSING`, `UNSUPPORTED_COMPARISON`, `DISPLAY_MAPPING_FAILED`, `GRAPH_LAYOUT_LIMITED`, `WORKTREE_CHANGING` |
 | Execution | `IDENTITY_REQUIRED`, `HOOK_FAILED`, `SIGNING_FAILED`, `GIT_FAILED`, `PROCESS_OWNERSHIP_FAILED`, `DEADLINE`, `CANCELED`, `COMMIT_ENCODING_UNSUPPORTED` |
 | Recovery | `COMPLETED_WITH_EFFECTS`, `FAILED_WITH_EFFECTS`, `STATE_UNKNOWN`, `SERVICE_UNAVAILABLE`, `RECOVERY_MARKER_FAILED` |
 
 Each terminal state (data-model §7) carries one result code:
 
 - `succeeded`: no error code.
-- `limited`: `OUTPUT_LIMIT`, with the reached §5 bound as its reason, or `OBJECT_MISSING` (§7 "Missing objects"). The response keeps its bounded data and completeness `limited`.
+- `limited`: `OUTPUT_LIMIT`, with the reached §5 bound as its reason, `OBJECT_MISSING` (§7 "Missing objects"), or `WORKTREE_CHANGING` (§8 "Changing working file"). The response keeps its bounded data and completeness `limited`.
 - `failed`: the specific failure code, such as `DEADLINE`, `GIT_FAILED`, or a mutation `OBJECT_MISSING`.
 - `canceled`: `CANCELED`.
 - `completed-with-effects`: `COMPLETED_WITH_EFFECTS`.
@@ -891,7 +893,7 @@ A mutation request in a workspace whose recovery state is `unknown` is rejected 
 
 Map these cases to codes:
 
-- At acceptance of a snapshot-bound request other than `approveTrust`, a stale `repositoryGeneration` gives `REPOSITORY_CHANGED`. No Git process starts. `readWorkspace` never fails on a generation mismatch (§2). An `approveTrust` fingerprint-generation mismatch gives `TRUST_CHANGED`.
+- At acceptance of a snapshot-bound request other than `approveTrust`, a stale `repositoryGeneration` gives `REPOSITORY_CHANGED`. No Git process starts. `readWorkspace` never fails on a generation mismatch (§2). It also never fails for a working file that changes during the read (§8 "Changing working file"). An `approveTrust` fingerprint-generation mismatch gives `TRUST_CHANGED`.
 - A hunk or file checkpoint that detects a changed file, index, HEAD, or attribute gives `STALE_SELECTION`. A commit preflight that detects a changed index, checkout, or operation state gives `STALE_REVIEW`.
 - The choice between `REPOSITORY_CHANGED` and these checkpoint codes depends on the request sequence. A `readWorkspace` that observes the change increases the generation, so a later request gives `REPOSITORY_CHANGED` at acceptance. Without such a read, the generation still matches, and the checkpoint code applies.
 - A checkpoint that detects a changed trust fingerprint gives `TRUST_CHANGED`. This includes a configuration change during a hunk or file request.

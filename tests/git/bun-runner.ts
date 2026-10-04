@@ -189,6 +189,23 @@ interface WslAnchor {
   close(): void;
 }
 
+// One `run` request, recorded before the checks. `refused` names the error of a request that started nothing.
+export interface RecordedCall {
+  at: number;
+  operationId: string;
+  contextKind: string;
+  repositoryId?: string;
+  arguments: readonly string[];
+  environmentPolicy: string;
+  input?: Uint8Array;
+  refused?: string;
+  exit?: GitExit;
+  // Microseconds from `Subprocess.resourceUsage()`. A call without a process has none.
+  cpuMicros?: number;
+}
+
+export type CallMatch = (call: { operationId: string; arguments: readonly string[] }) => boolean;
+
 interface ProcessRecord {
   pid: number;
   created: bigint;
@@ -204,6 +221,29 @@ function gate(): NonNullable<Gate> {
   const promise = new Promise<void>((resolve) => (open = resolve));
   return { promise, open };
 }
+
+// A barrier without a match holds every call, and a new one replaces it. Barriers with a match add up.
+type Barriers = { every: Gate; matched: (NonNullable<Gate> & { match: CallMatch })[] };
+
+function hold(barriers: Barriers, match?: CallMatch): () => void {
+  const held = gate();
+  if (match === undefined) {
+    barriers.every = held;
+    return () => {
+      if (barriers.every === held) barriers.every = null;
+      held.open();
+    };
+  }
+  const barrier = { ...held, match };
+  barriers.matched.push(barrier);
+  return () => {
+    barriers.matched = barriers.matched.filter((b) => b !== barrier);
+    held.open();
+  };
+}
+
+const holding = (barriers: Barriers, call: GitCall): Gate => barriers.every ?? barriers.matched.find((b) => b.match(call)) ?? null;
+const text = (value: unknown) => (typeof value === "string" ? value : "");
 
 const unknownTarget = () => new RunnerRefusal("UNKNOWN_TARGET");
 const sameIdentity = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -226,6 +266,10 @@ export function createBunRunner(options: BunRunnerOptions) {
   const tags = new Map<string, string>();
   const markers = new Map<string, MutationStarted>();
   const frames: Record<string, unknown>[] = [];
+  const calls: RecordedCall[] = [];
+  const identityCalls: { at: number; operationId: string; paths: string[]; replies: unknown[] }[] = [];
+  // The functions that stop the running calls of each operation.
+  const halts = new Map<string, Set<() => void>>();
   const drains = new Set<Promise<void>>();
   const diagnostics = createDiagnosticCounter();
   const inject = {
@@ -246,6 +290,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     deadlineMs: null as number | null,
     // Runs after each WSL process exits, before its exit reply.
     afterWslExit: null as ((call: GitCall) => Promise<void>) | null,
+    // Bytes replace the process of a call. No process starts, and the bytes go to stdout in 64 KiB chunks. The exit code is 0, or null after abort, closeJob, or a limited stdout collector.
+    stdout: undefined as ((call: { arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -259,8 +305,8 @@ export function createBunRunner(options: BunRunnerOptions) {
   const wslConfirmations: { distro: string; path: string; version: string }[] = [];
   // Native settings: the approved Git of each distro GUID (contract §11 "Git per distro").
   const wslSaved = new Map<string, Omit<WslSavedGit, "guid">>();
-  let startGate: Gate = null;
-  let stdoutGate: Gate = null;
+  const startBarriers: Barriers = { every: null, matched: [] };
+  const stdoutBarriers: Barriers = { every: null, matched: [] };
   let spawned = 0;
   let disposed = false;
 
@@ -408,7 +454,8 @@ export function createBunRunner(options: BunRunnerOptions) {
   }
 
   // Contract §6 "Completion signal". Until `exit`, the drain forwards every byte. At `exit`, it forwards the bytes that the pipe holds, then discards the rest until end-of-file.
-  function drain(pipe: InboundPipe, forward: (chunk: Uint8Array) => void, stdout: boolean) {
+  // `held` returns a promise while a barrier holds the stream.
+  function drain(pipe: InboundPipe, forward: (chunk: Uint8Array) => void, held: () => Promise<unknown> | null) {
     // `exit` sets the budget from a closure, so the type stays wide.
     let budget = null as number | null;
     let forwarded = () => {};
@@ -422,8 +469,9 @@ export function createBunRunner(options: BunRunnerOptions) {
             forwarding = false;
             forwarded();
           }
-          if (forwarding && stdout && stdoutGate) {
-            await stdoutGate.promise;
+          const barrier = forwarding ? held() : null;
+          if (barrier) {
+            await barrier;
             continue;
           }
           const available = peekPipe(pipe);
@@ -457,10 +505,51 @@ export function createBunRunner(options: BunRunnerOptions) {
     };
   }
 
-  // Starts one process after the start gate and drains it as the shell does.
-  async function execute(call: GitCall, argv: string[], cwd: string, env: Record<string, string>): Promise<GitExit> {
-    while (startGate) await startGate.promise;
+  // Starts one process after the start barriers and drains it as the shell does.
+  async function execute(call: GitCall, argv: string[], cwd: string, env: Record<string, string>, recorded?: RecordedCall): Promise<GitExit> {
+    for (let held = holding(startBarriers, call); held; held = holding(startBarriers, call)) await held.promise;
     call.signal.throwIfAborted();
+    // Abort, a kill, and closeJob stop the call. A stopped call leaves the stdout barrier.
+    const stopped = gate();
+    let halted = false;
+    const halt = () => {
+      halted = true;
+      stopped.open();
+    };
+    const own = halts.get(call.operationId) ?? new Set<() => void>();
+    halts.set(call.operationId, own.add(halt));
+    call.signal.addEventListener("abort", halt, { once: true });
+    const heldStdout = () => {
+      const barrier = halted ? null : holding(stdoutBarriers, call);
+      return barrier && Promise.race([barrier.promise, stopped.promise]);
+    };
+    try {
+      const injected = inject.stdout?.({ arguments: call.arguments, input: call.input });
+      if (injected === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout);
+      // Contract §5 "Native stdout/stderr chunk": at most 64 KiB in one chunk.
+      for (let at = 0; at < injected.length && !halted; at += NATIVE_CHUNK_BYTES) {
+        for (let barrier = heldStdout(); barrier; barrier = heldStdout()) await barrier;
+        if (halted) break;
+        call.stdout.push(injected.subarray(at, at + NATIVE_CHUNK_BYTES));
+        if (call.stdout.limited) halt();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      return { exitCode: halted ? null : 0, activeDescendants: 0 };
+    } finally {
+      call.signal.removeEventListener("abort", halt);
+      own.delete(halt);
+    }
+  }
+
+  async function spawn(
+    call: GitCall,
+    argv: string[],
+    cwd: string,
+    env: Record<string, string>,
+    recorded: RecordedCall | undefined,
+    halt: () => void,
+    heldStdout: () => Promise<unknown> | null,
+  ): Promise<GitExit> {
     const pipes = [createInboundPipe(NATIVE_CHUNK_BYTES), createInboundPipe(NATIVE_CHUNK_BYTES)];
     let proc: Subprocess<"pipe", "ignore", "ignore">;
     try {
@@ -488,6 +577,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     let expired = false;
     // The double ends only the spawned process.
     const kill = () => {
+      halt();
       if (killed) return;
       killed = true;
       proc.kill();
@@ -506,7 +596,7 @@ export function createBunRunner(options: BunRunnerOptions) {
           call.stdout.push(chunk);
           if (call.stdout.limited) kill();
         },
-        true,
+        heldStdout,
       ),
       drain(
         pipes[1],
@@ -514,7 +604,7 @@ export function createBunRunner(options: BunRunnerOptions) {
           call.stderr.push(chunk);
           if (diagnostics.add(call, chunk.length)) kill();
         },
-        false,
+        () => null,
       ),
     ];
 
@@ -522,6 +612,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     clearTimeout(timer);
     call.signal.removeEventListener("abort", kill);
     own.delete(proc);
+    const usage = proc.resourceUsage();
+    if (usage && recorded) recorded.cpuMicros = usage.cpuTime.total;
     for (const stream of streams) stream.exit();
     await Promise.all(streams.map((s) => s.done));
     scan(call.operationId);
@@ -561,36 +653,65 @@ export function createBunRunner(options: BunRunnerOptions) {
     return { result: "approved" };
   }
 
+  async function start(call: GitCall, recorded: RecordedCall): Promise<GitExit> {
+    checkCall(call);
+    const target = resolveTarget(call.operationId, call.context);
+    if (!target.wsl) {
+      const env = environment(call);
+      if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
+      return execute(call, [target.program, ...call.arguments], target.cwd, env, recorded);
+    }
+    // Contract §11 "Process launch": `--no-lazy-fetch` stays first, and `-C` takes the Linux directory.
+    const inst = target.wsl;
+    const dir = wslParts(target.cwd);
+    const index = call.transaction ? wslParts(call.transaction.indexFile)?.linux : "";
+    if (!dir || index === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL path");
+    const args = wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir.linux, ...call.arguments.slice(1)]);
+    if (commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
+    const anchor = call.environmentPolicy === "mutation" ? wslAnchor(call.operationId, inst) : null;
+    const exit = await execute(call, [WSL_EXE, ...args], launchDirectory, wslEnvironment(), recorded);
+    await inject.afterWslExit?.(call);
+    // The anchor count after the exit of an execution process becomes `activeDescendants`.
+    return anchor ? { ...exit, activeDescendants: (await anchor.ask())?.[0] ?? 0 } : exit;
+  }
+
   const runner: GitRunner = {
     async run(call: GitCall): Promise<GitExit> {
-      checkCall(call);
-      const target = resolveTarget(call.operationId, call.context);
-      if (!target.wsl) {
-        const env = environment(call);
-        if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
-        return execute(call, [target.program, ...call.arguments], target.cwd, env);
+      const context: Record<string, unknown> = typeof call.context === "object" && call.context !== null ? call.context : {};
+      const recorded: RecordedCall = {
+        at: performance.now(),
+        operationId: text(call.operationId),
+        contextKind: text(context.contextKind),
+        ...(typeof context.repositoryId === "string" ? { repositoryId: context.repositoryId } : {}),
+        arguments: Array.isArray(call.arguments) ? [...call.arguments] : [],
+        environmentPolicy: text(call.environmentPolicy),
+        ...(call.input instanceof Uint8Array ? { input: call.input } : {}),
+      };
+      calls.push(recorded);
+      try {
+        recorded.exit = await start(call, recorded);
+        return recorded.exit;
+      } catch (error) {
+        recorded.refused = error instanceof RunnerRefusal ? error.code : error instanceof Error ? error.name : "unknown";
+        throw error;
       }
-      // Contract §11 "Process launch": `--no-lazy-fetch` stays first, and `-C` takes the Linux directory.
-      const inst = target.wsl;
-      const dir = wslParts(target.cwd);
-      const index = call.transaction ? wslParts(call.transaction.indexFile)?.linux : "";
-      if (!dir || index === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL path");
-      const args = wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir.linux, ...call.arguments.slice(1)]);
-      if (commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
-      const anchor = call.environmentPolicy === "mutation" ? wslAnchor(call.operationId, inst) : null;
-      const exit = await execute(call, [WSL_EXE, ...args], launchDirectory, wslEnvironment());
-      await inject.afterWslExit?.(call);
-      // The anchor count after the exit of an execution process becomes `activeDescendants`.
-      return anchor ? { ...exit, activeDescendants: (await anchor.ask())?.[0] ?? 0 } : exit;
     },
 
+    // A refused request keeps an empty `replies` list.
     async identities(operationId, context, paths) {
+      const recorded = { at: performance.now(), operationId: text(operationId), paths: Array.isArray(paths) ? [...paths] : [], replies: [] as unknown[] };
+      identityCalls.push(recorded);
       if (!isIdentifier(operationId) || !checkContext(context)) throw new RunnerRefusal("INVALID_REQUEST", "identity context");
       checkIdentityPaths(paths);
       const target = resolveTarget(operationId, context);
-      if (!target.wsl) return paths.map(identityOf);
+      if (!target.wsl) {
+        const replies = paths.map(identityOf);
+        recorded.replies = replies;
+        return replies;
+      }
       const replies: WslIdentityReply[] = [];
       for (const path of paths) replies.push(await wslIdentity(operationId, target.wsl, path));
+      recorded.replies = replies;
       return replies as unknown as IdentityReply[];
     },
 
@@ -652,6 +773,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       frames.push({ type: "closeJob", operationId });
       // A killed `wsl.exe` gives its command `SIGHUP`, and the wrapper and anchor traps end the scopes (contract §11).
       for (const proc of running.get(operationId) ?? []) proc.kill();
+      for (const halt of halts.get(operationId) ?? []) halt();
       wslAnchors.delete(operationId);
       end((r) => r.operationId === operationId);
       inactive.add(operationId);
@@ -774,7 +896,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     let exit: GitExit;
     if (!seam) exit = await execute(asCall, [WSL_EXE, ...wslHead(call.distro), WSL_TEXTS.probe, "sh"], launchDirectory, wslEnvironment());
     else {
-      while (startGate) await startGate.promise;
+      for (let held = holding(startBarriers, asCall); held; held = holding(startBarriers, asCall)) await held.promise;
       call.signal.throwIfAborted();
       if (seam.stdout) stdout.push(new TextEncoder().encode(seam.stdout));
       if (seam.stderr) call.stderr.push(new TextEncoder().encode(seam.stderr));
@@ -794,6 +916,9 @@ export function createBunRunner(options: BunRunnerOptions) {
     markers,
     trustStore,
     recordsDirectory,
+    // Every `run` and identity request in arrival order.
+    calls,
+    identityCalls,
     // The WSL Git confirmations in order, the approved Git of each distro GUID, and the WSL identity replies.
     wslConfirmations,
     wslSaved,
@@ -815,23 +940,14 @@ export function createBunRunner(options: BunRunnerOptions) {
     contextPath(bootstrapId: string): string | undefined {
       return contexts.get(bootstrapId)?.path;
     },
-    // Test barrier: no process starts until the returned function runs.
-    holdStart(): () => void {
-      const held = gate();
-      startGate = held;
-      return () => {
-        if (startGate === held) startGate = null;
-        held.open();
-      };
+    // Test barrier: no matching process starts until the returned function runs. Without `match`, it holds every call.
+    holdStart(match?: CallMatch): () => void {
+      return hold(startBarriers, match);
     },
-    // Test barrier: stdout draining stops until the returned function runs. A full pipe then blocks the child.
-    pauseStdout(): () => void {
-      const held = gate();
-      stdoutGate = held;
-      return () => {
-        if (stdoutGate === held) stdoutGate = null;
-        held.open();
-      };
+    // Test barrier: stdout draining of each matching call stops until the returned function runs. A full pipe then blocks the child.
+    // Without `match`, it holds every call. Abort, a kill, or closeJob releases the stopped call.
+    pauseStdout(match?: CallMatch): () => void {
+      return hold(stdoutBarriers, match);
     },
     // Ends every recorded live process by PID and every running process, then waits a bounded time for the drains.
     async dispose(): Promise<void> {
@@ -839,10 +955,11 @@ export function createBunRunner(options: BunRunnerOptions) {
       for (const set of running.values()) for (const proc of set) proc.kill();
       wslAnchors.clear();
       for (const operationId of wslUnits.keys()) endWslScopes(operationId);
-      startGate?.open();
-      startGate = null;
-      stdoutGate?.open();
-      stdoutGate = null;
+      for (const barriers of [startBarriers, stdoutBarriers]) {
+        barriers.every?.open();
+        barriers.every = null;
+        for (const barrier of barriers.matched.splice(0)) barrier.open();
+      }
       await Promise.race([Promise.all([...drains]), Bun.sleep(DISPOSE_WAIT_MS)]);
       disposed = true;
       await Promise.race([Promise.all([...drains]), Bun.sleep(DISPOSE_WAIT_MS)]);

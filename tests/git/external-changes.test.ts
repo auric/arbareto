@@ -1,0 +1,607 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { watchWorkspace } from "../../src/git-service/watch";
+import { printOrigin } from "../origin";
+import type { CallMatch, RecordedCall } from "./bun-runner";
+import { FIXTURE_ROOT, ownedGit, useFixtureRoot, type OwnedGitOptions } from "./fixture-root";
+import { buildF02, buildF18, put, type Built } from "./fixtures";
+import { GIT } from "./git-binary";
+import { caseTest, once, openService, type OpenOptions, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+
+printOrigin("../../src/git-service/watch.ts", import.meta.dir);
+
+const TASK = "T075";
+const TIMEOUT_MS = 120_000;
+const WAIT_MS = 30_000;
+const W = ["windows-shell-double"] as const;
+// Task T075 and spec SC-007: a hint within 2 seconds. Plan.md "Freshness and reconciliation": a 100 ms debounce.
+const HINT_BUDGET_MS = 2_000;
+const DEBOUNCE_MS = 100;
+// The quiet time before a change, so the events of earlier steps have given their hint.
+const SETTLE_MS = 3 * DEBOUNCE_MS;
+// Timers fire on whole milliseconds, so a debounce timer can end up to 1 ms before its nominal time.
+const TIMER_SLACK_MS = 1;
+
+const FULL = { refresh: false, check: "full" } as const;
+const CHANGES = { refresh: false, check: "changes" } as const;
+const SUCCEEDED = { state: "succeeded", code: undefined };
+// A fixed whole-millisecond time, so a restored time equals the one that the last complete read saw.
+const FIXED_TIME = new Date(Date.UTC(2026, 0, 1));
+
+useFixtureRoot();
+
+const gitPath = (): string => {
+  if (GIT === null) throw new Error("Git executable absent");
+  return GIT;
+};
+const repoOf = (built: Built, name = "repo") => join(built.root, name);
+const git = (cwd: string, args: string[], options: OwnedGitOptions = {}) => ownedGit(gitPath(), FIXTURE_ROOT, cwd, args, options).toString("utf8");
+const outcome = (response: ServiceResponse) => ({ state: response.state, code: response.code });
+
+const isStatus: CallMatch = (call) => call.arguments.includes("status");
+// A full read lists status. Contract §8: a change check without a change starts no Git process.
+const ranFullRead = (calls: RecordedCall[]) => calls.some(isStatus);
+// The trust listing of contract §7: `config list --show-scope --show-origin -z`.
+const listedTrust = (calls: RecordedCall[]) => calls.some((c) => c.arguments.includes("config") && c.arguments.includes("list"));
+
+// Oracle: the worktree, the worktree administration directory, and the common directory, as Git resolves them.
+function watchedDirectories(worktree: string): string[] {
+  const [top, gitDir, common] = git(worktree, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]).trimEnd().split("\n");
+  return [...new Set([top!, gitDir!, common!])];
+}
+
+// A new commit object on top of HEAD. It moves no ref. The fixture Git uses fixed times, so only another message gives another object ID.
+const newCommit = (repo: string, message = "t075") => git(repo, ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", message]).trim();
+
+async function waitFor(what: string, found: () => boolean): Promise<void> {
+  const until = performance.now() + WAIT_MS;
+  while (!found()) {
+    if (performance.now() > until) throw new Error(`${what}: not seen within ${WAIT_MS} ms`);
+    await Bun.sleep(10);
+  }
+}
+
+// Runs `body` with a watcher that records the time of each hint.
+async function watching(directories: string[], body: (hints: number[]) => Promise<void>): Promise<void> {
+  const hints: number[] = [];
+  const watcher = watchWorkspace(directories, () => hints.push(performance.now()));
+  try {
+    await body(hints);
+  } finally {
+    watcher.close();
+  }
+}
+
+// Makes one change after a quiet time and returns the time from the change to the next hint.
+async function hintAfter(hints: number[], what: string, change: () => void): Promise<number> {
+  await Bun.sleep(SETTLE_MS);
+  const count = hints.length;
+  change();
+  const changedAt = performance.now();
+  while (hints.length <= count) {
+    if (performance.now() - changedAt > HINT_BUDGET_MS) throw new Error(`${what}: no watcher hint within ${HINT_BUDGET_MS} ms`);
+    await Bun.sleep(5);
+  }
+  return hints[count]! - changedAt;
+}
+
+describe("watcher hints (L, real files)", () => {
+  // F18 files: `main` and `packed` live in `packed-refs`, and `loose` has its own ref file.
+  const CHANGES_OF_F18: [string, (repo: string) => void][] = [
+    ["a working-file change", (repo) => writeFileSync(join(repo, "watched.txt"), "watched t075\n")],
+    ["an index change", (repo) => git(repo, ["update-index", "--chmod=+x", "--", "other.txt"])],
+    ["a loose ref change", (repo) => git(repo, ["update-ref", "refs/heads/loose", newCommit(repo)])],
+    ["a packed-refs change", (repo) => git(repo, ["update-ref", "-d", "refs/heads/packed"])],
+    ["a HEAD change", (repo) => git(repo, ["symbolic-ref", "HEAD", "refs/heads/loose"])],
+  ];
+
+  for (const [label, change] of CHANGES_OF_F18) {
+    caseTest(
+      TASK,
+      `F18 files: ${label} gives a watcher hint within ${HINT_BUDGET_MS} ms`,
+      [],
+      async () => {
+        const repo = repoOf(buildF18(gitPath(), `t075-watch-${label.replaceAll(" ", "-")}`, "files"));
+        await watching(watchedDirectories(repo), async (hints) => {
+          expect(await hintAfter(hints, label, () => change(repo))).toBeLessThanOrEqual(HINT_BUDGET_MS);
+        });
+      },
+      TIMEOUT_MS,
+    );
+  }
+
+  caseTest(
+    TASK,
+    `F18 reftable: a commit in the main worktree and a branch switch in the linked worktree each give the linked worktree watcher a hint within ${HINT_BUDGET_MS} ms`,
+    [],
+    async () => {
+      const built = buildF18(gitPath(), "t075-watch-reftable", "reftable");
+      const main = repoOf(built);
+      const wt = join(built.root, "wt");
+      await watching(watchedDirectories(wt), async (hints) => {
+        expect(await hintAfter(hints, "commit in the main worktree", () => git(main, ["commit", "-q", "--allow-empty", "--no-verify", "-m", "t075"]))).toBeLessThanOrEqual(HINT_BUDGET_MS);
+        expect(await hintAfter(hints, "branch switch in the linked worktree", () => git(wt, ["symbolic-ref", "HEAD", "refs/heads/loose"]))).toBeLessThanOrEqual(HINT_BUDGET_MS);
+      });
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    `watcher hints debounce for ${DEBOUNCE_MS} ms: changes with gaps below ${DEBOUNCE_MS} ms give one hint, at least ${DEBOUNCE_MS} ms after the last change`,
+    [],
+    async () => {
+      const repo = repoOf(buildF18(gitPath(), "t075-debounce-burst", "files"));
+      // 15 writes 20 ms apart take 300 ms, three debounce times. A watcher without a trailing debounce gives more than one hint.
+      const writes = 15;
+      const gapMs = DEBOUNCE_MS / 5;
+      await watching(watchedDirectories(repo), async (hints) => {
+        await Bun.sleep(SETTLE_MS);
+        const count = hints.length;
+        let last = 0;
+        for (let i = 0; i < writes; i++) {
+          writeFileSync(join(repo, "watched.txt"), `burst ${i}\n`);
+          last = performance.now();
+          await Bun.sleep(gapMs);
+        }
+        await Bun.sleep(HINT_BUDGET_MS);
+        expect(hints.length - count).toBe(1);
+        expect(hints[count]! - last).toBeGreaterThanOrEqual(DEBOUNCE_MS - TIMER_SLACK_MS);
+        expect(hints[count]! - last).toBeLessThanOrEqual(HINT_BUDGET_MS);
+      });
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    `watcher hints debounce for ${DEBOUNCE_MS} ms: two changes ${6 * DEBOUNCE_MS} ms apart give one hint each`,
+    [],
+    async () => {
+      const repo = repoOf(buildF18(gitPath(), "t075-debounce-apart", "files"));
+      await watching(watchedDirectories(repo), async (hints) => {
+        await Bun.sleep(SETTLE_MS);
+        const count = hints.length;
+        writeFileSync(join(repo, "watched.txt"), "first\n");
+        await Bun.sleep(6 * DEBOUNCE_MS);
+        writeFileSync(join(repo, "watched.txt"), "second\n");
+        await Bun.sleep(HINT_BUDGET_MS);
+        expect(hints.length - count).toBe(2);
+      });
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a watcher gives no hint without a change, and close() stops its hints (contract §6: a release stops the watcher)",
+    [],
+    async () => {
+      const repo = repoOf(buildF18(gitPath(), "t075-close", "files"));
+      const hints: number[] = [];
+      const watcher = watchWorkspace(watchedDirectories(repo), () => hints.push(performance.now()));
+      try {
+        await Bun.sleep(HINT_BUDGET_MS);
+        expect(hints).toEqual([]);
+      } finally {
+        watcher.close();
+      }
+      writeFileSync(join(repo, "watched.txt"), "after close\n");
+      await Bun.sleep(HINT_BUDGET_MS);
+      expect(hints).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+async function withService(options: Omit<OpenOptions, "git">, body: (service: Service) => Promise<void>): Promise<void> {
+  const service = await openService({ git: gitPath(), ...options });
+  try {
+    await body(service);
+  } finally {
+    await service.dispose();
+  }
+}
+
+// One read with the Git calls that it started.
+async function read(service: Service, repositoryId: string, payload: typeof FULL | typeof CHANGES | { refresh: true; check: "full" }): Promise<{ response: ServiceResponse<WorkspaceResult>; calls: RecordedCall[]; result: WorkspaceResult }> {
+  const before = service.runner.calls.length;
+  const response = await service.readWorkspace(repositoryId, payload);
+  expect(outcome(response)).toEqual(SUCCEEDED);
+  return { response, calls: service.runner.calls.slice(before), result: response.result! };
+}
+
+const changedEntry = (result: WorkspaceResult, path: string) => result.entries.some((e) => e.path === path && e.category === "unstaged");
+
+describe("hints in the service (contract §8)", () => {
+  caseTest(
+    TASK,
+    `F18: an external working-file change gives a hint within ${HINT_BUDGET_MS} ms that marks the workspace dirty, and the next readWorkspace increases generation`,
+    W,
+    () =>
+      withService({ name: "t075-hint-dirty" }, async (service) => {
+        const repo = repoOf(buildF18(gitPath(), "t075-hint-dirty", "files"));
+        const { repositoryId } = await service.register(repo);
+        const first = await read(service, repositoryId, FULL);
+        const idle = await read(service, repositoryId, CHANGES);
+        expect({ runs: idle.calls.length, snapshotId: idle.result.snapshotId }).toEqual({ runs: 0, snapshotId: first.result.snapshotId });
+        // The stat tuple holds no unselected working file, so only the hint can start the full read.
+        writeFileSync(join(repo, "watched.txt"), "watched t075\n");
+        await Bun.sleep(HINT_BUDGET_MS);
+        const next = await read(service, repositoryId, CHANGES);
+        expect(ranFullRead(next.calls)).toBe(true);
+        expect(next.result.generation).toBeGreaterThan(first.result.generation);
+        expect(changedEntry(next.result, "watched.txt")).toBe(true);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a watcher event alone never marks state fresh: it starts no Git process and sends no response",
+    W,
+    () =>
+      withService({ name: "t075-hint-alone" }, async (service) => {
+        const repo = repoOf(buildF18(gitPath(), "t075-hint-alone", "files"));
+        const { repositoryId } = await service.register(repo);
+        const first = await read(service, repositoryId, FULL);
+        const counts = () => ({ calls: service.runner.calls.length, responses: service.responses.length, progress: service.progress.length });
+        const before = counts();
+        writeFileSync(join(repo, "watched.txt"), "watched t075\n");
+        await Bun.sleep(HINT_BUDGET_MS);
+        expect(counts()).toEqual(before);
+        const next = await read(service, repositoryId, CHANGES);
+        expect({ full: ranFullRead(next.calls), changed: changedEntry(next.result, "watched.txt"), newer: next.result.generation > first.result.generation }).toEqual({ full: true, changed: true, newer: true });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a watcher event during a running read does not let that read mark state fresh: the next check changes read runs a full read",
+    W,
+    () =>
+      withService({ name: "t075-hint-during-read" }, async (service) => {
+        const repo = repoOf(buildF18(gitPath(), "t075-hint-during-read", "files"));
+        const { repositoryId } = await service.register(repo);
+        await read(service, repositoryId, FULL);
+        const release = service.runner.pauseStdout(once(isStatus));
+        try {
+          const running = service.send("readWorkspace", FULL, { repositoryId });
+          const operationId = await service.operationId(running);
+          await waitFor("held status call", () => service.runner.calls.some((c) => c.operationId === operationId && isStatus(c)));
+          // The small F18 status ends at once. Only its output waits at the barrier.
+          await Bun.sleep(SETTLE_MS);
+          writeFileSync(join(repo, "watched.txt"), "watched t075\n");
+          await Bun.sleep(HINT_BUDGET_MS);
+          release();
+          expect(outcome(await service.response(running))).toEqual(SUCCEEDED);
+        } finally {
+          release();
+        }
+        const next = await read(service, repositoryId, CHANGES);
+        expect({ full: ranFullRead(next.calls), changed: changedEntry(next.result, "watched.txt") }).toEqual({ full: true, changed: true });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    'the next readWorkspace call with check "full" recovers a suppressed watcher notification',
+    W,
+    () =>
+      withService({ name: "t075-suppressed-full", watchHints: false }, async (service) => {
+        const repo = repoOf(buildF18(gitPath(), "t075-suppressed-full", "files"));
+        const { repositoryId } = await service.register(repo);
+        const first = await read(service, repositoryId, FULL);
+        writeFileSync(join(repo, "watched.txt"), "watched t075\n");
+        const next = await read(service, repositoryId, FULL);
+        expect({ full: ranFullRead(next.calls), changed: changedEntry(next.result, "watched.txt"), newer: next.result.generation > first.result.generation }).toEqual({ full: true, changed: true, newer: true });
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("change check with suppressed hints (contract §8 \"Change check\")", () => {
+  // Each F18 files change of the stat tuple, and whether it changes HEAD or the index, so that the generation increases.
+  const TUPLE_CHANGES: [string, (repo: string) => void, boolean][] = [
+    ["an index change", (repo) => git(repo, ["update-index", "--chmod=+x", "--", "other.txt"]), true],
+    ["a HEAD change", (repo) => git(repo, ["symbolic-ref", "HEAD", "refs/heads/loose"]), true],
+    ["a current-branch ref change", (repo) => git(repo, ["update-ref", "refs/heads/main", newCommit(repo)]), true],
+    [
+      "a packed-refs change",
+      (repo) => {
+        // `packed` lives only in `packed-refs`, so its deletion rewrites that file and no ref file.
+        expect(existsSync(join(repo, ".git", "refs", "heads", "packed"))).toBe(false);
+        const packedRefs = join(repo, ".git", "packed-refs");
+        const before = readFileSync(packedRefs, "utf8");
+        expect(before).toContain(" refs/heads/packed\n");
+        git(repo, ["update-ref", "-d", "refs/heads/packed"]);
+        expect(readFileSync(packedRefs, "utf8")).not.toBe(before);
+      },
+      false,
+    ],
+  ];
+
+  for (const [label, change, moves] of TUPLE_CHANGES) {
+    caseTest(
+      TASK,
+      `with a suppressed hint, a check "changes" read detects ${label} and then runs a full read`,
+      W,
+      () =>
+        withService({ name: `t075-tuple-${label.replaceAll(" ", "-")}`, watchHints: false }, async (service) => {
+          const repo = repoOf(buildF18(gitPath(), `t075-tuple-${label.replaceAll(" ", "-")}`, "files"));
+          const { repositoryId } = await service.register(repo);
+          const first = await read(service, repositoryId, FULL);
+          change(repo);
+          const next = await read(service, repositoryId, CHANGES);
+          expect(ranFullRead(next.calls)).toBe(true);
+          if (moves) expect(next.result.generation).toBeGreaterThan(first.result.generation);
+        }),
+      TIMEOUT_MS,
+    );
+  }
+
+  caseTest(
+    TASK,
+    'with a suppressed hint for an unselected working file, a check "changes" read returns the last snapshot, and the next check "full" read shows the change',
+    W,
+    () =>
+      withService({ name: "t075-unselected", watchHints: false }, async (service) => {
+        const repo = repoOf(buildF18(gitPath(), "t075-unselected", "files"));
+        const { repositoryId } = await service.register(repo);
+        const first = await read(service, repositoryId, FULL);
+        writeFileSync(join(repo, "watched.txt"), "watched t075\n");
+        const poll = await read(service, repositoryId, CHANGES);
+        expect({ runs: poll.calls.length, snapshotId: poll.result.snapshotId, generation: poll.result.generation, changed: changedEntry(poll.result, "watched.txt") }).toEqual({
+          runs: 0,
+          snapshotId: first.result.snapshotId,
+          generation: first.result.generation,
+          changed: false,
+        });
+        const full = await read(service, repositoryId, FULL);
+        expect(changedEntry(full.result, "watched.txt")).toBe(true);
+      }),
+    TIMEOUT_MS,
+  );
+
+  // An F18 copy whose local clean filter names a program inside the worktree, so the trust fingerprint digests that file.
+  const EDITS: [string, (repo: string) => void][] = [
+    ["a configuration origin file", (repo) => git(repo, ["config", "t075.note", "edited"])],
+    [
+      "a digested program file",
+      (repo) => {
+        const path = join(repo, "tools", "clean.sh");
+        const bytes = readFileSync(path);
+        bytes[bytes.length - 2] = bytes[bytes.length - 2]! ^ 0x01;
+        writeFileSync(path, bytes);
+      },
+    ],
+  ];
+
+  for (const [label, edit] of EDITS) {
+    caseTest(
+      TASK,
+      `an edit of ${label} makes a check "changes" read list trust again`,
+      W,
+      () =>
+        withService({ name: `t075-trust-${label.replaceAll(" ", "-")}`, watchHints: false }, async (service) => {
+          const repo = repoOf(buildF18(gitPath(), `t075-trust-${label.replaceAll(" ", "-")}`, "files"));
+          put(repo, "tools/clean.sh", "#!/bin/sh\nexec cat\n# t075\n");
+          git(repo, ["config", "filter.t075.clean", "./tools/clean.sh"]);
+          const { repositoryId } = await service.register(repo);
+          const trust = await service.readTrust(repositoryId);
+          expect((await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation)).state).toBe("succeeded");
+          await read(service, repositoryId, FULL);
+          const idle = await read(service, repositoryId, CHANGES);
+          expect(idle.calls.length).toBe(0);
+          edit(repo);
+          const before = service.runner.calls.length;
+          await service.readWorkspace(repositoryId, CHANGES);
+          expect(listedTrust(service.runner.calls.slice(before))).toBe(true);
+        }),
+      TIMEOUT_MS,
+    );
+  }
+
+  test.todo('with a suppressed hint, a check "changes" read detects a change of the selected working file and then runs a full read (needs T105/T115)', async () => {
+    const repo = repoOf(buildF02(gitPath(), "t075-selected"));
+    const service = await openService({ git: gitPath(), name: "t075-selected", watchHints: false });
+    try {
+      const { repositoryId } = await service.register(repo);
+      const first = (await service.readWorkspace(repositoryId)).result!;
+      const entry = first.entries.find((e) => e.path === "multi.txt" && e.category === "unstaged")!;
+      // The comparison binds the working file of the selected entry (`workingVersions`).
+      await service.request("readComparison", { snapshotId: first.snapshotId, entryId: entry.entryId }, { repositoryId, repositoryGeneration: first.generation, selectionId: crypto.randomUUID() });
+      writeFileSync(join(repo, "multi.txt"), "selected file changed\n");
+      const next = await read(service, repositoryId, CHANGES);
+      expect(ranFullRead(next.calls)).toBe(true);
+    } finally {
+      await service.dispose();
+    }
+  });
+});
+
+describe("reftable change check with suppressed hints (contract §8 \"Change check\")", () => {
+  // F18 reftable: the main worktree `repo` and the linked worktree `wt`.
+  caseTest(
+    TASK,
+    'a commit in the main worktree makes a check "changes" read of each worktree run a full read',
+    W,
+    () =>
+      withService({ name: "t075-reftable-commit", watchHints: false }, async (service) => {
+        const built = buildF18(gitPath(), "t075-reftable-commit", "reftable");
+        const [main, wt] = [repoOf(built), join(built.root, "wt")];
+        const ids = [(await service.register(main)).repositoryId, (await service.register(wt)).repositoryId];
+        const firsts = [await read(service, ids[0]!, FULL), await read(service, ids[1]!, FULL)];
+        git(main, ["commit", "-q", "--allow-empty", "--no-verify", "-m", "t075"]);
+        const mainNext = await read(service, ids[0]!, CHANGES);
+        const wtNext = await read(service, ids[1]!, CHANGES);
+        expect({ main: ranFullRead(mainNext.calls), wt: ranFullRead(wtNext.calls) }).toEqual({ main: true, wt: true });
+        expect(mainNext.result.generation).toBeGreaterThan(firsts[0]!.result.generation);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    'a branch switch in the linked worktree makes its check "changes" read run a full read',
+    W,
+    () =>
+      withService({ name: "t075-reftable-switch", watchHints: false }, async (service) => {
+        const built = buildF18(gitPath(), "t075-reftable-switch", "reftable");
+        const wt = join(built.root, "wt");
+        const { repositoryId } = await service.register(wt);
+        const first = await read(service, repositoryId, FULL);
+        expect(first.result.identity.refFormat).toBe("reftable");
+        git(wt, ["symbolic-ref", "HEAD", "refs/heads/loose"]);
+        const next = await read(service, repositoryId, CHANGES);
+        expect(ranFullRead(next.calls)).toBe(true);
+        expect({ head: next.result.head, newer: next.result.generation > first.result.generation }).toEqual({ head: { state: "branch", target: "refs/heads/loose", oid: built.facts.repos.wt!.refs["refs/heads/loose"]! }, newer: true });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    'a ref update that keeps the size and time of tables.list makes a check "changes" read run a full read',
+    W,
+    () =>
+      withService({ name: "t075-reftable-same-size", watchHints: false }, async (service) => {
+        const built = buildF18(gitPath(), "t075-reftable-same-size", "reftable");
+        const repo = repoOf(built);
+        const tables = resolve(repo, git(repo, ["rev-parse", "--git-common-dir"]).trim(), "reftable", "tables.list");
+        // A large first table. Git's auto-compaction then keeps two tables after each small update, so tables.list keeps its size.
+        const head = git(repo, ["rev-parse", "HEAD"]).trim();
+        git(repo, ["update-ref", "--stdin"], { input: Buffer.from(Array.from({ length: 200 }, (_, i) => `create refs/tags/t075-${i} ${head}\n`).join("")) });
+        git(repo, ["pack-refs"]);
+        git(repo, ["update-ref", "refs/heads/loose", newCommit(repo, "t075 first")]);
+        utimesSync(tables, FIXED_TIME, FIXED_TIME);
+        const { repositoryId } = await service.register(repo);
+        await read(service, repositoryId, FULL);
+        const before = readFileSync(tables);
+        git(repo, ["update-ref", "refs/heads/loose", newCommit(repo, "t075 second")]);
+        const after = readFileSync(tables);
+        expect({ size: after.length, same: after.equals(before) }).toEqual({ size: before.length, same: false });
+        utimesSync(tables, FIXED_TIME, FIXED_TIME);
+        expect(statSync(tables).mtimeMs).toBe(FIXED_TIME.getTime());
+        const next = await read(service, repositoryId, CHANGES);
+        expect(ranFullRead(next.calls)).toBe(true);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    'an index change makes a check "changes" read run a full read',
+    W,
+    () =>
+      withService({ name: "t075-reftable-index", watchHints: false }, async (service) => {
+        const built = buildF18(gitPath(), "t075-reftable-index", "reftable");
+        const wt = join(built.root, "wt");
+        const { repositoryId } = await service.register(wt);
+        const first = await read(service, repositoryId, FULL);
+        git(wt, ["update-index", "--chmod=+x", "--", "other.txt"]);
+        const next = await read(service, repositoryId, CHANGES);
+        expect({ full: ranFullRead(next.calls), newer: next.result.generation > first.result.generation }).toEqual({ full: true, newer: true });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    'without a ref or index change, a check "changes" read starts no Git process',
+    W,
+    () =>
+      withService({ name: "t075-reftable-idle", watchHints: false }, async (service) => {
+        const built = buildF18(gitPath(), "t075-reftable-idle", "reftable");
+        for (const worktree of [repoOf(built), join(built.root, "wt")]) {
+          const { repositoryId } = await service.register(worktree);
+          const first = await read(service, repositoryId, FULL);
+          const poll = await read(service, repositoryId, CHANGES);
+          expect({ worktree, runs: poll.calls.length, snapshotId: poll.result.snapshotId, generation: poll.result.generation }).toEqual({
+            worktree,
+            runs: 0,
+            snapshotId: first.result.snapshotId,
+            generation: first.result.generation,
+          });
+        }
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("token invalidation (contract §8 \"Token invalidation\")", () => {
+  // Every value of the fields named `key` in `value`, at any depth. Data-model §5 names `comparisonId` and `hunkId`.
+  function valuesOf(value: unknown, key: string): unknown[] {
+    if (Array.isArray(value)) return value.flatMap((item) => valuesOf(item, key));
+    if (typeof value !== "object" || value === null) return [];
+    return Object.entries(value).flatMap(([k, item]) => (k === key ? [item, ...valuesOf(item, key)] : valuesOf(item, key)));
+  }
+
+  // Issues a hunk token for the unstaged multi.txt entry of F02. `apply` sends the hunk approval with a given generation.
+  async function hunkToken(service: Service, repositoryId: string): Promise<{ generation: number; apply: (generation: number) => Promise<ServiceResponse> }> {
+    const snapshot = (await service.readWorkspace(repositoryId)).result!;
+    const entry = snapshot.entries.find((e) => e.path === "multi.txt" && e.category === "unstaged")!;
+    const comparison = await service.request("readComparison", { snapshotId: snapshot.snapshotId, entryId: entry.entryId }, { repositoryId, repositoryGeneration: snapshot.generation, selectionId: crypto.randomUUID() });
+    const [comparisonId] = valuesOf(comparison.result, "comparisonId");
+    const [hunkId] = valuesOf(comparison.result, "hunkId");
+    return {
+      generation: snapshot.generation,
+      apply: (generation) => service.request("applyHunk", { comparisonId, hunkId, snapshotId: snapshot.snapshotId, direction: "stage" }, { repositoryId, repositoryGeneration: generation }),
+    };
+  }
+
+  async function withToken(name: string, options: Partial<OpenOptions>, body: (service: Service, repo: string, repositoryId: string) => Promise<void>): Promise<void> {
+    const repo = repoOf(buildF02(gitPath(), name));
+    const service = await openService({ git: gitPath(), name, ...options });
+    try {
+      await body(service, repo, (await service.register(repo)).repositoryId);
+    } finally {
+      await service.dispose();
+    }
+  }
+
+  test.todo("a hint and the next readWorkspace invalidate each token whose fingerprint part changed: a ref change that moves HEAD invalidates every token that binds HEAD (needs T105/T115)", () =>
+    withToken("t075-token-head", {}, async (service, repo, repositoryId) => {
+      const token = await hunkToken(service, repositoryId);
+      git(repo, ["update-ref", "refs/heads/main", newCommit(repo)]);
+      await Bun.sleep(HINT_BUDGET_MS);
+      const next = (await service.readWorkspace(repositoryId)).result!;
+      expect(next.generation).toBeGreaterThan(token.generation);
+      expect((await token.apply(next.generation)).state).not.toBe("succeeded");
+    }),
+  );
+
+  test.todo("a refresh: false read with an unchanged fingerprint keeps an issued hunk token (needs T105/T115)", () =>
+    withToken("t075-token-kept", { watchHints: false }, async (service, _repo, repositoryId) => {
+      const token = await hunkToken(service, repositoryId);
+      const next = (await service.readWorkspace(repositoryId, FULL)).result!;
+      expect(next.generation).toBe(token.generation);
+      expect(outcome(await token.apply(next.generation))).toEqual(SUCCEEDED);
+    }),
+  );
+
+  test.todo("a refresh: false read after an index change invalidates an issued hunk token (needs T105/T115)", () =>
+    withToken("t075-token-index", { watchHints: false }, async (service, repo, repositoryId) => {
+      const token = await hunkToken(service, repositoryId);
+      put(repo, "keep.txt", "keep t075\n");
+      git(repo, ["add", "--", "keep.txt"]);
+      const next = (await service.readWorkspace(repositoryId, FULL)).result!;
+      expect(next.generation).toBeGreaterThan(token.generation);
+      expect((await token.apply(next.generation)).state).not.toBe("succeeded");
+    }),
+  );
+
+  test.todo("a refresh: true read invalidates an issued hunk token without any change (needs T105/T115)", () =>
+    withToken("t075-token-refresh", { watchHints: false }, async (service, _repo, repositoryId) => {
+      const token = await hunkToken(service, repositoryId);
+      const next = (await service.readWorkspace(repositoryId, { refresh: true, check: "full" })).result!;
+      expect((await token.apply(next.generation)).state).not.toBe("succeeded");
+    }),
+  );
+});

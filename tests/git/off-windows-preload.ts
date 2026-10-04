@@ -14,5 +14,5 @@ mock.module("bun:ffi", () => ({
 }));
 Object.defineProperty(process, "platform", { value: "linux" });
 
-for (const module of ["./fixture-root", "./git-oracle", "./bun-runner", "./fixtures"]) await import(module);
+for (const module of ["./fixture-root", "./git-oracle", "./bun-runner", "./fixtures", "./service-harness"]) await import(module);
 console.log("PORTABLE_IMPORTS loaded");

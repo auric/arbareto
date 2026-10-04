@@ -48,7 +48,7 @@ The public bridge is not a generic message bus. Its operation discriminator is a
 | `operation` | One exact operation name from the table below. It equals the operation of the invoked command (§1 "Renderer request body"). |
 | `repositoryId` | Registered workspace identifier. Required for `readWorkspace`, `readEntries`, `readHistory`, `readComparison`, `readTrust`, `approveTrust`, `revokeTrust`, `applyHunk`, `applyFile`, `reviewCommit`, `commit`, `reviewSubmodules`, and `updateSubmodules`. Other operations omit it. |
 | `repositoryGeneration` | Nonnegative safe integer for snapshot-bound operations. It must match the supplied snapshot, review, or trust fingerprint. For `readHistory`, it must equal the current workspace generation. |
-| `selectionId` | Renderer selection generation. `readComparison` requires it, and other operations omit it. The renderer issues it, so the service checks only its format. Never a mutation approval. |
+| `selectionId` | Renderer selection generation, a top-level envelope field beside `repositoryGeneration`. `readComparison` requires it, and other operations omit it. The renderer issues it, so the service checks only its format. Never a mutation approval. |
 | `payload` | Exact operation-specific object. Reject unknown fields. |
 
 The bridge sends each envelope as a raw UTF-8 JSON `Uint8Array` body (§1 "Renderer request body"). The shell forwards these bytes unchanged. The renderer imports only the types of the zod schemas, so zod adds no renderer code.
@@ -59,7 +59,7 @@ Require `repositoryGeneration` for `readEntries`, `readHistory`, `readComparison
 
 `readWorkspace` may include the last observed generation, but a mismatch must not prevent refresh. Other operations omit this field. Cancellation, revocation, and closure must remain available after a repository generation changes.
 
-Each request gets exactly one response, and that response is terminal. The shell returns it as the result of the `invoke` call of that request. A response contains `requestId`, `operationId` when the service issued one, repository generation where applicable, and a typed result. A request that the service rejects before admission has no `operationId`.
+Each request gets exactly one response, and that response is terminal. The shell returns it as the result of the `invoke` call of that request. A response contains `requestId`, `operationId` when the service issued one, and a typed result. When an envelope passes validation and holds `repositoryGeneration` or `selectionId`, its response repeats that value. A `readWorkspace` response with a result carries the generation of that result instead. Responses omit each field that these rules do not set. When the service cannot encode a response within the §5 "Private/reply frame" bound, it sends a terminal `failed` response with `OUTPUT_LIMIT` for that request instead. A request that the service rejects before admission has no `operationId`.
 
 When the service admits a request, it issues an `operationId` and sends the accepted event. The accepted event is a progress event with `requestId`, `operationId`, and `state` `accepted`. It sends this event before any approval check, lock, or Git process. The accepted event does not mean approval, and a `rejected` response can follow. No request supplies a new `operationId`. Only `cancel` and `getOperation` name an issued one.
 
@@ -86,7 +86,7 @@ The shell sends four events to the main window. `operation-progress` carries one
 | `readWorkspace` | `refresh: boolean` and `check: "full"` or `"changes"`. `refresh: true` with `check: "changes"` gives `INVALID_REQUEST`. | Git-derived identity, HEAD, operation state, status completeness, hunk-profile eligibility, snapshot ID, and recovery state. Only a user Refresh action sends `refresh: true`, always with `check: "full"`. Focus return and the first read send `refresh: false` with `check: "full"`. The read after a mutation outcome and the read after a trust approval also send `refresh: false` with `check: "full"`. Polls send `refresh: false` with `check: "changes"` (§8 "Change check"). WSL polls send `check: "full"` instead (§11 "Change polling"). An explicit refresh of a blocked workspace performs recovery reconciliation (§8). Status paging (T284 implements it): the result holds the summary, `entryCount`, and the first page of entries. Later pages come from `readEntries`. |
 | `readEntries` | `snapshotId` and `cursor`. The envelope carries `repositoryId` and `repositoryGeneration`. T284 implements this operation. | One later page of status entries from the retained snapshot, and the cursor of the next page or none. It starts no Git process. A stale `repositoryGeneration` gives `REPOSITORY_CHANGED`. A released snapshot gives `UNKNOWN_TARGET`. Each page stays within the §5 "Status page" bound. |
 | `readHistory` | Empty object. The envelope carries `repositoryGeneration`. | Bounded HistoryPage: at most 100 checkout-reachable commits, ordered parents, boundary metadata, captured HEAD, and completeness. No arbitrary ref or pagination argument. The service captures HEAD itself and needs no status snapshot. It can run beside `readWorkspace` within the §5 read caps. Trust gating follows the read rule in §7. |
-| `readComparison` | Current snapshot ID and issued entry ID. | One supported canonical comparison with hunk IDs, or an explicit unsupported/limited result. Every result also carries the file-action decision of its entry (§4 "File staging"). |
+| `readComparison` | Current snapshot ID and issued entry ID. The envelope carries `repositoryId`, `repositoryGeneration`, and `selectionId`. | One supported canonical comparison with hunk IDs, or an explicit unsupported/limited result. Every result also carries the file-action decision of its entry (§4 "File staging"). |
 | `readTrust` | Empty object. The envelope carries `repositoryId`. | Safe execution-policy summary, approval fingerprint, trust `state`, and `persistence` (`stored` or `session`). Show configuration values only for the §7 value display allowlist. Redact URL user information first (§7). |
 | `approveTrust` | `fingerprint`: the issued fingerprint. `approve`: `true`. Any other `approve` value gives `INVALID_REQUEST`. | The service checks the fingerprint and its generation. The shell then shows a native confirmation (§7 "Trust approval store"). Approve returns the trust ID, `persistence` (`stored` or `session`), and `saveFailed` (boolean). `saveFailed` is `true` only when the shell replied `stored: false` after `persist: true`. It stores the approval, or keeps it for the service session only over a digest bound (§7). Cancel returns `canceled` and stores nothing. A changed policy requires new approval. |
 | `revokeTrust` | Current trust ID. | Delete the stored approval, revoke future executable operations, and invalidate dependent approvals. Running work needs explicit cancellation. The shell also closes every lingering Job of that common directory (§6 "Lingering Jobs"). The result states how many processes ended. An unfinished mutation of that common directory ends its processes at `ended` and never lingers (§6). Without a current trust ID, no remedy or outcome text offers Revoke trust (§9 "Lingering count"). |
@@ -312,7 +312,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | History parent references | 64 per commit and 1,024 per page |
 | Shallow-boundary metadata | 4 MiB |
 | History commit object | 256 KiB per object |
-| History object payload total | 32 MiB |
+| History page | 8 MiB encoded result for each `readHistory` response. This stays below the 16 MiB private/reply frame. The page keeps the rows before the first row that passes the bound. |
 | Frontend graph layout | 24 simultaneous lanes and 4,096 SVG path segments; explicit row-only fallback |
 | Effective configuration/trust input | 4 MiB; overflow blocks execution approval |
 | Trust program file digests | 64 files, 1 MiB per file, and 8 MiB total (§7 "Program file digests"). Overflow permits only a session approval without a stored record |
@@ -330,8 +330,8 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | Trust approval records | 4 KiB per record and 256 records. A new record above 256 replaces the oldest record. |
 | Retained comparison data | 4 comparisons and 128 MiB total |
 | Approval lifetime | 60 seconds; relevant changes invalidate it sooner |
-| Concurrent reads | 2 per workspace, 4 globally |
-| Pending reads | 8 globally; superseded selection reads are canceled |
+| Concurrent reads | 2 per workspace, 4 globally. `readEntries` takes no read slot, because it starts no Git process. |
+| Pending reads | 8 globally. A new `readComparison` cancels each unfinished `readComparison` of its workspace as superseded. `readEntries` never waits in this queue. |
 | Mutations | 1 per common repository; reject overlap without queueing old approvals |
 | Ordinary read deadline | 30 seconds. `reviewSubmodules`, the `updateSubmodules` preflight, and its level reads have no total read deadline. Each of their Git commands has the 30-second deadline below, and the submodule review bound limits the command count. |
 | Commit process deadline | 120 seconds, followed by interruption and reconciliation |

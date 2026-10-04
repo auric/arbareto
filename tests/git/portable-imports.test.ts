@@ -30,7 +30,7 @@ const SRC = join(import.meta.dir, "..", "..", "src");
 const PLATFORM_FILES = ["contracts/native-path.ts", "contracts/remedy-command.ts", "contracts/wsl-route.ts"];
 const BANNED: [string, RegExp][] = [
   ["win32", /win32/g],
-  ["git.exe", /git\\?\.exe/gi],
+  ["git.exe", /git\\?\.exe(?![A-Za-z0-9_])/gi],
   ["drive-letter class", /\[(?:A-Za-z|a-zA-Z|A-Z|a-z)\]:/g],
   ["process.platform", /process\.platform/g],
   ["fold-ascii import", /["'][^"'\n]*fold-ascii(?:\.ts)?["']/g],
@@ -78,8 +78,20 @@ test.each([
   ["git-service/x.ts", "export const drive = /^[A-Z]:/i;"],
   ["git-service/x.ts", "export const drive = /^[a-z]:/i;"],
   ["git-service/x.ts", "export const drive = /^[A-Za-z]:/;"],
+  ["git-service/x.ts", 'export const path = "C:\\\\Git\\\\cmd\\\\GIT.EXE";'],
+  ["git-service/x.ts", 'export const name = "git.exe";'],
+  ["git-service/x.ts", "export const leaf = /[\\\\/]git\\.exe$/i;"],
+  ["git-service/x.ts", "export const path = (dir: string) => `${dir}/git.exe`;"],
 ])("the scan finds the rule break in %s: %s", (file, source) => {
   expect(scanHits(file, source)).not.toEqual([]);
+});
+
+// Control fixtures: property names that start with `exe` give no hit.
+test.each([
+  ["git-service/x.ts", "export const path = (git: { executablePath: string }) => git.executablePath;"],
+  ["git-service/x.ts", "export const id = (git: { executableIdentity: string }) => git.executableIdentity;"],
+])("the scan permits %s: %s", (file, source) => {
+  expect(scanHits(file, source)).toEqual([]);
 });
 
 // Control fixture: type-only imports and the permitted runtime imports give no hit.

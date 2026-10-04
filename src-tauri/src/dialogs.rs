@@ -237,6 +237,33 @@ pub fn confirm_git(
     }
 }
 
+/// The probed Git of one distro (contract §11 "Git per distro").
+pub struct WslProposal<'a> {
+    pub distro: &'a str,
+    /// The absolute Linux path of the Git file.
+    pub git: &'a str,
+    pub version: &'a str,
+}
+
+/// The WSL Git confirmation: Use this Git and Cancel, the default.
+pub fn wsl_git_confirmation(proposal: &WslProposal) -> Confirmation {
+    let text = format!(
+        "Use this Git?\nDistro: {}\nPath: {}\nVersion: {}",
+        proposal.distro, proposal.git, proposal.version
+    );
+    confirmation(text, "Use this Git", None)
+}
+
+/// Only Use this Git approves. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "T212 wires the WSL register frame")
+)]
+pub fn confirm_wsl_git(native: &dyn Native, proposal: &WslProposal) -> bool {
+    let confirmation = wsl_git_confirmation(proposal);
+    native.confirm(&confirmation) == Some(confirmation.accept_button)
+}
+
 /// The contract §5 "Trust program file digests" row of a `bound` name.
 fn bound_text(bound: &str) -> Option<&'static str> {
     match bound {
@@ -891,6 +918,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_wsl_git_confirmation_names_the_distro_path_and_version_and_only_use_this_git_approves() {
+        let proposal = WslProposal {
+            distro: "Ubuntu-24.04",
+            git: "/usr/local/bin/git",
+            version: "2.55.0",
+        };
+        let confirmation = wsl_git_confirmation(&proposal);
+        assert_eq!(
+            confirmation.text,
+            "Use this Git?\nDistro: Ubuntu-24.04\nPath: /usr/local/bin/git\nVersion: 2.55.0"
+        );
+        assert_eq!(labels(&confirmation), ["Use this Git", "Cancel"]);
+        assert_eq!(confirmation.default_button, id_of(&confirmation, "Cancel"));
+        assert_eq!(
+            confirmation.accept_button,
+            id_of(&confirmation, "Use this Git")
+        );
+        let native = Fake::pressing(&[Press::Label("Use this Git")]);
+        assert!(confirm_wsl_git(&native, &proposal));
+        for press in CANCELS {
+            let native = Fake::pressing(&[press]);
+            assert!(!confirm_wsl_git(&native, &proposal));
+            assert!(!native.calls().contains(&"pick_executable"));
+        }
+    }
+
+    #[test]
     fn choose_another_git_opens_the_picker_and_replies_another_with_the_new_context() {
         let fixture = Fixture::new();
         let contexts = Contexts::new(SESSION);
@@ -1162,6 +1216,7 @@ pub(crate) mod tests {
             git: None,
             last_repository: Some(repository),
             window: None,
+            wsl_gits: Vec::new(),
         };
         assert_eq!(
             restore_workspace(&settings, &contexts, Instant::now()),
@@ -1189,6 +1244,7 @@ pub(crate) mod tests {
             git: Some(saved(&git)),
             last_repository: Some(folder(&fixture, "repo")),
             window: None,
+            wsl_gits: Vec::new(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -1215,6 +1271,7 @@ pub(crate) mod tests {
             }),
             last_repository: None,
             window: None,
+            wsl_gits: Vec::new(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -1242,6 +1299,7 @@ pub(crate) mod tests {
             git: Some(saved(&missing)),
             last_repository: None,
             window: None,
+            wsl_gits: Vec::new(),
         };
         assert_eq!(
             startup_context(&settings, &contexts, Instant::now()),
@@ -1259,6 +1317,7 @@ pub(crate) mod tests {
             git: None,
             last_repository: Some(folder(&fixture, "repo")),
             window: None,
+            wsl_gits: Vec::new(),
         };
         assert_eq!(startup_context(&settings, &contexts, Instant::now()), None);
     }
@@ -1272,6 +1331,7 @@ pub(crate) mod tests {
             git: None,
             last_repository: Some(repository.clone()),
             window: None,
+            wsl_gits: Vec::new(),
         };
         let chosen = restore_workspace(&settings, &contexts, Instant::now());
         assert_eq!(

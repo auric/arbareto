@@ -15,6 +15,7 @@ mod service;
 mod settings;
 mod spawn;
 mod webview;
+mod wsl;
 
 use std::sync::{Arc, Mutex};
 

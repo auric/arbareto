@@ -3,11 +3,13 @@
 
 // A test double of the shell end of `src/git-service/git-runner.ts`. It runs real Git through `Bun.spawn` argument arrays.
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
+// T206 adds the contract §11 WSL process requests. Their frame shapes are a proposal for T212 and the contract owner (see `WslDistrosReply`).
 
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
+import wslProcess from "../../src/contracts/wsl-process.json";
 import { NATIVE_CHUNK_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { isIdentifier } from "../../src/contracts/operations";
 import {
@@ -20,6 +22,7 @@ import {
   checkStarted,
   checkTrust,
   commandLineUnits,
+  type Collector,
   createDiagnosticCounter,
   isChannelPath,
   RunnerRefusal,
@@ -34,9 +37,12 @@ import {
   type TrustRecord,
 } from "../../src/git-service/git-runner";
 import { printOrigin } from "../origin";
+import { isWindowsProgram } from "../../src/contracts/wsl-route";
+import { listDistros, parseProbe, registryKeys, WSL_EXE, wslExec, type RegistryKey } from "../wsl/wsl-host";
 import { closePipe, createInboundPipe, peekPipe, processCreationTime, readIdentity, readPipe, terminateRecorded, type InboundPipe } from "./win32";
 
 printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
+printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/contracts/operations.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
@@ -64,6 +70,123 @@ export interface BunRunnerOptions {
   // The service environment. Each policy of `src/contracts/git-environment.json` starts from it.
   environment: Record<string, string>;
   trustStore?: TrustStore;
+  // Fixture isolation for WSL processes only: the Linux path of the owned global configuration.
+  // The double forwards it and `GIT_CONFIG_NOSYSTEM=1` through `WSLENV`. The product shell forwards nothing (T205).
+  wslGlobalConfig?: string;
+}
+
+// ---- Contract §11 process requests. The shell side is `src-tauri/src/wsl.rs`. ----
+
+const WSL_TEXTS = { wrapper: wslProcess.wrapper.join("\n"), anchor: wslProcess.anchor.join("\n"), probe: wslProcess.probe.join("\n") };
+// Contract §5: a WSL distro start probe has at most 60 seconds.
+const WSL_START_CAP_MS = 60_000;
+const WSL_PREFIX = /^\\\\(?:wsl\$|wsl\.localhost)\\([^\\/]+)(?:[\\/](.*))?$/i;
+
+export type WslMode = "probe" | "read" | "mutation" | "network";
+
+// The approved Linux Git of one distro (data-model §1). The shell takes it from its own parse of the probe output.
+export interface WslInstallation {
+  distro: string;
+  guid: string;
+  git: string;
+  systemdRun: string;
+  systemctl: string;
+  setsid: string;
+}
+
+// The native settings record of one approved WSL Git (contract §11 "Git per distro").
+export interface WslSavedGit {
+  guid: string;
+  distro: string;
+  git: string;
+  version: string;
+  gitIdentity: string;
+}
+
+// Proposed `wslDistros` reply: the two list calls, the registration keys of the listed names (contract §11 "Distro checks"),
+// and the saved Git of each listed GUID. A later probe with another Git identity gives `GIT_CHANGED`.
+// `path` is the native context path. The service holds only the bootstrap ID, so it routes this path (contract §11 "Route").
+export type WslDistrosReply = { path: string; listed: string[]; running: string[]; keys: RegistryKey[]; saved: WslSavedGit[] } | { code: "WSL_UNAVAILABLE"; reason: "wsl-missing" };
+
+// Proposed `register` Git form for a WSL Git. The shell takes the distro, the Git path, the helper paths, the version, and the Git identity
+// from the probe facts that it bound to this `repositoryDiscovery` context at `wslProbe`. The service never names a Linux program.
+export interface WslRegisterRequest {
+  operationId: string;
+  bootstrapId: string;
+  gitInstallationId: string;
+  confirm: true;
+}
+
+// The facts that the shell parsed from one successful probe of a `repositoryDiscovery` context.
+type WslBound = WslInstallation & { version: string; gitIdentity: string };
+
+// Proposed WSL identity reply (contract §11 "Paths and file access"). It holds no device number.
+export type WslIdentityReply =
+  | { distroGuid: string; fileSystemId: string; inode: string; fileSystemType: string }
+  | { code: "UNSUPPORTED_REPOSITORY"; reason?: "no-fs-uuid" | "mixed-location" };
+
+// Proposed `wslProbe` request: the fixed Git probe text in the distro of a `repositoryDiscovery` context, without the wrapper.
+export interface WslProbeCall {
+  operationId: string;
+  bootstrapId: string;
+  distro: string;
+  limits: { deadlineMs: number };
+  stdout: GitCall["stdout"];
+  stderr: GitCall["stderr"];
+  signal: AbortSignal;
+}
+
+// A seam result that replaces the real probe. No process starts for it.
+export interface WslProbeSeam {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number | null;
+  deadline?: true;
+}
+
+// The Linux path of a UNC WSL path. After the prefix, `\` and `/` both separate segments, as in `src/contracts/wsl-route.ts`.
+function wslParts(path: string): { distro: string; linux: string } | null {
+  const m = WSL_PREFIX.exec(path);
+  if (!m) return null;
+  return { distro: m[1]!, linux: `/${(m[2] ?? "").split(/[\\/]/).filter((s) => s !== "").join("/")}` };
+}
+
+// Mirrors `RETAINED_BYTES` of `src-tauri/src/wsl.rs`: the shell parses at most 64 KiB of probe output.
+const WSL_PROBE_RETAINED_BYTES = 64 * 1024;
+const WSL_HELPERS = ["git", "systemd-run", "systemctl", "setsid"] as const;
+
+// The shell parse of the contract §11 probe output. Output that fails a §11 rule binds nothing.
+function bindProbe(distro: string, text: string): WslBound | null {
+  const facts = parseProbe(text);
+  const paths = WSL_HELPERS.map((name) => {
+    const path = facts.paths[name];
+    return path?.startsWith("/") && !isWindowsProgram(path, facts.magic[name] === "MZ") ? path : undefined;
+  });
+  const [git, systemdRun, systemctl, setsid] = paths;
+  const fileSystem = /^ef53:([0-9a-f]+)$/.exec(facts.gitfs ?? "")?.[1];
+  const version = /^git version (\S+)$/.exec(facts.version ?? "")?.[1];
+  const guid = registryKeys().find((k) => k.name === distro && k.version === 2)?.guid;
+  if (!git || !systemdRun || !systemctl || !setsid || facts.scope !== "0" || !version || !guid) return null;
+  if (!fileSystem || /^0+$/.test(fileSystem) || !/^\d+:\d+:\d+$/.test(facts.gitfile ?? "")) return null;
+  return { distro, guid, git, systemdRun, systemctl, setsid, version, gitIdentity: `${fileSystem}:${facts.gitfile}` };
+}
+
+// Mirrors `src-tauri/src/wsl.rs` `classify`.
+function classifyIdentity(guid: string, inode: string, fileSystem: string): WslIdentityReply {
+  const ino = /^(\d+)\n$/.exec(inode)?.[1];
+  const fs = /^([0-9a-f]+):([0-9a-f]+)\n$/.exec(fileSystem);
+  if (!ino || !fs) return { code: "UNSUPPORTED_REPOSITORY" };
+  if (fs[1] === "1021997") return { code: "UNSUPPORTED_REPOSITORY", reason: "mixed-location" };
+  if (fs[1] !== "ef53" || /^0+$/.test(fs[2]!)) return { code: "UNSUPPORTED_REPOSITORY", reason: "no-fs-uuid" };
+  return { distroGuid: guid, fileSystemId: fs[2]!, inode: ino, fileSystemType: fs[1]! };
+}
+
+interface WslAnchor {
+  proc: Subprocess<"pipe", "pipe", "ignore">;
+  // The answer to one stdin line: the process count and the I/O sum of the operation scopes.
+  ask(): Promise<[number, number] | null>;
+  last: [number, number] | null;
+  close(): void;
 }
 
 interface ProcessRecord {
@@ -114,7 +237,28 @@ export function createBunRunner(options: BunRunnerOptions) {
     identities: new Map<string, IdentityReply>(),
     // File IDs by path, such as all zeros or all ones, that replace the `FileIdInfo` result.
     fileIds: new Map<string, Uint8Array>(),
+    // WSL seams (T207, T209): a probe result, a running list, `stat` probe outputs by UNC path, and the WSL Git confirmation result.
+    wslProbe: null as WslProbeSeam | null,
+    wslRunning: null as string[] | null,
+    wslStat: new Map<string, { inode: string; fileSystem: string }>(),
+    wslConfirm: "approved" as "approved" | "declined",
+    // A test-injected deadline. A shorter value than the request limit ends the process as the shell deadline does.
+    deadlineMs: null as number | null,
+    // Runs after each WSL process exits, before its exit reply.
+    afterWslExit: null as ((call: GitCall) => Promise<void>) | null,
   };
+  // Each WSL identity reply with its UNC path, in order.
+  const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
+  const wslGits = new Map<string, WslInstallation>();
+  // The probe facts that the shell bound to each `repositoryDiscovery` bootstrap ID.
+  const wslBound = new Map<string, WslBound>();
+  // The unit counter of each operation that started a wrapped process, with its installation.
+  const wslUnits = new Map<string, { inst: WslInstallation; n: number }>();
+  const wslAnchors = new Map<string, WslAnchor>();
+  // The native confirmations that a WSL `register` showed, in order.
+  const wslConfirmations: { distro: string; path: string; version: string }[] = [];
+  // Native settings: the approved Git of each distro GUID (contract §11 "Git per distro").
+  const wslSaved = new Map<string, Omit<WslSavedGit, "guid">>();
   let startGate: Gate = null;
   let stdoutGate: Gate = null;
   let spawned = 0;
@@ -137,13 +281,14 @@ export function createBunRunner(options: BunRunnerOptions) {
   const end = (keep: (record: ProcessRecord) => boolean) => live(keep).filter((r) => terminateRecorded(r.pid, r.created)).length;
 
   // Contract §6 "Context rules": the first `operationId` of a `bootstrapId` owns it.
-  function resolveTarget(operationId: string, context: ProcessContext): { program: string; cwd: string } {
+  // A WSL Git target carries its installation. Its `cwd` is the UNC directory that becomes the Linux `-C` directory.
+  function resolveTarget(operationId: string, context: ProcessContext): { program: string; cwd: string; wsl?: WslInstallation } {
     if (inactive.has(operationId)) throw unknownTarget();
     if (context.contextKind === "registeredOperation") {
       const program = gits.get(context.gitInstallationId);
       const repository = repositories.get(context.repositoryId);
       if (!program || !repository) throw unknownTarget();
-      return { program, cwd: repository.worktreeRoot };
+      return { program, cwd: repository.worktreeRoot, wsl: wslGits.get(context.gitInstallationId) };
     }
     const bound = contexts.get(context.bootstrapId);
     if (!bound || bound.kind !== context.contextKind || (bound.owner ?? operationId) !== operationId) throw unknownTarget();
@@ -151,7 +296,99 @@ export function createBunRunner(options: BunRunnerOptions) {
     if (context.contextKind === "gitProbe") return { program: bound.path, cwd: launchDirectory };
     const program = gits.get(context.gitInstallationId);
     if (!program) throw unknownTarget();
-    return { program, cwd: bound.path };
+    return { program, cwd: bound.path, wsl: wslGits.get(context.gitInstallationId) };
+  }
+
+  // Contract §11 "Process launch". Only the fixture isolation of `wslGlobalConfig` reaches Linux.
+  function wslEnvironment(): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(options.environment)) {
+      if (!["WSL_UTF8", "WSLENV", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"].includes(name.toUpperCase())) env[name] = value;
+    }
+    env.WSL_UTF8 = "1";
+    env.WSLENV = "";
+    if (options.wslGlobalConfig) Object.assign(env, { WSLENV: "GIT_CONFIG_GLOBAL:GIT_CONFIG_NOSYSTEM", GIT_CONFIG_GLOBAL: options.wslGlobalConfig, GIT_CONFIG_NOSYSTEM: "1" });
+    return env;
+  }
+
+  const wslHead = (distro: string) => ["--distribution", distro, "--cd", "/", "--exec", "/bin/sh", "-c"];
+
+  function wslWrapped(inst: WslInstallation, operationId: string, mode: WslMode, index: string, program: string, args: readonly string[]): string[] {
+    const n = (wslUnits.get(operationId)?.n ?? 0) + 1;
+    wslUnits.set(operationId, { inst, n });
+    const unit = `arbareto-${operationId}-${n}.scope`;
+    return [...wslHead(inst.distro), WSL_TEXTS.wrapper, "sh", unit, mode, index, inst.systemdRun, inst.systemctl, inst.setsid, program, ...args];
+  }
+
+  // Starts the anchor of a WSL mutation before its first Git process, in the operation's process set.
+  function wslAnchor(operationId: string, inst: WslInstallation): WslAnchor {
+    const existing = wslAnchors.get(operationId);
+    if (existing) return existing;
+    const proc = Bun.spawn([WSL_EXE, ...wslHead(inst.distro), WSL_TEXTS.anchor, "sh", inst.systemctl, operationId], {
+      cwd: launchDirectory,
+      env: wslEnvironment(),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const own = running.get(operationId) ?? new Set();
+    running.set(operationId, own.add(proc as unknown as Subprocess));
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    const waiting: ((line: [number, number] | null) => void)[] = [];
+    const anchor: WslAnchor = {
+      proc,
+      last: null,
+      ask: () => {
+        const answer = new Promise<[number, number] | null>((resolve) => waiting.push(resolve));
+        proc.stdin.write("\n");
+        void proc.stdin.flush();
+        return answer;
+      },
+      close: () => void proc.stdin.end(),
+    };
+    void (async () => {
+      for (;;) {
+        const chunk = await reader.read().catch(() => ({ done: true, value: undefined }));
+        if (chunk.done) break;
+        buffered += decoder.decode(chunk.value);
+        for (let nl = buffered.indexOf("\n"); nl >= 0; nl = buffered.indexOf("\n")) {
+          const m = /^(\d+) (\d+)$/.exec(buffered.slice(0, nl));
+          buffered = buffered.slice(nl + 1);
+          if (!m) continue;
+          anchor.last = [Number(m[1]), Number(m[2])];
+          waiting.shift()?.(anchor.last);
+        }
+      }
+      for (const resolve of waiting.splice(0)) resolve(null);
+    })();
+    wslAnchors.set(operationId, anchor);
+    return anchor;
+  }
+
+  // Contract §11 "Paths and file access": the two `stat` probes through the wrapper in `probe` mode.
+  async function wslIdentity(operationId: string, inst: WslInstallation, path: string): Promise<WslIdentityReply> {
+    const parts = wslParts(path);
+    let reply: WslIdentityReply = { code: "UNSUPPORTED_REPOSITORY" };
+    const injected = inject.wslStat.get(path);
+    if (injected) reply = classifyIdentity(inst.guid, injected.inode, injected.fileSystem);
+    else if (parts && parts.distro.toLowerCase() === inst.distro.toLowerCase()) {
+      const stat = (args: string[]) => {
+        const result = wslExec(wslWrapped(inst, operationId, "probe", "", "/usr/bin/stat", [...args, parts.linux]), { env: wslEnvironment() });
+        return result.exitCode === 0 ? result.stdout : "";
+      };
+      reply = classifyIdentity(inst.guid, stat(["--dereference", "--format=%i"]), stat(["--dereference", "--file-system", "--format=%t:%i"]));
+    }
+    wslIdentityLog.push({ path, reply });
+    return reply;
+  }
+
+  // Test end: ends every scope of an operation that this double started.
+  function endWslScopes(operationId: string): void {
+    const inst = wslUnits.get(operationId)?.inst;
+    if (!inst) return;
+    wslExec(["--distribution", inst.distro, "--cd", "/", "--exec", inst.systemctl, "--user", "kill", "--signal=SIGKILL", "--", `arbareto-${operationId}-*.scope`]);
   }
 
   // Mirrors `src-tauri/src/git_env.rs` `child_environment`. Windows variable names ignore case.
@@ -220,99 +457,151 @@ export function createBunRunner(options: BunRunnerOptions) {
     };
   }
 
+  // Starts one process after the start gate and drains it as the shell does.
+  async function execute(call: GitCall, argv: string[], cwd: string, env: Record<string, string>): Promise<GitExit> {
+    while (startGate) await startGate.promise;
+    call.signal.throwIfAborted();
+    const pipes = [createInboundPipe(NATIVE_CHUNK_BYTES), createInboundPipe(NATIVE_CHUNK_BYTES)];
+    let proc: Subprocess<"pipe", "ignore", "ignore">;
+    try {
+      proc = Bun.spawn(argv, {
+        cwd,
+        env,
+        stdin: "pipe",
+        stdout: Bun.file(pipes[0].name),
+        stderr: Bun.file(pipes[1].name),
+      }) as unknown as Subprocess<"pipe", "ignore", "ignore">;
+    } catch {
+      pipes.forEach(closePipe);
+      throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED");
+    }
+    spawned++;
+    const own = running.get(call.operationId) ?? new Set();
+    running.set(call.operationId, own.add(proc));
+    // Contract §6 "Console and input": stdin closes after the bounded input, or at once.
+    void (async () => {
+      if (call.input?.length) proc.stdin.write(call.input);
+      await proc.stdin.end();
+    })().catch(() => {});
+
+    let killed = false;
+    let expired = false;
+    // The double ends only the spawned process.
+    const kill = () => {
+      if (killed) return;
+      killed = true;
+      proc.kill();
+    };
+    const limit = "deadlineMs" in call.limits ? call.limits.deadlineMs : call.limits.ceilingMs;
+    const deadlineMs = Math.min(limit, inject.deadlineMs ?? limit);
+    const timer = setTimeout(() => {
+      expired = true;
+      kill();
+    }, deadlineMs);
+    call.signal.addEventListener("abort", kill, { once: true });
+    const streams = [
+      drain(
+        pipes[0],
+        (chunk) => {
+          call.stdout.push(chunk);
+          if (call.stdout.limited) kill();
+        },
+        true,
+      ),
+      drain(
+        pipes[1],
+        (chunk) => {
+          call.stderr.push(chunk);
+          if (diagnostics.add(call, chunk.length)) kill();
+        },
+        false,
+      ),
+    ];
+
+    await proc.exited;
+    clearTimeout(timer);
+    call.signal.removeEventListener("abort", kill);
+    own.delete(proc);
+    for (const stream of streams) stream.exit();
+    await Promise.all(streams.map((s) => s.done));
+    scan(call.operationId);
+    return {
+      exitCode: killed ? null : proc.exitCode,
+      activeDescendants: live((r) => r.operationId === call.operationId).length,
+      ...(expired ? { deadline: "deadline" as const } : {}),
+      ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}),
+    };
+  }
+
+  // The last anchor count of each WSL mutation with this tag (contract §11 "Process ownership").
+  const wslLingering = (tag: string) => [...wslAnchors].filter(([op]) => tags.get(op) === tag).reduce((sum, [, a]) => sum + (a.proc.exitCode === null ? (a.last?.[0] ?? 0) : 0), 0);
+
+  function endAnchor(operationId: string): void {
+    wslAnchors.get(operationId)?.proc.kill();
+    wslAnchors.delete(operationId);
+  }
+
+  async function registerWsl(request: WslRegisterRequest): Promise<RegisterReply> {
+    const fields = Object.keys(request).sort().join(",");
+    const ids = [request.operationId, request.bootstrapId, request.gitInstallationId].every(isIdentifier);
+    if (fields !== "bootstrapId,confirm,gitInstallationId,operationId" || !ids || request.confirm !== true) throw new RunnerRefusal("INVALID_REQUEST", "WSL register");
+    const bound = contexts.get(request.bootstrapId);
+    if (inactive.has(request.operationId) || bound?.kind !== "repositoryDiscovery" || (bound.owner ?? request.operationId) !== request.operationId) throw unknownTarget();
+    const facts = wslBound.get(request.bootstrapId);
+    if (!facts || issued.has(request.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL register");
+    bound.owner = request.operationId;
+    const { version, gitIdentity, ...inst } = facts;
+    // The native confirmation shows the distro, the Git path, and the version. Cancel is its default (contract §11).
+    wslConfirmations.push({ distro: inst.distro, path: inst.git, version });
+    if (inject.wslConfirm === "declined") return { result: "declined" };
+    issued.add(request.gitInstallationId);
+    gits.set(request.gitInstallationId, inst.git);
+    wslGits.set(request.gitInstallationId, inst);
+    wslSaved.set(inst.guid, { distro: inst.distro, git: inst.git, version, gitIdentity });
+    return { result: "approved" };
+  }
+
   const runner: GitRunner = {
     async run(call: GitCall): Promise<GitExit> {
       checkCall(call);
       const target = resolveTarget(call.operationId, call.context);
-      const env = environment(call);
-      if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
-      while (startGate) await startGate.promise;
-      call.signal.throwIfAborted();
-      const pipes = [createInboundPipe(NATIVE_CHUNK_BYTES), createInboundPipe(NATIVE_CHUNK_BYTES)];
-      let proc: Subprocess<"pipe", "ignore", "ignore">;
-      try {
-        proc = Bun.spawn([target.program, ...call.arguments], {
-          cwd: target.cwd,
-          env,
-          stdin: "pipe",
-          stdout: Bun.file(pipes[0].name),
-          stderr: Bun.file(pipes[1].name),
-        }) as unknown as Subprocess<"pipe", "ignore", "ignore">;
-      } catch {
-        pipes.forEach(closePipe);
-        throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED");
+      if (!target.wsl) {
+        const env = environment(call);
+        if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
+        return execute(call, [target.program, ...call.arguments], target.cwd, env);
       }
-      spawned++;
-      const own = running.get(call.operationId) ?? new Set();
-      running.set(call.operationId, own.add(proc));
-      // Contract §6 "Console and input": stdin closes after the bounded input, or at once.
-      void (async () => {
-        if (call.input?.length) proc.stdin.write(call.input);
-        await proc.stdin.end();
-      })().catch(() => {});
-
-      let killed = false;
-      let expired = false;
-      // The double ends only the spawned process.
-      const kill = () => {
-        if (killed) return;
-        killed = true;
-        proc.kill();
-      };
-      const deadlineMs = "deadlineMs" in call.limits ? call.limits.deadlineMs : call.limits.ceilingMs;
-      const timer = setTimeout(() => {
-        expired = true;
-        kill();
-      }, deadlineMs);
-      call.signal.addEventListener("abort", kill, { once: true });
-      const streams = [
-        drain(
-          pipes[0],
-          (chunk) => {
-            call.stdout.push(chunk);
-            if (call.stdout.limited) kill();
-          },
-          true,
-        ),
-        drain(
-          pipes[1],
-          (chunk) => {
-            call.stderr.push(chunk);
-            if (diagnostics.add(call, chunk.length)) kill();
-          },
-          false,
-        ),
-      ];
-
-      await proc.exited;
-      clearTimeout(timer);
-      call.signal.removeEventListener("abort", kill);
-      own.delete(proc);
-      for (const stream of streams) stream.exit();
-      await Promise.all(streams.map((s) => s.done));
-      scan(call.operationId);
-      return {
-        exitCode: killed ? null : proc.exitCode,
-        activeDescendants: live((r) => r.operationId === call.operationId).length,
-        ...(expired ? { deadline: "deadline" as const } : {}),
-        ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}),
-      };
+      // Contract §11 "Process launch": `--no-lazy-fetch` stays first, and `-C` takes the Linux directory.
+      const inst = target.wsl;
+      const dir = wslParts(target.cwd);
+      const index = call.transaction ? wslParts(call.transaction.indexFile)?.linux : "";
+      if (!dir || index === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL path");
+      const args = wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir.linux, ...call.arguments.slice(1)]);
+      if (commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
+      const anchor = call.environmentPolicy === "mutation" ? wslAnchor(call.operationId, inst) : null;
+      const exit = await execute(call, [WSL_EXE, ...args], launchDirectory, wslEnvironment());
+      await inject.afterWslExit?.(call);
+      // The anchor count after the exit of an execution process becomes `activeDescendants`.
+      return anchor ? { ...exit, activeDescendants: (await anchor.ask())?.[0] ?? 0 } : exit;
     },
 
     async identities(operationId, context, paths) {
       if (!isIdentifier(operationId) || !checkContext(context)) throw new RunnerRefusal("INVALID_REQUEST", "identity context");
       checkIdentityPaths(paths);
-      resolveTarget(operationId, context);
-      return paths.map(identityOf);
+      const target = resolveTarget(operationId, context);
+      if (!target.wsl) return paths.map(identityOf);
+      const replies: WslIdentityReply[] = [];
+      for (const path of paths) replies.push(await wslIdentity(operationId, target.wsl, path));
+      return replies as unknown as IdentityReply[];
     },
 
     async lingeringCount(operationId, commonDirectory) {
       if (!isIdentifier(operationId) || !isChannelPath(commonDirectory)) throw new RunnerRefusal("INVALID_REQUEST", "lingering count");
       if (inactive.has(operationId)) throw unknownTarget();
-      return live((r) => r.tag === commonDirectory).length;
+      return live((r) => r.tag === commonDirectory).length + wslLingering(commonDirectory);
     },
 
     async register(request) {
+      if (!("version" in request) && !("repositoryId" in request)) return registerWsl(request as unknown as WslRegisterRequest);
       const confirm = checkRegister(request);
       const bound = contexts.get(request.bootstrapId);
       if (inactive.has(request.operationId) || !bound || (bound.owner ?? request.operationId) !== request.operationId) throw unknownTarget();
@@ -330,6 +619,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (bound.kind !== "repositoryDiscovery" || !gits.has(request.gitInstallationId)) throw unknownTarget();
       if (issued.has(request.repositoryId)) throw new RunnerRefusal("INVALID_REQUEST", "issued ID");
       contexts.delete(request.bootstrapId);
+      wslBound.delete(request.bootstrapId);
       issued.add(request.repositoryId);
       const { worktreeRoot, gitDirectory, commonDirectory } = request;
       repositories.set(request.repositoryId, { worktreeRoot, gitDirectory, commonDirectory });
@@ -351,13 +641,18 @@ export function createBunRunner(options: BunRunnerOptions) {
     release(target) {
       checkRelease(target);
       if ("repositoryId" in target) repositories.delete(target.repositoryId);
-      else gits.delete(target.gitInstallationId);
+      else {
+        gits.delete(target.gitInstallationId);
+        wslGits.delete(target.gitInstallationId);
+      }
     },
 
     closeJob(operationId) {
       if (!isIdentifier(operationId)) throw new RunnerRefusal("INVALID_REQUEST", "closeJob");
       frames.push({ type: "closeJob", operationId });
+      // A killed `wsl.exe` gives its command `SIGHUP`, and the wrapper and anchor traps end the scopes (contract §11).
       for (const proc of running.get(operationId) ?? []) proc.kill();
+      wslAnchors.delete(operationId);
       end((r) => r.operationId === operationId);
       inactive.add(operationId);
       diagnostics.clear(operationId);
@@ -377,6 +672,9 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!isIdentifier(operationId) || typeof endProcesses !== "boolean") throw new RunnerRefusal("INVALID_REQUEST", "ended");
       frames.push({ type: "ended", operationId, endProcesses });
       if (endProcesses) end((r) => r.operationId === operationId);
+      // `ended` closes the anchor stdin. The anchor then prints its count each second and exits at 0.
+      if (endProcesses) endAnchor(operationId);
+      else wslAnchors.get(operationId)?.close();
       inactive.add(operationId);
       diagnostics.clear(operationId);
     },
@@ -392,7 +690,9 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (request.type === "revoke") {
         const identity = identityOf(request.commonDirectory);
         trustStore.records = trustStore.records.filter((r) => r.commonDirectory !== request.commonDirectory && !sameIdentity(r.commonIdentity, identity));
-        return { endedProcesses: end((r) => r.tag === request.commonDirectory) };
+        const wslCount = wslLingering(request.commonDirectory);
+        for (const [op] of [...wslAnchors].filter(([op]) => tags.get(op) === request.commonDirectory)) endAnchor(op);
+        return { endedProcesses: end((r) => r.tag === request.commonDirectory) + wslCount };
       }
       if (request.type === "confirmRun") throw new RunnerRefusal("INVALID_REQUEST", "confirmRun is not in this double yet");
       trustStore.persists.push(request.persist);
@@ -422,13 +722,86 @@ export function createBunRunner(options: BunRunnerOptions) {
     },
   };
 
+  // Proposed `wslDistros` request: a `repositoryDiscovery` context whose path is a WSL path.
+  async function wslDistros(operationId: string, bootstrapId: string): Promise<WslDistrosReply> {
+    const bound = contexts.get(bootstrapId);
+    if (inactive.has(operationId) || bound?.kind !== "repositoryDiscovery" || (bound.owner ?? operationId) !== operationId || !wslParts(bound.path)) throw unknownTarget();
+    bound.owner = operationId;
+    const listed = listDistros(false);
+    const running = inject.wslRunning ?? listDistros(true);
+    if (listed === null || running === null) return { code: "WSL_UNAVAILABLE", reason: "wsl-missing" };
+    const keys = registryKeys().filter((k) => listed.includes(k.name));
+    const saved = keys.flatMap((k) => {
+      const git = wslSaved.get(k.guid);
+      return git ? [{ guid: k.guid, ...git }] : [];
+    });
+    return { path: bound.path, listed, running, keys, saved };
+  }
+
+  // Proposed `wslProbe` request (contract §11 "Git per distro"). It runs without the wrapper and without `--no-lazy-fetch`.
+  async function wslProbe(call: WslProbeCall): Promise<GitExit> {
+    const bound = contexts.get(call.bootstrapId);
+    if (inactive.has(call.operationId) || bound?.kind !== "repositoryDiscovery" || (bound.owner ?? call.operationId) !== call.operationId) throw unknownTarget();
+    const parts = wslParts(bound.path);
+    const deadline = call.limits?.deadlineMs;
+    if (!parts || parts.distro.toLowerCase() !== call.distro.toLowerCase() || !Number.isSafeInteger(deadline) || deadline < 1 || deadline > WSL_START_CAP_MS) {
+      throw new RunnerRefusal("INVALID_REQUEST", "wslProbe");
+    }
+    bound.owner = call.operationId;
+    wslBound.delete(call.bootstrapId);
+    // The shell keeps its own copy of the forwarded stdout and parses it at the exit.
+    const seen: Uint8Array[] = [];
+    let seenBytes = 0;
+    const stdout: Collector = {
+      push(chunk) {
+        const kept = chunk.slice(0, WSL_PROBE_RETAINED_BYTES - seenBytes);
+        seen.push(kept);
+        seenBytes += kept.length;
+        call.stdout.push(chunk);
+      },
+      get bytes() {
+        return call.stdout.bytes;
+      },
+      get records() {
+        return call.stdout.records;
+      },
+      get limited() {
+        return call.stdout.limited;
+      },
+    };
+    const asCall = { ...call, stdout, context: { contextKind: "repositoryDiscovery", bootstrapId: call.bootstrapId }, arguments: [], environmentPolicy: "probe" } as unknown as GitCall;
+    const seam = inject.wslProbe;
+    let exit: GitExit;
+    if (!seam) exit = await execute(asCall, [WSL_EXE, ...wslHead(call.distro), WSL_TEXTS.probe, "sh"], launchDirectory, wslEnvironment());
+    else {
+      while (startGate) await startGate.promise;
+      call.signal.throwIfAborted();
+      if (seam.stdout) stdout.push(new TextEncoder().encode(seam.stdout));
+      if (seam.stderr) call.stderr.push(new TextEncoder().encode(seam.stderr));
+      exit = seam.deadline ? { exitCode: null, activeDescendants: 0, deadline: "deadline" } : { exitCode: seam.exitCode ?? 0, activeDescendants: 0 };
+    }
+    const facts = exit.exitCode === 0 && !exit.deadline ? bindProbe(call.distro, new TextDecoder().decode(Buffer.concat(seen))) : null;
+    if (facts) wslBound.set(call.bootstrapId, facts);
+    return exit;
+  }
+
   return {
     ...runner,
+    wslDistros,
+    wslProbe,
     inject,
     frames,
     markers,
     trustStore,
     recordsDirectory,
+    // The WSL Git confirmations in order, the approved Git of each distro GUID, and the WSL identity replies.
+    wslConfirmations,
+    wslSaved,
+    wslIdentityLog,
+    // A simulated service failure: the shell closes every operation Job outside the lingering set (contract §6).
+    failService(): void {
+      for (const operationId of running.keys()) if (!tags.has(operationId) || !inactive.has(operationId)) runner.closeJob(operationId);
+    },
     get spawned() {
       return spawned;
     },
@@ -464,6 +837,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     async dispose(): Promise<void> {
       end(() => true);
       for (const set of running.values()) for (const proc of set) proc.kill();
+      wslAnchors.clear();
+      for (const operationId of wslUnits.keys()) endWslScopes(operationId);
       startGate?.open();
       startGate = null;
       stdoutGate?.open();

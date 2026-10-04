@@ -36,6 +36,10 @@ export type ErrorCode = (typeof ERROR_CODES_BY_CATEGORY)[ErrorCategory][number];
 
 export const ERROR_CODES: readonly ErrorCode[] = Object.values(ERROR_CODES_BY_CATEGORY).flat();
 
+// Contract §9: the reasons of `WSL_UNAVAILABLE`.
+export const WSL_UNAVAILABLE_REASONS = ["wsl-missing", "distro-missing", "not-wsl2", "no-user-manager", "no-setsid", "no-coreutils", "start-failed"] as const;
+export type WslUnavailableReason = (typeof WSL_UNAVAILABLE_REASONS)[number];
+
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === "string" && (ERROR_CODES as readonly string[]).includes(value);
 }

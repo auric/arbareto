@@ -41,6 +41,99 @@ pub struct Settings {
     pub last_repository: Option<PathBuf>,
     /// The window bounds in DIPs.
     pub window: Option<Bounds>,
+    /// The approved Linux Git of each distro GUID, beside the Windows Git (contract §11 "Git per distro").
+    pub wsl_gits: Vec<SavedWslGit>,
+}
+
+/// One approved WSL Git. A later probe with another identity gives `GIT_CHANGED`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedWslGit {
+    /// The registration key name, such as `{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}`.
+    pub guid: String,
+    pub distro: String,
+    /// The absolute Linux path of the approved Git.
+    pub git: String,
+    pub version: String,
+    /// `<file-system ID>:<inode>:<size>:<modification time>` of the Git file (contract §11 "Git per distro").
+    pub identity: String,
+}
+
+/// Use this Git replaces the entry of the same distro GUID.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "T212 wires the WSL register frame")
+)]
+pub fn remember_wsl_git(settings: &mut Settings, git: SavedWslGit) {
+    settings.wsl_gits.retain(|saved| saved.guid != git.guid);
+    settings.wsl_gits.push(git);
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "T212 wires the WSL register frame")
+)]
+pub fn saved_wsl_git<'a>(settings: &'a Settings, guid: &str) -> Option<&'a SavedWslGit> {
+    settings.wsl_gits.iter().find(|saved| saved.guid == guid)
+}
+
+fn is_version(text: &str) -> bool {
+    text.len() <= VERSION_BYTES && text.bytes().all(|b| (0x20..0x7f).contains(&b))
+}
+
+/// The registry form of a GUID: braces around 8, 4, 4, 4, and 12 hex digits.
+fn is_guid(text: &str) -> bool {
+    let Some(inner) = text.strip_prefix('{').and_then(|t| t.strip_suffix('}')) else {
+        return false;
+    };
+    let groups: Vec<&str> = inner.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
+            group.len() == length && group.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+}
+
+fn is_git_identity(text: &str) -> bool {
+    let parts: Vec<&str> = text.split(':').collect();
+    let digits = |part: &str, hex: bool| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (hex && matches!(b, b'a'..=b'f')))
+    };
+    parts.len() == 4 && digits(parts[0], true) && parts[1..].iter().all(|part| digits(part, false))
+}
+
+fn saved_wsl_gits(value: &Value) -> Vec<SavedWslGit> {
+    let mut gits: Vec<SavedWslGit> = Vec::new();
+    for entry in value.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let text = |key: &str| entry[key].as_str();
+        let (Some(guid), Some(distro), Some(git), Some(version), Some(identity)) = (
+            text("guid"),
+            text("distro"),
+            text("git"),
+            text("version"),
+            text("identity"),
+        ) else {
+            continue;
+        };
+        let valid = is_guid(guid)
+            && !distro.is_empty()
+            && !distro.chars().any(char::is_control)
+            && git.starts_with('/')
+            && !git.chars().any(char::is_control)
+            && is_version(version)
+            && is_git_identity(identity);
+        if valid && !gits.iter().any(|saved| saved.guid == guid) {
+            gits.push(SavedWslGit {
+                guid: guid.to_string(),
+                distro: distro.to_string(),
+                git: git.to_string(),
+                version: version.to_string(),
+                identity: identity.to_string(),
+            });
+        }
+    }
+    gits
 }
 
 /// The selected Git. Unknown or invalid values give no saved Git.
@@ -87,13 +180,14 @@ pub fn load(path: &Path) -> Settings {
         git: file.get("git").and_then(saved_git),
         last_repository: file.get("lastRepository").and_then(channel_path),
         window: file.get("window").and_then(bounds),
+        wsl_gits: file.get("wslGits").map(saved_wsl_gits).unwrap_or_default(),
     }
 }
 
 fn saved_git(value: &Value) -> Option<SavedGit> {
-    let version = value["version"].as_str().filter(|version| {
-        version.len() <= VERSION_BYTES && version.bytes().all(|b| (0x20..0x7f).contains(&b))
-    })?;
+    let version = value["version"]
+        .as_str()
+        .filter(|version| is_version(version))?;
     let digest = value["digest"]
         .as_str()
         .filter(|digest| is_hex(digest, 64))?;
@@ -147,6 +241,22 @@ fn save_with(path: &Path, settings: &Settings, fault: Fault) -> io::Result<()> {
             "window".to_string(),
             json!({ "x": window.x, "y": window.y, "width": window.width, "height": window.height }),
         );
+    }
+    if !settings.wsl_gits.is_empty() {
+        let gits: Vec<Value> = settings
+            .wsl_gits
+            .iter()
+            .map(|git| {
+                json!({
+                    "guid": git.guid,
+                    "distro": git.distro,
+                    "git": git.git,
+                    "version": git.version,
+                    "identity": git.identity,
+                })
+            })
+            .collect();
+        file.insert("wslGits".to_string(), Value::Array(gits));
     }
     write_file(
         path,
@@ -1483,6 +1593,7 @@ mod tests {
                 width: 1280,
                 height: 800,
             }),
+            wsl_gits: Vec::new(),
         }
     }
 
@@ -1541,6 +1652,122 @@ mod tests {
         let git = load(&path).git.expect("saved Git");
         assert_eq!(git.selected_path, fixture.path("git.exe"));
         assert_eq!(git.executable_path, fixture.path("git.exe"));
+    }
+
+    const WSL_GUID: &str = "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}";
+    const OTHER_WSL_GUID: &str = "{8f51b15e-5f05-4b6d-8d78-5765530f558a}";
+
+    fn wsl_git(guid: &str, git: &str) -> SavedWslGit {
+        SavedWslGit {
+            guid: guid.to_string(),
+            distro: "Ubuntu-24.04".to_string(),
+            git: git.to_string(),
+            version: "2.55.0".to_string(),
+            identity: "fedc9aa3bd65bc57:43750:4066232:1751487822".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_approved_wsl_git_of_each_distro_guid_round_trips() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        let settings = Settings {
+            wsl_gits: vec![
+                wsl_git(WSL_GUID, "/usr/local/bin/git"),
+                wsl_git(OTHER_WSL_GUID, "/opt/git a$b/bin/git"),
+            ],
+            ..full_settings(&fixture)
+        };
+        save(&path, &settings).expect("save");
+        assert_eq!(load(&path), settings);
+        let file: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        assert_eq!(
+            file["wslGits"][0],
+            json!({
+                "guid": WSL_GUID,
+                "distro": "Ubuntu-24.04",
+                "git": "/usr/local/bin/git",
+                "version": "2.55.0",
+                "identity": "fedc9aa3bd65bc57:43750:4066232:1751487822",
+            })
+        );
+        assert_eq!(
+            file["git"],
+            settings_json(&fixture)["git"],
+            "beside the Windows Git"
+        );
+    }
+
+    #[test]
+    fn approving_a_wsl_git_replaces_only_the_entry_of_its_guid() {
+        let mut settings = Settings::default();
+        remember_wsl_git(&mut settings, wsl_git(WSL_GUID, "/usr/bin/git"));
+        remember_wsl_git(&mut settings, wsl_git(OTHER_WSL_GUID, "/usr/bin/git"));
+        remember_wsl_git(&mut settings, wsl_git(WSL_GUID, "/usr/local/bin/git"));
+        assert_eq!(
+            settings.wsl_gits,
+            [
+                wsl_git(OTHER_WSL_GUID, "/usr/bin/git"),
+                wsl_git(WSL_GUID, "/usr/local/bin/git")
+            ]
+        );
+        assert_eq!(
+            saved_wsl_git(&settings, WSL_GUID),
+            Some(&wsl_git(WSL_GUID, "/usr/local/bin/git"))
+        );
+        assert_eq!(
+            saved_wsl_git(&settings, "{00000000-0000-4000-8000-000000000000}"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_invalid_wsl_git_entry_is_dropped_and_the_other_entries_stay() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        let valid = json!({
+            "guid": OTHER_WSL_GUID,
+            "distro": "Ubuntu",
+            "git": "/usr/bin/git",
+            "version": "2.55.0",
+            "identity": "fedc9aa3bd65bc57:1:2:3",
+        });
+        let cases: [(&str, Value); 12] = [
+            ("guid", json!("c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00")),
+            ("guid", json!("{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea0}")),
+            ("distro", json!("")),
+            ("distro", json!("Ubu\u{1}ntu")),
+            ("git", json!("usr/bin/git")),
+            ("git", json!("/usr/bin/g\u{0}it")),
+            // `dialogs.rs` prints the path into the confirmation.
+            ("git", json!("/usr/bin/g\u{1b}it")),
+            ("git", json!("/usr/bin/git\nUse this Git")),
+            ("git", json!("/usr/bin/g\u{85}it")),
+            ("version", json!("2".repeat(65))),
+            ("identity", json!("fedc9aa3bd65bc57:1:2")),
+            ("identity", json!("xyz:1:2:3")),
+        ];
+        for (field, value) in cases {
+            let mut entry = valid.clone();
+            entry["guid"] = json!(WSL_GUID);
+            entry[field] = value.clone();
+            let mut file = settings_json(&fixture);
+            file["wslGits"] = json!([entry, valid]);
+            std::fs::write(&path, file.to_string()).expect("write");
+            let loaded = load(&path);
+            assert_eq!(loaded.wsl_gits.len(), 1, "{field} {value}");
+            assert_eq!(loaded.wsl_gits[0].guid, OTHER_WSL_GUID);
+            assert_eq!(
+                loaded.git,
+                full_settings(&fixture).git,
+                "the Windows Git stays"
+            );
+        }
+        let mut file = settings_json(&fixture);
+        file["wslGits"] = json!([valid, valid]);
+        std::fs::write(&path, file.to_string()).expect("write");
+        assert_eq!(load(&path).wsl_gits.len(), 1, "one entry for each GUID");
     }
 
     #[test]

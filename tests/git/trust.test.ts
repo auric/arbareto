@@ -2,12 +2,13 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
+import type { FileFact } from "../../src/contracts/channel";
 import { foldAscii } from "../../src/contracts/fold-ascii";
-import { PATH_RULES } from "../../src/contracts/native-path";
-import { RECONCILIATION_TARGET_MS, TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILES, TRUST_DIGEST_TOTAL_BYTES, TRUST_INPUT_BYTES } from "../../src/contracts/limits";
+import { NATIVE, PATH_RULES } from "../../src/contracts/native-path";
+import { RECONCILIATION_TARGET_MS, TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILES, TRUST_DIGEST_TOTAL_BYTES, TRUST_INPUT_BYTES, TRUST_LINK_HOPS } from "../../src/contracts/limits";
 import { configListArgs, hooksPathArgs } from "../../src/git-service/commands";
 import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
 import { RunnerRefusal, type GitRunner } from "../../src/git-service/git-runner";
@@ -18,7 +19,7 @@ import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, serviceEnv, 
 import { buildF02, buildF07, buildF08, buildF17, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import { hookListArgs, sha256 } from "./git-oracle";
-import { caseTest, once, openService, withFsCalls, withPath, type ApproveResult, type OpenOptions, type Service, type ServiceResponse, type TrustResult } from "./service-harness";
+import { caseTest, once, openService, withFsCalls, withPath, type ApproveResult, type Capability, type OpenOptions, type Service, type ServiceResponse, type TrustResult } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/commands.ts", import.meta.dir);
@@ -1340,6 +1341,28 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
     TIMEOUT_MS,
   );
 
+  // Contract §7 "Program file digests": the 64-file bound counts only `file` facts. An absent program takes no slot.
+  caseTest(
+    "T309",
+    `${TRUST_DIGEST_FILES + 6} absent program paths and one program file stay within the bounds: no bound, persistence stored, and an edit of the file gives TRUST_CHANGED`,
+    W,
+    () =>
+      withService({ name: "t309-absent-slots" }, async (service) => {
+        const built = buildF02(gitPath(), "t309-absent-slots");
+        const repo = repoOf(built);
+        for (let i = 0; i < TRUST_DIGEST_FILES + 6; i++) config(repo, `filter.a${i}.clean`, `./tools/missing-${i}.sh`);
+        const program = insideProgram(built, repo, "tools/present.sh");
+        config(repo, "filter.present.clean", program.command);
+        const { repositoryId } = await service.register(repo);
+        const trust = await trustOf(service, repositoryId);
+        expect({ bound: trust.bound, persistence: trust.persistence }).toEqual({ bound: undefined, persistence: "stored" });
+        await approve(service, repositoryId, trust);
+        flipByte(program.path);
+        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
+      }),
+    TIMEOUT_MS,
+  );
+
   caseTest(
     TASK,
     "an edit of an unchecked program file keeps the session approval",
@@ -1446,7 +1469,7 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
     TIMEOUT_MS,
   );
 
-  // Contract §7 "Program file digests": only ENOENT, ENOTDIR, and EISDIR mean absent. Every other error ends the listing `failed`.
+  // Contract §7 "Program file digests": only an `absent` fact means absent. An `error` fact ends the listing `failed`, and the text names its `code`.
   // POSIX mode 0100 keeps the execute bit, so Git still lists and runs the hook.
   caseTest(
     TASK,
@@ -1462,7 +1485,9 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         const issued = await trustOf(service, repositoryId);
         denyRead(hook);
         try {
-          const expected: ListingRefusal = { state: "failed", code: "REPOSITORY_UNAVAILABLE", text: { path: samePath(hook), errno: errnoOf(() => closeSync(openSync(hook, "r"))) } };
+          // Oracle: the test process cannot open the hook for reading. Contract §6 "File facts": EACCES and ERROR_ACCESS_DENIED give `access-denied`.
+          expect(errnoOf(() => closeSync(openSync(hook, "r")))).not.toBeNull();
+          const expected: ListingRefusal = { state: "failed", code: "REPOSITORY_UNAVAILABLE", text: { path: samePath(hook), errno: "access-denied" } };
           expect(refusal(await service.readTrust(repositoryId))).toEqual(expected);
           expect(refusal(await service.approveTrust(repositoryId, issued.fingerprint, issued.generation))).toEqual(expected);
         } finally {
@@ -1472,26 +1497,24 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
     TIMEOUT_MS,
   );
 
-  // ext4 and overlayfs refuse a component above 255 bytes with ENAMETOOLONG, also for root. Another file system can give another errno.
+  // Contract §6 "File facts" refuses a component above 255 UTF-16 units, and on Windows a trailing period. Contract §7 gives such a path bound `name`.
+  // The service sends no `fileFacts` entry for it, so the case needs no file system premise.
   caseTest(
     TASK,
-    "a local filter program path with a 300-byte component ends readTrust failed with REPOSITORY_UNAVAILABLE, never with the program absent",
+    "a local filter program path with a component that breaks the component rule gives bound name and persistence session, never a failed listing, and no fileFacts entry names it",
     W,
     () =>
-      withService({ name: "t071-long-component" }, async (service) => {
-        const built = buildF02(gitPath(), "t071-long-component");
-        const repo = repoOf(built);
-        const program = join(repo, "a".repeat(300));
-        const errno = errnoOf(() => lstatSync(program));
-        if (errno !== "ENAMETOOLONG") {
-          console.log(`SKIP ${TASK} 300-byte component: lstat gives ${errno}, not ENAMETOOLONG, on this file system`);
-          return;
-        }
-        config(repo, "filter.t071.clean", `./${basename(program)}`);
+      withService({ name: "t071-bad-component" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t071-bad-component"));
         const { repositoryId } = await service.register(repo);
-        const expected: ListingRefusal = { state: "failed", code: "REPOSITORY_UNAVAILABLE", text: { path: samePath(program), errno } };
-        expect(refusal(await service.readTrust(repositoryId))).toEqual(expected);
-        expect(refusal(await service.readWorkspace(repositoryId))).toEqual(expected);
+        for (const name of ["a".repeat(256), ...(NATIVE.isComponent("x.") ? [] : ["x."])]) {
+          config(repo, "filter.t071.clean", `./tools/${name}`);
+          const factFrom = service.runner.fileFactCalls.length;
+          const trust = await trustOf(service, repositoryId);
+          expect({ name, bound: trust.bound, persistence: trust.persistence, reads: trust.approvalRequired.reads }).toEqual({ name, bound: "name", persistence: "session", reads: true });
+          expect(entriesSince(service, factFrom).filter((entry) => entry.path.includes(name))).toEqual([]);
+          expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_REQUIRED);
+        }
       }),
     TIMEOUT_MS,
   );
@@ -1515,10 +1538,10 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
     TIMEOUT_MS,
   );
 
-  // Contract §7 "Program file digests": a symbolic link gets no digest, so its target can change unseen. The approval is session-only.
+  // Contract §7 "Program file digests": an absolute link target inside the worktree resolves to a new phase-1 entry, and phase 2 digests the script.
   caseTest(
     TASK,
-    "a .git/hooks/pre-commit symbolic link to a worktree script gives bound link and persistence session, and approveTrust stores no record",
+    "a .git/hooks/pre-commit symbolic link to a worktree script resolves to the script: no bound, persistence stored, and approveTrust stores a record",
     W,
     () =>
       withService({ name: "t071-hook-link" }, async (service) => {
@@ -1536,16 +1559,16 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         expect(lstatSync(hook).isSymbolicLink()).toBe(true);
         const { repositoryId } = await service.register(repo);
         const trust = await trustOf(service, repositoryId);
-        expect({ bound: trust.bound, persistence: trust.persistence, commit: trust.approvalRequired.commit }).toEqual({ bound: "link", persistence: "session", commit: true });
-        expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "session", saveFailed: false });
-        expect({ persists: service.trustStore.persists, records: service.trustStore.records }).toEqual({ persists: [false], records: [] });
+        expect({ bound: trust.bound, persistence: trust.persistence, commit: trust.approvalRequired.commit }).toEqual({ bound: undefined, persistence: "stored", commit: true });
+        expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "stored", saveFailed: false });
+        expect({ persists: service.trustStore.persists, records: service.trustStore.records.length }).toEqual({ persists: [true], records: 1 });
         expect(ran([target.log])).toEqual([]);
       }),
     TIMEOUT_MS,
   );
 });
 
-// Contract §7 "Program file digests": the refusal text names the path and the errno name. Null: the result holds no such text.
+// Contract §7 "Program file digests": the refusal text names the path and the `code` of the fact. Null: the result holds no such text.
 interface ListingRefusal {
   state: string;
   code: string | undefined;
@@ -1554,7 +1577,7 @@ interface ListingRefusal {
 
 function refusal(response: ServiceResponse<unknown>): ListingRefusal {
   const text = (response.result as { remedy?: { text?: unknown } } | undefined)?.remedy?.text;
-  const match = typeof text === "string" ? /^Arbareto cannot read (.+): ([A-Z0-9]+)\.$/s.exec(text) : null;
+  const match = typeof text === "string" ? /^Arbareto cannot read (.+): ([a-z-]+)\.$/s.exec(text) : null;
   return { ...outcome(response), text: match === null ? null : { path: samePath(match[1]!), errno: match[2]! } };
 }
 
@@ -1668,6 +1691,30 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
     },
     TIMEOUT_MS,
   );
+
+  // run-command.c `is_executable`: POSIX Git counts a PATH candidate only with the owner execute bit. Mode 0010 sets only the group bit.
+  // `access(X_OK)` passes for root with any execute bit. So a rule that reads `executable` turns this case red only in a run as root.
+  describe.skipIf(process.platform === "win32")("POSIX", () => {
+    caseTest(
+      "T309",
+      "POSIX: a tools/cleaner candidate with mode 0010 does not count, so the fingerprint stays the same; the owner execute bit gives TRUST_CHANGED",
+      W,
+      async () => {
+        const { repo, environment } = bareName("t309-bare-owner-bit");
+        await withService({ name: "t309-bare-owner-bit", environment }, async (service) => {
+          const { repositoryId } = await service.register(repo);
+          const trust = await trustOf(service, repositoryId);
+          await approve(service, repositoryId, trust);
+          const cleaner = put(repo, "tools/cleaner", program);
+          chmodSync(cleaner, 0o010);
+          expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: trust.fingerprint });
+          chmodSync(cleaner, 0o710);
+          expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
+        });
+      },
+      TIMEOUT_MS,
+    );
+  });
 });
 
 // Contract §7 "Repository-controlled resolution" and "Program file digests". The rule set comes from native-path.ts `emptyPathEntry`.
@@ -2267,13 +2314,17 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
         const installation = await admitted(service);
         const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
         const workspace = registrations.get(await registerIn(registrations, service, repo, installation))!;
-        const trust = createTrust({ runner: service.runner, environment: serviceEnv() });
         const controller = new AbortController();
-        // The first `lstat` belongs to the hooks folder, after both listing processes ended.
-        const { value } = await withFsCalls(
-          () => trust.readTrust({ operationId: crypto.randomUUID(), signal: controller.signal, workspace, installation }, 0),
-          (call) => call.name === "lstat" && controller.abort(),
-        );
+        // The first `fileFacts` request reads the hooks folder, after both listing processes ended (contract §7 "Program file digests").
+        const runner: GitRunner = {
+          ...service.runner,
+          fileFacts(request) {
+            controller.abort();
+            return service.runner.fileFacts(request);
+          },
+        };
+        const trust = createTrust({ runner, environment: serviceEnv() });
+        const value = await trust.readTrust({ operationId: crypto.randomUUID(), signal: controller.signal, workspace, installation }, 0);
         expect(value).toEqual({ result: "canceled" });
         const listed = await trust.listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace });
         if (!listed.ok) throw new Error(`listing: ${JSON.stringify(listed)}`);
@@ -2437,7 +2488,7 @@ const UNC_SHARE = "//arbareto.invalid/share";
 // True for `path` or a path below `base`, by the samePath text rule of these tests.
 const below = (path: string, base: string) => String(samePath(path)) === String(samePath(base)) || String(samePath(path)).startsWith(`${String(samePath(base))}/`);
 
-// Contract §7 "Inside and outside" (D31): the hooks folder listing and each hook entry never follow a link. T309 replaces this interim `lstat` rule.
+// Contract §7 "Program file digests": the service reads the hooks folder and each hook entry only through `fileFacts`, and the shell never follows a link.
 describe("hooks folder links (contract §7 \"Hook registrations\")", () => {
   // A directory link or a file link to the test UNC share. Windows needs the symbolic link privilege for it.
   function linkOrSkip(target: string, path: string, type: "dir" | "file"): boolean {
@@ -2477,7 +2528,7 @@ describe("hooks folder links (contract §7 \"Hook registrations\")", () => {
 
   caseTest(
     "T080",
-    "a .git/hooks/pre-commit entry that is a link to the UNC share is listed with bound link, needs commit approval, and the service reads it only with lstat",
+    "a .git/hooks/pre-commit entry that is a link to the UNC share is listed with bound link, needs commit approval, and the service makes no file call there",
     W,
     () =>
       withService({ name: "t080-hook-entry-link" }, async (service) => {
@@ -2491,7 +2542,7 @@ describe("hooks folder links (contract §7 \"Hook registrations\")", () => {
           bound: trust.bound,
           folder: (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined).map((h) => ({ event: h.event, path: samePath(h.path) })),
         }).toEqual({ commit: true, bound: "link", folder: [{ event: "pre-commit", path: samePath(hook) }] });
-        expect(calls.filter((c) => below(c.path, hook) && c.name !== "lstat")).toEqual([]);
+        expect(calls.filter((c) => below(c.path, hook))).toEqual([]);
       }),
     TIMEOUT_MS,
   );
@@ -2555,7 +2606,7 @@ describe("configuration file paths (contract §7 \"Configuration file paths\")",
         const { installation, changeFiles } = await changeFilesOf(service, repo, environment);
         expect(installation.configFiles).toEqual([...system.lines, ...global.lines]);
         expect(changeFiles.complete).toBe(true);
-        const paths = changeFiles.paths.map(samePath);
+        const paths = changeFiles.configPaths.map(samePath);
         for (const file of [...system.lines, FIXTURE_GLOBAL_CONFIG]) expect(paths).toContain(samePath(file));
       });
     },
@@ -2576,7 +2627,7 @@ describe("configuration file paths (contract §7 \"Configuration file paths\")",
         const { installation, changeFiles } = await changeFilesOf(service, repo, environment);
         expect(installation.configFiles).toEqual([slash(FIXTURE_GLOBAL_CONFIG)]);
         expect(changeFiles.complete).toBe(true);
-        const paths = changeFiles.paths.map(samePath);
+        const paths = changeFiles.configPaths.map(samePath);
         expect(paths).toContain(samePath(FIXTURE_GLOBAL_CONFIG));
         for (const file of systemFiles) expect(paths).not.toContain(samePath(file));
       });
@@ -2612,6 +2663,367 @@ describe("configuration file paths (contract §7 \"Configuration file paths\")",
         }
       });
     },
+    TIMEOUT_MS,
+  );
+});
+
+// The test UNC share of T307. `.invalid` is a reserved top-level domain (RFC 2606), so no host answers.
+const NONEXISTENT_SHARE = "//nonexistent.invalid/share";
+// A junction needs Windows. Off Windows, `symlinkSync` with type "junction" makes a symbolic link.
+const ALIAS_LINK: Capability = process.platform === "win32" ? "ntfs-junction" : "symlink";
+
+// The facts of each `fileFacts` request after call index `from`.
+const factsSince = (service: Service, from: number): FileFact[] => service.runner.fileFactCalls.slice(from).flatMap((c) => c.facts);
+
+const FACT_ROOTS = ["worktreeRoot", "gitDirectory", "commonDirectory"] as const;
+
+// Contract §6 "File facts": each entry names a root of `repositoryId` and native components only.
+// Each entry path, joined to its root, stays below that root and never reaches a path below `forbidden`.
+function entryBreaks(service: Service, from: number, repo: string, repositoryId: string, forbidden: string): unknown[] {
+  const roots = gitPaths(repo);
+  const breaks: unknown[] = [];
+  for (const call of service.runner.fileFactCalls.slice(from)) {
+    if (call.repositoryId !== repositoryId) breaks.push({ repositoryId: call.repositoryId });
+    for (const entry of call.files) {
+      const rootName = entry.root as string;
+      if (!(FACT_ROOTS as readonly string[]).includes(rootName)) {
+        breaks.push({ root: rootName });
+        continue;
+      }
+      const base = roots[entry.root];
+      const joined = join(base, ...entry.path);
+      if (entry.path.length === 0 || !entry.path.every((name) => NATIVE.isComponent(name))) breaks.push({ components: entry.path });
+      if (!below(joined, base) || below(joined, forbidden)) breaks.push({ walks: joined });
+    }
+  }
+  return breaks;
+}
+const entriesSince = (service: Service, from: number) => service.runner.fileFactCalls.slice(from).flatMap((c) => c.files);
+
+// Replaces the link at `path`. Windows removes a directory link with `rmdir`.
+function relink(target: string, path: string, type: "dir" | "file"): void {
+  if (type === "dir" && process.platform === "win32") rmdirSync(path);
+  else unlinkSync(path);
+  symlinkSync(target, path, type);
+}
+
+// Contract §7 "Inside and outside" and "Program file digests" (T309): the service reads hook and program paths only through `fileFacts` below a root.
+describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program file digests\")", () => {
+  const folderHooks = (trust: TrustResult) => (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined);
+  const reached = (calls: { path: string }[], service: Service, identityFrom: number, base: string) =>
+    [...calls.map((c) => c.path), ...service.runner.identityCalls.slice(identityFrom).flatMap((c) => c.paths)].filter((path) => below(path, base));
+
+  // A repository-controlled path outside the roots gets no identity request and no `fileFacts` entry.
+  caseTest(
+    "T307",
+    "a local core.hooksPath=//nonexistent.invalid/share needs commit approval, lists no folder hook, and no file call, identity request, or fileFacts entry reaches the share",
+    W,
+    () =>
+      withService({ name: "t307-unc-hooks-path" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t307-unc-hooks-path"));
+        config(repo, "core.hooksPath", NONEXISTENT_SHARE);
+        const { repositoryId } = await service.register(repo);
+        const identityFrom = service.runner.identityCalls.length;
+        const factFrom = service.runner.fileFactCalls.length;
+        const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
+        expect({ commit: trust.approvalRequired.commit, folder: folderHooks(trust) }).toEqual({ commit: true, folder: [] });
+        expect(reached(calls, service, identityFrom, NONEXISTENT_SHARE)).toEqual([]);
+        // The folder lies outside every root, so phase 1 asks no fact for it or for its entries.
+        expect({ entries: entriesSince(service, factFrom), facts: factsSince(service, factFrom) }).toEqual({ entries: [], facts: [] });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T307",
+    "a .git/hooks folder link to //nonexistent.invalid/share needs commit approval and lists no folder hook; phase 1 reads the link through fileFacts, nothing reaches the share, and a new link target text changes the fingerprint",
+    [...W, "symlink"],
+    () =>
+      withService({ name: "t307-hooks-folder-link" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t307-hooks-folder-link"));
+        const hooks = join(repo, ".git", "hooks");
+        rmSync(hooks, { recursive: true, force: true });
+        symlinkSync(NONEXISTENT_SHARE, hooks, "dir");
+        const { repositoryId } = await service.register(repo);
+        const identityFrom = service.runner.identityCalls.length;
+        const factFrom = service.runner.fileFactCalls.length;
+        const { value: first, calls } = await withFsCalls(() => trustOf(service, repositoryId));
+        expect({ commit: first.approvalRequired.commit, folder: folderHooks(first) }).toEqual({ commit: true, folder: [] });
+        expect(reached(calls, service, identityFrom, NONEXISTENT_SHARE)).toEqual([]);
+        // Phase 1 reads the hooks folder (contract §7 "Program file digests"). The shell reports the link and never follows it.
+        expect(factsSince(service, factFrom).filter((f) => f.kind === "link").length).toBeGreaterThan(0);
+        expect(entryBreaks(service, factFrom, repo, repositoryId, NONEXISTENT_SHARE)).toEqual([]);
+        expect((await trustOf(service, repositoryId)).fingerprint).toBe(first.fingerprint);
+        // Contract §7 fact table: the fingerprint holds each hop's target text.
+        relink("//nonexistent.invalid/other", hooks, "dir");
+        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(first.fingerprint);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T307",
+    "a hook link .git/hooks/pre-commit -> ../../scripts/h.sh resolves inside the worktree: commit approval is required, the approval is stored, and one changed byte of scripts/h.sh gives state changed and TRUST_CHANGED",
+    [...W, "symlink"],
+    async () => {
+      const built = buildF02(gitPath(), "t307-hook-link-inside");
+      const repo = repoOf(built);
+      const log = join(built.root, "canaries", "t307-hook-link-inside.log");
+      const script = put(repo, "scripts/h.sh", SCRIPT(log));
+      const hook = join(repo, ".git", "hooks", "pre-commit");
+      mkdirSync(dirname(hook), { recursive: true });
+      symlinkSync("../../scripts/h.sh", hook, "file");
+      // Oracle: Git lists the hook through the link.
+      expect(hookList(repo, "pre-commit").map((h) => h.scope ?? "hookdir")).toEqual(["hookdir"]);
+      await withService({ name: "t307-hook-link-inside" }, async (service) => {
+        const { repositoryId } = await service.register(repo);
+        const factFrom = service.runner.fileFactCalls.length;
+        const trust = await trustOf(service, repositoryId);
+        expect({
+          commit: trust.approvalRequired.commit,
+          bound: trust.bound,
+          persistence: trust.persistence,
+          folder: folderHooks(trust).map((h) => h.event),
+        }).toEqual({ commit: true, bound: undefined, persistence: "stored", folder: ["pre-commit"] });
+        // Phase 2 digests the resolved file below the worktree root.
+        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.digest === sha256(readFileSync(script)))).toBe(true);
+        expect(entryBreaks(service, factFrom, repo, repositoryId, NONEXISTENT_SHARE)).toEqual([]);
+        expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "stored" });
+        flipByte(script);
+        const changed = await trustOf(service, repositoryId);
+        expect({ state: changed.state, commit: changed.approvalRequired.commit }).toEqual({ state: "changed", commit: true });
+        // Contract §9: the approval of the old fingerprint gives TRUST_CHANGED.
+        expect(gate(await service.approveTrust(repositoryId, trust.fingerprint, trust.generation))).toEqual(TRUST_CHANGED);
+      });
+      expect(ran([log])).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  // Contract §7 "Program file digests": a relative target with `..` after a normal component cannot be resolved.
+  caseTest(
+    "T307",
+    "a hook link with the target x/../h.sh is listed with bound link and persistence session, and a new target text y/../h.sh changes the fingerprint",
+    [...W, "symlink"],
+    () =>
+      withService({ name: "t307-hook-link-dotdot" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t307-hook-link-dotdot"));
+        const hook = join(repo, ".git", "hooks", "pre-commit");
+        mkdirSync(dirname(hook), { recursive: true });
+        symlinkSync("x/../h.sh", hook, "file");
+        const { repositoryId } = await service.register(repo);
+        const factFrom = service.runner.fileFactCalls.length;
+        const trust = await trustOf(service, repositoryId);
+        // Phase 1 reads the hooks folder and its entries (contract §7 "Program file digests").
+        expect(entriesSince(service, factFrom).length).toBeGreaterThan(0);
+        expect(entryBreaks(service, factFrom, repo, repositoryId, NONEXISTENT_SHARE)).toEqual([]);
+        expect({
+          commit: trust.approvalRequired.commit,
+          bound: trust.bound,
+          persistence: trust.persistence,
+          folder: folderHooks(trust).map((h) => h.event),
+        }).toEqual({ commit: true, bound: "link", persistence: "session", folder: ["pre-commit"] });
+        // Contract §7 fact table: an unresolved link enters the fingerprint with each hop's target text.
+        relink("y/../h.sh", hook, "file");
+        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(trust.fingerprint);
+      }),
+    TIMEOUT_MS,
+  );
+
+  // The identity request maps the alias to the worktree root. The service then reads the hook only through `fileFacts` below that root.
+  caseTest(
+    "T307",
+    "a global core.hooksPath through a junction or symlink alias of the worktree maps to the worktree root: the tracked hook needs commit approval, fileFacts gives its digest, and the service makes no file call below the worktree or the alias",
+    [...W, ALIAS_LINK],
+    async () => {
+      const built = buildF08(gitPath(), "t307-alias-hooks", "sha1");
+      const repo = repoOf(built);
+      const canary = outsideProgram(built, "t307-alias-pre-commit");
+      const tracked = put(repo, ".githooks/pre-commit", `#!/bin/sh\nexec ${canary.command}\n`);
+      chmodSync(tracked, 0o755);
+      git(repo, ["add", "--", ".githooks/pre-commit"]);
+      git(repo, ["commit", "-q", "--no-verify", "-m", "hooks"]);
+      const alias = join(built.root, "alias");
+      symlinkSync(repo, alias, "junction");
+      const hooksPath = `${slash(alias)}/.githooks`;
+      expect(String(samePath(hooksPath)).startsWith(`${String(samePath(repo))}/`)).toBe(false);
+      const { file, environment } = ownGlobal(built, [["core.hooksPath", hooksPath]]);
+      // Oracle: Git lists the tracked hook through the alias.
+      expect(hookList(repo, "pre-commit", { GIT_CONFIG_GLOBAL: file }).map((h) => h.scope ?? "hookdir")).toEqual(["hookdir"]);
+      await withService({ name: "t307-alias-hooks", environment }, async (service) => {
+        const { repositoryId } = await service.register(repo);
+        const factFrom = service.runner.fileFactCalls.length;
+        const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
+        const hooks = (trust.hooks as ClassifiedHook[]).filter((h) => h.event === "pre-commit");
+        expect(hooks.map((h) => ({ folder: h.path !== undefined, repositoryControlled: h.repositoryControlled }))).toEqual([{ folder: true, repositoryControlled: true }]);
+        expect(trust.approvalRequired.commit).toBe(true);
+        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.digest === sha256(readFileSync(tracked)))).toBe(true);
+        // The alias maps to the worktree root, so no entry names a path below the alias.
+        expect(entryBreaks(service, factFrom, repo, repositoryId, alias)).toEqual([]);
+        expect(calls.filter((c) => below(c.path, repo) || below(c.path, alias))).toEqual([]);
+      });
+      expect(ran([canary.log])).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T307",
+    "a global core.hooksPath folder outside every root keeps its location only: no folder hook, no commit approval, no file call or fileFacts fact for it, and a changed hook byte there keeps the fingerprint",
+    W,
+    async () => {
+      const built = buildF02(gitPath(), "t307-outside-global-hooks");
+      const repo = repoOf(built);
+      const folder = join(built.root, "outside-hooks");
+      const canary = outsideProgram(built, "t307-outside-pre-commit");
+      const hook = put(folder, "pre-commit", `#!/bin/sh\nexec ${canary.command}\n# t307\n`);
+      chmodSync(hook, 0o755);
+      const { file, environment } = ownGlobal(built, [["core.hooksPath", slash(folder)]]);
+      // Oracle: Git lists the hook in that folder.
+      expect(hookList(repo, "pre-commit", { GIT_CONFIG_GLOBAL: file }).map((h) => h.scope ?? "hookdir")).toEqual(["hookdir"]);
+      await withService({ name: "t307-outside-global-hooks", environment }, async (service) => {
+        const { repositoryId } = await service.register(repo);
+        const factFrom = service.runner.fileFactCalls.length;
+        const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
+        expect({ commit: trust.approvalRequired.commit, folder: folderHooks(trust) }).toEqual({ commit: false, folder: [] });
+        expect(calls.filter((c) => below(c.path, folder))).toEqual([]);
+        expect({ entries: entriesSince(service, factFrom), facts: factsSince(service, factFrom) }).toEqual({ entries: [], facts: [] });
+        flipByte(hook);
+        expect((await trustOf(service, repositoryId)).fingerprint).toBe(trust.fingerprint);
+      });
+      expect(ran([canary.log])).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  // Contract §7 fact table: a link that resolves outside the roots is listed, and the fingerprint keeps its location and hop text only.
+  caseTest(
+    "T307",
+    "a hook link .git/hooks/pre-commit to a file outside the roots is listed by location: commit approval is required, the approval is stored, an edit of the target keeps the fingerprint, and a new target changes it",
+    [...W, "symlink"],
+    async () => {
+      const built = buildF02(gitPath(), "t307-hook-link-outside");
+      const repo = repoOf(built);
+      const target = outsideProgram(built, "t307-link-outside");
+      const other = outsideProgram(built, "t307-link-outside-other");
+      const hook = join(repo, ".git", "hooks", "pre-commit");
+      mkdirSync(dirname(hook), { recursive: true });
+      symlinkSync(target.path, hook, "file");
+      // Oracle: Git lists the hook through the link.
+      expect(hookList(repo, "pre-commit").map((h) => h.scope ?? "hookdir")).toEqual(["hookdir"]);
+      await withService({ name: "t307-hook-link-outside" }, async (service) => {
+        const { repositoryId } = await service.register(repo);
+        const factFrom = service.runner.fileFactCalls.length;
+        const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
+        expect({
+          commit: trust.approvalRequired.commit,
+          bound: trust.bound,
+          persistence: trust.persistence,
+          folder: folderHooks(trust).map((h) => h.event),
+        }).toEqual({ commit: true, bound: undefined, persistence: "stored", folder: ["pre-commit"] });
+        expect(calls.filter((c) => below(c.path, target.path))).toEqual([]);
+        expect(entryBreaks(service, factFrom, repo, repositoryId, dirname(target.path))).toEqual([]);
+        expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "stored" });
+        flipByte(target.path);
+        expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: trust.fingerprint });
+        relink(other.path, hook, "file");
+        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(trust.fingerprint);
+      });
+      expect(ran([target.log, other.log])).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  // Contract §5 and §7: link resolution follows at most 8 hops. A junction stores an absolute `\??\` target, and `symlinkSync` off Windows stores the absolute path.
+  caseTest(
+    "T307",
+    `a program path through ${TRUST_LINK_HOPS} chained folder links resolves to the file and gets its digest; ${TRUST_LINK_HOPS + 1} links give bound link and persistence session`,
+    [...W, ALIAS_LINK],
+    () =>
+      withService({ name: "t307-link-hops" }, async (service) => {
+        const built = buildF02(gitPath(), "t307-link-hops");
+        const repo = repoOf(built);
+        const program = insideProgram(built, repo, "real/clean.sh");
+        // l1 -> l2 -> ... -> l9 -> real.
+        for (let n = TRUST_LINK_HOPS + 1; n >= 1; n--) symlinkSync(join(repo, n > TRUST_LINK_HOPS ? "real" : `l${n + 1}`), join(repo, `l${n}`), "junction");
+        const { repositoryId } = await service.register(repo);
+        config(repo, "filter.hops.clean", "./l2/clean.sh");
+        const resolved = await trustOf(service, repositoryId);
+        expect({ bound: resolved.bound, persistence: resolved.persistence }).toEqual({ bound: undefined, persistence: "stored" });
+        flipByte(program.path);
+        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(resolved.fingerprint);
+        flipByte(program.path);
+        config(repo, "filter.hops.clean", "./l1/clean.sh");
+        const capped = await trustOf(service, repositoryId);
+        expect({ bound: capped.bound, persistence: capped.persistence }).toEqual({ bound: "link", persistence: "session" });
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §7 "Program file digests": a link whose target is exactly a root gives a `directory` fact. Git then reads hooks from that root.
+  caseTest(
+    "T309",
+    "a .git/hooks folder link to .. resolves to the worktree root: its pre-commit hook is listed with a digest, no bound, and one changed byte gives state changed",
+    [...W, ALIAS_LINK],
+    async () => {
+      const built = buildF02(gitPath(), "t309-hooks-root-link");
+      const repo = repoOf(built);
+      const log = join(built.root, "canaries", "t309-hooks-root-link.log");
+      mkdirSync(dirname(log), { recursive: true });
+      const hook = put(repo, "pre-commit", SCRIPT(log));
+      chmodSync(hook, 0o755);
+      const hooks = join(repo, ".git", "hooks");
+      rmSync(hooks, { recursive: true, force: true });
+      // A junction needs an absolute target. A symbolic link `..` in `.git` names the worktree root.
+      symlinkSync(process.platform === "win32" ? repo : "..", hooks, "junction");
+      // Oracle: Git lists the hook through the link.
+      expect(hookList(repo, "pre-commit").map((h) => h.scope ?? "hookdir")).toEqual(["hookdir"]);
+      await withService({ name: "t309-hooks-root-link" }, async (service) => {
+        const { repositoryId } = await service.register(repo);
+        const trust = await trustOf(service, repositoryId);
+        expect({
+          commit: trust.approvalRequired.commit,
+          bound: trust.bound,
+          persistence: trust.persistence,
+          folder: folderHooks(trust).map((h) => h.event),
+        }).toEqual({ commit: true, bound: undefined, persistence: "stored", folder: ["pre-commit"] });
+        await approve(service, repositoryId, trust);
+        flipByte(hook);
+        expect((await trustOf(service, repositoryId)).state).toBe("changed");
+      });
+      expect(ran([log])).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  // Contract §6 "File facts": the Windows walk opens each component case-insensitively. `factKey` folds ASCII letters, so both texts share one entry.
+  caseTest(
+    "T309",
+    "program paths ./TOOLS/CLEAN.SH and ./tools/clean.sh name one file: each phase sends one entry in the first spelling, the walk finds the file, and one changed byte gives TRUST_CHANGED",
+    [...W, "windows-path-rules"],
+    () =>
+      withService({ name: "t309-ascii-case" }, async (service) => {
+        const built = buildF02(gitPath(), "t309-ascii-case");
+        const repo = repoOf(built);
+        const program = insideProgram(built, repo, "tools/clean.sh");
+        config(repo, "filter.upper.clean", "./TOOLS/CLEAN.SH");
+        config(repo, "filter.lower.clean", "./tools/clean.sh");
+        const { repositoryId } = await service.register(repo);
+        const factFrom = service.runner.fileFactCalls.length;
+        const trust = await trustOf(service, repositoryId);
+        expect({ bound: trust.bound, persistence: trust.persistence }).toEqual({ bound: undefined, persistence: "stored" });
+        const sent = service.runner.fileFactCalls
+          .slice(factFrom)
+          .map((call) => ({ digest: call.digest, paths: call.files.filter((e) => foldAscii(e.path.join("/")) === "tools/clean.sh").map((e) => e.path.join("/")) }));
+        expect(sent).toEqual([
+          { digest: false, paths: ["TOOLS/CLEAN.SH"] },
+          { digest: true, paths: ["TOOLS/CLEAN.SH"] },
+        ]);
+        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.digest === sha256(readFileSync(program.path)))).toBe(true);
+        await approve(service, repositoryId, trust);
+        flipByte(program.path);
+        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
+      }),
     TIMEOUT_MS,
   );
 });

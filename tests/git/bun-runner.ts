@@ -15,6 +15,7 @@ import { isIdentifier } from "../../src/contracts/operations";
 import {
   checkCall,
   checkContext,
+  checkFileFacts,
   checkIdentityPaths,
   checkRegister,
   checkRelease,
@@ -24,6 +25,8 @@ import {
   commandLineUnits,
   type Collector,
   createDiagnosticCounter,
+  type FileFact,
+  type FileFactsRequest,
   isChannelPath,
   RunnerRefusal,
   type GitCall,
@@ -43,7 +46,7 @@ import type { InboundPipe } from "./win32";
 
 // The host module of the double. The generic harness loads it only through this path (tests/git/portable-imports.test.ts).
 export const HOST_SCRIPT = join(import.meta.dir, process.platform === "win32" ? "win32.ts" : "linux.ts");
-const { closePipe, createInboundPipe, peekPipe, processCreationTime, readIdentity, readPipe, terminateRecorded } = require(HOST_SCRIPT) as typeof import("./win32");
+const { closePipe, createInboundPipe, peekPipe, processCreationTime, readFileFacts, readIdentity, readPipe, terminateRecorded } = require(HOST_SCRIPT) as typeof import("./win32");
 
 printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
 printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
@@ -274,6 +277,15 @@ export function createBunRunner(options: BunRunnerOptions) {
   const frames: Record<string, unknown>[] = [];
   const calls: RecordedCall[] = [];
   const identityCalls: { at: number; operationId: string; paths: string[]; replies: unknown[] }[] = [];
+  // Each answered `fileFacts` request, with its entries and the file data bytes that the walk read for each entry. A refused request is not recorded.
+  const fileFactCalls: {
+    operationId: string;
+    repositoryId: string;
+    digest: boolean;
+    files: { root: FileFactsRequest["files"][number]["root"]; path: string[] }[];
+    facts: FileFact[];
+    bytesRead: number[];
+  }[] = [];
   // The functions that stop the running calls of each operation.
   const halts = new Map<string, Set<() => void>>();
   const drains = new Set<Promise<void>>();
@@ -733,6 +745,20 @@ export function createBunRunner(options: BunRunnerOptions) {
       return replies as unknown as IdentityReply[];
     },
 
+    // src-tauri/src/process_requests.rs `file_facts`: the fields, the target, then the WSL roots. The walk is synchronous, as in the shell.
+    async fileFacts(request) {
+      checkFileFacts(request);
+      const { operationId, contextKind, gitInstallationId, repositoryId } = request;
+      resolveTarget(operationId, { contextKind, gitInstallationId, repositoryId });
+      const roots = repositories.get(repositoryId)!;
+      // Contract §11 "Trust and environment": the shell refuses a WSL repository until T212 adds the WSL form.
+      if (Object.values(roots).some((root) => WSL_PREFIX.test(root))) throw new RunnerRefusal("INVALID_REQUEST", "WSL file facts");
+      const { facts, bytesRead } = readFileFacts(roots, request.digest, request.files);
+      const files = request.files.map(({ root, path }) => ({ root, path: [...path] }));
+      fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead });
+      return facts;
+    },
+
     async lingeringCount(operationId, commonDirectory) {
       if (!isIdentifier(operationId) || !isChannelPath(commonDirectory)) throw new RunnerRefusal("INVALID_REQUEST", "lingering count");
       if (inactive.has(operationId)) throw unknownTarget();
@@ -937,6 +963,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Every `run` and identity request in arrival order.
     calls,
     identityCalls,
+    fileFactCalls,
     // The WSL Git confirmations in order, the approved Git of each distro GUID, and the WSL identity replies.
     wslConfirmations,
     wslSaved,

@@ -4,20 +4,31 @@
 import { describe, expect } from "bun:test";
 import { chmodSync, existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
-import { classifyDiscoveryFailure } from "../../src/git-service/discovery";
+import { buildSubmoduleOutputTail } from "../../src/contracts/submodules";
+import { discoverRepository } from "../../src/git-service/discovery";
+import { createCollector } from "../../src/git-service/git-runner";
 import { redactUrlUserInfo } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
-import { FIXTURE_ROOT, fixtureEnv, fixtureGit, ownedGit, useFixtureRoot } from "./fixture-root";
+import { createBunRunner } from "./bun-runner";
+import { FIXTURE_ROOT, fixtureDir, fixtureEnv, fixtureGit, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF02, buildF17, put } from "./fixtures";
 import { GIT } from "./git-binary";
 import { caseTest, openService, type Service } from "./service-harness";
 
 printOrigin("../../src/git-service/discovery.ts", import.meta.dir);
 printOrigin("../../src/git-service/trust.ts", import.meta.dir);
+printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
+printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
 const TASK = "T073";
+const MERGED = "T308";
 const TIMEOUT_MS = 120_000;
-const SELECTED_GIT = "C:\\Program Files\\Git\\cmd\\git.exe";
+// Research R2: the first discovery query.
+const FIRST_QUERY = ["--no-lazy-fetch", "rev-parse", "--is-bare-repository", "--is-inside-git-dir"];
+// Contract §6 "Registration bootstrap": the remedy text of the merged refusal.
+const UNAVAILABLE_REMEDY = "Run `git status` in this folder";
+// Contract §7 "URL user information": the redacted form of each canary URL.
+const REDACTED_URL = "https://<redacted>@host.example/";
 
 // Every credential canary holds this text. Each sits in the user information of a URL.
 const CANARY = "ARBARETO-T073-";
@@ -70,25 +81,51 @@ function diagnostics(value: unknown): unknown[] {
 
 describe("credential canaries outside the service (L)", () => {
   caseTest(
-    TASK,
-    "Git stderr of a failing discovery holds a credential canary, and the discovery refusal holds none",
-    [],
-    () => {
+    MERGED,
+    "Git stderr of a failing discovery holds a credential canary, and the merged refusal carries it only redacted in outputTail",
+    ["shell-double"],
+    async () => {
       const git = gitPath();
       const repo = join(buildF02(git, "t073-discovery-stderr").root, "repo");
       // Git dies on a bad numeric value and prints that value (Git `config.c` `die_bad_number`).
       fixtureGit(git, repo, ["config", "core.abbrev", CANARIES.discovery]);
-      const proc = Bun.spawnSync([git, "--no-lazy-fetch", "rev-parse", "--is-bare-repository", "--is-inside-git-dir"], {
-        cwd: repo,
-        env: fixtureEnv({ LC_ALL: "C" }),
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      const proc = Bun.spawnSync([git, ...FIRST_QUERY], { cwd: repo, env: fixtureEnv({ LC_ALL: "C" }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
       expect({ exitCode: proc.exitCode, canary: text(proc.stderr).includes(CANARIES.discovery) }).toEqual({ exitCode: 128, canary: true });
-      const refusal = classifyDiscoveryFailure({ exitCode: proc.exitCode, stderr: new Uint8Array(proc.stderr), directory: repo, gitSelectedPath: SELECTED_GIT });
-      expect(refusal.code).toBe("REPOSITORY_UNAVAILABLE");
-      expect(leaks(refusal)).toEqual([]);
+
+      const runner = createBunRunner({ git, directory: fixtureDir("t073-discovery-stderr-runner"), environment: serviceEnv() });
+      try {
+        const gitInstallationId = crypto.randomUUID();
+        const probe = runner.addContext("gitProbe", git);
+        expect(await runner.register({ operationId: crypto.randomUUID(), bootstrapId: probe, gitInstallationId, version: "2.55.0", digest: "c".repeat(64), confirm: false })).toEqual({ result: "approved" });
+        // Records the stderr bytes of discovery call 1 and passes them on.
+        const seen: Uint8Array[] = [];
+        const recorded = {
+          ...runner,
+          run: async (call: Parameters<typeof runner.run>[0]) => {
+            if (call.arguments.join(" ") !== FIRST_QUERY.join(" ")) return runner.run(call);
+            const stderr = createCollector({ maxBytes: 64 * 1024 });
+            const exit = await runner.run({ ...call, stderr });
+            seen.push(stderr.take());
+            call.stderr.push(seen[0]!);
+            return exit;
+          },
+        };
+        const result = await discoverRepository(recorded, { operationId: crypto.randomUUID(), bootstrapId: runner.addContext("repositoryDiscovery", repo), gitInstallationId, directory: repo, gitSelectedPath: git });
+        const refusal = (result.ok ? undefined : result.refusal) as { code?: string; path?: string; remedy?: { text?: string; command?: string | null }; outputTail?: string } | undefined;
+        expect(seen.length).toBe(1);
+        expect(text(seen[0]!)).toContain(CANARIES.discovery);
+        expect({ code: refusal?.code, path: refusal?.path, text: refusal?.remedy?.text, command: refusal?.remedy?.command ?? null, outputTail: refusal?.outputTail }).toEqual({
+          code: "REPOSITORY_UNAVAILABLE",
+          path: repo,
+          text: UNAVAILABLE_REMEDY,
+          command: null,
+          outputTail: buildSubmoduleOutputTail(seen[0]!, false),
+        });
+        expect(refusal?.outputTail).toContain(REDACTED_URL);
+        expect(leaks(refusal)).toEqual([]);
+      } finally {
+        await runner.dispose();
+      }
     },
     TIMEOUT_MS,
   );
@@ -141,10 +178,20 @@ describe("credential canaries through the service (contract §7, data-model §7 
         expect(service.runner.calls.slice(failedFrom).some((c) => c.exit?.exitCode === 128)).toBe(true);
         await service.readTrust(repositoryId);
 
-        // The failing discovery reaches the classifier through the service.
+        // The failing discovery call 1 gives the merged refusal through the service. Its outputTail holds Git's message with the canary redacted.
         const other = join(buildF02(git, "t073-service-discovery").root, "repo");
         fixtureGit(git, other, ["config", "core.abbrev", CANARIES.discovery]);
-        expect((await service.chooseRepository(other)).state).not.toBe("succeeded");
+        const refused = await service.chooseRepository(other);
+        const gitStderr = new Uint8Array(Bun.spawnSync([git, ...FIRST_QUERY], { cwd: other, env: fixtureEnv({ LC_ALL: "C" }), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).stderr);
+        const result = refused.result as { remedy?: { text?: string; command?: string | null }; outputTail?: string } | undefined;
+        expect({ state: refused.state, code: refused.code, text: result?.remedy?.text, command: result?.remedy?.command ?? null, outputTail: result?.outputTail }).toEqual({
+          state: "failed",
+          code: "REPOSITORY_UNAVAILABLE",
+          text: UNAVAILABLE_REMEDY,
+          command: null,
+          outputTail: buildSubmoduleOutputTail(gitStderr, false),
+        });
+        expect(result?.outputTail).toContain(REDACTED_URL);
 
         expect(existsSync(hookLog)).toBe(false);
         expect(leaks(service.responses)).toEqual([]);

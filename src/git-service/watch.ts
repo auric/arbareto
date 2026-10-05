@@ -5,6 +5,7 @@
 
 import { constants, stat, statSync, watch, type BigIntStats, type FSWatcher } from "node:fs";
 import { open, stat as statPath } from "node:fs/promises";
+import { isMissing } from "./read-steps";
 
 // Plan.md "Freshness and reconciliation": the hint debounce. `limits.ts` holds only contract §5 bounds, which name `limited` reasons.
 const WATCH_DEBOUNCE_MS = 100;
@@ -86,8 +87,6 @@ export interface TupleFile {
   path: string;
   content: boolean;
 }
-
-const isMissing = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
 
 // Size, last-write time, and presence, and the bytes of a `content` file. Undefined: the fact is unknown.
 async function factOf(file: TupleFile): Promise<string | undefined> {

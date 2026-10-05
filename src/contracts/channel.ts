@@ -269,7 +269,9 @@ export const FileFact = z.union([
       lastWrite: Stamp,
       digest: Fingerprint.optional(),
       bound: z.enum(["file-bytes", "total-bytes"]).optional(),
+      // POSIX only. `executable` is the `access(X_OK)` result. `ownerExecute` is the `S_IXUSR` bit of `st_mode`.
       executable: z.boolean().optional(),
+      ownerExecute: z.boolean().optional(),
     })
     .refine((fact) => fact.digest === undefined || fact.bound === undefined)
     .meta({ title: "FileFactFile" }),
@@ -336,7 +338,7 @@ export const MutationReply = z.union([...StartedReply.options, Refused]);
 // ---- `trust` frames (contract §7 "Trust approval store") ----
 
 // Contract §7 "Program file digests".
-export const TRUST_BOUNDS = ["file-count", "file-bytes", "total-bytes", "link"] as const;
+export const TRUST_BOUNDS = ["file-count", "file-bytes", "total-bytes", "link", "name"] as const;
 export type TrustBound = (typeof TRUST_BOUNDS)[number];
 
 const confirm = {

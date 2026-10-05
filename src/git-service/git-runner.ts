@@ -6,6 +6,7 @@ import {
   BootstrapLimits,
   NetworkLimits,
   ProcessContext,
+  ProcessRequest,
   RegisteredLimits,
   RegisterGitCall,
   RegisterRepositoryCall,
@@ -13,6 +14,7 @@ import {
   ResolveGitCall,
   StartedCall,
   TrustCall,
+  type FileFact,
   type FileIdentity,
   type IdentityReply,
   type MarkerFailure,
@@ -39,7 +41,7 @@ import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operat
 import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
 
 export { isChannelPath } from "../contracts/operations";
-export type { FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, RegisterRequest, ResolveGitRequest, TrustBound, TrustRecord, TrustRequest };
+export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, RegisterRequest, ResolveGitRequest, TrustBound, TrustRecord, TrustRequest };
 
 // Contract §7 environment policies. `mutation-trace2` exists only after a supporting T091 result.
 export type EnvironmentPolicy = "probe" | "read" | "mutation" | "network";
@@ -102,9 +104,14 @@ export type TrustReply =
 
 export type RegisterReply = { result: "approved" | "declined" } | { result: "another"; bootstrapId: string; executablePath: string };
 
+// Contract §6 "File facts": the `FileFacts` frame without `type` and `callId`.
+export type FileFactsRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "fileFacts" }>, "type" | "callId">;
+
 export interface GitRunner {
   run(call: GitCall): Promise<GitExit>;
   identities(operationId: string, context: ProcessContext, paths: readonly string[]): Promise<IdentityReply[]>;
+  // Replies with one fact per entry, in request order.
+  fileFacts(request: FileFactsRequest): Promise<FileFact[]>;
   lingeringCount(operationId: string, commonDirectory: string): Promise<number>;
   register(request: RegisterRequest): Promise<RegisterReply>;
   // Replies with the `bootstrapId` of the new `gitProbe` context for `executablePath`.
@@ -186,6 +193,12 @@ export function checkCall(call: GitCall): void {
 
 export function checkIdentityPaths(paths: readonly string[]): void {
   if (!fits(IdentityPaths, paths)) refuse("identity paths");
+}
+
+// The `type` literal selects the `FileFacts` frame schema. A request that holds `type` or `callId` breaks the field set.
+export function checkFileFacts(request: FileFactsRequest): void {
+  const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
+  if (!valid || !fits(ProcessRequest, { type: "fileFacts", callId: crypto.randomUUID(), ...request })) refuse("fileFacts");
 }
 
 // Returns true for a Git registration with `confirm: true`. Only that request can reply `declined` or `another`.

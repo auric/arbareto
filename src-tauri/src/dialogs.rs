@@ -271,6 +271,7 @@ fn bound_text(bound: &str) -> Option<&'static str> {
         "file-bytes" => Some("1 MiB per file"),
         "total-bytes" => Some("8 MiB total"),
         "link" => Some("a link that Arbareto cannot follow"),
+        "name" => Some("a file name that Arbareto cannot check"),
         _ => None,
     }
 }
@@ -1038,6 +1039,7 @@ pub(crate) mod tests {
             ("file-bytes", "1 MiB per file"),
             ("total-bytes", "8 MiB total"),
             ("link", "a link that Arbareto cannot follow"),
+            ("name", "a file name that Arbareto cannot check"),
         ] {
             let confirmation = trust_confirmation(&trust_request(&fixture, false, Some(bound)));
             assert!(

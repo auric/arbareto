@@ -4,8 +4,11 @@
 // Linux calls of the `bun-runner.ts` test double. Run as a script, the file is a fixture process that records itself and lingers.
 
 import { dlopen, FFIType } from "bun:ffi";
-import { closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_TOTAL_BYTES } from "../../src/contracts/limits";
+import type { FileFact, FileFactsRequest } from "../../src/git-service/git-runner";
 
 const { ptr: P, u32, i32 } = FFIType;
 const open = () => dlopen("libc.so.6", { mkfifo: { args: [P, u32], returns: i32 } }).symbols;
@@ -149,6 +152,154 @@ export function terminateRecorded(pid: number, created: bigint): boolean {
 // The record name is `<pid>-<start time>`. `bun-runner.ts` counts these records as the live descendants of an operation.
 export function recordProcess(directory: string): void {
   writeFileSync(join(directory, `${process.pid}-${processCreationTime(process.pid)}`), "");
+}
+
+// POSIX.1-2024 <sys/stat.h>: the owner execute bit is 0100. Git `run-command.c` `is_executable` tests it.
+const S_IXUSR = 0o100n;
+// include/uapi/asm-generic/fcntl.h: `O_PATH` is 010000000. x86-64 and arm64 use the generic value. Node exports no `O_PATH`.
+const O_PATH = 0o10000000;
+const GENERIC_FCNTL_ARCHES = ["x64", "arm64"];
+
+type FactRoot = FileFactsRequest["files"][number]["root"];
+export type FileFactsResult = { facts: FileFact[]; bytesRead: number[] };
+
+// Contract §6 "File facts" `error` codes by POSIX `errno`. A thrown value without an errno is no open result.
+function errnoCode(error: unknown): string {
+  const { code, errno } = error as NodeJS.ErrnoException;
+  if (typeof code !== "string" || typeof errno !== "number") throw error;
+  return code;
+}
+
+function errorFact(error: unknown, component: number): FileFact {
+  const code = errnoCode(error);
+  return { kind: "error", component, code: code === "EACCES" ? "access-denied" : code === "EIO" ? "io-error" : "other-error" };
+}
+
+// Contract §6 "File facts" `absent`: only the open results ENOENT and ENOTDIR.
+function failed(error: unknown, component: number): FileFact {
+  const code = errnoCode(error);
+  return code === "ENOENT" || code === "ENOTDIR" ? { kind: "absent" } : errorFact(error, component);
+}
+
+// POSIX.1-2024 XBD 4.16: a pathname that begins with a slash is absolute. Text that is no well-formed UTF-8 gives tag `other`.
+function link(parent: number, name: string, component: number): FileFact {
+  let bytes: Buffer;
+  try {
+    bytes = readlinkSync(`/proc/self/fd/${parent}/${name}`, { encoding: "buffer" });
+  } catch (error) {
+    return errorFact(error, component);
+  }
+  let target: string;
+  try {
+    target = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return { kind: "link", component, tag: "other" };
+  }
+  if (target.includes("\0")) return { kind: "link", component, tag: "other" };
+  return { kind: "link", component, tag: "symlink", target, relative: !target.startsWith("/") };
+}
+
+// access(2) `X_OK` on the opened object. Only `EACCES` means "not executable".
+function executable(fd: number, component: number): { executable: boolean } | FileFact {
+  try {
+    accessSync(`/proc/self/fd/${fd}`, constants.X_OK);
+    return { executable: true };
+  } catch (error) {
+    return errnoCode(error) === "EACCES" ? { executable: false } : errorFact(error, component);
+  }
+}
+
+// Reads at most `limit` bytes. `/proc/self/fd/<fd>` reopens the `O_PATH` object itself and resolves no name again.
+// `O_NONBLOCK` keeps the open from a wait. Only a regular file comes here.
+function readData(fd: number, limit: number): Uint8Array {
+  const data = openSync(`/proc/self/fd/${fd}`, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const bytes = new Uint8Array(limit);
+    let filled = 0;
+    while (filled < limit) {
+      const n = readSync(data, bytes, filled, limit - filled, null);
+      if (n === 0) break;
+      filled += n;
+    }
+    return bytes.subarray(0, filled);
+  } finally {
+    closeSync(data);
+  }
+}
+
+// One fact per entry, in request order (src-tauri/src/file_facts.rs `walk`). `bytesRead` counts the file data bytes of each entry.
+// Each component opens relative to its parent descriptor with `O_PATH | O_NOFOLLOW`. That open never follows a link.
+// It calls no driver open, so a FIFO, a socket, or a device opens without a wait. `fstat` gives the type.
+export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, files: FileFactsRequest["files"]): FileFactsResult {
+  linux();
+  if (!GENERIC_FCNTL_ARCHES.includes(process.arch)) throw new Error(`tests/git/linux.ts has no O_PATH value for ${process.arch}`);
+  // The digested bytes that the request can still take. null after the first file that passed the total.
+  let budget: number | null = TRUST_DIGEST_TOTAL_BYTES;
+  const facts: FileFact[] = [];
+  const bytesRead: number[] = [];
+  for (const { root, path } of files) {
+    const read = { bytes: 0 };
+    facts.push(entryFact(roots[root], path, read));
+    bytesRead.push(read.bytes);
+  }
+  return { facts, bytesRead };
+
+  // `component` counts the components of `path` from 1. Component 0 is the root.
+  function entryFact(rootPath: string, path: readonly string[], read: { bytes: number }): FileFact {
+    const opened: number[] = [];
+    try {
+      try {
+        opened.push(openSync(rootPath, constants.O_RDONLY | constants.O_DIRECTORY));
+      } catch (error) {
+        return failed(error, 0);
+      }
+      for (const [index, name] of path.entries()) {
+        const component = index + 1;
+        const parent = opened.at(-1)!;
+        let fd: number;
+        try {
+          fd = openSync(`/proc/self/fd/${parent}/${name}`, O_PATH | constants.O_NOFOLLOW);
+        } catch (error) {
+          return failed(error, component);
+        }
+        opened.push(fd);
+        const stat = fstatSync(fd, { bigint: true });
+        if (stat.isSymbolicLink()) return link(parent, name, component);
+        // A middle component that is no directory makes the next open fail with ENOTDIR.
+        if (component < path.length) continue;
+        if (stat.isDirectory()) {
+          const mode = executable(fd, component);
+          return "kind" in mode ? mode : { kind: "directory", ...mode };
+        }
+        if (!stat.isFile()) return { kind: "other" };
+        const mode = executable(fd, component);
+        if ("kind" in mode) return mode;
+        const size = Number(stat.size);
+        const fact: FileFact = { kind: "file", size, lastWrite: stat.mtimeNs.toString(), ...mode, ownerExecute: (stat.mode & S_IXUSR) !== 0n };
+        if (!digest) return fact;
+        // Contract §6 "File facts": the per-file bound comes first. Only files within it count toward the request total.
+        if (size > TRUST_DIGEST_FILE_BYTES) return { ...fact, bound: "file-bytes" };
+        if (budget === null) return { ...fact, bound: "total-bytes" };
+        let bytes: Uint8Array;
+        try {
+          bytes = readData(fd, TRUST_DIGEST_FILE_BYTES + 1);
+        } catch (error) {
+          return errorFact(error, component);
+        }
+        read.bytes = bytes.length;
+        if (bytes.length > TRUST_DIGEST_FILE_BYTES) return { ...fact, bound: "file-bytes" };
+        if (bytes.length > budget) {
+          budget = null;
+          return { ...fact, bound: "total-bytes" };
+        }
+        budget -= bytes.length;
+        return { ...fact, digest: createHash("sha256").update(bytes).digest("hex") };
+      }
+      throw new Error("a file-fact entry holds no component");
+    } finally {
+      for (const fd of opened) closeSync(fd);
+    }
+  }
 }
 
 // Script mode: `bun linux.ts <records> <hold ms> <ready file>`. The process inherits the pipes of its parent and holds them.

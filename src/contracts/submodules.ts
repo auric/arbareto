@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { Base64 } from "./channel";
-import { Phase, ProgressEvent } from "./envelope";
+import { OutputTail, Phase, ProgressEvent } from "./envelope";
 import { COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES } from "./limits";
 import { Count, Fingerprint, Identifier, Text } from "./operations";
 import { buildRemedyCommand, type RemedyValue } from "./remedy-command";
@@ -43,9 +43,6 @@ export type SubmoduleFailedRead = (typeof SUBMODULE_FAILED_READS)[number];
 
 const ObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 const utf8Bytes = (text: string) => new TextEncoder().encode(text).length;
-// Contract §10: an output tail stays within 16 KiB and 100 lines.
-const lineCount = (text: string) => (text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
-const OutputTail = Text.refine((tail) => utf8Bytes(tail) <= COMMIT_OUTPUT_TAIL_BYTES && lineCount(tail) <= COMMIT_OUTPUT_TAIL_LINES);
 
 // Data-model §9 "Plan row". `url` is null for a gitlink without a `.gitmodules` entry (reason `no-url`).
 export const SubmodulePlanRow = z

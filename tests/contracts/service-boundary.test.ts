@@ -7,10 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { printOrigin } from "../origin";
+import { ERROR_CODES_BY_CATEGORY } from "../../src/contracts/errors";
 import { isWindows } from "../../src/contracts/native-path";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 
 const SERVICE_PATH = printOrigin("../../src/git-service/main.ts", import.meta.dir);
+printOrigin("../../src/contracts/errors.ts", import.meta.dir);
 printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
@@ -25,7 +27,7 @@ const ERROR_CODES = new Set(
   (
     "INVALID_REQUEST PROTOCOL_VERSION UNKNOWN_OPERATION UNKNOWN_TARGET FRAME_LIMIT BUSY WORKSPACE_LIMIT " +
     "GIT_UNAVAILABLE GIT_CHANGED GIT_UNSUPPORTED WEBVIEW_UNAVAILABLE WEBVIEW_UNSUPPORTED WSL_UNAVAILABLE " +
-    "REPOSITORY_UNAVAILABLE REPOSITORY_CHANGED UNSUPPORTED_REPOSITORY DUBIOUS_OWNERSHIP NOT_A_REPOSITORY " +
+    "REPOSITORY_UNAVAILABLE REPOSITORY_CHANGED UNSUPPORTED_REPOSITORY " +
     "OPERATION_IN_PROGRESS CONFLICTED LOCKED UNSUPPORTED_SUBMODULE TRUST_REQUIRED TRUST_CHANGED STALE_SELECTION " +
     "STALE_REVIEW APPROVAL_EXPIRED UNSUPPORTED_HUNK_PROFILE MALFORMED_GIT_OUTPUT OUTPUT_LIMIT OBJECT_MISSING " +
     "UNSUPPORTED_COMPARISON DISPLAY_MAPPING_FAILED GRAPH_LAYOUT_LIMITED WORKTREE_CHANGING IDENTITY_REQUIRED HOOK_FAILED " +
@@ -288,6 +290,10 @@ async function expectStillServing(service: Service, sessionId: string) {
 }
 
 describe("service boundary", () => {
+  test("the contract §9 code list equals the codes of src/contracts/errors.ts", () => {
+    expect(Object.values(ERROR_CODES_BY_CATEGORY).flat().map(String).sort()).toEqual([...ERROR_CODES].sort());
+  });
+
   test(
     "the startup handshake returns a sessionId",
     async () => {

@@ -1126,7 +1126,7 @@ pub struct Confirm {
     pub git_selected_path: PathBuf,
     pub fingerprint: String,
     pub persist: bool,
-    /// `file-count`, `file-bytes`, or `total-bytes`. Present only with `persist: false`.
+    /// `file-count`, `file-bytes`, `total-bytes`, `link`, or `name`. Present only with `persist: false`.
     pub bound: Option<String>,
 }
 

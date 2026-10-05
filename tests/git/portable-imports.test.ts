@@ -56,6 +56,9 @@ const SPECIFIER = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["']([^"'\n]+)["']/g;
 const FRONTEND_PACKAGES = /^(?:@tauri-apps\/|react(?:-dom)?(?:\/|$))/;
 const leavesFrontend = (file: string, specifier: string) =>
   specifier.startsWith(".") ? !posix.join(posix.dirname(file), specifier).startsWith("frontend/") : !FRONTEND_PACKAGES.test(specifier);
+// Contract §7 "Program file digests" (T309): the trust listing reads hook and program files only through `fileFacts`.
+const FS_FREE_FILES = ["git-service/trust.ts"];
+const FS_MODULES = ["node:fs", "node:fs/promises", "fs", "fs/promises"];
 
 // `file` is the path below `src/` with slashes.
 function scanHits(file: string, source: string): string[] {
@@ -67,6 +70,9 @@ function scanHits(file: string, source: string): string[] {
   }
   if (file.startsWith("frontend/")) {
     for (const [, specifier] of output.matchAll(SPECIFIER)) if (leavesFrontend(file, specifier)) hits.push(`src/${file}: runtime import ${specifier}`);
+  }
+  if (FS_FREE_FILES.includes(file)) {
+    for (const [, specifier] of output.matchAll(SPECIFIER)) if (FS_MODULES.includes(specifier)) hits.push(`src/${file}: runtime import ${specifier}`);
   }
   return hits;
 }
@@ -98,6 +104,8 @@ test.each([
   ["git-service/x.ts", 'export const name = "git.exe";'],
   ["git-service/x.ts", "export const leaf = /[\\\\/]git\\.exe$/i;"],
   ["git-service/x.ts", "export const path = (dir: string) => `${dir}/git.exe`;"],
+  ["git-service/trust.ts", 'import { constants } from "node:fs";\nconstants;'],
+  ["git-service/trust.ts", 'import { lstat } from "node:fs/promises";\nlstat;'],
 ])("the scan finds the rule break in %s: %s", (file, source) => {
   expect(scanHits(file, source)).not.toEqual([]);
 });

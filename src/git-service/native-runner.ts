@@ -7,6 +7,7 @@ import {
   ConfirmReply,
   ConfirmRunReply,
   ExitReply,
+  FileFactsReply,
   IdentityListReply,
   InputWrittenReply,
   LingeringCountReply,
@@ -22,6 +23,7 @@ import { isChannelPath, isIdentifier } from "../contracts/operations";
 import {
   checkCall,
   checkContext,
+  checkFileFacts,
   checkIdentityPaths,
   checkRegister,
   checkRelease,
@@ -30,6 +32,8 @@ import {
   checkTrust,
   createDiagnosticCounter,
   RunnerRefusal,
+  type FileFact,
+  type FileFactsRequest,
   type GitExit,
   type GitRunner,
   type IdentityReply,
@@ -58,6 +62,15 @@ function decodeChunk(data: string): Uint8Array | undefined {
   } catch {
     return undefined;
   }
+}
+
+// Contract §6 "File facts": `component` counts from 1 for a link and from 0, the root, for an error.
+// Only `digest: true` gives `digest` or `bound`, and then each file has one of them.
+function factFits(request: FileFactsRequest, fact: FileFact, components: number): boolean {
+  if (fact.kind === "link") return fact.component >= 1 && fact.component <= components;
+  if (fact.kind === "error") return fact.component <= components;
+  if (fact.kind !== "file") return true;
+  return request.digest ? fact.digest !== undefined || fact.bound !== undefined : fact.digest === undefined && fact.bound === undefined;
 }
 
 interface Pending {
@@ -218,6 +231,16 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & { receive(f
       return ask<IdentityReply[]>("process", { type: "identity", operationId, ...context, paths: [...paths] }, (r) => {
         const reply = IdentityListReply.safeParse(r);
         return reply.success && reply.data.identities.length === paths.length ? reply.data.identities : undefined;
+      });
+    },
+
+    async fileFacts(request) {
+      checkFileFacts(request);
+      const { operationId, contextKind, gitInstallationId, repositoryId, digest, files } = request;
+      const body = { type: "fileFacts", operationId, contextKind, gitInstallationId, repositoryId, digest, files: files.map(({ root, path }) => ({ root, path: [...path] })) };
+      return ask<FileFact[]>("process", body, (r) => {
+        const reply = FileFactsReply.safeParse(r);
+        return reply.success && reply.data.facts.length === files.length && reply.data.facts.every((fact, i) => factFits(request, fact, files[i]!.path.length)) ? reply.data.facts : undefined;
       });
     },
 

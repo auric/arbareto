@@ -47,6 +47,10 @@
             }
           },
           "additionalProperties": false
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "additionalProperties": false,

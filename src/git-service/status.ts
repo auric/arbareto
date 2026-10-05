@@ -3,14 +3,12 @@
 
 // Contract §3 `readWorkspace` and `readEntries`, contract §5 "Status page", and contract §8 "Change check" and "Changing working file".
 
-import { constants } from "node:fs";
-import { open, stat } from "node:fs/promises";
-import { FileIdentity } from "../contracts/channel";
+import { stat } from "node:fs/promises";
+import { FileIdentity, type FileFact } from "../contracts/channel";
 import type { ChangeEntry, ReadEntriesResult, WorkspaceRefusal, WorkspaceSnapshot } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
-  GIT_PROCESS_DEADLINE_MS,
   IDENTITY_PATHS,
   MUTATION_RAW_INDEX_BYTES,
   STATUS_LISTING_BYTES,
@@ -36,6 +34,7 @@ import { hunkEligibility, IndexFormatError, type HunkEligibility } from "./eligi
 import type { GitInstallation } from "./git-installation";
 import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
 import { sameIdentity } from "./identity";
+import { contextOf, encodedBytes, isMissing, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
 import {
   createSnapshotStore,
@@ -53,7 +52,7 @@ import {
   type WorkingVersion,
 } from "./snapshot";
 import { createStatusParser, type BranchHeaders, type StatusRecord } from "./status-parser";
-import { parseMaybeBool, type ChangeFiles, type ConfigEntry, type ListingOutcome, type Trust, type TrustListing } from "./trust";
+import { parseMaybeBool, readProgramFiles, type ChangeFiles, type ConfigEntry, type ListingOutcome, type ProgramFile, type Trust, type TrustListing } from "./trust";
 import { statFiles, type TupleFile } from "./watch";
 
 // Contract §7 "Missing objects".
@@ -108,6 +107,7 @@ type RecoveryState = WorkspaceSnapshot["recoveryState"];
 // Contract §8 "Change check": the last complete read. `hints` is the hint count at its start.
 interface LastRead {
   files: TupleFile[];
+  programs: ProgramFile[];
   facts: string;
   hints: number;
   listing: TrustListing;
@@ -148,11 +148,6 @@ const EMPTY = new Uint8Array(0);
 const MAX_GENERATION = Number.MAX_SAFE_INTEGER;
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
-const keyOf = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
-const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
-const isMissing = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
-
-const contextOf = (w: Workspace) => ({ contextKind: "registeredOperation" as const, gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId });
 
 // Splits NUL-terminated records. Bytes after the last NUL belong to no record.
 function records(bytes: Uint8Array): Uint8Array[] {
@@ -231,20 +226,6 @@ export async function hasPromisor(entries: readonly ConfigEntry[], w: Workspace,
   return format.some((e) => e.key === "core.repositoryformatversion" && inFormatFile(e)) && candidates.some(inFormatFile);
 }
 
-// Contract §7 "Missing objects": the `cat-file --batch-check` answer for `oids`, one line each in input order. Git prints `<object> missing` for an absent object.
-export function objectCheckAnswer(raw: Uint8Array, oids: readonly string[]): "missing" | "present" | "failed" {
-  if (raw.length === 0 || raw[raw.length - 1] !== NEWLINE) return "failed";
-  const lines = Buffer.from(raw.subarray(0, -1)).toString("latin1").split("\n");
-  if (lines.length !== oids.length) return "failed";
-  let missing = false;
-  for (const [i, line] of lines.entries()) {
-    const rest = line.startsWith(`${oids[i]} `) ? line.slice(oids[i]!.length + 1) : null;
-    if (rest === "missing") missing = true;
-    else if (rest === null || !/^(?:blob|tree|commit|tag) [0-9]+$/.test(rest)) return "failed";
-  }
-  return missing ? "missing" : "present";
-}
-
 // Git `wt-status.c` `wt_status_get_state` order. Data-model §2 lists no value for `git am`, so `rebase-apply/applying` gives `unknown`.
 function stateOf(present: Record<OperationMarker, boolean | null>, unmerged: boolean): OperationState {
   if (Object.values(present).includes(null)) return "unknown";
@@ -279,40 +260,17 @@ function headOf(branch: BranchHeaders, symbolic: { exitCode: number | null; stdo
   return branch.oid === null ? { state: "unborn", target } : { state: "branch", target, oid: branch.oid };
 }
 
-// Contract §5 "Raw index eligible for mutation": at most the bound plus one byte. O_NONBLOCK keeps a FIFO from blocking the open.
+// Contract §5 "Raw index eligible for mutation". Null: the index file is absent.
 async function readRawIndex(path: string): Promise<Uint8Array | null | "over" | "unavailable"> {
-  let handle;
-  try {
-    handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
-  } catch (error) {
-    return isMissing(error) ? null : "unavailable";
-  }
-  try {
-    if (!(await handle.stat()).isFile()) return "unavailable";
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (;;) {
-      const chunk = new Uint8Array(Math.min(1024 * 1024, MUTATION_RAW_INDEX_BYTES + 1 - size));
-      const { bytesRead } = await handle.read(chunk, 0, chunk.length);
-      if (bytesRead === 0) break;
-      size += bytesRead;
-      if (size > MUTATION_RAW_INDEX_BYTES) return "over";
-      chunks.push(chunk.subarray(0, bytesRead));
-    }
-    return Buffer.concat(chunks);
-  } catch {
-    return "unavailable";
-  } finally {
-    await handle.close();
-  }
+  const read = await readBounded(path, MUTATION_RAW_INDEX_BYTES);
+  return read === "absent" ? null : read;
 }
 
 // The `files` ref whose file the stat tuple holds for `head`, or null.
 const branchRef = (w: Workspace, head: Head) => (w.refFormat === "files" && head.state !== "detached" ? head.target : null);
 
-// Contract §8 "Change check": the index, the `files` ref files of `head` or the two `reftable/tables.list` files, and the candidate files of a listing.
+// Contract §8 "Change check": the index, the `files` ref files of `head` or the two `reftable/tables.list` files, and the configuration files of a listing.
 // Null: Git has not resolved the branch ref file of `head` yet.
-// ponytail: `paths` holds the program files of the interim digest reads. T309 replaces them with phase-1 `fileFacts` entries.
 function tupleFiles(w: Workspace, st: WorkspaceState, head: Head, paths: readonly string[]): TupleFile[] | null {
   const file = (path: string, content = false): TupleFile => ({ path, content });
   const candidates = paths.map((path) => file(path));
@@ -324,15 +282,34 @@ function tupleFiles(w: Workspace, st: WorkspaceState, head: Head, paths: readonl
   return refFile === undefined ? null : [...files, file(refFile), ...candidates];
 }
 
-const tupleText = (files: readonly TupleFile[], facts: ReadonlyMap<string, string>) => JSON.stringify(files.map((f) => [f.path, facts.get(f.path)]));
+// Contract §8 "Change check": the stat facts by path, and the facts of the program-file entries by entry.
+interface TupleFacts {
+  stats: ReadonlyMap<string, string>;
+  programs: ReadonlyMap<string, FileFact>;
+}
+
+const entryKey = (entry: ProgramFile) => JSON.stringify([entry.root, ...entry.path]);
+
+// The program-file entries come through phase-1 `fileFacts` requests of `operationId`, never through a file call (contract §7 "Program file digests").
+// Null: a fact is unknown, so no compare can prove that nothing changed.
+async function tupleFacts(runner: GitRunner, operationId: string, w: Workspace, files: readonly TupleFile[], programs: readonly ProgramFile[]): Promise<TupleFacts | null> {
+  const stats = await statFiles(files);
+  if (stats === null) return null;
+  const facts = await readProgramFiles(runner, operationId, w, programs);
+  return facts === null ? null : { stats, programs: new Map(programs.map((entry, i) => [entryKey(entry), facts[i]!])) };
+}
+
+const tupleText = (files: readonly TupleFile[], programs: readonly ProgramFile[], facts: TupleFacts) =>
+  JSON.stringify([files.map((f) => [f.path, facts.stats.get(f.path)]), programs.map((entry) => [entryKey(entry), facts.programs.get(entryKey(entry))])]);
 
 // Contract §7 "Shared listing" and §8 "Change check": the tuple of the last listing of the workspace.
 // Null: a candidate needs a fact that the service does not hold, so no compare can prove that nothing changed.
-async function listingTuple(w: Workspace, st: WorkspaceState): Promise<string | null> {
+async function listingTuple(runner: GitRunner, w: Workspace, st: WorkspaceState, operationId: string): Promise<string | null> {
   if (st.changeFiles === null || !st.changeFiles.complete) return null;
-  const files = tupleFiles(w, st, st.head ?? w.head, st.changeFiles.paths);
-  const facts = files && (await statFiles(files));
-  return files === null || facts === null ? null : tupleText(files, facts);
+  const { configPaths, programFiles } = st.changeFiles;
+  const files = tupleFiles(w, st, st.head ?? w.head, configPaths);
+  const facts = files && (await tupleFacts(runner, operationId, w, files, programFiles));
+  return files === null || facts === null ? null : tupleText(files, programFiles, facts);
 }
 
 // Contract §5 "Status page": the pages of `entries` within the bound. `kept` is below the entry count when one entry cannot fit a page.
@@ -377,25 +354,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     return policyFingerprint({ attributes: EMPTY, trust: { state: view.state, trustId: view.trustId ?? null }, configurationFingerprint: listing.fingerprint, git: installation });
   };
 
-  async function run(t: ProcessTarget, args: string[], stdout: Collector, input?: Uint8Array): Promise<Step> {
-    try {
-      const exit = await runner.run({
-        operationId: t.operationId,
-        context: contextOf(t.workspace),
-        arguments: args,
-        ...(input === undefined ? {} : { input }),
-        environmentPolicy: "read",
-        limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
-        stdout,
-        stderr: createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }),
-        signal: t.signal,
-      });
-      return { exit };
-    } catch (error) {
-      if (error instanceof RunnerRefusal) return { refused: error.code };
-      throw error;
-    }
-  }
+  const run = (t: ProcessTarget, args: string[], stdout: Collector, input?: Uint8Array): Promise<Step> => runRead(runner, t, args, stdout, input);
 
   // The `count` paths that a `rev-parse --git-path` call prints, one per line. Null: the call or its output failed.
   async function gitPaths(t: ProcessTarget, args: string[], count: number): Promise<string[] | null> {
@@ -457,12 +416,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
   async function objectCheck(t: ReadWorkspaceTarget, oids: readonly string[]): Promise<"missing" | "present" | "failed" | "canceled" | "deadline"> {
     if (oids.length === 0) return "failed";
     const out = createCollector({ maxBytes: STATUS_LISTING_BYTES });
-    const step = await run(t, objectCheckArgs(), out, new TextEncoder().encode(`${oids.join("\n")}\n`));
+    const step = await run(t, objectCheckArgs(), out, objectCheckInput(oids));
     if (t.signal.aborted) return "canceled";
-    if ("refused" in step) return "failed";
-    if (step.exit.deadline !== undefined) return "deadline";
-    if (out.limited || step.exit.exitCode !== 0) return "failed";
-    return objectCheckAnswer(out.take(), oids);
+    return objectCheckOutcome(step, out, oids);
   }
 
   function recoveryOf(st: WorkspaceState): RecoveryState {
@@ -501,13 +457,14 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
       const lines = await gitPaths(t, refPathArgs(ref), 1);
       if (lines !== null) st.refFiles.set(ref, lines[0]!);
     }
-    const known = st.changeFiles?.complete ? st.changeFiles.paths : null;
-    const prior = tupleFiles(w, st, assumed, known ?? []);
-    const before = prior === null ? null : await statFiles(prior);
+    const known = st.changeFiles?.complete ? st.changeFiles : null;
+    const prior = tupleFiles(w, st, assumed, known?.configPaths ?? []);
+    const priorPrograms = known?.programFiles ?? [];
+    const before = prior === null ? null : await tupleFacts(runner, t.operationId, w, prior, priorPrograms);
     // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read records nothing.
     if (t.signal.aborted) return end({ result: "canceled" });
     const listing = trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
-    if (prior !== null && before !== null && known !== null) trust.shared.record(w.repositoryId, { tuple: tupleText(prior, before), listing, generation: () => ownerGeneration });
+    if (prior !== null && before !== null && known !== null) trust.shared.record(w.repositoryId, { tuple: tupleText(prior, priorPrograms, before), listing, generation: () => ownerGeneration });
     else trust.shared.release(w.repositoryId);
     const listed = await listing;
     if (!listed.ok) return stop(listed);
@@ -515,8 +472,12 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     st.changeFiles = lst.changeFiles;
     // Contract §8 "Change check" and T088 decision E3: the tuple holds only facts from before the listing.
     // A candidate that this listing names first leaves no tuple, so the next poll runs in full.
-    const files = before !== null && lst.changeFiles.complete ? tupleFiles(w, st, assumed, lst.changeFiles.paths) : null;
-    const tuple = before !== null && files !== null && files.every((f) => before.has(f.path)) ? { files, facts: tupleText(files, before) } : null;
+    const { configPaths, programFiles } = lst.changeFiles;
+    const files = before !== null && lst.changeFiles.complete ? tupleFiles(w, st, assumed, configPaths) : null;
+    const tuple =
+      before !== null && files !== null && files.every((f) => before.stats.has(f.path)) && programFiles.every((entry) => before.programs.has(entryKey(entry)))
+        ? { files, programs: programFiles, facts: tupleText(files, programFiles, before) }
+        : null;
     // Contract §7: the read gate decides before any status, diff, or history read.
     const gate = trust.gate(w, lst, t.installation, "reads");
     if (gate !== null) return refusal(gate);
@@ -597,8 +558,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
       }
     }
 
-    const ita = new Set(parsed.records.filter(intentToAdd).map((r) => keyOf(r.path.bytes)));
-    const indexEntries: IndexEntry[] = listedEntries.map((e) => ({ ...e, intentToAdd: e.stage === 0 && ita.has(keyOf(e.path)) }));
+    const ita = new Set(parsed.records.filter(intentToAdd).map((r) => latin1(r.path.bytes)));
+    const indexEntries: IndexEntry[] = listedEntries.map((e) => ({ ...e, intentToAdd: e.stage === 0 && ita.has(latin1(e.path)) }));
     let fingerprintLimit: LimitName | null = null;
     let fingerprint = null;
     if (raw === "over") fingerprintLimit = "MUTATION_RAW_INDEX_BYTES";
@@ -623,9 +584,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     if (changed && !last) return { kind: "changed" };
 
     // Index flags: complete only when the index listing is complete. A path without an index entry has no flags set.
-    const byPath = new Map(indexEntries.filter((e) => e.stage === 0).map((e) => [keyOf(e.path), e]));
+    const byPath = new Map(indexEntries.filter((e) => e.stage === 0).map((e) => [latin1(e.path), e]));
     const flagsOf = (bytes: Uint8Array): Flags | undefined => {
-      const e = byPath.get(keyOf(bytes));
+      const e = byPath.get(latin1(bytes));
       if (e !== undefined) return { intentToAdd: e.intentToAdd, assumeUnchanged: e.assumeUnchanged, skipWorktree: e.skipWorktree };
       return indexReason === null ? UNSET : undefined;
     };
@@ -753,9 +714,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
       // A trust approval or revocation changes the policy without a file change, so the policy must also be equal.
       const kept = st.kept;
       if (t.check === "changes" && !t.refresh && kept !== null && kept.hints === st.hints && !st.unwatched && !st.unavailable) {
-        const facts = await statFiles(kept.files);
+        const facts = await tupleFacts(runner, t.operationId, t.workspace, kept.files, kept.programs);
         if (t.signal.aborted) return { result: "canceled" };
-        const same = facts !== null && tupleText(kept.files, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
+        const same = facts !== null && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
         if (same && policyOf(t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st) } };
       }
       if (t.refresh) st.refreshing++;
@@ -798,7 +759,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     },
 
     // Contract §7 "Shared listing": `readHistory` reads this tuple again before it reuses a listing.
-    listingTuple: (w: Workspace): Promise<string | null> => listingTuple(w, stateOfWorkspace(w.repositoryId)),
+    listingTuple: (w: Workspace, operationId: string): Promise<string | null> => listingTuple(runner, w, stateOfWorkspace(w.repositoryId), operationId),
 
     // A watcher hint marks the workspace dirty (contract §8 "Token invalidation"). `lost`: later changes can give no hint.
     hint(repositoryId: string, lost: boolean): void {

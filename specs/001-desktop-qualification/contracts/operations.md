@@ -1431,7 +1431,7 @@ The update processes write no superproject index. The superproject index digest 
 - `<n>` counts the rows that the update plans to visit, except `skip` rows without the register step. A nested level adds its new rows to `<n>` when the update reads it. The nested rows of a failed or refused row leave `<n>`. `<i>` names the row in progress.
 - The service splits stderr into segments at CR and LF. It takes the last `NN% (a/b)` match of the newest segment as the percentage. Git prints that counter with the untranslated format `"%3u%% (%"PRIuMAX"/%"PRIuMAX")%s"` (progress.c:134). The service parses no other text, because Git translates it. A fetch with `--progress` printed such segments (probe S20).
 - A segment without a match keeps the last percentage. A new process starts without a percentage.
-- Besides the §2 identity fields, progress events carry only the index, the count, the row ID, the phase, the percentage, and the stall flag. The phase is `fetch` or `update`, and §6 "Activity and stall notice" defines the flag. They carry no Git text. At most 4 events per second go out (§5).
+- Besides the §2 identity fields, progress events carry only the phase, the stall flag, and `counters`. `counters` holds `rowIndex`, `rowCount`, and `percent` when a percentage exists. The row index names the row in the ordered row list, so no row ID goes out. The phase is `fetch` or `update`, and §6 "Activity and stall notice" defines the flag. They carry no Git text. At most 4 events per second go out (§5).
 
 ### Deadlines and Cancel
 

@@ -5,6 +5,8 @@ import { describe, expect, test } from "bun:test";
 import { renameSync } from "node:fs";
 import { join } from "node:path";
 import { CONCURRENT_READS_GLOBAL, CONCURRENT_READS_PER_WORKSPACE, NATIVE_CHUNK_BYTES, PENDING_READS_GLOBAL, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
+import { recheckArgs } from "../../src/git-service/commands";
+import { createReadScheduler, type ReadEnd, type ReadJob } from "../../src/git-service/read-scheduler";
 import { printOrigin } from "../origin";
 import type { CallMatch, RecordedCall } from "./bun-runner";
 import { fixtureGit, useFixtureRoot } from "./fixture-root";
@@ -38,6 +40,8 @@ const outcome = (response: ServiceResponse) => ({ state: response.state, code: r
 
 const isStatus: CallMatch = (call) => call.arguments.includes("status");
 const isRevList: CallMatch = (call) => call.arguments.includes("rev-list");
+// Data-model §7: the re-read is discovery call 1 as a registered read (contract §6 "Registration bootstrap").
+const isRecheck: CallMatch = (call) => call.arguments.join("\0") === recheckArgs().join("\0");
 // Every registered call. `gitProbe` calls are the only ones without `--no-lazy-fetch` (contract §7 "Missing objects").
 const isRegistered: CallMatch = (call) => call.arguments[0] === "--no-lazy-fetch";
 
@@ -146,6 +150,34 @@ describe("cancellation (data-model §7)", () => {
     TIMEOUT_MS,
   );
 
+  // Contract §6 "Registration reuse and release" (D3b): a release cancels every unfinished read of the workspace, and none re-reads.
+  caseTest(
+    TASK,
+    "a chooseGit that releases the workspace of a read that holds git status ends that read canceled; the status process stops, and no Git process of the released workspace runs after the release",
+    W,
+    () =>
+      withService({ name: "t074-release" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t074-release"));
+        fillStatus(repo);
+        const { repositoryId } = await service.register(repo);
+        const release = service.runner.pauseStdout(once(isStatus));
+        try {
+          const read = service.send("readWorkspace", FULL, { repositoryId });
+          const held = await heldCall(service, await service.operationId(read), isStatus);
+          const choose = service.send("chooseGit", { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+          expect((await service.response(choose)).state).toBe("succeeded");
+          const releasedAt = service.responseAt.get(choose)!;
+          release();
+          expect(outcome(await service.response(read))).toEqual({ state: "canceled", code: "CANCELED" });
+          expect(held.exit?.exitCode).toBeNull();
+          expect(service.runner.calls.filter((c) => c.repositoryId === repositoryId && c.at > releasedAt).map((c) => c.arguments.join(" "))).toEqual([]);
+        } finally {
+          release();
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
   test.todo("a superseded selection read is canceled (needs T105/T115)", async () => {
     const repo = repoOf(buildF02(gitPath(), "t074-superseded"));
     const service = await openService({ git: gitPath(), name: "t074-superseded" });
@@ -195,6 +227,46 @@ describe("re-read after a failed read and the read deadline (data-model §7)", (
       }),
     TIMEOUT_MS,
   );
+
+  // Contract §5 "Cancellation/reconciliation target" bounds the re-read after a cancel and after a failure, as after the deadline.
+  for (const path of ["cancel", "failure"] as const) {
+    caseTest(
+      TASK,
+      `a re-read after a ${path} that cannot start ends the read within the ${RECONCILIATION_TARGET_MS} ms reconciliation target`,
+      W,
+      () =>
+        withService({ name: `t074-reread-target-${path}` }, async (service) => {
+          const repo = repoOf(buildF02(gitPath(), `t074-reread-target-${path}`));
+          fillStatus(repo);
+          const { repositoryId } = await service.register(repo);
+          const holdReread = service.runner.holdStart(isRecheck);
+          const release = path === "cancel" ? service.runner.pauseStdout(once(isStatus)) : () => {};
+          // A malformed status record ends the read `failed` (contract §9).
+          if (path === "failure") service.runner.inject.stdout = (call) => (call.arguments.includes("status") ? Buffer.from("Z junk\0") : undefined);
+          try {
+            const read = service.send("readWorkspace", FULL, { repositoryId });
+            const operationId = await service.operationId(read);
+            let from = performance.now();
+            if (path === "cancel") {
+              await heldCall(service, operationId, isStatus);
+              const cancel = service.send("cancel", { operationId });
+              expect((await service.response<{ state: string }>(cancel)).result?.state).toBe("cancel-requested");
+              from = service.responseAt.get(cancel)!;
+            }
+            const done = await service.response(read, RECONCILIATION_TARGET_MS * 2);
+            expect(outcome(done)).toEqual(path === "cancel" ? { state: "canceled", code: "CANCELED" } : { state: "failed", code: "MALFORMED_GIT_OUTPUT" });
+            expect(service.responseAt.get(read)! - from).toBeLessThan(RECONCILIATION_TARGET_MS + SETTLE_MS * 4);
+            // The re-read started in its own operation and waited at the start barrier.
+            expect(service.runner.calls.some((c) => c.operationId !== operationId && isRecheck(c))).toBe(true);
+          } finally {
+            service.runner.inject.stdout = undefined;
+            release();
+            holdReread();
+          }
+        }),
+      TIMEOUT_MS,
+    );
+  }
 
   caseTest(
     TASK,
@@ -297,6 +369,86 @@ describe("read limits (contract §5 \"Concurrent reads\" and \"Pending reads\")"
   );
 });
 
+describe("read scheduler (contract §5 \"Pending reads\", data-model §7)", () => {
+  type Job = ReadJob<string, null>;
+  // A scheduler whose `cancel` aborts the job as the registry does. `hold` keeps the read work running until `releaseAll`.
+  function harness() {
+    const controllers = new Map<string, AbortController>();
+    const ends = new Map<string, ReadEnd<string, null>["kind"]>();
+    const holds: (() => void)[] = [];
+    let rereads = 0;
+    const scheduler = createReadScheduler({ closeJob: () => {}, cancel: (operationId) => controllers.get(operationId)?.abort() });
+    const job = (options: { selection?: string; hold?: boolean; end?: (end: ReadEnd<string, null>) => void } = {}): Job => {
+      const operationId = crypto.randomUUID();
+      const controller = new AbortController();
+      controllers.set(operationId, controller);
+      const held = new Promise<void>((resolve) => holds.push(resolve));
+      return {
+        operationId,
+        repositoryId: "workspace",
+        signal: controller.signal,
+        ...(options.selection === undefined ? {} : { selection: options.selection }),
+        run: async () => {
+          if (options.hold) await held;
+          return "outcome";
+        },
+        failed: () => false,
+        reread: async () => {
+          rereads++;
+          return null;
+        },
+        end: (end) => {
+          ends.set(operationId, end.kind);
+          options.end?.(end);
+        },
+      };
+    };
+    return { scheduler, job, ends, rereads: () => rereads, releaseAll: () => holds.forEach((release) => release()) };
+  }
+
+  test(`a canceled read that waits for a slot leaves the queue at once without a re-read, so ${PENDING_READS_GLOBAL + 1} selection reads that cancel each other never get BUSY`, async () => {
+    const { scheduler, job, ends, rereads, releaseAll } = harness();
+    for (let i = 0; i < CONCURRENT_READS_PER_WORKSPACE; i++) scheduler.schedule(job({ hold: true }));
+    const selection = crypto.randomUUID();
+    const waiting: string[] = [];
+    for (let i = 0; i <= PENDING_READS_GLOBAL; i++) {
+      // Contract §5: a read that can neither start nor wait gets BUSY before admission.
+      expect({ read: i, accepts: scheduler.accepts("workspace") }).toEqual({ read: i, accepts: true });
+      const next = job({ selection });
+      waiting.push(next.operationId);
+      scheduler.schedule(next);
+    }
+    await Bun.sleep(0);
+    expect(waiting.map((operationId): string => ends.get(operationId) ?? "running")).toEqual([...Array<string>(PENDING_READS_GLOBAL).fill("canceled"), "running"]);
+    expect(rereads()).toBe(0);
+    releaseAll();
+    await waitFor("the last selection read", () => ends.get(waiting.at(-1)!) === "outcome");
+  });
+
+  test("an end that throws still frees the read slot, and no rejection escapes", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => void rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { scheduler, job, ends } = harness();
+      const throwing = () =>
+        job({
+          end: () => {
+            throw new Error("end failed");
+          },
+        });
+      for (let i = 0; i < CONCURRENT_READS_PER_WORKSPACE; i++) scheduler.schedule(throwing());
+      const last = job();
+      scheduler.schedule(last);
+      await waitFor("the waiting read", () => ends.get(last.operationId) === "outcome");
+      await Bun.sleep(SETTLE_MS);
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+});
+
 describe("late responses (contract §8)", () => {
   caseTest(
     TASK,
@@ -372,7 +524,7 @@ describe("late responses (contract §8)", () => {
       expect((await service.readWorkspace(repositoryId)).result!.generation).toBeGreaterThan(read.generation);
       release();
       const response = await service.response(late);
-      // Task T087: every response carries `repositoryGeneration` and `selectionId`.
+      // Contract §2: a response repeats the `repositoryGeneration` and `selectionId` of its validated envelope.
       expect({ repositoryGeneration: response.repositoryGeneration, selectionId: Object.fromEntries(Object.entries(response)).selectionId }).toEqual({ repositoryGeneration: read.generation, selectionId });
     } finally {
       release();

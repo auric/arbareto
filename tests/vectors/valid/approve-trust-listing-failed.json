@@ -1,0 +1,5 @@
+{
+  "schema": "approve-trust-result",
+  "expected": "valid",
+  "text": "{\"remedy\":{\"text\":\"Arbareto cannot read /home/dev/repo/.git/hooks/pre-commit: EACCES.\"}}"
+}

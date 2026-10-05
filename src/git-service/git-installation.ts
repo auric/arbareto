@@ -7,6 +7,7 @@ import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_EXECUTABLE_DIGEST_BYTES, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { admitGitProbe, MINIMUM_GIT_VERSION } from "./admission";
+import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
 import { createCollector, isChannelPath, RunnerRefusal, type GitRunner, type IdentityReply, type ProcessContext } from "./git-runner";
 
 // Data-model §1 "Git installation".
@@ -22,6 +23,9 @@ export interface GitInstallation {
   admission: "admitted";
   // Contract §6 "Startup contexts": the saved version when this startup admitted another version.
   previousVersion?: string;
+  // Contract §7 "Configuration file paths": the system lines, then the global lines, as `git var` printed them.
+  // An admitted probe always sets it. Only an installation that no probe admitted, such as a test value, lacks it.
+  configFiles?: readonly string[];
 }
 
 export type GitProbeResult =
@@ -113,6 +117,40 @@ async function runProbe(
   return exit.exitCode === 0 ? new TextDecoder().decode(stdout.take()) : "";
 }
 
+// Contract §7 "Configuration file paths" (git-var(1), Git `builtin/var.c` `cmd_var`): the only parse of `git var` output.
+// Exit 0 prints LF-terminated lines that are valid UTF-8. Exit 1 without output means that Git reads no file of that kind.
+// Every other result gives null.
+export function parseConfigPaths(exitCode: number | null, stdout: Uint8Array, stderrBytes: number): string[] | null {
+  if (exitCode === 1) return stdout.length === 0 && stderrBytes === 0 ? [] : null;
+  if (exitCode !== 0 || stdout.length === 0 || stdout[stdout.length - 1] !== 0x0a) return null;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(stdout.subarray(0, -1));
+  } catch {
+    return null;
+  }
+  const lines = text.split("\n");
+  return lines.every((line) => line !== "" && !line.includes("\0")) ? lines : null;
+}
+
+// Runs the two `git var` calls in order after the admission checks pass. The shell destroys the context at `register`, so they run before it.
+// The first result that `parseConfigPaths` refuses refuses the installation, as an admission check does. A `RunnerRefusal` keeps its code.
+async function configPaths(runner: GitRunner, operationId: string, context: ProcessContext, signal: AbortSignal, version: string): Promise<string[] | GitProbeResult> {
+  const out: string[] = [];
+  for (const args of [configSystemPathArgs(), configGlobalPathArgs()]) {
+    const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+    const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+    const exit = await runner.run({ operationId, context, arguments: args, environmentPolicy: "probe", limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS }, stdout, stderr, signal });
+    // Contract §5: a bootstrap probe deadline gives DEADLINE, as `runProbe` does.
+    if (exit.deadline) return failure("DEADLINE");
+    if (exit.diagnosticLimit || stdout.limited) return failure("OUTPUT_LIMIT");
+    const lines = parseConfigPaths(exit.exitCode, stdout.take(), stderr.bytes);
+    if (lines === null) return failure("GIT_UNSUPPORTED", version);
+    out.push(...lines);
+  }
+  return out;
+}
+
 // Contract §3 "Git proposal": the native Git file in the folder that `--exec-path` prints. On Windows, the path has backslashes.
 // Output without one folder line gives `null`. The service never falls back to the candidate.
 function execPathGit(output: string): string | null {
@@ -158,14 +196,24 @@ async function probeCandidate(
     if (typeof versionOutput !== "string") return versionOutput;
     const admitted = admitGitProbe(versionOutput);
     if (!("admission" in admitted) || admitted.admission !== "admitted") return failure(admitted.gitCode, "detectedVersion" in admitted ? admitted.detectedVersion : undefined);
-    const gitInstallationId = crypto.randomUUID();
     const version = admitted.detectedVersion;
+    const configFiles = await configPaths(runner, operationId, context, signal, version);
+    if (!Array.isArray(configFiles)) return configFiles;
+    const gitInstallationId = crypto.randomUUID();
     const reply = await runner.register({ operationId, bootstrapId: target.bootstrapId, gitInstallationId, version, digest, confirm: options.confirm ?? true });
     if (reply.result === "another") return { another: { bootstrapId: reply.bootstrapId, executablePath: reply.executablePath } };
     if (reply.result !== "approved") return { ok: false, canceled: true };
     return {
       ok: true,
-      installation: { gitInstallationId, selectedPath: selected, executablePath: target.executablePath, executableIdentity: { file, versionOutput, digest }, version, admission: "admitted" },
+      installation: {
+        gitInstallationId,
+        selectedPath: selected,
+        executablePath: target.executablePath,
+        executableIdentity: { file, versionOutput, digest },
+        version,
+        admission: "admitted",
+        configFiles,
+      },
     };
   } catch (error) {
     if (error instanceof RunnerRefusal) return failure(error.code);

@@ -17,7 +17,15 @@ export const ERROR_CODES_BY_CATEGORY = {
     "UNSUPPORTED_SUBMODULE",
   ],
   trustAndApproval: ["TRUST_REQUIRED", "TRUST_CHANGED", "STALE_SELECTION", "STALE_REVIEW", "APPROVAL_EXPIRED", "UNSUPPORTED_HUNK_PROFILE"],
-  dataAndDisplay: ["MALFORMED_GIT_OUTPUT", "OUTPUT_LIMIT", "OBJECT_MISSING", "UNSUPPORTED_COMPARISON", "DISPLAY_MAPPING_FAILED", "GRAPH_LAYOUT_LIMITED"],
+  dataAndDisplay: [
+    "MALFORMED_GIT_OUTPUT",
+    "OUTPUT_LIMIT",
+    "OBJECT_MISSING",
+    "UNSUPPORTED_COMPARISON",
+    "DISPLAY_MAPPING_FAILED",
+    "GRAPH_LAYOUT_LIMITED",
+    "WORKTREE_CHANGING",
+  ],
   execution: [
     "IDENTITY_REQUIRED",
     "HOOK_FAILED",
@@ -59,7 +67,7 @@ export type TerminalState = (typeof TERMINAL_STATES)[number];
 // `none`: the state carries no code. `specific`: the state carries the specific failure or refusal code.
 export const TERMINAL_STATE_CODES: Record<TerminalState, "none" | "specific" | readonly ErrorCode[]> = {
   succeeded: "none",
-  limited: ["OUTPUT_LIMIT", "OBJECT_MISSING"],
+  limited: ["OUTPUT_LIMIT", "OBJECT_MISSING", "WORKTREE_CHANGING"],
   failed: "specific",
   canceled: ["CANCELED"],
   "completed-with-effects": ["COMPLETED_WITH_EFFECTS"],

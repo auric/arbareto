@@ -17,7 +17,7 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
-use crate::bootstrap::{ContextKind, Contexts, Identity, read_identity};
+use crate::bootstrap::{ContextKind, Contexts, Identity, identity_reply, read_identity};
 use crate::dialogs::Registered;
 use crate::file_facts;
 use crate::git_env::child_environment;
@@ -645,13 +645,7 @@ impl ProcessRequests {
             check_active(&state, operation_id)?;
             self.target(&mut state, request, kind, operation_id)?;
         }
-        let identities: Vec<Value> = paths
-            .iter()
-            .map(|path| match read_identity(path) {
-                Ok(identity) => identity.reply(),
-                Err(code) => json!({ "code": code }),
-            })
-            .collect();
+        let identities: Vec<Value> = paths.iter().map(|path| identity_reply(path)).collect();
         self.send(
             self.current(),
             json!({ "type": "identity", "callId": call_id, "identities": identities }),
@@ -3516,17 +3510,19 @@ pub(crate) mod tests {
                 .open(&held)
                 .expect("hold without sharing")
         };
+        // Win32 `CreateFileW` refuses `<` in a name with `ERROR_INVALID_NAME`, which is no not-found result.
+        let invalid = harness.fixture.path("a<b");
         let call = uuid();
         harness.send(json!({
             "type": "identity", "callId": call, "operationId": uuid(), "contextKind": "registeredOperation",
             "gitInstallationId": workspace.git, "repositoryId": workspace.repository,
-            "paths": [target, link, held, harness.fixture.path("absent")],
+            "paths": [target, link, held, harness.fixture.path("absent"), harness.fixture.path("absent").join("child"), invalid],
         }));
         let expected = read_identity(&target).expect("bootstrap identity").reply();
         let reply = harness.reply(&call);
         assert_eq!(reply["type"], "identity");
         let identities = reply["identities"].as_array().expect("identities");
-        assert_eq!(identities.len(), 4, "one entry per path, in order");
+        assert_eq!(identities.len(), 6, "one entry per path, in order");
         assert_eq!(identities[0], expected, "the bootstrap identity");
         assert_eq!(
             identities[1], expected,
@@ -3539,8 +3535,18 @@ pub(crate) mod tests {
         );
         assert_eq!(
             identities[3],
+            json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" }),
+            "ERROR_FILE_NOT_FOUND"
+        );
+        assert_eq!(
+            identities[4],
+            json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" }),
+            "ERROR_PATH_NOT_FOUND"
+        );
+        assert_eq!(
+            identities[5],
             json!({ "code": "UNSUPPORTED_REPOSITORY" }),
-            "a failed call"
+            "another failed open"
         );
     }
 

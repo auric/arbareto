@@ -1,0 +1,225 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "untrusted",
+            "approved",
+            "changed",
+            "revoked"
+          ]
+        },
+        "persistence": {
+          "type": "string",
+          "enum": [
+            "stored",
+            "session"
+          ]
+        },
+        "trustId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "approvalRequired": {
+          "type": "object",
+          "properties": {
+            "reads": {
+              "type": "boolean"
+            },
+            "commit": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "reads",
+            "commit"
+          ],
+          "additionalProperties": false
+        },
+        "bound": {
+          "type": "string",
+          "enum": [
+            "file-count",
+            "file-bytes",
+            "total-bytes",
+            "link"
+          ]
+        },
+        "inputLimited": {
+          "type": "boolean",
+          "const": true
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "system",
+                  "global",
+                  "local",
+                  "worktree",
+                  "command",
+                  "submodule",
+                  "unknown"
+                ]
+              },
+              "origin": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "scope",
+              "origin"
+            ],
+            "additionalProperties": false,
+            "title": "TrustEntry"
+          }
+        },
+        "hooks": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "event": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "system",
+                      "global",
+                      "local",
+                      "worktree",
+                      "command",
+                      "submodule",
+                      "unknown"
+                    ]
+                  },
+                  "commandScope": {
+                    "type": "string",
+                    "enum": [
+                      "system",
+                      "global",
+                      "local",
+                      "worktree",
+                      "command",
+                      "submodule",
+                      "unknown"
+                    ]
+                  },
+                  "commandOrigin": {
+                    "type": "string"
+                  },
+                  "disabled": {
+                    "type": "boolean"
+                  },
+                  "repositoryControlled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "event",
+                  "name",
+                  "scope",
+                  "disabled",
+                  "repositoryControlled"
+                ],
+                "additionalProperties": false,
+                "title": "ConfiguredHook"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "event": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "repositoryControlled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "event",
+                  "path",
+                  "repositoryControlled"
+                ],
+                "additionalProperties": false,
+                "title": "FolderHook"
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "generation",
+        "fingerprint",
+        "state",
+        "persistence",
+        "approvalRequired",
+        "entries",
+        "hooks"
+      ],
+      "additionalProperties": false,
+      "title": "TrustReport"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "remedy"
+      ],
+      "additionalProperties": false,
+      "title": "TrustListingFailed"
+    }
+  ],
+  "title": "ReadTrustResult"
+}

@@ -39,6 +39,11 @@ function git(gitPath: string, repo: string, args: string[], allowExit: number[] 
   return proc.stdout;
 }
 
+// `git hook list -z --show-scope <event>` with the read options. The service runs no `hook list` (research R5 "T280 record"), so only the tests and probes build it.
+export function hookListArgs(event: string): string[] {
+  return ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "hook", "list", "-z", "--show-scope", event];
+}
+
 export function sha256(bytes: Uint8Array): string {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }

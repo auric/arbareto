@@ -4,9 +4,13 @@
 import { describe, expect } from "bun:test";
 import { chmodSync, existsSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, join, relative } from "node:path";
-import { classifyDiscoveryFailure, safeDirectoryCommand } from "../../src/git-service/discovery";
+import { classifyDiscoveryFailure, discoverRepository, safeDirectoryCommand } from "../../src/git-service/discovery";
+import type { GitInstallation } from "../../src/git-service/git-installation";
+import { createCollector, RunnerRefusal, type GitRunner, type IdentityReply, type RefusedCode } from "../../src/git-service/git-runner";
+import { createRegistrations, type RegistrationOutcome } from "../../src/git-service/registration";
 import { printOrigin } from "../origin";
-import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, realGlobalConfigDigests, removeTree, useFixtureRoot } from "./fixture-root";
+import { createBunRunner, type BunRunner } from "./bun-runner";
+import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, realGlobalConfigDigests, removeTree, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF07, buildF08, buildF10, buildF15, buildF17, F15_MARKER, POWERSHELL_QUOTES, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import { sha256 } from "./git-oracle";
@@ -14,6 +18,7 @@ import { caseTest, openService, type Refusal, type RegistrationResult, type Serv
 
 printOrigin("../../src/git-service/discovery.ts", import.meta.dir);
 printOrigin("../../src/git-service/registration.ts", import.meta.dir);
+printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 
 const TASK = "T068";
 const TIMEOUT_MS = 120_000;
@@ -119,7 +124,7 @@ describe("dubious ownership classifier (contract §6, plan.md F15)", () => {
       // A localized Git prints another first line. The rest of the text stays.
       const localized = new TextEncoder().encode(text(failure.stderr).replace(DUBIOUS_PREFIX, "fatal: zweifelhafter Besitz im Repository unter '"));
       const refusal = classifyDiscoveryFailure({ exitCode: failure.exitCode, stderr: localized, directory: repo!, gitSelectedPath: SELECTED_GIT });
-      expect([repo, slash(repo!)]).toContain(refusal.path);
+      expect([repo, slash(repo!)]).toContain(refusal.path!);
       expect(refusal.remedy?.command ?? null).toBeNull();
     },
     TIMEOUT_MS,
@@ -141,7 +146,7 @@ describe("dubious ownership classifier (contract §6, plan.md F15)", () => {
         const path = slash(text(probeDiscovery(git, repo, OTHER_OWNER).stderr).split("\n")[0]!.slice(DUBIOUS_PREFIX.length, -1));
         const command = safeDirectoryCommand(git, path).command;
         if (command === null) {
-          expect({ repo, command }).toEqual({ repo, command: expectedSafeDirectory(git, path) });
+          expect({ repo, expected: expectedSafeDirectory(git, path) }).toEqual({ repo, expected: null });
           continue;
         }
         const parse = Bun.spawnSync([shell, "-NoProfile", "-Command", PARSE_SCRIPT], {
@@ -415,13 +420,14 @@ describe("registration refusals (contract §6, data-model §2)", () => {
 
   caseTest(
     TASK,
-    "F15: a removed path gives REPOSITORY_UNAVAILABLE",
+    "F15: a removed path gives the UNKNOWN_TARGET refusal of the context check",
     ["shell-double"],
     () =>
       withService("t068-removed", async (service) => {
         const repo = join(buildF15(gitPath(), "t068-removed").root, "repo");
         removeTree(repo);
-        expectRefusal(await service.chooseRepository(repo), "REPOSITORY_UNAVAILABLE", REMEDY.unavailable);
+        const response = await service.chooseRepository(repo);
+        expect({ state: response.state, code: response.code, result: response.result }).toEqual({ state: "failed", code: "UNKNOWN_TARGET", result: undefined });
       }),
     TIMEOUT_MS,
   );
@@ -464,6 +470,71 @@ describe("registration refusals (contract §6, data-model §2)", () => {
   }
 });
 
+// Contract §6 "Channel frames": a `refused` reply keeps its code. Only a failed identity gives `UNSUPPORTED_REPOSITORY`.
+describe("runner refusals during registration (contract §6)", () => {
+  const SYMBOLIC = "--no-lazy-fetch symbolic-ref -q HEAD";
+  const refuse = (code: RefusedCode) => Promise.reject(new RunnerRefusal(code));
+
+  // Registers through a wrapper of the shell double. Each wrapper changes one reply of one request.
+  async function registerWith(name: string, wrap: (runner: BunRunner) => GitRunner): Promise<RegistrationOutcome> {
+    const git = gitPath();
+    const repo = join(buildF08(git, name, "sha1").root, "repo");
+    const runner = createBunRunner({ git, directory: fixtureDir(`${name}-runner`), environment: serviceEnv() });
+    try {
+      const gitInstallationId = crypto.randomUUID();
+      const probe = runner.addContext("gitProbe", git);
+      expect(await runner.register({ operationId: crypto.randomUUID(), bootstrapId: probe, gitInstallationId, version: "2.55.0", digest: "c".repeat(64), confirm: false })).toEqual({ result: "approved" });
+      const installation: GitInstallation = {
+        gitInstallationId,
+        selectedPath: git,
+        executablePath: git,
+        version: "2.55.0",
+        admission: "admitted",
+        executableIdentity: { file: { volumeSerial: "0".repeat(16), fileId: "0".repeat(31) + "1" }, versionOutput: "2.55.0", digest: "c".repeat(64) },
+      };
+      const registrations = createRegistrations({ runner: wrap(runner), unfinishedMutation: () => false });
+      return await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: runner.addContext("repositoryDiscovery", repo), installation, signal: new AbortController().signal });
+    } finally {
+      await runner.dispose();
+    }
+  }
+
+  const passThrough: [string, RefusedCode, (runner: BunRunner) => GitRunner][] = [
+    ["the first discovery call", "GIT_CHANGED", (r) => ({ ...r, run: (call) => (call.arguments.join(" ") === FIRST_QUERY.join(" ") ? refuse("GIT_CHANGED") : r.run(call)) })],
+    ["a later discovery call", "UNKNOWN_TARGET", (r) => ({ ...r, run: (call) => (call.arguments.join(" ") === SYMBOLIC ? refuse("UNKNOWN_TARGET") : r.run(call)) })],
+    ["the identity request", "INVALID_REQUEST", (r) => ({ ...r, identities: () => refuse("INVALID_REQUEST") })],
+    ["the register request", "GIT_CHANGED", (r) => ({ ...r, register: () => refuse("GIT_CHANGED") })],
+    ["the register request", "UNKNOWN_TARGET", (r) => ({ ...r, register: () => refuse("UNKNOWN_TARGET") })],
+  ];
+  for (const [step, code, wrap] of passThrough) {
+    caseTest(
+      TASK,
+      `${code} from ${step} keeps its code and carries no result`,
+      ["shell-double"],
+      async () => expect(await registerWith(`t068-refused-${code.toLowerCase()}-${step.split(" ").at(-2)}`, wrap)).toEqual({ ok: false, code }),
+      TIMEOUT_MS,
+    );
+  }
+
+  const failedIdentity: [string, (replies: IdentityReply[]) => IdentityReply[]][] = [
+    ["an UNSUPPORTED_REPOSITORY entry", (replies) => [replies[0]!, { code: "UNSUPPORTED_REPOSITORY" }, ...replies.slice(2)]],
+    ["an all-zero file ID", (replies) => [{ volumeSerial: "0".repeat(16), fileId: "0".repeat(32) }, ...replies.slice(1)]],
+    ["a reply list of the wrong length", (replies) => replies.slice(1)],
+  ];
+  for (const [label, change] of failedIdentity) {
+    caseTest(
+      TASK,
+      `${label} in the identity reply gives UNSUPPORTED_REPOSITORY with the NTFS or ReFS remedy`,
+      ["shell-double"],
+      async () => {
+        const outcome = await registerWith(`t068-identity-${label.split(" ").at(-1)!.toLowerCase()}`, (r) => ({ ...r, identities: async (...args) => change(await r.identities(...args)) }));
+        expect(outcome).toEqual({ ok: false, code: "UNSUPPORTED_REPOSITORY", result: { remedy: { text: REMEDY.fileId } } });
+      },
+      TIMEOUT_MS,
+    );
+  }
+});
+
 describe("F08 object format and HEAD (data-model §2)", () => {
   const HEX = { sha1: /^[0-9a-f]{40}$/, sha256: /^[0-9a-f]{64}$/ };
 
@@ -500,6 +571,59 @@ describe("F08 object format and HEAD (data-model §2)", () => {
     TIMEOUT_MS,
   );
 
+  // git-symbolic-ref(1) `-q`: a detached HEAD gives a non-zero status without a message.
+  caseTest(
+    TASK,
+    "F08 detached: exit status 1 of symbolic-ref -q without stderr gives a detached HEAD, and one stderr byte refuses",
+    ["shell-double"],
+    async () => {
+      const git = gitPath();
+      const built = buildF08(git, "t068-f08-detached-quiet", "detached");
+      const { first } = built.facts.notes.commits as { first: string; second: string };
+      const repo = join(built.root, "repo");
+      const symbolic = "--no-lazy-fetch symbolic-ref -q HEAD";
+      const runner = createBunRunner({ git, directory: fixtureDir("t068-f08-detached-quiet-runner"), environment: serviceEnv() });
+      try {
+        const gitInstallationId = crypto.randomUUID();
+        const probe = runner.addContext("gitProbe", git);
+        expect(await runner.register({ operationId: crypto.randomUUID(), bootstrapId: probe, gitInstallationId, version: "2.55.0", digest: "c".repeat(64), confirm: false })).toEqual({ result: "approved" });
+        const discover = (wrapped: GitRunner) =>
+          discoverRepository(wrapped, { operationId: crypto.randomUUID(), bootstrapId: runner.addContext("repositoryDiscovery", repo), gitInstallationId, directory: repo, gitSelectedPath: git });
+
+        // The real `symbolic-ref -q HEAD` call gives status 1 and no stderr byte.
+        const seen: { exitCode: number | null; stderr: number }[] = [];
+        const observed: GitRunner = {
+          ...runner,
+          run: async (call) => {
+            if (call.arguments.join(" ") !== symbolic) return runner.run(call);
+            const real = createCollector({ maxBytes: 64 * 1024 });
+            const exit = await runner.run({ ...call, stderr: real });
+            seen.push({ exitCode: exit.exitCode, stderr: real.bytes });
+            return exit;
+          },
+        };
+        const detached = await discover(observed);
+        expect(seen).toEqual([{ exitCode: 1, stderr: 0 }]);
+        expect(detached.ok ? detached.repository.head : detached.refusal).toEqual({ state: "detached", oid: first });
+
+        // One stderr byte follows the real output of that call.
+        const oneByte: GitRunner = {
+          ...runner,
+          run: async (call) => {
+            const exit = await runner.run(call);
+            if (call.arguments.join(" ") === symbolic) call.stderr.push(new Uint8Array([0x0a]));
+            return exit;
+          },
+        };
+        const refused = await discover(oneByte);
+        expect(refused.ok ? refused.repository.head : refused.refusal.code).toBe("REPOSITORY_UNAVAILABLE");
+      } finally {
+        await runner.dispose();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
   caseTest(
     TASK,
     "F01 unborn: head is a validated unborn branch",
@@ -510,6 +634,67 @@ describe("F08 object format and HEAD (data-model §2)", () => {
         const { repositoryId } = await service.register(join(built.root, "repo"));
         expect((await service.readWorkspace(repositoryId)).result?.head).toEqual({ state: "unborn", target: "refs/heads/main" });
       }),
+    TIMEOUT_MS,
+  );
+
+  // git-show-ref(1) `--exists`: status 0 for an existing ref, 2 for a missing ref, and 1 for another lookup error.
+  caseTest(
+    TASK,
+    "F01 unborn: exit status 2 of show-ref --exists decides the unborn HEAD, other stderr bytes keep it, and status 1 refuses",
+    ["shell-double"],
+    async () => {
+      const git = gitPath();
+      const repo = join(buildF01(git, "t068-f01-exists", "empty").root, "repo");
+      const verify = "--no-lazy-fetch show-ref --head --verify HEAD";
+      const exists = "--no-lazy-fetch show-ref --exists refs/heads/main";
+      await withService("t068-f01-exists", async (service) => {
+        expect((await service.readWorkspace((await service.register(repo)).repositoryId)).result?.head).toEqual({ state: "unborn", target: "refs/heads/main" });
+        const calls = discoveryCalls(service).map((c) => ({ args: c.arguments.join(" "), exitCode: c.exit?.exitCode }));
+        const at = calls.findIndex((c) => c.args === verify);
+        expect(calls.slice(at, at + 2)).toEqual([{ args: verify, exitCode: 128 }, { args: exists, exitCode: 2 }]);
+      });
+
+      // A direct discovery through the shell double. Each wrapper changes one fact of one call.
+      const runner = createBunRunner({ git, directory: fixtureDir("t068-f01-exists-runner"), environment: serviceEnv() });
+      try {
+        const gitInstallationId = crypto.randomUUID();
+        const probe = runner.addContext("gitProbe", git);
+        expect(await runner.register({ operationId: crypto.randomUUID(), bootstrapId: probe, gitInstallationId, version: "2.55.0", digest: "c".repeat(64), confirm: false })).toEqual({ result: "approved" });
+        const discover = (wrapped: GitRunner) =>
+          discoverRepository(wrapped, { operationId: crypto.randomUUID(), bootstrapId: runner.addContext("repositoryDiscovery", repo), gitInstallationId, directory: repo, gitSelectedPath: git });
+
+        // Other stderr bytes replace the stderr of the failed `show-ref --head --verify HEAD`.
+        const gitStderr: Uint8Array[] = [];
+        const otherStderr: GitRunner = {
+          ...runner,
+          run: async (call) => {
+            if (call.arguments.join(" ") !== verify) return runner.run(call);
+            const real = createCollector({ maxBytes: 64 * 1024 });
+            const exit = await runner.run({ ...call, stderr: real });
+            gitStderr.push(real.take());
+            call.stderr.push(new TextEncoder().encode("error: other bytes\n"));
+            return exit;
+          },
+        };
+        const unborn = await discover(otherStderr);
+        expect(gitStderr.length).toBe(1);
+        expect(gitStderr[0]!.length).toBeGreaterThan(0);
+        expect(unborn.ok ? unborn.repository.head : unborn.refusal).toEqual({ state: "unborn", target: "refs/heads/main" });
+
+        // Status 1 replaces the status of `show-ref --exists`. Git 2.55.0 gives 1 for a corrupt loose ref of the HEAD target.
+        const failedLookup: GitRunner = {
+          ...runner,
+          run: async (call) => {
+            const exit = await runner.run(call);
+            return call.arguments.join(" ") === exists ? { ...exit, exitCode: 1 } : exit;
+          },
+        };
+        const failed = await discover(failedLookup);
+        expect(failed.ok ? failed.repository.head : failed.refusal.code).toBe("REPOSITORY_UNAVAILABLE");
+      } finally {
+        await runner.dispose();
+      }
+    },
     TIMEOUT_MS,
   );
 

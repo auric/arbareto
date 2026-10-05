@@ -2,20 +2,29 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, join, relative, resolve } from "node:path";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
+import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import { foldAscii } from "../../src/contracts/fold-ascii";
-import { TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILES, TRUST_DIGEST_TOTAL_BYTES, TRUST_INPUT_BYTES } from "../../src/contracts/limits";
-import { redactUrlUserInfo } from "../../src/git-service/trust";
+import { PATH_RULES } from "../../src/contracts/native-path";
+import { RECONCILIATION_TARGET_MS, TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILES, TRUST_DIGEST_TOTAL_BYTES, TRUST_INPUT_BYTES } from "../../src/contracts/limits";
+import { configListArgs, hooksPathArgs } from "../../src/git-service/commands";
+import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
+import { RunnerRefusal, type GitRunner } from "../../src/git-service/git-runner";
+import { createRegistrations, type Workspace } from "../../src/git-service/registration";
+import { createTrust, parseMaybeBool, redactUrlUserInfo, relativePathEntries, type ChangeFiles } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot, type OwnedGitOptions } from "./fixture-root";
 import { buildF02, buildF07, buildF08, buildF17, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
-import { sha256 } from "./git-oracle";
-import { caseTest, once, openService, withPath, type ApproveResult, type OpenOptions, type Service, type ServiceResponse, type TrustResult } from "./service-harness";
+import { hookListArgs, sha256 } from "./git-oracle";
+import { caseTest, once, openService, withFsCalls, withPath, type ApproveResult, type OpenOptions, type Service, type ServiceResponse, type TrustResult } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
+printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 printOrigin("../../src/git-service/trust.ts", import.meta.dir);
+printOrigin("../../src/git-service/git-installation.ts", import.meta.dir);
+printOrigin("../../src/git-service/registration.ts", import.meta.dir);
 
 const TASK = "T071";
 const TIMEOUT_MS = 120_000;
@@ -101,8 +110,20 @@ const f17Ran = (built: Built) =>
 // Contract §7: the read commands of this slice. The trust listing and discovery use none of them.
 const READ_COMMANDS = new Set(["status", "diff-files", "diff-index", "diff", "ls-files", "rev-list", "cat-file", "check-attr", "hash-object"]);
 const subcommand = (args: readonly string[]) => args.find((a) => !a.startsWith("-")) ?? "";
+// Contract §7 "Held history steps": `rev-list` and `cat-file --batch-command` can start beside the trust listing. The `cat-file --batch-check` object check cannot.
+const heldHistoryStep = (args: readonly string[]) => subcommand(args) === "rev-list" || (subcommand(args) === "cat-file" && args.includes("--batch-command"));
 const readCalls = (service: Service) =>
-  service.runner.calls.filter((c) => READ_COMMANDS.has(subcommand(c.arguments)) || (subcommand(c.arguments) === "config" && c.arguments.includes("--file"))).map((c) => c.arguments.join(" "));
+  service.runner.calls
+    .filter((c) => !heldHistoryStep(c.arguments) && (READ_COMMANDS.has(subcommand(c.arguments)) || (subcommand(c.arguments) === "config" && c.arguments.includes("--file"))))
+    .map((c) => c.arguments.join(" "));
+
+// Contract §7 "Held history steps": a refused gate returns no history row, so no response holds a commit ID of the fixture history.
+function expectNoHeldRow(service: Service, repo: string): void {
+  const commits = git(repo, ["--no-lazy-fetch", "rev-list", "--parents", "--max-count=100", "--date-order", "HEAD"]).split(/\s+/).filter((oid) => oid !== "");
+  expect(commits.length).toBeGreaterThan(0);
+  const text = JSON.stringify(service.responses);
+  expect(commits.filter((oid) => text.includes(oid))).toEqual([]);
+}
 
 // Each string or key in `value` that holds `needle`, with its path.
 function leaks(value: unknown, needle: string, at = "$"): string[] {
@@ -138,16 +159,17 @@ function configListing(repo: string, env: Record<string, string> = {}): ConfigEn
   return entries;
 }
 
-// Oracle: `git hook list -z --show-scope <event>`. A configured hook prints its scope, `disabled` when off, and its name. A hooks-directory hook prints one field.
-function hookList(repo: string, event: string): { scope?: string; disabled: boolean; name: string }[] {
-  const out = git(repo, ["hook", "list", "-z", "--show-scope", event], { allowExit: [0, 1] });
+// Oracle: `git hook list -z --show-scope <event>`. A configured hook prints its scope, `disabled` or `event-disabled` when off, and its name. A hooks-directory hook prints one field.
+// Research R5 "T280 record": `event-disabled` wins over `disabled`, and both hooks stay off.
+function hookList(repo: string, event: string, env: Record<string, string> = {}): { scope?: string; disabled: boolean; name: string }[] {
+  const out = git(repo, hookListArgs(event), { allowExit: [0, 1], env });
   return out
     .split("\0")
     .filter((line) => line !== "")
     .map((line) => {
       const parts = line.split("\t");
       if (parts.length === 1) return { disabled: false, name: parts[0]! };
-      return { scope: parts[0]!, disabled: parts.length === 3 && parts[1] === "disabled", name: parts[parts.length - 1]! };
+      return { scope: parts[0]!, disabled: parts.length === 3 && (parts[1] === "disabled" || parts[1] === "event-disabled"), name: parts[parts.length - 1]! };
     });
 }
 
@@ -312,7 +334,7 @@ describe("read gate (contract §7)", () => {
   for (const key of BLOCKING) {
     caseTest(
       TASK,
-      `F17: a repository-scope ${key} canary makes readWorkspace and readHistory return TRUST_REQUIRED before any status, diff, or history read, and no canary runs`,
+      `F17: a repository-scope ${key} canary makes readWorkspace and readHistory return TRUST_REQUIRED before any status or diff read, no response holds a commit ID of the fixture, and no canary runs`,
       W,
       () =>
         withService({ name: `t071-gate-${key.replaceAll(".", "-")}` }, async (service) => {
@@ -323,6 +345,7 @@ describe("read gate (contract §7)", () => {
           const { workspace, history } = await readBoth(service, repositoryId, generation);
           expect({ workspace: gate(workspace), history: gate(history) }).toEqual({ workspace: TRUST_REQUIRED, history: TRUST_REQUIRED });
           expect(readCalls(service)).toEqual([]);
+          expectNoHeldRow(service, repo);
           expect((await trustOf(service, repositoryId)).approvalRequired.reads).toBe(true);
           expect(f17Ran(built)).toEqual([]);
         }),
@@ -388,6 +411,7 @@ describe("read gate (contract §7)", () => {
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: gate(workspace), history: gate(history) }).toEqual({ workspace: TRUST_REQUIRED, history: TRUST_REQUIRED });
         expect(readCalls(service)).toEqual([]);
+        expectNoHeldRow(service, repoOf(built));
         expect(f17Ran(built)).toEqual([]);
       });
     },
@@ -412,6 +436,7 @@ describe("read gate (contract §7)", () => {
           const { workspace, history } = await readBoth(service, repositoryId, generation);
           expect({ workspace: gate(workspace), history: gate(history) }).toEqual({ workspace: TRUST_REQUIRED, history: TRUST_REQUIRED });
           expect(readCalls(service)).toEqual([]);
+          expectNoHeldRow(service, repo);
           expect(ran([program.log])).toEqual([]);
         });
       },
@@ -1036,14 +1061,19 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
     "a selected Git path that differs only in ASCII letter case keeps the approval",
     [...W, "windows-path-rules"],
     () =>
-      withSessions("t071-git-path-ascii-case", {}, async (first, set) => {
+      // Git prints the system file origin in the letter case of the path that started it (`file:C:/gIT/etc/gitconfig`), and the fingerprint covers origin bytes.
+      // So the case reads no system file, and only the selected-path compare differs.
+      withSessions("t071-git-path-ascii-case", { environment: serviceEnv({ GIT_CONFIG_NOSYSTEM: "1" }) }, async (first, set) => {
         const built = buildF17(gitPath(), "t071-git-path-ascii-case", "trust");
         const repo = repoOf(built);
         await approve(first, (await first.register(repo)).repositoryId);
         // Contract §7 follows the §6 "Startup contexts" case rule: only ASCII letters fold.
-        const other = gitPath().replace(/[A-Za-z]/g, (c) => (c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase()));
+        // Git for Windows finds its runtime prefix from the `<prefix>\bin\git.exe` names in their own case, so only the folders above them change.
+        const kept = join(basename(dirname(dirname(gitPath()))), basename(dirname(gitPath())), basename(gitPath()));
+        const above = gitPath().slice(0, -kept.length);
+        const other = above.replace(/[A-Za-z]/g, (c) => (c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase())) + kept;
         expect(other).not.toBe(gitPath());
-        const second = set(await nextSession(first, "t071-git-path-ascii-case-next", { gitSelectedPath: other }));
+        const second = set(await nextSession(first, "t071-git-path-ascii-case-next", { gitSelectedPath: other, environment: serviceEnv({ GIT_CONFIG_NOSYSTEM: "1" }) }));
         const { repositoryId } = await second.register(repo);
         expect((await trustOf(second, repositoryId)).state).toBe("approved");
         expect(outcome(await second.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
@@ -1415,7 +1445,144 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
       }),
     TIMEOUT_MS,
   );
+
+  // Contract §7 "Program file digests": only ENOENT, ENOTDIR, and EISDIR mean absent. Every other error ends the listing `failed`.
+  // POSIX mode 0100 keeps the execute bit, so Git still lists and runs the hook.
+  caseTest(
+    TASK,
+    "a .git/hooks/pre-commit hook that the service cannot read ends readTrust failed with REPOSITORY_UNAVAILABLE, never with the hook absent",
+    [...W, "read-denial"],
+    () =>
+      withService({ name: "t071-unreadable-hook" }, async (service) => {
+        const built = buildF02(gitPath(), "t071-unreadable-hook");
+        const repo = repoOf(built);
+        const hook = put(repo, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+        chmodSync(hook, 0o755);
+        const { repositoryId } = await service.register(repo);
+        const issued = await trustOf(service, repositoryId);
+        denyRead(hook);
+        try {
+          const expected: ListingRefusal = { state: "failed", code: "REPOSITORY_UNAVAILABLE", text: { path: samePath(hook), errno: errnoOf(() => closeSync(openSync(hook, "r"))) } };
+          expect(refusal(await service.readTrust(repositoryId))).toEqual(expected);
+          expect(refusal(await service.approveTrust(repositoryId, issued.fingerprint, issued.generation))).toEqual(expected);
+        } finally {
+          allowRead(hook);
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
+  // ext4 and overlayfs refuse a component above 255 bytes with ENAMETOOLONG, also for root. Another file system can give another errno.
+  caseTest(
+    TASK,
+    "a local filter program path with a 300-byte component ends readTrust failed with REPOSITORY_UNAVAILABLE, never with the program absent",
+    W,
+    () =>
+      withService({ name: "t071-long-component" }, async (service) => {
+        const built = buildF02(gitPath(), "t071-long-component");
+        const repo = repoOf(built);
+        const program = join(repo, "a".repeat(300));
+        const errno = errnoOf(() => lstatSync(program));
+        if (errno !== "ENAMETOOLONG") {
+          console.log(`SKIP ${TASK} 300-byte component: lstat gives ${errno}, not ENAMETOOLONG, on this file system`);
+          return;
+        }
+        config(repo, "filter.t071.clean", `./${basename(program)}`);
+        const { repositoryId } = await service.register(repo);
+        const expected: ListingRefusal = { state: "failed", code: "REPOSITORY_UNAVAILABLE", text: { path: samePath(program), errno } };
+        expect(refusal(await service.readTrust(repositoryId))).toEqual(expected);
+        expect(refusal(await service.readWorkspace(repositoryId))).toEqual(expected);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a .git/hooks/pre-commit directory enters the fingerprint as absent, and readTrust succeeds",
+    W,
+    () =>
+      withService({ name: "t071-hook-directory" }, async (service) => {
+        const built = buildF02(gitPath(), "t071-hook-directory");
+        const repo = repoOf(built);
+        const folder = join(repo, ".git", "hooks", "pre-commit");
+        mkdirSync(folder, { mode: 0o755 });
+        const { repositoryId } = await service.register(repo);
+        const trust = await trustOf(service, repositoryId);
+        expect(trust.hooks.filter((h) => h.event === "pre-commit").map((h) => samePath(h.path))).toEqual([samePath(folder)]);
+        writeFileSync(join(folder, "inside"), "t071\n");
+        expect((await trustOf(service, repositoryId)).fingerprint).toBe(trust.fingerprint);
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §7 "Program file digests": a symbolic link gets no digest, so its target can change unseen. The approval is session-only.
+  caseTest(
+    TASK,
+    "a .git/hooks/pre-commit symbolic link to a worktree script gives bound link and persistence session, and approveTrust stores no record",
+    W,
+    () =>
+      withService({ name: "t071-hook-link" }, async (service) => {
+        const built = buildF02(gitPath(), "t071-hook-link");
+        const repo = repoOf(built);
+        const target = insideProgram(built, repo, "tools/hook.sh");
+        const hook = join(repo, ".git", "hooks", "pre-commit");
+        try {
+          symlinkSync(target.path, hook, "file");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+          console.log(`SKIP ${TASK} hook link: symlink creation gives EPERM for this account`);
+          return;
+        }
+        expect(lstatSync(hook).isSymbolicLink()).toBe(true);
+        const { repositoryId } = await service.register(repo);
+        const trust = await trustOf(service, repositoryId);
+        expect({ bound: trust.bound, persistence: trust.persistence, commit: trust.approvalRequired.commit }).toEqual({ bound: "link", persistence: "session", commit: true });
+        expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "session", saveFailed: false });
+        expect({ persists: service.trustStore.persists, records: service.trustStore.records }).toEqual({ persists: [false], records: [] });
+        expect(ran([target.log])).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
 });
+
+// Contract §7 "Program file digests": the refusal text names the path and the errno name. Null: the result holds no such text.
+interface ListingRefusal {
+  state: string;
+  code: string | undefined;
+  text: { path: unknown; errno: string | null } | null;
+}
+
+function refusal(response: ServiceResponse<unknown>): ListingRefusal {
+  const text = (response.result as { remedy?: { text?: unknown } } | undefined)?.remedy?.text;
+  const match = typeof text === "string" ? /^Arbareto cannot read (.+): ([A-Z0-9]+)\.$/s.exec(text) : null;
+  return { ...outcome(response), text: match === null ? null : { path: samePath(match[1]!), errno: match[2]! } };
+}
+
+// The errno name that the test process gets for the same path. The test runs as the same user as the service.
+function errnoOf(read: () => unknown): string | null {
+  try {
+    read();
+    return null;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code ?? null;
+  }
+}
+
+// POSIX mode 0100 denies the read and keeps the execute bit. On Windows, an ACL entry denies the read.
+function denyRead(path: string): void {
+  if (process.platform === "win32") icacls([path, "/deny", `${userInfo().username}:(R)`]);
+  else chmodSync(path, 0o100);
+}
+
+function allowRead(path: string): void {
+  if (process.platform === "win32") icacls([path, "/remove:d", userInfo().username]);
+  else chmodSync(path, 0o755);
+}
+
+function icacls(args: string[]): void {
+  const proc = Bun.spawnSync(["icacls", ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  if (proc.exitCode !== 0) throw new Error(`icacls ${args.join(" ")} exited ${proc.exitCode}`);
+}
 
 describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
   // The child PATH of the task text: the relative entry `tools`, then an absolute owned bin directory.
@@ -1501,6 +1668,68 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
     },
     TIMEOUT_MS,
   );
+});
+
+// Contract §7 "Repository-controlled resolution" and "Program file digests". The rule set comes from native-path.ts `emptyPathEntry`.
+describe("relative child PATH entries (contract §7 \"Program file digests\")", () => {
+  test("Windows rules skip an empty entry, as Git for Windows path_lookup does: C:\\a;C:\\b; gives no relative entry", () => {
+    expect(relativePathEntries("C:\\a;C:\\b;", PATH_RULES.windows)).toEqual([]);
+    expect(relativePathEntries(";C:\\a;;tools;.", PATH_RULES.windows)).toEqual(["tools", "."]);
+  });
+
+  test("POSIX rules take an empty entry as the current folder, as run-command.c locate_in_PATH does: /a:/b: gives .", () => {
+    expect(relativePathEntries("/a:/b:", PATH_RULES.posix)).toEqual(["."]);
+    expect(relativePathEntries(":/a::tools", PATH_RULES.posix)).toEqual([".", ".", "tools"]);
+  });
+
+  test("an absent or empty PATH gives no entry, as locate_in_PATH and path_lookup return no program", () => {
+    for (const rules of [PATH_RULES.windows, PATH_RULES.posix]) {
+      expect(relativePathEntries(undefined, rules)).toEqual([]);
+      expect(relativePathEntries("", rules)).toEqual([]);
+    }
+  });
+});
+
+describe("empty child PATH entry with a global bare-name filter (contract §7 \"Repository-controlled resolution\")", () => {
+  // Two absolute owned folders, then an empty entry from the trailing delimiter. A global `filter.lfs.process` names the bare program `git-lfs`.
+  async function readsWith(name: string, trailing: boolean): Promise<boolean> {
+    const built = buildF02(gitPath(), name);
+    const repo = repoOf(built);
+    const bins = ["bin1", "bin2"].map((folder) => join(built.root, folder));
+    for (const bin of bins) mkdirSync(bin, { recursive: true });
+    const { environment } = ownGlobal(built, [["filter.lfs.process", "git-lfs filter-process"]]);
+    const path = bins.join(delimiter) + (trailing ? delimiter : "");
+    let reads = true;
+    await withService({ name, environment: withPath(environment, path) }, async (service) => {
+      const { repositoryId } = await service.register(repo);
+      reads = (await trustOf(service, repositoryId)).approvalRequired.reads;
+    });
+    return reads;
+  }
+
+  caseTest(
+    TASK,
+    "Windows: a child PATH of absolute owned entries that ends with ; holds no relative entry, so a global bare-name filter.lfs.process needs no read approval",
+    [...W, "windows-path-rules"],
+    async () => {
+      expect(await readsWith("t071-empty-entry-windows", true)).toBe(false);
+    },
+    TIMEOUT_MS,
+  );
+
+  // POSIX `locate_in_PATH` takes the empty entry as the current folder. Git starts the filter from the worktree root, so `./git-lfs` is a repository candidate.
+  describe.skipIf(process.platform === "win32")("POSIX", () => {
+    caseTest(
+      TASK,
+      "POSIX: a child PATH that ends with : holds the relative entry ., so a global bare-name filter.lfs.process needs read approval, and the same PATH without : needs none",
+      W,
+      async () => {
+        expect(await readsWith("t071-empty-entry-posix", true)).toBe(true);
+        expect(await readsWith("t071-empty-entry-posix-none", false)).toBe(false);
+      },
+      TIMEOUT_MS,
+    );
+  });
 });
 
 describe("F07 per-worktree records (contract §7 \"Trust approval store\")", () => {
@@ -1593,4 +1822,791 @@ describe("stale record (contract §7 \"Mutation trust\")", () => {
       await service.dispose();
     }
   });
+});
+
+// T080 cases. A configured hook result also names the friendly name, the scope of its command entry, and the classification.
+type ClassifiedHook = TrustResult["hooks"][number] & { name?: string; commandScope?: string; repositoryControlled?: boolean };
+
+describe("hook classification (contract §7 \"Hook registrations\")", () => {
+  caseTest(
+    "T080",
+    "a global hook.<name>.event and a local hook.<name>.command canary: readTrust reports the hook repository-controlled by its command entry, commit approval is required, and the canary never runs",
+    W,
+    async () => {
+      const built = buildF02(gitPath(), "t080-hook-scope");
+      const repo = repoOf(built);
+      const canary = outsideProgram(built, "t080-hook-command");
+      config(repo, "hook.t080.command", canary.command);
+      const { file, environment } = ownGlobal(built, [["hook.t080.event", "pre-commit"]]);
+      // Oracle: `git hook list` shows the scope of the event entry, but Git runs the local command (research R5 "T280 record").
+      expect(hookList(repo, "pre-commit", { GIT_CONFIG_GLOBAL: file })).toEqual([{ scope: "global", disabled: false, name: "t080" }]);
+      await withService({ name: "t080-hook-scope", environment }, async (service) => {
+        const { repositoryId } = await service.register(repo);
+        const trust = await trustOf(service, repositoryId);
+        const hooks = (trust.hooks as ClassifiedHook[]).filter((h) => h.event === "pre-commit");
+        expect(hooks.map((h) => ({ name: h.name, scope: h.scope, commandScope: h.commandScope, repositoryControlled: h.repositoryControlled }))).toEqual([
+          { name: "t080", scope: "global", commandScope: "local", repositoryControlled: true },
+        ]);
+        expect(trust.approvalRequired).toEqual({ reads: false, commit: true });
+      });
+      expect(ran([canary.log])).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe("shared listing (contract §7 \"Shared listing\")", () => {
+  const same = (args: readonly string[], expected: string[]) => args.length === expected.length && args.every((arg, i) => arg === expected[i]);
+  // The two Git processes of one trust listing (contract §7 "Hook registrations"), counted from the runner calls after `from`.
+  const listings = (service: Service, from: number) => {
+    const calls = service.runner.calls.slice(from);
+    return { configList: calls.filter((c) => same(c.arguments, configListArgs())).length, hooksPath: calls.filter((c) => same(c.arguments, hooksPathArgs())).length };
+  };
+
+  caseTest(
+    "T080",
+    "a readHistory before any readWorkspace of its generation lists itself; a full readWorkspace and then a readHistory of its generation start one config list and one rev-parse --git-path hooks; a local configuration edit between them starts a second listing",
+    W,
+    () =>
+      withService({ name: "t080-shared-listing" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t080-shared-listing"));
+        const registered = await service.register(repo);
+        const { repositoryId } = registered;
+
+        let from = service.runner.calls.length;
+        const firstHistory = await service.readHistory(repositoryId, registered.generation);
+        const firstWorkspace = await service.readWorkspace(repositoryId);
+        expect({ history: outcome(firstHistory), workspace: outcome(firstWorkspace) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
+        expect(listings(service, from)).toEqual({ configList: 2, hooksPath: 2 });
+
+        from = service.runner.calls.length;
+        const workspace = await service.readWorkspace(repositoryId);
+        const history = await service.readHistory(repositoryId, workspace.result!.generation);
+        expect({ history: outcome(history), workspace: outcome(workspace) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
+        expect(listings(service, from)).toEqual({ configList: 1, hooksPath: 1 });
+
+        // The edit changes the local configuration file in the contract §8 change tuple, so the history read cannot reuse the listing.
+        from = service.runner.calls.length;
+        const edited = await service.readWorkspace(repositoryId);
+        config(repo, "t080.note", "edited");
+        const afterEdit = await service.readHistory(repositoryId, edited.result!.generation);
+        expect({ history: outcome(afterEdit), workspace: outcome(edited) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
+        expect(listings(service, from)).toEqual({ configList: 2, hooksPath: 2 });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T080",
+    "a readHistory that waits for the shared listing of a held readWorkspace ends canceled after cancel, while the readWorkspace still waits",
+    W,
+    () =>
+      withService({ name: "t080-shared-cancel" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t080-shared-cancel"));
+        const { repositoryId } = await service.register(repo);
+        const first = await service.readWorkspace(repositoryId);
+        expect(outcome(first)).toEqual(SUCCEEDED);
+        const generation = first.result!.generation;
+        const from = service.runner.calls.length;
+        const isConfigList = (c: { arguments: readonly string[] }) => same(c.arguments, configListArgs());
+        const release = service.runner.pauseStdout(once(isConfigList));
+        try {
+          // The request generation makes the listing shareable at once (contract §7 "Shared listing").
+          const workspace = service.send("readWorkspace", { refresh: false, check: "full" }, { repositoryId, repositoryGeneration: generation });
+          await waitFor("held config list", () => service.runner.calls.slice(from).some(isConfigList));
+          const history = service.send("readHistory", {}, { repositoryId, repositoryGeneration: generation });
+          const operationId = await service.operationId(history);
+          // The listing reuse starts after a few file facts, and `rev-list` starts after three Git processes. So the cancel finds the read waiting for the shared listing.
+          await waitFor("history rev-list call", () => service.runner.calls.some((c) => c.operationId === operationId && c.arguments.includes("rev-list")));
+          expect((await service.cancel(operationId)).state).toBe("succeeded");
+          expect(outcome(await service.response(history, RECONCILIATION_TARGET_MS * 2))).toEqual({ state: "canceled", code: "CANCELED" });
+          expect(service.responseAt.has(workspace)).toBe(false);
+          expect(listings(service, from)).toEqual({ configList: 1, hooksPath: 1 });
+        } finally {
+          release();
+        }
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("absent candidate configuration files (contract §8 \"Change check\")", () => {
+  caseTest(
+    "T080",
+    "after approval with extensions.worktreeConfig, a new config.worktree and then a missing include.path target that gets a command-valued core.fsmonitor canary each make the next check: \"changes\" read list again and refuse with TRUST_CHANGED, and no canary runs",
+    W,
+    async () => {
+      const built = buildF02(gitPath(), "t080-candidates");
+      const repo = repoOf(built);
+      const canary = outsideProgram(built, "t080-fsmonitor");
+      const target = join(built.root, "t080-include.gitconfig");
+      config(repo, "extensions.worktreeConfig", "true");
+      config(repo, "include.path", slash(target));
+      const worktreeConfig = resolve(repo, git(repo, ["rev-parse", "--git-path", "config.worktree"]).trim());
+      expect({ worktreeConfig: existsSync(worktreeConfig), target: existsSync(target) }).toEqual({ worktreeConfig: false, target: false });
+      const monitor = `[core]\n\tfsmonitor = ${canary.command}\n`;
+      const configLists = (service: Service) => service.runner.calls.filter((c) => subcommand(c.arguments) === "config" && c.arguments.includes("list")).length;
+
+      // Hints off: only the contract §8 stat tuple can detect the new file.
+      await withService({ name: "t080-candidates", watchHints: false }, async (service) => {
+        const { repositoryId } = await service.register(repo);
+        await approve(service, repositoryId);
+        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+
+        writeFileSync(worktreeConfig, monitor);
+        // Oracle: Git reads the new file with worktree scope.
+        expect(configListing(repo).filter((e) => e.key === "core.fsmonitor").map((e) => e.scope)).toEqual(["worktree"]);
+        let before = configLists(service);
+        expect(gate(await service.readWorkspace(repositoryId, { refresh: false, check: "changes" }))).toEqual(TRUST_CHANGED);
+        expect(configLists(service)).toBeGreaterThan(before);
+
+        rmSync(worktreeConfig);
+        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        writeFileSync(target, monitor);
+        // Oracle: Git reads the include target with the scope of the file that names it.
+        expect(configListing(repo).filter((e) => e.key === "core.fsmonitor").map((e) => ({ scope: e.scope, origin: originPath(e.origin, repo) }))).toEqual([
+          { scope: "local", origin: samePath(target) },
+        ]);
+        before = configLists(service);
+        expect(gate(await service.readWorkspace(repositoryId, { refresh: false, check: "changes" }))).toEqual(TRUST_CHANGED);
+        expect(configLists(service)).toBeGreaterThan(before);
+      });
+      expect(ran([canary.log])).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+// kernel32 `GetShortPathNameW` (Microsoft Learn): the path with the 8.3 name of each component that has one.
+function shortPath(path: string): string {
+  const { dlopen, FFIType } = require("bun:ffi") as typeof import("bun:ffi");
+  const UNITS = 32_768;
+  const kernel32 = dlopen("kernel32.dll", { GetShortPathNameW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32], returns: FFIType.u32 } });
+  try {
+    const out = new Uint16Array(UNITS);
+    const units = kernel32.symbols.GetShortPathNameW(Buffer.from(`${path}\0`, "utf16le"), out, UNITS);
+    if (units === 0 || units >= UNITS) throw new Error(`GetShortPathNameW failed for ${path}`);
+    return Buffer.from(out.buffer, 0, units * 2).toString("utf16le");
+  } finally {
+    kernel32.close();
+  }
+}
+
+describe("inside and outside (contract §7 \"Inside and outside\")", () => {
+  // A global core.hooksPath names the `.githooks` folder of the worktree through `spell(alias)`. The worktree holds a committed pre-commit canary there.
+  // `symlinkSync` with type "junction" makes a junction on Windows and a symbolic link on other platforms.
+  async function aliasHooks(name: string, aliasName: string, spell: (alias: string) => string): Promise<void> {
+    const built = buildF08(gitPath(), name, "sha1");
+    const repo = repoOf(built);
+    const canary = outsideProgram(built, `${name}-pre-commit`);
+    chmodSync(put(repo, ".githooks/pre-commit", `#!/bin/sh\nexec ${canary.command}\n`), 0o755);
+    git(repo, ["add", "--", ".githooks/pre-commit"]);
+    git(repo, ["commit", "-q", "--no-verify", "-m", "hooks"]);
+    const alias = join(built.root, aliasName);
+    symlinkSync(repo, alias, "junction");
+    const hooksPath = `${slash(spell(alias))}/.githooks`;
+    // No text comparison places the folder under the worktree.
+    expect(String(samePath(hooksPath)).startsWith(`${String(samePath(repo))}/`)).toBe(false);
+    const { file, environment } = ownGlobal(built, [["core.hooksPath", hooksPath]]);
+    // Oracle: Git lists the committed hook through the alias.
+    expect(hookList(repo, "pre-commit", { GIT_CONFIG_GLOBAL: file }).map((h) => h.scope ?? "hookdir")).toEqual(["hookdir"]);
+    await withService({ name, environment }, async (service) => {
+      const { repositoryId } = await service.register(repo);
+      const from = service.runner.calls.length;
+      const trust = await trustOf(service, repositoryId);
+      // Contract §7 "Hook registrations": the identity requests add no Git process to the listing.
+      expect(service.runner.calls.slice(from).map((c) => c.arguments.join(" ")).sort()).toEqual([configListArgs().join(" "), hooksPathArgs().join(" ")].sort());
+      const hooks = (trust.hooks as ClassifiedHook[]).filter((h) => h.event === "pre-commit");
+      expect(hooks.map((h) => ({ folder: h.path !== undefined, repositoryControlled: h.repositoryControlled }))).toEqual([{ folder: true, repositoryControlled: true }]);
+      expect(trust.approvalRequired).toEqual({ reads: false, commit: true });
+      // A hooks-folder hook blocks no read (contract §7 "Mutation trust").
+      expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+    });
+    expect(ran([canary.log])).toEqual([]);
+  }
+
+  caseTest(
+    "T080",
+    "a global core.hooksPath through a junction alias of the worktree folder: readTrust reports the folder hook repository-controlled and commit approval required, and the hook never runs",
+    W,
+    () => aliasHooks("t080-alias-hooks", "alias", (alias) => alias),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T080",
+    "a global core.hooksPath through the 8.3 short name of a junction alias of the worktree folder: the folder hook is repository-controlled and commit approval is required",
+    [...W, "ntfs-junction"],
+    () =>
+      aliasHooks("t080-alias-hooks-short", "worktree-alias-long-name", (alias) => {
+        const short = shortPath(alias);
+        // A volume without 8.3 names keeps the long name, and the case cannot run there.
+        expect({ short: basename(short) === basename(alias) }).toEqual({ short: false });
+        return short;
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T080",
+    "a global core.hooksPath through a junction alias of the worktree folder in another non-ASCII letter case: the folder hook is repository-controlled and commit approval is required",
+    [...W, "ntfs-junction", "windows-path-rules"],
+    // NTFS folds U+00C9 and U+00E9 to one name through its upcase table. The contract §7 text rule folds only ASCII letters.
+    () => aliasHooks("t080-alias-hooks-case", "alias-\u00e9", (alias) => `${alias.slice(0, -1)}\u00c9`),
+    TIMEOUT_MS,
+  );
+});
+
+// The service steps without the session: an admitted installation, and a registration with it.
+async function admitted(service: Service): Promise<GitInstallation> {
+  const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+  if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+  return probed.installation;
+}
+
+async function registerIn(registrations: ReturnType<typeof createRegistrations>, service: Service, repo: string, installation: GitInstallation): Promise<string> {
+  const signal = new AbortController().signal;
+  const result = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal });
+  if (!result.ok || !("repositoryId" in result.result)) throw new Error(`registration failed: ${JSON.stringify(result)}`);
+  return result.result.repositoryId;
+}
+
+describe("workspace release (contract §6 \"Registration reuse and release\")", () => {
+  // An F17 copy whose clean filter program is above the file bound, so an approval is session-only.
+  function sessionOnly(name: string): string {
+    const built = buildF17(gitPath(), name, "trust");
+    padTo(join(repoOf(built), "tools", "clean.sh"), TRUST_DIGEST_FILE_BYTES + 1);
+    return repoOf(built);
+  }
+
+  caseTest(
+    TASK,
+    "a release clears the session approval: after another repository releases the workspace, its re-registration needs a new approval",
+    W,
+    () =>
+      withService({ name: "t071-release" }, async (service) => {
+        const repo = sessionOnly("t071-release");
+        const first = await service.register(repo);
+        await approve(service, first.repositoryId);
+        expect(outcome(await service.readWorkspace(first.repositoryId))).toEqual(SUCCEEDED);
+        await service.register(repoOf(buildF02(gitPath(), "t071-release-other")));
+        expect(outcome(await service.readWorkspace(first.repositoryId))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
+        const again = await service.register(repo);
+        expect(gate(await service.readWorkspace(again.repositoryId))).toEqual(TRUST_REQUIRED);
+        expect((await trustOf(service, again.repositoryId)).state).toBe("untrusted");
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a registration of the same worktree with another gitInstallationId never reuses the workspace of the first one",
+    W,
+    () =>
+      withService({ name: "t071-reuse-installation" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t071-reuse-installation"));
+        const probe = async () => {
+          const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+          if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+          return probed.installation;
+        };
+        const [a, b] = [await probe(), await probe()];
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const register = async (installation: GitInstallation) => {
+          const signal = new AbortController().signal;
+          const result = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal });
+          if (!result.ok || !("repositoryId" in result.result)) throw new Error(`registration failed: ${JSON.stringify(result)}`);
+          return result.result.repositoryId;
+        };
+        const first = await register(a);
+        expect(await register(a)).toBe(first);
+        const other = await register(b);
+        expect(other).not.toBe(first);
+        expect(registrations.get(other)?.gitInstallationId).toBe(b.gitInstallationId);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "chooseGit releases every workspace of the previous Git; a re-registration binds a new workspace to the new Git and needs a new approval",
+    W,
+    () =>
+      withService({ name: "t071-choose-git" }, async (service) => {
+        const repo = sessionOnly("t071-choose-git");
+        const first = await service.register(repo);
+        await approve(service, first.repositoryId);
+        expect(outcome(await service.readWorkspace(first.repositoryId))).toEqual(SUCCEEDED);
+        const chosen = await service.request("chooseGit", { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+        expect(chosen.state).toBe("succeeded");
+        expect(outcome(await service.readWorkspace(first.repositoryId))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
+        const second = await service.register(repo);
+        expect(second.repositoryId).not.toBe(first.repositoryId);
+        expect(gate(await service.readWorkspace(second.repositoryId))).toEqual(TRUST_REQUIRED);
+        await approve(service, second.repositoryId);
+        expect(outcome(await service.readWorkspace(second.repositoryId))).toEqual(SUCCEEDED);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "releaseInstallation gives busy and changes nothing while a workspace of that Git has an unfinished mutation",
+    W,
+    () =>
+      withService({ name: "t071-release-busy" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t071-release-busy"));
+        const installation = await admitted(service);
+        let unfinished = true;
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => unfinished });
+        const id = await registerIn(registrations, service, repo, installation);
+        expect(await registrations.releaseInstallation(installation.gitInstallationId, () => true)).toBe("busy");
+        expect(registrations.has(id)).toBe(true);
+        // The shell keeps the installation binding, so the same registration still runs its discovery.
+        expect(await registerIn(registrations, service, repo, installation)).toBe(id);
+        unfinished = false;
+        expect(await registrations.releaseInstallation(installation.gitInstallationId, () => true)).toBe("released");
+        expect(registrations.has(id)).toBe(false);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "releaseInstallation waits for a registration that commits with that Git, then releases the new workspace",
+    W,
+    () =>
+      withService({ name: "t071-release-lock" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t071-release-lock"));
+        const installation = await admitted(service);
+        let open = () => {};
+        const gate = new Promise<void>((resolve) => (open = resolve));
+        let approved = false;
+        // The shell approved the `register` frame. Its reply reaches the service only after the gate opens.
+        const runner: GitRunner = {
+          ...service.runner,
+          async register(request) {
+            const reply = await service.runner.register(request);
+            if ("repositoryId" in request) {
+              approved = true;
+              await gate;
+            }
+            return reply;
+          },
+        };
+        const registrations = createRegistrations({ runner, unfinishedMutation: () => false });
+        const signal = new AbortController().signal;
+        const registering = registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal });
+        await waitFor("approved register frame", () => approved);
+        const releasing = registrations.releaseInstallation(installation.gitInstallationId, () => true);
+        open();
+        const registered = await registering;
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        expect(await releasing).toBe("released");
+        expect(registrations.has(registered.result.repositoryId)).toBe(false);
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §3 `approveTrust`: the approval binds the `repositoryId` of the request.
+  caseTest(
+    TASK,
+    "an approveTrust whose confirmation ends after a release of its workspace sets nothing and gives UNKNOWN_TARGET; a re-registration starts untrusted",
+    W,
+    () =>
+      withService({ name: "t071-approve-release" }, async (service) => {
+        const repo = repoOf(buildF17(gitPath(), "t071-approve-release", "trust"));
+        const installation = await admitted(service);
+        let open = () => {};
+        const gate = new Promise<void>((resolve) => (open = resolve));
+        let asked = false;
+        // The Git selection dialog stays open until the gate opens.
+        const runner: GitRunner = {
+          ...service.runner,
+          async trust(request) {
+            if (request.type === "confirm") {
+              asked = true;
+              await gate;
+            }
+            return service.runner.trust(request);
+          },
+        };
+        const trust = createTrust({ runner, environment: serviceEnv() });
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false, onRelease: (w) => trust.release(w) });
+        const id = await registerIn(registrations, service, repo, installation);
+        const target = (workspace: Workspace) => ({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, installation });
+        const read = await trust.readTrust(target(registrations.get(id)!), 0);
+        if (read.result !== "succeeded") throw new Error(`readTrust: ${JSON.stringify(read)}`);
+        expect(read.value.state).toBe("untrusted");
+        const approving = trust.approveTrust(target(registrations.get(id)!), read.value.fingerprint);
+        await waitFor("confirm request", () => asked);
+        await registerIn(registrations, service, repoOf(buildF02(gitPath(), "t071-approve-release-other")), installation);
+        expect(registrations.has(id)).toBe(false);
+        open();
+        expect(await approving).toEqual({ result: "failed", code: "UNKNOWN_TARGET" });
+        const again = registrations.get(await registerIn(registrations, service, repo, installation))!;
+        const next = await trust.readTrust(target(again), 0);
+        expect({ result: next.result, state: next.result === "succeeded" ? next.value.state : undefined }).toEqual({ result: "succeeded", state: "untrusted" });
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §6 "Registration reuse and release": a read that a release cancels issues nothing.
+  caseTest(
+    TASK,
+    "a readTrust whose signal aborts during its file facts issues no fingerprint for approveTrust",
+    W,
+    () =>
+      withService({ name: "t071-read-trust-abort" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t071-read-trust-abort"));
+        const installation = await admitted(service);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const workspace = registrations.get(await registerIn(registrations, service, repo, installation))!;
+        const trust = createTrust({ runner: service.runner, environment: serviceEnv() });
+        const controller = new AbortController();
+        // The first `lstat` belongs to the hooks folder, after both listing processes ended.
+        const { value } = await withFsCalls(
+          () => trust.readTrust({ operationId: crypto.randomUUID(), signal: controller.signal, workspace, installation }, 0),
+          (call) => call.name === "lstat" && controller.abort(),
+        );
+        expect(value).toEqual({ result: "canceled" });
+        const listed = await trust.listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace });
+        if (!listed.ok) throw new Error(`listing: ${JSON.stringify(listed)}`);
+        expect(trust.acceptApprove(workspace.repositoryId, listed.listing.fingerprint, 0)).toBe("TRUST_CHANGED");
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("hook commands and the enabled flag (contract §7 \"Hook registrations\")", () => {
+  caseTest(
+    "T080",
+    "a local configured hook with an empty command has no program record: readTrust reports it repository-controlled, and commit approval is required",
+    W,
+    () =>
+      withService({ name: "t080-empty-command" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t080-empty-command"));
+        config(repo, "hook.t080empty.event", "pre-commit");
+        config(repo, "hook.t080empty.command", "");
+        const { repositoryId } = await service.register(repo);
+        const trust = await trustOf(service, repositoryId);
+        const hooks = (trust.hooks as ClassifiedHook[]).filter((h) => h.name === "t080empty");
+        expect({ hooks: hooks.map((h) => h.repositoryControlled), commit: trust.approvalRequired.commit }).toEqual({ hooks: [true], commit: true });
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Research probe D8 (Git 2.56.0.windows.1): `git hook list` and `git hook run` exit 0 for a value that is no boolean, and that entry changes no flag.
+  for (const values of [["maybe"], ["false", "maybe"], ["maybe", "false"]]) {
+    caseTest(
+      "T080",
+      `hook.<name>.enabled entries ${JSON.stringify(values)} give the disabled flag of git hook list`,
+      W,
+      () =>
+        withService({ name: `t080-enabled-${values.join("-")}` }, async (service) => {
+          const built = buildF02(gitPath(), `t080-enabled-${values.join("-")}`);
+          const repo = repoOf(built);
+          const canary = outsideProgram(built, `enabled-${values.join("-")}`);
+          config(repo, "hook.t080on.event", "pre-commit");
+          config(repo, "hook.t080on.command", canary.command);
+          for (const value of values) config(repo, "--add", "hook.t080on.enabled", value);
+          const expected = hookList(repo, "pre-commit").map((h) => h.disabled);
+          expect(expected).toHaveLength(1);
+          const { repositoryId } = await service.register(repo);
+          const trust = await trustOf(service, repositoryId);
+          expect((trust.hooks as ClassifiedHook[]).filter((h) => h.name === "t080on").map((h) => h.disabled === true)).toEqual(expected);
+          expect(ran([canary.log])).toEqual([]);
+        }),
+      TIMEOUT_MS,
+    );
+  }
+});
+
+describe("listing internals (contract §7)", () => {
+  // Git `parse.c` `git_parse_int` accepts only the units k, m, and g. A unit text must never index an object prototype.
+  test("a boolean value with a prototype name as its unit is no boolean", () => {
+    for (const value of ["1constructor", "1__proto__", "1toString", "1hasOwnProperty"]) expect({ value, parsed: parseMaybeBool(value) }).toEqual({ value, parsed: -1 });
+    expect(parseMaybeBool("1k")).toBe(1);
+  });
+
+  test("a refused config listing call still waits for the hooks path call, so no listing process outlives the listing", async () => {
+    let releaseHooks = () => {};
+    const hooksHeld = new Promise<void>((resolve) => (releaseHooks = resolve));
+    let hooksEnded = false;
+    const runner = {
+      async run(call: { arguments: readonly string[] }) {
+        if (call.arguments.join(" ") === configListArgs().join(" ")) throw new RunnerRefusal("UNKNOWN_TARGET", "test refusal");
+        await hooksHeld;
+        hooksEnded = true;
+        return { exitCode: 0, activeDescendants: 0 };
+      },
+    } as unknown as GitRunner;
+    const trust = createTrust({ runner, environment: {} });
+    const workspace = { repositoryId: crypto.randomUUID(), gitInstallationId: crypto.randomUUID(), worktreeRoot: FIXTURE_ROOT } as unknown as Workspace;
+    let settled = false;
+    const listing = trust.listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace });
+    void listing.then(() => (settled = true));
+    await Bun.sleep(100);
+    expect({ settled, hooksEnded }).toEqual({ settled: false, hooksEnded: false });
+    releaseHooks();
+    expect(await listing).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
+    expect(hooksEnded).toBe(true);
+  });
+});
+
+describe("identity errors (contract §6 \"Process fields\", §7 \"Inside and outside\")", () => {
+  // Only a not-found identity reply means a missing path. Another identity error leaves the place unknown.
+  caseTest(
+    "T080",
+    "an identity error that is not a not-found result for a global program path outside the roots ends readTrust failed with REPOSITORY_UNAVAILABLE",
+    W,
+    async () => {
+      const built = buildF02(gitPath(), "t080-identity-error");
+      const repo = repoOf(built);
+      // An absent program in an owned folder outside the worktree. Only its own identity request fails.
+      const program = join(built.root, "outside-bin", "cleaner");
+      mkdirSync(dirname(program), { recursive: true });
+      const { environment } = ownGlobal(built, [["filter.t080.clean", slash(program)]]);
+      await withService({ name: "t080-identity-error", environment }, async (service) => {
+        const { repositoryId } = await service.register(repo);
+        expect((await trustOf(service, repositoryId)).approvalRequired.reads).toBe(false);
+        const asked = service.runner.identityCalls.flatMap((c) => c.paths).filter((p) => samePath(p) === samePath(program));
+        expect(asked.length).toBeGreaterThan(0);
+        for (const path of new Set(asked)) service.runner.inject.identities.set(path, { code: "UNSUPPORTED_REPOSITORY" });
+        expect(outcome(await service.readTrust(repositoryId))).toEqual({ state: "failed", code: "REPOSITORY_UNAVAILABLE" });
+      });
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe("hooks folder outside the roots (contract §7 \"Inside and outside\")", () => {
+  caseTest(
+    "T080",
+    "a local core.hooksPath that names an owned folder outside the worktree needs commit approval without a listed hook, and the service lists no hook there",
+    W,
+    () =>
+      withService({ name: "t080-outside-hooks" }, async (service) => {
+        const built = buildF02(gitPath(), "t080-outside-hooks");
+        const repo = repoOf(built);
+        const folder = join(built.root, "outside-hooks");
+        mkdirSync(folder, { recursive: true });
+        config(repo, "core.hooksPath", slash(folder));
+        const { repositoryId } = await service.register(repo);
+        const folderHooks = (trust: TrustResult) => (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined);
+        const empty = await trustOf(service, repositoryId);
+        expect({ commit: empty.approvalRequired.commit, folder: folderHooks(empty) }).toEqual({ commit: true, folder: [] });
+        // Oracle: Git lists a hook in that folder. The service never opens the folder, so it lists none.
+        const canary = outsideProgram(built, "outside-hooks-pre-commit");
+        chmodSync(put(folder, "pre-commit", `#!/bin/sh\nexec ${canary.command}\n`), 0o755);
+        expect(hookList(repo, "pre-commit").map((h) => h.scope ?? "hookdir")).toEqual(["hookdir"]);
+        const listed = await trustOf(service, repositoryId);
+        expect({ commit: listed.approvalRequired.commit, folder: folderHooks(listed) }).toEqual({ commit: true, folder: [] });
+        expect(ran([canary.log])).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  // A UNC folder gets no file system call. Any call there would wait on the network.
+  caseTest(
+    "T080",
+    "a local core.hooksPath on a UNC path needs commit approval, and readTrust ends without a file system call there",
+    W,
+    () =>
+      withService({ name: "t080-unc-hooks" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t080-unc-hooks"));
+        config(repo, "core.hooksPath", "//arbareto.invalid/share/hooks");
+        const { repositoryId } = await service.register(repo);
+        const from = service.runner.identityCalls.length;
+        const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
+        expect({ commit: trust.approvalRequired.commit, folder: (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined) }).toEqual({ commit: true, folder: [] });
+        const reached = [...calls.map((c) => c.path), ...service.runner.identityCalls.slice(from).flatMap((c) => c.paths)].filter((path) => below(path, UNC_SHARE));
+        expect(reached).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+// The test UNC share. `.invalid` is a reserved top-level domain (RFC 2606), so no host answers.
+const UNC_SHARE = "//arbareto.invalid/share";
+// True for `path` or a path below `base`, by the samePath text rule of these tests.
+const below = (path: string, base: string) => String(samePath(path)) === String(samePath(base)) || String(samePath(path)).startsWith(`${String(samePath(base))}/`);
+
+// Contract §7 "Inside and outside" (D31): the hooks folder listing and each hook entry never follow a link. T309 replaces this interim `lstat` rule.
+describe("hooks folder links (contract §7 \"Hook registrations\")", () => {
+  // A directory link or a file link to the test UNC share. Windows needs the symbolic link privilege for it.
+  function linkOrSkip(target: string, path: string, type: "dir" | "file"): boolean {
+    try {
+      symlinkSync(target, path, type);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      console.log(`SKIP T080 hooks link: symlink creation gives EPERM for this account`);
+      return false;
+    }
+  }
+
+  caseTest(
+    "T080",
+    "a .git/hooks folder that is a link to the UNC share lists no hook, needs commit approval with bound link, and no file call or identity request reaches below the link",
+    W,
+    () =>
+      withService({ name: "t080-hooks-folder-link" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t080-hooks-folder-link"));
+        const hooks = join(repo, ".git", "hooks");
+        rmSync(hooks, { recursive: true, force: true });
+        if (!linkOrSkip(UNC_SHARE, hooks, "dir")) return;
+        const { repositoryId } = await service.register(repo);
+        const from = service.runner.identityCalls.length;
+        const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
+        expect({ commit: trust.approvalRequired.commit, bound: trust.bound, folder: (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined) }).toEqual({
+          commit: true,
+          bound: "link",
+          folder: [],
+        });
+        const paths = [...calls.map((c) => c.path), ...service.runner.identityCalls.slice(from).flatMap((c) => c.paths)];
+        expect(paths.filter((path) => (below(path, hooks) && !below(hooks, path)) || below(path, UNC_SHARE))).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T080",
+    "a .git/hooks/pre-commit entry that is a link to the UNC share is listed with bound link, needs commit approval, and the service reads it only with lstat",
+    W,
+    () =>
+      withService({ name: "t080-hook-entry-link" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t080-hook-entry-link"));
+        const hook = join(repo, ".git", "hooks", "pre-commit");
+        if (!linkOrSkip(`${UNC_SHARE}/pre-commit`, hook, "file")) return;
+        const { repositoryId } = await service.register(repo);
+        const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
+        expect({
+          commit: trust.approvalRequired.commit,
+          bound: trust.bound,
+          folder: (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined).map((h) => ({ event: h.event, path: samePath(h.path) })),
+        }).toEqual({ commit: true, bound: "link", folder: [{ event: "pre-commit", path: samePath(hook) }] });
+        expect(calls.filter((c) => below(c.path, hook) && c.name !== "lstat")).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("configuration file paths (contract §7 \"Configuration file paths\")", () => {
+  const VAR_SYSTEM = ["--no-lazy-fetch", "var", "GIT_CONFIG_SYSTEM"];
+  const VAR_GLOBAL = ["--no-lazy-fetch", "var", "GIT_CONFIG_GLOBAL"];
+  const isVar = (args: readonly string[]) => [VAR_SYSTEM, VAR_GLOBAL].some((v) => v.join("\0") === args.join("\0"));
+  const varCalls = (service: Service) => service.runner.calls.filter((c) => c.contextKind === "gitProbe" && c.refused === undefined && isVar(c.arguments)).map((c) => c.arguments.join(" "));
+
+  // Oracle: git-var(1) in `env`. Exit 0 prints one path per line. Exit 1 without output means no file of that kind.
+  function gitVar(name: string, env: Record<string, string>): { exitCode: number | null; lines: string[] } {
+    const proc = Bun.spawnSync([gitPath(), "var", name], { cwd: FIXTURE_ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const out = proc.stdout.toString("utf8");
+    return { exitCode: proc.exitCode, lines: out === "" ? [] : out.replace(/\n$/, "").split("\n") };
+  }
+
+  // The service steps of one installation without the session: probe, registration, and one trust listing.
+  async function changeFilesOf(service: Service, repo: string, environment: Record<string, string>, runner: GitRunner = service.runner): Promise<{ installation: GitInstallation; changeFiles: ChangeFiles }> {
+    const signal = new AbortController().signal;
+    const probed = await probeGit(runner, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+    if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+    const { installation } = probed;
+    const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+    const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal });
+    if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+    const workspace = registrations.get(registered.result.repositoryId)!;
+    const trust = createTrust({ runner: service.runner, environment, configFiles: (id) => (id === installation.gitInstallationId ? installation.configFiles : undefined) });
+    const listed = await trust.listTrust({ operationId: crypto.randomUUID(), signal, workspace });
+    if (!listed.ok) throw new Error(`listing failed: ${JSON.stringify(listed)}`);
+    return { installation, changeFiles: listed.listing.changeFiles };
+  }
+
+  caseTest(
+    "T080",
+    "without HOME in the service environment, the git var lines name the system and the owned global file, the change files stay complete, git var runs once per installation, and each listing starts 2 Git processes",
+    W,
+    async () => {
+      const repo = repoOf(buildF02(gitPath(), "t080-var-no-home"));
+      const environment = serviceEnv();
+      for (const key of Object.keys(environment)) if (key.toUpperCase() === "HOME") delete environment[key];
+      const system = gitVar("GIT_CONFIG_SYSTEM", environment);
+      const global = gitVar("GIT_CONFIG_GLOBAL", environment);
+      // Git prints the path with `/` (`C:/…` on Windows).
+      expect({ system: system.exitCode, global }).toEqual({ system: 0, global: { exitCode: 0, lines: [slash(FIXTURE_GLOBAL_CONFIG)] } });
+      await withService({ name: "t080-var-no-home", environment }, async (service) => {
+        expect(varCalls(service)).toEqual([VAR_SYSTEM.join(" "), VAR_GLOBAL.join(" ")]);
+        const { repositoryId } = await service.register(repo);
+        const listing = [configListArgs().join(" "), hooksPathArgs().join(" ")].sort();
+        for (let i = 0; i < 2; i++) {
+          const from = service.runner.calls.length;
+          expect(outcome(await service.readTrust(repositoryId))).toEqual(SUCCEEDED);
+          expect(service.runner.calls.slice(from).map((c) => c.arguments.join(" ")).sort()).toEqual(listing);
+        }
+        const from = service.runner.calls.length;
+        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        expect(service.runner.calls.slice(from).map((c) => c.arguments.join(" ")).filter((args) => listing.includes(args) || isVar(args.split(" "))).sort()).toEqual(listing);
+        expect(varCalls(service)).toHaveLength(2);
+
+        const { installation, changeFiles } = await changeFilesOf(service, repo, environment);
+        expect(installation.configFiles).toEqual([...system.lines, ...global.lines]);
+        expect(changeFiles.complete).toBe(true);
+        const paths = changeFiles.paths.map(samePath);
+        for (const file of [...system.lines, FIXTURE_GLOBAL_CONFIG]) expect(paths).toContain(samePath(file));
+      });
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T080",
+    "GIT_CONFIG_NOSYSTEM=1 makes git var GIT_CONFIG_SYSTEM exit 1 without output, so no system candidate exists and the change files stay complete",
+    W,
+    async () => {
+      const repo = repoOf(buildF02(gitPath(), "t080-var-nosystem"));
+      const environment = serviceEnv({ GIT_CONFIG_NOSYSTEM: "1" });
+      expect(gitVar("GIT_CONFIG_SYSTEM", environment)).toEqual({ exitCode: 1, lines: [] });
+      const systemFiles = gitVar("GIT_CONFIG_SYSTEM", serviceEnv()).lines;
+      expect(systemFiles.length).toBeGreaterThan(0);
+      await withService({ name: "t080-var-nosystem", environment }, async (service) => {
+        const { installation, changeFiles } = await changeFilesOf(service, repo, environment);
+        expect(installation.configFiles).toEqual([slash(FIXTURE_GLOBAL_CONFIG)]);
+        expect(changeFiles.complete).toBe(true);
+        const paths = changeFiles.paths.map(samePath);
+        expect(paths).toContain(samePath(FIXTURE_GLOBAL_CONFIG));
+        for (const file of systemFiles) expect(paths).not.toContain(samePath(file));
+      });
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T080",
+    "a git var call with another exit status, or exit 1 with output, refuses the Git with GIT_UNSUPPORTED, and the probe stops at the first such call",
+    W,
+    async () => {
+      const environment = serviceEnv();
+      await withService({ name: "t080-var-status", environment }, async (service) => {
+        // Exit 1 with output and exit 2 are no git-var(1) result.
+        for (const [args, exitCode, later] of [
+          [VAR_SYSTEM, 1, [VAR_GLOBAL]],
+          [VAR_GLOBAL, 2, []],
+        ] as const) {
+          const ran: string[] = [];
+          const wrapped: GitRunner = {
+            ...service.runner,
+            async run(call) {
+              ran.push(call.arguments.join(" "));
+              const exit = await service.runner.run(call);
+              return call.arguments.join(" ") === args.join(" ") ? { ...exit, exitCode } : exit;
+            },
+          };
+          const probed = await probeGit(wrapped, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+          expect({ args, probed }).toMatchObject({ args, probed: { ok: false, gitCode: "GIT_UNSUPPORTED" } });
+          expect({ args, later: later.filter((v) => ran.includes(v.join(" "))) }).toEqual({ args, later: [] });
+          expect(ran).toContain(args.join(" "));
+        }
+      });
+    },
+    TIMEOUT_MS,
+  );
 });

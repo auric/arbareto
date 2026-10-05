@@ -126,8 +126,10 @@ describe("foreign identifiers (contract §2)", () => {
 });
 
 describe("generations (contract §2, §9)", () => {
-  // Stages a change and reads, so the workspace generation increases.
+  // Reads once, then stages a change and reads again, so the workspace generation increases.
+  // Data-model §2: only an accepted state change advances the generation. The first observation after registration does not.
   async function advance(service: Service, repo: string, repositoryId: string, generation: number): Promise<number> {
+    expect((await service.readWorkspace(repositoryId)).result!.generation).toBe(generation);
     put(repo, "keep.txt", `keep ${generation}\n`);
     fixtureGit(gitPath(), repo, ["add", "--", "keep.txt"]);
     const read = await service.readWorkspace(repositoryId);

@@ -24,17 +24,31 @@ const TEST_TIMEOUT_MS = 30_000;
 
 // The stub Git is compiled at test time under the owned root, so no executable enters the repository.
 // It reads its version from `version.txt` beside itself and appends each call to `calls.jsonl` there.
-// Like Git before 2.45.0, it rejects `--no-lazy-fetch` with "unknown option" (contract §7 "Missing objects").
+// Like Git before 2.45.0, a version below 2.45 rejects `--no-lazy-fetch` with "unknown option" (contract §7 "Missing objects").
+// Another version accepts the global options that the product passes to an admitted Git.
 // `--exec-path` prints the text of `exec-path.txt` beside it, or else its own folder. Like Git for Windows, it prints forward slashes.
+// `var GIT_CONFIG_SYSTEM` and `var GIT_CONFIG_GLOBAL` print one path each. `var-exit.txt` beside it holds another exit status for the first one.
 const STUB_SOURCE = `
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 const dir = dirname(process.execPath);
-const args = process.argv.slice(2);
-appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
-if (args.includes("--no-lazy-fetch")) {
+const all = process.argv.slice(2);
+appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ args: all, cwd: process.cwd() }) + "\\n");
+const version = readFileSync(join(dir, "version.txt"), "utf8").trim();
+const [major, minor] = version.split(".").map(Number);
+const GLOBAL_OPTIONS = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs"];
+let at = 0;
+while (at < all.length && GLOBAL_OPTIONS.includes(all[at])) at++;
+const args = all.slice(at);
+if (all.includes("--no-lazy-fetch") && (major < 2 || (major === 2 && minor < 45))) {
   process.stderr.write("unknown option: --no-lazy-fetch\\nusage: git [-v | --version] [-h | --help] <command> [<args>]\\n");
   process.exit(129);
+}
+if (args.length === 2 && args[0] === "var" && (args[1] === "GIT_CONFIG_SYSTEM" || args[1] === "GIT_CONFIG_GLOBAL")) {
+  const status = join(dir, "var-exit.txt");
+  if (args[1] === "GIT_CONFIG_SYSTEM" && existsSync(status)) process.exit(Number(readFileSync(status, "utf8")));
+  process.stdout.write(join(dir, args[1] === "GIT_CONFIG_SYSTEM" ? "etc" : "home", "gitconfig").replaceAll("\\\\", "/") + "\\n");
+  process.exit(0);
 }
 if (args.length === 1 && args[0] === "--exec-path") {
   const execPath = join(dir, "exec-path.txt");
@@ -42,7 +56,6 @@ if (args.length === 1 && args[0] === "--exec-path") {
   process.exit(0);
 }
 if (args.length === 2 && args[0] === "version" && args[1] === "--build-options") {
-  const version = readFileSync(join(dir, "version.txt"), "utf8").trim();
   process.stdout.write("git version " + version + "\\ncpu: x86_64\\nsizeof-long: 4\\nsizeof-size_t: 8\\n");
   process.exit(0);
 }
@@ -50,6 +63,12 @@ process.exit(1);
 `;
 
 type StubCall = { args: string[]; cwd: string };
+
+// Contract §7 "Configuration file paths": after the admission checks, the probe runs these two arrays.
+const VAR_ARGS = [
+  ["--no-lazy-fetch", "var", "GIT_CONFIG_SYSTEM"],
+  ["--no-lazy-fetch", "var", "GIT_CONFIG_GLOBAL"],
+];
 
 const sha256 = (path: string) => new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex");
 const stubCalls = (exe: string): StubCall[] => {
@@ -178,10 +197,32 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       expect(stubCalls(exe)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
         { args: ["version", "--build-options"], cwd: launchDirectory },
+        ...VAR_ARGS.map((args) => ({ args, cwd: launchDirectory })),
       ]);
+      // Contract §7 "Configuration file paths": the lines as `git var` printed them.
+      expect(installation.configFiles).toEqual(["etc", "home"].map((folder) => join(exe, "..", folder, "gitconfig").replaceAll("\\", "/")));
       // Contract §6 `register`: the issued ID binds to the probed context.
       expect(registers).toHaveLength(1);
       expect(registers[0]).toMatchObject({ bootstrapId, gitInstallationId: installation.gitInstallationId, version: MINIMUM });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a first git var call with exit status 2 refuses the Git with GIT_UNSUPPORTED, the second git var call never runs, and nothing registers",
+    async () => {
+      const exe = stub("var-failed", MINIMUM);
+      writeFileSync(join(exe, "..", "var-exit.txt"), "2");
+      const bootstrapId = runner.addContext("gitProbe", exe);
+      registers.length = 0;
+      const result = await probeGit(counted, { bootstrapId, executablePath: exe });
+      expect(result).toMatchObject({ ok: false, gitCode: "GIT_UNSUPPORTED", detectedVersion: MINIMUM, minimumVersion: MINIMUM });
+      expect(stubCalls(exe)).toEqual([
+        { args: ["--exec-path"], cwd: launchDirectory },
+        { args: ["version", "--build-options"], cwd: launchDirectory },
+        { args: VAR_ARGS[0], cwd: launchDirectory },
+      ]);
+      expect(registers).toEqual([]);
     },
     TEST_TIMEOUT_MS,
   );
@@ -267,14 +308,13 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
         expect(installation.executableIdentity.file).toEqual(readIdentity(second));
         expect(installation.executableIdentity.digest).toBe(sha256(second));
         expect(runs.map((call) => call.context)).toEqual([
-          { contextKind: "gitProbe", bootstrapId },
-          { contextKind: "gitProbe", bootstrapId },
-          { contextKind: "gitProbe", bootstrapId: next },
-          { contextKind: "gitProbe", bootstrapId: next },
+          ...Array.from({ length: 4 }, () => ({ contextKind: "gitProbe" as const, bootstrapId })),
+          ...Array.from({ length: 4 }, () => ({ contextKind: "gitProbe" as const, bootstrapId: next })),
         ]);
         const probes = [
           { args: ["--exec-path"], cwd: launchDirectory },
           { args: ["version", "--build-options"], cwd: launchDirectory },
+          ...VAR_ARGS.map((args) => ({ args, cwd: launchDirectory })),
         ];
         expect(stubCalls(first)).toEqual(probes);
         expect(stubCalls(second)).toEqual(probes);
@@ -324,6 +364,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       expect(stubCalls(real)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
         { args: ["version", "--build-options"], cwd: launchDirectory },
+        ...VAR_ARGS.map((args) => ({ args, cwd: launchDirectory })),
       ]);
       expect(registers).toHaveLength(1);
       expect(registers[0].bootstrapId).not.toBe(bootstrapId);
@@ -392,6 +433,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       expect(stubCalls(upgraded)).toEqual([
         { args: ["--exec-path"], cwd: launchDirectory },
         { args: ["version", "--build-options"], cwd: launchDirectory },
+        ...VAR_ARGS.map((args) => ({ args, cwd: launchDirectory })),
       ]);
       // The shell saves these register fields without a confirmation.
       expect(registers).toHaveLength(1);

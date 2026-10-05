@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "entries": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "entryId": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "staged",
+              "unstaged",
+              "untracked",
+              "conflicted"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "pathBytes": {
+            "type": "string",
+            "minLength": 1,
+            "format": "base64",
+            "contentEncoding": "base64",
+            "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+          },
+          "xy": {
+            "type": "string",
+            "pattern": "^[.MTADRCU]{2}$"
+          },
+          "submodule": {
+            "type": "string",
+            "pattern": "^(?:N\\.\\.\\.|S[C.][M.][U.])$"
+          },
+          "modes": {
+            "minItems": 3,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[0-7]{6}$"
+            }
+          },
+          "oids": {
+            "minItems": 2,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            }
+          },
+          "score": {
+            "type": "string",
+            "pattern": "^[RC][0-9]{1,3}$"
+          },
+          "sourcePath": {
+            "type": "string"
+          },
+          "sourcePathBytes": {
+            "type": "string",
+            "minLength": 1,
+            "format": "base64",
+            "contentEncoding": "base64",
+            "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+          },
+          "flags": {
+            "type": "object",
+            "properties": {
+              "intentToAdd": {
+                "type": "boolean"
+              },
+              "assumeUnchanged": {
+                "type": "boolean"
+              },
+              "skipWorktree": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "intentToAdd",
+              "assumeUnchanged",
+              "skipWorktree"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "entryId",
+          "category",
+          "path",
+          "pathBytes"
+        ],
+        "additionalProperties": false,
+        "title": "ChangeEntry"
+      }
+    },
+    "cursor": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "entries",
+    "cursor"
+  ],
+  "additionalProperties": false,
+  "title": "ReadEntriesResult"
+}

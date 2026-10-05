@@ -1,0 +1,5 @@
+{
+  "schema": "read-history-result",
+  "expected": "valid",
+  "text": "{\"generation\":3,\"scope\":\"current-checkout\",\"head\":{\"state\":\"unborn\",\"target\":\"refs/heads/main\"},\"shallowFingerprint\":null,\"rows\":[],\"boundaries\":{\"page\":[],\"shallow\":[]},\"completeness\":{\"state\":\"complete\"}}"
+}

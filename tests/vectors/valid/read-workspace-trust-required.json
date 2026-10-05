@@ -1,0 +1,5 @@
+{
+  "schema": "read-workspace-result",
+  "expected": "valid",
+  "text": "{\"completeness\":{\"state\":\"failed\",\"code\":\"TRUST_REQUIRED\"},\"recoveryState\":\"unavailable\"}"
+}

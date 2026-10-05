@@ -56,18 +56,39 @@ pub(crate) fn open(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
+/// True for an open error of `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`.
+fn not_found(error: &std::io::Error) -> bool {
+    error.raw_os_error().is_some_and(|code| {
+        code == ERROR_FILE_NOT_FOUND.0 as i32 || code == ERROR_PATH_NOT_FOUND.0 as i32
+    })
+}
+
 /// True when the identity open of `path` fails with `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`.
 pub fn is_absent(path: &Path) -> bool {
-    open(path).is_err_and(|error| {
-        error.raw_os_error().is_some_and(|code| {
-            code == ERROR_FILE_NOT_FOUND.0 as i32 || code == ERROR_PATH_NOT_FOUND.0 as i32
-        })
-    })
+    open(path).is_err_and(|error| not_found(&error))
 }
 
 /// Opens `path` as `open` does, then reads `FileIdInfo`.
 pub fn read_identity(path: &Path) -> Result<Identity, &'static str> {
-    let file = open(path).map_err(|_| "UNSUPPORTED_REPOSITORY")?;
+    file_identity(&open(path).map_err(|_| "UNSUPPORTED_REPOSITORY")?)
+}
+
+/// One entry of an identity reply (contract §6 "Process fields"). Only a not-found open adds `reason` `absent`.
+pub fn identity_reply(path: &Path) -> serde_json::Value {
+    match open(path) {
+        Ok(file) => file_identity(&file).map_or_else(
+            |code| serde_json::json!({ "code": code }),
+            |identity| identity.reply(),
+        ),
+        Err(error) if not_found(&error) => {
+            serde_json::json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" })
+        }
+        Err(_) => serde_json::json!({ "code": "UNSUPPORTED_REPOSITORY" }),
+    }
+}
+
+/// Reads `FileIdInfo` through the handle of `file`.
+fn file_identity(file: &std::fs::File) -> Result<Identity, &'static str> {
     let mut info = FILE_ID_INFO::default();
     // SAFETY: `file` keeps the handle open, and `info` has the passed size.
     unsafe {

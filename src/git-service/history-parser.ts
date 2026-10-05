@@ -84,7 +84,7 @@ export interface CommitObjects {
 const FOUND = /^([^ ]+) ([^ ]+) (0|[1-9][0-9]*)$/;
 const MISSING = /^([^ ]+) missing$/;
 // The longest valid header is `<64-hex oid> commit <size>`. A 64-bit size has at most 20 decimal digits.
-const HEADER_BYTES = 64 + " commit ".length + 20;
+export const HEADER_BYTES = 64 + " commit ".length + 20;
 
 // Upstream commit.c `parse_commit_buffer`: the header starts with one `tree` line, then the `parent` lines follow directly.
 // Upstream commit.c `get_header`: a header line ends at LF, and the header block ends at the first empty line.

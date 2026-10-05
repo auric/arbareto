@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { describe, expect } from "bun:test";
-import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as LIMITS from "../../src/contracts/limits";
+import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
+import { createRegistrations, type Workspace } from "../../src/git-service/registration";
+import { createWorkspaceReader, hasPromisor } from "../../src/git-service/status";
+import { createTrust, type ConfigEntry } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
-import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
-import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, buildF16Status, F16_STATUS_RECORDS, type Built } from "./fixtures";
+import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, buildF16Status, F16_STATUS_RECORDS, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import type { CallMatch } from "./bun-runner";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
-import { caseTest, once, openService, type ChangeEntry, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { caseTest, once, openService, withFsCalls, type ChangeEntry, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/status.ts", import.meta.dir);
+printOrigin("../../src/git-service/registration.ts", import.meta.dir);
+printOrigin("../../src/git-service/trust.ts", import.meta.dir);
 
 const TASK = "T069";
 const PAGING = "T284";
@@ -335,9 +341,20 @@ describe("F05 submodules (contract §7)", () => {
         // `sub-moved` has another checked-out commit, so it is unstaged. `sub-same` matches.
         expect({ moved: categories[b64("sub-moved")], same: b64("sub-same") in categories }).toEqual({ moved: ["unstaged"], same: false });
 
+        // With the Git for Windows system configuration, `git-lfs filter-process` runs during read 1. It writes `lfs.repositoryformatversion` into the local configuration and installs hooks.
+        // git-config(1): `--get` exits 0 for a found key and 1 for a missing key.
+        const lfsWrote = ownedGit(git, FIXTURE_ROOT, repo, ["config", "--local", "--get", "lfs.repositoryformatversion"], { allowExit: [0, 1] }).length > 0;
+        console.log(`OBSERVATION ${TASK}: F05 read 1 left lfs.repositoryformatversion in the local configuration: ${lfsWrote}`);
+
         // A staged gitlink commit that differs from HEAD. `update-index --cacheinfo` starts no Git inside the submodule.
         ownedGit(git, FIXTURE_ROOT, repo, ["update-index", "--cacheinfo", `160000,${subs["sub-moved"].checkedOut},sub-moved`]);
-        const second = await service.readWorkspace(repositoryId);
+        let second = await service.readWorkspace(repositoryId);
+        if (lfsWrote) {
+          // The changed local configuration and hooks change the fingerprint, so read 2 needs a new approval.
+          expect(outcome(second)).toMatchObject({ code: "TRUST_CHANGED" });
+          await approve(service, repositoryId);
+          second = await service.readWorkspace(repositoryId);
+        }
         expect(second.state).toBe("succeeded");
         expect(logs.filter((log) => existsSync(log))).toEqual([]);
         const after = byPath(second.result!.entries);
@@ -466,12 +483,52 @@ describe("F16 status bounds (contract §5)", () => {
         const listing = Buffer.concat(records);
         expect(listing.length).toBe(LIMITS.STATUS_LISTING_BYTES + 1);
         expect(count + 1).toBeLessThan(LIMITS.STATUS_LISTING_RECORDS);
+        // More records follow the bound, so only a stop at the bound ends the call without an exit status.
+        const tail = Buffer.concat(Array.from({ length: 256 }, (_, i) => Buffer.from(`? w/${String(i).padStart(6, "0")}${"c".repeat(RECORD - 11)}\0`)));
         let injected = 0;
-        service.runner.inject.stdout = (call) => (isStatus(call.arguments) ? (injected++, listing) : undefined);
+        service.runner.inject.stdout = (call) => (isStatus(call.arguments) ? (injected++, Buffer.concat([listing, tail])) : undefined);
         const response = await read(service, f(built));
         expect(injected).toBeGreaterThan(0);
         expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "OUTPUT_LIMIT" });
         expect(response.result!.completeness).toMatchObject({ state: "limited", reason: limitName("STATUS_LISTING_BYTES") });
+        // Contract §5 and §6 "Byte caps": the service stops `git status` when the parser reaches its byte bound.
+        expect(service.runner.calls.filter((c) => isStatus(c.arguments)).map((c) => c.exit?.exitCode)).toEqual([null]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §2 and §8: a late read that records nothing returns the first page of the snapshot that a newer read retained with an equal observation.
+  caseTest(
+    PAGING,
+    "a readWorkspace that ends after a newer read with an equal observation returns the first page of the retained snapshot, and readEntries accepts its cursor",
+    ["shell-double"],
+    () =>
+      withService("t284-late-equal", async (service) => {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t284-late-equal"));
+        // Untracked records with 4,000-byte names fill more than one Status page.
+        const listing = Buffer.concat([headers(git, repo), ...Array.from({ length: 1200 }, (_, i) => Buffer.from(`? u/${String(i).padStart(4, "0")}${"n".repeat(4000)}\0`))]);
+        service.runner.inject.stdout = (call) => (isStatus(call.arguments) ? listing : undefined);
+        const { repositoryId } = await service.register(repo);
+        const release = service.runner.pauseStdout(once((call) => isStatus(call.arguments)));
+        try {
+          const late = service.send("readWorkspace", { refresh: false, check: "full" }, { repositoryId });
+          await heldCall(service, await service.operationId(late), (call) => isStatus(call.arguments));
+          const newer = await service.readWorkspace(repositoryId);
+          expect({ ...outcome(newer), paged: newer.result?.cursor !== null }).toEqual({ state: "succeeded", code: undefined, paged: true });
+          release();
+          const result = (await service.response<WorkspaceResult>(late)).result!;
+          expect({ generation: result.generation, snapshotId: result.snapshotId, cursor: result.cursor, entries: result.entries.length }).toEqual({
+            generation: newer.result!.generation,
+            snapshotId: newer.result!.snapshotId,
+            cursor: newer.result!.cursor,
+            entries: newer.result!.entries.length,
+          });
+          const page = await service.readEntries(repositoryId, result.generation, result.snapshotId, result.cursor!);
+          expect(page.state).toBe("succeeded");
+        } finally {
+          release();
+        }
       }),
     TIMEOUT_MS,
   );
@@ -502,6 +559,45 @@ describe("F16 status bounds (contract §5)", () => {
       TIMEOUT_MS,
     );
   }
+});
+
+// Git `promisor-remote.c` `promisor_remote_config` and `setup.c` `read_repository_format` (git-for-windows v2.56.0.windows.1).
+describe("promisor remote rule (contract §7 \"Missing objects\")", () => {
+  const w = { worktreeRoot: join(FIXTURE_ROOT, "repo"), commonDirectory: join(FIXTURE_ROOT, "repo", ".git") } as Workspace;
+  const entry = (key: string, value: string | null, origin = "file:.git/config", scope = "local"): ConfigEntry => ({
+    scope: scope as ConfigEntry["scope"],
+    origin,
+    key,
+    value,
+    exact: true,
+    originBytes: new Uint8Array(),
+    keyValueBytes: new Uint8Array(),
+  });
+  const version = entry("core.repositoryformatversion", "1");
+  // Identity replies by path text. The common config and the local origin name one file. Another path names another file.
+  const COMMON = { volumeSerial: "00000000000000c6", fileId: "000000000000000000000000000000c6" };
+  const OTHER = { volumeSerial: "00000000000000c6", fileId: "000000000000000000000000000000c7" };
+  const identify = (unknown: boolean) => async (paths: string[]) =>
+    paths.map((path) => (unknown ? { code: "UNSUPPORTED_REPOSITORY" } : path === join(w.commonDirectory, "config") ? COMMON : OTHER));
+
+  test.each([
+    ["a true remote.<name>.promisor", [entry("remote.origin.promisor", "true")], true],
+    ["a true remote.promisor without a subsection, which names the empty remote", [entry("remote.promisor", "true")], true],
+    ["a remote.<name>.partialclonefilter without promisor", [entry("remote.origin.partialclonefilter", "blob:none")], true],
+    ["a false remote.<name>.promisor", [entry("remote.origin.promisor", "false")], false],
+    ["a remote name that starts with /", [entry("remote./x.promisor", "true"), entry("remote./x.partialclonefilter", "blob:none")], false],
+    ["extensions.partialclone in the common config with core.repositoryformatversion", [version, entry("extensions.partialclone", "origin")], true],
+    ["extensions.partialclone without core.repositoryformatversion", [entry("extensions.partialclone", "origin")], false],
+    ["extensions.partialclone from the global file", [version, entry("extensions.partialclone", "origin", `file:${join(FIXTURE_ROOT, "home", ".gitconfig")}`, "global")], false],
+    ["extensions.partialclone that starts with /", [version, entry("extensions.partialclone", "/origin")], false],
+  ] as const)("%s gives %p", async (_label, entries, expected) => {
+    expect(await hasPromisor(entries, w, identify(false))).toBe(expected);
+  });
+
+  // Contract §7 "Missing objects": without an identity, no fact decides the origin file.
+  test("an origin file without a shell identity gives unknown, never false", async () => {
+    expect(await hasPromisor([version, entry("extensions.partialclone", "origin")], w, identify(true))).toBe("unknown");
+  });
 });
 
 describe("readEntries (contract §3, data-model §4)", () => {
@@ -563,6 +659,107 @@ describe("index bytes (contract §7)", () => {
         const { repositoryId } = await service.register(repo);
         for (let i = 0; i < 2; i++) expect((await service.readWorkspace(repositoryId, { refresh: i === 1, check: "full" })).state).toBe("succeeded");
         expect(rawIndexDigest(git, repo)).toBe(before);
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("changing working file (contract §8 \"Changing working file\")", () => {
+  // An atomic save writes a temporary file and renames it over the original.
+  const atomicSave = (repo: string, name: string, content: string) => {
+    put(repo, `${name}.tmp`, content);
+    renameSync(join(repo, `${name}.tmp`), join(repo, name));
+  };
+
+  // No public operation binds a working file before T105, so this case drives `status.ts` directly with the service runner and a bound path.
+  caseTest(
+    "T085",
+    "a bound working file that changes during both read attempts gives limited with WORKTREE_CHANGING and keeps the entries; a change during the first attempt only gives a complete result with a new generation",
+    ["shell-double"],
+    () =>
+      withService("t085-changing", async (service) => {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t085-changing"));
+        put(repo, "swap.txt", "save 0\n");
+        const chosen = service.responses.map((r) => r.result).find((r): r is Pick<GitInstallation, "gitInstallationId" | "selectedPath" | "executablePath" | "version"> & { digest: string } => typeof r === "object" && r !== null && "gitInstallationId" in r)!;
+        const installation: GitInstallation = {
+          gitInstallationId: chosen.gitInstallationId,
+          selectedPath: chosen.selectedPath,
+          executablePath: chosen.executablePath,
+          version: chosen.version,
+          admission: "admitted",
+          executableIdentity: { file: { volumeSerial: "0".repeat(16), fileId: "0".repeat(31) + "1" }, versionOutput: chosen.version, digest: chosen.digest },
+        };
+        const signal = new AbortController().signal;
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        let saves = 0;
+        let savesLeft = 0;
+        const reader = createWorkspaceReader({
+          runner: service.runner,
+          trust: createTrust({ runner: service.runner, environment: serviceEnv() }),
+          workingVersion: {
+            afterLstat: async () => {
+              if (savesLeft === 0) return;
+              savesLeft--;
+              atomicSave(repo, "swap.txt", `save ${++saves}\n`);
+            },
+          },
+        });
+        const read = () => reader.readWorkspace({ operationId: crypto.randomUUID(), signal, installation, workspace, refresh: false, bound: [new Uint8Array(Buffer.from("swap.txt"))] });
+
+        // The T081 read retries one swap, so four saves change the file during both full reads.
+        savesLeft = 4;
+        const changing = await read();
+        expect({ savesLeft, result: changing.result, code: "code" in changing ? changing.code : undefined }).toEqual({ savesLeft: 0, result: "limited", code: "WORKTREE_CHANGING" });
+        const kept = (changing as { value: WorkspaceResult }).value;
+        expect(kept.completeness).toEqual({ state: "limited", code: "WORKTREE_CHANGING" });
+        expect(byPath(kept.entries)).toEqual(oracleCategories(git, repo));
+        // Contract §8: the second full read gets a new generation.
+        expect(kept.generation).toBe(registered.result.generation + 1);
+
+        savesLeft = 2;
+        const recovered = await read();
+        expect({ savesLeft, result: recovered.result }).toEqual({ savesLeft: 0, result: "succeeded" });
+        const complete = (recovered as { value: WorkspaceResult }).value;
+        expect({ completeness: complete.completeness, generation: complete.generation }).toEqual({ completeness: { state: "complete" }, generation: kept.generation + 1 });
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+// Contract §6 "Registration reuse and release" (D3b): a read that a release cancels records nothing for the released `repositoryId`.
+describe("release during a read (contract §6 \"Registration reuse and release\")", () => {
+  caseTest(
+    TASK,
+    "a readWorkspace whose workspace is released while it opens the raw index ends canceled and records no snapshot",
+    ["shell-double"],
+    () =>
+      withService("t069-release-index", async (service) => {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t069-release-index"));
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const { installation } = probed;
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal: new AbortController().signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        const reader = createWorkspaceReader({ runner: service.runner, trust: createTrust({ runner: service.runner, environment: serviceEnv() }) });
+        const controller = new AbortController();
+        const index = workspace.indexPath.replaceAll("\\", "/").toLowerCase();
+        // The release comes after every Git step of the read, so only the record step can see it.
+        const { value } = await withFsCalls(
+          () => reader.readWorkspace({ operationId: crypto.randomUUID(), signal: controller.signal, installation, workspace, refresh: false }),
+          (call) => {
+            if (call.name !== "open" || call.path.replaceAll("\\", "/").toLowerCase() !== index || controller.signal.aborted) return;
+            reader.release(workspace.repositoryId);
+            controller.abort();
+          },
+        );
+        expect(value).toEqual({ result: "canceled" });
       }),
     TIMEOUT_MS,
   );

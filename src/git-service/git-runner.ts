@@ -36,6 +36,7 @@ import {
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operations";
+import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
 
 export { isChannelPath } from "../contracts/operations";
 export type { FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, RegisterRequest, ResolveGitRequest, TrustBound, TrustRecord, TrustRequest };
@@ -169,7 +170,9 @@ export function checkCall(call: GitCall): void {
   const bootstrap = context.contextKind !== "registeredOperation";
   if (context.contextKind === "gitProbe") {
     const probe = args.length === 1 ? args[0] === "--exec-path" : args.length === 2 && args[0] === "version" && args[1] === "--build-options";
-    if (!probe) refuse("gitProbe permits only the exec-path and version probes");
+    // Contract §6 `gitProbe`: the shell also admits the two exact `git var` arrays of §7 "Configuration file paths".
+    const paths = [configSystemPathArgs(), configGlobalPathArgs()].some((known) => known.length === args.length && known.every((arg, i) => arg === args[i]));
+    if (!probe && !paths) refuse("gitProbe permits only the exec-path, version, and configuration path probes");
   } else if (args[0] !== "--no-lazy-fetch") {
     refuse("first argument must be --no-lazy-fetch");
   }

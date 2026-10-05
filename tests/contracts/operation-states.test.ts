@@ -98,7 +98,7 @@ describe("running", () => {
     expectNoCode(result);
   });
 
-  test.each([["OUTPUT_LIMIT"], ["OBJECT_MISSING"]])("a limited read carries %s", (code) => {
+  test.each([["OUTPUT_LIMIT"], ["OBJECT_MISSING"], ["WORKTREE_CHANGING"]])("a limited read carries %s", (code) => {
     expectStep(
       { operation: READ, state: "running" },
       { type: "read-complete", result: "limited", code },

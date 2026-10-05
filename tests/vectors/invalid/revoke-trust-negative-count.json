@@ -1,0 +1,5 @@
+{
+  "schema": "revoke-trust-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"endedProcesses\":-1}"
+}

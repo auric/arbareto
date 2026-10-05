@@ -85,6 +85,8 @@ export type StatusParseResult =
 export interface StatusParser {
   push(chunk: Uint8Array): void;
   end(): StatusParseResult;
+  // True once a contract §5 status bound ends the parse. Later bytes change nothing.
+  readonly limited: boolean;
 }
 
 // Unicode Table 3-7 "Well-Formed UTF-8 Byte Sequences": the length of the sequence at `at`, or 0.
@@ -398,6 +400,9 @@ export function createStatusParser(objectFormat: ObjectFormat): StatusParser {
         partBytes = 0;
         pending = null;
       }
+    },
+    get limited(): boolean {
+      return final?.state === "limited";
     },
     end(): StatusParseResult {
       if (final !== null) return final;

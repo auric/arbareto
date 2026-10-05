@@ -1,0 +1,5 @@
+{
+  "schema": "read-history-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"generation\":3,\"scope\":\"current-checkout\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},\"shallowFingerprint\":null,\"rows\":[{\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\",\"parents\":[\"1111111111111111111111111111111111111111\"],\"subject\":\"subject\",\"author\":{\"name\":\"Name\",\"email\":\"name@example.invalid\"},\"date\":1767225600,\"encoding\":null}],\"boundaries\":{\"page\":[\"1111111111111111111111111111111111111111\"],\"shallow\":[]},\"completeness\":{\"state\":\"complete\"}}"
+}

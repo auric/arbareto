@@ -146,7 +146,7 @@ Split-index sources: [rev-parse index load](https://github.com/git-for-windows/g
 
 Use `--is-bare-repository` and `--is-inside-git-dir` before registration. Either true result refuses the folder with `UNSUPPORTED_REPOSITORY`.
 
-A folder outside every repository fails that first query. Discovery stops at the file system root or at a mount point. Then `setup.c` dies with one of two messages (setup.c:2004-2015). The first is "not a git repository (or any of the parent directories)". The second is "not a git repository (or any parent up to mount point". `die` prints the prefix `fatal: ` and exits with status 128 (usage.c:74, :87). A `.git` file with a missing target dies with "not a git repository: <path>" instead (setup.c:940). So the prefix `fatal: not a git repository (or any` under the fixed C locale separates `NOT_A_REPOSITORY` from the missing-target case, which stays `REPOSITORY_UNAVAILABLE`. No probe ran this case; T068 verifies it.
+A folder outside every repository fails that first query. Discovery stops at the file system root or at a mount point. Then `setup.c` dies with one of two messages (setup.c:2004-2015). The first is "not a git repository (or any of the parent directories)". The second is "not a git repository (or any parent up to mount point". `die` prints the prefix `fatal: ` and exits with status 128 (usage.c:74, :87). A `.git` file with a missing target dies with "not a git repository: <path>" instead (setup.c:940). So the prefix `fatal: not a git repository (or any` under the fixed C locale separates `NOT_A_REPOSITORY` from the missing-target case, which stays `REPOSITORY_UNAVAILABLE`. No probe ran this case; T068 verifies it. This prefix rule and the dubious-ownership prefix are heuristics under CLAUDE.md "No heuristics". R5 "Heuristics review (2026-10-05)" lists their replacement as open.
 
 **T283 record (2026-10-04)**: T076 must not build the full combined discovery `rev-parse` form. T076 and T082 may build the two-call form below instead of the separate profiles. The two-call form saves five Git processes in each success case and none in a refusal case.
 
@@ -601,6 +601,22 @@ Retain only allowlisted diagnostic metadata. Arbitrary hook output can contain c
 After every mutation outcome, reread actual state. Report unexpected or unknown effects without rollback claims. Never retry automatically or remove a lock with uncertain ownership.
 
 Sources: [configured hooks](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/hook.adoc#L8-L34), [hook discovery](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-hook.adoc#L115-L149), [conditional configuration](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config.adoc#L85-L125), [filesystem monitors](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/core.adoc#L64-L82), [Windows Jobs](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects), [suspended creation](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags).
+
+**Heuristics review (2026-10-05)**: A review of the cloud track C6 tasks T080, T082, and T083 applied CLAUDE.md "No heuristics". The contract now holds these rules:
+
+- §7 "Repository-controlled resolution": an identity match decides that a path lies inside a directory. A text comparison never proves that a path is outside.
+- §7 "Program file digests": only ENOENT, ENOTDIR, and EISDIR mean `absent`. A directory cannot run as a hook or program. Any other open error fails the listing with `REPOSITORY_UNAVAILABLE`.
+- §6 "Registration bootstrap": exit statuses of `symbolic-ref -q HEAD` and `show-ref --exists <ref>` decide the HEAD state. `show-ref --exists` exits 0 for an existing ref, 2 for a missing ref, and 1 for a failed lookup. Git 2.43.0 added it (git-show-ref(1)).
+- §7 "Configuration file paths": two `git var` calls give the system and global candidate files. Git 2.42.0 added `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL` to `git var` (git-var(1)). Exit 1 without output comes from `cmd_var` in `builtin/var.c` when Git reads no file of that kind.
+
+These items stay open. They need new shell facts, and the main session designs them:
+
+- The digest read follows links. Bun has no open without link following on Windows.
+- Without link following, a symlinked hook would enter the fingerprint as `absent`. That rule needs a decision.
+- Contract §6 classifies `DUBIOUS_OWNERSHIP` and `NOT_A_REPOSITORY` by stderr prefix (R2 "Repository identity"). Contract §6 marks both prefixes as pending replacement by OS facts.
+- Contract §12 uses `rev-parse --verify -q HEAD`. It cannot tell an unborn branch from a failed lookup either. Settle it when §12 is implemented.
+
+Sources: [git-show-ref --exists](https://github.com/git/git/blob/v2.55.0/Documentation/git-show-ref.adoc), [git-symbolic-ref exit status](https://github.com/git/git/blob/v2.55.0/Documentation/git-symbolic-ref.adoc), [git-var paths](https://github.com/git/git/blob/v2.55.0/Documentation/git-var.adoc), [cmd_var](https://github.com/git/git/blob/v2.55.0/builtin/var.c).
 
 ## R6. Measurement evidence and reference environment
 

@@ -137,5 +137,5 @@ describeGit(
       console.log(`OBSERVATION T077: the fixture root is ${FIXTURE_ROOT}.`);
     }, F07_TIMEOUT_MS);
   },
-  "windows-shell-double",
+  "shell-double",
 );

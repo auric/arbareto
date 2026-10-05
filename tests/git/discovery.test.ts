@@ -277,7 +277,7 @@ describe("F07 worktree identities (data-model §2, contract §3 \"Worktree key\"
   caseTest(
     TASK,
     "each linked worktree gets its own worktreeRoot, gitDirectory, indexPath, worktreeIdentity, and 64-hex worktreeKey, and all share one commonIdentity",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-f07-identity", async (service) => {
         const git = gitPath();
@@ -314,7 +314,7 @@ describe("F07 worktree identities (data-model §2, contract §3 \"Worktree key\"
   caseTest(
     TASK,
     "the worktreeKey stays equal after a new service session, and the repositoryId does not",
-    ["windows-shell-double"],
+    ["shell-double"],
     async () => {
       const git = gitPath();
       const built = buildF07(git, "t068-f07-restart");
@@ -337,7 +337,7 @@ describe("F07 worktree identities (data-model §2, contract §3 \"Worktree key\"
   caseTest(
     TASK,
     "a junction alias gives the same identities, repositoryId, and worktreeKey",
-    ["windows-shell-double", "ntfs-junction"],
+    ["shell-double", "ntfs-junction"],
     () =>
       withService("t068-f07-junction", async (service) => {
         const git = gitPath();
@@ -363,7 +363,7 @@ describe("F07 worktree identities (data-model §2, contract §3 \"Worktree key\"
   caseTest(
     TASK,
     "a submodule checkout opened directly and a separate Git directory open normally",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-f07-open", async (service) => {
         const git = gitPath();
@@ -389,7 +389,7 @@ describe("registration refusals (contract §6, data-model §2)", () => {
   caseTest(
     TASK,
     "a bare repository, a Git administration folder, and a .git file with a missing target give their codes and remedy texts",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-refusals", async (service) => {
         const built = buildF07(gitPath(), "t068-refusals");
@@ -404,7 +404,7 @@ describe("registration refusals (contract §6, data-model §2)", () => {
   caseTest(
     TASK,
     "F15: a plain folder gives NOT_A_REPOSITORY with its remedy text through the service",
-    ["windows-shell-double", "no-enclosing-repository"],
+    ["shell-double", "no-enclosing-repository"],
     () =>
       withService("t068-plain-service", async (service) => {
         const built = buildF15(gitPath(), "t068-plain-service");
@@ -416,7 +416,7 @@ describe("registration refusals (contract §6, data-model §2)", () => {
   caseTest(
     TASK,
     "F15: a removed path gives REPOSITORY_UNAVAILABLE",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-removed", async (service) => {
         const repo = join(buildF15(gitPath(), "t068-removed").root, "repo");
@@ -429,7 +429,7 @@ describe("registration refusals (contract §6, data-model §2)", () => {
   caseTest(
     TASK,
     "dubious ownership gives DUBIOUS_OWNERSHIP with the path and the service-built command, and the service never runs it",
-    ["windows-shell-double", "other-account-owner"],
+    ["shell-double", "other-account-owner"],
     () =>
       withService("t068-dubious-service", async (service) => {
         const git = gitPath();
@@ -451,7 +451,7 @@ describe("registration refusals (contract §6, data-model §2)", () => {
     caseTest(
       TASK,
       `an injected ${label} file ID gives UNSUPPORTED_REPOSITORY with the NTFS or ReFS remedy`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t068-file-id-${label}`, async (service) => {
           const repo = join(buildF08(gitPath(), `t068-file-id-${label}`, "sha1").root, "repo");
@@ -471,7 +471,7 @@ describe("F08 object format and HEAD (data-model §2)", () => {
     caseTest(
       TASK,
       `${variant}: objectFormat is Git-reported, and head is the symbolic target plus an OID of that format`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t068-f08-${variant}`, async (service) => {
           const built = buildF08(gitPath(), `t068-f08-${variant}`, variant);
@@ -489,7 +489,7 @@ describe("F08 object format and HEAD (data-model §2)", () => {
   caseTest(
     TASK,
     "detached: head is the detached object ID",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-f08-detached", async (service) => {
         const built = buildF08(gitPath(), "t068-f08-detached", "detached");
@@ -503,7 +503,7 @@ describe("F08 object format and HEAD (data-model §2)", () => {
   caseTest(
     TASK,
     "F01 unborn: head is a validated unborn branch",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-f01-unborn", async (service) => {
         const built = buildF01(gitPath(), "t068-f01-unborn", "empty");
@@ -516,7 +516,7 @@ describe("F08 object format and HEAD (data-model §2)", () => {
   caseTest(
     TASK,
     "an unborn branch differs from a failed lookup: a corrupt branch ref never reads as unborn",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-f08-failed-lookup", async (service) => {
         const built = buildF08(gitPath(), "t068-f08-failed-lookup", "sha1");
@@ -546,7 +546,7 @@ describe("registration effects", () => {
   caseTest(
     TASK,
     "repositoryId is a random session identifier, not a path or revision; opening creates no worktree and keeps every configuration file digest",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-effects", async (service) => {
         const git = gitPath();
@@ -611,7 +611,7 @@ describe("discovery canaries (research R2)", () => {
   caseTest(
     TASK,
     "registration and restoreWorkspace run no canary, never send rev-parse --shared-index-path, and use only the discovery commands",
-    ["windows-shell-double"],
+    ["shell-double"],
     async () => {
       const git = gitPath();
       const built = buildF17(git, "t068-canaries", "trust");
@@ -640,7 +640,7 @@ describe("discovery canaries (research R2)", () => {
   caseTest(
     TASK,
     "F10 split index registers, and its split state comes only from the raw link extension",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t068-split-index", async (service) => {
         const built = buildF10(gitPath(), "t068-split-index", "split-index");

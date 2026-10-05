@@ -39,7 +39,11 @@ import {
 import { printOrigin } from "../origin";
 import { isWindowsProgram } from "../../src/contracts/wsl-route";
 import { listDistros, parseProbe, registryKeys, WSL_EXE, wslExec, type RegistryKey } from "../wsl/wsl-host";
-import { closePipe, createInboundPipe, peekPipe, processCreationTime, readIdentity, readPipe, terminateRecorded, type InboundPipe } from "./win32";
+import type { InboundPipe } from "./win32";
+
+// The host module of the double. The generic harness loads it only through this path (tests/git/portable-imports.test.ts).
+export const HOST_SCRIPT = join(import.meta.dir, process.platform === "win32" ? "win32.ts" : "linux.ts");
+const { closePipe, createInboundPipe, peekPipe, processCreationTime, readIdentity, readPipe, terminateRecorded } = require(HOST_SCRIPT) as typeof import("./win32");
 
 printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
 printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
@@ -250,7 +254,7 @@ const sameIdentity = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stri
 
 export function createBunRunner(options: BunRunnerOptions) {
   const launchDirectory = join(options.directory, "launch");
-  // A fixture process writes `<pid>-<creation time>` here (`win32.ts` `recordProcess`).
+  // A fixture process writes `<pid>-<creation time>` here (`recordProcess` of `HOST_SCRIPT`).
   const recordsDirectory = join(options.directory, "processes");
   const recoveryFolder = join(options.directory, "recovery");
   for (const dir of [launchDirectory, recordsDirectory, recoveryFolder]) mkdirSync(dir, { recursive: true });

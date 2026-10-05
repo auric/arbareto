@@ -150,7 +150,7 @@ describe("categories (data-model §5)", () => {
   caseTest(
     TASK,
     "F02: one path appears in Staged and in Unstaged",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f02", async (service) => {
         const git = gitPath();
@@ -169,7 +169,7 @@ describe("categories (data-model §5)", () => {
   caseTest(
     TASK,
     "F06: a staged deletion and an untracked replacement are separate entries",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f06", async (service) => {
         const git = gitPath();
@@ -186,7 +186,7 @@ describe("categories (data-model §5)", () => {
   caseTest(
     TASK,
     "F01: an empty repository gives a complete clean result",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f01", async (service) => {
         const built = buildF01(gitPath(), "t069-f01", "empty");
@@ -208,7 +208,7 @@ describe("F03 path identity (data-model §5)", () => {
   caseTest(
     TASK,
     "F03: Unicode, spaced, bracket, and option-like names keep their literal identity",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f03-names", async (service) => {
         const git = gitPath();
@@ -234,7 +234,7 @@ describe("F03 path identity (data-model §5)", () => {
   caseTest(
     TASK,
     "F03: an index path with invalid UTF-8 bytes displays \\xNN escapes and keeps its raw bytes",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f03-invalid", async (service) => {
         const git = gitPath();
@@ -264,7 +264,7 @@ describe("F10 conflicts and index flags", () => {
     caseTest(
       TASK,
       `F10 ${variant}: conflicted entries go to Conflicted, and operationState names the unfinished operation`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t069-f10-${variant}`, async (service) => {
           const git = gitPath();
@@ -282,7 +282,7 @@ describe("F10 conflicts and index flags", () => {
   caseTest(
     TASK,
     "F10 flags: intent-to-add, assume-unchanged, and skip-worktree entries show their Git status and flags",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f10-flags", async (service) => {
         const git = gitPath();
@@ -317,7 +317,7 @@ describe("F05 submodules (contract §7)", () => {
   caseTest(
     TASK,
     "F05: a gitlink appears only when its checked-out or staged commit differs from the recorded commit, and no submodule canary runs",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f05", async (service) => {
         const git = gitPath();
@@ -383,7 +383,7 @@ describe("F16 status bounds (contract §5)", () => {
   caseTest(
     TASK,
     `F16: more than ${LIMITS.STATUS_LISTING_RECORDS} records give completeness limited with reason STATUS_LISTING_RECORDS, never an empty success, in pages within the Status page bound`,
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f16-over", async (service) => {
         const built = buildF16Status(gitPath(), "t069-f16-over", "over-limit");
@@ -403,7 +403,7 @@ describe("F16 status bounds (contract §5)", () => {
   caseTest(
     TASK,
     `F16: exactly ${LIMITS.STATUS_LISTING_RECORDS} records give a complete result in pages within the Status page bound; each readEntries page ends succeeded while a readHistory and a readWorkspace of the workspace wait at the stdout barrier`,
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-f16-at", async (service) => {
         const built = buildF16Status(gitPath(), "t069-f16-at", "at-limit");
@@ -450,7 +450,7 @@ describe("F16 status bounds (contract §5)", () => {
   caseTest(
     TASK,
     `a status listing of ${LIMITS.STATUS_LISTING_BYTES} bytes plus one gives completeness limited with reason STATUS_LISTING_BYTES`,
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-bytes", async (service) => {
         const git = gitPath();
@@ -488,7 +488,7 @@ describe("F16 status bounds (contract §5)", () => {
     caseTest(
       TASK,
       `a malformed status record (${label}) gives MALFORMED_GIT_OUTPUT, never a clean result`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t069-malformed-${label.replaceAll(" ", "-")}`, async (service) => {
           const git = gitPath();
@@ -508,7 +508,7 @@ describe("readEntries (contract §3, data-model §4)", () => {
   caseTest(
     PAGING,
     "readEntries checks the generation first, then the snapshot, then the cursor, and starts no Git process",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t284-checks", async (service) => {
         const git = gitPath();
@@ -549,7 +549,7 @@ describe("index bytes (contract §7)", () => {
   caseTest(
     TASK,
     "a status read leaves the raw index bytes unchanged, also with stat-dirty files that Git could refresh",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t069-index-bytes", async (service) => {
         const git = gitPath();

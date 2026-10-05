@@ -109,7 +109,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "an ordinary F02 copy is eligible",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService({ name: "t190-plain" }, async (service) => {
         const { repositoryId } = await service.register(repoOf(buildF02(gitPath(), "t190-plain")));
@@ -121,7 +121,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "index.sparse=true at local scope gives reason sparse-index",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService({ name: "t190-sparse" }, async (service) => {
         const repo = repoOf(buildF02(gitPath(), "t190-sparse"));
@@ -135,7 +135,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "a split index gives reason split-index from the raw link extension, and no call asks Git for the shared index path",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService({ name: "t190-split" }, async (service) => {
         const repo = repoOf(buildF02(gitPath(), "t190-split"));
@@ -161,7 +161,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "core.splitIndex=true at local scope with an unsplit index gives reason split-index, and the check starts no process",
-    ["windows-shell-double"],
+    ["shell-double"],
     async () => {
       const reference = await plainCalls("t190-reference-local");
       await withService({ name: "t190-split-local" }, async (service) => {
@@ -180,7 +180,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "core.splitIndex=true at global scope with an unsplit index gives reason split-index, and the check starts no process",
-    ["windows-shell-double"],
+    ["shell-double"],
     async () => {
       const reference = await plainCalls("t190-reference-global");
       // The owned global file serves every fixture of this run, so this case uses its own global file (fixtures.ts `buildF10` notes).
@@ -201,7 +201,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "a post-index-change hook gives reason index-change-hook, and its canary never runs",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService({ name: "t190-hook" }, async (service) => {
         const built = buildF02(gitPath(), "t190-hook");
@@ -220,7 +220,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "a disabled post-index-change registration gives reason index-change-hook, and its canary never runs",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService({ name: "t190-hook-disabled" }, async (service) => {
         const built = buildF02(gitPath(), "t190-hook-disabled");
@@ -240,7 +240,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "a command-valued core.fsmonitor after trust approval gives reason executable-monitor, and its canary never runs before approval",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService({ name: "t190-monitor" }, async (service) => {
         const built = buildF02(gitPath(), "t190-monitor");
@@ -258,7 +258,7 @@ describe("hunk eligibility profiles (contract §4, data-model §2)", () => {
   caseTest(
     TASK,
     "the built-in core.fsmonitor=true gives the unqualified-monitor reason, needs no approval, and reads still run",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService({ name: "t190-builtin-monitor" }, async (service) => {
         const repo = repoOf(buildF02(gitPath(), "t190-builtin-monitor"));

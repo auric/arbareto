@@ -54,7 +54,7 @@ describe("foreign identifiers (contract §2)", () => {
   caseTest(
     TASK,
     "a trust ID from another workspace gives UNKNOWN_TARGET and starts no Git process",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t072-trust-workspace", async (service) => {
         const built = buildF07(gitPath(), "t072-trust-workspace");
@@ -69,7 +69,7 @@ describe("foreign identifiers (contract §2)", () => {
   caseTest(
     TASK,
     "a trust ID from another session gives UNKNOWN_TARGET and starts no Git process",
-    ["windows-shell-double"],
+    ["shell-double"],
     async () => {
       const git = gitPath();
       const repo = join(buildF02(git, "t072-trust-session").root, "repo");
@@ -138,7 +138,7 @@ describe("generations (contract §2, §9)", () => {
   caseTest(
     TASK,
     "readHistory without repositoryGeneration gives INVALID_REQUEST and starts no Git process",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t072-history-missing", async (service) => {
         const repo = join(buildF02(gitPath(), "t072-history-missing").root, "repo");
@@ -167,7 +167,7 @@ describe("generations (contract §2, §9)", () => {
   caseTest(
     TASK,
     "a readHistory whose generation differs from the current workspace generation gives REPOSITORY_CHANGED and starts no Git process",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t072-history-stale", async (service) => {
         const repo = join(buildF02(gitPath(), "t072-history-stale").root, "repo");
@@ -203,7 +203,7 @@ describe("generations (contract §2, §9)", () => {
   caseTest(
     TASK,
     "a readWorkspace payload without check, or with a check other than full or changes, gives INVALID_REQUEST",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t072-check", async (service) => {
         const repo = join(buildF02(gitPath(), "t072-check").root, "repo");
@@ -221,7 +221,7 @@ describe("registration reuse and release (contract §6)", () => {
   caseTest(
     TASK,
     "20 alternating opens of two common directories never give WORKSPACE_LIMIT, and each open releases the other repositoryId to UNKNOWN_TARGET",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t072-alternating", async (service) => {
         const git = gitPath();
@@ -244,7 +244,7 @@ describe("registration reuse and release (contract §6)", () => {
   caseTest(
     TASK,
     "reopening the current worktree returns its repositoryId",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t072-reopen", async (service) => {
         const repo = join(buildF02(gitPath(), "t072-reopen").root, "repo");
@@ -259,7 +259,7 @@ describe("registration reuse and release (contract §6)", () => {
   caseTest(
     TASK,
     "two linked worktrees of one common directory stay registered together",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t072-linked", async (service) => {
         const built = buildF07(gitPath(), "t072-linked");
@@ -274,7 +274,7 @@ describe("registration reuse and release (contract §6)", () => {
   caseTest(
     TASK,
     `a ninth registration of distinct linked worktrees of one common directory gives WORKSPACE_LIMIT naming the ${REGISTERED_WORKSPACES}-workspace limit`,
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t072-limit", async (service) => {
         const git = gitPath();

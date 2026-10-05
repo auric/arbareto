@@ -84,7 +84,7 @@ for (const spec of [PERF_M, PERF_L]) {
     caseTest(
       TASK,
       `${spec.name}: with no hint and an unchanged stat tuple, a check "changes" read starts no Git process and returns the same snapshotId and generation`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t192-${spec.name}-unchanged`, async (service) => {
           const { repositoryId } = await service.register(copyOf(spec).repo);
@@ -106,7 +106,7 @@ for (const spec of [PERF_M, PERF_L]) {
     caseTest(
       TASK,
       `${spec.name}: after an index change, a check "changes" read runs one full read`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t192-${spec.name}-index`, async (service) => {
           const { repo, facts } = copyOf(spec);
@@ -128,7 +128,7 @@ for (const spec of [PERF_M, PERF_L]) {
     caseTest(
       TASK,
       `OBSERVATION ${spec.name}: medians of wall and CPU time for ${RUNS} check "full" reads and ${RUNS} no-change check "changes" reads`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t192-${spec.name}-medians`, async (service) => {
           const { repositoryId } = await service.register(copyOf(spec).repo);
@@ -148,7 +148,7 @@ for (const spec of [PERF_M, PERF_L]) {
     caseTest(
       TASK,
       `OBSERVATION ${spec.name}: wall time of restoreWorkspace`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t192-${spec.name}-restore`, async (service) => {
           const { repo } = copyOf(spec);
@@ -217,7 +217,7 @@ for (const spec of [PERF_M, PERF_L]) {
       caseTest(
         TASK,
         `OBSERVATION ${fixture}: Git process count, process times, and response bytes of ${RUNS} reads of each kind`,
-        ["windows-shell-double"],
+        ["shell-double"],
         async () => {
           const { repo, facts } = copyOf(spec, commitGraph);
           expect(facts.commitGraph).toBe(commitGraph);

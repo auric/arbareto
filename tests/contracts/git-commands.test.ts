@@ -205,7 +205,7 @@ describe("service arrays", () => {
   caseTest(
     "T067",
     "the service starts every Git array with --no-lazy-fetch except the gitProbe --exec-path and version --build-options probes, and reads add the read options",
-    ["windows-shell-double"],
+    ["shell-double"],
     async () => {
       const git = gitPath();
       const repo = join(buildF02(git, "t067-f02").root, "repo");

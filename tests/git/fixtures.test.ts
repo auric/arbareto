@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describeGit } from "./git-binary";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { indexEntries, operationMarkers, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
@@ -25,6 +25,9 @@ function snapshot(git: string, repo: string) {
     markers: operationMarkers(git, repo),
   };
 }
+
+// Each repository that a case of this file builds. The last case reads its `core.filemode`.
+const builtRepos: string[] = [];
 
 const paths = (out: Buffer) => [...new Set(out.toString("utf8").split("\0").filter((p) => p !== ""))].sort();
 
@@ -56,6 +59,7 @@ function check(git: string, label: string, build: (name: string) => F.Built, ext
   let a: F.Built;
   try {
     a = build(`${slug}-1`);
+    builtRepos.push(...Object.keys(a.facts.repos).map((key) => join(a.root, key)));
   } catch (error) {
     if (!(error instanceof F.CapabilitySkip)) throw error;
     console.log(`SKIP ${label}: missing capability ${error.capability} (unverified)`);
@@ -193,6 +197,16 @@ describeGit("fixture builders", (git) => {
       expect(canaryRuns(b).clean).toBe(true);
     }), TIMEOUT);
 
+  // The canaries must run from their files: the clean filter and the hook canary need the executable bit.
+  test("F17 trust canaries run through the clean filter and the pre-commit hook", () => {
+    const b = F.buildF17(git, "f17-canaries", "trust");
+    const repo = join(b.root, "repo");
+    builtRepos.push(repo);
+    git1(git, repo, ["hash-object", "--path=data.dat", "data.dat"]);
+    git1(git, repo, ["hook", "run", "pre-commit"]);
+    expect(canaryRuns(b)).toMatchObject({ clean: true, "pre-commit": true });
+  }, TIMEOUT);
+
   for (const variant of ["partial-reset-soft", "partial-read-tree"] as const) {
     test(`F17 ${variant}`, () =>
       check(git, `F17 ${variant}`, (n) => F.buildF17(git, n, variant), (g, b) => {
@@ -237,4 +251,11 @@ describeGit("fixture builders", (git) => {
         }
       }), TIMEOUT);
   }
+
+  // Git on Linux and macOS sets `core.filemode` from a probe. The builders fix it at local scope.
+  test("each built repository has core.filemode false", () => {
+    expect(builtRepos.length).toBeGreaterThan(0);
+    const values = Object.fromEntries(builtRepos.map((repo) => [relative(FIXTURE_ROOT, repo).replaceAll("\\", "/"), git1(git, repo, ["config", "--local", "--get", "core.filemode"], [0, 1]).toString().trim()]));
+    expect(values).toEqual(Object.fromEntries(Object.keys(values).map((key) => [key, "false"])));
+  });
 });

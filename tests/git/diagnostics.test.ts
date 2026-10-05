@@ -116,7 +116,7 @@ describe("credential canaries through the service (contract §7, data-model §7 
   caseTest(
     TASK,
     "no remote URL, url.<URL>.insteadOf, Git stderr, or hook canary appears in a response, progress event, session log, or diagnostic",
-    ["windows-shell-double"],
+    ["shell-double"],
     async () => {
       const git = gitPath();
       const repo = join(buildF02(git, "t073-service").root, "repo");
@@ -167,7 +167,7 @@ describe("inert repository text (contract §1, §9 \"Commit failure output\")", 
   caseTest(
     TASK,
     "repository text that looks like markup or a command stays inert string data in responses",
-    ["windows-shell-double"],
+    ["shell-double"],
     async () => {
       const git = gitPath();
       const built = buildF17(git, "t073-inert", "trust");

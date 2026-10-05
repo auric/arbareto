@@ -17,9 +17,10 @@ import { GIT } from "./git-binary";
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
-export type Capability = "windows-shell-double" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository";
+export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository";
 
 const WINDOWS = process.platform === "win32";
+const LINUX = process.platform === "linux";
 
 // Runs the test Git with the owned environment and the fixed C locale of the `probe` policy.
 function probe(args: string[], cwd?: string): { exitCode: number; stdout: string; stderr: string } | null {
@@ -43,8 +44,9 @@ function noEnclosingRepository(): boolean {
 }
 
 const PRESENT: Record<Capability, boolean> = {
-  // `bun-runner.ts` needs kernel32 named pipes and FILE_ID_INFO.
-  "windows-shell-double": WINDOWS,
+  // `bun-runner.ts` has host calls only for Windows (`win32.ts`) and Linux (`linux.ts`).
+  "shell-double": WINDOWS || LINUX,
+  "windows-path-rules": WINDOWS,
   powershell: Bun.which("powershell") !== null || Bun.which("pwsh") !== null,
   // A junction needs Windows. A volume without junction support fails the fixture step.
   "ntfs-junction": WINDOWS,

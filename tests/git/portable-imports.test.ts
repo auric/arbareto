@@ -12,7 +12,7 @@ test(
   "the generic harness modules load off Windows without kernel32, and the Windows-only suites skip",
   () => {
     const child = Bun.spawnSync(
-      [process.execPath, "test", "--preload", "./tests/git/off-windows-preload.ts", "./tests/git/bun-runner.test.ts", "./tests/git/git-installation.test.ts"],
+      [process.execPath, "test", "--preload", "./tests/git/off-windows-preload.ts", "./tests/git/git-installation.test.ts"],
       { cwd: join(import.meta.dir, "..", ".."), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: CHILD_TIMEOUT_MS },
     );
     const output = `${child.stdout.toString()}${child.stderr.toString()}`;
@@ -24,6 +24,22 @@ test(
   },
   CHILD_TIMEOUT_MS + 10_000,
 );
+
+// The generic harness loads the host module only through `HOST_SCRIPT`. `scanImports` drops type-only imports.
+const HARNESS = import.meta.dir;
+const HARNESS_FILES = ["fixture-root.ts", "git-binary.ts", "git-oracle.ts", "bun-runner.ts", "fixtures.ts", "service-harness.ts"];
+const HOST_MODULES = ["./win32", "./win32.ts", "./linux", "./linux.ts", "bun:ffi"];
+
+test("the generic harness holds no static import of a host module or bun:ffi", () => {
+  console.log(`ORIGIN ${HARNESS}`);
+  const hits: string[] = [];
+  for (const file of HARNESS_FILES) {
+    const imports = new Bun.Transpiler({ loader: "ts" }).scanImports(readFileSync(join(HARNESS, file), "utf8"));
+    for (const { kind, path } of imports) if (kind === "import-statement" && HOST_MODULES.includes(path)) hits.push(`tests/git/${file}: ${path}`);
+  }
+  console.log(hits.map((hit) => `SCAN_HIT ${hit}`).join("\n"));
+  expect(hits).toEqual([]);
+});
 
 // Shared TypeScript takes native path rules only from `src/contracts/native-path.ts`. The transpiler drops comments and type-only imports.
 const SRC = join(import.meta.dir, "..", "..", "src");

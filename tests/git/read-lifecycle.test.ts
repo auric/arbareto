@@ -18,7 +18,7 @@ printOrigin("../../src/git-service/read-scheduler.ts", import.meta.dir);
 const TASK = "T074";
 const TIMEOUT_MS = 120_000;
 const WAIT_MS = 30_000;
-const W = ["windows-shell-double"] as const;
+const W = ["shell-double"] as const;
 // The test-injected read deadline (`readDeadlineMs` seam).
 const DEADLINE_MS = 3_000;
 // A negative check has no event to wait for. A read that the scheduler admits starts its first process at once, so this wait is far above that time.

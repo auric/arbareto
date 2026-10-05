@@ -66,10 +66,15 @@ export function run(r: Repo, args: string[], options: OwnedGitOptions = {}): str
   return ownedGit(r.git, FIXTURE_ROOT, r.dir, [...r.pre, ...args], options).toString();
 }
 
+const SHEBANG = Buffer.from("#!");
+
 export function put(dir: string, rel: string, content: string | Uint8Array): string {
   const path = fixturePath(relative(FIXTURE_ROOT, join(dir, rel)));
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
+  // Off Windows, Git starts a hook, filter, or canary script only when the file has the executable bit.
+  // The `mode` option of `writeFileSync` does not change an existing file.
+  if (SHEBANG.equals(typeof content === "string" ? Buffer.from(content.slice(0, 2)) : content.subarray(0, 2))) chmodSync(path, 0o755);
   return path;
 }
 
@@ -78,9 +83,10 @@ const sorted = (paths: Iterable<string>) => [...new Set(paths)].sort();
 const lines = (count: number, f: (n: number) => string) => Array.from({ length: count }, (_, i) => f(i + 1)).join("");
 const rev = (r: Repo, what: string) => run(r, ["rev-parse", "--verify", "-q", what]).trim();
 
-// Every builder sets the line-ending keys at local scope and never sets `core.longpaths`.
+// Every builder sets the line-ending keys and `core.filemode` at local scope and never sets `core.longpaths`.
+// With `core.filemode=false`, Git ignores the executable bit of a working file and adds a new file as 100644, as Git for Windows does.
 function lineEndings(r: Repo): void {
-  for (const [key, value] of [["core.autocrlf", "false"], ["core.eol", "lf"], ["core.safecrlf", "false"]]) run(r, ["config", key, value!]);
+  for (const [key, value] of [["core.autocrlf", "false"], ["core.eol", "lf"], ["core.safecrlf", "false"], ["core.filemode", "false"]]) run(r, ["config", key, value!]);
 }
 
 function init(git: string, dir: string, extra: string[] = []): Repo {

@@ -17,7 +17,7 @@ printOrigin("../../src/git-service/watch.ts", import.meta.dir);
 const TASK = "T075";
 const TIMEOUT_MS = 120_000;
 const WAIT_MS = 30_000;
-const W = ["windows-shell-double"] as const;
+const W = ["shell-double"] as const;
 // Task T075 and spec SC-007: a hint within 2 seconds. Plan.md "Freshness and reconciliation": a 100 ms debounce.
 const HINT_BUDGET_MS = 2_000;
 const DEBOUNCE_MS = 100;

@@ -7,21 +7,21 @@ import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../../src/contracts/limits";
 import { createCollector, PROCESS_LIMITS, type GitCall, type ProcessContext } from "../../src/git-service/git-runner";
-import { createBunRunner, createTrustStore, type BunRunner } from "./bun-runner";
+import { createBunRunner, createTrustStore, HOST_SCRIPT, type BunRunner } from "./bun-runner";
 import { fixtureDir, fixtureGit, fixturePath, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
-import { processCreationTime } from "./win32";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 
 useFixtureRoot();
 
+const { processCreationTime } = require(HOST_SCRIPT) as typeof import("./win32");
+
 const MIB = 1024 * 1024;
 const TEST_TIMEOUT_MS = 30_000;
 const LINGER_MS = 6000;
 const BLOB_BYTES = 300_000;
-const WIN32_SCRIPT = join(import.meta.dir, "win32.ts");
 const id = () => crypto.randomUUID();
 const slash = (path: string) => path.replaceAll("\\", "/");
 const text = (collector: { take(): Uint8Array }) => new TextDecoder().decode(collector.take());
@@ -36,9 +36,9 @@ describeGit("bun runner", (git) => {
   const hostileGitDir = () => fixturePath("hostile.git");
   const hostileIndex = () => fixturePath("hostile-index");
 
-  // A `!` alias runs through the `sh` of Git for Windows. It starts a recorded process that holds the pipes for `LINGER_MS`.
+  // A `!` alias runs through the shell of Git. It starts a recorded process that holds the pipes for `LINGER_MS`.
   const lingerAlias = (ready: string, background: boolean) => {
-    const linger = `"${slash(process.execPath)}" "${slash(WIN32_SCRIPT)}" "${slash(runner.recordsDirectory)}" ${LINGER_MS} "${slash(ready)}"`;
+    const linger = `"${slash(process.execPath)}" "${slash(HOST_SCRIPT)}" "${slash(runner.recordsDirectory)}" ${LINGER_MS} "${slash(ready)}"`;
     if (!background) return `alias.hold=!${linger}`;
     const wait = `i=0; while [ $i -lt 200 ] && [ ! -e "${slash(ready)}" ]; do sleep 0.05; i=$((i+1)); done`;
     return `alias.hold=!${linger} & ${wait}; echo early >&2`;
@@ -279,7 +279,7 @@ describeGit("bun runner", (git) => {
       worktreeRoot,
       gitDirectory: commonDirectory,
       commonDirectory,
-      gitSelectedPath: "C:\\Program Files\\Git\\cmd\\git.exe",
+      gitSelectedPath: git,
       fingerprint: "a".repeat(64),
       ...(persist ? { persist: true as const } : { persist: false as const, bound: "file-count" as const }),
     });
@@ -309,4 +309,4 @@ describeGit("bun runner", (git) => {
     await runner.dispose();
     for (const [pid, created] of records) expect(processCreationTime(Number(pid)) === created).toBe(false);
   });
-}, "Windows named pipes and FILE_ID_INFO");
+});

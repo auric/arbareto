@@ -20,7 +20,7 @@ printOrigin("../../src/git-service/trust.ts", import.meta.dir);
 const TASK = "T071";
 const TIMEOUT_MS = 120_000;
 const WAIT_MS = 30_000;
-const W = ["windows-shell-double"] as const;
+const W = ["shell-double"] as const;
 
 const SUCCEEDED = { state: "succeeded", code: undefined };
 // Contract §9 fixes the code. A blocked read can start its trust listing first, so the terminal state is not fixed.
@@ -1034,7 +1034,7 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
   caseTest(
     TASK,
     "a selected Git path that differs only in ASCII letter case keeps the approval",
-    W,
+    [...W, "windows-path-rules"],
     () =>
       withSessions("t071-git-path-ascii-case", {}, async (first, set) => {
         const built = buildF17(gitPath(), "t071-git-path-ascii-case", "trust");
@@ -1099,7 +1099,7 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
   caseTest(
     TASK,
     "a changed Git digest behind the same selected path keeps the approval",
-    ["windows-shell-double", "git-for-windows"],
+    ["shell-double", "git-for-windows"],
     () =>
       withSessions("t071-changed-digest", {}, async (first, set) => {
         const built = buildF17(gitPath(), "t071-changed-digest", "trust");
@@ -1432,7 +1432,7 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
   caseTest(
     TASK,
     "without tools\\cleaner.exe and tools\\cleaner the fingerprint records absent for tools, and creating tools\\cleaner gives TRUST_CHANGED",
-    W,
+    [...W, "windows-path-rules"],
     async () => {
       const { repo, environment } = bareName("t071-bare-absent");
       await withService({ name: "t071-bare-absent", environment }, async (service) => {
@@ -1449,7 +1449,7 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
   caseTest(
     TASK,
     "after approval, one changed byte of tools\\cleaner gives TRUST_CHANGED",
-    W,
+    [...W, "windows-path-rules"],
     async () => {
       const { repo, environment } = bareName("t071-bare-byte");
       const cleaner = put(repo, "tools/cleaner", program);
@@ -1466,7 +1466,7 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
   caseTest(
     TASK,
     "with both tools\\cleaner.exe and tools\\cleaner present, the digest covers tools\\cleaner.exe, as Git for Windows tries .exe first",
-    ["windows-shell-double", "git-for-windows"],
+    ["shell-double", "git-for-windows"],
     async () => {
       const { repo, environment } = bareName("t071-bare-exe");
       const cleaner = put(repo, "tools/cleaner", program);
@@ -1487,7 +1487,7 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
   caseTest(
     TASK,
     "a file in the absolute owned bin directory gets no digest",
-    W,
+    [...W, "windows-path-rules"],
     async () => {
       const { repo, bin, environment } = bareName("t071-bare-bin");
       const owned = put(bin, "cleaner", program);

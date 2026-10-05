@@ -119,7 +119,7 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
     caseTest(
       TASK,
       `F19 ${variant}: rows equal git rev-list --parents --max-count=100 --date-order <OID>, with full row fields and separate boundaries`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t070-f19-${variant}`, async (service) => {
           const built = buildF19(gitPath(), `t070-f19-${variant}`, variant);
@@ -160,7 +160,7 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
   caseTest(
     TASK,
     "F19 encoding: an invalid UTF-8 subject or author gives replacement characters and the encoding value",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-encoding", async (service) => {
         const built = buildF19(gitPath(), "t070-encoding", "encoding");
@@ -180,7 +180,7 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
   caseTest(
     TASK,
     "F01 unborn gives an empty complete page with the unborn head",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-unborn", async (service) => {
         const built = buildF01(gitPath(), "t070-unborn", "empty");
@@ -213,7 +213,7 @@ describe("F16 history bounds (contract §5)", () => {
     caseTest(
       TASK,
       reason === null ? `F16 ${variant}: a page at the bound is complete` : `F16 ${variant}: the bound gives limited with reason ${reason}, never a truncated complete page`,
-      ["windows-shell-double"],
+      ["shell-double"],
       () =>
         withService(`t070-f16-${variant}`, async (service) => {
           const built = buildF16History(gitPath(), `t070-f16-${variant}`, variant);
@@ -250,7 +250,7 @@ describe("F16 history bounds (contract §5)", () => {
   caseTest(
     TASK,
     `a shallow file above ${LIMITS.SHALLOW_METADATA_BYTES} bytes gives limited with reason SHALLOW_METADATA_BYTES`,
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-shallow-limit", async (service) => {
         const built = buildF19(gitPath(), "t070-shallow-limit", "shallow");
@@ -273,7 +273,7 @@ describe("missing objects (contract §7 \"Missing objects\")", () => {
   caseTest(
     TASK,
     "F17 partial clone: a missing commit gives limited with OBJECT_MISSING, git cat-file -e still fails, and the uploadpack canary never runs",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-partial", async (service) => {
         const built = buildF17(gitPath(), "t070-partial", "partial-read-tree");
@@ -316,7 +316,7 @@ describe("history without a status snapshot (contract §3 readHistory)", () => {
   caseTest(
     TASK,
     "right after registration, readHistory returns the page with the registration generation, and the runner sees no status call",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-no-status", async (service) => {
         const built = buildF19(gitPath(), "t070-no-status", "linear");
@@ -333,7 +333,7 @@ describe("history without a status snapshot (contract §3 readHistory)", () => {
   caseTest(
     TASK,
     `readHistory runs beside a held readWorkspace within the ${LIMITS.CONCURRENT_READS_PER_WORKSPACE}-read cap`,
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-beside", async (service) => {
         const built = buildF19(gitPath(), "t070-beside", "linear");
@@ -357,7 +357,7 @@ describe("history without a status snapshot (contract §3 readHistory)", () => {
   caseTest(
     TASK,
     "the page binds the captured HEAD OID and target",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-head", async (service) => {
         const built = buildF19(gitPath(), "t070-head", "linear");
@@ -377,7 +377,7 @@ describe("history without a status snapshot (contract §3 readHistory)", () => {
   caseTest(
     TASK,
     "the page binds the shallow fingerprint, and a shallow file change gives another fingerprint",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-shallow-fingerprint", async (service) => {
         const built = buildF19(gitPath(), "t070-shallow-fingerprint", "shallow");
@@ -400,7 +400,7 @@ describe("trust gate (contract §7)", () => {
   caseTest(
     TASK,
     "an F17 copy without read approval gives TRUST_REQUIRED, and the runner sees no rev-list",
-    ["windows-shell-double"],
+    ["shell-double"],
     () =>
       withService("t070-trust", async (service) => {
         const built = buildF17(gitPath(), "t070-trust", "trust");

@@ -132,7 +132,7 @@ Custom filters remain outside hunk support and file staging even after trust app
 | Field | Meaning and validation |
 | --- | --- |
 | `snapshotId` | Opaque identifier for one validated observation. |
-| `repositoryId`, `generation` | Workspace and service generation that produced the observation. |
+| `repositoryId`, `generation` | Workspace and service generation that produced the observation. A complete read that records a different observation advances `generation`, also for a change of working files alone. An equal observation keeps it (contract §8 "Token invalidation"). |
 | `head` | Symbolic target and resolved object ID, including the unborn distinction. |
 | `indexFingerprint` | Full-index content digest and Git-derived entries. Include referenced split-index state when applicable. Split-index state comes from the raw index `link` extension, which names the shared index file (contract §4). |
 | `indexEntries` | Literal path identity, stage, mode, object ID, and the intent-to-add, assume-unchanged, and skip-worktree flags. |

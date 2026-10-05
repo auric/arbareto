@@ -830,6 +830,7 @@ Keys that cannot fire for these reads do not block reads. Ordinary trust discove
 - The service reads the tuple of a listing before that listing starts. So an edit during the listing changes the compare result.
 - Any tuple difference needs a new listing. The tuple holds each configuration origin file and each absent candidate file (§8 "Change check"). So a configuration edit or a new configuration file forces a new listing.
 - A `readHistory` that finds that listing still running waits for it.
+- The first read after registration shares no listing with `readHistory`, because no tuple exists before its listing. The first `readHistory` runs its own listing.
 - A WSL repository never shares a trust listing, and each WSL read runs its own listing. The service has no tested stat tuple for distro configuration files (§11 "Trust and environment").
 - In the T281 probe, a history read with a stale listing passed its gate after a local `core.fsmonitor` edit. A fresh listing gave `TRUST_CHANGED`. So the tuple compare is required.
 - The shared listing removes 2 Git processes from a `readHistory` that reuses a listing.
@@ -955,6 +956,8 @@ Changes invalidate approvals before replacement views arrive. A pending read can
 - A `refresh: false` read whose fingerprint differs from the issued one invalidates every token that depends on it.
 - A `refresh: false` read with an unchanged fingerprint keeps issued tokens.
 - A watcher hint marks the workspace dirty, so the next read re-reads Git state. The hint alone invalidates no token.
+- A complete read that records an observation different from the retained one advances `generation`. This holds also for a change of working files alone. An equal observation keeps the generation.
+- A token that these rules keep still needs the current generation at acceptance (§9).
 - Service restart and successful consumption invalidate tokens as data-model §6 states.
 - After a hunk approval expires or becomes invalid, the renderer issues `readComparison` again for the same entry. It keeps the diff scroll while the canonical comparison stays unchanged. It keeps the hunk selection only when the new comparison has a hunk with the same canonical hunk digest. Otherwise the selection clears with a notice. The §4 publication rechecks stay unchanged.
 - After a file approval expires or becomes invalid, the renderer issues `readComparison` again for the same entry. It keeps the file selection while the entry keeps its category. The §4 "File staging" rechecks stay unchanged.
@@ -962,7 +965,7 @@ Changes invalidate approvals before replacement views arrive. A pending read can
 **Change check.** A `readWorkspace` with `check: "changes"` first compares a stat tuple with the one from the last complete read. WSL polls never use it (§11 "Change polling"). The tuple holds size, last-write time, and presence for a fixed file set:
 
 - The index, in every ref format.
-- The worktree `HEAD`, the ref file of the current branch, and `packed-refs`, for the `files` ref format.
+- The worktree `HEAD`, the ref file of the current branch, and `packed-refs`, for the `files` ref format. A full read resolves the path of the ref file with `git rev-parse --git-path <target>`, once per new HEAD target. The service keeps no list of ref prefixes.
 - Discovery reports the ref format through `--show-ref-format`. For the `reftable` format, two files replace the `HEAD`, branch ref, and `packed-refs` entries. They are `reftable/tables.list` in the worktree administration directory and in the common directory. For the main worktree, both paths name one file. Git rewrites this stack ordering file by rename on every ref update (gitformat-reftable(5)). `HEAD` is then a fixed stub, and no branch ref file or `packed-refs` exists. A ref update can keep the file size, so the tuple also holds the file content. A `tables.list` above 64 KiB counts as changed, so the read runs in full.
 - Every configuration origin file from the last trust listing.
 - The program-file entries: each phase-1 `fileFacts` entry of the last trust listing (§7 "Program file digests"). Each entry holds its root, its components, and its fact: the kind, `size` and `lastWrite` of a file, and the target text of each link hop. The check reads them again with phase-1 `fileFacts` requests (T088). Any difference in a fact changes the tuple.
@@ -971,8 +974,11 @@ Changes invalidate approvals before replacement views arrive. A pending read can
 - The candidates also include each `include.path` and `includeIf.<condition>.path` target that the listing names.
 - The system and global candidates are the kept `git var` lines. Git applies `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`, and `GIT_CONFIG_NOSYSTEM` to that output, so the service applies no override itself. The service resolves the other candidates as Git does (Git `config.c` `do_git_config_sequence` and `handle_path_include`). The local `config` lies in the common directory. `config.worktree` lies in the worktree administration directory. A relative include target resolves against the folder of the file that names it. A leading `~/` resolves against the home folder.
 - The working file of the selected entry, from its `workingVersions` binding.
+- New candidates: a listing can name a candidate that the tuple taken before that listing did not hold. The read then keeps no tuple. The next poll runs in full and takes its facts before its listing.
 
-The check starts no Git process. Without a watcher hint and with an equal tuple, the read returns the last snapshot. Its `snapshotId` and `generation` stay unchanged. Otherwise it runs a full read. A change check is a hint, not validation. Every mutation checkpoint still reads Git state (§4). This stat compares change hints only. Physical identity still comes from the §6 identity request.
+The check also compares the hint counter and the trust policy fingerprint with those of the last complete read. Any difference in the hint counter, the tuple, or the trust policy fingerprint runs a full read through the read gate (§7). The check starts no Git process. Without a watcher hint and with an equal tuple, the read returns the last snapshot. Its `snapshotId` and `generation` stay unchanged. Otherwise it runs a full read. A change check is a hint, not validation. Every mutation checkpoint still reads Git state (§4). This stat compares change hints only. Physical identity still comes from the §6 identity request.
+
+**Watcher hints.** The service watches the worktree, the worktree administration directory, and the common directory. The debounce is trailing 100 ms, with a maximum wait of 1000 ms from the first event not yet delivered as a hint. A watch is lost when it fails to start, emits `error`, or its directory changes identity (`dev` and `ino`). The service checks that identity at most once per debounce interval. After a lost watch, every poll of that workspace runs in full until the workspace is registered again.
 
 **Changing working file.** An atomic save can replace a working file while `readWorkspace` reads it. When a working-file read reports a change during the read, the service discards the partial result. It then runs the full read once more, and that result gets a new generation. Both attempts share one §5 "Ordinary read deadline". A change during the second read ends the read `limited` with `WORKTREE_CHANGING`. That result keeps the entries and working files that did read. A `limited` read is not a complete read, so the next `check: "changes"` poll runs in full. A token that binds the changed working file becomes invalid ("Token invalidation" above). `readWorkspace` never fails with `REPOSITORY_CHANGED` for this cause.
 

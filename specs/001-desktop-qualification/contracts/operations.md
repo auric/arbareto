@@ -163,9 +163,8 @@ Support valid UTF-8 LF/CRLF content within the specified limits. Reject binary, 
 - Reason (research R14 S34): Windows PowerShell 5.1 puts an argument in double quotes when it holds white space. U+0020, U+00A0, U+2002, and U+3000 each caused this. Every interpolated value but one ends its argument, so the closing quote follows its last character. The exception is the System32 path of the §11 form, which `\wsl.exe` follows. One trailing U+005C escaped that quote, and the value merged with the next argument. Two became one, so the value changed. PowerShell 7.6 kept each value literal.
 - Without white space, 5.1 adds no quotes, and a trailing U+005C stayed literal. The rule still refuses such a value, because this is the stricter reading. A drive root holds no white space, and both shells passed `D:\` literally.
 - Path form. The service removes each trailing U+005C and U+002F from a Windows path that it puts in a command. A drive root keeps its separator, such as `D:\`. So no built Windows path ends in U+005C, except a drive root. The rule changes no other character of the path.
-- Exception: the §6 `safe.directory` path stays as Git reported it, because Git compares that text. The U+005C refusal above still applies to it.
 - A UNC share root also loses its trailing separator, such as `\\server\share`. No probe ran Git with such a root, so that form stays unverified (research R14 S34). A WSL command takes Linux paths unchanged (§11).
-- The §6 dubious-ownership command, the §9 hook remedy, and the §11 and §12 commands use this rule. One shared builder applies it.
+- The §9 hook remedy and the §11 and §12 commands use this rule. One shared builder applies it.
 - The remedy text is: "This command stages or unstages the whole file with your Git settings. Run it in a terminal."
 
 Disable executable external diffs and text conversion for supported inspection. Ordinary Git EOL conversion remains distinct from custom filters.
@@ -315,7 +314,8 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | History page | 8 MiB encoded result for each `readHistory` response. This stays below the 16 MiB private/reply frame. The page keeps the rows before the first row that passes the bound. |
 | Frontend graph layout | 24 simultaneous lanes and 4,096 SVG path segments; explicit row-only fallback |
 | Effective configuration/trust input | 4 MiB; overflow blocks execution approval |
-| Trust program file digests | 64 files, 1 MiB per file, and 8 MiB total (§7 "Program file digests"). Overflow permits only a session approval without a stored record |
+| Trust program file digests | 64 files, 1 MiB per file, and 8 MiB total (§7 "Program file digests"). At most 8 link hops for each program or hook path. Overflow permits only a session approval without a stored record |
+| File facts | 64 entries per request, 255 UTF-16 units per name component, 1 MiB per file, and 8 MiB per request (§6 "File facts"). The shell applies the byte bounds in request order. |
 | Git executable digest input | 256 MiB per file, read as a stream. The read stops above the bound. A larger file gives `GIT_UNSUPPORTED`, and no Git process starts (§3 "Git proposal"). |
 | Diagnostic bytes retained | 64 KiB per stream, never persisted as raw logs. The service retains them, and the shell forwards every byte before the completion signal (§6 "Channel frames"). |
 | Total unexpected diagnostic output | 4 MiB per operation before cancellation. Each `updateSubmodules` process counts its own 4 MiB, because its stderr carries progress (§12 "Deadlines and Cancel"). The service counts the forwarded bytes and sends `cancel` at the bound. |
@@ -403,7 +403,7 @@ The service validates the frame with the strict decoder and the zod handshake sc
 
 The native shell creates temporary contexts for `chooseGit`, `chooseRepository`, `restoreWorkspace`, and `dismissRecoveryMarker`. It also creates one for the saved selected Git path at each startup handshake ("Startup contexts" below). A context binds the selected path, physical identity, session, permitted probe, and expiry.
 
-Every physical identity is native: the 64-bit volume serial number and the 128-bit file ID from `GetFileInformationByHandleEx` with `FileIdInfo`. The 64-bit file ID is not unique on ReFS, FAT, or exFAT (research R2). The service never reads an identity through Bun `fs.stat`. It sends an identity request (below) for each Git-resolved path. An all-zero or all-ones file ID, or a failed call, refuses registration with `UNSUPPORTED_REPOSITORY`. The remedy is: open the repository from an NTFS or ReFS volume.
+Every physical identity is native: the 64-bit volume serial number and the 128-bit file ID from `GetFileInformationByHandleEx` with `FileIdInfo`. The 64-bit file ID is not unique on ReFS, FAT, or exFAT (research R2). The service never reads an identity through Bun `fs.stat`. It sends an identity request (below) for each Git-resolved path. The service never stats, opens, or reads a repository-controlled program or hook path. It sends a file-fact request ("File facts" below). An all-zero or all-ones file ID, or a failed call, refuses registration with `UNSUPPORTED_REPOSITORY`. The remedy is: open the repository from an NTFS or ReFS volume.
 
 The renderer cannot supply or replace those paths. Restoration uses only the application-owned last-selection setting and requires fresh validation.
 
@@ -415,12 +415,12 @@ The renderer cannot supply or replace those paths. Restoration uses only the app
 | Context | Permitted execution | Completion |
 | --- | --- | --- |
 | `gitProbe` | Selected executable with the fixed arguments `--exec-path` or `version --build-options`. No `--no-lazy-fetch` (§7 "Missing objects"). The shell admits the two exact arrays `--no-lazy-fetch var GIT_CONFIG_SYSTEM` and `--no-lazy-fetch var GIT_CONFIG_GLOBAL` in any live `gitProbe` context. The shell holds no admission state. The service calls them only after its admission checks pass (§7 "Configuration file paths"). It runs from the application-owned launch directory. | Validate executable identity, version, architecture, and admission policy before issuing `gitInstallationId`. |
-| `repositoryDiscovery` | Admitted Git in the selected directory. Only fixed discovery profiles using `rev-parse`, `symbolic-ref`, and `show-ref`. A `repositoryDiscovery` context permits `symbolic-ref` only with the options `-q`, `--quiet`, and `--short` and exactly one ref name, `HEAD`. The shell refuses every other `symbolic-ref` form, such as `-d`, `--delete`, `-m`, a second name, or no name. It permits `show-ref` as `show-ref --head --verify HEAD`, and also as `show-ref --exists` with exactly one ref name. That name starts with `refs/`, and it is the output of `symbolic-ref -q HEAD` without `--short`. The name must pass the git-check-ref-format(1) rules without options. The shell enforces these rules in `is_ref_name`. The shell refuses every other `show-ref` form. | Resolve and validate repository paths, formats, HEAD state, and physical identities before issuing `repositoryId`. Exit statuses decide the HEAD state (git-symbolic-ref(1), git-show-ref(1)). `symbolic-ref -q HEAD` exit 0 gives the branch ref name. Exit 1 with zero bytes of stderr means a detached HEAD. Any other non-zero result gives `REPOSITORY_UNAVAILABLE`. For a branch ref name, `show-ref --exists <ref>` tells an unborn branch from a failed lookup. Exit 0 means the ref exists. Exit 2 means the ref is missing, so the branch is unborn. Any other exit gives `REPOSITORY_UNAVAILABLE`. For an existing branch or a detached HEAD, `show-ref --head --verify HEAD` gives the object ID. A failure of that read gives `REPOSITORY_UNAVAILABLE`. The service reads no stderr text for these decisions. Refuse registration when `--is-bare-repository` or `--is-inside-git-dir` reports true, with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is: open a worktree of it, or clone it. For a Git administration folder, the remedy is: open the working folder that contains it. Classify Git's ownership refusal as `DUBIOUS_OWNERSHIP` by exit status and message prefix. Show the path and a remedy command that the service builds, and never run that command. Never offer Git's suggested command, because Git quotes it for a POSIX shell. PowerShell parsed `$(calc)` in that text as a subexpression (research R5). Under the fixed C locale, one stderr line starts with `fatal: detected dubious ownership in repository at '`. The path runs from that prefix to the last `'` of that line. The command is `& '<selected Git path>' config --global --add safe.directory '<path>'` with the §4 quoting rule. A WSL repository gets the §11 "Remedy commands" form. A message without that prefix gets no command. So does a path that the §4 quoting rule refuses, but the path still shows. Classify a folder outside every repository as `NOT_A_REPOSITORY`: exit status 128 and a stderr prefix `fatal: not a git repository (or any` (research R2). The remedy is: "Open a folder inside a Git repository." The `DUBIOUS_OWNERSHIP` and `NOT_A_REPOSITORY` stderr prefixes are pending replacement by OS facts; see research R5 "Heuristics review (2026-10-05)". A probe past its §5 deadline gives `DEADLINE`. Other discovery failures use `REPOSITORY_UNAVAILABLE`. |
+| `repositoryDiscovery` | Admitted Git in the selected directory. Only fixed discovery profiles using `rev-parse`, `symbolic-ref`, and `show-ref`. A `repositoryDiscovery` context permits `symbolic-ref` only with the options `-q`, `--quiet`, and `--short` and exactly one ref name, `HEAD`. The shell refuses every other `symbolic-ref` form, such as `-d`, `--delete`, `-m`, a second name, or no name. It permits `show-ref` as `show-ref --head --verify HEAD`, and also as `show-ref --exists` with exactly one ref name. That name starts with `refs/`, and it is the output of `symbolic-ref -q HEAD` without `--short`. The name must pass the git-check-ref-format(1) rules without options. The shell enforces these rules in `is_ref_name`. The shell refuses every other `show-ref` form. | Resolve and validate repository paths, formats, HEAD state, and physical identities before issuing `repositoryId`. Exit statuses decide the HEAD state (git-symbolic-ref(1), git-show-ref(1)). `symbolic-ref -q HEAD` exit 0 gives the branch ref name. Exit 1 with zero bytes of stderr means a detached HEAD. Any other non-zero result gives `REPOSITORY_UNAVAILABLE`. For a branch ref name, `show-ref --exists <ref>` tells an unborn branch from a failed lookup. Exit 0 means the ref exists. Exit 2 means the ref is missing, so the branch is unborn. Any other exit gives `REPOSITORY_UNAVAILABLE`. For an existing branch or a detached HEAD, `show-ref --head --verify HEAD` gives the object ID. A failure of that read gives `REPOSITORY_UNAVAILABLE`. The service reads no stderr text for these decisions. Refuse registration when `--is-bare-repository` or `--is-inside-git-dir` reports true, with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is: open a worktree of it, or clone it. For a Git administration folder, the remedy is: open the working folder that contains it. The first discovery call is `rev-parse --is-bare-repository --is-inside-git-dir` (research R2 "T283 record"). Every nonzero exit of that call gives `REPOSITORY_UNAVAILABLE` (spec Clarifications, 2026-10-05). The refusal names the selected folder as `path`. Its remedy text is "Run `git status` in this folder", and it offers no command. Its `outputTail` holds Git's stderr by the §9 "Commit failure output" rules. Git exits with 128 for every setup failure, such as a folder outside every repository or dubious ownership. It prints no machine-readable reason, so the service reads no stderr text for this decision. Git's suggested command shows only as plain text in the output tail, never with Copy command, because Git quotes it for a POSIX shell (research R5). A probe past its §5 deadline gives `DEADLINE`. Other discovery failures use `REPOSITORY_UNAVAILABLE`. |
 | `registeredOperation` | Service-constructed Git operation against registered Git and repository IDs. | Normal operation and reconciliation rules apply. |
 
 Discovery profiles use only the documented identity queries in `research.md`. They accept no renderer-provided arguments, refs, paths, or environment overrides.
 
-Discovery probes run under a fixed C locale, so Git messages stay unlocalized. Ownership and bare-repository refusals come before the configuration listing in §7.
+Discovery probes run under a fixed C locale, so Git messages stay unlocalized. Discovery refusals come before the configuration listing in §7.
 
 A WSL path gets its route, identity, Git, and process rules from §11. Its identity comes from the §11 `stat` probe, never from `FileIdInfo`.
 
@@ -557,7 +557,7 @@ The owning shell keeps each marker file open without delete sharing. At startup,
 
 **Dismissal.** A marker for a deleted or moved repository never resolves through a refresh. `dismissRecoveryMarker` removes such a marker explicitly. The shell binds a `repositoryDiscovery` context to the stored worktree path of the marker. The context needs the identity of that path. When the identity open fails with `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`, the path does not exist. The shell then creates no context and forwards only the marker ID. Any other identity failure refuses the request with its code ("Registration bootstrap"). With a context, the service runs the discovery profiles there. The service returns one of two results:
 
-- Dismissal allowed: the payload holds no `bootstrapId`, so the service runs no discovery. Discovery also allows it when Git reports `REPOSITORY_UNAVAILABLE` or `NOT_A_REPOSITORY`. It allows it when the resolved common-directory identity differs from the marker identity.
+- Dismissal allowed: the payload holds no `bootstrapId`, so the service runs no discovery. Discovery also allows it when it gives `REPOSITORY_UNAVAILABLE`, which includes the merged refusal ("Registration bootstrap"). The native confirmation below still follows. It allows it when the resolved common-directory identity differs from the marker identity.
 - Dismissal refused: any other result. The code is `STATE_UNKNOWN` with the remedy "Open this repository and use Refresh."
 
 A damaged marker needs no repository context. The shell creates no context and forwards only its marker ID, so the service allows the dismissal.
@@ -584,6 +584,7 @@ This subsection defines the bodies of `process`, `mutation`, and `trust` frames.
 | `cancel` | `callId`. | Closes the Job of the operation that owns that call, with every descendant. Each process of that operation then gets `exit`. A cancel for an ended call is dropped. |
 | `identity` | `callId`, `operationId`, `contextKind`, the context IDs, `paths`: 1 to 8 paths. | Replies `identity` with one entry per path, in request order. |
 | `lingeringCount` | `callId`, `operationId`, `commonDirectory`. | Replies `lingeringCount` with the active process count of the lingering Jobs with that tag. An unreadable identity gives 0. |
+| `fileFacts` | `callId`, `operationId`, `contextKind` `registeredOperation`, `gitInstallationId`, `repositoryId`, `digest`, `files`. | Replies `fileFacts` with one fact per entry, in request order ("File facts" below). |
 | `register` | `callId`, `operationId`, `bootstrapId`, `gitInstallationId`, and either `version`, `digest`, and `confirm`, or `repositoryId`, `worktreeRoot`, `gitDirectory`, and `commonDirectory`. `version` is the parsed version text, such as `2.55.0.windows.3`, not the full output line. `digest` is the SHA-256 of the probed file as 64 lowercase hex digits. | Binds the issued ID to the native context of `bootstrapId`. A `register` without the confirmation is valid only in a startup context. The shell then saves the Git ("Startup contexts"). |
 | `resolveGit` | `callId`, `operationId`, and `bootstrapId` of a live `gitProbe` context. `executablePath`: `git.exe` in the folder that `--exec-path` printed (§3 "Git proposal"). | It refuses another file name and a path that is not a regular file with `INVALID_REQUEST`. This rule also covers a startup context. The service checks the installation root ("Startup contexts"). Otherwise it destroys the context, binds a new `gitProbe` context of that operation to the file, and replies `resolveGit`. The new context keeps the selected path and the startup state. On other platforms, the service expects the file name `git`. |
 | `release` | Exactly one of `repositoryId` or `gitInstallationId`. | Removes the binding. A later request with that ID gets `refused` with `UNKNOWN_TARGET`. |
@@ -639,6 +640,7 @@ Streamed input:
 | `refused` | `callId`, `code`. | The request started nothing. Valid for each request with `callId`. |
 | `identity` | `callId`, `identities`. | Each entry is an identity reply ("Process fields") or `{"code":"UNSUPPORTED_REPOSITORY"}`. |
 | `lingeringCount` | `callId`, `count`. | Nonnegative safe integer. |
+| `fileFacts` | `callId`, `facts`. | One fact per request entry, in request order ("File facts" below). |
 | `register` | `callId`, `result`: `approved`, `declined`, or `another`. With `another`, also `bootstrapId` and `executablePath` of the new `gitProbe` context. `executablePath` is a native absolute path by the channel path rule. | Git with `confirm: true`: the Git selection confirmation result. Otherwise `approved`. |
 | `resolveGit` | `callId`, `bootstrapId`. | The new `gitProbe` context for the resolved file. The first context ID is no longer valid. |
 
@@ -673,7 +675,7 @@ Streamed input:
 | `confirmRun` | `callId`, `worktreeRoot`, `submodulePaths`: 1 to 256 paths in display order, `programCount`: at least 1, `uncheckedCount`: 0 to `programCount`. | `{type, callId, result}`: `approved` or `declined`. |
 
 - `fingerprint` is 64 lowercase hex digits. `gitSelectedPath` is a native absolute path by the channel path rule.
-- `bound` is `file-count`, `file-bytes`, or `total-bytes` (§7 "Program file digests").
+- `bound` is `file-count`, `file-bytes`, `total-bytes`, or `link` (§7 "Program file digests").
 - An unreadable common-directory identity gives `revoke` the reply `endedProcesses` 0, as for `lingeringCount`.
 - A service exit closes each open trust dialog as Cancel. The shell then writes and deletes no record.
 
@@ -685,6 +687,65 @@ Streamed input:
 - A malformed `exit` fails its call at once with `PROCESS_OWNERSHIP_FAILED`. So does a malformed reply to a request other than `run`.
 - The shell answers a malformed request that holds a valid `callId` with `refused` and `INVALID_REQUEST`. It drops every other malformed frame.
 - A service exit drops every pending call. The shell keeps the lingering set ("Lingering Jobs").
+
+### File facts
+
+The service never stats, opens, or reads a repository-controlled program or hook path (§7). The shell reads such files below the three Git-resolved roots, and it never follows a link below a root (spec Clarifications, 2026-10-05). §7 "Program file digests" states how the service uses the facts.
+
+Request fields. Every field is required.
+
+| Field | Value |
+| --- | --- |
+| `type` | `fileFacts`. |
+| `callId` | New identifier for this call. |
+| `operationId` | Active operation. |
+| `contextKind` | `registeredOperation`. Another context gets `refused` with `INVALID_REQUEST`. |
+| `gitInstallationId`, `repositoryId` | Bound IDs. An unbound or released `repositoryId` gets `refused` with `UNKNOWN_TARGET`. |
+| `digest` | Boolean. `true` asks for the SHA-256 of each final file. |
+| `files` | 1 to 64 entries (§5). Each entry holds exactly `root` and `path`. No entry holds an absolute path. |
+| `root` | `worktreeRoot`, `gitDirectory`, or `commonDirectory`: the path that `register` bound to `repositoryId`. |
+| `path` | 1 or more name components below the root, in order. |
+
+Component rule. Each component has 1 to 255 UTF-16 units (§5). It holds no NUL and no lone surrogate. It follows the native rule of `isComponent` in `src/contracts/native-path.ts`:
+
+- Windows (Microsoft Learn "Naming Files, Paths, and Namespaces", "Naming Conventions"): no `<`, `>`, `:`, `"`, `/`, `\`, `|`, `?`, or `*`, and no U+0000 to U+001F. No trailing space or period, so `.` and `..` fail too. No reserved device name in any letter case, also with an extension: `CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `COM¹` to `COM³`, `LPT1` to `LPT9`, and `LPT¹` to `LPT³`. So `nul` and `COM1.txt` fail.
+- POSIX (POSIX.1-2024 XBD 3.146 "Filename"): no `/` and no NUL, and not `.` or `..`.
+- So no entry can name a UNC path, a device, an alternate data stream, or a parent folder.
+- A broken rule gives `refused` with `INVALID_REQUEST`, and the shell reads nothing.
+
+Shell behavior:
+
+- The shell opens each root as the identity request does ("Process fields"). Git resolved and opened each root during discovery.
+- It opens each component relative to the handle of its parent. A component that is a link ends the walk of that entry. The shell never follows it.
+- On Windows, a link is a reparse point with a name-surrogate tag (Microsoft Learn "Reparse Point Tags", `IsReparseTagNameSurrogate`). On POSIX, it is a symbolic link.
+- A reparse point with another tag is no link. As a middle component, it gives `other`, and the walk of that entry ends. As the final component, its fact follows its type, such as the logical bytes of a WOF-compressed file.
+- A component that exists but cannot be opened or read gives `error`. A failed read of a final file gives `error` too.
+- With `digest: true`, the shell reads the size of each final file through its handle. It reads at most the per-file bound plus one byte and hashes the bytes with SHA-256. With `digest: false`, it reads no file data.
+- The §5 byte bounds apply in request order. A file above 1 MiB gets bound `file-bytes` and no digest. Only digested bytes count toward the 8 MiB request total. The first file that would pass that total gets bound `total-bytes` and no digest, and so does each later file.
+- A WSL repository gets the §11 "Trust and environment" rule.
+
+Reply facts. Each fact holds `kind` and the fields of its kind.
+
+| `kind` | Fields | Meaning |
+| --- | --- | --- |
+| `file` | `size`, `lastWrite`. Optional: `digest` or `bound`, never both, and `executable`. | A regular file. `size` is a nonnegative safe integer. `lastWrite` is a signed 64-bit integer as decimal text. On Windows it is `FILE_BASIC_INFO` `LastWriteTime` in 100-ns units since 1601. On POSIX it is the modification time in nanoseconds since 1970. `digest` is the SHA-256 as 64 lowercase hex digits, only with `digest: true` and no bound. `bound` is `file-bytes` or `total-bytes`. |
+| `directory` | Optional: `executable`. | A directory. |
+| `link` | `component`, `tag`. With tag `symlink` or `junction`, also `target` and `relative`. | `component` is the zero-based index of the link in `path`. `tag` is `symlink`, `junction`, or `other` for another name-surrogate tag. `target` is the link text as stored: the `SubstituteName` of the reparse data on Windows, the `readlink` text on POSIX. `relative` is the relative flag of a symbolic link, and `false` for a junction. A target that is no well-formed text, or that holds NUL, gives tag `other`. The shell reads nothing after the link and computes no digest. |
+| `absent` | None. | A component does not exist, or a parent component is no directory. Only these open results mean `absent`: `STATUS_OBJECT_NAME_NOT_FOUND` and `STATUS_OBJECT_PATH_NOT_FOUND` on Windows (Win32 `ERROR_FILE_NOT_FOUND` and `ERROR_PATH_NOT_FOUND`), and `ENOENT` and `ENOTDIR` on POSIX. |
+| `other` | None. | The object exists but is no regular file, directory, or link, such as a FIFO, a socket, or a device. A middle component with a reparse tag that is not a name surrogate gives `other` too. Such an object cannot run as a hook. |
+| `error` | `component`, `code`. | A component exists but cannot be opened or read. `component` is the zero-based index of the failed component in `path`. `code` is one entry of the closed list below. |
+
+The `error` codes (`FILE_FACT_ERRORS` in `src/contracts/channel.ts`):
+
+| `code` | Windows status (Win32 error) | POSIX `errno` |
+| --- | --- | --- |
+| `access-denied` | `STATUS_ACCESS_DENIED` (`ERROR_ACCESS_DENIED`) | `EACCES` |
+| `sharing-violation` | `STATUS_SHARING_VIOLATION` (`ERROR_SHARING_VIOLATION`) | None. |
+| `io-error` | `STATUS_IO_DEVICE_ERROR` (`ERROR_IO_DEVICE`) | `EIO` |
+| `other-error` | Every other failure. | Every other failure. |
+
+- `executable` comes only on POSIX. It is the result of an `X_OK` access check on the opened object. The Windows shell never sends it.
+- The reply holds exactly one fact per entry.
 
 ## 7. Startup, trust, and environment
 
@@ -778,7 +839,16 @@ Keys that cannot fire for these reads do not block reads. Ordinary trust discove
 - Its program lies inside one of those directories. Git runs hook, filter, and monitor commands from the worktree root. A program path with `/` or `\` that is not absolute resolves against that root.
 - Its program is a bare name, and the child `PATH` holds an empty, `.`, or other relative entry. Then every bare-name program needs trust, Git LFS included.
 
-A path lies inside a directory when its identity equals the identity of that directory (§6 identity request). The identity of an existing ancestor of the path counts too. A text comparison may prove that a path is inside, but never that it is outside. The service refuses a UNC or device path by text before it opens any file. Such a path gets no identity request, and it stays in the fingerprint as a location only. One identity request carries at most 8 paths, so a long ancestor chain needs more than one request. In a WSL repository, the §11 identity probes give the identities. The UNC refusal does not apply there (§11 "Paths and file access").
+**Inside and outside.** The roots are the worktree root, the Git directory, and the common directory. These rules decide whether a path lies inside them:
+
+- A path from repository-controlled scope is repository-controlled. The service inspects it only through `fileFacts` below a root (§6 "File facts"). It never opens such a path outside the roots.
+- A path from protected scope that lies under a root by text is walked with `fileFacts`.
+- A protected path outside every root by text gets an identity request (§6 "Process fields"). The request covers the path and its existing ancestors. UNC and device paths are refused by text first. Such a path gets no identity request, and it stays in the fingerprint as a location only.
+- An identity equal to a root identity means inside. The service maps the path to that root plus the remaining components and walks it with `fileFacts`.
+- Otherwise the path is outside: protected, location only.
+- So a junction alias of the worktree never makes tracked hook files run without approval.
+- By text, a path lies under a root when its components start with the components of the root. On Windows, the comparison folds only the ASCII letters `A` to `Z` (§6 "Startup contexts" case rule). The longest matching root wins.
+- One identity request carries at most 8 paths, so a long ancestor chain needs more than one request. In a WSL repository, the §11 identity probes give the identities. The UNC refusal does not apply there (§11 "Paths and file access").
 
 The rule classifies the program that Git starts. A protected command can still read repository files through its arguments. That behavior stays the user's configured choice (research R5).
 
@@ -786,6 +856,8 @@ The rule classifies the program that Git starts. A protected command can still r
 
 - Classify each configured hook by the scope and origin of its `hook.<name>.command` entry, never by its `hook.<name>.event` entry. A repository-controlled command entry needs approval for every operation that can run its event, whatever scope the event entry has. `git hook list --show-scope` reports the scope of the last `event` entry. Git runs the last `command` value from any scope.
 - A hooks-folder hook is the entry `<event>` in the hooks directory, for each of the 28 known events. Git for Windows also tries `<event>.exe` when `<event>` is absent. On Windows, Git lists an entry that exists, a folder included. On POSIX, Git lists the entry only when it has the execute bit.
+- The service reads the hooks directory and its entries only through phase-1 `fileFacts` ("Program file digests"). The fact table there decides whether an entry counts as a listed hook.
+- A hooks directory that lies outside every root lists no entries. So does one whose link resolves outside the roots or cannot be resolved. Its location and each hop's target text stay in the fingerprint. When its `core.hooksPath` entry is repository-controlled, or the directory lies inside a root, `approvalRequired.commit` is `true`. Unknown never becomes "no hooks".
 
 **Configuration file paths.** Two commands give the system and global candidate files of §8 "Change check". They are `git var GIT_CONFIG_SYSTEM` and `git var GIT_CONFIG_GLOBAL` (git-var(1)). The service runs both once per admitted Git installation and keeps the result with that installation. They run in the `gitProbe` context after the admission checks pass (§6 "Registration bootstrap"). The trust listing itself still starts 2 Git processes ("Hook registrations").
 
@@ -797,12 +869,29 @@ The rule classifies the program that Git starts. A protected command can still r
 
 **Program file digests.** The trust fingerprint also covers the bytes of repository-controlled program files. So an edit of an approved hook or program file gives `TRUST_CHANGED`.
 
-- The service computes the SHA-256 digest of each file that a repository-controlled integration names by path. These are the hooks-folder files from "Hook registrations". They are also program paths that are absolute or hold `/` or `\`. It resolves each path by the rule above.
-- Only a resolved path inside the worktree root, the Git directory, or the common directory gets a digest. "Repository-controlled resolution" defines inside. The service never opens a program path outside them. Such a path stays in the fingerprint as a location only.
-- A listed path inside those directories can fail to open. Only ENOENT, ENOTDIR, and EISDIR mean `absent`, and the path then enters the fingerprint as the fixed value `absent`. An open file whose handle reports a type other than a regular file also enters as `absent`. That type is an OS fact, not an error. Any other error ends the listing `failed` with `REPOSITORY_UNAVAILABLE`, and the text names the path and the error. The error is its code, such as `EACCES`, never its message text.
-- A bare-name program has no path. Its name and the child `PATH` entries stay in the fingerprint. Git for Windows skips empty `PATH` entries. For each other entry in order, it tries `<entry>\<name>.exe`, then `<entry>\<name>` when that is not a directory (research R5). When the child `PATH` holds relative entries, the service repeats that lookup in each of them. Each relative entry resolves against the worktree root. Git starts hooks, filters, and monitors from that root. The first regular file found gets a digest. Without one, each relative entry enters the fingerprint as `absent`, so creating such a file gives `TRUST_CHANGED`. The lookup uses the same error rule: only ENOENT, ENOTDIR, and EISDIR mean `absent`. An earlier absolute entry can hold the same name, and Git then starts that file. The digest still covers the repository candidate, so this case errs toward `TRUST_CHANGED`.
-- Bounds: at most 64 files, 1 MiB per file, and 8 MiB in total (§5). The service checks the size through the open handle before it reads. It reads at most the bound plus one byte. It digests files in fingerprint order. A file above 1 MiB enters the fingerprint as `unchecked` with its path. So does every file after the 64-file or 8 MiB bound. T192 and T169 measure the poll cost with these digests.
-- The `bound` names map to the §5 "Trust program file digests" row: `file-count` is 64 files, `file-bytes` is 1 MiB per file, and `total-bytes` is 8 MiB total.
+- The service covers each file that a repository-controlled integration names by path. These are the hooks-folder entries from "Hook registrations". They are also program paths that are absolute or hold `/` or `\`. It resolves each path by "Repository-controlled resolution" and "Inside and outside".
+- The service never stats, opens, or reads such a path itself. It sends `fileFacts` requests (§6 "File facts") only for paths inside the roots. A path outside the roots stays in the fingerprint as a location only.
+- Phase 1 sends `digest: false`. It reads the hooks directory, each `<event>` with its `<event>.exe` on Windows, each bare-name candidate, and each program path. A list above 64 entries takes more than one request.
+- Link resolution runs in TypeScript, one hop at a time, at most 8 hops (§5), and only inside the roots. A relative target resolves by text against the folder of the link. It may start with a run of `..` components, and no `..` may follow a normal component. An absolute target `\??\X:\…` maps to `X:\…`. The components of the entry after the link follow the target. The result is a new phase-1 entry.
+- A link cannot be resolved when its target holds `..` after a normal component, or when it is root-relative or drive-relative. The same holds for a `\??\UNC\` target or another NT path, a component that breaks the §6 rule, tag `other`, and a chain above 8 hops.
+- Phase 2 sends `digest: true` for the resolved files inside the roots, in fingerprint order, in one request.
+- The fact after resolution decides the fingerprint value and the hook listing:
+
+| Fact after resolution | Fingerprint value | Listed as a hook |
+| --- | --- | --- |
+| `file` with `digest` | The digest. | Yes. On POSIX, only with `executable`. |
+| `file` with `bound` | `unchecked` with that bound. | Yes. On POSIX, only with `executable`. |
+| `directory` or `other` | `absent`. | On Windows, yes. On POSIX, only a `directory` with `executable`. |
+| `absent` | `absent`. | No. |
+| A link that resolves outside the roots | The location and each hop's target text. | Yes. |
+| A link that cannot be resolved | `unchecked` with bound `link`, and each hop's target text. | Yes. |
+| `error` | None. The listing ends `failed` with `REPOSITORY_UNAVAILABLE`. | None. |
+
+- Only an `absent` fact means absent. An `error` fact ends the listing `failed` with `REPOSITORY_UNAVAILABLE`. The text names the path and the `code`, never an OS message text.
+- Unknown never becomes "no hooks". An entry without a link keeps byte-identical fingerprint fields, so old approvals stay valid.
+- A bare-name program has no path. Its name and the child `PATH` entries stay in the fingerprint. Git for Windows skips empty `PATH` entries. For each other entry in order, it tries `<entry>\<name>.exe`, then `<entry>\<name>` when that is not a directory (research R5). When the child `PATH` holds relative entries, the service repeats that lookup in each of them. Each relative entry resolves against the worktree root. Git starts hooks, filters, and monitors from that root. The service reads each candidate inside the roots with phase-1 `fileFacts`. A candidate outside the roots stays a location only. The first `file` fact gets a digest in phase 2. Without one, each relative entry enters the fingerprint as `absent`, so creating such a file gives `TRUST_CHANGED`. The lookup uses the same rule: only an `absent` fact means absent, and an `error` fact ends the listing `failed`. An earlier absolute entry can hold the same name, and Git then starts that file. The digest still covers the repository candidate, so this case errs toward `TRUST_CHANGED`.
+- Bounds: the shell applies 1 MiB per file and 8 MiB per request (§6 "File facts"). Phase 2 carries at most 64 files. A file with bound `file-bytes` or `total-bytes` enters the fingerprint as `unchecked` with its path. So does every file after the 64-file bound. T192 and T169 measure the poll cost with these digests.
+- The `bound` names map to the §5 "Trust program file digests" row: `file-count` is 64 files, `file-bytes` is 1 MiB per file, and `total-bytes` is 8 MiB total. `link` is a link that cannot be resolved, including a chain above 8 hops. Its confirmation text is "a link that Arbareto cannot follow".
 - Over a bound, `readTrust` reports the reached bound and `persistence` `session`. `approveTrust` still accepts an explicit approval. Its `confirm` frame carries `persist: false`. The native confirmation names the reached bound and states: "Arbareto cannot check these program files for later edits. This approval lasts until Arbareto closes or its Git service restarts." On Approve, the shell writes no record. The service keeps the approval for the service session. The session ends when Arbareto closes or at Restart service (§2). An edit of an `unchecked` file keeps that session approval, and the confirmation says so. The next session reports `untrusted`, also after Restart service.
 - Reading a program file runs nothing. The stored record keeps one fingerprint digest, so the record format stays unchanged.
 
@@ -832,7 +921,7 @@ The service derives trust `state` from the records and from its session approval
 
 Do not disable required hooks to obtain a successful result. Do not add an application-owned hook without approved scope changes.
 
-Logs stay in memory for the session, with at most 1,000 entries (§5 "Session log entries"). This slice writes no log files. Logs contain only allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries (data-model §7 `effects`). Do not retain raw stderr, hook output, messages, patches, environment blocks, or configuration dumps. Two response fields carry Git or hook output: the commit failure output (§9) and each submodule output tail (§12). They never enter a log, a `diagnostic`, or a progress event.
+Logs stay in memory for the session, with at most 1,000 entries (§5 "Session log entries"). This slice writes no log files. Logs contain only allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries (data-model §7 `effects`). Do not retain raw stderr, hook output, messages, patches, environment blocks, or configuration dumps. Only `outputTail` fields carry Git or hook output: the commit failure output, the `stage` output, and the discovery refusal (§9), and each submodule output tail (§12). An `outputTail` never enters a log, a `diagnostic`, or a progress event.
 
 Provide actionable safe explanations. Full repository-specific diagnostics remain available through the user's selected Git tools, not unrestricted automatic log export.
 
@@ -857,7 +946,8 @@ Changes invalidate approvals before replacement views arrive. A pending read can
 - The index, in every ref format.
 - The worktree `HEAD`, the ref file of the current branch, and `packed-refs`, for the `files` ref format.
 - Discovery reports the ref format through `--show-ref-format`. For the `reftable` format, two files replace the `HEAD`, branch ref, and `packed-refs` entries. They are `reftable/tables.list` in the worktree administration directory and in the common directory. For the main worktree, both paths name one file. Git rewrites this stack ordering file by rename on every ref update (gitformat-reftable(5)). `HEAD` is then a fixed stub, and no branch ref file or `packed-refs` exists. A ref update can keep the file size, so the tuple also holds the file content. A `tables.list` above 64 KiB counts as changed, so the read runs in full.
-- Every configuration origin file from the last trust listing, and every file that the trust fingerprint digests.
+- Every configuration origin file from the last trust listing.
+- The program-file entries: each phase-1 `fileFacts` entry of the last trust listing (§7 "Program file digests"). Each entry holds its root, its components, and its fact: the kind, `size` and `lastWrite` of a file, and the target text of each link hop. The check reads them again with phase-1 `fileFacts` requests (T088). Any difference in a fact changes the tuple.
 - Each candidate configuration file that does not exist yet, with presence `absent`. Creating, removing, or changing any candidate changes the tuple.
 - The candidates are the files Git reads. They are the system and global files (§7 "Configuration file paths") and the local `config`. The worktree `config.worktree` is a candidate when `extensions.worktreeConfig` is set.
 - The candidates also include each `include.path` and `includeIf.<condition>.path` target that the listing names.
@@ -915,7 +1005,7 @@ A recovery marker survives a service restart, application close, and crash (§6)
 | --- | --- |
 | Request boundary | `INVALID_REQUEST`, `PROTOCOL_VERSION`, `UNKNOWN_OPERATION`, `UNKNOWN_TARGET`, `FRAME_LIMIT`, `BUSY`, `WORKSPACE_LIMIT` |
 | Prerequisites | `GIT_UNAVAILABLE`, `GIT_CHANGED`, `GIT_UNSUPPORTED`, `WEBVIEW_UNAVAILABLE`, `WEBVIEW_UNSUPPORTED`, `WSL_UNAVAILABLE` |
-| Repository state | `REPOSITORY_UNAVAILABLE`, `REPOSITORY_CHANGED`, `UNSUPPORTED_REPOSITORY`, `DUBIOUS_OWNERSHIP`, `NOT_A_REPOSITORY`, `OPERATION_IN_PROGRESS`, `CONFLICTED`, `LOCKED`, `UNSUPPORTED_SUBMODULE` |
+| Repository state | `REPOSITORY_UNAVAILABLE`, `REPOSITORY_CHANGED`, `UNSUPPORTED_REPOSITORY`, `OPERATION_IN_PROGRESS`, `CONFLICTED`, `LOCKED`, `UNSUPPORTED_SUBMODULE` |
 | Trust and approval | `TRUST_REQUIRED`, `TRUST_CHANGED`, `STALE_SELECTION`, `STALE_REVIEW`, `APPROVAL_EXPIRED`, `UNSUPPORTED_HUNK_PROFILE` |
 | Data and display | `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `OBJECT_MISSING`, `UNSUPPORTED_COMPARISON`, `DISPLAY_MAPPING_FAILED`, `GRAPH_LAYOUT_LIMITED`, `WORKTREE_CHANGING` |
 | Execution | `IDENTITY_REQUIRED`, `HOOK_FAILED`, `SIGNING_FAILED`, `GIT_FAILED`, `PROCESS_OWNERSHIP_FAILED`, `DEADLINE`, `CANCELED`, `COMMIT_ENCODING_UNSUPPORTED` |
@@ -958,6 +1048,7 @@ Map these cases to codes:
 - `UNSUPPORTED_SUBMODULE` reasons: `unsaved-commits`, `update-mode`, `clone-interrupted`, `folder-not-empty`, `no-url`, `path`, `remote-name`, `gitdir-config`, or `limit`. The code carries the submodule path and one reason. §12 "Refusals" gives each text and remedy. A refusal during the run gives no code. Its row ends `refused` with its reason, which can also be `programs` or `changed-after-review` (§12 "Refusals during the run").
 - A submodule preflight gives `STALE_REVIEW` when it detects a change (§12 "Update protocol"). The change can be in the plan, a submodule HEAD, a `.git` entry, a folder state, or the program list. So does the re-check after an approved `confirmRun`. That re-check consumed the token, so the operation ends `failed` with the code (§12 "Update protocol" step 3).
 - An `updateSubmodules` process deadline gives `DEADLINE` with reason `inactivity` or `ceiling`. Other `DEADLINE` results carry no reason.
+- Every nonzero exit of the first discovery call gives `REPOSITORY_UNAVAILABLE` (§6 "Registration bootstrap"). The result names the selected folder as `path` and carries the remedy text "Run `git status` in this folder" without a command. It also carries `outputTail` ("Commit failure output" below). Git's ownership refusal and a folder outside every repository give this code too.
 - A registration beyond 8 workspaces registered at one time gives `WORKSPACE_LIMIT`. The result names the limit. Only linked worktrees of one common directory can reach it (§6 "Registration reuse and release").
 - A registration that would release a workspace with an unfinished mutation gives `BUSY`.
 - A mutation whose `started` frame finds the cross-instance mutex held gives `BUSY` with the §6 "Cross-instance exclusion" remedy.
@@ -975,6 +1066,7 @@ Map these cases to codes:
 - Only Git and the hooks that the user configured or approved write this output, as in a terminal run. Redaction removes URL user information but cannot detect every secret form (research R5).
 - A failed `updateSubmodules` process carries its own `outputTail` by these rules, with one change for progress (§12 "Output tail").
 - A failed `applyFile` `stage` Git step carries an `outputTail` from the stderr of its `update-index` process, by these rules.
+- The discovery `REPOSITORY_UNAVAILABLE` of the first discovery call carries an `outputTail` from the stderr of that call. It follows these rules with the §12 "Output tail" change.
 
 **Other locks.** Return `LOCKED` only when the app's own exclusive `index.lock` creation fails. A lingering process can hold another lock, such as a ref lock or `HEAD.lock`. Git then fails after handoff, and the commit ends `GIT_FAILED`, or `failed-with-effects` when reconciliation observes hook effects. The outcome names each observed lock (§8 "Observed locks") with its path. Its remedy text is: "Git could not take a lock. Another Git process, or a process that Git or a hook started, can hold it. Use Refresh after that process ends."
 
@@ -1048,7 +1140,7 @@ Do not classify repository state by parsing localized human status output. Use b
 - Verify the folder check before the first step of each `reuse` row. A file added after the preflight gives `folder-not-empty`, and the file keeps its bytes. The check reads of a `reuse` row use `--git-dir` and `--work-tree`.
 - Verify that Cancel after a connect step gives `failed-with-effects` with the `connected` flag. Verify that a failed first fetch whose row reaches its target gives `succeeded`.
 - Verify that a silent update process with a changing I/O sum passes the inactivity limit. An idle one reaches it.
-- Verify that the `DUBIOUS_OWNERSHIP` remedy stays literal in PowerShell for a folder with `$(…)` and for each quote character.
+- Verify that a plain folder, a dubious-ownership folder with `$(…)` or a quote character in its name, and a broken gitfile each give `REPOSITORY_UNAVAILABLE`. Each refusal names the selected folder, carries Git's message in `outputTail`, and offers no command. Other stderr bytes keep the same code.
 - Verify that a WSL identity holds the UUID-derived file-system ID and the inode, not the device number. Verify that a type other than `ef53` gives `no-fs-uuid`.
 - Verify that a hook whose native child reads an invisible console ends at the deadline (§6 "Console and input"). Every descendant ends too.
 - Verify the stall notice for a commit hook and for a submodule step that block without I/O. The notice appears 15 to 17 seconds after the last activity, with Cancel and the §6 command. Cancel ends the Job, and no log holds output. Activity hides the notice.
@@ -1172,8 +1264,9 @@ A Windows Job holds `wsl.exe`, not the Linux processes. A Linux process that det
 - Reason: the device number can change. WSL2 attaches each distro disk as a SCSI disk, and `lsblk` listed `sda` to `sde`. The attach order probably selects the device; T252 checks this. The reference distro's root reported `stat %d` 2096, which is device 8:48 (`/dev/sdd`). A UUID stays with the file system. Registration reuse, the mutation exclusion, recovery markers, lingering Job tags, and trust records use this identity. This applies where §6 and §7 name `FileIdInfo`.
 - ID source (research R13 P7): ext4 derives `f_fsid` from its superblock UUID (Linux `fs/ext4/super.c`, `uuid_to_fsid`). The reference root reported ID `fedc9aa3bd65bc57`, which equals that value for its `findmnt` UUID. `statfs` reads the mounted superblock and needs no udev data. `findmnt` took the UUID from udev data, because the user cannot read the disk device. The udev trigger finished 0.7 seconds after user space started, so an earlier UUID read could be empty. XFS derives its ID from the device number (Linux `fs/xfs/xfs_super.c`). Two tmpfs mounts gave different IDs. So only type `ef53` counts.
 - An entry path with a character that Windows names cannot hold gets reason `path` (data-model §5). The service reads each working file through its UNC path and cannot map such a name.
-- The service reads and writes repository files through the UNC path. These are raw index bytes, working-file and program-file digests, the stat tuple, the index lock, the candidate copy, and publication. In P5, a second exclusive create of `index.lock` failed with error 80. A replace over `index` succeeded, and Linux Git read the result. Bun `fs.stat` returned the size and the time. The atomicity of the replace over the WSL file share is unverified (T213).
+- The service reads and writes repository files through the UNC path. These are raw index bytes, working-file digests, the stat tuple, the index lock, the candidate copy, and publication. In P5, a second exclusive create of `index.lock` failed with error 80. A replace over `index` succeeded, and Linux Git read the result. Bun `fs.stat` returned the size and the time. The atomicity of the replace over the WSL file share is unverified (T213).
 - The candidate lies in the Linux Git directory beside the index. Git gets it as a Linux path through the index file argument of the wrapper.
+- Ownership gap. Linux Git refuses a repository that another user owns. It compares `st_uid` with the effective user ID, and for root with `SUDO_UID` (Git `git-compat-util.h` `is_path_owned_by_current_uid`). Its refusal holds no machine-readable reason. So a WSL repository gets the §6 merged refusal: `REPOSITORY_UNAVAILABLE` with the output tail. The app runs no ownership probe in the distro.
 
 ### Change polling
 
@@ -1186,7 +1279,7 @@ A Windows Job holds `wsl.exe`, not the Linux processes. A Linux process that det
 ### Trust and environment
 
 - Repository-controlled programs run as the Linux user of the distro. Through interop, they can start Windows programs as the Windows user. The §7 trust rules apply unchanged.
-- The trust listing uses the distro Git. Program-file digests read each file through its UNC path. A bare-name program uses the Linux `PATH` of the Git probe. The lookup tries only `<entry>/<name>`, because Linux Git adds no `.exe`. The Windows directories in that `PATH` lie outside the repository, so they enter the fingerprint as locations only. The service may not read the Linux execute bit through the UNC path. So in a WSL repository, any existing hooks-folder entry counts as a hook, as on Windows. The lookup tries only `<event>`, because Linux Git adds no `.exe`. This rule can only add approval prompts.
+- The trust listing uses the distro Git. The service reads no program file through its UNC path (§6 "File facts"). T212 adds the WSL form of `fileFacts`. Until then, the shell refuses a `fileFacts` request for a WSL repository with `INVALID_REQUEST`. A bare-name program uses the Linux `PATH` of the Git probe. The lookup tries only `<entry>/<name>`, because Linux Git adds no `.exe`. The Windows directories in that `PATH` lie outside the repository, so they enter the fingerprint as locations only. The service may not read the Linux execute bit through the UNC path. So in a WSL repository, any existing hooks-folder entry counts as a hook, as on Windows. The lookup tries only `<event>`, because Linux Git adds no `.exe`. This rule can only add approval prompts.
 - A WSL repository never shares a trust listing (§7 "Shared listing"). WSL polls use no stat tuple ("Change polling"), and no probe tested the tuple for distro configuration files.
 - Every `wsl.exe` process gets an empty `WSLENV` ("Process launch" above). WSL forwards only the variables that `WSLENV` names (P4 forwarded `GIT_TRACE` through it). So no Windows variable reaches Linux Git, and that includes the `GIT_*` variables that §7 preserves for Git for Windows. The distro's own configuration and environment apply.
 - The `--exec` environment in P4 held `HOME`, `PATH`, `LANG`, `USER`, `SHELL`, `TERM`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `WSL_DISTRO_NAME`, and `WSL_INTEROP`. It held no `GIT_*` variable. The `mutation-trace2` policy does not apply to WSL, so hook and signing failures stay `GIT_FAILED`.

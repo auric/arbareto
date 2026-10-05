@@ -191,8 +191,14 @@ mod tests {
         }
     }
 
-    /// The vector schemas that the shell never reads. The renderer and the service check them.
-    const NOT_READ: [&str; 2] = ["process-reply", "renderer-envelope"];
+    /// The vector schemas that the shell reads into no generated type. The renderer and the service check them.
+    /// The shell checks `process` frames by hand (contract §6 "Channel frames"). It reads only the `requestId` of a response.
+    const NOT_READ: [&str; 4] = [
+        "process-reply",
+        "process-request",
+        "renderer-envelope",
+        "response",
+    ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
     fn check(schema: &str, text: &str) -> Option<String> {
@@ -251,7 +257,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 51 } else { 48 },
+            if cfg!(windows) { 52 } else { 49 },
             "shell-read vectors"
         );
     }

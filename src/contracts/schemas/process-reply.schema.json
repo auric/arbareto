@@ -336,6 +336,186 @@
       ],
       "additionalProperties": false,
       "title": "ResolveGitReply"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "fileFacts"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "facts": {
+          "minItems": 1,
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "file"
+                  },
+                  "size": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "lastWrite": {
+                    "type": "string",
+                    "pattern": "^(?:0|-?[1-9][0-9]{0,18})$"
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "bound": {
+                    "type": "string",
+                    "enum": [
+                      "file-bytes",
+                      "total-bytes"
+                    ]
+                  },
+                  "executable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "size",
+                  "lastWrite"
+                ],
+                "additionalProperties": false,
+                "title": "FileFactFile"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "directory"
+                  },
+                  "executable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "title": "FileFactDirectory"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "link"
+                  },
+                  "component": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "tag": {
+                    "type": "string",
+                    "enum": [
+                      "symlink",
+                      "junction",
+                      "other"
+                    ]
+                  },
+                  "target": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "relative": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "component",
+                  "tag"
+                ],
+                "additionalProperties": false,
+                "title": "FileFactLink"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "absent"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "title": "FileFactAbsent"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "other"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "title": "FileFactOther"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "error"
+                  },
+                  "component": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "code": {
+                    "type": "string",
+                    "enum": [
+                      "access-denied",
+                      "sharing-violation",
+                      "io-error",
+                      "other-error"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "component",
+                  "code"
+                ],
+                "additionalProperties": false,
+                "title": "FileFactError"
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "facts"
+      ],
+      "additionalProperties": false,
+      "title": "FileFactsReply"
     }
   ],
   "title": "ProcessReply"

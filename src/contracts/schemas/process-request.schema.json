@@ -591,6 +591,86 @@
       "properties": {
         "type": {
           "type": "string",
+          "const": "fileFacts"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "digest": {
+          "type": "boolean"
+        },
+        "files": {
+          "minItems": 1,
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "root": {
+                "type": "string",
+                "enum": [
+                  "worktreeRoot",
+                  "gitDirectory",
+                  "commonDirectory"
+                ]
+              },
+              "path": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                }
+              }
+            },
+            "required": [
+              "root",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "contextKind": {
+          "type": "string",
+          "const": "registeredOperation"
+        },
+        "gitInstallationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "operationId",
+        "digest",
+        "files",
+        "contextKind",
+        "gitInstallationId",
+        "repositoryId"
+      ],
+      "additionalProperties": false,
+      "title": "FileFacts"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
           "const": "lingeringCount"
         },
         "callId": {

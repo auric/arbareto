@@ -40,7 +40,8 @@
           "enum": [
             "file-count",
             "file-bytes",
-            "total-bytes"
+            "total-bytes",
+            "link"
           ]
         },
         "callId": {

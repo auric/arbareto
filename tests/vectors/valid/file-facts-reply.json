@@ -1,0 +1,5 @@
+{
+  "schema": "process-reply",
+  "expected": "valid",
+  "text": "{\"type\":\"fileFacts\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"facts\":[{\"kind\":\"file\",\"size\":12,\"lastWrite\":\"133700000000000000\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},{\"kind\":\"directory\"},{\"kind\":\"link\",\"component\":1,\"tag\":\"symlink\",\"target\":\"../../scripts/h.sh\",\"relative\":true},{\"kind\":\"absent\"},{\"kind\":\"other\"},{\"kind\":\"error\",\"component\":1,\"code\":\"access-denied\"}]}"
+}

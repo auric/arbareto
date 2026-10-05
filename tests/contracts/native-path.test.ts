@@ -32,6 +32,14 @@ describe("the Windows rule set", () => {
   test("fold changes only the ASCII letters A to Z", () => {
     expect(rules.fold("C:\\Git\\\u212A")).toBe("c:\\git\\\u212A");
   });
+
+  test.each(["pre-commit", "a.b", "é"])("isComponent accepts %p", (name) => {
+    expect(rules.isComponent(name)).toBe(true);
+  });
+
+  test.each(["", ".", "..", "a\\b", "a/b", "x:y", "a<b", "nul", "COM1.txt", "x.", "x ", "a\u0001b"])("isComponent refuses %p", (name) => {
+    expect(rules.isComponent(name)).toBe(false);
+  });
 });
 
 describe("the POSIX rule set", () => {
@@ -52,6 +60,14 @@ describe("the POSIX rule set", () => {
 
   test("fold changes nothing", () => {
     expect(rules.fold("/Git/\u212A")).toBe("/Git/\u212A");
+  });
+
+  test.each(["x:y", "nul"])("isComponent accepts %p", (name) => {
+    expect(rules.isComponent(name)).toBe(true);
+  });
+
+  test.each(["", ".", "..", "a/b", "a\u0000b"])("isComponent refuses %p", (name) => {
+    expect(rules.isComponent(name)).toBe(false);
   });
 });
 

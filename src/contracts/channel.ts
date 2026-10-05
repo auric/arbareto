@@ -6,6 +6,8 @@ import {
   BOOTSTRAP_DEADLINE_CAP_MS,
   DAMAGED_MARKER_FILE_NAME_UNITS,
   DAMAGED_MARKERS_PER_HANDSHAKE,
+  FILE_FACT_COMPONENT_UNITS,
+  FILE_FACT_ENTRIES,
   IDENTITY_PATHS,
   INLINE_PROCESS_INPUT_BYTES,
   PROCESS_EXIT_CODE_MAX,
@@ -172,6 +174,15 @@ const run = {
 };
 const identity = { type: z.literal("identity"), ...call, operationId: Identifier, paths: z.array(ChannelPath).min(1).max(IDENTITY_PATHS) };
 
+// Contract §6 "File facts": one root and its name components. No entry holds an absolute path.
+const Component = z
+  .string()
+  .min(1)
+  .max(FILE_FACT_COMPONENT_UNITS)
+  .refine((name) => name.length <= FILE_FACT_COMPONENT_UNITS && name.isWellFormed() && NATIVE.isComponent(name));
+const FileFactEntry = z.strictObject({ root: z.enum(["worktreeRoot", "gitDirectory", "commonDirectory"]), path: z.array(Component).min(1) });
+const fileFacts = { type: z.literal("fileFacts"), ...call, operationId: Identifier, digest: z.boolean(), files: z.array(FileFactEntry).min(1).max(FILE_FACT_ENTRIES) };
+
 // Contract §6 "Channel frames": `executablePath` is the native Git file name in the folder that `--exec-path` printed.
 export const GitExecutable = ChannelPath.refine(NATIVE.isGitExecutable);
 
@@ -201,6 +212,7 @@ export const ProcessRequest = z.union([
   z.strictObject({ ...identity, ...GIT_PROBE }).meta({ title: "IdentityGitProbe" }),
   z.strictObject({ ...identity, ...DISCOVERY }).meta({ title: "IdentityDiscovery" }),
   z.strictObject({ ...identity, ...REGISTERED }).meta({ title: "IdentityRegistered" }),
+  z.strictObject({ ...fileFacts, ...REGISTERED }).meta({ title: "FileFacts" }),
   z.strictObject({ type: z.literal("lingeringCount"), ...call, operationId: Identifier, commonDirectory: ChannelPath }).meta({ title: "LingeringCount" }),
   z.strictObject({ type: z.literal("register"), ...call, ...RegisterGitCall.shape }).meta({ title: "RegisterGit" }),
   z.strictObject({ type: z.literal("register"), ...call, ...RegisterRepositoryCall.shape }).meta({ title: "RegisterRepository" }),
@@ -234,6 +246,48 @@ export const RegisterReply = z.union([
     .meta({ title: "RegisterAnother" }),
 ]);
 export const ResolveGitReply = z.strictObject({ type: z.literal("resolveGit"), ...call, bootstrapId: Identifier }).meta({ title: "ResolveGitReply" });
+
+// Contract §6 "File facts": `lastWrite` is a signed 64-bit integer in decimal.
+const STAMP = /^(?:0|-?[1-9][0-9]{0,18})$/;
+const Stamp = z
+  .string()
+  .regex(STAMP)
+  // zod runs a refinement also after a failed pattern check, and `BigInt` throws on other text.
+  .refine((value) => STAMP.test(value) && BigInt.asIntN(64, BigInt(value)) === BigInt(value));
+// Contract §6 "File facts": the codes of a component that exists but cannot be opened or read.
+export const FILE_FACT_ERRORS = ["access-denied", "sharing-violation", "io-error", "other-error"] as const;
+// `digest` and `bound` exclude each other. A link carries `target` and `relative` exactly when its tag is `symlink` or `junction`.
+export const FileFact = z.union([
+  z
+    .strictObject({
+      kind: z.literal("file"),
+      size: Count,
+      lastWrite: Stamp,
+      digest: Fingerprint.optional(),
+      bound: z.enum(["file-bytes", "total-bytes"]).optional(),
+      executable: z.boolean().optional(),
+    })
+    .refine((fact) => fact.digest === undefined || fact.bound === undefined)
+    .meta({ title: "FileFactFile" }),
+  z.strictObject({ kind: z.literal("directory"), executable: z.boolean().optional() }).meta({ title: "FileFactDirectory" }),
+  z
+    .strictObject({
+      kind: z.literal("link"),
+      component: Count,
+      tag: z.enum(["symlink", "junction", "other"]),
+      target: Text.optional(),
+      relative: z.boolean().optional(),
+    })
+    .refine((fact) => (fact.tag !== "other") === (fact.target !== undefined) && (fact.target !== undefined) === (fact.relative !== undefined))
+    .meta({ title: "FileFactLink" }),
+  z.strictObject({ kind: z.literal("absent") }).meta({ title: "FileFactAbsent" }),
+  z.strictObject({ kind: z.literal("other") }).meta({ title: "FileFactOther" }),
+  z.strictObject({ kind: z.literal("error"), component: Count, code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "FileFactError" }),
+]);
+export type FileFact = z.infer<typeof FileFact>;
+export const FileFactsReply = z
+  .strictObject({ type: z.literal("fileFacts"), ...call, facts: z.array(FileFact).min(1).max(FILE_FACT_ENTRIES) })
+  .meta({ title: "FileFactsReply" });
 export const ProcessReply = z.union([
   OutputReply,
   ActivityReply,
@@ -244,6 +298,7 @@ export const ProcessReply = z.union([
   LingeringCountReply,
   ...RegisterReply.options,
   ResolveGitReply,
+  FileFactsReply,
 ]);
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
@@ -277,7 +332,7 @@ export const MutationReply = z.union([...StartedReply.options, Refused]);
 // ---- `trust` frames (contract §7 "Trust approval store") ----
 
 // Contract §7 "Program file digests".
-export const TRUST_BOUNDS = ["file-count", "file-bytes", "total-bytes"] as const;
+export const TRUST_BOUNDS = ["file-count", "file-bytes", "total-bytes", "link"] as const;
 export type TrustBound = (typeof TRUST_BOUNDS)[number];
 
 const confirm = {

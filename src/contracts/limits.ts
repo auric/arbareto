@@ -40,6 +40,10 @@ export const TRUST_INPUT_BYTES = 4 * MIB;
 export const TRUST_DIGEST_FILES = 64;
 export const TRUST_DIGEST_FILE_BYTES = 1 * MIB;
 export const TRUST_DIGEST_TOTAL_BYTES = 8 * MIB;
+export const TRUST_LINK_HOPS = 8;
+export const FILE_FACT_ENTRIES = 64;
+// Contract §6 "File facts": the Windows file name component limit.
+export const FILE_FACT_COMPONENT_UNITS = 255;
 export const GIT_EXECUTABLE_DIGEST_BYTES = 256 * MIB;
 export const DIAGNOSTIC_RETAINED_BYTES_PER_STREAM = 64 * KIB;
 export const UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION = 4 * MIB;

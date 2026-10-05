@@ -106,6 +106,10 @@ An answer that starts with "Reviewer default" records an analysis decision, not 
 ### Session 2026-10-05
 
 - Q: When Git refuses to open a folder (exit 128), what should Arbareto show? → A: Merged refusal. Every nonzero exit of the first discovery call gives `REPOSITORY_UNAVAILABLE`. The refusal names the selected folder and the remedy "Run `git status` in this folder". It offers no command. Its output tail shows Git's error output, cleaned by the contract §9 rules. Git exits with 128 for every setup failure and gives no machine-readable reason. The project forbids heuristics. So the application drops the ownership refusal, the not-a-repository refusal, and the copyable `safe.directory` command. This replaces the 2026-10-01 answer about the dubious-ownership command.
+- Q: What happens when Git cannot name its system or global configuration files? → A: Arbareto refuses that Git. The two `git var` calls run in order and stop at the first failed or unreadable result. That result refuses the Git installation with the admission refusal. Arbareto never continues with an empty set of configuration files (contract §7 "Configuration file paths").
+- Q: What happens when too many reads wait? → A: Arbareto rejects the new read with `BUSY` when 8 reads already wait. The rejected read gets no operation ID. A canceled read that still waits leaves the queue at once and ends canceled (contract §5 "Pending reads").
+- Q: What does the status view show when a partial clone lacks an object? → A: No entries. The status read ends with `OBJECT_MISSING` and its remedy only. A history page keeps its bounded rows (contract §7 "Missing objects").
+- Q: Why can a repository ask for trust again after the first status read? → A: A protected program can change it. With the Git for Windows system configuration, `git-lfs filter-process` writes local configuration and installs hooks during the first status read. The next read ends `TRUST_CHANGED`, and the user approves again (contract §7 "Protected programs that change trust").
 
 ### Interface requirements supplied on 2026-09-28
 

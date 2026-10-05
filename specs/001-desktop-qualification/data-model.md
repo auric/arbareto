@@ -41,14 +41,14 @@ Native-owned bootstrap contexts permit bounded probing before permanent IDs exis
 
 | Field | Meaning and validation |
 | --- | --- |
-| `repositoryId` | Random session identifier issued after registration. Not a path or Git revision expression. A registration of the same worktree identity returns the existing identifier. A registration of another common directory releases the previous one (contract §6 "Registration reuse and release"). |
+| `repositoryId` | Random session identifier issued after registration. Not a path or Git revision expression. A registration of the same worktree identity and the same `gitInstallationId` returns the existing identifier. A `chooseGit` that issues a new installation releases every workspace bound to the previous one, with the full release effects. The client then registers again, and a new workspace binds the new installation. A registration of another common directory releases the previous one (contract §6 "Registration reuse and release"). |
 | `gitInstallationId` | Selected Git installation. |
 | `worktreeRoot` | Absolute working-tree path returned through Git discovery. |
 | `gitDirectory` | Git-resolved worktree administration directory. |
 | `commonDirectory` | Git-resolved shared administration directory. |
 | `indexPath` | Git-resolved index path for this worktree. |
 | `worktreeIdentity` | Resolved directory identity for this checkout and its administration directory. |
-| `worktreeKey` | SHA-256 of the worktree root identity, as 64 lowercase hex digits (contract §3 "Worktree key"). It stays equal across sessions and for both WSL prefixes. It names the stored draft and grants no access. |
+| `worktreeKey` | SHA-256 of the worktree root identity, as 64 lowercase hex digits (contract §3 "Worktree key"). On Windows, the hash input is the 8 big-endian volume serial bytes, then the 16 file ID bytes. It stays equal across sessions and for both WSL prefixes. It names the stored draft and grants no access. |
 | `commonIdentity` | Resolved common-directory identity. This identifies the application mutation exclusion group, in one instance and across instances (contract §6 "Cross-instance exclusion"). |
 | `head` | Symbolic target plus object ID, detached object ID, or a validated unborn branch. |
 | `objectFormat` | Git-reported object format. Validate object IDs against that format. |
@@ -86,7 +86,7 @@ WSL start and poll transitions:
 | `waiting` or `polling` | Window loses focus | `paused`. A running poll finishes. |
 | `paused` | Window gains focus | The focus-return full read runs, then `waiting`. |
 
-Refuse bare repositories and Git administration folders with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is "Open a worktree of it, or clone it". For a Git administration folder, the remedy is "Open the working folder that contains it". Every nonzero exit of the first discovery call gives `REPOSITORY_UNAVAILABLE` (contract §6 "Registration bootstrap"). The refusal names the selected folder and the remedy "Run `git status` in this folder", without a command. Its output tail shows Git's error output. This covers a folder outside every repository, dubious ownership, an inaccessible target, and a missing `.git` file target. A discovery probe past its deadline gives `DEADLINE` (contract §5). Other discovery failures also use `REPOSITORY_UNAVAILABLE` with that remedy. Opening a repository never creates a worktree or changes Git configuration.
+Refuse bare repositories and Git administration folders with `UNSUPPORTED_REPOSITORY`. For a bare repository, the remedy is "Open a worktree of it, or clone it". For a Git administration folder, the remedy is "Open the working folder that contains it". Every nonzero exit of the first discovery call gives `REPOSITORY_UNAVAILABLE` (contract §6 "Registration bootstrap"). The refusal names the selected folder and the remedy "Run `git status` in this folder", without a command. Its output tail shows Git's error output. This covers a folder outside every repository, dubious ownership, an inaccessible target, and a missing `.git` file target. A discovery probe past its deadline gives `DEADLINE` (contract §5). Other Git exit results of a discovery call also use `REPOSITORY_UNAVAILABLE` with that remedy. A process-layer runner refusal passes through unchanged (contract §6 "Registration bootstrap"). Opening a repository never creates a worktree or changes Git configuration.
 
 ### Stored draft
 
@@ -139,11 +139,11 @@ Custom filters remain outside hunk support and file staging even after trust app
 | `workingVersions` | Selected-path existence, type, mode, raw-byte digest, and normalized content identity. For a file approval in direction `stage`, the digest covers the whole working file within the contract §5 whole-file bound. |
 | `policyFingerprint` | Relevant attributes, trust approval, configuration, and Git installation identity. |
 | `operationState` | Freshly observed mutation blockers. |
-| `completeness` | `complete`, `limited`, or `failed`, with a specific reason. A missing object in a partial clone gives `limited` with `OBJECT_MISSING`; the app never fetches it (contract §7 "Missing objects"). A working file that changes during both `readWorkspace` read attempts gives `limited` with `WORKTREE_CHANGING` (contract §8 "Changing working file"). |
+| `completeness` | `complete`, `limited`, or `failed`, with a specific reason. A missing object in a partial clone gives `limited` with `OBJECT_MISSING`; the app never fetches it (contract §7 "Missing objects"). That status result is a refusal without entries. A history page keeps its bounded rows. A working file that changes during both `readWorkspace` read attempts gives `limited` with `WORKTREE_CHANGING` (contract §8 "Changing working file"). A shallow file that changes during both `readHistory` attempts gives the same result (contract §8 "Changing shallow file"). |
 | `entryCount` | Number of status entries in the snapshot, all pages included. `readWorkspace` returns it with the first page (contract §3). T284 adds this field. |
 | `observedAt` | Observation time. It is not a transaction timestamp. |
 
-**Status snapshot retention.** The service retains one status snapshot for each registered workspace. `readEntries` pages only from this snapshot (contract §3). A full read replaces it. A `check: "changes"` read with an equal tuple and no hint keeps it (contract §8 "Change check"). A workspace release releases it (contract §6 "Registration reuse and release"). A new service session releases all snapshots (contract §8 "Service restart"). `readEntries` checks the envelope `repositoryGeneration` first, and a stale value gives `REPOSITORY_CHANGED`. Then it checks `snapshotId`, and a released or replaced snapshot gives `UNKNOWN_TARGET`. Then it checks `cursor`, and a cursor that this snapshot did not issue gives `UNKNOWN_TARGET`. Each refusal is `rejected` (contract §9). Each page stays within the contract §5 "Status page" bound of 8 MiB.
+**Status snapshot retention.** The service retains one status snapshot for each registered workspace. `readEntries` pages only from this snapshot (contract §3). A full read replaces it. A `check: "changes"` read with an equal tuple and no hint keeps it (contract §8 "Change check"). A late read whose observation equals the one that a newer read recorded keeps it and returns its first page (contract §8 "Late read"). A workspace release releases it (contract §6 "Registration reuse and release"). A new service session releases all snapshots (contract §8 "Service restart"). `readEntries` checks the envelope `repositoryGeneration` first, and a stale value gives `REPOSITORY_CHANGED`. Then it checks `snapshotId`, and a released or replaced snapshot gives `UNKNOWN_TARGET`. Then it checks `cursor`, and a cursor that this snapshot did not issue gives `UNKNOWN_TARGET`. Each refusal is `rejected` (contract §9). Each page stays within the contract §5 "Status page" bound of 8 MiB.
 
 Git reads can span external changes. Admit a mutation token only after consistency checks complete.
 
@@ -248,15 +248,17 @@ Compare actual commit scope through read-only Git inspection against that retain
 
 | Current state | Event | Next state and required behavior |
 | --- | --- | --- |
-| `accepted` | Valid read | `running`. |
+| none | A read arrives while 8 reads wait for a slot | `rejected` with `BUSY` before admission. No `operationId` is issued (contract §5 "Pending reads"). |
+| `accepted` | Valid read | `running` when it takes its slot. The read deadline starts then (contract §5). |
+| `accepted` (read waiting for a slot) | Cancellation request | The read leaves the queue at once. `canceled`, with no re-read. |
 | `accepted` | Mutation exclusion unavailable | `rejected`; do not queue an old approval. |
 | `accepted` | Invalid approval, trust, or state | `rejected`; no process starts. |
 | `accepted` (mutation) | The shell replies to `started` with the marker ID | `running`. The approval, trust, and state checks passed, and the mutation exclusion is held. The shell flushed the marker file before its reply. No lock and no Git process exist before this step. The rechecks under the canonical index lock run in `running` (contract §4, §6 "Recovery markers"). |
 | `accepted` (mutation) | The shell replies to `started` with `busy` or a failure class | `rejected` with `BUSY` or `RECOVERY_MARKER_FAILED`. Release the mutation exclusion. No lock and no Git process start (contract §6, §9). |
 | `running` | Cancellation request | `cancel-requested`; signal only owned processes. |
-| `running` | Read completes | `succeeded`, `limited`, or `failed`; check generation before display. |
+| `running` | Read completes | `succeeded`, `limited`, or `failed`; check generation before display. Before `failed`, run the re-read; a refusal of the re-read replaces the result (contract §5 "Deadline outcomes"). |
 | `running` | Mutation finishes or fails | `reconciling`; keep further mutations blocked. |
-| `running` (read) | Read deadline expires | Close the operation Job, refresh relevant state, then `failed` with `DEADLINE`. |
+| `running` (read) | Read deadline expires | Close the operation Job, run the re-read, then `failed` with `DEADLINE`. The re-read is discovery call 1 with the 5-second reconciliation target. A refusal of the re-read replaces the result (contract §5 "Deadline outcomes"). |
 | `running` (Update submodules) | The submodule program confirmation is declined | `canceled`. No update process starts, and the recovery marker is resolved. |
 | `running` (Update submodules) | The re-check after an approved program confirmation finds a change | `failed` with `STALE_REVIEW` or `TRUST_CHANGED`. The review token stays consumed. No update process starts, no reconciliation runs, and the recovery marker is resolved (contract §12 "Update protocol" step 3). |
 | `running` (`commit` or Update submodules) | The running Git process shows no activity for 15 seconds | Stay `running`. Set `stalled`, and show the stall notice. The next activity clears it. No deadline changes (contract §6 "Activity and stall notice"). |
@@ -266,8 +268,8 @@ Compare actual commit scope through read-only Git inspection against that retain
 | `running` (Update submodules) | An update process passes its inactivity deadline or ceiling | Close the operation Job at once, with every descendant. Start no later update process. Then `reconciling`, with `DEADLINE` and reason `inactivity` or `ceiling` (contract §12). |
 | `running` (mutation) | A Git step, preflight read, or commit process deadline expires | Close the operation Job at once, with every descendant. Then `reconciling`, with `DEADLINE` as the recorded cause. Reconciliation classifies the outcome from observed state (contract §4, §5 "Deadline outcomes"). |
 | `cancel-requested` (mutation) | Processes stop or deadline expires | `reconciling`. |
-| `cancel-requested` (read) | Owned processes stop | Refresh relevant state, then `canceled`. |
-| `cancel-requested` (read) | The read deadline expires first | Close the operation Job, refresh relevant state, then `failed` with `DEADLINE`. |
+| `cancel-requested` (read) | Owned processes stop | Run the re-read, then `canceled`. A refusal of the re-read replaces the result. |
+| `cancel-requested` (read) | The read deadline expires first | Close the operation Job, run the re-read, then `failed` with `DEADLINE`. A refusal of the re-read replaces the result. |
 | `reconciling` | Intended effects confirmed | `succeeded`, including completion after a late cancellation request. |
 | `reconciling` | No effects confirmed | `canceled` or `failed`, according to the observed outcome. |
 | `reconciling` | Execution completed with differing observed effects | `completed-with-effects`; identify grounded results, preserve the draft, and require fresh review. For Update submodules, a `refused` row is such a difference, also when no row changed (contract §12 "Reconciliation and outcome"). |

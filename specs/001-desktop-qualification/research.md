@@ -609,13 +609,13 @@ Sources: [configured hooks](https://github.com/git-for-windows/git/blob/52ca1113
 - §6 "Registration bootstrap": exit statuses of `symbolic-ref -q HEAD` and `show-ref --exists <ref>` decide the HEAD state. `show-ref --exists` exits 0 for an existing ref, 2 for a missing ref, and 1 for a failed lookup. Git 2.43.0 added it (git-show-ref(1)).
 - §7 "Configuration file paths": two `git var` calls give the system and global candidate files. Git 2.42.0 added `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL` to `git var` (git-var(1)). Exit 1 without output comes from `cmd_var` in `builtin/var.c` when Git reads no file of that kind.
 
-These items stay open. They need new shell facts, and the main session designs them:
+These items needed new shell facts. The main session decided each one on 2026-10-05:
 
-- The digest read follows links. Bun has no open without link following on Windows.
-- Without link following, a symlinked hook would enter the fingerprint as `absent`. That rule needs a decision.
-- Contract §6 classifies `DUBIOUS_OWNERSHIP` and `NOT_A_REPOSITORY` by stderr prefix (R2 "Repository identity"). Contract §6 marks both prefixes as pending replacement by OS facts.
-- Contract §12 uses `rev-parse --verify -q HEAD`. It cannot tell an unborn branch from a failed lookup either. Settle it when §12 is implemented.
-- Contract §6 "File facts" records two limits of the shell walk. An SMB server can resolve a junction on its own side, where `OBJ_DONT_REPARSE` cannot see it. The walk also has no deadline and no cancel, as the identity request has none.
+- The digest read follows links. Bun has no open without link following on Windows. T309 replaces this reader with `fileFacts`, which follows a link at most 8 hops by the contract §7 rule.
+- Until T309, the Bun `lstat` reader cannot resolve links. Decision D2 is its interim rule, and it fails closed. A symbolic link gives `unchecked` with bound `link` and a session-only approval. A device or inode mismatch between `lstat` and the opened handle fails the listing.
+- Contract §6 classifies `DUBIOUS_OWNERSHIP` and `NOT_A_REPOSITORY` by stderr prefix (R2 "Repository identity"). T310 replaces both with the merged refusal.
+- Contract §12 used `rev-parse --verify -q HEAD` to find an unborn HEAD. Decision D29: a failed `rev-parse --verify` decides nothing. Only the `show-ref --exists` exit status decides unborn (2) or present (0).
+- Contract §6 "File facts" records two limits of the shell walk. An SMB server can resolve a junction on its own side, where `OBJ_DONT_REPARSE` cannot see it. The walk also has no deadline and no cancel, as the identity request has none. Decision D30: T312 owns both limits.
 
 Sources: [git-show-ref --exists](https://github.com/git/git/blob/v2.55.0/Documentation/git-show-ref.adoc), [git-symbolic-ref exit status](https://github.com/git/git/blob/v2.55.0/Documentation/git-symbolic-ref.adoc), [git-var paths](https://github.com/git/git/blob/v2.55.0/Documentation/git-var.adoc), [cmd_var](https://github.com/git/git/blob/v2.55.0/builtin/var.c).
 

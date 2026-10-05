@@ -50,6 +50,14 @@
 - Test failure, cancellation, external changes, keyboard access, and destructive-operation safeguards.
 - Verify native behavior and performance with packaged builds on each supported platform, not browser-only tests.
 
+## No heuristics
+
+- Decide only from authoritative facts. Never use heuristics.
+- Authoritative facts are: exact parses of machine-readable Git output (`-z`, porcelain v2, `--format`, `--show-scope`, `--show-origin`); Git exit codes that the Git documentation defines for that command; OS facts (file identity, stat type, process records); contract-defined values.
+- Never classify by English message text, substrings, file-name patterns, timing, retry counts, or "looks like" checks. `LC_ALL=C` does not make Git messages a contract.
+- When no authoritative signal exists, refuse with a typed error and report the contract gap.
+- Never guess. Never turn an unknown into a success.
+
 ## Tool boundaries
 
 - Reuse installed tools. Do not install duplicates or remove tools used by other projects.

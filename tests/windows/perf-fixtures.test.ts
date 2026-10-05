@@ -195,6 +195,29 @@ describeGit("performance fixtures", (git) => {
     }
   }, 120_000);
 
+  test("reuse refuses a tampered cached fixture with an added ref or a changed commit-graph presence", () => {
+    const spec: PerfSpec = { name: `tamper-refs-${process.pid}`, files: 300, commits: 120, refs: 8, largeText: false };
+    const first = ensurePerfFixture(git, spec);
+    try {
+      const digest = first.manifest.facts.semanticDigest;
+      expect(first.reused).toBe(false);
+
+      ownedGit(git, PERF_CACHE_ROOT, first.repo, ["update-ref", "refs/heads/extra", "HEAD"]);
+      const afterRef = ensurePerfFixture(git, spec);
+      expect([afterRef.reused, afterRef.manifest.facts.semanticDigest]).toEqual([false, digest]);
+
+      const graph = ownedGit(git, PERF_CACHE_ROOT, afterRef.repo, ["rev-parse", "--path-format=absolute", "--git-path", "objects/info/commit-graph"]).toString().trim();
+      expect(existsSync(graph)).toBe(true);
+      removeTree(graph);
+      const afterGraph = ensurePerfFixture(git, spec);
+      expect([afterGraph.reused, afterGraph.manifest.facts.semanticDigest]).toEqual([false, digest]);
+
+      expect(ensurePerfFixture(git, spec).reused).toBe(true);
+    } finally {
+      removeTree(first.folder);
+    }
+  }, 120_000);
+
   for (const commitGraph of [true, false]) {
     test(`L ${variant(commitGraph)} builds once per seed and reuses its cache`, () => {
       let started = performance.now();

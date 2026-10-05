@@ -57,6 +57,9 @@ export interface PerfFacts {
 // The reuse check. Git compares the stat data of clean files, so only the paths that status lists get a content hash.
 export interface PerfReuseState {
   tip: string;
+  // SHA-256 of `for-each-ref --format=%(objectname) %(refname)`, which sorts by ref name.
+  refs: string;
+  commitGraph: boolean;
   // SHA-256 of `ls-files -s -z` and of `status --porcelain=v2 -z --untracked-files=all`.
   index: string;
   status: string;
@@ -219,9 +222,9 @@ export function buildPerfRepo(git: string, root: string, repo: string, spec: Per
   };
 }
 
-function reuseProbe(git: string, repo: string): { tip: string; index: string; status: Buffer } {
+function reuseProbe(git: string, repo: string): { tip: string; refs: string; index: string; status: Buffer } {
   const g = (args: string[]) => ownedGit(git, PERF_CACHE_ROOT, repo, ["--no-optional-locks", ...args]);
-  return { tip: g(["rev-parse", "HEAD"]).toString().trim(), index: sha256(g(["ls-files", "-s", "-z"])), status: g(["status", "--porcelain=v2", "-z", "--untracked-files=all"]) };
+  return { tip: g(["rev-parse", "HEAD"]).toString().trim(), refs: sha256(g(["for-each-ref", "--format=%(objectname) %(refname)"])), index: sha256(g(["ls-files", "-s", "-z"])), status: g(["status", "--porcelain=v2", "-z", "--untracked-files=all"]) };
 }
 
 // The fixtures have only ordinary changed entries ("1") and untracked entries ("?") (git-status(1) "Porcelain Format Version 2").
@@ -234,14 +237,14 @@ export function perfReuseState(git: string, repo: string): PerfReuseState {
     if (path === null) throw new Error(`unexpected status record in ${repo}: ${record}`);
     files[path] = sha256(readFileSync(join(repo, path)));
   }
-  return { tip: probe.tip, index: probe.index, status: sha256(probe.status), files };
+  return { tip: probe.tip, refs: probe.refs, commitGraph: hasCommitGraph(git, repo), index: probe.index, status: sha256(probe.status), files };
 }
 
 // An equal status hash gives the same listed paths, so only the recorded paths need a content hash.
 function reuseMatches(git: string, repo: string, expected: PerfReuseState | undefined): boolean {
   if (expected === undefined || !existsSync(repo)) return false;
   const probe = reuseProbe(git, repo);
-  if (probe.tip !== expected.tip || probe.index !== expected.index || sha256(probe.status) !== expected.status) return false;
+  if (probe.tip !== expected.tip || probe.refs !== expected.refs || hasCommitGraph(git, repo) !== expected.commitGraph || probe.index !== expected.index || sha256(probe.status) !== expected.status) return false;
   return Object.entries(expected.files).every(([path, digest]) => existsSync(join(repo, path)) && sha256(readFileSync(join(repo, path))) === digest);
 }
 

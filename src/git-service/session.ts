@@ -18,6 +18,7 @@ import { createRegistrations, type RegistrationOutcome } from "./registration";
 import { createWorkspaceReader, type ReadOutcome } from "./status";
 import { isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
+import { watchWorkspace } from "./watch";
 
 export type { Handshake } from "../contracts/channel";
 
@@ -40,6 +41,8 @@ export interface SessionOptions {
   environment?: ServiceEnvironment;
   // Contract §5 "Ordinary read deadline". Tests set a shorter value.
   readDeadlineMs?: number;
+  // `false` starts no watcher, so only the contract §8 stat tuple starts a full read. Tests use it.
+  watchHints?: boolean;
 }
 
 // The outcome forms of the reads that `read-scheduler.ts` runs.
@@ -48,7 +51,7 @@ type ReadResult =
   | { result: "canceled" }
   | { result: "deadline" };
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -100,11 +103,18 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   });
   const reader = createWorkspaceReader({ runner, trust });
   const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
+  // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
+  const watchers = new Map<string, () => void>();
   // No mutation handler exists yet, so no mutation can be unfinished.
   const registrations = createRegistrations({
     runner,
     unfinishedMutation: () => false,
+    onRegister: (w) => {
+      if (watchHints) watchers.set(w.repositoryId, watchWorkspace([w.worktreeRoot, w.gitDirectory, w.commonDirectory], (lost) => reader.hint(w.repositoryId, lost)));
+    },
     onRelease: (workspace) => {
+      watchers.get(workspace.repositoryId)?.();
+      watchers.delete(workspace.repositoryId);
       scheduler.release(workspace.repositoryId);
       reader.release(workspace.repositoryId);
       trust.release(workspace);
@@ -244,6 +254,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
           installation,
           workspace,
           refresh: request.payload.refresh,
+          check: request.payload.check,
           ...(request.repositoryGeneration === undefined ? {} : { requestGeneration: request.repositoryGeneration }),
         }),
       (t) => reader.recheck({ ...t, workspace }),
@@ -416,5 +427,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     registry,
     log,
+    // Stops every watcher. The service process needs no call, because its exit ends them.
+    close(): void {
+      for (const stop of watchers.values()) stop();
+      watchers.clear();
+    },
   };
 }

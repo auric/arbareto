@@ -88,7 +88,11 @@ for (const spec of [PERF_M, PERF_L]) {
       () =>
         withService(`t192-${spec.name}-unchanged`, async (service) => {
           const { repositoryId } = await service.register(copyOf(spec).repo);
-          const full = await readSucceeded(service, repositoryId, FULL);
+          const first = await readSucceeded(service, repositoryId, FULL);
+          // T088 decision E3: the first read after registration keeps no stat tuple, so the first poll is one full read with the same generation.
+          const from = service.runner.calls.length;
+          const full = await readSucceeded(service, repositoryId, CHANGES);
+          expect({ status: service.runner.calls.slice(from).filter((c) => isStatus(c.arguments)).length, generation: full.generation }).toEqual({ status: 1, generation: first.generation });
           for (let i = 0; i < 3; i++) {
             const before = service.runner.calls.length;
             const poll = await readSucceeded(service, repositoryId, CHANGES);
@@ -111,7 +115,9 @@ for (const spec of [PERF_M, PERF_L]) {
         withService(`t192-${spec.name}-index`, async (service) => {
           const { repo, facts } = copyOf(spec);
           const { repositoryId } = await service.register(repo);
-          const full = await readSucceeded(service, repositoryId, FULL);
+          await readSucceeded(service, repositoryId, FULL);
+          // T088 decision E3: the first poll after registration is one full read. It leaves the tuple that the next poll compares.
+          const full = await readSucceeded(service, repositoryId, CHANGES);
           const path = facts.unstaged.find((p) => p !== facts.c8.path && p !== facts.mixed.path)!;
           ownedGit(gitPath(), FIXTURE_ROOT, repo, ["--literal-pathspecs", "add", "--", path]);
           const before = service.runner.calls.length;
@@ -254,6 +260,8 @@ for (const spec of [PERF_M, PERF_L]) {
             add("readHistory with its own trust listing", own);
             await withService(`t192-${key}-shared-${run}`, async (service) => {
               const { repositoryId } = await service.register(repo);
+              // T088 decision E6: the first full read after registration has no tuple before its listing, so it shares no listing. This warm-up read is not a sample.
+              await readFacts(service, () => service.readWorkspace(repositoryId, FULL));
               const full = await readFacts(service, () => service.readWorkspace(repositoryId, FULL));
               expect(countOf(full.calls, statusArgs())).toBe(1);
               add('readWorkspace check "full"', full);

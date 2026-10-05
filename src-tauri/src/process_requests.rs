@@ -19,6 +19,7 @@ use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject}
 
 use crate::bootstrap::{ContextKind, Contexts, Identity, read_identity};
 use crate::dialogs::Registered;
+use crate::file_facts;
 use crate::git_env::child_environment;
 use crate::jobs::Supervisor;
 use crate::settings::is_hex;
@@ -98,6 +99,7 @@ struct Git {
 struct Repository {
     worktree_root: PathBuf,
     git_directory: PathBuf,
+    common_directory: PathBuf,
 }
 
 /// Streamed input of one call (contract §6 "Streamed input").
@@ -314,6 +316,7 @@ impl ProcessRequests {
             Some("input") => self.input(request),
             Some("cancel") => self.cancel(request),
             Some("identity") => self.identity(request, call()?),
+            Some("fileFacts") => self.file_facts(request, call()?),
             Some("lingeringCount") => self.lingering_count(request, call()?),
             Some("register") => self.register(request, call()?),
             Some("resolveGit") => self.resolve_git(request, call()?),
@@ -656,6 +659,36 @@ impl ProcessRequests {
         Ok(())
     }
 
+    fn file_facts(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let parsed = file_facts::parse(request)?;
+        let roots = {
+            let mut state = self.state();
+            check_active(&state, parsed.operation_id)?;
+            self.target(&mut state, request, Kind::Registered, parsed.operation_id)?;
+            let id = request["repositoryId"].as_str().ok_or(INVALID)?;
+            let repository = state.repositories.get(id).ok_or(UNKNOWN)?;
+            [
+                repository.worktree_root.clone(),
+                repository.git_directory.clone(),
+                repository.common_directory.clone(),
+            ]
+        };
+        // Contract §11 "Trust and environment": refuse a WSL repository until T212 adds the WSL form.
+        if roots.iter().any(|root| file_facts::is_wsl_path(root)) {
+            return Err(INVALID);
+        }
+        let facts = file_facts::walk(
+            [&roots[0], &roots[1], &roots[2]],
+            parsed.digest,
+            &parsed.files,
+        );
+        self.send(
+            self.current(),
+            json!({ "type": "fileFacts", "callId": call_id, "facts": facts }),
+        );
+        Ok(())
+    }
+
     fn lingering_count(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
         keys(
             request,
@@ -771,7 +804,7 @@ impl ProcessRequests {
             let repository_id = identifier(&request["repositoryId"])?;
             let worktree_root = path(&request["worktreeRoot"])?;
             let git_directory = path(&request["gitDirectory"])?;
-            path(&request["commonDirectory"])?;
+            let common_directory = path(&request["commonDirectory"])?;
             if state.issued.contains(repository_id) {
                 return Err(INVALID);
             }
@@ -792,6 +825,7 @@ impl ProcessRequests {
                 Repository {
                     worktree_root,
                     git_directory,
+                    common_directory,
                 },
             );
             "approved"
@@ -1549,7 +1583,7 @@ mod strict_tests {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::io::Read;
@@ -3449,7 +3483,7 @@ mod tests {
 
     // ---- Identity requests ----
 
-    fn junction(link: &Path, target: &Path) -> bool {
+    pub(crate) fn junction(link: &Path, target: &Path) -> bool {
         Command::new("cmd")
             .args(["/d", "/c", "mklink", "/J"])
             .arg(link)
@@ -3573,6 +3607,213 @@ mod tests {
                     "{name}"
                 );
             }
+        }
+    }
+
+    // ---- File facts (contract §6 "File facts") ----
+
+    fn file_facts_body(call: &str, workspace: &Workspace, files: Value) -> Value {
+        json!({
+            "type": "fileFacts", "callId": call, "operationId": uuid(), "contextKind": "registeredOperation",
+            "gitInstallationId": workspace.git, "repositoryId": workspace.repository, "digest": true, "files": files,
+        })
+    }
+
+    /// Registers the test binary as Git and a repository with the three roots as given. Registration opens no root.
+    fn register_roots(harness: &Harness, roots: [&str; 3]) -> Workspace {
+        let git = harness.register_git(&test_exe());
+        let worktree = harness.fixture.path(&uuid());
+        std::fs::create_dir(&worktree).expect("discovery folder");
+        let bootstrap_id = harness
+            .contexts
+            .create(ContextKind::RepositoryDiscovery, &worktree, Instant::now())
+            .expect("discovery context");
+        let repository = uuid();
+        harness.register(json!({
+            "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository,
+            "worktreeRoot": roots[0], "gitDirectory": roots[1], "commonDirectory": roots[2],
+        }));
+        Workspace {
+            git,
+            repository,
+            worktree,
+        }
+    }
+
+    #[test]
+    fn file_fact_requests_that_break_a_field_rule_get_refused_invalid_request() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let entry = |path: Value| json!({ "root": "gitDirectory", "path": path });
+        let files = |path: Value| set("files", json!([entry(path)]));
+        let cases: Vec<(&str, Edit)> = vec![
+            ("component ..", files(json!(["hooks", ".."]))),
+            (r"component a\b", files(json!([r"a\b"]))),
+            ("component x:y", files(json!(["x:y"]))),
+            ("component nul", files(json!(["nul"]))),
+            ("component x.", files(json!(["x."]))),
+            (
+                "component of 256 UTF-16 units",
+                files(json!(["\u{1f600}".repeat(128)])),
+            ),
+            ("no component", files(json!([]))),
+            ("a component that is no string", files(json!([1]))),
+            (
+                "root home",
+                set("files", json!([{ "root": "home", "path": ["h.sh"] }])),
+            ),
+            (
+                "an entry with another key",
+                set(
+                    "files",
+                    json!([{ "root": "gitDirectory", "path": ["hooks"], "x": 1 }]),
+                ),
+            ),
+            ("no entry", set("files", json!([]))),
+            (
+                "65 entries",
+                set("files", json!(vec![entry(json!(["hooks"])); 65])),
+            ),
+            ("no digest", remove("digest")),
+            ("digest that is no boolean", set("digest", json!(1))),
+            (
+                "a discovery context",
+                both(
+                    set("contextKind", json!("repositoryDiscovery")),
+                    set("bootstrapId", json!(uuid())),
+                ),
+            ),
+            ("an unknown field", set("extra", json!(1))),
+            (
+                "an operation ID that is no identifier",
+                set("operationId", json!("x")),
+            ),
+        ];
+        expect_refusals(
+            &harness,
+            |call| file_facts_body(call, &workspace, json!([entry(json!(["hooks"]))])),
+            cases,
+            "INVALID_REQUEST",
+        );
+    }
+
+    #[test]
+    fn an_unbound_or_released_repository_id_gets_unknown_target() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let files = json!([{ "root": "gitDirectory", "path": ["hooks"] }]);
+        let bound = uuid();
+        harness.send(file_facts_body(&bound, &workspace, files.clone()));
+        assert_eq!(
+            harness.reply(&bound),
+            json!({ "type": "fileFacts", "callId": bound, "facts": [{ "kind": "absent" }] })
+        );
+        let unbound = Workspace {
+            git: workspace.git.clone(),
+            repository: uuid(),
+            worktree: workspace.worktree.clone(),
+        };
+        let call = uuid();
+        harness.send(file_facts_body(&call, &unbound, files.clone()));
+        assert_eq!(harness.reply(&call), refused(&call, "UNKNOWN_TARGET"));
+        harness.send(json!({ "type": "release", "repositoryId": workspace.repository }));
+        let released = uuid();
+        harness.send(file_facts_body(&released, &workspace, files));
+        assert_eq!(
+            harness.reply(&released),
+            refused(&released, "UNKNOWN_TARGET")
+        );
+    }
+
+    #[test]
+    fn a_file_facts_reply_holds_one_fact_per_entry_in_order_and_never_follows_a_junction() {
+        use std::os::windows::fs::MetadataExt;
+
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let hooks = workspace.worktree.join(".git").join("hooks");
+        std::fs::create_dir(&hooks).expect("hooks");
+        std::fs::write(hooks.join("pre-commit"), "abc").expect("hook");
+        let outside = harness.fixture.path("outside");
+        std::fs::create_dir(&outside).expect("outside");
+        std::fs::write(outside.join("pre-commit"), "outside").expect("outside hook");
+        if !junction(&hooks.join("linked"), &outside) {
+            println!("SKIP fileFacts junction: missing capability ntfs-junction (unverified)");
+            return;
+        }
+        let call = uuid();
+        harness.send(file_facts_body(
+            &call,
+            &workspace,
+            json!([
+                { "root": "gitDirectory", "path": ["hooks", "linked", "pre-commit"] },
+                { "root": "worktreeRoot", "path": [".git", "hooks", "pre-commit"] },
+            ]),
+        ));
+        let metadata = std::fs::metadata(hooks.join("pre-commit")).expect("metadata");
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "fileFacts", "callId": call, "facts": [
+                { "kind": "link", "component": 2, "tag": "junction", "target": format!(r"\??\{}", outside.display()), "relative": false },
+                { "kind": "file", "size": 3, "lastWrite": metadata.last_write_time().to_string(), "digest": crate::file_facts::tests::ABC },
+            ] })
+        );
+    }
+
+    #[test]
+    fn common_directory_reads_below_the_main_git_directory_after_a_linked_worktree_registration() {
+        let harness = Harness::child();
+        let common = harness.fixture.path("main").join(".git");
+        let git_directory = common.join("worktrees").join("linked");
+        let worktree = harness.fixture.path("linked");
+        std::fs::create_dir_all(common.join("hooks")).expect("hooks");
+        std::fs::create_dir_all(&git_directory).expect("worktree administration folder");
+        std::fs::create_dir(&worktree).expect("linked worktree");
+        std::fs::write(common.join("hooks").join("pre-commit"), "abc").expect("hook");
+        std::fs::write(git_directory.join("commondir"), "../..\n").expect("commondir");
+        let text = |path: &Path| path.to_str().expect("UTF-8 fixture path").to_string();
+        let workspace = register_roots(
+            &harness,
+            [&text(&worktree), &text(&git_directory), &text(&common)],
+        );
+        let call = uuid();
+        harness.send(file_facts_body(
+            &call,
+            &workspace,
+            json!([
+                { "root": "commonDirectory", "path": ["hooks", "pre-commit"] },
+                { "root": "gitDirectory", "path": ["hooks", "pre-commit"] },
+                { "root": "gitDirectory", "path": ["commondir"] },
+                { "root": "worktreeRoot", "path": ["hooks"] },
+            ]),
+        ));
+        let facts = harness.reply(&call)["facts"].clone();
+        assert_eq!(facts[0]["digest"], crate::file_facts::tests::ABC, "{facts}");
+        assert_eq!(facts[1], json!({ "kind": "absent" }), "{facts}");
+        assert_eq!(facts[2]["size"], 6, "{facts}");
+        assert_eq!(facts[3], json!({ "kind": "absent" }), "{facts}");
+    }
+
+    #[test]
+    fn a_wsl_repository_gets_refused_invalid_request_until_t212() {
+        let harness = Harness::child();
+        for root in [
+            r"\\wsl$\Ubuntu\home\u\repo",
+            r"\\WSL.localhost\Ubuntu\home\u\repo",
+        ] {
+            let git_directory = format!(r"{root}\.git");
+            let workspace = register_roots(&harness, [root, &git_directory, &git_directory]);
+            let call = uuid();
+            harness.send(file_facts_body(
+                &call,
+                &workspace,
+                json!([{ "root": "gitDirectory", "path": ["hooks", "pre-commit"] }]),
+            ));
+            assert_eq!(
+                harness.reply(&call),
+                refused(&call, "INVALID_REQUEST"),
+                "{root}"
+            );
         }
     }
 

@@ -615,6 +615,7 @@ These items stay open. They need new shell facts, and the main session designs t
 - Without link following, a symlinked hook would enter the fingerprint as `absent`. That rule needs a decision.
 - Contract §6 classifies `DUBIOUS_OWNERSHIP` and `NOT_A_REPOSITORY` by stderr prefix (R2 "Repository identity"). Contract §6 marks both prefixes as pending replacement by OS facts.
 - Contract §12 uses `rev-parse --verify -q HEAD`. It cannot tell an unborn branch from a failed lookup either. Settle it when §12 is implemented.
+- Contract §6 "File facts" records two limits of the shell walk. An SMB server can resolve a junction on its own side, where `OBJ_DONT_REPARSE` cannot see it. The walk also has no deadline and no cancel, as the identity request has none.
 
 Sources: [git-show-ref --exists](https://github.com/git/git/blob/v2.55.0/Documentation/git-show-ref.adoc), [git-symbolic-ref exit status](https://github.com/git/git/blob/v2.55.0/Documentation/git-symbolic-ref.adoc), [git-var paths](https://github.com/git/git/blob/v2.55.0/Documentation/git-var.adoc), [cmd_var](https://github.com/git/git/blob/v2.55.0/builtin/var.c).
 

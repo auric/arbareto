@@ -192,13 +192,8 @@ mod tests {
     }
 
     /// The vector schemas that the shell reads into no generated type. The renderer and the service check them.
-    /// The shell checks `process` frames by hand (contract §6 "Channel frames"). It reads only the `requestId` of a response.
-    const NOT_READ: [&str; 4] = [
-        "process-reply",
-        "process-request",
-        "renderer-envelope",
-        "response",
-    ];
+    /// The shell writes process replies and never reads them. It reads only the `requestId` of a response.
+    const NOT_READ: [&str; 3] = ["process-reply", "renderer-envelope", "response"];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
     fn check(schema: &str, text: &str) -> Option<String> {
@@ -216,6 +211,14 @@ mod tests {
             "trust-record" => strict(text).and_then(|value| valid(trust_record(&value))),
             "handshake" => strict(text).and_then(|value| handshake(&value).map(drop)),
             "progress" => strict(text).and_then(|value| valid(progress(&value))),
+            // The shell checks `process` frames by hand (contract §6 "Channel frames"). Only `fileFacts` vectors exist.
+            "process-request" => match strict(text) {
+                Ok(value) if value["type"] == "fileFacts" => value
+                    .as_object()
+                    .ok_or(INVALID)
+                    .and_then(|request| crate::file_facts::parse(request).map(drop)),
+                _ => return None,
+            },
             other if NOT_READ.contains(&other) => return None,
             other => panic!("unknown vector schema {other}"),
         }))
@@ -257,7 +260,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 52 } else { 49 },
+            if cfg!(windows) { 58 } else { 54 },
             "shell-read vectors"
         );
     }

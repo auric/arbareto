@@ -264,12 +264,13 @@ pub fn confirm_wsl_git(native: &dyn Native, proposal: &WslProposal) -> bool {
     native.confirm(&confirmation) == Some(confirmation.accept_button)
 }
 
-/// The contract §5 "Trust program file digests" row of a `bound` name.
+/// The contract §7 "Program file digests" text of a `bound` name.
 fn bound_text(bound: &str) -> Option<&'static str> {
     match bound {
         "file-count" => Some("64 files"),
         "file-bytes" => Some("1 MiB per file"),
         "total-bytes" => Some("8 MiB total"),
+        "link" => Some("a link that Arbareto cannot follow"),
         _ => None,
     }
 }
@@ -1036,6 +1037,7 @@ pub(crate) mod tests {
             ("file-count", "64 files"),
             ("file-bytes", "1 MiB per file"),
             ("total-bytes", "8 MiB total"),
+            ("link", "a link that Arbareto cannot follow"),
         ] {
             let confirmation = trust_confirmation(&trust_request(&fixture, false, Some(bound)));
             assert!(

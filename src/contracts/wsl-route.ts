@@ -22,8 +22,8 @@ export type WslRoute =
   | { kind: "refused"; code: "WSL_UNAVAILABLE"; reason: "distro-missing" | "not-wsl2"; distro: string }
   | { kind: "refused"; code: "UNSUPPORTED_REPOSITORY"; reason: "wsl-path" };
 
-// The prefix comparison ignores letter case, as WSL does (research R13 P3).
-const PREFIX = /^\\\\(?:wsl\$|wsl\.localhost)\\/i;
+// The prefix comparison ignores letter case, as WSL does (research R13 P3). Win32 takes `\` and `/` as separators.
+const PREFIX = /^[\\/]{2}(?:wsl\$|wsl\.localhost)[\\/]/i;
 // WSL shows a Linux name that Windows names cannot hold with characters in U+F000 to U+F0FF (research R13 P5).
 const MAPPED = /[-]/;
 // The characters that `wslpath -w` mapped into U+F000 to U+F0FF on the reference distro (2026-10-04).

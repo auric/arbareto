@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cloud environment setup script for Arbareto. The SessionStart hook in .claude/settings.json runs it through .claude/cloud-setup-hook.ts at each session start and resume.
+# Cloud environment setup script for Arbareto. The SessionStart hook in .claude/settings.json runs it through .claude/session-start.ts at each session start and resume.
 # The hook keeps every session on the checked-out script. Each install step skips when its pinned version is present, so a repeated run is short.
 # The environment's "Setup script" field can stay empty. To warm the environment cache, it can hold: ARBARETO_FORCE_CLOUD_SETUP=1 bash "${CLAUDE_PROJECT_DIR:-/home/user/arbareto}/.claude/cloud-setup.sh"
 # The script exits at once unless CLAUDE_CODE_REMOTE is "true". Set ARBARETO_FORCE_CLOUD_SETUP=1 to run it by hand.
@@ -140,7 +140,7 @@ if repo_root="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)
   ponytail_status=0
   (cd "$repo_root" && /usr/local/bin/bun .claude/skills/ponytail-review/update.ts --check) || ponytail_status=$?
   echo "ponytail-review check exit status: $ponytail_status"
-  [ "$ponytail_status" -ne 3 ] || echo "ponytail-review copy is behind upstream: run \`bun .claude/skills/ponytail-review/update.ts\`, review, and commit." >&3
+  [ "$ponytail_status" -ne 3 ] || echo "ponytail-review copy is behind upstream: run \`bun .claude/skills/ponytail-review/update.ts\`, review the SKILL.md diff, and commit." >&3
   if [ ! -e "$repo_root/.specify/feature.json" ]; then
     printf '%s\n' '{"feature_directory": "specs/001-desktop-qualification"}' > "$repo_root/.specify/feature.json" || echo "Could not write .specify/feature.json." >&3
   fi

@@ -34,6 +34,8 @@
 - After any tasks.md edit, run `/speckit-analyze`.
 - At the end of each batch, run `/speckit-converge`.
 - Batch review: dispatch `reviewer`. It runs `ponytail-review` for over-engineering and a manual correctness, security, and heuristics review, plus `web-design-guidelines` for UI diffs.
+- When a session start prints "ponytail-review copy is behind upstream", run `bun .claude/skills/ponytail-review/update.ts`.
+- Show the user the `SKILL.md` diff, then commit the update. A cloud session commits it on its session branch.
 - Change any `CLAUDE.md` or `.claude/rules/*.md` file only through `claude-md-management:claude-md-improver`: report first, then apply the approved edit (local sessions only; plugins do not load in the cloud).
 - To start the app, use the `run` skill with the README "Development" commands only.
 

@@ -4,7 +4,7 @@
 // Performance fixtures M and L of the plan.md "Reference hardware and fixtures" table (T164).
 // Git runs with `fixtureEnv`, so a caller must hold an owned root through `useFixtureRoot`.
 
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { FIXTURE_ROOT, fixtureEnv, fixturePath, ownedGit, ownedPath, removeTree, type OwnedGitOptions } from "../git/fixture-root";
@@ -54,10 +54,21 @@ export interface PerfFacts {
   semanticDigest: string;
 }
 
+// The reuse check. Git compares the stat data of clean files, so only the paths that status lists get a content hash.
+export interface PerfReuseState {
+  tip: string;
+  // SHA-256 of `ls-files -s -z` and of `status --porcelain=v2 -z --untracked-files=all`.
+  index: string;
+  status: string;
+  // SHA-256 of each changed or untracked path that status lists.
+  files: Record<string, string>;
+}
+
 export interface PerfManifest {
   seed: number;
   builderDigest: string;
   facts: PerfFacts;
+  reuse: PerfReuseState;
 }
 
 // 2020-01-01T00:00:00Z. Commit k has this time plus k seconds (plan.md "Reproducibility").
@@ -100,8 +111,9 @@ function mdText(changed: boolean): string {
   }).join("");
 }
 
-export function builderDigest(): string {
-  return sha256(readFileSync(import.meta.path));
+// Checkouts differ in line ends, so CRLF counts as LF. An LF source keeps its raw SHA-256.
+export function builderDigest(source: Buffer = readFileSync(import.meta.path)): string {
+  return sha256(Buffer.from(source.toString("utf8").replaceAll("\r\n", "\n")));
 }
 
 // A single file or a split chain (git-commit-graph(1) "FILES").
@@ -207,6 +219,32 @@ export function buildPerfRepo(git: string, root: string, repo: string, spec: Per
   };
 }
 
+function reuseProbe(git: string, repo: string): { tip: string; index: string; status: Buffer } {
+  const g = (args: string[]) => ownedGit(git, PERF_CACHE_ROOT, repo, ["--no-optional-locks", ...args]);
+  return { tip: g(["rev-parse", "HEAD"]).toString().trim(), index: sha256(g(["ls-files", "-s", "-z"])), status: g(["status", "--porcelain=v2", "-z", "--untracked-files=all"]) };
+}
+
+// The fixtures have only ordinary changed entries ("1") and untracked entries ("?") (git-status(1) "Porcelain Format Version 2").
+export function perfReuseState(git: string, repo: string): PerfReuseState {
+  const probe = reuseProbe(git, repo);
+  const files: Record<string, string> = {};
+  for (const record of probe.status.toString("utf8").split("\0")) {
+    if (record === "") continue;
+    const path = record.startsWith("? ") ? record.slice(2) : record.startsWith("1 ") ? record.split(" ").slice(8).join(" ") : null;
+    if (path === null) throw new Error(`unexpected status record in ${repo}: ${record}`);
+    files[path] = sha256(readFileSync(join(repo, path)));
+  }
+  return { tip: probe.tip, index: probe.index, status: sha256(probe.status), files };
+}
+
+// An equal status hash gives the same listed paths, so only the recorded paths need a content hash.
+function reuseMatches(git: string, repo: string, expected: PerfReuseState | undefined): boolean {
+  if (expected === undefined || !existsSync(repo)) return false;
+  const probe = reuseProbe(git, repo);
+  if (probe.tip !== expected.tip || probe.index !== expected.index || sha256(probe.status) !== expected.status) return false;
+  return Object.entries(expected.files).every(([path, digest]) => existsSync(join(repo, path)) && sha256(readFileSync(join(repo, path))) === digest);
+}
+
 export interface CachedPerfFixture {
   folder: string;
   repo: string;
@@ -216,29 +254,103 @@ export interface CachedPerfFixture {
   stream: string | null;
 }
 
-// Builds `spec` once per seed and variant under the cache root. Reuses it only when the seed, the builder digest, and a recomputed semantic digest match.
+// The L build takes about 15 minutes. A lock older than this bound belongs to a dead builder, also when its PID was reused.
+const LOCK_STALE_MS = 60 * 60_000;
+const LOCK_POLL_MS = 500;
+
+const errorCode = (e: unknown) => (e as NodeJS.ErrnoException).code;
+
+// Signal 0 tests the PID only. Only ESRCH means no such process; EPERM means a live process of another user.
+function lockOwnerDead(lock: string): boolean {
+  let pid: unknown;
+  try {
+    pid = (JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")) as { pid?: unknown }).pid;
+  } catch {
+    return false;
+  }
+  if (typeof pid !== "number") return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (e) {
+    return errorCode(e) === "ESRCH";
+  }
+}
+
+// Builders in other worktrees share the cache root, so `mkdir` of the lock folder is the exclusive claim.
+function acquireLock(lock: string): void {
+  const deadline = Date.now() + 2 * LOCK_STALE_MS;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      return;
+    } catch (e) {
+      if (errorCode(e) !== "EEXIST") throw e;
+    }
+    let age: number;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch (e) {
+      if (errorCode(e) === "ENOENT") continue;
+      throw e;
+    }
+    if (age > LOCK_STALE_MS || lockOwnerDead(lock)) {
+      // The rename lets only one waiter remove a stale lock. A plain removal can delete a lock that another waiter just took.
+      const claimed = `${lock}.stale-${process.pid}`;
+      try {
+        renameSync(lock, claimed);
+      } catch (e) {
+        if (errorCode(e) === "ENOENT") continue;
+        throw e;
+      }
+      removeTree(claimed);
+      continue;
+    }
+    if (Date.now() > deadline) {
+      const owner = existsSync(join(lock, "owner.json")) ? readFileSync(join(lock, "owner.json"), "utf8") : "unknown owner";
+      throw new Error(`build lock ${lock} is held by ${owner}`);
+    }
+    Bun.sleepSync(LOCK_POLL_MS);
+  }
+}
+
+// Builds `spec` once per seed and variant under the cache root. Reuses it only when the seed, the builder digest, and the reuse state match.
+// `semanticDigest` is the build-time oracle. A full recheck reads every working file (about 9 minutes on L).
 // Budgets count the maintained variant, which is the default.
+// The check and the build run under the lock. A build goes into a temporary folder, so a reader never sees a partial fixture.
 export function ensurePerfFixture(git: string, spec: PerfSpec, commitGraph = true): CachedPerfFixture {
   mkdirSync(PERF_CACHE_ROOT, { recursive: true });
-  const folder = ownedPath(PERF_CACHE_ROOT, `${spec.name}-seed${PERF_SEED}-${commitGraph ? "commit-graph" : "no-commit-graph"}`);
+  const name = `${spec.name}-seed${PERF_SEED}-${commitGraph ? "commit-graph" : "no-commit-graph"}`;
+  const folder = ownedPath(PERF_CACHE_ROOT, name);
+  const lock = ownedPath(PERF_CACHE_ROOT, `${name}.lock`);
+  const temp = ownedPath(PERF_CACHE_ROOT, `${name}.tmp`);
   const repo = join(folder, "repo");
   const manifestPath = join(folder, "manifest.json");
-  const streamPath = join(folder, `${spec.name}.fast-import`);
+  const streamFile = `${spec.name}.fast-import`;
   // T245 builds W-M from the maintained M stream.
   const keepStream = spec.name === PERF_M.name && commitGraph;
+  const stream = keepStream ? join(folder, streamFile) : null;
   const digest = builderDigest();
-  if (existsSync(manifestPath)) {
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as PerfManifest;
-    if (manifest.seed === PERF_SEED && manifest.builderDigest === digest && manifest.facts.commitGraph === commitGraph && semanticDigest(git, repo) === manifest.facts.semanticDigest) {
-      return { folder, repo, manifest, reused: true, stream: keepStream ? streamPath : null };
+  acquireLock(lock);
+  try {
+    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, start: new Date().toISOString() }));
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as PerfManifest;
+      if (manifest.seed === PERF_SEED && manifest.builderDigest === digest && manifest.facts.commitGraph === commitGraph && reuseMatches(git, repo, manifest.reuse)) {
+        return { folder, repo, manifest, reused: true, stream };
+      }
     }
+    if (existsSync(temp)) removeTree(temp);
+    mkdirSync(temp);
+    const facts = buildPerfRepo(git, PERF_CACHE_ROOT, join(temp, "repo"), spec, join(temp, streamFile), keepStream, commitGraph);
+    const manifest: PerfManifest = { seed: PERF_SEED, builderDigest: digest, facts, reuse: perfReuseState(git, join(temp, "repo")) };
+    writeFileSync(join(temp, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    if (existsSync(folder)) removeTree(folder);
+    renameSync(temp, folder);
+    return { folder, repo, manifest, reused: false, stream };
+  } finally {
+    removeTree(lock);
   }
-  if (existsSync(folder)) removeTree(folder);
-  mkdirSync(folder);
-  const facts = buildPerfRepo(git, PERF_CACHE_ROOT, repo, spec, streamPath, keepStream, commitGraph);
-  const manifest: PerfManifest = { seed: PERF_SEED, builderDigest: digest, facts };
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  return { folder, repo, manifest, reused: false, stream: keepStream ? streamPath : null };
 }
 
 // An independent copy under the owned root. Tests and measurements use copies only and never change a cached fixture.

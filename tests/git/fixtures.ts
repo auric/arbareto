@@ -3,7 +3,7 @@
 
 // Deterministic builders of the plan.md fixture matrix (T066). Facts come from the construction, never from `src/git-service/`.
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FIXTURE_ROOT, fixtureDir, fixturePath, ownedGit, type OwnedGitOptions } from "./fixture-root";
@@ -190,6 +190,16 @@ function requireInit(git: string, option: string, capability: string): void {
   }
   if (!probes.get(option)) throw new CapabilitySkip(capability);
 }
+// Writes two names that differ only in letter case in an owned folder, once per run. One file means a case-insensitive file system.
+function caseInsensitiveFs(): boolean {
+  if (!probes.has("case-insensitive-fs")) {
+    const dir = fixtureDir("probe-case-insensitive-fs");
+    writeFileSync(join(dir, "case"), "lower\n");
+    writeFileSync(join(dir, "CASE"), "upper\n");
+    probes.set("case-insensitive-fs", readdirSync(dir).length === 1);
+  }
+  return probes.get("case-insensitive-fs")!;
+}
 const requireSha256 = (git: string) => requireInit(git, "--object-format=sha256", "sha256-object-format");
 const requireReftable = (git: string) => requireInit(git, "--ref-format=reftable", "reftable");
 
@@ -280,10 +290,12 @@ export function buildF03(git: string, name: string): Built {
   }
   normalizeIndex(r);
   const invalidKey = invalid.toString("utf8");
+  // A case-sensitive file system holds only `collide/Name.txt`, so Git reports `collide/name.txt` as deleted.
+  const caseInsensitive = caseInsensitiveFs();
   facts.repos.repo = repoFacts(r, {
     refs: { "refs/heads/main": base },
     staged: sorted([names.dash, names.readme, "README.md", invalidKey]),
-    unstaged: sorted([names.unicode, names.bracket, names.noNewline, invalidKey]),
+    unstaged: sorted([names.unicode, names.bracket, names.noNewline, invalidKey, ...(caseInsensitive ? [] : ["collide/name.txt"])]),
     entries: [
       { path: "collide/Name.txt", stage: 0, oid: x },
       { path: "collide/name.txt", stage: 0, oid: x },
@@ -295,7 +307,8 @@ export function buildF03(git: string, name: string): Built {
   // Git without `core.longpaths` cannot open the long folder, so the long file is in no Git listing.
   facts.notes.longPath = { path: longPath, utf16Units: longPath.length, bunWrote };
   facts.notes.invalidUtf8IndexPath = invalid.toString("hex");
-  if (!bunWrote) facts.notes.unverified = ["long-paths"];
+  const unverified = [...(bunWrote ? [] : ["long-paths"]), ...(caseInsensitive ? [] : ["case-insensitive-fs"])];
+  if (unverified.length > 0) facts.notes.unverified = unverified;
   return { id: "F03", variant: "base", root, facts };
 }
 

@@ -11,6 +11,7 @@ import { createBunRunner, type BunRunner } from "./bun-runner";
 import { FIXTURE_ROOT, fixtureDir, fixtureGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF07 } from "./fixtures";
 import { describeGit } from "./git-binary";
+import { missingCapability } from "./service-harness";
 
 const IDENTITY_MODULE = printOrigin("../../src/git-service/identity.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
@@ -137,5 +138,5 @@ describeGit(
       console.log(`OBSERVATION T077: the fixture root is ${FIXTURE_ROOT}.`);
     }, F07_TIMEOUT_MS);
   },
-  "shell-double",
+  missingCapability("shell-double"),
 );

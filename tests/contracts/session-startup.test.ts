@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { printOrigin } from "../origin";
 import { PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES } from "../../src/contracts/limits";
-import { NATIVE } from "../../src/contracts/native-path";
+import { isWindows, NATIVE } from "../../src/contracts/native-path";
 import { isChannelPath } from "../../src/contracts/operations";
 import type { GitCall, GitExit, GitRunner } from "../../src/git-service/git-runner";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
@@ -33,17 +33,20 @@ writeFileSync(WRAPPER_PATH, "wrapper Git stub");
 // The handshake refuses a temporary folder that is not a native absolute path. A faked platform on another host gives such a folder.
 // A Windows host never skips.
 const startupTest = test.skipIf(process.platform !== "win32" && !isChannelPath(SAVED_PATH));
+// `src/git-service/admission.ts` host rule: only Windows needs the `.windows.<n>` suffix.
+const ADMITTED_VERSION = isWindows ? "2.55.0.windows.3" : "2.55.0";
+const OLDER_VERSION = isWindows ? "2.54.0.windows.1" : "2.54.0";
 const SAVED_GIT = {
   bootstrapId: "00000000-0000-4000-8000-0000000000aa",
   selectedPath: SAVED_PATH,
   executablePath: SAVED_PATH,
-  version: "2.55.0.windows.3",
+  version: ADMITTED_VERSION,
   digest: new Bun.CryptoHasher("sha256").update(readFileSync(SAVED_PATH)).digest("hex"),
 };
 
 // The shell answers the exec-path probe with the saved folder and the version probe with an admitted version.
 async function probeRun(call: GitCall): Promise<GitExit> {
-  const output = call.arguments[0] === "--exec-path" ? `${SAVED_FOLDER}\n` : "git version 2.55.0.windows.3\ncpu: x86_64\n";
+  const output = call.arguments[0] === "--exec-path" ? `${SAVED_FOLDER}\n` : `git version ${ADMITTED_VERSION}\ncpu: x86_64\n`;
   call.stdout.push(new TextEncoder().encode(output));
   return { exitCode: 0, activeDescendants: 0 };
 }
@@ -296,9 +299,9 @@ startupTest(
   async () => {
     const registers: unknown[] = [];
     const runner = { ...wrapperRunner([]), register: async (request: unknown) => (registers.push(request), { result: "approved" as const }) };
-    const { getEnvironment, responseFor } = startSession(runner, { ...HANDSHAKE, savedGit: { ...SAVED_GIT, version: "2.54.0.windows.1" } });
+    const { getEnvironment, responseFor } = startSession(runner, { ...HANDSHAKE, savedGit: { ...SAVED_GIT, version: OLDER_VERSION } });
     const [response] = await responseFor(getEnvironment());
-    expect(response).toMatchObject({ state: "succeeded", result: { detectedVersion: SAVED_GIT.version, previousVersion: "2.54.0.windows.1", admission: "admitted" } });
+    expect(response).toMatchObject({ state: "succeeded", result: { detectedVersion: SAVED_GIT.version, previousVersion: OLDER_VERSION, admission: "admitted" } });
     expect(response.result?.gitCode).toBeUndefined();
     expect(registers).toEqual([expect.objectContaining({ version: SAVED_GIT.version, digest: SAVED_GIT.digest, confirm: false })]);
 

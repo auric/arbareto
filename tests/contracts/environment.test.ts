@@ -15,7 +15,8 @@ printOrigin("../../src/git-service/environment.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-installation.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
-const MINIMUM = "2.55.0.windows.3";
+// `src/git-service/admission.ts` host rule: only Windows needs the `.windows.<n>` suffix.
+const MINIMUM = isWindows ? "2.55.0.windows.3" : "2.55.0";
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
 const GIT_PATH = isWindows ? "C:\\arbareto-test-fixture\\git\\cmd\\git.exe" : "/arbareto-test-fixture/git/bin/git";
 const RESOLVED_PATH = isWindows ? "C:\\arbareto-test-fixture\\git\\mingw64\\libexec\\git-core\\git.exe" : "/arbareto-test-fixture/git/libexec/git-core/git";

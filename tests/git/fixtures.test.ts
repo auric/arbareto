@@ -109,6 +109,9 @@ describeGit("fixture builders", (git) => {
       if (long.bunWrote) expect(Object.keys(workingFileDigests(repo))).toContain(long.path);
       const raw = git1(g, repo, ["ls-files", "-z", "--stage"]);
       expect(raw.includes(Buffer.from(b.facts.notes.invalidUtf8IndexPath as string, "hex"))).toBe(true);
+      // `git init` probes the letter case of the file system and sets `core.ignorecase` only when it ignores case.
+      const ignoreCase = git1(g, repo, ["config", "--get", "--type=bool", "core.ignorecase"], [0, 1]).toString().trim() === "true";
+      expect({ ignoreCase }).toEqual({ ignoreCase: !((b.facts.notes.unverified as string[] | undefined) ?? []).includes("case-insensitive-fs") });
       console.log(`OBSERVATION T066: F03 long path of ${long.utf16Units} UTF-16 units: Bun wrote and read it back = ${long.bunWrote}; Git without core.longpaths lists it as untracked = ${paths(git1(g, repo, ["ls-files", "-o", "-z"])).includes(long.path)}`);
     }), TIMEOUT);
 

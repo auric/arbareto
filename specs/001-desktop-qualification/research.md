@@ -2403,4 +2403,6 @@ Vite writes asset URLs from `/`. Bun writes them relative to the page (`./`).
 - The shadcn check with `bunx --bun shadcn@4.21.0 init --base base --preset mira --yes`, on a host that reaches `ui.shadcn.com`.
 - The `components.json` path check after T123.
 
+**Closing decision** (main session, 2026-10-05): The Windows packaged-load check and the Windows timing check do not run. The Bun way already fails the R9 worker rule, so no switch follows. The packaged Vite build is already qualified through T008. Open this comparison again only when a Bun release bundles worker modules and the Tailwind plugin follows the locked Tailwind version. The R15 recommendation stays unchanged.
+
 Sources: the Bun documentation in `bun-types` `1.4.2` (`docs/bundler/html-static.mdx`, `docs/bundler/executables.mdx`), the `bun-plugin-tailwind` `0.1.2` file `index.mjs`, the `@tailwindcss/vite` `4.3.3` file `dist/index.mjs`, [bun-plugin-tailwind 0.1.2](https://registry.npmjs.org/bun-plugin-tailwind/0.1.2), [Tailwind Vite plugin 4.3.3](https://registry.npmjs.org/@tailwindcss/vite/4.3.3). Raw logs and scripts: `/tmp/t313` in the cloud session of 2026-10-05.

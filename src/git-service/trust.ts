@@ -1091,7 +1091,7 @@ function displayHooks(listing: TrustListing) {
 // ---- Shared listing (contract §7) ----
 
 export interface ListingSlot {
-  // The contract §8 change tuple that the service read before the listing started. T088 defines its form.
+  // The contract §8 change tuple that `status.ts` read before the listing started.
   tuple: string;
   listing: Promise<ListingOutcome>;
   // The generation of the `readWorkspace` that started the listing. Without a request generation, the generation of its result. Null until the service knows it.

@@ -93,6 +93,17 @@ describeGit("bun runner", (git) => {
     expect(await runner.run(failed)).toEqual({ exitCode: 1, activeDescendants: 0 });
   });
 
+  test("each recorded call keeps its wall time from the request to the exit", async () => {
+    const nap = `alias.nap=!"${slash(process.execPath)}" -e 'setTimeout(() => {}, 200)'`;
+    const slow = call({ arguments: ["--no-lazy-fetch", "-c", nap, "nap"] });
+    expect(await runner.run(slow)).toEqual({ exitCode: 0, activeDescendants: 0 });
+    const fast = call();
+    expect(await runner.run(fast)).toEqual({ exitCode: 0, activeDescendants: 0 });
+    const durationMs = (c: GitCall) => runner.calls.find((r) => r.operationId === c.operationId)?.durationMs ?? Number.NaN;
+    expect(durationMs(slow)).toBeGreaterThanOrEqual(150);
+    expect(durationMs(fast)).toBeLessThan(150);
+  });
+
   test("gitProbe runs only the version probe, and an array without --no-lazy-fetch is refused", async () => {
     const before = runner.spawned;
     for (const args of [["status"], ["rev-parse", "--no-lazy-fetch"]]) {

@@ -206,6 +206,8 @@ export interface RecordedCall {
   exit?: GitExit;
   // Microseconds from `Subprocess.resourceUsage()`. A call without a process has none.
   cpuMicros?: number;
+  // Milliseconds from `at` to the resolved exit. A refused call has none.
+  durationMs?: number;
 }
 
 export type CallMatch = (call: { operationId: string; arguments: readonly string[] }) => boolean;
@@ -694,6 +696,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       calls.push(recorded);
       try {
         recorded.exit = await start(call, recorded);
+        recorded.durationMs = performance.now() - recorded.at;
         return recorded.exit;
       } catch (error) {
         recorded.refused = error instanceof RunnerRefusal ? error.code : error instanceof Error ? error.name : "unknown";

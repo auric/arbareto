@@ -200,11 +200,20 @@ const processLabel = (args: readonly string[]) => {
 
 function reportKind(fixture: string, kind: Kind, samples: readonly ReadFacts[]): void {
   const counts = [...new Set(samples.map((s) => s.calls.length))].sort((a, b) => a - b);
-  const byProcess = new Map<string, number[]>();
-  for (const sample of samples) for (const call of sample.calls) byProcess.set(processLabel(call.arguments), [...(byProcess.get(processLabel(call.arguments)) ?? []), (call.cpuMicros ?? 0) / 1000]);
-  const processes = [...byProcess].map(([label, cpu]) => `${label}: ${cpu.length} runs, median CPU ${median(cpu).toFixed(1)} ms`).join("; ");
+  const byProcess = new Map<string, { cpu: number[]; wall: number[] }>();
+  for (const sample of samples) {
+    for (const call of sample.calls) {
+      const entry = byProcess.get(processLabel(call.arguments)) ?? { cpu: [], wall: [] };
+      entry.cpu.push((call.cpuMicros ?? 0) / 1000);
+      entry.wall.push(call.durationMs ?? 0);
+      byProcess.set(processLabel(call.arguments), entry);
+    }
+  }
+  const processes = [...byProcess]
+    .map(([label, { cpu, wall }]) => `${label}: ${cpu.length} runs, median CPU ${median(cpu).toFixed(1)} ms, median wall ${median(wall).toFixed(1)} ms, max wall ${Math.max(...wall).toFixed(1)} ms`)
+    .join("; ");
   console.log(
-    `OBSERVATION ${TASK}: R6 Git processes per read: fixture ${fixture}: ${kind}: ${samples.length} reads, Git process count ${counts.join(" or ")}, median read wall ${median(samples.map((s) => s.wallMs)).toFixed(1)} ms, median response bytes ${median(samples.map((s) => s.bytes))}; per process: ${processes || "none"}; per-process wall time: not recorded (harness seam)`,
+    `OBSERVATION ${TASK}: R6 Git processes per read: fixture ${fixture}: ${kind}: ${samples.length} reads, Git process count ${counts.join(" or ")}, median read wall ${median(samples.map((s) => s.wallMs)).toFixed(1)} ms, median response bytes ${median(samples.map((s) => s.bytes))}; per process: ${processes || "none"}`,
   );
 }
 

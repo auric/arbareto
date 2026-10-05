@@ -42,6 +42,7 @@ These rules apply to every test task.
 - Only a green Windows rerun with `ORIGIN` lines in that checkout marks the task done. A red rerun keeps the task open.
 - The shell double runs on Windows and Linux. Its capability is `shell-double`.
 - The capability `symlink` names cases that need a symbolic link. It is present when `symlinkSync` succeeds at test time.
+- A capability gate decides by exit status, never by Git message text. Example: the `no-enclosing-repository` gate (`noEnclosingRepository` in `tests/git/service-harness.ts`) runs `git -c safe.directory=* rev-parse --is-inside-work-tree` in the parent of the fixture root. Exit 0 means that an enclosing repository exists.
 - `windows-path-rules`, `ntfs-junction`, `git-for-windows`, and `powershell` name Windows-only cases.
 - A Linux skip needs no research.md record. Copy `OBSERVATION` lines into research.md only from Windows runs.
 - Each cloud prompt states these rules. The session edits no task checkbox. It reports the pass, fail, and skip counts of each file, every `SKIP … missing capability` line, and the `ORIGIN` lines. It runs the control mutation on Linux, red and then green. It never changes a capability to make a case run. It reports each Linux behavior difference. It changes only the files of its track.

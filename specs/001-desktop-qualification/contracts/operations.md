@@ -715,13 +715,16 @@ Component rule. Each component has 1 to 255 UTF-16 units (§5). It holds no NUL 
 
 Shell behavior:
 
-- The shell opens each root as the identity request does ("Process fields"). Git resolved and opened each root during discovery.
+- The shell opens each root as the identity request does ("Process fields"). Git resolved and opened each root during discovery. A root that cannot be opened gives `absent` for a not-found result (Win32 `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`). Any other failure gives `error` with `component` 0.
 - It opens each component relative to the handle of its parent. A component that is a link ends the walk of that entry. The shell never follows it.
+- On Windows, the shell opens each component with a case-insensitive lookup (`OBJ_CASE_INSENSITIVE`), as Win32 and Git do.
 - On Windows, a link is a reparse point with a name-surrogate tag (Microsoft Learn "Reparse Point Tags", `IsReparseTagNameSurrogate`). On POSIX, it is a symbolic link.
-- A reparse point with another tag is no link. As a middle component, it gives `other`, and the walk of that entry ends. As the final component, its fact follows its type, such as the logical bytes of a WOF-compressed file.
+- A reparse point with another tag is no link. As a middle component, it gives `other`, and the walk of that entry ends. As the final component, it gives the fact of its type. With `digest: true`, a file there gives `error` with code `other-error`, because a read of its logical bytes needs an open that follows the reparse point.
+- A file system filter can complete the open of its own reparse point. WOF does this for a compressed file, so the open gives no reparse result. Such a file gives the fact of its type, and the digest covers its logical bytes (T302).
 - A component that exists but cannot be opened or read gives `error`. A failed read of a final file gives `error` too.
+- The shell opens each final component with attribute access only and reads its type. A directory gives `directory`, also with `digest: true`. Only a regular file is opened again for its data.
 - With `digest: true`, the shell reads the size of each final file through its handle. It reads at most the per-file bound plus one byte and hashes the bytes with SHA-256. With `digest: false`, it reads no file data.
-- The §5 byte bounds apply in request order. A file above 1 MiB gets bound `file-bytes` and no digest. Only digested bytes count toward the 8 MiB request total. The first file that would pass that total gets bound `total-bytes` and no digest, and so does each later file.
+- The §5 byte bounds apply in request order. The shell checks the 1 MiB per-file bound first. A file above 1 MiB always gets bound `file-bytes` and no digest. Only files within 1 MiB count toward the 8 MiB request total, with their digested bytes. The first file within 1 MiB that would pass that total gets bound `total-bytes` and no digest, and so does each later file within 1 MiB.
 - A WSL repository gets the §11 "Trust and environment" rule.
 
 Reply facts. Each fact holds `kind` and the fields of its kind.
@@ -730,10 +733,10 @@ Reply facts. Each fact holds `kind` and the fields of its kind.
 | --- | --- | --- |
 | `file` | `size`, `lastWrite`. Optional: `digest` or `bound`, never both, and `executable`. | A regular file. `size` is a nonnegative safe integer. `lastWrite` is a signed 64-bit integer as decimal text. On Windows it is `FILE_BASIC_INFO` `LastWriteTime` in 100-ns units since 1601. On POSIX it is the modification time in nanoseconds since 1970. `digest` is the SHA-256 as 64 lowercase hex digits, only with `digest: true` and no bound. `bound` is `file-bytes` or `total-bytes`. |
 | `directory` | Optional: `executable`. | A directory. |
-| `link` | `component`, `tag`. With tag `symlink` or `junction`, also `target` and `relative`. | `component` is the zero-based index of the link in `path`. `tag` is `symlink`, `junction`, or `other` for another name-surrogate tag. `target` is the link text as stored: the `SubstituteName` of the reparse data on Windows, the `readlink` text on POSIX. `relative` is the relative flag of a symbolic link, and `false` for a junction. A target that is no well-formed text, or that holds NUL, gives tag `other`. The shell reads nothing after the link and computes no digest. |
+| `link` | `component`, `tag`. With tag `symlink` or `junction`, also `target` and `relative`. | `component` is the position of the link in `path`, counted from 1. `tag` is `symlink`, `junction`, or `other` for another name-surrogate tag. `target` is the link text as stored: the `SubstituteName` of the reparse data on Windows, the `readlink` text on POSIX. `relative` is the relative flag of a symbolic link, and `false` for a junction. A target that is no well-formed text, or that holds NUL, gives tag `other`. The shell reads nothing after the link and computes no digest. |
 | `absent` | None. | A component does not exist, or a parent component is no directory. Only these open results mean `absent`: `STATUS_OBJECT_NAME_NOT_FOUND` and `STATUS_OBJECT_PATH_NOT_FOUND` on Windows (Win32 `ERROR_FILE_NOT_FOUND` and `ERROR_PATH_NOT_FOUND`), and `ENOENT` and `ENOTDIR` on POSIX. |
 | `other` | None. | The object exists but is no regular file, directory, or link, such as a FIFO, a socket, or a device. A middle component with a reparse tag that is not a name surrogate gives `other` too. Such an object cannot run as a hook. |
-| `error` | `component`, `code`. | A component exists but cannot be opened or read. `component` is the zero-based index of the failed component in `path`. `code` is one entry of the closed list below. |
+| `error` | `component`, `code`. | A component exists but cannot be opened or read. `component` is the position of the failed component in `path`, counted from 1. Component 0 is the root. `code` is one entry of the closed list below. |
 
 The `error` codes (`FILE_FACT_ERRORS` in `src/contracts/channel.ts`):
 

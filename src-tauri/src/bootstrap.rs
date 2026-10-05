@@ -48,7 +48,7 @@ impl Identity {
 }
 
 /// Opens `path` with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`.
-fn open(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES.0)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)

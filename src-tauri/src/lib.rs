@@ -4,6 +4,8 @@
 mod bootstrap;
 mod dialogs;
 mod env_sanitize;
+#[cfg(windows)]
+mod file_facts;
 mod framing;
 mod git_env;
 mod ipc;

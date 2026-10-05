@@ -453,7 +453,7 @@ pub(crate) fn is_hex(text: &str, digits: usize) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -572,7 +572,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// The SHA-256 of `bytes` through Windows CNG.
-fn sha256(bytes: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut digest = [0; 32];
     // SAFETY: the pseudo handle needs no open or close, and both slices are live.
     let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, bytes, &mut digest) };

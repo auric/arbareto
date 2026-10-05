@@ -619,6 +619,22 @@ These items needed new shell facts. The main session decided each one on 2026-10
 
 Sources: [git-show-ref --exists](https://github.com/git/git/blob/v2.55.0/Documentation/git-show-ref.adoc), [git-symbolic-ref exit status](https://github.com/git/git/blob/v2.55.0/Documentation/git-symbolic-ref.adoc), [git-var paths](https://github.com/git/git/blob/v2.55.0/Documentation/git-var.adoc), [cmd_var](https://github.com/git/git/blob/v2.55.0/builtin/var.c).
 
+### Watcher event source
+
+**Decision**: T088 keeps Bun's built-in `fs.watch` with `recursive: true`. It adds no watcher library.
+
+**Rationale**: Bun 1.4.2 watches recursively on Windows through `ReadDirectoryChangesW` (`src/runtime/node/win_watcher.rs:391-399` at commit 744846f8). Bun reports a buffer overflow as a `change` event with a `null` file name. On Windows, `win_watcher.rs:251-254` does this. On Linux, `test/js/node/watch/fs.watch.test.ts:624-625` shows it for `IN_Q_OVERFLOW`. The service treats every event as a hint, and that event too. The contract §8 change tuple decides every change.
+
+**Alternatives considered**:
+
+- `@parcel/watcher` 2.6.0 (MIT). VS Code uses it. Rejected: its `index.js` loads the platform addon with a dynamic `require`. A `bun build --compile` executable cannot resolve that call (Bun docs `bundler/executables.mdx:800-810`, anomalyco/opencode#37686). It also adds one native `.node` binary per platform.
+- `chokidar` 5.0.0. Rejected: its atomic-write and `awaitWriteFinish` logic depends on timing (CLAUDE.md "No heuristics"). The change tuple already decides every change.
+- Rust `notify` 8.2.0. It is mature, and rust-analyzer, Deno, and Zed use it. Rejected for now: it moves the watch into the shell and adds an IPC path for hints. The thin-shell rule prefers the service.
+
+**Revisit**: Open this decision again only when T161 or T075 shows missed hints that `fs.watch` cannot deliver.
+
+Sources: [win_watcher.rs](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime/node/win_watcher.rs#L251-L254), [recursive watch](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime/node/win_watcher.rs#L391-L399), [overflow test](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/test/js/node/watch/fs.watch.test.ts#L624-L625), [executables doc](https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/docs/bundler/executables.mdx#L800-L810), [opencode#37686](https://github.com/anomalyco/opencode/issues/37686).
+
 ## R6. Measurement evidence and reference environment
 
 **Decision**: Measure installed release builds against fixed fixtures and budgets. Use Git Extensions as the SC-015 comparison baseline under matched conditions.

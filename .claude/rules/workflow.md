@@ -26,7 +26,7 @@ This file is the cloud copy of the user's global rules. Locally, the user's glob
 - Pick the effort by picking the agent. An `Agent` call cannot set effort. The project agents in `.claude/agents/` pin model and effort:
   - Implementation: `implementer` (Opus, medium) by default. Use `implementer-xhigh` for known-hard packages or to retry a failed medium run. Use `implementer-max` only to retry a failed xhigh run. Run one implementer at a time.
   - Frontend React and Vite work: `frontend-implementer` (Opus, medium). It preloads `vercel-react-best-practices` and `web-design-guidelines`.
-  - Batch and diff review: `reviewer` (Opus, medium, read-only). It runs `code-review` and `security-review` in report-only mode.
+  - Batch and diff review: `reviewer` (Opus, medium, read-only). It runs `ponytail-review` for over-engineering and a manual correctness, security, and heuristics review.
   - Implementation plans and design: `Plan` (Opus, xhigh, read-only).
   - Root-cause analysis (crash analysis, bug diagnosis, repro design, fix proposal, review verification): `investigator` (Opus, medium, no edits to tracked files).
   - Code exploration, doc research, triage, data gathering, and operational runs that need judgment: `scout` (Opus, low). A shallow `scout` report goes to `investigator` when it needs analysis.

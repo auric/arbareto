@@ -33,7 +33,7 @@
 - shadcn work: invoke the `shadcn` skill. Run the generator (`init`, `add`) only with the version pinned in tasks.md, never `@latest`.
 - After any tasks.md edit, run `/speckit-analyze`.
 - At the end of each batch, run `/speckit-converge`.
-- Batch review: dispatch `reviewer`. It runs `code-review` and `security-review` in report-only mode, plus `web-design-guidelines` for UI diffs.
+- Batch review: dispatch `reviewer`. It runs `ponytail-review` for over-engineering and a manual correctness, security, and heuristics review, plus `web-design-guidelines` for UI diffs.
 - Change any `CLAUDE.md` or `.claude/rules/*.md` file only through `claude-md-management:claude-md-improver`: report first, then apply the approved edit (local sessions only; plugins do not load in the cloud).
 - To start the app, use the `run` skill with the README "Development" commands only.
 

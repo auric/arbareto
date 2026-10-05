@@ -9,6 +9,7 @@
 # It installs specify-cli 1.0.12 from PyPI with "uv tool install", or with "pip install --user" when uv is absent. A failed install does not stop the session.
 # It installs CodeGraph 1.6.0 from the upstream GitHub release. It builds the index with "codegraph init -y", or runs "codegraph sync" when .codegraph/ exists. A failed step does not stop the session.
 # The CodeGraph bundle contains its own Node runtime. The script does not install Node.
+# It runs "bun .claude/skills/ponytail-review/update.ts --check". Only a "behind" result prints a line to stdout.
 # It writes .specify/feature.json, which Git ignores, when the file is absent. The Spec Kit scripts read the active feature from it.
 # It is not verified locally, because the development host is Windows.
 # Rust is opt-in, so the default setup stays short and the environment cache can keep it. The Rust steps run only with ARBARETO_CLOUD_RUST=1, or when /usr/local/bin/rustc exists.
@@ -16,7 +17,7 @@
 # The T289 and T291 sessions run "ARBARETO_CLOUD_RUST=1 ARBARETO_FORCE_CLOUD_SETUP=1 bash .claude/cloud-setup.sh" once at their start.
 # The Rust toolchain is only for the Linux portability check "cargo check --target x86_64-unknown-linux-gnu". The app supports only Windows.
 # When CLAUDE_ENV_FILE is set, it adds one PATH line that puts /usr/local/bin first for later Bash tool calls.
-# Hosts on the default Trusted allowlist: archive.ubuntu.com, keyserver.ubuntu.com, ppa.launchpad.net, github.com, release-assets.githubusercontent.com, registry.npmjs.org, pypi.org, files.pythonhosted.org, static.rust-lang.org, index.crates.io, static.crates.io.
+# Hosts on the default Trusted allowlist: archive.ubuntu.com, keyserver.ubuntu.com, ppa.launchpad.net, github.com, release-assets.githubusercontent.com, registry.npmjs.org, pypi.org, files.pythonhosted.org, static.rust-lang.org, index.crates.io, static.crates.io, api.github.com, raw.githubusercontent.com.
 # The PPA source uses http://ppa.launchpad.net. add-apt-repository writes ppa.launchpadcontent.net, which is not on the allowlist. Apt verifies the PPA signature with the pinned key.
 set -euo pipefail
 
@@ -135,6 +136,11 @@ if repo_root="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)
   if [ "$rust" = 1 ] && [ -x /usr/local/bin/cargo ]; then
     (cd "$repo_root" && /usr/local/bin/cargo fetch --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu) || echo "cargo fetch failed. Run 'cargo fetch --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu' in the session." >&3
   fi
+  # Exit 3 means the vendored skill is behind the latest upstream release. Other exit codes only reach the log.
+  ponytail_status=0
+  (cd "$repo_root" && /usr/local/bin/bun .claude/skills/ponytail-review/update.ts --check) || ponytail_status=$?
+  echo "ponytail-review check exit status: $ponytail_status"
+  [ "$ponytail_status" -ne 3 ] || echo "ponytail-review copy is behind upstream: run \`bun .claude/skills/ponytail-review/update.ts\`, review, and commit." >&3
   if [ ! -e "$repo_root/.specify/feature.json" ]; then
     printf '%s\n' '{"feature_directory": "specs/001-desktop-qualification"}' > "$repo_root/.specify/feature.json" || echo "Could not write .specify/feature.json." >&3
   fi

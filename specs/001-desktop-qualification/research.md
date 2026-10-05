@@ -2321,3 +2321,86 @@ The probe S34 ran on 2026-10-01 for the verification remediation. It used Git `2
 
 Sources: [submodule--helper update strategy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2107-L2147), [initialization active key](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L596-L597), [current revision failure](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/submodule--helper.c#L2834-L2838), [GIT_PROTOCOL_FROM_USER](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/git-submodule.sh#L29-L30), [detached ssh](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/compat/mingw.c#L2251-L2261), [progress counter](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/progress.c#L134), [protocol policy](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/protocol.adoc), [environment variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc), [RelNotes 2.45.0](https://github.com/git/git/blob/master/Documentation/RelNotes/2.45.0.adoc), [GHSA-8h77-4q3w-gfgv](https://github.com/git/git/security/advisories/GHSA-8h77-4q3w-gfgv), [GHSA-vwqx-4fm8-6qc9](https://github.com/git/git/security/advisories/GHSA-vwqx-4fm8-6qc9), [GCM environment](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/environment.md), [submodule fetch](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L2644-L2665), [submodule default remote](https://github.com/git/git/blob/v2.55.0/builtin/submodule--helper.c#L77-L115), [default remote](https://github.com/git/git/blob/v2.55.0/remote.c#L666-L680), [fetch.all](https://github.com/git/git/blob/v2.55.0/builtin/fetch.c#L2700-L2720), [nested Git directory refusal](https://github.com/git/git/blob/v2.55.0/submodule.c#L2402-L2442).
 
+## R15. Frontend bundler comparison: Bun and Vite (T313)
+
+**Purpose**: Compare Bun's bundler with `bunx --bun vite build` for `src/frontend`, without a change to any build input.
+
+**Recommendation (2026-10-05)**: Keep Vite. Bun 1.4.2 does not bundle a `new Worker(new URL(…, import.meta.url))` module, so it fails the R9 worker rule. `bun-plugin-tailwind` `0.1.2` compiles with Tailwind `4.1.14`, not the locked `4.3.3`. The Bun build saved about 0.3 s on Linux. That gain does not outweigh these failures. Look at a switch again only when Bun bundles worker modules and the plugin follows the locked Tailwind version.
+
+### Method
+
+- Commit `9960120`. Each trial ran in a copy from `git archive 9960120` under `/tmp/t313`, after `bun install --frozen-lockfile`. The repository stayed unchanged.
+- Host: Linux cloud container, Ubuntu 24.04.4, kernel 6.18.44, 4 vCPU Intel Xeon at 2.10 GHz, 16 GB. These are not Windows numbers.
+- Vite: `bun run build:frontend`, which runs `bunx --bun vite build` with the repository `vite.config.ts`.
+- Bun: `bun build-bun.ts` with `Bun.build({ entrypoints: ["./src/frontend/index.html"], outdir: "./dist", target: "browser", format: "esm", splitting: true, minify: true, sourcemap: "none", jsx: { development: false }, define: { "process.env.NODE_ENV": "\"production\"" }, plugins: [bun-plugin-tailwind], metafile: true })`. The Bun CLI accepts no plugins, so the API is necessary (`bun-types` `1.4.2`, `docs/bundler/html-static.mdx`).
+- Timing: wall clock around one child process, measured with `performance.now()` in a Bun driver. One discarded warm-up run, then 5 runs. Before each run, the driver deleted `dist`, `node_modules/.vite`, `node_modules/.cache`, and `node_modules/.vite-temp`. `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0` turned off Bun's transpiler cache for both ways. The driver removed `BUN_OPTIONS`, because the session shell sets `--smol`.
+- Sizes: bytes on disk. Gzip bytes come from zlib level 9.
+- Probe: the checks 3 to 6 used one probe, identical in both copies. It adds `src/frontend/probe/`: a worker, a shared module, a lazy module, and a Tailwind component. `main.tsx` imports `./index.css` and two `@/probe/…` modules. At `9960120`, no module imports `index.css`, so the unchanged build emits no CSS.
+- Facts came from the Vite bundle data (`generateBundle` in the main and worker builds, `this.resolve`, and the manifest), the Bun metafile, and an oxc parse of each output as a module (`rolldown/parseAst`). Headless Chromium `141.0.7390.37` (Playwright `1.56.1`) loaded each output from a local static server.
+
+### Versions
+
+| Item | Version |
+| --- | --- |
+| Bun | `1.4.2` (`/usr/local/bin/bun`) |
+| `vite` / `rolldown` | `8.3.2` / `1.2.12` (`bun.lock`; `package.json` `^8.3.1`). R9 names Rolldown `1.2.9`. |
+| `@vitejs/plugin-react` | `6.1.1` |
+| `tailwindcss`, `@tailwindcss/vite`, `@tailwindcss/oxide` | `4.3.3` |
+| `lightningcss` | `1.33.0` and `1.32.0` |
+| `react`, `react-dom` | `19.3.0` |
+| `bun-plugin-tailwind` (trial only) | `0.1.2`, the `latest` tag, published 2025-10-09. Its `index.mjs` holds Tailwind `4.1.14` and its own Oxide binaries. Its peer dependency added `bun@1.4.2` and twelve `@oven/bun-*@1.4.2` platform packages to the trial lock. |
+| shadcn CLI | `4.21.0` through `bunx --bun shadcn@4.21.0`. `bun.lock` resolves the `shadcn` dev dependency to `4.21.1`. |
+
+### Build time (Linux cloud container)
+
+| Build | Runs (ms) | Median (ms) |
+| --- | --- | --- |
+| Vite, `9960120` unchanged | 470.5, 484.1, 436.3, 708.9, 547.0 | 484.1 |
+| Bun, `9960120` unchanged | 188.2, 147.7, 174.0, 173.7, 143.6 | 173.7 |
+| Vite, with probe | 544.8, 610.3, 523.2, 617.0, 548.6 | 548.6 |
+| Bun, with probe | 266.4, 320.7, 315.7, 278.9, 290.9 | 290.9 |
+
+The Vite time includes `bun run` and `bunx`. The Bun time includes the start of `bun` and the plugin load. An earlier series with `BUN_OPTIONS=--smol` gave the medians 562.7, 184.6, 585.2, and 324.9 ms in the same order.
+
+### Output
+
+| Build | Files: bytes (gzip) | Total bytes |
+| --- | --- | --- |
+| Vite, unchanged | `assets/index-CdaoxUVW.js` 226,336 (70,230); `index.html` 319 | 226,655 |
+| Bun, unchanged | `chunk-18w0n4nh.js` 220,248 (68,743); `index.html` 313 | 220,561 |
+| Vite, with probe | `assets/index-CFph830q.js` 227,005 (70,555); `assets/index-CqW2oqFI.css` 5,418 (1,928); `assets/probe.worker-DRYppA-N.js` 212 (183); `assets/probe-lazy-guDQre9Z.js` 48 (66); `index.html` 393 | 233,076 |
+| Bun, with probe | `chunk-kmwn20qd.js` 220,876 (69,072); `chunk-1bqhmsnr.css` 18,285 (4,362); `index.html` 376 | 239,537 |
+
+Vite writes asset URLs from `/`. Bun writes them relative to the page (`./`).
+
+### Results
+
+| Check | Vite | Bun |
+| --- | --- | --- |
+| 3. ES worker chunks (R9) | Pass. The worker build ran with format `es`. Its entry chunk holds `probe.worker.ts` and the shared module, and it imports `probe-lazy` on demand. The page calls `new Worker(new URL("/assets/probe.worker-DRYppA-N.js", "" + import.meta.url), { type: "module" })`, and that file exists. No chunk calls `new Blob` or `createObjectURL`. In Chromium, the worker ran from that file and posted the expected value. All requests stayed on the page origin. | Fail. The metafile shows no import from `start.ts`, and Bun emits no worker file. The output keeps `new URL("./probe.worker.ts", import.meta.url)`. Chromium got HTTP 404 for `/probe.worker.ts`, and the worker failed. With the worker as a second entry point, as the Bun documentation tells for executables, Bun emits `probe/probe.worker.js` and its chunks as ES modules. The page still requests `./probe.worker.ts`, and Chromium got HTTP 404 again. Bun states: "We may eventually detect statically-known paths in `new Worker(path)` and bundle them automatically" (`bun-types` `1.4.2`, `docs/bundler/executables.mdx`). |
+| 4. Tailwind v4 | Pass. The banner shows `v4.3.3`, and no `@import` remains. The output has 12 theme variables and 13 utility rules, one for each probe class. | Fail. The CSS compiles: no `@import` remains, and Chromium computed the same probe styles as in the Vite build. But the banner shows `v4.1.14`. The output has 34 theme variables and 121 utility rules. All 13 Vite utility rules are present with equal declarations. With `root: "./src/frontend"`, the output has 14 theme variables and 38 utility rules. The plugin scans from `build.config.root` or `process.cwd()`, and it reads candidates from each non-CSS module that Bun parses (`index.mjs:40935-40951`). The Vite plugin scans the Vite root only. Which file gave each extra candidate is not proven (open). |
+| 5. React JSX | Pass. The module graph holds `react-jsx-runtime.production.js`, `react.production.js`, and `react-dom-client.production.js`, and no development file. The AST has no `jsxDEV` and no `process.env` reference. | Pass, with the same facts from the metafile and the AST. |
+| 5. Render in Chromium | The probe component rendered. Without the Tauri host, the app stayed at its "Loading…" fallback. No page error. One console error came from the `/favicon.ico` 404. | The probe component rendered. The app stayed at the same fallback. No page error. The console held one resource-load error, and the server answered HTTP 404 for `/probe.worker.ts`. |
+| 6. `@` alias | Pass. `this.resolve` gave `src/frontend/probe/start.ts`, `ProbeView.tsx`, and `probe-shared.ts`, and each importer's graph holds them. Source: `resolve.alias` in `vite.config.ts`. | Pass. The metafile maps the same three specifiers to the same three files. Source: `paths` in `tsconfig.json`. |
+| 7. shadcn generator | Open. Exit 1 on the unchanged copy. Message: "You are not authorized to access the item at https://ui.shadcn.com/init?…". The cloud proxy refused `CONNECT ui.shadcn.com:443` with HTTP 403. No file changed, and `bun run build:frontend` then exited 0. | Open. The copy had no `vite.config.ts`, no Vite packages, and `types: ["bun"]`. Exit 1 with the same message. No file changed, and `bun build-bun.ts` then exited 0. Without `vite.config.*`, shadcn `4.21.0` sets the framework to `manual`, not `vite` (`dist/chunk-B2MD6U5O.js`). |
+
+`components.json` does not exist at `9960120` (T123 is open). So the check of its paths is open.
+
+### Dev-dependency delta of a switch
+
+- Removes: `vite` `^8.3.1` (`8.3.2`), `@vitejs/plugin-react` `^6.1.1` (`6.1.1`), and `@tailwindcss/vite` `^4.3.3` (`4.3.3`). `bun.lock` loses 72 entries. Among them are `rolldown` `1.2.12` and 15 bindings, `@tailwindcss/node` and `@tailwindcss/oxide` `4.3.3` with their platform packages, and `lightningcss` `1.32.0` and `1.33.0` with their platform packages.
+- Adds: `bun-plugin-tailwind` `0.1.2`. `bun.lock` gains 14 entries: the plugin, `bun@1.4.2`, and twelve `@oven/bun-*@1.4.2` packages.
+- Keeps: `tailwindcss` `4.3.3`. Without it, the Bun build failed: "Can't resolve 'tailwindcss'". So Tailwind `4.1.14` code would compile the `4.3.3` CSS entry.
+- Other changes: a build script file for `Bun.build`, a new `build:frontend` script, and `vite/client` out of the `tsconfig.json` types.
+- Nothing else needs Vite. The repository has no Vitest. `bun run dev` runs `cargo tauri dev --no-dev-server`, and `tauri.conf.json` names no dev URL. Only the shadcn framework detection and the R9 text ("Use a Vite worker factory") name Vite.
+
+`bun run typecheck` fails at `9960120` in both copies with the same error: TS2307 in `tests/git/external-changes.test.ts` for `src/git-service/watch`. The trial did not cause it.
+
+### Open for Windows
+
+- Packaged load of the build output through the Tauri `build.frontendDist` in WebView2 (T008), with the probe worker.
+- Clean build time on the Windows reference host, as the median of 5 runs, for each way.
+- The shadcn check with `bunx --bun shadcn@4.21.0 init --base base --preset mira --yes`, on a host that reaches `ui.shadcn.com`.
+- The `components.json` path check after T123.
+
+Sources: the Bun documentation in `bun-types` `1.4.2` (`docs/bundler/html-static.mdx`, `docs/bundler/executables.mdx`), the `bun-plugin-tailwind` `0.1.2` file `index.mjs`, the `@tailwindcss/vite` `4.3.3` file `dist/index.mjs`, [bun-plugin-tailwind 0.1.2](https://registry.npmjs.org/bun-plugin-tailwind/0.1.2), [Tailwind Vite plugin 4.3.3](https://registry.npmjs.org/@tailwindcss/vite/4.3.3). Raw logs and scripts: `/tmp/t313` in the cloud session of 2026-10-05.

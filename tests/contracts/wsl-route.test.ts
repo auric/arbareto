@@ -76,6 +76,18 @@ describe("WSL route (T204, contract §11 Route)", () => {
     expect(routeWslPath(`${BS}${BS}wsl.localhost${BS}Ubuntu-24.04/home${BS}user/r`, FACTS)).toMatchObject({ kind: "wsl", distro: "Ubuntu-24.04", linuxPath: "/home/user/r" });
   });
 
+  test("either separator in the two prefix positions routes to WSL", () => {
+    const identityPath = unc("wsl.localhost", "Ubuntu-24.04", "home", "user", "r");
+    for (const path of [
+      "//wsl$/Ubuntu-24.04/home/user/r",
+      `${BS}${BS}wsl.localhost/Ubuntu-24.04/home/user/r`,
+      `/${BS}WSL$${BS}Ubuntu-24.04/home/user/r`,
+      `${BS}/Wsl.Localhost/Ubuntu-24.04${BS}home${BS}user${BS}r`,
+    ]) {
+      expect(routeWslPath(path, FACTS)).toEqual({ kind: "wsl", distro: "Ubuntu-24.04", guid: GUID, identityPath, linuxPath: "/home/user/r" });
+    }
+  });
+
   test("an exact distro match wins, then one match that ignores letter case", () => {
     const facts: WslDistroFacts = {
       listed: ["ubuntu", "Ubuntu", "Debian"],
@@ -118,9 +130,12 @@ describe("WSL route (T204, contract §11 Route)", () => {
       "\\\\wsl\\Ubuntu-24.04\\r",
       "\\\\wsl.localhostx\\Ubuntu-24.04\\r",
       "\\\\wsl$x\\Ubuntu-24.04\\r",
-      "//wsl$/Ubuntu-24.04/r",
+      "//wsl$x/Ubuntu-24.04/r",
+      "//server/share/r",
       "\\\\?\\UNC\\wsl$\\Ubuntu-24.04\\r",
+      "//?/UNC/wsl$/Ubuntu-24.04/r",
       "\\\\wsl$",
+      "//wsl.localhost",
     ];
     for (const path of windows) expect(routeWslPath(path, FACTS)).toEqual({ kind: "windows" });
   });

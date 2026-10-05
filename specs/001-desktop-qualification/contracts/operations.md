@@ -719,6 +719,7 @@ Shell behavior:
 - It opens each component relative to the handle of its parent. A component that is a link ends the walk of that entry. The shell never follows it.
 - On Windows, the shell opens each component with a case-insensitive lookup (`OBJ_CASE_INSENSITIVE`), as Win32 and Git do.
 - On Windows, a link is a reparse point with a name-surrogate tag (Microsoft Learn "Reparse Point Tags", `IsReparseTagNameSurrogate`). On POSIX, it is a symbolic link.
+- On Windows, two open results mark a reparse point: `STATUS_REPARSE_POINT_ENCOUNTERED` and `STATUS_IO_REPARSE_TAG_NOT_HANDLED`. A tag that no file system filter handles gives the second result (T302). The shell then opens the component again with `FILE_OPEN_REPARSE_POINT` and reads its tag.
 - A reparse point with another tag is no link. As a middle component, it gives `other`, and the walk of that entry ends. As the final component, it gives the fact of its type. With `digest: true`, a file there gives `error` with code `other-error`, because a read of its logical bytes needs an open that follows the reparse point.
 - A file system filter can complete the open of its own reparse point. WOF does this for a compressed file, so the open gives no reparse result. Such a file gives the fact of its type, and the digest covers its logical bytes (T302).
 - A component that exists but cannot be opened or read gives `error`. A failed read of a final file gives `error` too.
@@ -726,6 +727,8 @@ Shell behavior:
 - With `digest: true`, the shell reads the size of each final file through its handle. It reads at most the per-file bound plus one byte and hashes the bytes with SHA-256. With `digest: false`, it reads no file data.
 - The §5 byte bounds apply in request order. The shell checks the 1 MiB per-file bound first. A file above 1 MiB always gets bound `file-bytes` and no digest. Only files within 1 MiB count toward the 8 MiB request total, with their digested bytes. The first file within 1 MiB that would pass that total gets bound `total-bytes` and no digest, and so does each later file within 1 MiB.
 - A WSL repository gets the §11 "Trust and environment" rule.
+- Limit: an SMB server can resolve a junction on its own side, where `OBJ_DONT_REPARSE` cannot see it. So a root on an SMB share can give a fact through such a junction. That junction can target only the volumes of that server.
+- Limit: as the identity request does, the walk runs synchronously, with no deadline and no cancel. A later task adds both.
 
 Reply facts. Each fact holds `kind` and the fields of its kind.
 
@@ -1170,7 +1173,7 @@ WSL2 repositories are in this slice (spec FR-039 to FR-046). Git inside the dist
 ### Route
 
 - WSL routing exists only on Windows. On other platforms, every path takes the native route.
-- A selected or restored path is a WSL path when it starts with `\\wsl$\` or `\\wsl.localhost\`. The prefix comparison ignores letter case, as WSL does (P3).
+- A selected or restored path is a WSL path when it starts with `\\wsl$\` or `\\wsl.localhost\`. Each of the three separators in that prefix can be `\` or `/`, as Win32 accepts both. The prefix comparison ignores letter case, as WSL does (P3).
 - The next segment names the distro. It must equal a name that `wsl.exe --list --quiet` prints. Without an exact match, one match that ignores letter case counts, because `wsl.exe --distribution` accepted another letter case (P3). Any other result gives `WSL_UNAVAILABLE` with reason `distro-missing`.
 - The identity is one normalized UNC path: the `\\wsl.localhost\` prefix, the listed distro spelling, and the remaining segments. So both prefixes of one folder give one `repositoryId`.
 - The Linux path is `/` followed by the remaining segments, joined with `/`. `wslpath -u` gave the same result in P3.

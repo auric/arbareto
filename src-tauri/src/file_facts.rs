@@ -5,7 +5,7 @@
 //! The walk opens each component relative to its parent handle. It never follows a reparse point below a root.
 
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::Path;
+use std::path::{Component, Path, Prefix};
 
 use serde_json::{Value, json};
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -19,9 +19,10 @@ use windows::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_IO_DEVICE, ERROR_PATH_NOT_FOUND,
     ERROR_SHARING_VIOLATION, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE,
-    STATUS_ACCESS_DENIED, STATUS_END_OF_FILE, STATUS_IO_DEVICE_ERROR, STATUS_OBJECT_NAME_NOT_FOUND,
-    STATUS_OBJECT_PATH_NOT_FOUND, STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION,
-    STATUS_UNSUCCESSFUL, UNICODE_STRING, WIN32_ERROR,
+    STATUS_ACCESS_DENIED, STATUS_END_OF_FILE, STATUS_IO_DEVICE_ERROR,
+    STATUS_IO_REPARSE_TAG_NOT_HANDLED, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+    STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION, STATUS_UNSUCCESSFUL,
+    UNICODE_STRING, WIN32_ERROR,
 };
 use windows::Win32::Storage::FileSystem::{
     FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -133,10 +134,18 @@ fn is_component(name: &str) -> bool {
         && !reserved
 }
 
-/// Contract §11 "Route": a WSL path starts with `\\wsl$\` or `\\wsl.localhost\` in any letter case.
+/// Contract §11 "Route": a WSL path is a UNC path on the server `wsl$` or `wsl.localhost` in any letter case.
+/// The prefix parser takes `\` and `/` as separators.
 pub(crate) fn is_wsl_path(path: &Path) -> bool {
-    let text = path.to_string_lossy().to_ascii_lowercase();
-    text.starts_with(r"\\wsl$\") || text.starts_with(r"\\wsl.localhost\")
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(server, _) => {
+                server.eq_ignore_ascii_case("wsl$") || server.eq_ignore_ascii_case("wsl.localhost")
+            }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// One fact per entry, in request order.
@@ -159,7 +168,7 @@ fn fact(root: &Path, path: &[&str], digest: bool, budget: &mut Option<u64>) -> V
     for (component, name) in (1..).zip(middle) {
         parent = match open(&parent, name, false, false) {
             Ok(handle) => handle,
-            Err(STATUS_REPARSE_POINT_ENCOUNTERED) => {
+            Err(status) if is_reparse_point(status) => {
                 return reparse_point(&parent, name, component, None);
             }
             Err(status) => return not_opened(status, component),
@@ -168,11 +177,17 @@ fn fact(root: &Path, path: &[&str], digest: bool, budget: &mut Option<u64>) -> V
     let component = path.len();
     match open(&parent, last, false, false) {
         Ok(handle) => file_fact(&handle, component, digest, budget),
-        Err(STATUS_REPARSE_POINT_ENCOUNTERED) => {
+        Err(status) if is_reparse_point(status) => {
             reparse_point(&parent, last, component, Some(digest))
         }
         Err(status) => not_opened(status, component),
     }
+}
+
+/// `OBJ_DONT_REPARSE` stops the open at a reparse point that the I/O manager would follow.
+/// A tag that no file system filter handles fails the open with `STATUS_IO_REPARSE_TAG_NOT_HANDLED` (T302).
+fn is_reparse_point(status: NTSTATUS) -> bool {
+    status == STATUS_REPARSE_POINT_ENCOUNTERED || status == STATUS_IO_REPARSE_TAG_NOT_HANDLED
 }
 
 /// Opens a root as the identity request opens a path.
@@ -377,7 +392,7 @@ fn read(handle: HANDLE, limit: usize) -> Result<Vec<u8>, NTSTATUS> {
     Ok(bytes)
 }
 
-/// A component whose open returned `STATUS_REPARSE_POINT_ENCOUNTERED`. `last` holds `digest` for the final component.
+/// A component whose open stopped at a reparse point. `last` holds `digest` for the final component.
 fn reparse_point(parent: &OwnedHandle, name: &str, component: usize, last: Option<bool>) -> Value {
     let handle = match open(parent, name, false, true) {
         Ok(handle) => handle,
@@ -850,15 +865,166 @@ pub(crate) mod tests {
 
     #[test]
     fn a_wsl_path_starts_with_either_wsl_prefix_in_any_letter_case() {
-        for path in [r"\\wsl$\Ubuntu\repo", r"\\WSL.LOCALHOST\Ubuntu\repo"] {
+        for path in [
+            r"\\wsl$\Ubuntu\repo",
+            r"\\WSL.LOCALHOST\Ubuntu\repo",
+            "//wsl$/x",
+            r"\\wsl.localhost/x",
+            r"\\wsl$/Ubuntu/repo",
+            r"/\Wsl$\Ubuntu/repo",
+            r"//WSL.localhost\Ubuntu\repo",
+        ] {
             assert!(is_wsl_path(Path::new(path)), "{path}");
         }
         for path in [
             r"\\server\share\repo",
+            "//server/share/repo",
             r"C:\wsl.localhost\repo",
             r"\\wsl.localhost2\x",
+            "//wsl$x/Ubuntu",
         ] {
             assert!(!is_wsl_path(Path::new(path)), "{path}");
         }
+    }
+
+    /// A symbolic link `REPARSE_DATA_BUFFER` (MS-FSCC 2.1.2.4) with `SubstituteName` at `offset`.
+    fn symlink_buffer(tag: u32, offset: u16, name: &[u16], data_length: Option<u16>) -> Vec<u8> {
+        let path: Vec<u8> = name.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+        let length = (name.len() * 2) as u16;
+        let data_length = data_length.unwrap_or(12 + offset + length);
+        let mut data = Vec::new();
+        data.extend(tag.to_le_bytes());
+        data.extend(data_length.to_le_bytes());
+        data.extend(0u16.to_le_bytes());
+        for field in [offset, length, 0, 0] {
+            data.extend(field.to_le_bytes());
+        }
+        data.extend(SYMLINK_FLAG_RELATIVE.to_le_bytes());
+        data.extend(vec![0u8; usize::from(offset)]);
+        data.extend(path);
+        data
+    }
+
+    #[test]
+    fn crafted_reparse_data_gives_no_target() {
+        let name: Vec<u16> = "h.sh".encode_utf16().collect();
+        assert_eq!(
+            target(
+                &symlink_buffer(IO_REPARSE_TAG_SYMLINK, 0, &name, None),
+                IO_REPARSE_TAG_SYMLINK
+            ),
+            Some(("h.sh".to_string(), true)),
+            "the well-formed buffer"
+        );
+        let mut odd = symlink_buffer(IO_REPARSE_TAG_SYMLINK, 0, &name, None);
+        odd[10] = 7;
+        for (case, data, tag) in [
+            (
+                "SubstituteNameOffset past ReparseDataLength",
+                symlink_buffer(IO_REPARSE_TAG_SYMLINK, 8, &name, Some(12)),
+                IO_REPARSE_TAG_SYMLINK,
+            ),
+            ("an odd SubstituteNameLength", odd, IO_REPARSE_TAG_SYMLINK),
+            (
+                "a lone surrogate",
+                symlink_buffer(IO_REPARSE_TAG_SYMLINK, 0, &[0x68, 0xD800], None),
+                IO_REPARSE_TAG_SYMLINK,
+            ),
+            (
+                "an embedded NUL",
+                symlink_buffer(IO_REPARSE_TAG_SYMLINK, 0, &[0x68, 0, 0x68], None),
+                IO_REPARSE_TAG_SYMLINK,
+            ),
+            (
+                "another tag in the buffer",
+                symlink_buffer(IO_REPARSE_TAG_MOUNT_POINT, 0, &name, None),
+                IO_REPARSE_TAG_SYMLINK,
+            ),
+            (
+                "a short header",
+                vec![0x0c, 0, 0, 0xa0, 4],
+                IO_REPARSE_TAG_SYMLINK,
+            ),
+        ] {
+            assert_eq!(target(&data, tag), None, "{case}");
+        }
+    }
+
+    /// A third-party tag without the name-surrogate bit (Microsoft Learn "Reparse Point Tags").
+    const PRIVATE_TAG: u32 = 0x0000_7A5E;
+
+    /// Sets `PRIVATE_TAG` with `FSCTL_SET_REPARSE_POINT` and a `REPARSE_GUID_DATA_BUFFER`. A folder must be empty.
+    fn set_private_tag(path: &Path) -> bool {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        use windows::Win32::System::IO::DeviceIoControl;
+        use windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+
+        let Ok(file) = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+            .open(path)
+        else {
+            return false;
+        };
+        let payload = [1u8, 2, 3, 4];
+        let mut data = Vec::new();
+        data.extend(PRIVATE_TAG.to_le_bytes());
+        data.extend((payload.len() as u16).to_le_bytes());
+        data.extend(0u16.to_le_bytes());
+        data.extend(*b"arbareto-fixture");
+        data.extend(payload);
+        // SAFETY: `file` keeps the handle open, and `data` is a live local of the passed length.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(file.as_raw_handle()),
+                FSCTL_SET_REPARSE_POINT,
+                Some(data.as_ptr().cast()),
+                data.len() as u32,
+                None,
+                0,
+                None,
+                None,
+            )
+        }
+        .is_ok()
+    }
+
+    #[test]
+    fn a_reparse_point_without_the_name_surrogate_bit_gives_other_or_the_fact_of_its_type() {
+        let repo = Repo::new();
+        let folder = repo.hook("tagged-folder");
+        let file_path = repo.hook("tagged-file");
+        std::fs::create_dir(&folder).expect("folder");
+        std::fs::write(&file_path, "abc").expect("file");
+        if !set_private_tag(&folder) || !set_private_tag(&file_path) {
+            println!("SKIP private reparse tag: missing capability reparse-tag (unverified)");
+            return;
+        }
+        let metadata = std::fs::symlink_metadata(&file_path).expect("metadata");
+        let file_fact = json!({ "kind": "file", "size": 3, "lastWrite": metadata.last_write_time().to_string() });
+        let files: &[(usize, &[&str])] = &[
+            (GIT, &["hooks", "tagged-folder", "x"]),
+            (GIT, &["hooks", "tagged-file", "x"]),
+            (GIT, &["hooks", "tagged-folder"]),
+            (GIT, &["hooks", "tagged-file"]),
+        ];
+        assert_eq!(
+            repo.facts(true, files),
+            vec![
+                json!({ "kind": "other" }),
+                json!({ "kind": "other" }),
+                json!({ "kind": "directory" }),
+                json!({ "kind": "error", "component": 2, "code": "other-error" }),
+            ],
+            "digest true"
+        );
+        assert_eq!(
+            repo.facts(false, &files[2..]),
+            vec![json!({ "kind": "directory" }), file_fact],
+            "digest false"
+        );
     }
 }

@@ -126,7 +126,7 @@ Use Git's child-before-parent date order. OID lengths follow the repository obje
 
 Return separate page-boundary and shallow-boundary metadata. An unavailable parent is not a root. Show current HEAD/branch only from the captured identity; do not invent branch ownership for commits.
 
-Resolve shallow metadata through Git and recheck its bounded fingerprint with the captured checkout. Missing objects give `limited` with `OBJECT_MISSING`, without fetching (§7 "Missing objects"). Graph-only layout limits remain frontend presentation state, not workspace mutation blockers.
+Resolve shallow metadata through Git and recheck its bounded fingerprint with the captured checkout. In a partial clone, missing objects give `limited` with `OBJECT_MISSING`, without fetching. Without a promisor remote, a missing object gives `failed` with `REPOSITORY_UNAVAILABLE` (§7 "Missing objects"). Graph-only layout limits remain frontend presentation state, not workspace mutation blockers.
 
 ## 4. Snapshot and hunk rules
 
@@ -716,9 +716,10 @@ A trace2 event target comes only from the T091 probe result (research R4). The p
 
 - `--no-lazy-fetch` sets `GIT_NO_LAZY_FETCH=1` for every Git child, hooks included (research R5). An approved hook cannot fetch objects during an app operation. This differs from command-line Git. A hook that fails for this reason shows its message in the commit failure output (§9).
 - Object check: the configuration listing shows a promisor remote as `remote.<name>.promisor` or `extensions.partialClone`. In such a repository, a failed read or mutation step starts an object check. The service runs `cat-file --batch-check` with `--no-lazy-fetch`. Its input holds the object IDs that the step needed: HEAD tree and index entries within the §5 listing caps, or history commit IDs. A `missing` answer gives `OBJECT_MISSING` (§9). Otherwise the failure stays `GIT_FAILED`. The service never parses the Git message.
-- A read that needs a missing object ends `limited` with `OBJECT_MISSING`. It keeps any bounded data and blocks dependent mutations. History follows the same rule.
+- A read that needs a missing object ends `limited` with `OBJECT_MISSING`. It keeps any bounded data and blocks dependent mutations. History follows the same rule in a partial clone.
 - A mutation step before publication or handoff fails with `OBJECT_MISSING`, and no data changes. After handoff, reconciliation classifies the result from observed state, and the exit status alone decides nothing. The commit passes `--quiet`, so Git prints no summary after the commit. Without it, a research R5 probe saw a commit move HEAD, run `post-commit`, and then exit 128 in its summary. With `--quiet`, the same case exited 0 and ran every hook.
 - The `OBJECT_MISSING` remedy text is: "This partial clone lacks objects that Git needs here. Arbareto never downloads objects. Download them in a terminal, for example with git backfill, then use Refresh."
+- Damaged object store: a failed history read without a promisor remote also runs the object check. A `missing` answer in a repository without a promisor remote means a damaged object store. The read ends `failed` with `REPOSITORY_UNAVAILABLE`, and its text suggests `git fsck`. `recoveryState` becomes `unavailable` (data-model §2), and the incomplete read keeps dependent mutations blocked.
 
 Trust discovery includes traditional hooks, configured hook commands/events, conditional includes, worktree configuration, filters, monitors, diff tools, and signing programs.
 
@@ -726,7 +727,7 @@ Trust discovery includes traditional hooks, configured hook commands/events, con
 
 **URL user information.** A key subsection can hold a URL with credentials. Examples are `url.<base>.insteadOf`, `http.<url>.extraheader`, `credential.<url>.helper`, and `includeIf.hasconfig:remote.*.url:<pattern>.path`. Git prints these subsections unchanged (research R5 probe). So the service redacts every key subsection, origin, and allowlisted value before display or logging. For each `://` in the text, the authority runs to the next `/`, `?`, `#`, or the end. When that authority holds `@`, all text before its last `@` becomes `<redacted>`. Git's `transport_anonymize_url` also removes the user information of a URL for display (research R5). The trust fingerprint covers the unredacted bytes, and no response carries them.
 
-Do not execute a custom filter merely to determine whether the repository is trusted. Before the first status read, list effective configuration with scopes. The listing includes `command` scope entries from the preserved environment. The trust fingerprint covers them. This listing runs no filter and loads no index. A repository-controlled key (resolution rule below) can define a command that a read runs. Such a key blocks status, diff, and history reads until trust approval. History reads cannot run these keys (table below). They still wait for the same approval, so one read gate covers the workspace. `readHistory` takes the listing of its request generation when the service holds one ("Shared listing" below). Otherwise it runs the listing itself. It never waits for a status read. System, global, and command entries are protected configuration (Git `Documentation/git-config.adoc`). They run without approval, unless the resolution rule makes them repository-controlled.
+Do not execute a custom filter merely to determine whether the repository is trusted. Before the first status read, list effective configuration with scopes. The listing includes `command` scope entries from the preserved environment. The trust fingerprint covers them. This listing runs no filter and loads no index. A repository-controlled key (resolution rule below) can define a command that a read runs. Such a key blocks status, diff, and history reads until trust approval. History reads cannot run these keys (list below). Their results still wait for the same approval, so one read gate covers the workspace. `readHistory` takes the listing of its request generation when the service holds one ("Shared listing" below). Otherwise it runs the listing itself. It waits for no status step, only for a running listing of its generation. System, global, and command entries are protected configuration (Git `Documentation/git-config.adoc`). They run without approval, unless the resolution rule makes them repository-controlled.
 
 The blocking class is any repository-controlled key that names a command a read can run. This slice reads through `status --porcelain=v2`, `diff-files`, `diff-index --cached`, `ls-files --eol`, `rev-list`, `cat-file --batch-command`, and `cat-file --batch-check`. The untracked read is the T092 method, such as `diff --no-index --no-ext-diff --no-textconv` (§4). T092 adds its selected form to this list. Reads also run `check-attr -z --stdin`, `hash-object -t tree --stdin` without `-w`, and `config --file .gitmodules --null --list`. For those commands, the listed keys behave as follows:
 
@@ -746,14 +747,18 @@ Status and diff reads pass `--ignore-submodules=dirty`. Superproject reads never
 
 Keys that cannot fire for these reads do not block reads. Ordinary trust discovery still covers them before any operation that can run them.
 
-**Shared listing.** One trust listing serves `readWorkspace` and `readHistory` of the same repository generation (research R5 "T281 record"). The listing result is bound to that generation. The service never reuses it for another generation.
+**Shared listing.** Only `readHistory` may reuse a trust listing (research R5 "T281 record"). It reuses the listing that a `readWorkspace` of the same generation runs or ran, after the tuple recheck below.
 
-- Before a read reuses a listing, the service reads the §8 change tuple again. It compares it with the tuple from the time of that listing. This compare starts no Git process.
-- A new generation, or any tuple difference, needs a new listing. The tuple holds each configuration origin file and each absent candidate file (§8 "Change check"). So a configuration edit or a new configuration file forces a new listing.
-- A read that finds the listing of its generation still running waits for that listing.
-- A WSL repository never shares a trust listing, and each WSL read runs its own listing. The service has no tested stat tuple for distro configuration files (§11 "Change polling").
+- `readWorkspace` always runs its own listing. It can start gated programs, such as filters and `core.fsmonitor`, so its trust decision never relies on stat data.
+- A listing belongs to the generation of the read that started it. For a `readWorkspace` without a request generation, that is the generation of its result.
+- The service never reuses a listing for another generation.
+- Before `readHistory` reuses a listing, the service reads the §8 change tuple again. It compares it with the tuple from the time of that listing. This compare starts no Git process.
+- The service reads the tuple of a listing before that listing starts. So an edit during the listing changes the compare result.
+- Any tuple difference needs a new listing. The tuple holds each configuration origin file and each absent candidate file (§8 "Change check"). So a configuration edit or a new configuration file forces a new listing.
+- A `readHistory` that finds that listing still running waits for it.
+- A WSL repository never shares a trust listing, and each WSL read runs its own listing. The service has no tested stat tuple for distro configuration files (§11 "Trust and environment").
 - In the T281 probe, a history read with a stale listing passed its gate after a local `core.fsmonitor` edit. A fresh listing gave `TRUST_CHANGED`. So the tuple compare is required.
-- The shared listing removes 2 Git processes from the second read of a generation.
+- The shared listing removes 2 Git processes from a `readHistory` that reuses a listing.
 
 **Held history steps.** `readHistory` can start its history steps beside the trust listing (research R5 "T281 record"). They start before the gate decides.
 
@@ -988,6 +993,7 @@ Do not classify repository state by parsing localized human status output. Use b
 - Verify a repeated `commit` with a consumed review token returns the first operation, and a repeated `requestId` gives `INVALID_REQUEST`.
 - Verify stale/out-of-order reads cannot replace the active view or authorize mutation.
 - Verify that a `check: "changes"` read without a hint or a tuple change starts no Git process. Verify that `readHistory` runs beside `readWorkspace` without a status snapshot, and waits for read trust like other reads.
+- Verify the §7 "Shared listing" and "Held history steps" rules. `readHistory` reuses the listing of a `readWorkspace` of its generation. `readWorkspace` always runs its own listing. A configuration edit or a new candidate file between the two reads forces a new listing. A refused gate returns no held history row, and no canary runs.
 - Verify that a trust approval over a digest bound stores no record, and that the next session reports `untrusted`. This holds also after Restart service.
 - Verify all limits report incomplete state explicitly and release owned process resources.
 - Verify cancellation near completion reports actual effects and preserves unrelated processes.
@@ -1170,7 +1176,8 @@ A Windows Job holds `wsl.exe`, not the Linux processes. A Linux process that det
 ### Trust and environment
 
 - Repository-controlled programs run as the Linux user of the distro. Through interop, they can start Windows programs as the Windows user. The §7 trust rules apply unchanged.
-- The trust listing uses the distro Git. Program-file digests read each file through its UNC path. A bare-name program uses the Linux `PATH` of the Git probe. The lookup tries only `<entry>/<name>`, because Linux Git adds no `.exe`. The Windows directories in that `PATH` lie outside the repository, so they enter the fingerprint as locations only. The service may not read the Linux execute bit through the UNC path. So in a WSL repository, any existing hooks-folder entry counts as a hook, as on Windows. This rule can only add approval prompts.
+- The trust listing uses the distro Git. Program-file digests read each file through its UNC path. A bare-name program uses the Linux `PATH` of the Git probe. The lookup tries only `<entry>/<name>`, because Linux Git adds no `.exe`. The Windows directories in that `PATH` lie outside the repository, so they enter the fingerprint as locations only. The service may not read the Linux execute bit through the UNC path. So in a WSL repository, any existing hooks-folder entry counts as a hook, as on Windows. The lookup tries only `<event>`, because Linux Git adds no `.exe`. This rule can only add approval prompts.
+- A WSL repository never shares a trust listing (§7 "Shared listing"). WSL polls use no stat tuple ("Change polling"), and no probe tested the tuple for distro configuration files.
 - Every `wsl.exe` process gets an empty `WSLENV` ("Process launch" above). WSL forwards only the variables that `WSLENV` names (P4 forwarded `GIT_TRACE` through it). So no Windows variable reaches Linux Git, and that includes the `GIT_*` variables that §7 preserves for Git for Windows. The distro's own configuration and environment apply.
 - The `--exec` environment in P4 held `HOME`, `PATH`, `LANG`, `USER`, `SHELL`, `TERM`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `WSL_DISTRO_NAME`, and `WSL_INTEROP`. It held no `GIT_*` variable. The `mutation-trace2` policy does not apply to WSL, so hook and signing failures stay `GIT_FAILED`.
 - Credentials come from the distro's Git configuration. The app sets up no credential helper. An SSH agent that `.bashrc` starts does not load under `--exec` (Git Extensions #11839). Hooks and the §12 update fetches can meet this limit.
@@ -1431,7 +1438,7 @@ The update processes write no superproject index. The superproject index digest 
 - `<n>` counts the rows that the update plans to visit, except `skip` rows without the register step. A nested level adds its new rows to `<n>` when the update reads it. The nested rows of a failed or refused row leave `<n>`. `<i>` names the row in progress.
 - The service splits stderr into segments at CR and LF. It takes the last `NN% (a/b)` match of the newest segment as the percentage. Git prints that counter with the untranslated format `"%3u%% (%"PRIuMAX"/%"PRIuMAX")%s"` (progress.c:134). The service parses no other text, because Git translates it. A fetch with `--progress` printed such segments (probe S20).
 - A segment without a match keeps the last percentage. A new process starts without a percentage.
-- Besides the §2 identity fields, progress events carry only the phase, the stall flag, and `counters`. `counters` holds `rowIndex`, `rowCount`, and `percent` when a percentage exists. The row index names the row in the ordered row list, so no row ID goes out. The phase is `fetch` or `update`, and §6 "Activity and stall notice" defines the flag. They carry no Git text. At most 4 events per second go out (§5).
+- Besides the §2 identity fields, progress events carry only the phase, the stall flag, and `counters`. `counters` holds `rowIndex`, `rowCount`, and `percent` when a percentage exists. `rowIndex` is `<i>`, and `rowCount` is `<n>`. No row ID goes out. The phase is `fetch` or `update`, and §6 "Activity and stall notice" defines the flag. They carry no Git text. At most 4 events per second go out (§5).
 
 ### Deadlines and Cancel
 

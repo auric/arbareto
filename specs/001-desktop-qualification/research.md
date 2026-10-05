@@ -120,6 +120,14 @@ Contract fit of a persistent process:
 - The saving is one process and 20 to 25 ms per page. T192 measures the full process count of `readHistory` (plan.md "Git processes per read").
 - This probe is not qualification evidence, and no Arbareto build ran.
 
+**T081 record (2026-10-05, win32 Git 2.56.0.windows.1)**: `tests/git/snapshot.test.ts` reports which Git output detects each index flag. Each line is an `OBSERVATION`.
+
+- Intent-to-add: `status --porcelain=v2 -z` shows it as the ordinary record `1 .A`, with `mH` and `mI` `000000`.
+- Assume-unchanged: `ls-files -z -v` shows it as a lowercase tag: `h`, or `s` together with skip-worktree.
+- Skip-worktree: `ls-files -z -v` shows it as the tag `S`, or `s` together with assume-unchanged.
+- `ls-files -v` gives an intent-to-add entry the plain tag `H`. So `ls-files -v` alone cannot detect intent-to-add.
+- The Linux run is pending.
+
 Sources: [status format and optional locks](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-status.adoc), [cat-file framing](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-cat-file.adoc#L143-L175), [NUL options](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-cat-file.adoc#L266-L275).
 
 ### Repository identity
@@ -538,7 +546,7 @@ Informal timings, not qualification evidence (median of 10 interleaved runs on o
 - The cached M with commit-graph carried the CRLF builder digest of another checkout. The probe accepted the builder bytes with LF or CRLF line ends and checked the semantic digest of each copy. All four copies matched.
 - This probe is not qualification evidence, and no Arbareto build ran.
 
-Verdict for T080: one trust listing can serve `readWorkspace` and `readHistory` of the same generation. This saves 2 Git processes for the second read. Adopted in contract §7 "Shared listing" (2026-10-05).
+Verdict for T080: one trust listing can serve `readWorkspace` and `readHistory` of the same generation. This saves 2 Git processes for the second read. Adopted in contract §7 "Shared listing" (2026-10-05), in a conservative form. Only `readHistory` reuses a listing, and `readWorkspace` always runs its own.
 
 Verdict for T086: `rev-list` and `cat-file` can run in parallel with the trust listing, with their result held until the gate passes. No gated program started, and a refused gate delivered no held row. The process count stays 7, and the wall time drops by at most the listing time. Adopted in contract §7 "Held history steps" (2026-10-05).
 

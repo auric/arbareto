@@ -23,8 +23,6 @@ const TIMING_RUNS = 20;
 // Contract §5 probe deadline.
 const DEADLINE_MS = 30_000;
 const OTHER_OWNER = { GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
-const DUBIOUS_PREFIX = "fatal: detected dubious ownership in repository at '";
-const NOT_A_REPOSITORY_PREFIX = "fatal: not a git repository (or any";
 // githooks.adoc at the R2 Git revision lists these 28 names.
 const HOOKS = [
   "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit",
@@ -52,14 +50,12 @@ function spawn(dir: string, args: string[], extra: Record<string, string> = {}):
   }
 }
 
-// Contract §6 classification of the first query output, or of the combined output.
+// Contract §6 classification of the first query output, or of the combined output. Every nonzero exit gives the merged refusal. No stderr byte decides.
 function classify(r: Result): string {
   if (r.exit === 0) {
     const [bare, inside] = r.stdout.split("\n");
     return bare === "true" || inside === "true" ? "UNSUPPORTED_REPOSITORY" : "ok";
   }
-  if (r.exit === 128 && r.stderr.split("\n").some((l) => l.startsWith(DUBIOUS_PREFIX))) return "DUBIOUS_OWNERSHIP";
-  if (r.exit === 128 && r.stderr.startsWith(NOT_A_REPOSITORY_PREFIX)) return "NOT_A_REPOSITORY";
   return "REPOSITORY_UNAVAILABLE";
 }
 

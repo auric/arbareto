@@ -1,0 +1,5 @@
+{
+  "schema": "registration-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"path\":\"C:/repo\",\"remedy\":{\"text\":\"Run `git status` in this folder\"},\"outputTail\":\"line\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\nline\\n\"}"
+}

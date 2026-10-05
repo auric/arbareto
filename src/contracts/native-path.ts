@@ -22,6 +22,15 @@ export const PATH_RULES = {
       /^[^<>:"/\\|?*\u0000-\u001f]+$/.test(name) &&
       !/[. ]$/.test(name) &&
       !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/.test(foldAscii(name)),
+    // Contract §7 "Program file digests": an absolute link target is the `SubstituteName`, an NT object namespace path.
+    // Sources: MS-FSCC 2.1.2.4 and 2.1.2.5 (`SubstituteName`), Microsoft Learn "Naming Files, Paths, and Namespaces", "NT Namespaces".
+    // `\??\X:\…` maps to `X:\…`, and `\??\UNC\server\share\…` maps to `\\server\share\…`. Every other form gives null.
+    linkTarget: (target: string): string | null => {
+      const drive = /^\\\?\?\\([A-Za-z]:\\.*)$/s.exec(target);
+      if (drive) return drive[1]!;
+      const unc = /^\\\?\?\\UNC(\\[^\\/]+\\[^\\/]+(?:\\.*)?)$/s.exec(target);
+      return unc ? `\\${unc[1]}` : null;
+    },
     gitName: "git.exe",
     separator: /[\\/]/,
     path: win32,
@@ -45,6 +54,8 @@ export const PATH_RULES = {
     isGitExecutable: (path: string) => path.endsWith("/git"),
     // POSIX.1-2024 XBD 3.146 "Filename": no `/` and no NUL. The filenames dot and dot-dot have a special meaning.
     isComponent: (name: string) => name !== "." && name !== ".." && /^[^/\u0000]+$/.test(name),
+    // POSIX.1-2024 XBD 4.16 "Pathname Resolution": a link text that begins with a slash is an absolute pathname.
+    linkTarget: (target: string): string | null => (posix.isAbsolute(target) ? target : null),
     gitName: "git",
     separator: /\//,
     path: posix,

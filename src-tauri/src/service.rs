@@ -950,7 +950,7 @@ mod tests {
             .prepare(&picked, "chooseRepository", json!({}))
             .expect("prepare")
             .expect("a context");
-        let failed = json!({ "requestId": CALL, "state": "failed", "code": "NOT_A_REPOSITORY" });
+        let failed = json!({ "requestId": CALL, "state": "failed", "code": "REPOSITORY_UNAVAILABLE" });
         assert_eq!(
             shell.finish(&picked, "chooseRepository", &prepared, failed.clone()),
             failed

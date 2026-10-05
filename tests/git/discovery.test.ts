@@ -2,11 +2,14 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect } from "bun:test";
-import { chmodSync, existsSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, utimesSync } from "node:fs";
 import { basename, join, relative } from "node:path";
-import { classifyDiscoveryFailure, discoverRepository, safeDirectoryCommand } from "../../src/git-service/discovery";
+import { COMMIT_OUTPUT_TAIL_BYTES } from "../../src/contracts/limits";
+import { buildSubmoduleOutputTail } from "../../src/contracts/submodules";
+import * as discoveryModule from "../../src/git-service/discovery";
+import { discoverRepository, type DiscoveryResult } from "../../src/git-service/discovery";
 import type { GitInstallation } from "../../src/git-service/git-installation";
-import { createCollector, RunnerRefusal, type GitRunner, type IdentityReply, type RefusedCode } from "../../src/git-service/git-runner";
+import { createCollector, RunnerRefusal, type GitExit, type GitRunner, type IdentityReply, type RefusedCode } from "../../src/git-service/git-runner";
 import { createRegistrations, type RegistrationOutcome } from "../../src/git-service/registration";
 import { printOrigin } from "../origin";
 import { createBunRunner, type BunRunner } from "./bun-runner";
@@ -19,27 +22,23 @@ import { caseTest, openService, type Refusal, type RegistrationResult, type Serv
 printOrigin("../../src/git-service/discovery.ts", import.meta.dir);
 printOrigin("../../src/git-service/registration.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
+printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
 const TASK = "T068";
+const MERGED = "T308";
 const TIMEOUT_MS = 120_000;
-const SHELL_TIMEOUT_MS = 60_000;
+const STREAM_BYTES = 64 * 1024;
 
 // Research R2: the first discovery query. Contract §6: discovery runs under the fixed C locale.
 const FIRST_QUERY = ["--no-lazy-fetch", "rev-parse", "--is-bare-repository", "--is-inside-git-dir"];
 // Git `t/README`: this knob makes the ownership check fail for every repository.
 const OTHER_OWNER = { GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
-// Contract §6 "Registration bootstrap" and research R2.
-const DUBIOUS_PREFIX = "fatal: detected dubious ownership in repository at '";
-const NOT_A_REPOSITORY_PREFIX = "fatal: not a git repository (or any";
-// A fixed selected Git path. The classifier is pure, so it needs no real file.
-const SELECTED_GIT = "C:\\Program Files\\Git\\cmd\\git.exe";
 
 // Data-model §2 and contract §6 remedy texts.
 const REMEDY = {
   bare: "Open a worktree of it, or clone it",
   administrationFolder: "Open the working folder that contains it",
   unavailable: "Run `git status` in this folder",
-  notARepository: "Open a folder inside a Git repository.",
   fileId: "Open the repository from an NTFS or ReFS volume",
 };
 
@@ -53,16 +52,9 @@ const gitPath = (): string => {
   return GIT;
 };
 const slash = (path: string) => path.replaceAll("\\", "/");
-const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
-
-// Contract §4 "Quoting rule": PowerShell ends a single-quoted string at U+0027 and U+2018 to U+201B, so each is doubled. U+0022 and U+201C to U+201E refuse the value.
-const SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
-const REFUSED_QUOTES = /["\u201C-\u201E]/;
-const psQuote = (value: string) => `'${value.replace(SINGLE_QUOTES, "$&$&")}'`;
-function expectedSafeDirectory(gitSelectedPath: string, path: string): string | null {
-  if (REFUSED_QUOTES.test(gitSelectedPath) || REFUSED_QUOTES.test(path)) return null;
-  return `& ${psQuote(gitSelectedPath)} config --global --add safe.directory ${psQuote(path)}`;
-}
+const encode = (value: string) => new TextEncoder().encode(value);
+// Contract §9 "Commit failure output" with the §12 "Output tail" change. No byte was dropped before the buffer.
+const outputTail = (stderr: Uint8Array) => buildSubmoduleOutputTail(stderr, false);
 
 function probeDiscovery(git: string, directory: string, extra: Record<string, string> = {}): { exitCode: number; stderr: Uint8Array } {
   const proc = Bun.spawnSync([git, ...FIRST_QUERY], { cwd: directory, env: fixtureEnv({ LC_ALL: "C", ...extra }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -80,166 +72,234 @@ function hostileRepositories(git: string, built: Built): string[] {
   });
 }
 
-// Git's own suggestion, which Git quotes for a POSIX shell.
-const gitSuggestion = (stderr: string) => stderr.split("\n").find((line) => line.includes("git config --global --add safe.directory"))?.trim() ?? null;
-
 const markers = () => (readdirSync(FIXTURE_ROOT, { recursive: true }) as string[]).filter((p) => basename(p) === F15_MARKER);
 
-describe("dubious ownership classifier (contract §6, plan.md F15)", () => {
-  caseTest(
-    TASK,
-    "each hostile folder gives DUBIOUS_OWNERSHIP with the Git-reported path and the service-built safe.directory command, never Git's suggested command",
-    [],
-    () => {
-      const git = gitPath();
-      const repos = hostileRepositories(git, buildF15(git, "t068-hostile"));
-      expect(repos.length).toBe(POWERSHELL_QUOTES.length);
-      for (const repo of repos) {
-        const failure = probeDiscovery(git, repo, OTHER_OWNER);
-        const stderr = text(failure.stderr);
-        const path = slash(repo);
-        expect({ repo, exitCode: failure.exitCode, line: stderr.split("\n")[0] }).toEqual({ repo, exitCode: 128, line: `${DUBIOUS_PREFIX}${path}'` });
-        const refusal = classifyDiscoveryFailure({ exitCode: failure.exitCode, stderr: failure.stderr, directory: repo, gitSelectedPath: SELECTED_GIT });
-        const expected = expectedSafeDirectory(SELECTED_GIT, path);
-        expect({ repo, code: refusal.code, path: refusal.path, command: refusal.remedy?.command ?? null }).toEqual({ repo, code: "DUBIOUS_OWNERSHIP", path, command: expected });
-        expect({ repo, command: safeDirectoryCommand(SELECTED_GIT, path).command }).toEqual({ repo, command: expected });
-        const suggestion = gitSuggestion(stderr);
-        expect(suggestion).not.toBeNull();
-        expect(JSON.stringify(refusal)).not.toContain(suggestion as string);
-      }
-      expect(markers()).toEqual([]);
+// Contract §6 "Registration bootstrap": the merged refusal of discovery call 1. `path` is compared only when the caller knows the selected folder.
+function expectMerged(label: string, refusal: { code?: string; path?: string; remedy?: { text?: string; command?: string | null }; outputTail?: unknown } | undefined, stderr: Uint8Array, path?: string): void {
+  const seen = { label, code: refusal?.code, text: refusal?.remedy?.text, command: refusal?.remedy?.command ?? null, outputTail: refusal?.outputTail };
+  const expected = { label, code: "REPOSITORY_UNAVAILABLE", text: REMEDY.unavailable, command: null, outputTail: outputTail(stderr) };
+  if (path === undefined) return void expect(seen).toEqual(expected);
+  expect({ ...seen, path: refusal?.path }).toEqual({ ...expected, path });
+}
+
+type Wrap = (runner: BunRunner) => GitRunner;
+const isFirstQuery = (call: { arguments: readonly string[] }) => call.arguments.join(" ") === FIRST_QUERY.join(" ");
+
+// Discovery call 1 runs in the double with own collectors. `replace` then gives the stderr bytes and the exit status of that call.
+// The stdout of the double reaches the call only when the exit status stays.
+function replaceFirst(replace: (exit: GitExit, stderr: Uint8Array) => { exitCode: number | null; stderr: Uint8Array }): Wrap {
+  return (r) => ({
+    ...r,
+    run: async (call) => {
+      if (!isFirstQuery(call)) return r.run(call);
+      const stdout = createCollector({ maxBytes: STREAM_BYTES });
+      const stderr = createCollector({ maxBytes: STREAM_BYTES });
+      const exit = await r.run({ ...call, stdout, stderr });
+      const out = replace(exit, stderr.take());
+      if (out.exitCode === exit.exitCode) call.stdout.push(stdout.take());
+      call.stderr.push(out.stderr);
+      return { ...exit, exitCode: out.exitCode };
     },
+  });
+}
+
+// Keeps the reply of discovery call 1 and records its stderr bytes.
+const recordFirst = (seen: Uint8Array[]): Wrap => replaceFirst((exit, stderr) => (seen.push(stderr), { exitCode: exit.exitCode, stderr }));
+
+// The probe policy removes `GIT_TEST_*` (`src/contracts/git-environment.json`), so the knob never reaches Git through the double or the service environment seam.
+// Discovery call 1 still runs in the double. Its stderr bytes and exit status come from the same query with the knob in the same folder.
+const ownerKnob = (git: string, directory: string, seen: Uint8Array[]): Wrap =>
+  replaceFirst(() => {
+    const knob = probeDiscovery(git, directory, OTHER_OWNER);
+    seen.push(knob.stderr);
+    return knob;
+  });
+
+interface Double {
+  discover(directory: string, wrap?: Wrap): Promise<DiscoveryResult>;
+  register(directory: string, wrap?: Wrap): Promise<RegistrationOutcome>;
+}
+
+// Direct discovery and registration through wrappers of one shell double. Discovery knows the selected folder, and registration does not (contract §3).
+async function withDouble(name: string, body: (double: Double) => Promise<void>): Promise<void> {
+  const git = gitPath();
+  const runner = createBunRunner({ git, directory: fixtureDir(`${name}-runner`), environment: serviceEnv() });
+  try {
+    const gitInstallationId = crypto.randomUUID();
+    const probe = runner.addContext("gitProbe", git);
+    expect(await runner.register({ operationId: crypto.randomUUID(), bootstrapId: probe, gitInstallationId, version: "2.55.0", digest: "c".repeat(64), confirm: false })).toEqual({ result: "approved" });
+    const installation: GitInstallation = {
+      gitInstallationId,
+      selectedPath: git,
+      executablePath: git,
+      version: "2.55.0",
+      admission: "admitted",
+      executableIdentity: { file: { volumeSerial: "0".repeat(16), fileId: "0".repeat(31) + "1" }, versionOutput: "2.55.0", digest: "c".repeat(64) },
+    };
+    const wrapped = (wrap?: Wrap): GitRunner => (wrap ? wrap(runner) : runner);
+    await body({
+      discover: (directory, wrap) =>
+        discoverRepository(wrapped(wrap), { operationId: crypto.randomUUID(), bootstrapId: runner.addContext("repositoryDiscovery", directory), gitInstallationId, directory, gitSelectedPath: git }),
+      register: (directory, wrap) =>
+        createRegistrations({ runner: wrapped(wrap), unfinishedMutation: () => false }).register({
+          operationId: crypto.randomUUID(),
+          bootstrapId: runner.addContext("repositoryDiscovery", directory),
+          installation,
+          signal: new AbortController().signal,
+        }),
+    });
+  } finally {
+    await runner.dispose();
+  }
+}
+
+const refusalOf = (result: DiscoveryResult) => (result.ok ? undefined : (result.refusal as Parameters<typeof expectMerged>[1]));
+const outcomeRefusal = (outcome: RegistrationOutcome) => (outcome.ok ? undefined : { code: outcome.code, ...(outcome.result as object | undefined) });
+
+describe("merged discovery refusal through the shell double (contract §6 \"Registration bootstrap\", plan.md F15)", () => {
+  caseTest(
+    MERGED,
+    "F15 with GIT_TEST_ASSUME_DIFFERENT_OWNER=1: Git's ownership refusal gives REPOSITORY_UNAVAILABLE with the selected folder, the remedy text, Git's message in outputTail, and no command",
+    ["shell-double"],
+    () =>
+      withDouble("t308-owner", async (double) => {
+        const git = gitPath();
+        const repo = join(buildF15(git, "t308-owner").root, "repo");
+        const seen: Uint8Array[] = [];
+        const refusal = refusalOf(await double.discover(repo, ownerKnob(git, repo, seen)));
+        expect({ calls: seen.length, exitCode: probeDiscovery(git, repo, OTHER_OWNER).exitCode, bytes: seen[0]!.length > 0 }).toEqual({ calls: 1, exitCode: 128, bytes: true });
+        expectMerged("owner", refusal, seen[0]!, repo);
+      }),
     TIMEOUT_MS,
   );
 
   caseTest(
-    TASK,
-    "a stderr text without the C-locale prefix gives the path and no command",
-    [],
-    () => {
-      const git = gitPath();
-      const [repo] = hostileRepositories(git, buildF15(git, "t068-localized"));
-      const failure = probeDiscovery(git, repo!, OTHER_OWNER);
-      expect(text(failure.stderr)).toStartWith(DUBIOUS_PREFIX);
-      // A localized Git prints another first line. The rest of the text stays.
-      const localized = new TextEncoder().encode(text(failure.stderr).replace(DUBIOUS_PREFIX, "fatal: zweifelhafter Besitz im Repository unter '"));
-      const refusal = classifyDiscoveryFailure({ exitCode: failure.exitCode, stderr: localized, directory: repo!, gitSelectedPath: SELECTED_GIT });
-      expect([repo, slash(repo!)]).toContain(refusal.path!);
-      expect(refusal.remedy?.command ?? null).toBeNull();
-    },
-    TIMEOUT_MS,
-  );
-
-  caseTest(
-    TASK,
-    "PowerShell parses each built command without a subexpression, runs it with an owned GIT_CONFIG_GLOBAL, creates no marker, and adds the path as safe.directory",
-    ["powershell"],
-    () => {
-      const git = gitPath();
-      const shell = (Bun.which("pwsh") ?? Bun.which("powershell")) as string;
-      const repos = hostileRepositories(git, buildF15(git, "t068-powershell"));
-      const cwd = fixtureDir("t068-powershell-cwd");
-      const owned = join(cwd, "owned.gitconfig");
-      writeFileSync(owned, "");
-      const added: string[] = [];
-      for (const repo of repos) {
-        const path = slash(text(probeDiscovery(git, repo, OTHER_OWNER).stderr).split("\n")[0]!.slice(DUBIOUS_PREFIX.length, -1));
-        const command = safeDirectoryCommand(git, path).command;
-        if (command === null) {
-          expect({ repo, expected: expectedSafeDirectory(git, path) }).toEqual({ repo, expected: null });
-          continue;
+    MERGED,
+    "each of the eight F15 hostile names gives the merged refusal with the selected folder and Git's message as plain text, and no marker appears",
+    ["shell-double"],
+    () =>
+      withDouble("t308-hostile", async (double) => {
+        const git = gitPath();
+        const repos = hostileRepositories(git, buildF15(git, "t308-hostile"));
+        expect(repos.length).toBe(POWERSHELL_QUOTES.length);
+        for (const repo of repos) {
+          const seen: Uint8Array[] = [];
+          const refusal = refusalOf(await double.discover(repo, ownerKnob(git, repo, seen)));
+          expect({ repo, calls: seen.length }).toEqual({ repo, calls: 1 });
+          expectMerged(repo, refusal, seen[0]!, repo);
         }
-        const parse = Bun.spawnSync([shell, "-NoProfile", "-Command", PARSE_SCRIPT], {
-          env: { ...process.env, ARBARETO_CMD: Buffer.from(command, "utf8").toString("base64") },
-          timeout: SHELL_TIMEOUT_MS,
-        });
-        expect(text(parse.stderr)).toBe("");
-        const [errors, commands, subexpressions, lastType, quoting, last] = text(parse.stdout).trim().split("|");
-        expect({ command, errors, commands, subexpressions, lastType, quoting, last: Buffer.from(last ?? "", "base64").toString("utf8") }).toEqual({
-          command,
-          errors: "0",
-          commands: "1",
-          subexpressions: "0",
-          lastType: "StringConstantExpressionAst",
-          quoting: "SingleQuoted",
-          last: path,
-        });
-        const run = Bun.spawnSync([shell, "-NoProfile", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], {
-          cwd,
-          env: fixtureEnv({ GIT_CONFIG_GLOBAL: owned }),
-          timeout: SHELL_TIMEOUT_MS,
-        });
-        expect({ command, exitCode: run.exitCode, stderr: text(run.stderr) }).toEqual({ command, exitCode: 0, stderr: "" });
-        added.push(path);
-      }
-      expect(added.length).toBeGreaterThan(0);
-      expect(markers()).toEqual([]);
-      const listed = ownedGit(git, FIXTURE_ROOT, cwd, ["config", "--file", owned, "--get-all", "safe.directory"]).toString("utf8").split("\n").filter((l) => l !== "");
-      expect(listed).toEqual(added);
-    },
+        expect(markers()).toEqual([]);
+      }),
     TIMEOUT_MS,
   );
 
   caseTest(
-    TASK,
-    "OBSERVATION: whether Git for Windows honors the fixed C locale for the ownership message",
-    ["git-for-windows"],
-    () => {
-      const git = gitPath();
-      const repo = join(buildF15(git, "t068-locale").root, "repo");
-      const version = ownedGit(git, FIXTURE_ROOT, repo, ["version"]).toString().trim();
-      for (const [label, extra] of [
-        ["LC_ALL=C LANG=de_DE.UTF-8 LANGUAGE=de", { LANG: "de_DE.UTF-8", LANGUAGE: "de" }],
-        ["LC_ALL=C", {}],
-      ] as const) {
-        const failure = probeDiscovery(git, repo, { ...OTHER_OWNER, ...extra });
-        expect(failure.exitCode).toBe(128);
-        console.log(`OBSERVATION ${TASK}: ${version} with ${label}: ownership message starts with the C-locale prefix: ${text(failure.stderr).startsWith(DUBIOUS_PREFIX)}`);
-      }
-    },
-    TIMEOUT_MS,
-  );
-});
-
-// PowerShell's parser reports the error count, the command count, the subexpression and expandable string count, and the last command element.
-const PARSE_SCRIPT = [
-  "$c = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:ARBARETO_CMD))",
-  "$t = $null; $e = $null",
-  "$ast = [System.Management.Automation.Language.Parser]::ParseInput($c, [ref]$t, [ref]$e)",
-  "$cmd = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))",
-  "$sub = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.SubExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))",
-  "$last = $cmd[0].CommandElements[$cmd[0].CommandElements.Count - 1]",
-  "[Console]::Out.WriteLine([string]$e.Count + '|' + [string]$cmd.Count + '|' + [string]$sub.Count + '|' + $last.GetType().Name + '|' + [string]$last.StringConstantType + '|' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$last.Value)))",
-].join(" ; ");
-
-describe("other discovery failures (research R2)", () => {
-  caseTest(
-    TASK,
-    "F15: a plain folder gives NOT_A_REPOSITORY from exit status 128 and the stderr prefix",
-    ["no-enclosing-repository"],
-    () => {
-      const git = gitPath();
-      const plain = join(buildF15(git, "t068-plain").root, "plain");
-      const failure = probeDiscovery(git, plain);
-      expect({ exitCode: failure.exitCode, prefix: text(failure.stderr).startsWith(NOT_A_REPOSITORY_PREFIX) }).toEqual({ exitCode: 128, prefix: true });
-      const refusal = classifyDiscoveryFailure({ exitCode: failure.exitCode, stderr: failure.stderr, directory: plain, gitSelectedPath: SELECTED_GIT });
-      expect({ code: refusal.code, text: refusal.remedy?.text }).toEqual({ code: "NOT_A_REPOSITORY", text: REMEDY.notARepository });
-    },
+    MERGED,
+    "F15: a plain folder gives the merged refusal with Git's message in outputTail",
+    ["shell-double", "no-enclosing-repository"],
+    () =>
+      withDouble("t308-plain", async (double) => {
+        const plain = join(buildF15(gitPath(), "t308-plain").root, "plain");
+        const seen: Uint8Array[] = [];
+        const refusal = refusalOf(await double.discover(plain, recordFirst(seen)));
+        expect({ calls: seen.length, bytes: seen[0]!.length > 0 }).toEqual({ calls: 1, bytes: true });
+        expectMerged("plain", refusal, seen[0]!, plain);
+      }),
     TIMEOUT_MS,
   );
 
   caseTest(
-    TASK,
-    "F07: a .git file with a missing target gives REPOSITORY_UNAVAILABLE, not NOT_A_REPOSITORY",
-    [],
-    () => {
-      const git = gitPath();
-      const broken = join(buildF07(git, "t068-broken").root, "broken");
-      const failure = probeDiscovery(git, broken);
-      expect({ exitCode: failure.exitCode, prefix: text(failure.stderr).startsWith(NOT_A_REPOSITORY_PREFIX) }).toEqual({ exitCode: 128, prefix: false });
-      const refusal = classifyDiscoveryFailure({ exitCode: failure.exitCode, stderr: failure.stderr, directory: broken, gitSelectedPath: SELECTED_GIT });
-      expect({ code: refusal.code, text: refusal.remedy?.text }).toEqual({ code: "REPOSITORY_UNAVAILABLE", text: REMEDY.unavailable });
-    },
+    MERGED,
+    "F07: a .git file with a missing target gives the merged refusal with Git's message in outputTail",
+    ["shell-double"],
+    () =>
+      withDouble("t308-broken", async (double) => {
+        const built = buildF07(gitPath(), "t308-broken");
+        const broken = join(built.root, (built.facts.notes.unopenable as { missingGitdir: string }).missingGitdir);
+        const seen: Uint8Array[] = [];
+        const refusal = refusalOf(await double.discover(broken, recordFirst(seen)));
+        expect({ calls: seen.length, bytes: seen[0]!.length > 0 }).toEqual({ calls: 1, bytes: true });
+        expectMerged("broken", refusal, seen[0]!, broken);
+      }),
+    TIMEOUT_MS,
+  );
+
+  // The service reads no stderr text for this decision, so any bytes keep the code. A localized Git prints another ownership line.
+  const OTHER_STDERR: [string, Uint8Array][] = [
+    ["other text", encode("error: other bytes\n")],
+    ["a localized ownership line", encode("fatal: zweifelhafter Besitz im Repository unter '/x'\n")],
+    ["the C-locale not-a-repository line", encode("fatal: not a git repository (or any of the parent directories): .git\n")],
+    ["bytes that are not UTF-8", new Uint8Array([0x66, 0xff, 0xfe, 0x0a])],
+  ];
+  caseTest(
+    MERGED,
+    "other stderr bytes in place of Git's message keep REPOSITORY_UNAVAILABLE for the owner, plain-folder, and broken-gitfile cases",
+    ["shell-double", "no-enclosing-repository"],
+    () =>
+      withDouble("t308-other-stderr", async (double) => {
+        const git = gitPath();
+        const f15 = buildF15(git, "t308-other-stderr");
+        const f07 = buildF07(git, "t308-other-stderr-f07");
+        const folders: [string, string, boolean][] = [
+          ["owner", join(f15.root, "repo"), true],
+          ["plain", join(f15.root, "plain"), false],
+          ["broken", join(f07.root, (f07.facts.notes.unopenable as { missingGitdir: string }).missingGitdir), false],
+        ];
+        for (const [folder, directory, knob] of folders) {
+          for (const [label, bytes] of OTHER_STDERR) {
+            const wrap = replaceFirst((exit) => ({ exitCode: knob ? probeDiscovery(git, directory, OTHER_OWNER).exitCode : exit.exitCode, stderr: bytes }));
+            expectMerged(`${folder}: ${label}`, refusalOf(await double.discover(directory, wrap)), bytes, directory);
+          }
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §9 "Commit failure output": the tail keeps the last 16 KiB and drops their first partial line. A URL cut there never shows its user information.
+  caseTest(
+    MERGED,
+    "call-1 stderr above 16 KiB gives the outputTail of its last 16 KiB without their first partial line, and no part of the user information of a URL across the cut remains",
+    ["shell-double"],
+    () =>
+      withDouble("t308-long-stderr", async (double) => {
+        const f07 = buildF07(gitPath(), "t308-long-stderr");
+        const broken = join(f07.root, (f07.facts.notes.unopenable as { missingGitdir: string }).missingGitdir);
+        const secret = "CANARYUSER:CANARYPASSWORD";
+        const url = `fatal: remote https://${secret}@example.invalid/repo.git\n`;
+        const last = "fatal: remote https://LASTUSER:LASTPASSWORD@example.invalid/x.git\n";
+        // ASCII text, so each length is a byte count. The cut falls in the middle of the user information.
+        const half = Math.floor(secret.length / 2);
+        const cut = url.indexOf(secret) + half;
+        const after = COMMIT_OUTPUT_TAIL_BYTES - (url.length - cut) - last.length;
+        // The kept bytes hold fewer than 100 lines, so only the partial-line rule can remove the cut URL.
+        const line = `${"y".repeat(199)}\n`;
+        const rest = after % line.length;
+        const stderr = encode(line.repeat(100) + url + line.repeat(Math.floor(after / line.length)) + (rest > 0 ? `${"z".repeat(rest - 1)}\n` : "") + last);
+        const kept = stderr.subarray(stderr.length - COMMIT_OUTPUT_TAIL_BYTES);
+        expect(new TextDecoder().decode(kept).startsWith(url.slice(cut))).toBe(true);
+        const refusal = refusalOf(await double.discover(broken, replaceFirst((exit) => ({ exitCode: exit.exitCode, stderr }))));
+        expect({ code: refusal?.code, path: refusal?.path, outputTail: refusal?.outputTail }).toEqual({ code: "REPOSITORY_UNAVAILABLE", path: broken, outputTail: buildSubmoduleOutputTail(kept, true) });
+        expect(["CANARY", "PASSWORD", "USER:", secret.slice(half)].filter((canary) => String(refusal?.outputTail).includes(canary))).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    MERGED,
+    "registration passes the outputTail of the merged refusal through, and the discovery module no longer exports the classifier or the dubious-ownership command",
+    ["shell-double", "no-enclosing-repository"],
+    () =>
+      withDouble("t308-registration", async (double) => {
+        const git = gitPath();
+        const built = buildF15(git, "t308-registration");
+        const plain: Uint8Array[] = [];
+        expectMerged("plain", outcomeRefusal(await double.register(join(built.root, "plain"), recordFirst(plain))), plain[0]!);
+        const owner: Uint8Array[] = [];
+        const repo = join(built.root, "repo");
+        expectMerged("owner", outcomeRefusal(await double.register(repo, ownerKnob(git, repo, owner))), owner[0]!);
+        // T310 removes the T082 classification and the dubious-ownership command.
+        expect(Object.keys(discoveryModule).filter((name) => ["classifyDiscoveryFailure", "safeDirectoryCommand"].includes(name))).toEqual([]);
+      }),
     TIMEOUT_MS,
   );
 });
@@ -406,14 +466,22 @@ describe("registration refusals (contract §6, data-model §2)", () => {
     TIMEOUT_MS,
   );
 
+  // Contract §3: the service payload holds only `bootstrapId`, so these cases do not compare `path`. The direct discovery cases above compare it.
   caseTest(
-    TASK,
-    "F15: a plain folder gives NOT_A_REPOSITORY with its remedy text through the service",
+    MERGED,
+    "F15 plain folder and F07 broken gitfile: chooseRepository gives the merged refusal with Git's message in outputTail and no command",
     ["shell-double", "no-enclosing-repository"],
     () =>
-      withService("t068-plain-service", async (service) => {
-        const built = buildF15(gitPath(), "t068-plain-service");
-        expectRefusal(await service.chooseRepository(join(built.root, built.facts.notes.plain as string)), "NOT_A_REPOSITORY", REMEDY.notARepository);
+      withService("t308-merged-service", async (service) => {
+        const git = gitPath();
+        const f15 = buildF15(git, "t308-merged-service");
+        const f07 = buildF07(git, "t308-merged-service-f07");
+        for (const directory of [join(f15.root, f15.facts.notes.plain as string), join(f07.root, (f07.facts.notes.unopenable as { missingGitdir: string }).missingGitdir)]) {
+          const response = await service.chooseRepository(directory);
+          const git1 = probeDiscovery(git, directory);
+          expect({ directory, state: response.state, exitCode: git1.exitCode }).toEqual({ directory, state: "failed", exitCode: 128 });
+          expectMerged(directory, { code: response.code, ...(response.result as Refusal | undefined) }, git1.stderr);
+        }
       }),
     TIMEOUT_MS,
   );
@@ -432,20 +500,18 @@ describe("registration refusals (contract §6, data-model §2)", () => {
     TIMEOUT_MS,
   );
 
+  // A fixture cannot make a folder that another account owns, and the probe policy removes the GIT_TEST_ knob. The direct discovery cases use the knob.
   caseTest(
-    TASK,
-    "dubious ownership gives DUBIOUS_OWNERSHIP with the path and the service-built command, and the service never runs it",
+    MERGED,
+    "dubious ownership gives the merged refusal through the service, with Git's message in outputTail, no command, and no safe.directory call",
     ["shell-double", "other-account-owner"],
     () =>
-      withService("t068-dubious-service", async (service) => {
+      withService("t308-dubious-service", async (service) => {
         const git = gitPath();
-        const repo = join(buildF15(git, "t068-dubious-service").root, "repo");
+        const repo = join(buildF15(git, "t308-dubious-service").root, "repo");
         const response = await service.chooseRepository(repo);
-        const result = response.result as Refusal | undefined;
-        expect({ code: response.code, path: result?.path }).toEqual({ code: "DUBIOUS_OWNERSHIP", path: slash(repo) });
-        expect(result?.remedy?.command).toBe(safeDirectoryCommand(git, slash(repo)).command);
-        expect(service.runner.calls.filter((c) => c.arguments.includes("safe.directory") || c.arguments.some((a) => a.startsWith("safe.directory")))).toEqual([]);
-        expect(JSON.stringify(service.responses)).not.toContain("git config --global --add safe.directory");
+        expectMerged("dubious", { code: response.code, ...(response.result as Refusal | undefined) }, probeDiscovery(git, repo).stderr);
+        expect(service.runner.calls.filter((c) => c.arguments.some((a) => a.includes("safe.directory")))).toEqual([]);
       }),
     TIMEOUT_MS,
   );
@@ -698,19 +764,31 @@ describe("F08 object format and HEAD (data-model §2)", () => {
     TIMEOUT_MS,
   );
 
+  // Contract §6: a failed HEAD lookup gives REPOSITORY_UNAVAILABLE. No probe verified the Git 2.55.0 exit statuses, so the case reports them for research.md.
   caseTest(
-    TASK,
-    "an unborn branch differs from a failed lookup: a corrupt branch ref never reads as unborn",
+    MERGED,
+    "a corrupt loose ref of the HEAD target gives REPOSITORY_UNAVAILABLE and never reads as unborn",
     ["shell-double"],
     () =>
-      withService("t068-f08-failed-lookup", async (service) => {
-        const built = buildF08(gitPath(), "t068-f08-failed-lookup", "sha1");
-        const repo = join(built.root, "repo");
+      withService("t308-corrupt-ref", async (service) => {
+        const git = gitPath();
+        const repo = join(buildF08(git, "t308-corrupt-ref", "sha1").root, "repo");
         put(repo, ".git/refs/heads/main", "not an object ID\n");
         const response = await service.chooseRepository(repo);
-        if (response.state !== "succeeded") return void expect(response.code).toBeString();
-        const read = await service.readWorkspace((response.result as RegistrationResult).repositoryId);
-        expect(read.state === "succeeded" ? read.result?.head.state : read.code).not.toBe("unborn");
+        const result = response.result as Refusal | undefined;
+        expect({ state: response.state, code: response.code, text: result?.remedy?.text, command: result?.remedy?.command ?? null }).toEqual({
+          state: "failed",
+          code: "REPOSITORY_UNAVAILABLE",
+          text: REMEDY.unavailable,
+          command: null,
+        });
+        const version = ownedGit(git, FIXTURE_ROOT, repo, ["version"]).toString().trim();
+        for (const args of [["symbolic-ref", "-q", "HEAD"], ["show-ref", "--head", "--verify", "HEAD"], ["show-ref", "--exists", "refs/heads/main"]]) {
+          const proc = Bun.spawnSync([git, "--no-lazy-fetch", ...args], { cwd: repo, env: fixtureEnv({ LC_ALL: "C" }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+          console.log(`OBSERVATION ${MERGED}: ${version}: corrupt loose ref of the HEAD target: \`${args.join(" ")}\` exits with ${proc.exitCode}`);
+        }
+        const steps = discoveryCalls(service).map((c) => ({ args: c.arguments.slice(1).join(" "), exitCode: c.exit?.exitCode }));
+        console.log(`OBSERVATION ${MERGED}: ${version}: discovery calls for a corrupt loose ref of the HEAD target: ${JSON.stringify(steps)}`);
       }),
     TIMEOUT_MS,
   );

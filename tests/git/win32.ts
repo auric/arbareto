@@ -4,8 +4,11 @@
 // Win32 calls of the `bun-runner.ts` test double. Run as a script, the file is a fixture process that records itself and lingers.
 
 import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_TOTAL_BYTES } from "../../src/contracts/limits";
+import type { FileFact, FileFactsRequest } from "../../src/git-service/git-runner";
 
 const { ptr: P, u32, i32 } = FFIType;
 const open = () =>
@@ -155,6 +158,243 @@ export function terminateRecorded(pid: number, created: bigint): boolean {
     return true;
   } finally {
     kernel32().CloseHandle(handle);
+  }
+}
+
+const openNt = () =>
+  dlopen("ntdll.dll", {
+    NtOpenFile: { args: [P, u32, P, P, u32, u32], returns: u32 },
+    NtQueryInformationFile: { args: [P, P, P, u32, u32], returns: u32 },
+    NtReadFile: { args: [P, P, P, P, P, P, u32, P, P], returns: u32 },
+    NtFsControlFile: { args: [P, P, P, P, P, u32, P, u32, P, u32], returns: u32 },
+  }).symbols;
+let ntSymbols: ReturnType<typeof openNt> | undefined;
+
+// As `kernel32()`: the import of this file must not open `ntdll.dll`.
+function ntdll(): ReturnType<typeof openNt> {
+  if (process.platform !== "win32") throw new Error("tests/git/win32.ts needs Windows");
+  return (ntSymbols ??= openNt());
+}
+
+// MS-ERREF 2.3.1 NTSTATUS values, as the unsigned 32-bit numbers that the `u32` returns give.
+const STATUS_UNSUCCESSFUL = 0xc000_0001;
+const STATUS_END_OF_FILE = 0xc000_0011;
+const STATUS_ACCESS_DENIED = 0xc000_0022;
+const STATUS_OBJECT_NAME_NOT_FOUND = 0xc000_0034;
+const STATUS_OBJECT_PATH_NOT_FOUND = 0xc000_003a;
+const STATUS_SHARING_VIOLATION = 0xc000_0043;
+const STATUS_IO_DEVICE_ERROR = 0xc000_0185;
+const STATUS_IO_REPARSE_TAG_NOT_HANDLED = 0xc000_0279;
+const STATUS_REPARSE_POINT_ENCOUNTERED = 0xc000_050b;
+// `NT_SUCCESS` is false for a warning or an error status.
+const failed = (status: number) => status >= 0x8000_0000;
+// Contract §6 "File facts": the open results that mark a reparse point.
+const REPARSE = new Set([STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_IO_REPARSE_TAG_NOT_HANDLED]);
+// Contract §6 "File facts" pairs each of these Win32 errors of the root open with its status. Microsoft Learn "System Error Codes".
+const ERROR_ACCESS_DENIED = 5;
+const ERROR_SHARING_VIOLATION = 32;
+const ERROR_IO_DEVICE = 1117;
+const ROOT_STATUS = new Map([
+  [ERROR_FILE_NOT_FOUND, STATUS_OBJECT_NAME_NOT_FOUND],
+  [ERROR_PATH_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND],
+  [ERROR_ACCESS_DENIED, STATUS_ACCESS_DENIED],
+  [ERROR_SHARING_VIOLATION, STATUS_SHARING_VIOLATION],
+  [ERROR_IO_DEVICE, STATUS_IO_DEVICE_ERROR],
+]);
+
+// Microsoft Learn constants of `NtOpenFile`, `FILE_INFORMATION_CLASS`, `FSCTL_GET_REPARSE_POINT`, and "Reparse Point Tags".
+const OBJ_CASE_INSENSITIVE = 0x40;
+const OBJ_DONT_REPARSE = 0x1000;
+const FILE_READ_DATA = 0x1;
+const FILE_SYNCHRONOUS_IO_NONALERT = 0x20;
+const FILE_OPEN_REPARSE_POINT = 0x0020_0000;
+const FILE_BASIC_INFORMATION = 4;
+const FILE_STANDARD_INFORMATION = 5;
+const FILE_ATTRIBUTE_TAG_INFORMATION = 35;
+const FSCTL_GET_REPARSE_POINT = 0x0009_00a8;
+const MAXIMUM_REPARSE_DATA_BUFFER_SIZE = 16 * 1024;
+const IO_REPARSE_TAG_MOUNT_POINT = 0xa000_0003;
+const IO_REPARSE_TAG_SYMLINK = 0xa000_000c;
+const SYMLINK_FLAG_RELATIVE = 0x1;
+// Bit 29 is the name surrogate bit (`IsReparseTagNameSurrogate`).
+const NAME_SURROGATE = 0x2000_0000;
+// x64 layouts: `UNICODE_STRING` is 16 bytes, `OBJECT_ATTRIBUTES` 48 bytes, and `IO_STATUS_BLOCK` 16 bytes with `Information` at 8.
+const UNICODE_STRING_BYTES = 16;
+const OBJECT_ATTRIBUTES_BYTES = 48;
+
+type FactRoot = FileFactsRequest["files"][number]["root"];
+type Opened = { handle: Pointer } | { status: number };
+
+// Opens `name` relative to `parent`, as src-tauri/src/file_facts.rs `open` does. An empty name opens the same file again.
+// `OBJ_DONT_REPARSE` fails the open at each reparse point that the I/O manager would follow.
+function ntOpen(parent: Pointer, name: string, read: boolean, reparsePoint: boolean): Opened {
+  const units = Buffer.from(`${name}\0`, "utf16le");
+  const objectName = new Uint8Array(UNICODE_STRING_BYTES);
+  const nameView = new DataView(objectName.buffer);
+  nameView.setUint16(0, name.length * 2, true);
+  nameView.setUint16(2, name.length * 2, true);
+  nameView.setBigUint64(8, BigInt(ptr(units)), true);
+  const attributes = new Uint8Array(OBJECT_ATTRIBUTES_BYTES);
+  const view = new DataView(attributes.buffer);
+  view.setUint32(0, OBJECT_ATTRIBUTES_BYTES, true);
+  view.setBigUint64(8, BigInt(parent), true);
+  view.setBigUint64(16, BigInt(ptr(objectName)), true);
+  // Win32 file names ignore letter case, and Git opens hooks through Win32.
+  view.setUint32(24, OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE, true);
+  const handle = new BigUint64Array(1);
+  const access = FILE_READ_ATTRIBUTES | SYNCHRONIZE | (read ? FILE_READ_DATA : 0);
+  const options = FILE_SYNCHRONOUS_IO_NONALERT | (reparsePoint ? FILE_OPEN_REPARSE_POINT : 0);
+  const status = ntdll().NtOpenFile(ptr(handle), access, ptr(attributes), ptr(new BigUint64Array(2)), FILE_SHARE_ALL, options);
+  return failed(status) ? { status } : { handle: Number(handle[0]) as Pointer };
+}
+
+function query(handle: Pointer, info: Uint8Array, infoClass: number): number {
+  return ntdll().NtQueryInformationFile(handle, ptr(new BigUint64Array(2)), ptr(info), info.length, infoClass);
+}
+
+// Reads at most `limit` bytes from the current position of a synchronous handle.
+function readData(handle: Pointer, limit: number): Uint8Array | { status: number } {
+  const bytes = new Uint8Array(limit);
+  let filled = 0;
+  while (filled < limit) {
+    const io = new BigUint64Array(2);
+    const status = ntdll().NtReadFile(handle, null, null, null, ptr(io), ptr(bytes, filled), limit - filled, null, null);
+    if (status === STATUS_END_OF_FILE || (!failed(status) && io[1] === 0n)) break;
+    if (failed(status)) return { status };
+    filled += Number(io[1]);
+  }
+  return bytes.subarray(0, filled);
+}
+
+// Contract §6 "File facts": the `error` code of each status.
+function errorFact(component: number, status: number): FileFact {
+  const code = status === STATUS_ACCESS_DENIED ? "access-denied" : status === STATUS_SHARING_VIOLATION ? "sharing-violation" : status === STATUS_IO_DEVICE_ERROR ? "io-error" : "other-error";
+  return { kind: "error", component, code };
+}
+
+// Only `STATUS_OBJECT_NAME_NOT_FOUND` and `STATUS_OBJECT_PATH_NOT_FOUND` mean absent.
+function notOpened(status: number, component: number): FileFact {
+  return status === STATUS_OBJECT_NAME_NOT_FOUND || status === STATUS_OBJECT_PATH_NOT_FOUND ? { kind: "absent" } : errorFact(component, status);
+}
+
+// `SubstituteName` and the relative flag from `REPARSE_DATA_BUFFER` (MS-FSCC 2.1.2.4 and 2.1.2.5).
+// Null for data out of bounds, text that is no well-formed UTF-16, or a NUL.
+function linkTarget(data: Uint8Array, tag: number): { target: string; relative: boolean } | null {
+  if (data.length < 8) return null;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  // The 8-byte header holds `ReparseTag` and `ReparseDataLength`.
+  const end = 8 + view.getUint16(4, true);
+  if (end > data.length || view.getUint32(0, true) !== tag) return null;
+  const symlink = tag === IO_REPARSE_TAG_SYMLINK;
+  // A symlink holds `Flags` at 16 and its `PathBuffer` at 20. A mount point holds its `PathBuffer` at 16.
+  if (end < (symlink ? 20 : 12)) return null;
+  const start = (symlink ? 20 : 16) + view.getUint16(8, true);
+  const length = view.getUint16(10, true);
+  if (start + length > end || length % 2 !== 0) return null;
+  let target = "";
+  for (let at = start; at < start + length; at += 2) target += String.fromCharCode(view.getUint16(at, true));
+  if (!target.isWellFormed() || target.includes("\0")) return null;
+  return { target, relative: symlink && (view.getUint32(16, true) & SYMLINK_FLAG_RELATIVE) !== 0 };
+}
+
+// A name-surrogate reparse point. Only a symlink or a junction with well-formed text carries `target` and `relative`.
+function link(handle: Pointer, tag: number, component: number): FileFact {
+  const name = tag === IO_REPARSE_TAG_SYMLINK ? "symlink" : tag === IO_REPARSE_TAG_MOUNT_POINT ? "junction" : null;
+  if (name === null) return { kind: "link", component, tag: "other" };
+  const data = new Uint8Array(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+  const io = new BigUint64Array(2);
+  const status = ntdll().NtFsControlFile(handle, null, null, null, ptr(io), FSCTL_GET_REPARSE_POINT, null, 0, ptr(data), data.length);
+  if (failed(status)) return errorFact(component, status);
+  const found = linkTarget(data.subarray(0, Number(io[1])), tag);
+  return found === null ? { kind: "link", component, tag: "other" } : { kind: "link", component, tag: name, ...found };
+}
+
+// Contract §6 "File facts", by the rules of src-tauri/src/file_facts.rs `walk`. One fact per entry, in request order.
+// `bytesRead` counts the file data bytes of each entry. Each component opens relative to its parent handle, so no link below a root is followed.
+export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, files: FileFactsRequest["files"]): { facts: FileFact[]; bytesRead: number[] } {
+  // The digested bytes that the request can still take. Null after the first file that passed the total.
+  let budget: number | null = TRUST_DIGEST_TOTAL_BYTES;
+  const facts: FileFact[] = [];
+  const bytesRead: number[] = [];
+  for (const { root, path } of files) {
+    const opened: Pointer[] = [];
+    const read = { bytes: 0 };
+    try {
+      facts.push(entryFact(roots[root], path, opened, read));
+    } finally {
+      for (const handle of opened) kernel32().CloseHandle(handle);
+    }
+    bytesRead.push(read.bytes);
+  }
+  return { facts, bytesRead };
+
+  // `component` counts the components of `path` from 1. Component 0 is the root, opened as the identity request opens a path.
+  function entryFact(rootPath: string, path: readonly string[], opened: Pointer[], read: { bytes: number }): FileFact {
+    const root = kernel32().CreateFileW(wide(rootPath), FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, null);
+    if (!valid(root)) return notOpened(ROOT_STATUS.get(kernel32().GetLastError()) ?? STATUS_UNSUCCESSFUL, 0);
+    opened.push(root);
+    let parent = root;
+    for (const [index, name] of path.entries()) {
+      const component = index + 1;
+      const last = component === path.length;
+      const result = ntOpen(parent, name, false, false);
+      if ("status" in result) {
+        if (REPARSE.has(result.status)) return reparsePoint(parent, name, component, last ? digest : null, opened, read);
+        return notOpened(result.status, component);
+      }
+      opened.push(result.handle);
+      if (last) return fileFact(result.handle, component, digest, opened, read);
+      parent = result.handle;
+    }
+    throw new Error("a file-fact entry holds no component");
+  }
+
+  // The fact of a final component that the walk opened with attribute access only.
+  // With `digest`, a file within the per-file bound is opened again for its data, and the read takes at most the bound plus one byte.
+  function fileFact(handle: Pointer, component: number, digest: boolean, opened: Pointer[], read: { bytes: number }): FileFact {
+    // `FILE_STANDARD_INFORMATION`: `EndOfFile` at 8, `Directory` at 21. `FILE_BASIC_INFORMATION`: `LastWriteTime` at 16.
+    const standard = new Uint8Array(24);
+    let status = query(handle, standard, FILE_STANDARD_INFORMATION);
+    if (failed(status)) return errorFact(component, status);
+    if (standard[21] !== 0) return { kind: "directory" };
+    const basic = new Uint8Array(40);
+    status = query(handle, basic, FILE_BASIC_INFORMATION);
+    if (failed(status)) return errorFact(component, status);
+    const size = Number(new DataView(standard.buffer).getBigInt64(8, true));
+    const fact: FileFact = { kind: "file", size, lastWrite: new DataView(basic.buffer).getBigInt64(16, true).toString() };
+    if (!digest) return fact;
+    // Contract §6 "File facts": the per-file bound comes first. Only files within it count toward the request total.
+    if (size > TRUST_DIGEST_FILE_BYTES) return { ...fact, bound: "file-bytes" };
+    if (budget === null) return { ...fact, bound: "total-bytes" };
+    const data = ntOpen(handle, "", true, false);
+    if ("status" in data) return errorFact(component, data.status);
+    opened.push(data.handle);
+    const bytes = readData(data.handle, TRUST_DIGEST_FILE_BYTES + 1);
+    if (!(bytes instanceof Uint8Array)) return errorFact(component, bytes.status);
+    read.bytes = bytes.length;
+    if (bytes.length > TRUST_DIGEST_FILE_BYTES) return { ...fact, bound: "file-bytes" };
+    if (bytes.length > budget) {
+      budget = null;
+      return { ...fact, bound: "total-bytes" };
+    }
+    budget -= bytes.length;
+    return { ...fact, digest: createHash("sha256").update(bytes).digest("hex") };
+  }
+
+  // A component whose open stopped at a reparse point. `last` holds `digest` for the final component, and null for a middle one.
+  function reparsePoint(parent: Pointer, name: string, component: number, last: boolean | null, opened: Pointer[], read: { bytes: number }): FileFact {
+    const result = ntOpen(parent, name, false, true);
+    if ("status" in result) return notOpened(result.status, component);
+    opened.push(result.handle);
+    const info = new Uint8Array(8);
+    const status = query(result.handle, info, FILE_ATTRIBUTE_TAG_INFORMATION);
+    if (failed(status)) return errorFact(component, status);
+    const tag = new DataView(info.buffer).getUint32(4, true);
+    if ((tag & NAME_SURROGATE) !== 0) return link(result.handle, tag, component);
+    if (last === null) return { kind: "other" };
+    const fact = fileFact(result.handle, component, false, opened, read);
+    // Logical bytes need an open that follows the reparse point, so a digest is not possible.
+    return last && fact.kind === "file" ? errorFact(component, STATUS_REPARSE_POINT_ENCOUNTERED) : fact;
   }
 }
 

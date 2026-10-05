@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
+import { ProcessRequest, type FileFact } from "../../src/contracts/channel";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
   INLINE_PROCESS_INPUT_BYTES,
@@ -15,6 +16,7 @@ import { isWindows } from "../../src/contracts/native-path";
 import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, type GitCall, type IdentityReply, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
 import { createNativeRunner } from "../../src/git-service/native-runner";
 
+printOrigin("../../src/contracts/channel.ts", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
@@ -598,6 +600,75 @@ describe("native runner identity, lingering count, and registration", () => {
     const channel = createChannelDouble();
     expect(channel.reply("process", exit(id()))).toBe(true);
     expect(channel.reply("process", { type: "exit" })).toBe(false);
+  });
+});
+
+// Contract §6 "File facts" and "Errors": the `fileFacts` frame and the checks of its reply.
+describe("native runner file facts", () => {
+  const request = (digest: boolean) => ({
+    operationId: id(),
+    contextKind: "registeredOperation" as const,
+    gitInstallationId: id(),
+    repositoryId: id(),
+    digest,
+    files: [
+      { root: "gitDirectory" as const, path: ["hooks", "pre-commit"] },
+      { root: "worktreeRoot" as const, path: ["tools"] },
+    ],
+  });
+  const ABSENT = { kind: "absent" };
+
+  test("fileFacts sends the FileFacts frame and returns one fact per entry", async () => {
+    const channel = createChannelDouble();
+    const sent = request(false);
+    const result = channel.runner.fileFacts(sent);
+    const frame = channel.last("fileFacts");
+    expect(Object.keys(channel.sent.at(-1)!)).toEqual(["kind", "process"]);
+    expect(frame).toEqual({ type: "fileFacts", callId: frame.callId, ...sent });
+    expect(ProcessRequest.safeParse(frame).success).toBe(true);
+    const facts: FileFact[] = [
+      { kind: "link", component: 2, tag: "symlink", target: "../../scripts/h.sh", relative: true },
+      { kind: "directory", executable: true },
+    ];
+    expect(channel.reply("process", { type: "fileFacts", callId: frame.callId, facts })).toBe(true);
+    expect(await result).toEqual(facts);
+
+    const digested = channel.runner.fileFacts(request(true));
+    const files: FileFact[] = [
+      { kind: "file", size: 3, lastWrite: "12", digest: "a".repeat(64) },
+      { kind: "file", size: 2_000_000, lastWrite: "12", bound: "file-bytes" },
+    ];
+    expect(channel.reply("process", { type: "fileFacts", callId: channel.last("fileFacts").callId, facts: files })).toBe(true);
+    expect(await digested).toEqual(files);
+  });
+
+  // Each reply breaks the shape or a rule between the request and its facts.
+  test.each([
+    ["a count that differs from the entry count", false, [ABSENT]],
+    ["a link component past the entry path", false, [{ kind: "link", component: 3, tag: "other" }, ABSENT]],
+    ["a link component 0", false, [{ kind: "link", component: 0, tag: "other" }, ABSENT]],
+    ["an error component past the entry path", false, [{ kind: "error", component: 3, code: "io-error" }, ABSENT]],
+    ["a digest without digest: true", false, [{ kind: "file", size: 3, lastWrite: "1", digest: "a".repeat(64) }, ABSENT]],
+    ["a bound without digest: true", false, [{ kind: "file", size: 3, lastWrite: "1", bound: "file-bytes" }, ABSENT]],
+    ["a file without digest and bound after digest: true", true, [{ kind: "file", size: 3, lastWrite: "1" }, ABSENT]],
+    ["an unknown fact kind", false, [{ kind: "nope" }, ABSENT]],
+  ] as const)("a reply with %s fails the call with PROCESS_OWNERSHIP_FAILED", async (_label, digest, facts) => {
+    const channel = createChannelDouble();
+    const result = channel.runner.fileFacts(request(digest));
+    expect(channel.reply("process", { type: "fileFacts", callId: channel.last("fileFacts").callId, facts })).toBe(false);
+    await expect(result).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+  });
+
+  test("a refused reply gives its code, and an invalid request sends nothing", async () => {
+    const channel = createChannelDouble();
+    const refused = channel.runner.fileFacts(request(false));
+    expect(channel.reply("process", { type: "refused", callId: channel.last("fileFacts").callId, code: "UNKNOWN_TARGET" })).toBe(true);
+    await expect(refused).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
+    const before = channel.sent.length;
+    for (const files of [[], [{ root: "worktreeRoot" as const, path: [".."] }], [{ root: "worktreeRoot" as const, path: [] }]]) {
+      await expect(channel.runner.fileFacts({ ...request(false), files })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    }
+    expect(channel.sent.length).toBe(before);
   });
 });
 

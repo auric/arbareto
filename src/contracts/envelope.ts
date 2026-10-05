@@ -6,7 +6,7 @@ import { DamagedMarker, TRUST_BOUNDS, UtcTime } from "./channel";
 import { ERROR_CODES, TERMINAL_STATES, type ErrorCode } from "./errors";
 import * as limits from "./limits";
 import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REGISTERED_WORKSPACES } from "./limits";
-import { ChannelPath, Count, Fingerprint, Identifier, isOperationName, MutationKind, OPERATION_NAMES, SHELL_ONLY, type OperationName } from "./operations";
+import { ChannelPath, Count, Fingerprint, Identifier, isOperationName, MutationKind, OPERATION_NAMES, SHELL_ONLY, Text, type OperationName } from "./operations";
 import { OPERATION_STATES } from "./outcome";
 import { decodeStrictJson, hasFractionOrExponent } from "./strict-json";
 
@@ -237,12 +237,20 @@ export const ChooseGitResult = z.union([
     .meta({ title: "ChooseGitFailed" }),
 ]);
 
+// Contract §9 "Commit failure output": an output tail stays within 16 KiB and 100 lines.
+const tailLines = (tail: string) => (tail === "" ? 0 : tail.split("\n").length - (tail.endsWith("\n") ? 1 : 0));
+export const OutputTail = Text.refine((tail) => new TextEncoder().encode(tail).length <= limits.COMMIT_OUTPUT_TAIL_BYTES && tailLines(tail) <= limits.COMMIT_OUTPUT_TAIL_LINES);
+
 // Contract §3 `chooseRepository` and `restoreWorkspace`: both operations share this result. The response `code` names each refusal.
-// `path` and `remedy` follow contract §6 "Registration bootstrap". `limit` follows contract §9 `WORKSPACE_LIMIT`.
+// `path`, `remedy`, and `outputTail` follow contract §6 "Registration bootstrap". `limit` follows contract §9 `WORKSPACE_LIMIT`.
 export const RegistrationResult = z.union([
   z.strictObject({ repositoryId: Identifier, generation: Generation, worktreeKey: Fingerprint }).meta({ title: "Registered" }),
   z
-    .strictObject({ path: z.string().optional(), remedy: z.strictObject({ text: z.string().optional(), command: z.string().nullable().optional() }).optional() })
+    .strictObject({
+      path: z.string().optional(),
+      remedy: z.strictObject({ text: z.string().optional(), command: z.string().nullable().optional() }).optional(),
+      outputTail: OutputTail.optional(),
+    })
     .meta({ title: "RegistrationRefused" }),
   z.strictObject({ limit: z.literal(REGISTERED_WORKSPACES) }).meta({ title: "WorkspaceLimit" }),
 ]);

@@ -52,6 +52,45 @@ describe("the Windows rule set", () => {
   test.each(["C:\\x", "c:/x", "\\x", "/x", "x", "C:x"])("isUncOrDevice refuses %p", (path) => {
     expect(rules.isUncOrDevice(path)).toBe(false);
   });
+
+  // Contract §7 "Program file digests": the absolute target of a link is its NT `SubstituteName` (MS-FSCC 2.1.2.4 and 2.1.2.5).
+  test.each([
+    ["\\??\\C:\\repo\\scripts\\h.sh", "C:\\repo\\scripts\\h.sh"],
+    ["\\??\\c:\\", "c:\\"],
+    ["\\??\\UNC\\server\\share\\x", "\\\\server\\share\\x"],
+    ["\\??\\UNC\\server\\share", "\\\\server\\share"],
+  ])("linkTarget maps %p to %p", (target, path) => {
+    expect(rules.linkTarget(target)).toBe(path);
+  });
+
+  test("linkTarget gives a UNC path for the UNC form, so isUncOrDevice keeps it out of the roots", () => {
+    expect(rules.isUncOrDevice(rules.linkTarget("\\??\\UNC\\server\\share\\x")!)).toBe(true);
+    expect(rules.isUncOrDevice(rules.linkTarget("\\??\\C:\\x")!)).toBe(false);
+  });
+
+  test.each([
+    "",
+    "\\??\\",
+    "\\??\\C:",
+    "\\??\\C:x",
+    "\\??\\C:/x",
+    "\\??\\CC:\\x",
+    "\\??\\Volume{0b5a9f3c-1c2d-4e5f-8a9b-0c1d2e3f4a5b}\\x",
+    "\\??\\GLOBALROOT\\Device\\HarddiskVolume1\\x",
+    "\\??\\UNC\\",
+    "\\??\\UNC\\server",
+    "\\??\\UNC\\server\\",
+    "\\??\\UNC\\\\share",
+    "\\??\\unc\\server\\share",
+    "\\?\\C:\\x",
+    "\\\\?\\C:\\x",
+    "\\Device\\HarddiskVolume1\\x",
+    "C:\\x",
+    "\\\\server\\share",
+    "/x",
+  ])("linkTarget refuses %p", (target) => {
+    expect(rules.linkTarget(target)).toBeNull();
+  });
 });
 
 describe("the POSIX rule set", () => {
@@ -84,6 +123,15 @@ describe("the POSIX rule set", () => {
 
   test.each(["//server/share", "/x", "\\\\server\\share", "\\\\.\\pipe\\x"])("isUncOrDevice refuses %p", (path) => {
     expect(rules.isUncOrDevice(path)).toBe(false);
+  });
+
+  // POSIX.1-2024 XBD 4.16: a link text that begins with a slash is an absolute pathname.
+  test.each(["/", "/x/y", "//x/y"])("linkTarget keeps the absolute target %p", (target) => {
+    expect(rules.linkTarget(target)).toBe(target);
+  });
+
+  test.each(["", "x", "../x", "\\??\\C:\\x"])("linkTarget refuses %p", (target) => {
+    expect(rules.linkTarget(target)).toBeNull();
   });
 });
 

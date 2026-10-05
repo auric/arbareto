@@ -3,13 +3,10 @@
 
 // Contract §3 `readHistory` and "HistoryPage result", the §5 history bounds, and contract §7 "Shared listing", "Held history steps", and "Missing objects".
 
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
 import type { HistoryPage, HistoryRefusal, HistoryRow } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
-  GIT_PROCESS_DEADLINE_MS,
   HISTORY_COMMIT_OBJECT_BYTES,
   HISTORY_PAGE_BYTES,
   HISTORY_STREAM_BYTES,
@@ -19,11 +16,12 @@ import {
 import { NATIVE } from "../contracts/native-path";
 import { batchCommandArgs, headOidArgs, headRefExistsArgs, headTargetArgs, isObjectId, isRefName, objectCheckArgs, revListArgs, shallowPathArgs, type ObjectFormat } from "./commands";
 import type { GitInstallation } from "./git-installation";
-import { createCollector, isChannelPath, RunnerRefusal, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, isChannelPath, type GitExit, type GitRunner } from "./git-runner";
 import { HEADER_BYTES, parseCommitObjects, parseTraversal, type CommitObject, type CommitObjects, type Traversal } from "./history-parser";
+import { contextOf, encodedBytes, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { Completeness, Head, LimitName } from "./snapshot";
-import { hasPromisor, OBJECT_MISSING_REMEDY, objectCheckAnswer } from "./status";
+import { hasPromisor, OBJECT_MISSING_REMEDY } from "./status";
 import type { ListingOutcome, Trust, TrustListing } from "./trust";
 
 // Contract §7 "Missing objects": a failed history read with a missing object and without a promisor remote.
@@ -49,8 +47,9 @@ export type HistoryOutcome =
 export interface HistoryReaderOptions {
   runner: GitRunner;
   trust: Trust;
-  // The contract §8 change tuple of the last listing of the workspace (`WorkspaceReader.listingTuple`). Null: no compare can prove that nothing changed.
-  listingTuple(w: Workspace): Promise<string | null>;
+  // The contract §8 change tuple of the last listing of the workspace (`WorkspaceReader.listingTuple`). Its `fileFacts` requests belong to `operationId`.
+  // Null: no compare can prove that nothing changed.
+  listingTuple(w: Workspace, operationId: string): Promise<string | null>;
   // Data-model §2 `unavailable` (`WorkspaceReader.markUnavailable`).
   markUnavailable(repositoryId: string): void;
 }
@@ -87,9 +86,6 @@ const limited = (reason: LimitName): Completeness => ({ state: "limited", code: 
 // Spec FR-008: invalid UTF-8 shows replacement characters. A byte order mark stays text.
 const lossy = new TextDecoder("utf-8", { ignoreBOM: true });
 const exact = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const latin1 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
-const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
-const isMissing = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
 const isStop = (value: unknown): value is Stop => typeof value === "object" && value !== null && ("stop" in value || "failed" in value);
 // Git `ctype.c` `sane_ctype`: `isspace` holds TAB, LF, CR, and SPACE only.
 const isSpace = (byte: number) => byte === 0x09 || byte === 0x0a || byte === 0x0d || byte === 0x20;
@@ -131,34 +127,6 @@ function oneLine(out: Bytes): string | null {
   }
 }
 
-// Contract §5 "Shallow-boundary metadata": at most the bound plus one byte. O_NONBLOCK keeps a FIFO from blocking the open.
-async function readShallowFile(path: string): Promise<{ kind: "absent" } | { kind: "file"; bytes: Uint8Array } | { kind: "over" } | { kind: "unreadable" }> {
-  let handle;
-  try {
-    handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
-  } catch (error) {
-    return isMissing(error) ? { kind: "absent" } : { kind: "unreadable" };
-  }
-  try {
-    if (!(await handle.stat()).isFile()) return { kind: "unreadable" };
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (;;) {
-      const chunk = new Uint8Array(Math.min(1024 * 1024, SHALLOW_METADATA_BYTES + 1 - size));
-      const { bytesRead } = await handle.read(chunk, 0, chunk.length);
-      if (bytesRead === 0) break;
-      size += bytesRead;
-      if (size > SHALLOW_METADATA_BYTES) return { kind: "over" };
-      chunks.push(chunk.subarray(0, bytesRead));
-    }
-    return { kind: "file", bytes: Buffer.concat(chunks) };
-  } catch {
-    return { kind: "unreadable" };
-  } finally {
-    await handle.close();
-  }
-}
-
 // Git `shallow.c` `is_repository_shallow` reads one object ID per line, and Git writes each line in lowercase hex with LF. Null for another form.
 function shallowCommits(bytes: Uint8Array, objectFormat: ObjectFormat): Set<string> | null {
   const lines = latin1(bytes).split("\n");
@@ -171,13 +139,14 @@ function shallowCommits(bytes: Uint8Array, objectFormat: ObjectFormat): Set<stri
   return commits;
 }
 
+// Contract §5 "Shallow-boundary metadata".
 async function readShallow(path: string, objectFormat: ObjectFormat): Promise<Shallow | Stop> {
-  const read = await readShallowFile(path);
-  if (read.kind === "unreadable") return { failed: "REPOSITORY_UNAVAILABLE" };
-  if (read.kind !== "file") return read;
-  const commits = shallowCommits(read.bytes, objectFormat);
+  const read = await readBounded(path, SHALLOW_METADATA_BYTES);
+  if (read === "unavailable") return { failed: "REPOSITORY_UNAVAILABLE" };
+  if (read === "absent" || read === "over") return { kind: read };
+  const commits = shallowCommits(read, objectFormat);
   if (commits === null) return { failed: "MALFORMED_GIT_OUTPUT" };
-  return { kind: "file", commits, fingerprint: new Bun.CryptoHasher("sha256").update(read.bytes).digest("hex") };
+  return { kind: "file", commits, fingerprint: new Bun.CryptoHasher("sha256").update(read).digest("hex") };
 }
 
 const sameShallow = (a: Shallow, b: Shallow) => a.kind === b.kind && (a.kind !== "file" || a.fingerprint === (b as typeof a).fingerprint);
@@ -258,26 +227,15 @@ function rowOf(oid: string, parents: readonly string[], object: CommitObject): H
 export function createHistoryReader({ runner, trust, listingTuple, markUnavailable }: HistoryReaderOptions) {
   async function run(t: ProcessTarget, args: string[], stdout: Bytes, input?: Uint8Array): Promise<Step> {
     if (t.signal.aborted) return { aborted: true };
-    const w = t.workspace;
-    const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+    let step: ReadStep;
     try {
-      const exit = await runner.run({
-        operationId: t.operationId,
-        context: { contextKind: "registeredOperation", gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId },
-        arguments: args,
-        ...(input === undefined ? {} : { input }),
-        environmentPolicy: "read",
-        limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
-        stdout,
-        stderr,
-        signal: t.signal,
-      });
-      return t.signal.aborted ? { aborted: true } : { exit, stdout, stderrBytes: stderr.bytes };
+      step = await runRead(runner, t, args, stdout, input);
     } catch (error) {
       if (t.signal.aborted) return { aborted: true };
-      if (error instanceof RunnerRefusal) return { refused: error.code };
       throw error;
     }
+    if (t.signal.aborted) return { aborted: true };
+    return "refused" in step ? step : { ...step, stdout };
   }
 
   const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
@@ -376,11 +334,11 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
   // Contract §7 "Shared listing": the listing of a `readWorkspace` of the request generation, after the tuple recheck. Otherwise an own listing.
   async function listingFor(t: ReadHistoryTarget): Promise<ListingOutcome> {
     const w = t.workspace;
-    const tuple = await listingTuple(w);
+    const tuple = await listingTuple(w, t.operationId);
     if (tuple !== null) {
       const shared = await trust.shared.reuse(w.repositoryId, t.generation, tuple, t.signal);
       // The tuple is read again after the shared listing ends, so an edit during that listing also forces an own listing.
-      if (shared !== null && (await listingTuple(w)) === tuple) return { ok: true, listing: shared };
+      if (shared !== null && (await listingTuple(w, t.operationId)) === tuple) return { ok: true, listing: shared };
     }
     if (t.signal.aborted) return { ok: false, stop: "canceled" };
     return trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
@@ -389,12 +347,9 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
   // Contract §7 "Missing objects": `cat-file --batch-check` on the history commit IDs. The service never parses the Git message.
   async function objectCheck(t: ProcessTarget, oids: readonly string[]): Promise<"missing" | "present" | "failed" | "canceled" | "deadline"> {
     const out = createCollector({ maxBytes: oids.length * (HEADER_BYTES + 1) });
-    const step = await run(t, objectCheckArgs(), out, new TextEncoder().encode(`${oids.join("\n")}\n`));
+    const step = await run(t, objectCheckArgs(), out, objectCheckInput(oids));
     if ("aborted" in step) return "canceled";
-    if ("refused" in step) return "failed";
-    if (step.exit.deadline !== undefined) return "deadline";
-    if (out.limited || step.exit.exitCode !== 0) return "failed";
-    return objectCheckAnswer(out.take(), oids);
+    return objectCheckOutcome(step, out, oids);
   }
 
   // A failed `rev-list` or `cat-file`. The check input holds HEAD, the rows, and the parents that `rev-list` named.
@@ -431,9 +386,7 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
     const missing = objects.completeness.state === "limited" && objects.completeness.code === "OBJECT_MISSING";
     if (missing) {
       const w = t.workspace;
-      const promisor = await hasPromisor(listing.entries, w, (paths) =>
-        runner.identities(t.operationId, { contextKind: "registeredOperation", gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId }, paths),
-      );
+      const promisor = await hasPromisor(listing.entries, w, (paths) => runner.identities(t.operationId, contextOf(w), paths));
       // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read marks nothing.
       if (t.signal.aborted) return { result: "canceled" };
       // A promisor check that cannot complete gives GIT_FAILED, as an object check that cannot complete does.

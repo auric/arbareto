@@ -2,40 +2,34 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { ErrorCode } from "../contracts/errors";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
-import { isWindows } from "../contracts/native-path";
-import { buildRemedyCommand, type RemedyCommand } from "../contracts/remedy-command";
+import { COMMIT_OUTPUT_TAIL_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
+import { buildSubmoduleOutputTail } from "../contracts/submodules";
 import { discoveryLayoutArgs, discoveryProfiles, isObjectId, isRefName, refExistsArgs, type ObjectFormat } from "./commands";
-import { createCollector, isChannelPath, type GitRunner } from "./git-runner";
+import { createCollector, isChannelPath, type Collector, type GitRunner } from "./git-runner";
 
 // Data-model §2 and contract §6 "Registration bootstrap": the remedy texts of discovery refusals.
 export const DISCOVERY_REMEDIES = {
   bare: "Open a worktree of it, or clone it",
   administrationFolder: "Open the working folder that contains it",
-  notARepository: "Open a folder inside a Git repository.",
   unavailable: "Run `git status` in this folder",
 } as const;
 
-// Contract §6 "Registration bootstrap", under the fixed C locale. Git `die` exits with status 128 (research R2).
-const DIE_STATUS = 128;
-const DUBIOUS_PREFIX = new TextEncoder().encode("fatal: detected dubious ownership in repository at '");
-const NOT_A_REPOSITORY_PREFIX = new TextEncoder().encode("fatal: not a git repository (or any");
 // git-show-ref(1) `--exists`: the status for a missing reference.
 const REF_MISSING_STATUS = 2;
-const SAFE_DIRECTORY_TEMPLATE = "& {git} config --global --add safe.directory {path}";
 
 const NEWLINE = 0x0a;
-const APOSTROPHE = 0x27;
 const REF_FORMATS = ["files", "reftable"] as const;
 const OBJECT_FORMATS: readonly ObjectFormat[] = ["sha1", "sha256"];
 
 export type RefFormat = (typeof REF_FORMATS)[number];
 
-// `DUBIOUS_OWNERSHIP` carries the Git-reported path and a command. Every other refusal carries the selected folder when the caller knows it, and a data-model §2 code also carries its text.
+// Each refusal carries the selected folder when the caller knows it, and a data-model §2 code also carries its text.
+// Contract §6 and §9: only the refusal of discovery call 1 carries `outputTail`. No log may hold it.
 export interface DiscoveryRefusal {
   code: ErrorCode;
   path?: string;
-  remedy?: { text?: string; command?: string | null };
+  remedy?: { text: string };
+  outputTail?: string;
 }
 
 // Data-model §2 `head`: a symbolic target with its object ID, a detached object ID, or a validated unborn branch.
@@ -60,36 +54,34 @@ export interface DiscoveryTarget {
   gitInstallationId: string;
   // The folder of the bootstrap context. Only refusals show it. Contract §3: the service payload holds only `bootstrapId`, so the service does not know it.
   directory?: string;
-  // Data-model §1 `selectedPath`. The dubious-ownership command names it.
+  // Data-model §1 `selectedPath`.
   gitSelectedPath: string;
   signal?: AbortSignal;
 }
 
-export interface DiscoveryFailure {
-  exitCode: number | null;
-  stderr: Uint8Array;
-  directory?: string;
-  gitSelectedPath: string;
-}
-
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const lossy = new TextDecoder("utf-8", { ignoreBOM: true });
 
-function startsWith(bytes: Uint8Array, prefix: Uint8Array): boolean {
-  if (bytes.length < prefix.length) return false;
-  for (let i = 0; i < prefix.length; i++) if (bytes[i] !== prefix[i]) return false;
-  return true;
-}
-
-function lines(bytes: Uint8Array): Uint8Array[] {
-  const out: Uint8Array[] = [];
-  let start = 0;
-  for (let i = 0; i <= bytes.length; i++) {
-    if (i < bytes.length && bytes[i] !== NEWLINE) continue;
-    out.push(bytes.subarray(start, i));
-    start = i + 1;
-  }
-  return out;
+// Contract §9 "Commit failure output": a ring buffer that keeps the last 16 KiB of raw stderr bytes.
+function createTailCollector() {
+  let kept = new Uint8Array(0);
+  let bytes = 0;
+  return {
+    push(chunk: Uint8Array): void {
+      bytes += chunk.length;
+      const joined = new Uint8Array(kept.length + chunk.length);
+      joined.set(kept);
+      joined.set(chunk, kept.length);
+      kept = joined.length > COMMIT_OUTPUT_TAIL_BYTES ? joined.slice(joined.length - COMMIT_OUTPUT_TAIL_BYTES) : joined;
+    },
+    get bytes() {
+      return bytes;
+    },
+    records: 0,
+    get limited() {
+      return bytes > kept.length;
+    },
+    outputTail: (): string => buildSubmoduleOutputTail(kept, bytes > kept.length),
+  };
 }
 
 // Splits LF-terminated output. Returns null when the output does not end with LF.
@@ -111,42 +103,22 @@ const refusal = (code: ErrorCode, directory: string | undefined, text?: string):
 });
 const unavailable = (directory: string | undefined) => refusal("REPOSITORY_UNAVAILABLE", directory, DISCOVERY_REMEDIES.unavailable);
 
-// Contract §6 and §4: the service builds this command and never runs it. The path keeps the form that Git reported.
-export function safeDirectoryCommand(gitSelectedPath: string, path: string | Uint8Array): RemedyCommand {
-  return buildRemedyCommand(SAFE_DIRECTORY_TEMPLATE, {
-    git: { kind: "gitPath", text: gitSelectedPath, form: isWindows ? "windows" : "linux" },
-    path: { kind: "path", text: path, form: "git-reported" },
-  });
-}
-
-// Contract §6 "Registration bootstrap": classifies a failed discovery query by exit status and stderr prefix. Git's own suggested command never reaches the result.
-export function classifyDiscoveryFailure(failure: DiscoveryFailure): DiscoveryRefusal {
-  const { exitCode, stderr, directory, gitSelectedPath } = failure;
-  if (exitCode !== DIE_STATUS) return unavailable(directory);
-  for (const line of lines(stderr)) {
-    if (!startsWith(line, DUBIOUS_PREFIX)) continue;
-    // The path runs from the prefix to the last `'` of the line.
-    const end = line.lastIndexOf(APOSTROPHE);
-    if (end < DUBIOUS_PREFIX.length) return { code: "DUBIOUS_OWNERSHIP", ...(directory === undefined ? {} : { path: directory }), remedy: { command: null } };
-    const path = line.slice(DUBIOUS_PREFIX.length, end);
-    return { code: "DUBIOUS_OWNERSHIP", path: lossy.decode(path), remedy: { command: safeDirectoryCommand(gitSelectedPath, path).command } };
-  }
-  if (startsWith(stderr, NOT_A_REPOSITORY_PREFIX)) return refusal("NOT_A_REPOSITORY", directory, DISCOVERY_REMEDIES.notARepository);
-  return unavailable(directory);
-}
-
 interface QueryResult {
   exitCode: number | null;
   stdout: Uint8Array;
-  stderr: Uint8Array;
   // Every stderr byte that Git wrote, also the bytes past the collector bound.
   stderrBytes: number;
 }
 
 // Runs one fixed discovery query under the `probe` policy. A `RunnerRefusal` keeps its own code and rejects the call.
-async function query(runner: GitRunner, target: DiscoveryTarget, args: string[], signal: AbortSignal): Promise<QueryResult | DiscoveryRefusal> {
+async function query(
+  runner: GitRunner,
+  target: DiscoveryTarget,
+  args: string[],
+  signal: AbortSignal,
+  stderr: Collector = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }),
+): Promise<QueryResult | DiscoveryRefusal> {
   const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-  const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   const exit = await runner.run({
     operationId: target.operationId,
     context: { contextKind: "repositoryDiscovery", bootstrapId: target.bootstrapId, gitInstallationId: target.gitInstallationId },
@@ -161,13 +133,13 @@ async function query(runner: GitRunner, target: DiscoveryTarget, args: string[],
   if (exit.deadline) return refusal("DEADLINE", target.directory);
   if (signal.aborted) return refusal("CANCELED", target.directory);
   if (exit.diagnosticLimit || stdout.limited) return refusal("OUTPUT_LIMIT", target.directory);
-  return { exitCode: exit.exitCode, stdout: stdout.take(), stderr: stderr.take(), stderrBytes: stderr.bytes };
+  return { exitCode: exit.exitCode, stdout: stdout.take(), stderrBytes: stderr.bytes };
 }
 
 const isRefusal = (value: QueryResult | DiscoveryRefusal): value is DiscoveryRefusal => "code" in value;
 
 // Research R2 "T283 record": the two-call form, then `symbolic-ref` and `show-ref` for HEAD.
-// The first call decides each contract §6 refusal. A later failure gives REPOSITORY_UNAVAILABLE.
+// Contract §6: every nonzero exit of the first call gives the merged REPOSITORY_UNAVAILABLE with `outputTail`. Git prints no machine-readable reason, so no stderr byte decides.
 // No query loads the index, because an index load can run `core.fsmonitor` before trust approval.
 export async function discoverRepository(runner: GitRunner, target: DiscoveryTarget): Promise<DiscoveryResult> {
   const signal = target.signal ?? new AbortController().signal;
@@ -175,9 +147,10 @@ export async function discoverRepository(runner: GitRunner, target: DiscoveryTar
   const profiles = discoveryProfiles();
   const [flagsArgs, symbolicArgs, headArgs] = [profiles[0]!, profiles[7]!, profiles[8]!];
 
-  const flags = await query(runner, target, flagsArgs, signal);
+  const tail = createTailCollector();
+  const flags = await query(runner, target, flagsArgs, signal, tail);
   if (isRefusal(flags)) return fail(flags);
-  if (flags.exitCode !== 0) return fail(classifyDiscoveryFailure({ exitCode: flags.exitCode, stderr: flags.stderr, directory: target.directory, gitSelectedPath: target.gitSelectedPath }));
+  if (flags.exitCode !== 0) return fail({ ...unavailable(target.directory), outputTail: tail.outputTail() });
   const [bare, inside, ...extra] = outputLines(flags.stdout) ?? [];
   if (extra.length > 0 || !isBoolean(bare) || !isBoolean(inside)) return fail(unavailable(target.directory));
   if (bare === "true") return fail(refusal("UNSUPPORTED_REPOSITORY", target.directory, DISCOVERY_REMEDIES.bare));

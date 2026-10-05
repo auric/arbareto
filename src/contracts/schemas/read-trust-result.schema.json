@@ -56,7 +56,8 @@
             "file-count",
             "file-bytes",
             "total-bytes",
-            "link"
+            "link",
+            "name"
           ]
         },
         "inputLimited": {

@@ -5,7 +5,7 @@
 // Its imports must load off Windows without `dlopen` (tests/git/portable-imports.test.ts).
 
 import { spyOn, test } from "bun:test";
-import { chmodSync, closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,7 +20,7 @@ import { GIT } from "./git-binary";
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
-export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial";
+export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo";
 
 const WINDOWS = process.platform === "win32";
 const LINUX = process.platform === "linux";
@@ -39,11 +39,12 @@ function gitForWindows(): boolean {
   return version?.exitCode === 0 && /^git version \d+\.\d+\.\d+\.windows\.\d+\r?$/m.test(version.stdout);
 }
 
-// Contract §6 "Registration bootstrap" `NOT_A_REPOSITORY`: exit status 128 and the stderr prefix. The query is the first discovery query (research.md R2).
+// Contract §6 "Registration bootstrap": the first discovery query (research.md R2) gives the merged `REPOSITORY_UNAVAILABLE` here.
+// Exit 0 of `rev-parse --is-inside-work-tree` means that Git found an enclosing repository. `safe.directory=*` keeps an ownership refusal from hiding one.
 // The owned root does not exist at load, so the check runs in its parent.
 function noEnclosingRepository(): boolean {
-  const result = probe(["rev-parse", "--is-bare-repository", "--is-inside-git-dir"], dirname(FIXTURE_ROOT));
-  return result?.exitCode === 128 && result.stderr.startsWith("fatal: not a git repository (or any");
+  const result = probe(["-c", "safe.directory=*", "rev-parse", "--is-inside-work-tree"], dirname(FIXTURE_ROOT));
+  return result !== null && result.exitCode !== 0;
 }
 
 // A case that denies the service a file read. A process with CAP_DAC_OVERRIDE, such as root, opens a file without read permission.
@@ -66,6 +67,32 @@ function readDenial(): boolean {
   }
 }
 
+// tasks.md "Test harness rules": present when `symlinkSync` succeeds. Windows refuses `CreateSymbolicLinkW` without the privilege or Developer Mode.
+function symlinkCreation(): boolean {
+  const dir = mkdtempSync(join(tmpdir(), "arbareto-symlink-"));
+  try {
+    symlinkSync("target", join(dir, "probe"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Present when `mkfifo` makes a FIFO in a folder. Windows has no FIFO in a folder. An MSYS `mkfifo` there makes no native FIFO.
+function fifoCreation(): boolean {
+  if (WINDOWS || Bun.which("mkfifo") === null) return false;
+  const dir = mkdtempSync(join(tmpdir(), "arbareto-fifo-"));
+  try {
+    const fifo = join(dir, "probe");
+    const made = Bun.spawnSync(["mkfifo", fifo], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    return made.exitCode === 0 && lstatSync(fifo).isFIFO();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const PRESENT: Record<Capability, boolean> = {
   // `bun-runner.ts` has host calls only for Windows (`win32.ts`) and Linux (`linux.ts`).
   "shell-double": WINDOWS || LINUX,
@@ -78,6 +105,8 @@ const PRESENT: Record<Capability, boolean> = {
   "other-account-owner": false,
   "no-enclosing-repository": noEnclosingRepository(),
   "read-denial": readDenial(),
+  symlink: symlinkCreation(),
+  fifo: fifoCreation(),
 };
 
 export function missingCapability(...needs: Capability[]): Capability | null {
@@ -242,7 +271,7 @@ export interface TrustResult {
   persistence: "stored" | "session";
   trustId?: string;
   approvalRequired: { reads: boolean; commit: boolean };
-  bound?: "file-count" | "file-bytes" | "total-bytes" | "link";
+  bound?: "file-count" | "file-bytes" | "total-bytes" | "link" | "name";
   inputLimited?: boolean;
   entries: { key: string; scope: string; origin?: string; value?: string }[];
   hooks: { event: string; scope?: string; path?: string; disabled?: boolean }[];

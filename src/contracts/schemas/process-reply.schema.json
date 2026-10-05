@@ -388,6 +388,9 @@
                   },
                   "executable": {
                     "type": "boolean"
+                  },
+                  "ownerExecute": {
+                    "type": "boolean"
                   }
                 },
                 "required": [

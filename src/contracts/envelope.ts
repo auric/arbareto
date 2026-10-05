@@ -2,9 +2,10 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { z } from "zod";
-import { DamagedMarker, UtcTime } from "./channel";
+import { DamagedMarker, TRUST_BOUNDS, UtcTime } from "./channel";
 import { ERROR_CODES, TERMINAL_STATES, type ErrorCode } from "./errors";
-import { COMMIT_MESSAGE_BYTES, PUBLIC_REQUEST_BYTES } from "./limits";
+import * as limits from "./limits";
+import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REGISTERED_WORKSPACES } from "./limits";
 import { ChannelPath, Count, Fingerprint, Identifier, isOperationName, MutationKind, OPERATION_NAMES, SHELL_ONLY, type OperationName } from "./operations";
 import { OPERATION_STATES } from "./outcome";
 import { decodeStrictJson, hasFractionOrExponent } from "./strict-json";
@@ -186,11 +187,14 @@ export const ProgressEvent = z.strictObject({
 export type ProgressEvent = z.infer<typeof ProgressEvent>;
 
 // Contract §2: one terminal response for each request. A response without an issued operation has no `operationId`.
+// A response repeats the `repositoryGeneration` and `selectionId` of its validated envelope. A `readWorkspace` result generation replaces the first.
 export const Response = z.strictObject({
   requestId: Identifier.nullable(),
   operationId: Identifier.optional(),
   state: z.enum(TERMINAL_STATES),
   code: ErrorCodeSchema.optional(),
+  repositoryGeneration: Generation.optional(),
+  selectionId: Identifier.optional(),
   result: z.unknown().optional(),
 });
 export type Response = z.infer<typeof Response>;
@@ -232,6 +236,229 @@ export const ChooseGitResult = z.union([
     .strictObject({ detectedVersion: z.string().optional(), reason: GitReason.optional(), path: z.string().optional(), minimumVersion: z.string() })
     .meta({ title: "ChooseGitFailed" }),
 ]);
+
+// Contract §3 `chooseRepository` and `restoreWorkspace`: both operations share this result. The response `code` names each refusal.
+// `path` and `remedy` follow contract §6 "Registration bootstrap". `limit` follows contract §9 `WORKSPACE_LIMIT`.
+export const RegistrationResult = z.union([
+  z.strictObject({ repositoryId: Identifier, generation: Generation, worktreeKey: Fingerprint }).meta({ title: "Registered" }),
+  z
+    .strictObject({ path: z.string().optional(), remedy: z.strictObject({ text: z.string().optional(), command: z.string().nullable().optional() }).optional() })
+    .meta({ title: "RegistrationRefused" }),
+  z.strictObject({ limit: z.literal(REGISTERED_WORKSPACES) }).meta({ title: "WorkspaceLimit" }),
+]);
+export type RegistrationResult = z.infer<typeof RegistrationResult>;
+export const ChooseRepositoryResult = RegistrationResult;
+export const RestoreWorkspaceResult = RegistrationResult;
+
+// Git `config.c` `config_scope_name`: the scopes that `config list --show-scope` prints.
+export const ConfigScope = z.enum(["system", "global", "local", "worktree", "command", "submodule", "unknown"]);
+export type ConfigScope = z.infer<typeof ConfigScope>;
+const TrustPersistence = z.enum(["stored", "session"]);
+const Remedy = z.strictObject({ text: z.string().min(1) });
+
+// Contract §7 "Program file digests": a failed trust listing. The text names the path and the errno name.
+const TrustListingFailed = z.strictObject({ remedy: Remedy }).meta({ title: "TrustListingFailed" });
+
+// Contract §7 "Value display allowlist": `value` appears only for an allowlisted key. Each text is redacted (contract §7 "URL user information").
+export const TrustEntry = z.strictObject({ key: z.string().min(1), scope: ConfigScope, origin: z.string(), value: z.string().optional() }).meta({ title: "TrustEntry" });
+
+// Contract §7 "Hook registrations". `scope` is the scope of the last `hook.<name>.event` entry, as `git hook list --show-scope` prints it.
+// `commandScope` and `commandOrigin` belong to the `hook.<name>.command` entry, which decides `repositoryControlled`. A disabled hook can lack that entry.
+export const TrustHook = z.union([
+  z
+    .strictObject({
+      event: z.string().min(1),
+      // Git accepts an empty subsection, so a friendly name can be empty.
+      name: z.string(),
+      scope: ConfigScope,
+      commandScope: ConfigScope.optional(),
+      commandOrigin: z.string().optional(),
+      disabled: z.boolean(),
+      repositoryControlled: z.boolean(),
+    })
+    .meta({ title: "ConfiguredHook" }),
+  z.strictObject({ event: z.string().min(1), path: z.string().min(1), repositoryControlled: z.boolean() }).meta({ title: "FolderHook" }),
+]);
+
+// Contract §3 `readTrust` and data-model §3. `bound` names the reached contract §7 "Program file digests" bound, which gives `persistence` `session`.
+// `inputLimited` marks a listing above the contract §5 "Effective configuration/trust input" bound. Only an approved or changed state carries a `trustId`.
+export const ReadTrustResult = z
+  .union([
+    z
+      .strictObject({
+        generation: Generation,
+        fingerprint: Fingerprint,
+        state: z.enum(["untrusted", "approved", "changed", "revoked"]),
+        persistence: TrustPersistence,
+        trustId: Identifier.optional(),
+        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean() }),
+        bound: z.enum(TRUST_BOUNDS).optional(),
+        inputLimited: z.literal(true).optional(),
+        entries: z.array(TrustEntry),
+        hooks: z.array(TrustHook),
+      })
+      .refine((r) => (r.bound === undefined || r.persistence === "session") && ((r.state === "approved" || r.state === "changed") === (r.trustId !== undefined)))
+      .meta({ title: "TrustReport" }),
+    TrustListingFailed,
+  ])
+  .meta({ title: "ReadTrustResult" });
+
+// Contract §3 `approveTrust`: `saveFailed` is true only after a `persist: true` confirmation that the shell could not store.
+export const ApproveTrustResult = z
+  .union([
+    z
+      .strictObject({ trustId: Identifier, persistence: TrustPersistence, saveFailed: z.boolean() })
+      .refine((r) => !r.saveFailed || r.persistence === "session")
+      .meta({ title: "TrustApproved" }),
+    TrustListingFailed,
+  ])
+  .meta({ title: "ApproveTrustResult" });
+
+// Contract §3 `revokeTrust`: the process count of the shell `revoke` reply.
+export const RevokeTrustResult = z.strictObject({ endedProcesses: Count }).meta({ title: "RevokeTrustResult" });
+
+// Data-model §2 `objectFormat`: SHA-1 and SHA-256 object IDs in lowercase hex.
+const ObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+// git-status(1) "Porcelain Format Version 2": octal modes.
+const FileMode = z.string().regex(/^[0-7]{6}$/);
+
+// Data-model §2 `head`: a symbolic target with its object ID, a detached object ID, or an unborn branch.
+export const Head = z
+  .discriminatedUnion("state", [
+    z.strictObject({ state: z.literal("branch"), target: z.string().min(1), oid: ObjectId }).meta({ title: "BranchHead" }),
+    z.strictObject({ state: z.literal("detached"), oid: ObjectId }).meta({ title: "DetachedHead" }),
+    z.strictObject({ state: z.literal("unborn"), target: z.string().min(1) }).meta({ title: "UnbornHead" }),
+  ])
+  .meta({ title: "Head" });
+
+// Contract §9: `limited` carries `OUTPUT_LIMIT` with the export name of the reached contract §5 bound, `OBJECT_MISSING`, or `WORKTREE_CHANGING`.
+const LIMIT_NAMES = Object.keys(limits) as [string, ...string[]];
+export const Completeness = z
+  .discriminatedUnion("state", [
+    z.strictObject({ state: z.literal("complete") }).meta({ title: "Complete" }),
+    z
+      .strictObject({ state: z.literal("limited"), code: z.enum(["OUTPUT_LIMIT", "OBJECT_MISSING", "WORKTREE_CHANGING"]), reason: z.enum(LIMIT_NAMES).optional() })
+      .refine((c) => (c.code === "OUTPUT_LIMIT") === (c.reason !== undefined))
+      .meta({ title: "Limited" }),
+    z.strictObject({ state: z.literal("failed"), code: ErrorCodeSchema }).meta({ title: "Failed" }),
+  ])
+  .meta({ title: "Completeness" });
+
+// Data-model §5 "Change entry". `pathBytes` and `sourcePathBytes` hold the literal path bytes in base64. `path` and `sourcePath` are display text.
+// `xy`, `submodule`, `modes`, `oids`, and `score` repeat the fields of the git-status(1) porcelain v2 record in its order.
+// `flags` is absent when the index listing gives no single entry for the path.
+export const ChangeEntry = z
+  .strictObject({
+    entryId: Identifier,
+    category: z.enum(["staged", "unstaged", "untracked", "conflicted"]),
+    path: z.string(),
+    pathBytes: z.base64().min(1),
+    xy: z.string().regex(/^[.MTADRCU]{2}$/).optional(),
+    submodule: z.string().regex(/^(?:N\.\.\.|S[C.][M.][U.])$/).optional(),
+    modes: z.array(FileMode).min(3).max(4).optional(),
+    oids: z.array(ObjectId).min(2).max(3).optional(),
+    score: z.string().regex(/^[RC][0-9]{1,3}$/).optional(),
+    sourcePath: z.string().optional(),
+    sourcePathBytes: z.base64().min(1).optional(),
+    flags: z.strictObject({ intentToAdd: z.boolean(), assumeUnchanged: z.boolean(), skipWorktree: z.boolean() }).optional(),
+  })
+  .refine((e) => (e.sourcePath === undefined) === (e.sourcePathBytes === undefined))
+  .meta({ title: "ChangeEntry" });
+
+// Contract §4 "Hunk eligibility and publication", in the order of its list. Null: the read holds no raw index bytes to decide from.
+export const HunkEligibility = z
+  .union([
+    z.strictObject({ eligible: z.literal(true) }).meta({ title: "Eligible" }),
+    z.strictObject({ eligible: z.literal(false), reason: z.enum(["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor"]) }).meta({ title: "Ineligible" }),
+  ])
+  .nullable();
+
+// Data-model §2 `operationState` and `recoveryState`.
+export const WorkspaceOperationState = z.enum(["normal", "conflicted", "merging", "rebasing", "cherry-picking", "reverting", "sequencer-active", "unknown"]);
+export const RecoveryState = z.enum(["ready", "refreshing", "reconciling", "unknown", "unavailable"]);
+
+// Contract §3 `readWorkspace` with a retained snapshot: the summary, `entryCount`, the first page, and the cursor of the next page or null.
+export const WorkspaceSnapshot = z
+  .strictObject({
+    generation: Generation,
+    snapshotId: Identifier,
+    identity: z.strictObject({
+      worktreeRoot: ChannelPath,
+      gitDirectory: ChannelPath,
+      commonDirectory: ChannelPath,
+      indexPath: ChannelPath,
+      objectFormat: z.enum(["sha1", "sha256"]),
+      refFormat: z.enum(["files", "reftable"]),
+    }),
+    head: Head,
+    operationState: WorkspaceOperationState,
+    recoveryState: RecoveryState,
+    completeness: Completeness,
+    hunkEligibility: HunkEligibility,
+    entryCount: Count,
+    entries: z.array(ChangeEntry),
+    cursor: Identifier.nullable(),
+  })
+  .refine((r) => r.completeness.state !== "failed" && (r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount))
+  .meta({ title: "WorkspaceSnapshot" });
+
+// Contract §3 `readWorkspace` without a snapshot: a failed read, or a missing object (contract §7 "Missing objects"). It holds no entry, so it never reports a clean working tree.
+export const WorkspaceRefusal = z
+  .strictObject({ completeness: Completeness, recoveryState: RecoveryState, remedy: Remedy.optional() })
+  .refine((r) => r.completeness.state === "failed" || (r.completeness.state === "limited" && r.completeness.code === "OBJECT_MISSING"))
+  .meta({ title: "WorkspaceRefusal" });
+
+export const ReadWorkspaceResult = z.union([WorkspaceSnapshot, WorkspaceRefusal]).meta({ title: "ReadWorkspaceResult" });
+export type ReadWorkspaceResult = z.infer<typeof ReadWorkspaceResult>;
+export type WorkspaceSnapshot = z.infer<typeof WorkspaceSnapshot>;
+export type WorkspaceRefusal = z.infer<typeof WorkspaceRefusal>;
+export type ChangeEntry = z.infer<typeof ChangeEntry>;
+export type Completeness = z.infer<typeof Completeness>;
+
+// Contract §3 `readEntries`: one later page with at least one entry, and the cursor of the next page or null.
+export const ReadEntriesResult = z.strictObject({ entries: z.array(ChangeEntry).min(1), cursor: Identifier.nullable() }).meta({ title: "ReadEntriesResult" });
+export type ReadEntriesResult = z.infer<typeof ReadEntriesResult>;
+
+// Contract §3 "HistoryPage result" and data-model §4 "History page". `parents` holds the effective parents in Git order.
+// `date` is the author time in seconds (Git `ident.c` `split_ident_line`). `encoding` is the `encoding` header value without control characters, or null.
+export const HistoryRow = z
+  .strictObject({
+    oid: ObjectId,
+    parents: z.array(ObjectId).max(HISTORY_PARENTS_PER_COMMIT),
+    subject: z.string(),
+    author: z.strictObject({ name: z.string(), email: z.string() }),
+    date: Count,
+    encoding: z.string().regex(/^[^\u0000-\u001f\u007f-\u009f]*$/).nullable(),
+  })
+  .meta({ title: "HistoryRow" });
+
+// Contract §3 `readHistory`: at most 100 rows of the captured checkout, child before parent. The first row is the captured HEAD commit.
+// `boundaries.page` holds the parents outside the page. `boundaries.shallow` holds the raw parents that a shallow commit of the page hides.
+// `remedy` holds the contract §7 "Missing objects" text of an `OBJECT_MISSING` page.
+export const HistoryPage = z
+  .strictObject({
+    generation: Generation,
+    scope: z.literal("current-checkout"),
+    head: Head,
+    shallowFingerprint: Fingerprint.nullable(),
+    rows: z.array(HistoryRow).max(HISTORY_STREAM_ROWS),
+    boundaries: z.strictObject({ page: z.array(ObjectId), shallow: z.array(ObjectId) }),
+    completeness: Completeness,
+    remedy: Remedy.optional(),
+  })
+  .refine((p) => p.completeness.state !== "failed" && (p.head.state === "unborn" ? p.rows.length === 0 : p.rows.length === 0 || p.rows[0]!.oid === p.head.oid))
+  .meta({ title: "HistoryPage" });
+
+// Contract §3 `readHistory` without a page: a refused gate, a failed read, or a damaged object store (contract §7 "Missing objects"). It holds no row.
+export const HistoryRefusal = z
+  .strictObject({ completeness: Completeness, remedy: Remedy.optional() })
+  .refine((r) => r.completeness.state === "failed")
+  .meta({ title: "HistoryRefusal" });
+
+export const ReadHistoryResult = z.union([HistoryPage, HistoryRefusal]).meta({ title: "ReadHistoryResult" });
+export type HistoryRow = z.infer<typeof HistoryRow>;
+export type HistoryPage = z.infer<typeof HistoryPage>;
+export type HistoryRefusal = z.infer<typeof HistoryRefusal>;
 
 // Contract §3 `cancel` and `getOperation`: the current or retained state of an issued operation (data-model §7).
 export const OperationResult = z.strictObject({

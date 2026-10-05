@@ -262,7 +262,7 @@ export function createBunRunner(options: BunRunnerOptions) {
   for (const dir of [launchDirectory, recordsDirectory, recoveryFolder]) mkdirSync(dir, { recursive: true });
 
   const trustStore = options.trustStore ?? createTrustStore();
-  const contexts = new Map<string, { kind: "gitProbe" | "repositoryDiscovery"; path: string; owner?: string }>();
+  const contexts = new Map<string, { kind: "gitProbe" | "repositoryDiscovery"; path: string; owner?: string; identity?: IdentityReply }>();
   const gits = new Map<string, string>();
   const repositories = new Map<string, { worktreeRoot: string; gitDirectory: string; commonDirectory: string }>();
   const issued = new Set<string>();
@@ -331,6 +331,15 @@ export function createBunRunner(options: BunRunnerOptions) {
     return [...records.values()].filter((r) => keep(r) && processCreationTime(r.pid) === r.created);
   };
   const end = (keep: (record: ProcessRecord) => boolean) => live(keep).filter((r) => terminateRecorded(r.pid, r.created)).length;
+
+  // src-tauri/src/bootstrap.rs `revalidate`: the selected path must read as the identity of context creation.
+  // Otherwise the shell destroys the `repositoryDiscovery` context and refuses with `UNKNOWN_TARGET`.
+  function revalidate(bootstrapId: string): void {
+    const now = readIdentity(contexts.get(bootstrapId)!.path);
+    if (!("code" in now) && sameIdentity(now, contexts.get(bootstrapId)!.identity)) return;
+    contexts.delete(bootstrapId);
+    throw unknownTarget();
+  }
 
   // Contract §6 "Context rules": the first `operationId` of a `bootstrapId` owns it.
   // A WSL Git target carries its installation. Its `cwd` is the UNC directory that becomes the Linux `-C` directory.
@@ -665,6 +674,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     if (!target.wsl) {
       const env = environment(call);
       if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
+      if (call.context.contextKind === "repositoryDiscovery") revalidate(call.context.bootstrapId);
       return execute(call, [target.program, ...call.arguments], target.cwd, env, recorded);
     }
     // Contract §11 "Process launch": `--no-lazy-fetch` stays first, and `-C` takes the Linux directory.
@@ -940,7 +950,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Returns the bootstrap ID of a new native context.
     addContext(kind: "gitProbe" | "repositoryDiscovery", path: string): string {
       const bootstrapId = crypto.randomUUID();
-      contexts.set(bootstrapId, { kind, path });
+      contexts.set(bootstrapId, { kind, path, ...(kind === "repositoryDiscovery" ? { identity: readIdentity(path) } : {}) });
       return bootstrapId;
     },
     // The path of a live native context, or `undefined` after its end.

@@ -1,0 +1,5 @@
+{
+  "schema": "read-entries-result",
+  "expected": "valid",
+  "text": "{\"entries\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000202\",\"category\":\"unstaged\",\"path\":\"ita.txt\",\"pathBytes\":\"aXRhLnR4dA==\",\"xy\":\".A\",\"submodule\":\"N...\",\"modes\":[\"000000\",\"000000\",\"100644\"],\"oids\":[\"0000000000000000000000000000000000000000\",\"0000000000000000000000000000000000000000\"],\"flags\":{\"intentToAdd\":true,\"assumeUnchanged\":false,\"skipWorktree\":false}},{\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000203\",\"category\":\"conflicted\",\"path\":\"conflict.txt\",\"pathBytes\":\"Y29uZmxpY3QudHh0\",\"xy\":\"UU\",\"submodule\":\"N...\",\"modes\":[\"100644\",\"100644\",\"100644\",\"100644\"],\"oids\":[\"0123456789abcdef0123456789abcdef01234567\",\"89abcdef0123456789abcdef0123456789abcdef\",\"fedcba9876543210fedcba9876543210fedcba98\"]}],\"cursor\":\"0f0f0f0f-0000-4000-8000-000000000211\"}"
+}

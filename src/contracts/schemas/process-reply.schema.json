@@ -200,6 +200,10 @@
                   "code": {
                     "type": "string",
                     "const": "UNSUPPORTED_REPOSITORY"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "const": "absent"
                   }
                 },
                 "required": [

@@ -4,6 +4,8 @@
 // Contract §4 "Split index": the service reads the raw index `link` extension itself.
 // Layout: Git `Documentation/gitformat-index.adoc` and `read-cache.c` (git-for-windows 52ca1113).
 
+import { parseMaybeBool, type ConfigEntry, type TrustListing } from "./trust";
+
 export type ObjectFormat = "sha1" | "sha256";
 
 // gitformat-index: checksums and object names use the hash of the repository object format.
@@ -130,4 +132,46 @@ export function splitIndexLink(rawIndex: Uint8Array, objectFormat?: ObjectFormat
   if (answers.length === 0) throw failure;
   if (answers.some((a) => a !== answers[0])) refuse("object format is ambiguous");
   return answers[0]!;
+}
+
+// ---- Hunk eligibility (contract §4 "Hunk eligibility and publication", data-model §2 `hunkEligibility`) ----
+
+// Order of the contract §4 list. The first reason that applies wins.
+export const HUNK_REFUSAL_REASONS = ["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor"] as const;
+export type HunkRefusalReason = (typeof HUNK_REFUSAL_REASONS)[number];
+export type HunkEligibility = { eligible: true } | { eligible: false; reason: HunkRefusalReason };
+
+const INDEX_CHANGE_EVENT = "post-index-change";
+
+// The last entry of a key gives its value (Git `config.c` `git_configset_get_value`). Undefined when no scope sets the key.
+// Git prints the section and the variable in lowercase. These keys have no subsection, so the whole key compares in lowercase.
+function effective(entries: readonly ConfigEntry[], key: string): ConfigEntry | undefined {
+  let found: ConfigEntry | undefined;
+  for (const entry of entries) if (entry.key.toLowerCase() === key) found = entry;
+  return found;
+}
+
+// `rawIndex` holds the index file bytes that the read captured, or null when the index file is absent.
+// This function starts no process and never asks Git for the shared index path (contract §6).
+// It throws IndexFormatError for bytes that are no Git index. The caller must not treat that as eligible.
+export function hunkEligibility(rawIndex: Uint8Array | null, objectFormat: ObjectFormat, listing: Pick<TrustListing, "entries" | "hooks">): HunkEligibility {
+  const refuse = (reason: HunkRefusalReason): HunkEligibility => ({ eligible: false, reason });
+  const { entries, hooks } = listing;
+  // repo-settings.c `prepare_repo_settings`: `index.sparse` is a Git boolean.
+  const sparse = effective(entries, "index.sparse");
+  if (sparse !== undefined && parseMaybeBool(sparse.value) === 1) return refuse("sparse-index");
+  if (rawIndex !== null && splitIndexLink(rawIndex, objectFormat) !== null) return refuse("split-index");
+  // config.c `repo_config_get_split_index`: only a valid true value splits the index.
+  const split = effective(entries, "core.splitindex");
+  if (split !== undefined && parseMaybeBool(split.value) === 1) return refuse("split-index");
+  // Research R3: every registration counts, also a disabled one or one of a disabled event.
+  if (hooks.configured.some((hook) => hook.event === INDEX_CHANGE_EVENT) || hooks.folder.some((hook) => hook.event === INDEX_CHANGE_EVENT)) return refuse("index-change-hook");
+  // fsmonitor-settings.c `lookup_fsmonitor_settings`: true names the built-in daemon, false disables, and another value is a command.
+  const monitor = effective(entries, "core.fsmonitor");
+  if (monitor !== undefined) {
+    const mode = parseMaybeBool(monitor.value);
+    if (mode === -1) return refuse("executable-monitor");
+    if (mode === 1) return refuse("unqualified-monitor");
+  }
+  return { eligible: true };
 }

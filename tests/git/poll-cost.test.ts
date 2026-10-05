@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect } from "bun:test";
-import { batchCommandArgs, configListArgs, discoveryProfiles, hooksPathArgs, revListArgs, shallowPathArgs, statusArgs } from "../../src/git-service/commands";
+import { batchCommandArgs, configListArgs, discoveryLayoutArgs, discoveryProfiles, hooksPathArgs, revListArgs, shallowPathArgs, statusArgs } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { copyPerfFixture, ensurePerfFixture, PERF_L, PERF_M, type PerfFacts, type PerfSpec } from "../windows/perf-fixtures";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
@@ -176,6 +176,9 @@ const countOf = (calls: readonly RecordedCall[], args: readonly string[]) => cal
 // Contract §7 "Hook registrations" (research R5 "T280 record"): the trust listing is these 2 Git processes.
 const isListing = (args: readonly string[]) => sameArgs(args, configListArgs()) || sameArgs(args, hooksPathArgs());
 const sortedArgs = (calls: readonly RecordedCall[]) => calls.map((c) => c.arguments.join(" ")).sort();
+// T082 and research R2 "T283 record": the first query, the two-call layout query, then `symbolic-ref` and `show-ref` for a HEAD with a commit.
+const [firstQuery, , , , , , , headTarget, headCommit] = discoveryProfiles();
+const DISCOVERY_CALLS = [firstQuery!, discoveryLayoutArgs(), headTarget!, headCommit!];
 
 async function readFacts<R>(service: Service, read: () => Promise<ServiceResponse<R>>): Promise<ReadFacts<R>> {
   const first = service.runner.calls.length;
@@ -236,7 +239,7 @@ for (const spec of [PERF_M, PERF_L]) {
             // Each kind that names a trust listing starts in a new service session, so no earlier listing of the generation exists.
             await withService(`t192-${key}-trust-${run}`, async (service) => {
               const discovery = await readFacts(service, () => service.chooseRepository(repo));
-              expect(sortedArgs(discovery.calls.filter((c) => c.contextKind === "repositoryDiscovery"))).toEqual(discoveryProfiles().map((p) => p.join(" ")).sort());
+              expect(sortedArgs(discovery.calls.filter((c) => c.contextKind === "repositoryDiscovery"))).toEqual(DISCOVERY_CALLS.map((p) => p.join(" ")).sort());
               add("discovery", discovery);
               const { repositoryId } = discovery.result as RegistrationResult;
               const trust = await readFacts(service, () => service.readTrust(repositoryId));

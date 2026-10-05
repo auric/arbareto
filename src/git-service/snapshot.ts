@@ -22,12 +22,12 @@ export type Head = { state: "branch"; target: string; oid: string } | { state: "
 // Data-model §2 `operationState`.
 export type OperationState = "normal" | "conflicted" | "merging" | "rebasing" | "cherry-picking" | "reverting" | "sequencer-active" | "unknown";
 
-// Contract §9: `limited` carries `OUTPUT_LIMIT` with the reached §5 bound, or `OBJECT_MISSING`. `failed` carries the specific code.
+// Contract §9: `limited` carries `OUTPUT_LIMIT` with the reached §5 bound, `OBJECT_MISSING`, or `WORKTREE_CHANGING`. `failed` carries the specific code.
 export type LimitName = Exclude<keyof typeof limits, "default">;
 export type Completeness =
   | { state: "complete" }
   | { state: "limited"; code: "OUTPUT_LIMIT"; reason: LimitName }
-  | { state: "limited"; code: "OBJECT_MISSING" }
+  | { state: "limited"; code: "OBJECT_MISSING" | "WORKTREE_CHANGING" }
   | { state: "failed"; code: ErrorCode };
 
 const failed = (code: ErrorCode) => ({ ok: false as const, completeness: { state: "failed" as const, code } });
@@ -266,7 +266,7 @@ export interface ReadWorkingVersionOptions {
 }
 
 // An atomic save replaces the file between the `lstat` and the open, so one swap gets one retry.
-// Contract §8 defines no outcome for a path that changes during a read. REPOSITORY_CHANGED makes the caller read again.
+// REPOSITORY_CHANGED reports a second swap. `readWorkspace` maps it by contract §8 "Changing working file".
 export async function readWorkingVersion(
   worktreeRoot: string,
   path: Uint8Array,
@@ -405,11 +405,12 @@ export function createSnapshotStore<S extends ChangeSnapshot = ChangeSnapshot>()
       return workspace(repositoryId).generation;
     },
     // A full read replaces the retained snapshot. A changed observation advances the generation. The first one does not.
-    record(observation: Observation, extra?: Omit<S, keyof ChangeSnapshot>): S {
+    // `advance` gives a new generation also to an equal observation (contract §8 "Changing working file").
+    record(observation: Observation, extra?: Omit<S, keyof ChangeSnapshot>, advance = false): S {
       checkObservation(observation);
       const w = workspace(observation.repositoryId);
       const digest = observationDigest(observation);
-      if (w.digest !== null && w.digest !== digest) w.generation += 1;
+      if (advance || (w.digest !== null && w.digest !== digest)) w.generation += 1;
       w.digest = digest;
       w.snapshot = { ...observation, ...extra, snapshotId: crypto.randomUUID(), generation: w.generation } as S;
       return w.snapshot;
@@ -417,6 +418,11 @@ export function createSnapshotStore<S extends ChangeSnapshot = ChangeSnapshot>()
     // A `check: "changes"` read with an equal tuple and no hint returns this snapshot (contract §8 "Change check").
     retained(repositoryId: string): S | null {
       return workspaces.get(repositoryId)?.snapshot ?? null;
+    },
+    // The retained snapshot when it holds an observation equal to `observation`, else null. A late read returns it (contract §2 and §8).
+    retainedEqual(observation: Observation): S | null {
+      const w = workspaces.get(observation.repositoryId);
+      return w !== undefined && w.digest === observationDigest(observation) ? w.snapshot : null;
     },
     // `readEntries` checks the generation first, then the snapshot (data-model §4).
     lookup(repositoryId: string, repositoryGeneration: number, snapshotId: string): SnapshotLookup<S> {

@@ -33,7 +33,8 @@ export const HISTORY_PARENTS_PER_COMMIT = 64;
 export const HISTORY_PARENTS_PER_PAGE = 1024;
 export const SHALLOW_METADATA_BYTES = 4 * MIB;
 export const HISTORY_COMMIT_OBJECT_BYTES = 256 * KIB;
-export const HISTORY_OBJECT_PAYLOAD_BYTES = 32 * MIB;
+// The encoded result of each `readHistory` response.
+export const HISTORY_PAGE_BYTES = 8 * MIB;
 export const GRAPH_LANES = 24;
 export const GRAPH_PATH_SEGMENTS = 4096;
 export const TRUST_INPUT_BYTES = 4 * MIB;

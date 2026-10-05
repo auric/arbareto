@@ -12,7 +12,7 @@ import {
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../../src/contracts/limits";
 import { isWindows } from "../../src/contracts/native-path";
-import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, type GitCall, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
+import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, type GitCall, type IdentityReply, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
 import { createNativeRunner } from "../../src/git-service/native-runner";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -449,17 +449,23 @@ describe("native runner input", () => {
 });
 
 describe("native runner identity, lingering count, and registration", () => {
-  test("discovery identity requests carry gitInstallationId, and error entries hold only UNSUPPORTED_REPOSITORY", async () => {
+  test("discovery identity requests carry gitInstallationId, and error entries hold only UNSUPPORTED_REPOSITORY with an optional absent reason", async () => {
     const channel = createChannelDouble();
     const context = { contextKind: "repositoryDiscovery", bootstrapId: id(), gitInstallationId: id() } as const;
     const operationId = id();
-    const result = channel.runner.identities(operationId, context, [REPO, GIT_DIR]);
+    const result = channel.runner.identities(operationId, context, [REPO, GIT_DIR, REPO]);
     const request = channel.last("identity");
-    expect(request).toEqual({ type: "identity", callId: request.callId, operationId, ...context, paths: [REPO, GIT_DIR] });
-    channel.reply("process", { type: "identity", callId: request.callId, identities: [IDENTITY, { code: "UNSUPPORTED_REPOSITORY" }] });
-    expect(await result).toEqual([IDENTITY, { code: "UNSUPPORTED_REPOSITORY" }]);
+    expect(request).toEqual({ type: "identity", callId: request.callId, operationId, ...context, paths: [REPO, GIT_DIR, REPO] });
+    const identities: IdentityReply[] = [IDENTITY, { code: "UNSUPPORTED_REPOSITORY" }, { code: "UNSUPPORTED_REPOSITORY", reason: "absent" }];
+    channel.reply("process", { type: "identity", callId: request.callId, identities });
+    expect(await result).toEqual(identities);
 
-    for (const entry of [{ code: "INVALID_REQUEST" }, { code: "UNSUPPORTED_REPOSITORY", extra: 1 }, { ...IDENTITY, fileId: "0".repeat(31) }]) {
+    for (const entry of [
+      { code: "INVALID_REQUEST" },
+      { code: "UNSUPPORTED_REPOSITORY", extra: 1 },
+      { code: "UNSUPPORTED_REPOSITORY", reason: "access-denied" },
+      { ...IDENTITY, fileId: "0".repeat(31) },
+    ]) {
       const bad = channel.runner.identities(operationId, context, [REPO]);
       expect(channel.reply("process", { type: "identity", callId: channel.last("identity").callId, identities: [entry] })).toBe(false);
       await expect(bad).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });

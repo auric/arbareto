@@ -1,0 +1,5 @@
+{
+  "schema": "read-workspace-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"completeness\":{\"state\":\"limited\",\"code\":\"OUTPUT_LIMIT\",\"reason\":\"STATUS_LISTING_BYTES\"},\"recoveryState\":\"ready\"}"
+}

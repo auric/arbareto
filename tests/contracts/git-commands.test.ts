@@ -10,7 +10,6 @@ import {
   batchCommandArgs,
   configListArgs,
   discoveryProfiles,
-  hookListArgs,
   hooksPathArgs,
   indexFlagArgs,
   indexListArgs,
@@ -31,8 +30,6 @@ printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 const R = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs"];
 const SHA1 = "0123456789abcdef0123456789abcdef01234567";
 const SHA256 = "0123456789abcdef".repeat(4);
-// Contract §7 "Mutation trust": the hooks that `git commit` can run.
-const HOOKS = ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction", "pre-auto-gc"];
 const SERVICE_TIMEOUT_MS = 120_000;
 
 // Each T076 read builder with fixed valid inputs.
@@ -40,13 +37,17 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["configListArgs", () => configListArgs()],
   ["hooksPathArgs", () => hooksPathArgs()],
   ["shallowPathArgs", () => shallowPathArgs()],
-  ["hookListArgs", () => hookListArgs("pre-commit")],
   ["statusArgs", () => statusArgs()],
   ["indexListArgs", () => indexListArgs()],
   ["indexFlagArgs", () => indexFlagArgs()],
   ["revListArgs", () => revListArgs(SHA1, "sha1")],
   ["batchCommandArgs", () => batchCommandArgs()],
   ["objectCheckArgs", () => objectCheckArgs()],
+  ["indexEntryArgs", () => commands.indexEntryArgs()],
+  ["headTargetArgs", () => commands.headTargetArgs()],
+  ["markerPathArgs", () => commands.markerPathArgs()],
+  ["pseudorefExistsArgs", () => commands.pseudorefExistsArgs("CHERRY_PICK_HEAD")],
+  ["recheckArgs", () => commands.recheckArgs()],
 ];
 
 // The arrays of every exported builder without a parameter. `discoveryProfiles` gives several arrays.
@@ -111,14 +112,6 @@ describe("read builders (contract §7)", () => {
     expect(batchCommandArgs()).toEqual([...R, "cat-file", "--batch-command", "-Z"]);
     expect(objectCheckArgs()).toEqual([...R, "cat-file", "--batch-check"]);
     expect(objectCheckArgs.length).toBe(0);
-  });
-
-  test.each(HOOKS.map((hook) => [hook]))("hookListArgs puts the hook event %s last as one item", (hook) => {
-    expect(hookListArgs(hook)).toEqual([...R, "hook", "list", "-z", "--show-scope", hook]);
-  });
-
-  test.each([["--output=x"], ["x y"], [""]])("hookListArgs refuses %j with TypeError", (event) => {
-    expect(() => hookListArgs(event)).toThrow(TypeError);
   });
 
   test.each(READ_BUILDERS)("%s starts with --no-lazy-fetch, then --no-optional-locks and --literal-pathspecs", (_name, build) => {
@@ -218,7 +211,7 @@ describe("service arrays", () => {
         const calls = service.runner.calls;
         const probes = calls.filter((c) => c.contextKind === "gitProbe").map((c) => [...c.arguments]);
         expect(probes).toContainEqual(["version", "--build-options"]);
-        for (const args of probes) expect([["--exec-path"], ["version", "--build-options"]]).toContainEqual(args);
+        for (const args of probes) expect([["--exec-path"], ["version", "--build-options"], ["--no-lazy-fetch", "var", "GIT_CONFIG_SYSTEM"], ["--no-lazy-fetch", "var", "GIT_CONFIG_GLOBAL"]]).toContainEqual(args);
         const others = calls.filter((c) => c.contextKind !== "gitProbe");
         expect(others.map((c) => c.contextKind)).toEqual(expect.arrayContaining(["repositoryDiscovery", "registeredOperation"]));
         for (const c of others) expect({ args: c.arguments, first: c.arguments[0] }).toEqual({ args: c.arguments, first: "--no-lazy-fetch" });

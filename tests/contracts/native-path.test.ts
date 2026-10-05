@@ -40,6 +40,18 @@ describe("the Windows rule set", () => {
   test.each(["", ".", "..", "a\\b", "a/b", "x:y", "a<b", "nul", "COM1.txt", "x.", "x ", "a\u0001b"])("isComponent refuses %p", (name) => {
     expect(rules.isComponent(name)).toBe(false);
   });
+
+  // Contract §7 "Inside and outside": a UNC path and a device path get no identity request.
+  test.each(["\\\\server\\share\\x", "//server/share", "\\/server/share", "\\\\server", "\\\\.\\pipe\\x", "\\\\?\\C:\\x", "//./pipe/x", "//?/C:/x", "\\\\?\\UNC\\server\\share\\x"])(
+    "isUncOrDevice accepts %p",
+    (path) => {
+      expect(rules.isUncOrDevice(path)).toBe(true);
+    },
+  );
+
+  test.each(["C:\\x", "c:/x", "\\x", "/x", "x", "C:x"])("isUncOrDevice refuses %p", (path) => {
+    expect(rules.isUncOrDevice(path)).toBe(false);
+  });
 });
 
 describe("the POSIX rule set", () => {
@@ -68,6 +80,10 @@ describe("the POSIX rule set", () => {
 
   test.each(["", ".", "..", "a/b", "a\u0000b"])("isComponent refuses %p", (name) => {
     expect(rules.isComponent(name)).toBe(false);
+  });
+
+  test.each(["//server/share", "/x", "\\\\server\\share", "\\\\.\\pipe\\x"])("isUncOrDevice refuses %p", (path) => {
+    expect(rules.isUncOrDevice(path)).toBe(false);
   });
 });
 

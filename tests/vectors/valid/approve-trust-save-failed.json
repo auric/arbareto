@@ -1,0 +1,5 @@
+{
+  "schema": "approve-trust-result",
+  "expected": "valid",
+  "text": "{\"trustId\":\"0f0f0f0f-0000-4000-8000-000000000080\",\"persistence\":\"session\",\"saveFailed\":true}"
+}

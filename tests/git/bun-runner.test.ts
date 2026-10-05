@@ -278,7 +278,11 @@ describeGit("bun runner", (git) => {
     runner.inject.fileIds.set(commonDirectory, new Uint8Array(16).fill(0xff));
     expect(await runner.identities(operationId, context, [repo, commonDirectory])).toEqual([{ code: "UNSUPPORTED_REPOSITORY" }, { code: "UNSUPPORTED_REPOSITORY" }]);
     runner.inject.fileIds.clear();
-    expect(await runner.identities(operationId, context, [join(repo, "absent")])).toEqual([{ code: "UNSUPPORTED_REPOSITORY" }]);
+    // Contract §6 "Process fields": only a not-found open adds `reason` `absent`.
+    expect(await runner.identities(operationId, context, [join(repo, "absent"), join(repo, "absent", "child")])).toEqual([
+      { code: "UNSUPPORTED_REPOSITORY", reason: "absent" },
+      { code: "UNSUPPORTED_REPOSITORY", reason: "absent" },
+    ]);
   });
 
   test("the trust store keys records by identity, survives a new session, and follows persist and revoke", async () => {

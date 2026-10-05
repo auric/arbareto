@@ -1,0 +1,5 @@
+{
+  "schema": "read-workspace-result",
+  "expected": "valid",
+  "text": "{\"completeness\":{\"state\":\"limited\",\"code\":\"OBJECT_MISSING\"},\"recoveryState\":\"ready\",\"remedy\":{\"text\":\"This partial clone lacks objects that Git needs here. Arbareto never downloads objects. Download them in a terminal, for example with git backfill, then use Refresh.\"}}"
+}

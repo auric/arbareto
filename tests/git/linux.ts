@@ -94,16 +94,17 @@ export function closePipe(pipe: InboundPipe): void {
   rmSync(pipe.name, { force: true });
 }
 
-export type FileIdentity = { volumeSerial: string; fileId: string } | { code: "UNSUPPORTED_REPOSITORY" };
+export type FileIdentity = { volumeSerial: string; fileId: string } | { code: "UNSUPPORTED_REPOSITORY"; reason?: "absent" };
 
 // `dev` and `ino` from `stat`. The 16 identity bytes are `ino` in big-endian order.
+// ENOENT and ENOTDIR are the not-found results, as `ERROR_FILE_NOT_FOUND` and `ERROR_PATH_NOT_FOUND` are in `win32.ts`.
 export function readIdentity(path: string, fileIdOverride?: Uint8Array): FileIdentity {
   const refused = { code: "UNSUPPORTED_REPOSITORY" } as const;
   let stat;
   try {
     stat = statSync(path, { bigint: true });
-  } catch {
-    return refused;
+  } catch (error) {
+    return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? { ...refused, reason: "absent" } : refused;
   }
   const fileId = fileIdOverride ?? Buffer.from(stat.ino.toString(16).padStart(32, "0"), "hex");
   // As in `win32.ts`, the all-zero and the all-ones file ID name no file (research R2).

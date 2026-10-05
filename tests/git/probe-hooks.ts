@@ -5,24 +5,20 @@
 
 import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { configListArgs, hookListArgs, hooksPathArgs } from "../../src/git-service/commands";
+import { configListArgs, HOOK_EVENTS, hooksPathArgs } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, realGlobalConfigDigests, removeFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
 import { GIT } from "./git-binary";
+import { hookListArgs } from "./git-oracle";
 
 printOrigin("../../src/git-service/commands", import.meta.dir);
 printOrigin("./fixture-root", import.meta.dir);
 printOrigin("./fixtures", import.meta.dir);
 printOrigin("./probe-hooks", import.meta.dir);
 
-// hook-list.h at Git 49d759b (v2.56.0.windows.1), generated from githooks.adoc.
-const EVENTS = [
-  "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit",
-  "pre-rebase", "post-checkout", "post-merge", "pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update",
-  "reference-transaction", "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman",
-  "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit", "post-index-change",
-];
+// hook-list.h at Git 49d759b (v2.56.0.windows.1), generated from githooks.adoc. `commands.ts` holds the shared list.
+const EVENTS = HOOK_EVENTS;
 const KNOWN = new Set(EVENTS);
 // Contract §5 probe deadline.
 const DEADLINE_MS = 30_000;

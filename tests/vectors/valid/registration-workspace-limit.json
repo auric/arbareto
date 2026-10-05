@@ -1,0 +1,5 @@
+{
+  "schema": "registration-result",
+  "expected": "valid",
+  "text": "{\"limit\":8}"
+}

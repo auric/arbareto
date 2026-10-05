@@ -1,0 +1,5 @@
+{
+  "schema": "response",
+  "expected": "valid",
+  "text": "{\"requestId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"state\":\"rejected\",\"code\":\"BUSY\",\"repositoryGeneration\":7}"
+}

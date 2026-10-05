@@ -4,8 +4,11 @@
 // The in-process service of the batch 2 tests: `createSession` with the `bun-runner.ts` shell double.
 // Its imports must load off Windows without `dlopen` (tests/git/portable-imports.test.ts).
 
-import { test } from "bun:test";
-import { dirname } from "node:path";
+import { spyOn, test } from "bun:test";
+import { chmodSync, closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import * as fsp from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Handshake } from "../../src/contracts/channel";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
@@ -17,7 +20,7 @@ import { GIT } from "./git-binary";
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
-export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository";
+export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial";
 
 const WINDOWS = process.platform === "win32";
 const LINUX = process.platform === "linux";
@@ -43,6 +46,26 @@ function noEnclosingRepository(): boolean {
   return result?.exitCode === 128 && result.stderr.startsWith("fatal: not a git repository (or any");
 }
 
+// A case that denies the service a file read. A process with CAP_DAC_OVERRIDE, such as root, opens a file without read permission.
+// The probe file keeps the execute bit only, and the open must fail with EACCES. On Windows, `icacls /deny` gives the denial.
+function readDenial(): boolean {
+  if (WINDOWS) return Bun.which("icacls") !== null;
+  const dir = mkdtempSync(join(tmpdir(), "arbareto-read-denial-"));
+  try {
+    const file = join(dir, "probe");
+    writeFileSync(file, "");
+    chmodSync(file, 0o100);
+    try {
+      closeSync(openSync(file, "r"));
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EACCES";
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const PRESENT: Record<Capability, boolean> = {
   // `bun-runner.ts` has host calls only for Windows (`win32.ts`) and Linux (`linux.ts`).
   "shell-double": WINDOWS || LINUX,
@@ -54,6 +77,7 @@ const PRESENT: Record<Capability, boolean> = {
   // A fixture cannot create a repository that another account owns (`buildF15` notes).
   "other-account-owner": false,
   "no-enclosing-repository": noEnclosingRepository(),
+  "read-denial": readDenial(),
 };
 
 export function missingCapability(...needs: Capability[]): Capability | null {
@@ -80,6 +104,26 @@ export function once(match: CallMatch): CallMatch {
     first = call;
     return true;
   };
+}
+
+// The `node:fs/promises` file calls of the in-process service while `body` runs, in call order. `onCall` runs before each call.
+export type FsCall = { name: "lstat" | "stat" | "access" | "open" | "readdir"; path: string };
+export async function withFsCalls<T>(body: () => Promise<T>, onCall: (call: FsCall) => void = () => {}): Promise<{ value: T; calls: FsCall[] }> {
+  const calls: FsCall[] = [];
+  const spies = (["lstat", "stat", "access", "open", "readdir"] as const).map((name) => {
+    const original = fsp[name] as (...args: unknown[]) => unknown;
+    return spyOn(fsp, name).mockImplementation(((path: unknown, ...rest: unknown[]) => {
+      const call = { name, path: String(path) };
+      calls.push(call);
+      onCall(call);
+      return original(path, ...rest);
+    }) as never);
+  });
+  try {
+    return { value: await body(), calls };
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
 }
 
 // Windows variable names ignore case, so the result holds one PATH key with the first spelling of `env`.
@@ -114,6 +158,7 @@ export interface ServiceResponse<R = unknown> {
   state: string;
   code?: string;
   repositoryGeneration?: number;
+  selectionId?: string;
   result?: R;
 }
 
@@ -197,7 +242,7 @@ export interface TrustResult {
   persistence: "stored" | "session";
   trustId?: string;
   approvalRequired: { reads: boolean; commit: boolean };
-  bound?: "file-count" | "file-bytes" | "total-bytes";
+  bound?: "file-count" | "file-bytes" | "total-bytes" | "link";
   inputLimited?: boolean;
   entries: { key: string; scope: string; origin?: string; value?: string }[];
   hooks: { event: string; scope?: string; path?: string; disabled?: boolean }[];

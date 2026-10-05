@@ -1,0 +1,5 @@
+{
+  "schema": "read-entries-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"entries\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000204\",\"category\":\"untracked\",\"path\":\"bad-\\\\xff.txt\",\"pathBytes\":\"YmFkLf8udHh0\",\"flags\":{\"intentToAdd\":false,\"assumeUnchanged\":false,\"skipWorktree\":false}}],\"cursor\":null,\"entryCount\":4}"
+}

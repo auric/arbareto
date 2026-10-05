@@ -21,6 +21,7 @@ const open = () =>
     TerminateProcess: { args: [P, u32], returns: i32 },
     WaitForSingleObject: { args: [P, u32], returns: u32 },
     SetFileTime: { args: [P, P, P, P], returns: i32 },
+    GetLastError: { args: [], returns: u32 },
   }).symbols;
 let symbols: ReturnType<typeof open> | undefined;
 
@@ -79,13 +80,21 @@ export function closePipe(pipe: InboundPipe): void {
   kernel32().CloseHandle(pipe.handle);
 }
 
-export type FileIdentity = { volumeSerial: string; fileId: string } | { code: "UNSUPPORTED_REPOSITORY" };
+export type FileIdentity = { volumeSerial: string; fileId: string } | { code: "UNSUPPORTED_REPOSITORY"; reason?: "absent" };
+
+// Microsoft Learn "System Error Codes (0-499)": the two not-found results of `CreateFileW`.
+const ERROR_FILE_NOT_FOUND = 2;
+const ERROR_PATH_NOT_FOUND = 3;
 
 // Contract §6 "Process fields": `FILE_ID_INFO` read through a handle with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`.
+// Only a not-found open gives `reason` `absent`. `GetLastError` must run right after `CreateFileW`.
 export function readIdentity(path: string, fileIdOverride?: Uint8Array): FileIdentity {
   const refused = { code: "UNSUPPORTED_REPOSITORY" } as const;
   const handle = kernel32().CreateFileW(wide(path), FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, null);
-  if (!valid(handle)) return refused;
+  if (!valid(handle)) {
+    const error = kernel32().GetLastError();
+    return error === ERROR_FILE_NOT_FOUND || error === ERROR_PATH_NOT_FOUND ? { ...refused, reason: "absent" } : refused;
+  }
   try {
     const info = new Uint8Array(FILE_ID_INFO_BYTES);
     if (!kernel32().GetFileInformationByHandleEx(handle, FILE_ID_INFO_CLASS, ptr(info), FILE_ID_INFO_BYTES)) return refused;

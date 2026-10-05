@@ -36,7 +36,11 @@ const withinBytes = (max: number) => (value: unknown) => new TextEncoder().encod
 // Contract §6 "Process fields": a Windows identity reply.
 export const FileIdentity = z.strictObject({ volumeSerial: hex(16), fileId: hex(32) }).meta({ title: "FileIdentity" });
 export type FileIdentity = z.infer<typeof FileIdentity>;
-export const IdentityReply = z.union([FileIdentity, z.strictObject({ code: z.literal("UNSUPPORTED_REPOSITORY") }).meta({ title: "IdentityRefused" })]);
+// `reason` `absent`: the open failed with `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`. Every other failure carries the code alone.
+export const IdentityReply = z.union([
+  FileIdentity,
+  z.strictObject({ code: z.literal("UNSUPPORTED_REPOSITORY"), reason: z.literal("absent").optional() }).meta({ title: "IdentityRefused" }),
+]);
 export type IdentityReply = z.infer<typeof IdentityReply>;
 
 // Contract §6 "Startup handshake": UTC times in RFC 3339 form. RFC 3339 §5.6 permits the leap second 60, which `z.iso.datetime` refuses.

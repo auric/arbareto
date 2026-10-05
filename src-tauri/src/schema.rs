@@ -193,7 +193,19 @@ mod tests {
 
     /// The vector schemas that the shell reads into no generated type. The renderer and the service check them.
     /// The shell writes process replies and never reads them. It reads only the `requestId` of a response.
-    const NOT_READ: [&str; 3] = ["process-reply", "renderer-envelope", "response"];
+    /// The shell forwards the registration, trust, workspace, entries, and history results in `Response.result` and reads no field of them.
+    const NOT_READ: [&str; 10] = [
+        "process-reply",
+        "renderer-envelope",
+        "response",
+        "registration-result",
+        "read-trust-result",
+        "approve-trust-result",
+        "revoke-trust-result",
+        "read-workspace-result",
+        "read-entries-result",
+        "read-history-result",
+    ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
     fn check(schema: &str, text: &str) -> Option<String> {

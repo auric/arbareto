@@ -6,6 +6,7 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { NATIVE } from "../../src/contracts/native-path";
 import { FIXTURE_ROOT, fixtureDir, fixturePath, ownedGit, type OwnedGitOptions } from "./fixture-root";
 import { indexEntries } from "./git-oracle";
 
@@ -292,8 +293,11 @@ export function buildF03(git: string, name: string): Built {
   const invalidKey = invalid.toString("utf8");
   // A case-sensitive file system holds only `collide/Name.txt`, so Git reports `collide/name.txt` as deleted.
   const caseInsensitive = caseInsensitiveFs();
+  // Git without `core.longpaths` cannot open the long file where the native rules hold a path limit. Elsewhere Git lists it as untracked.
+  const longUntracked = bunWrote && NATIVE.gitPathUnitLimit === null ? [longPath] : [];
   facts.repos.repo = repoFacts(r, {
     refs: { "refs/heads/main": base },
+    untracked: longUntracked,
     staged: sorted([names.dash, names.readme, "README.md", invalidKey]),
     unstaged: sorted([names.unicode, names.bracket, names.noNewline, invalidKey, ...(caseInsensitive ? [] : ["collide/name.txt"])]),
     entries: [
@@ -304,7 +308,7 @@ export function buildF03(git: string, name: string): Built {
       { path: names.bracket, stage: 0 },
     ],
   });
-  // Git without `core.longpaths` cannot open the long folder, so the long file is in no Git listing.
+  // The long file is in a Git listing only where `longUntracked` holds it.
   facts.notes.longPath = { path: longPath, utf16Units: longPath.length, bunWrote };
   facts.notes.invalidUtf8IndexPath = invalid.toString("hex");
   const unverified = [...(bunWrote ? [] : ["long-paths"]), ...(caseInsensitive ? [] : ["case-insensitive-fs"])];
@@ -718,6 +722,8 @@ function importHistory(r: Repo, stream: Buffer): Map<number, string> {
 }
 
 export type F16HistoryVariant = "parents-64" | "parents-65" | "parent-refs" | "object-at-limit" | "object-over-limit" | "traversal";
+// The T086 "History page" variant. It stays outside `F16HistoryVariant`, because `tests/git/history-parser.test.ts` maps each member of that type to a parser bound.
+export type F16PageVariant = "page-bytes";
 export const F16_OBJECT_LIMIT = 256 * 1024;
 
 // The size of a commit object with this message and one parent. The header lines are fixed by `fiCommit`.
@@ -728,8 +734,8 @@ function commitObjectBytes(message: number, oidHex: number): number {
   return tree + parent + ident("author") + ident("committer") + 1 + message;
 }
 
-// F16 history part: the 64-parent bound, 1,024 parent references per page, the 256 KiB object bound, and a traversal above 128 KiB.
-export function buildF16History(git: string, name: string, variant: F16HistoryVariant): Built {
+// F16 history part: the 64-parent bound, 1,024 parent references per page, the 256 KiB object bound, 100 rows of 2 KiB subjects, and the 8 MiB history page.
+export function buildF16History(git: string, name: string, variant: F16HistoryVariant | F16PageVariant): Built {
   const root = start(name);
   const facts = newFacts();
   const r = init(git, join(root, "repo"));
@@ -763,9 +769,17 @@ export function buildF16History(git: string, name: string, variant: F16HistoryVa
     facts.notes.objectBytes = target;
   }
   if (variant === "traversal") {
-    // 100 commits with 2 KiB subjects give more than 128 KiB of row text and stay far below 256 KiB per object.
+    // 100 commits with 2 KiB subjects stay far below 256 KiB per object. The traversal stream holds only object IDs, so it stays below 128 KiB.
     let tip = 1;
     for (let i = 0; i < 99; i++) tip = next({ message: `${String(i).padStart(3, "0")} ${"t".repeat(2044)}\n`, from: tip });
+    roles.tip = tip;
+  }
+  if (variant === "page-bytes") {
+    // 10 commits. Each message is one paragraph of 200 KiB of 0x01 bytes, so each object stays below 256 KiB.
+    const message = Buffer.concat([Buffer.alloc(200 * 1024, 0x01), Buffer.from("\n")]);
+    commits[0]!.message = message;
+    let tip = 1;
+    for (let i = 0; i < 9; i++) tip = next({ message, from: tip });
     roles.tip = tip;
   }
   const oids = importHistory(r, Buffer.concat(commits.map(fiCommit)));

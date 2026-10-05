@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "trustId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "persistence": {
+          "type": "string",
+          "enum": [
+            "stored",
+            "session"
+          ]
+        },
+        "saveFailed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "trustId",
+        "persistence",
+        "saveFailed"
+      ],
+      "additionalProperties": false,
+      "title": "TrustApproved"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "remedy"
+      ],
+      "additionalProperties": false,
+      "title": "TrustListingFailed"
+    }
+  ],
+  "title": "ApproveTrustResult"
+}

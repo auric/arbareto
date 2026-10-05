@@ -1952,6 +1952,11 @@ describe("absent candidate configuration files (contract §8 \"Change check\")",
         const { repositoryId } = await service.register(repo);
         await approve(service, repositoryId);
         expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        // T088 decision E3: the first read after registration keeps no stat tuple. This poll leaves one, so a later poll lists again only for a changed tuple.
+        expect(outcome(await service.readWorkspace(repositoryId, { refresh: false, check: "changes" }))).toEqual(SUCCEEDED);
+        const idle = configLists(service);
+        expect(outcome(await service.readWorkspace(repositoryId, { refresh: false, check: "changes" }))).toEqual(SUCCEEDED);
+        expect(configLists(service)).toBe(idle);
 
         writeFileSync(worktreeConfig, monitor);
         // Oracle: Git reads the new file with worktree scope.

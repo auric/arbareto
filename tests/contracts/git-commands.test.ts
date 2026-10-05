@@ -46,6 +46,7 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["indexEntryArgs", () => commands.indexEntryArgs()],
   ["headTargetArgs", () => commands.headTargetArgs()],
   ["markerPathArgs", () => commands.markerPathArgs()],
+  ["refPathArgs", () => commands.refPathArgs("refs/heads/main")],
   ["pseudorefExistsArgs", () => commands.pseudorefExistsArgs("CHERRY_PICK_HEAD")],
   ["recheckArgs", () => commands.recheckArgs()],
 ];
@@ -106,6 +107,15 @@ describe("read builders (contract §7)", () => {
     ["", "sha1"],
   ] as const)("revListArgs refuses %j for %s with TypeError", (oid, objectFormat) => {
     expect(() => revListArgs(oid, objectFormat)).toThrow(TypeError);
+  });
+
+  test("refPathArgs asks Git for the absolute file of one ref (T088 decision E7)", () => {
+    expect(commands.refPathArgs("refs/heads/main")).toEqual([...R, "rev-parse", "--path-format=absolute", "--git-path", "refs/heads/main"]);
+    expect(commands.refPathArgs("refs/bisect/bad")).toEqual([...R, "rev-parse", "--path-format=absolute", "--git-path", "refs/bisect/bad"]);
+  });
+
+  test.each(["HEAD", "main", "--all", "-x", "refs/heads/", "refs/heads/a..b", "refs/heads/a b", "refs/heads/x.lock", ""])("refPathArgs refuses %j with TypeError", (name) => {
+    expect(() => commands.refPathArgs(name)).toThrow(TypeError);
   });
 
   test("batchCommandArgs uses -Z framing, and the object check takes object IDs only on stdin", () => {

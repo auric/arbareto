@@ -36,6 +36,8 @@ export interface RegistrationOptions {
   unfinishedMutation(repositoryId: string): boolean;
   // Data-model §4 "Status snapshot retention": a workspace release releases its retained state.
   onRelease?(workspace: Workspace): void;
+  // A new workspace. A reused workspace gives no call.
+  onRegister?(workspace: Workspace): void;
 }
 
 const refused = (value: DiscoveryRefusal): RegistrationOutcome => {
@@ -61,7 +63,7 @@ export function worktreeKey(identity: FileIdentity): string {
 
 const registered = (w: Workspace): RegistrationOutcome => ({ ok: true, result: { repositoryId: w.repositoryId, generation: w.generation, worktreeKey: w.worktreeKey } });
 
-export function createRegistrations({ runner, unfinishedMutation, onRelease }: RegistrationOptions) {
+export function createRegistrations({ runner, unfinishedMutation, onRelease, onRegister }: RegistrationOptions) {
   const workspaces = new Map<string, Workspace>();
   // The reuse, limit, and release decision and the `register` frame run one registration at a time.
   let tail: Promise<unknown> = Promise.resolve();
@@ -117,6 +119,7 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease }: R
       generation: 0,
     };
     workspaces.set(repositoryId, workspace);
+    onRegister?.(workspace);
     return registered(workspace);
   }
 

@@ -121,6 +121,12 @@ export function markerPathArgs(): string[] {
   return read("rev-parse", "--path-format=absolute", ...OPERATION_MARKERS.flatMap((name) => ["--git-path", name]));
 }
 
+// Contract §8 "Change check" (T088 decision E7): Git resolves the file of a `files` ref, also for a per-worktree ref. Git prints one absolute path.
+export function refPathArgs(name: string): string[] {
+  if (!isRefName(name)) throw new TypeError("ref name refused");
+  return read("rev-parse", "--path-format=absolute", "--git-path", name);
+}
+
 // The `reftable` format keeps these pseudorefs in the ref store, not as files.
 // git-show-ref(1) `--exists`: status 0 when the reference exists, 2 when it is missing, and 1 for another lookup error.
 export function pseudorefExistsArgs(name: "CHERRY_PICK_HEAD" | "REVERT_HEAD"): string[] {

@@ -8,6 +8,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writ
 import { join, resolve } from "node:path";
 import { refPathArgs } from "../../src/git-service/commands";
 import { probeGit } from "../../src/git-service/git-installation";
+import type { GitRunner } from "../../src/git-service/git-runner";
+import { createHistoryReader } from "../../src/git-service/history";
 import { createRegistrations } from "../../src/git-service/registration";
 import { createWorkspaceReader } from "../../src/git-service/status";
 import { createTrust } from "../../src/git-service/trust";
@@ -613,6 +615,66 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
           },
         );
         expect({ marked, result: value.result, full: value.runs > 0 }).toEqual({ marked: true, result: "succeeded", full: true });
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §6 "File facts": an `error` fact names no file state. So a tuple with it proves nothing, and the reads keep and share no tuple.
+  caseTest(
+    "T309",
+    'an error fact for a program-file entry outside the trust listing keeps no tuple: a check "changes" read runs in full, and readHistory runs its own listing',
+    W,
+    () =>
+      withService({ name: "t309-tuple-error", watchHints: false }, async (service) => {
+        const git = gitPath();
+        const repo = repoOf(buildF18(git, "t309-tuple-error", "files"));
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const { installation } = probed;
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal: new AbortController().signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        // The stub gives the first entry of each phase-1 request outside a trust listing an `error` fact. The listings get the real facts.
+        let listing = 0;
+        let stubbed = 0;
+        const runner: GitRunner = {
+          ...service.runner,
+          async fileFacts(request) {
+            const facts = await service.runner.fileFacts(request);
+            if (listing > 0 || request.digest) return facts;
+            stubbed++;
+            return facts.map((fact, i) => (i === 0 ? { kind: "error", component: request.files[0]!.path.length, code: "sharing-violation" } : fact));
+          },
+        };
+        const trust = createTrust({ runner, environment: serviceEnv(), configFiles: () => installation.configFiles });
+        const listTrust = trust.listTrust;
+        trust.listTrust = async (target) => {
+          listing++;
+          try {
+            return await listTrust(target);
+          } finally {
+            listing--;
+          }
+        };
+        const reader = createWorkspaceReader({ runner, trust });
+        const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
+        const target = () => ({ operationId: crypto.randomUUID(), signal: new AbortController().signal, installation, workspace });
+        const poll = async (check: "full" | "changes") => {
+          const before = service.runner.calls.length;
+          const outcome = await reader.readWorkspace({ ...target(), refresh: false, check });
+          if (outcome.result !== "succeeded") throw new Error(`read ended ${outcome.result}`);
+          return { generation: outcome.value.generation, full: ranFullRead(service.runner.calls.slice(before)) };
+        };
+        await poll("full");
+        // Its tuple before the listing holds the stubbed fact. The first read had no program-file entry to ask.
+        const second = await poll("full");
+        expect(stubbed).toBe(1);
+        expect((await poll("changes")).full).toBe(true);
+        expect(stubbed).toBeGreaterThanOrEqual(2);
+        const before = service.runner.calls.length;
+        const read = await history.readHistory({ ...target(), generation: second.generation });
+        expect({ result: read.result, listed: listedTrust(service.runner.calls.slice(before)) }).toEqual({ result: "succeeded", listed: true });
       }),
     TIMEOUT_MS,
   );

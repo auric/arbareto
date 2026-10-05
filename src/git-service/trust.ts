@@ -678,10 +678,10 @@ async function requestFacts(runner: GitRunner, operationId: string, w: Workspace
 }
 
 // Contract §8 "Change check": the facts of the program-file entries of a listing, read again with phase-1 requests.
-// Null: a refusal or a malformed reply, so no compare can prove that nothing changed.
+// Null: a refusal, a malformed reply, or an `error` fact. Then no compare can prove that nothing changed.
 export async function readProgramFiles(runner: GitRunner, operationId: string, w: Workspace, files: readonly ProgramFile[]): Promise<FileFact[] | null> {
   const reply = await requestFacts(runner, operationId, w, false, files);
-  return Array.isArray(reply) ? reply : null;
+  return Array.isArray(reply) && reply.every((fact) => fact.kind !== "error") ? reply : null;
 }
 
 // Contract §7 "Program file digests". The service reads repository-controlled program and hook paths only through these requests.

@@ -109,6 +109,30 @@ pub struct Context {
 /// The options that a discovery `symbolic-ref` permits besides the one name `HEAD` (contract §6 "Registration bootstrap").
 const SYMBOLIC_REF_OPTIONS: [&str; 3] = ["-q", "--quiet", "--short"];
 
+/// The two configuration path reads of a `gitProbe` context (contract §7 "Configuration file paths").
+/// The shell holds no admission state. The service runs them only after its admission checks.
+const CONFIGURATION_PATH_READS: [[&str; 3]; 2] = [
+    ["--no-lazy-fetch", "var", "GIT_CONFIG_SYSTEM"],
+    ["--no-lazy-fetch", "var", "GIT_CONFIG_GLOBAL"],
+];
+
+/// A `refs/` name that `git check-ref-format` without options accepts.
+/// The rules are the list in the git-check-ref-format(1) "DESCRIPTION" section of Git 2.56.0.
+/// The `refs/` prefix also refuses `@`, a leading `/`, and option-like names such as `--foo`.
+fn is_ref_name(name: &str) -> bool {
+    name.starts_with("refs/")
+        && !name.ends_with('/')
+        && !name.ends_with('.')
+        && !name.contains("..")
+        && !name.contains("@{")
+        && name.split('/').all(|component| {
+            !component.is_empty() && !component.starts_with('.') && !component.ends_with(".lock")
+        })
+        && name
+            .bytes()
+            .all(|b| b >= 0x20 && b != 0x7f && !b" ~^:?*[\\".contains(&b))
+}
+
 /// The native bootstrap contexts of one service session.
 pub struct Contexts {
     state: Mutex<State>,
@@ -238,12 +262,23 @@ impl Contexts {
     ) -> Result<(), &'static str> {
         let permitted = match self.get(bootstrap_id, now)?.kind {
             ContextKind::GitProbe => {
-                arguments == ["--exec-path"] || arguments == ["version", "--build-options"]
+                arguments == ["--exec-path"]
+                    || arguments == ["version", "--build-options"]
+                    || CONFIGURATION_PATH_READS
+                        .iter()
+                        .any(|read| arguments == read)
             }
             ContextKind::RepositoryDiscovery => match arguments {
                 [prefix, command, rest @ ..] if prefix == "--no-lazy-fetch" => {
                     match command.as_str() {
-                        "rev-parse" | "show-ref" => true,
+                        "rev-parse" => true,
+                        "show-ref" => match rest {
+                            [head, verify, name] => {
+                                head == "--head" && verify == "--verify" && name == "HEAD"
+                            }
+                            [exists, name] => exists == "--exists" && is_ref_name(name),
+                            _ => false,
+                        },
                         "symbolic-ref" => {
                             rest.iter().filter(|a| *a == "HEAD").count() == 1
                                 && rest.iter().all(|a| {
@@ -543,6 +578,149 @@ mod tests {
             &["--no-lazy-fetch", "--exec-path"],
             &["--no-lazy-fetch", "rev-parse", "--show-toplevel"],
             &[],
+        ] {
+            assert_eq!(
+                contexts.permits(&id, &strings(refused), now),
+                Err("INVALID_REQUEST"),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_git_probe_context_permits_exactly_the_two_configuration_path_reads() {
+        let fixture = Fixture::new();
+        let git = file(&fixture, "git.exe");
+        let contexts = Contexts::new(SESSION);
+        let now = Instant::now();
+        let id = contexts
+            .create(ContextKind::GitProbe, &git, now)
+            .expect("create");
+        for permitted in [
+            &["--no-lazy-fetch", "var", "GIT_CONFIG_SYSTEM"][..],
+            &["--no-lazy-fetch", "var", "GIT_CONFIG_GLOBAL"],
+        ] {
+            assert_eq!(
+                contexts.permits(&id, &strings(permitted), now),
+                Ok(()),
+                "{permitted:?}"
+            );
+        }
+        for refused in [
+            &["--no-lazy-fetch", "var", "GIT_DIR"][..],
+            &["--no-lazy-fetch", "var", "GIT_EDITOR"],
+            &["--no-lazy-fetch", "var", "-l"],
+            &["--no-lazy-fetch", "var", "git_config_system"],
+            &[
+                "--no-lazy-fetch",
+                "var",
+                "GIT_CONFIG_SYSTEM",
+                "GIT_CONFIG_GLOBAL",
+            ],
+            &["--no-lazy-fetch", "var", "GIT_CONFIG_GLOBAL", "-l"],
+            &["--no-lazy-fetch", "var"],
+            &["var", "GIT_CONFIG_SYSTEM"],
+        ] {
+            assert_eq!(
+                contexts.permits(&id, &strings(refused), now),
+                Err("INVALID_REQUEST"),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_discovery_context_permits_only_the_two_show_ref_forms() {
+        let fixture = Fixture::new();
+        let directory = fixture.path("selected");
+        std::fs::create_dir(&directory).expect("mkdir");
+        let contexts = Contexts::new(SESSION);
+        let now = Instant::now();
+        let id = contexts
+            .create(ContextKind::RepositoryDiscovery, &directory, now)
+            .expect("create");
+        for permitted in [
+            &["--no-lazy-fetch", "show-ref", "--head", "--verify", "HEAD"][..],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/main"],
+            &[
+                "--no-lazy-fetch",
+                "show-ref",
+                "--exists",
+                "refs/heads/feature/x-1",
+            ],
+        ] {
+            assert_eq!(
+                contexts.permits(&id, &strings(permitted), now),
+                Ok(()),
+                "{permitted:?}"
+            );
+        }
+        for refused in [
+            &["--no-lazy-fetch", "show-ref", "refs/heads/main"][..],
+            &["--no-lazy-fetch", "show-ref", "--verify", "refs/heads/main"],
+            &[
+                "--no-lazy-fetch",
+                "show-ref",
+                "--head",
+                "--verify",
+                "HEAD",
+                "-d",
+            ],
+            &["--no-lazy-fetch", "show-ref", "--verify", "--head", "HEAD"],
+            &["--no-lazy-fetch", "show-ref"],
+            &["--no-lazy-fetch", "show-ref", "--exists"],
+            &[
+                "--no-lazy-fetch",
+                "show-ref",
+                "--exists",
+                "refs/heads/a",
+                "refs/heads/b",
+            ],
+            &["--no-lazy-fetch", "show-ref", "refs/heads/main", "--exists"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "HEAD"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "heads/main"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "main"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a..b"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a\0b"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "--foo"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "--verify"],
+            &[
+                "--no-lazy-fetch",
+                "show-ref",
+                "--exists",
+                "refs/heads/.hidden",
+            ],
+            &[
+                "--no-lazy-fetch",
+                "show-ref",
+                "--exists",
+                "refs/heads/x.lock",
+            ],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads//x"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/x/"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/x."],
+            &[
+                "--no-lazy-fetch",
+                "show-ref",
+                "--exists",
+                "refs/heads/x@{1}",
+            ],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a b"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a\\b"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a~1"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a^"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a:b"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a?"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a*"],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a[b"],
+            &[
+                "--no-lazy-fetch",
+                "show-ref",
+                "--exists",
+                "refs/heads/a\x7f",
+            ],
+            &["--no-lazy-fetch", "show-ref", "--exists", "refs/heads/a\tb"],
         ] {
             assert_eq!(
                 contexts.permits(&id, &strings(refused), now),

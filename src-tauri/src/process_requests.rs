@@ -2317,6 +2317,8 @@ fn stop_walk(stop: &WalkStop) {
 /// Calls `CancelSynchronousIo` on a stopped walk thread until it ends, for at most `CLOSE_WAIT`.
 /// A process start makes several opens, and each one can wait on an oplock break (research U3).
 /// A cancel that comes before a driver queues its I/O can also leave the I/O waiting.
+/// One call can itself wait while the I/O is not cancelable, as one wait of `CreateProcessW` on an oplock break (research U3).
+/// Only the watchdog waits then: it holds no lock, its reply went out, and nothing joins it.
 fn cancel_io(worker: &JoinHandle<()>) {
     let until = Instant::now() + CLOSE_WAIT;
     while !worker.is_finished() && Instant::now() < until {
@@ -6412,24 +6414,42 @@ pub(crate) mod tests {
         assert!(harness.requests.state().walks.is_empty(), "walks");
     }
 
-    /// Calls `CancelSynchronousIo` on `worker` until it finds a pending synchronous I/O. False after `WAIT`.
-    fn cancel_pending_io(worker: &JoinHandle<()>) -> bool {
-        // SAFETY: `worker` keeps the thread handle open for each call.
-        eventually(WAIT, || unsafe {
-            CancelSynchronousIo(HANDLE(worker.as_raw_handle())).is_ok()
-        })
+    /// One `CancelSynchronousIo` call on `worker`, from a helper thread. `Some(found)`: the call returned within `CLOSE_WAIT`.
+    /// `None`: the call still waits. A call waits while the I/O of the worker is not cancelable (research U3).
+    /// So no test thread ever waits in the call itself. The helper keeps the thread handle open.
+    fn cancel_call(worker: &Arc<JoinHandle<()>>) -> Option<bool> {
+        let (done, returned) = mpsc::channel();
+        let target = Arc::clone(worker);
+        std::thread::spawn(move || {
+            // SAFETY: `target` keeps the thread handle open for the call.
+            let found = unsafe { CancelSynchronousIo(HANDLE(target.as_raw_handle())) }.is_ok();
+            let _ = done.send(found);
+        });
+        returned.recv_timeout(CLOSE_WAIT).ok()
     }
 
-    /// Repeats `CancelSynchronousIo` every 100 ms until `ended` gets a value. Returns it and the count of the extra calls.
-    fn cancel_until<T>(worker: &JoinHandle<()>, ended: &mpsc::Receiver<T>) -> (Option<T>, usize) {
-        for extra in 0..30 {
+    /// The end of `cancel_until`.
+    #[derive(Debug)]
+    enum Canceled<T> {
+        /// `ended` got the value after this count of calls.
+        Ended(T, usize),
+        /// One call did not return within `CLOSE_WAIT`.
+        CallWaits,
+        /// No value after 30 calls.
+        NoEnd,
+    }
+
+    /// Repeats `CancelSynchronousIo` every 100 ms until `ended` gets a value, for at most 30 calls.
+    fn cancel_until<T>(worker: &Arc<JoinHandle<()>>, ended: &mpsc::Receiver<T>) -> Canceled<T> {
+        for calls in 0..30 {
             if let Ok(value) = ended.recv_timeout(Duration::from_millis(100)) {
-                return (Some(value), extra);
+                return Canceled::Ended(value, calls);
             }
-            // SAFETY: `worker` keeps the thread handle open for the call.
-            let _ = unsafe { CancelSynchronousIo(HANDLE(worker.as_raw_handle())) };
+            if cancel_call(worker).is_none() {
+                return Canceled::CallWaits;
+            }
         }
-        (None, 30)
+        Canceled::NoEnd
     }
 
     #[test]
@@ -6447,26 +6467,29 @@ pub(crate) mod tests {
             )
         };
         let (done, ended) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
+        let worker = Arc::new(std::thread::spawn(move || {
             let _ = done.send(reader.read(&mut [0u8; 1]).map_err(|e| e.raw_os_error()));
-        });
-        assert!(
-            cancel_pending_io(&worker),
-            "the read waits as synchronous I/O"
-        );
-        let (read, extra) = cancel_until(&worker, &ended);
+        }));
         // A first cancel can come before the pipe driver queues the read. A later call then ends it.
-        println!("OBSERVATION T314: pipe read {read:?} after {extra} extra cancels");
-        assert_eq!(
-            read.expect("the read returns"),
-            Err(Some(995)),
-            "the read ends with ERROR_OPERATION_ABORTED"
-        );
+        match cancel_until(&worker, &ended) {
+            Canceled::Ended(read, calls) => {
+                println!("OBSERVATION T314: pipe read {read:?} after {calls} cancel calls");
+                assert_eq!(
+                    read,
+                    Err(Some(995)),
+                    "the read ends with ERROR_OPERATION_ABORTED"
+                );
+            }
+            other => panic!("the read does not end at a cancel: {other:?}"),
+        }
         drop(writer);
     }
 
+    /// Research U3: a start of a program that a batch oplock holds waits on the break.
+    /// A cancel ends each cancelable wait of the start, and the start then fails with no process.
+    /// One wait of `CreateProcessW` on the break is not always cancelable. A cancel call then waits too, until the holder lets go.
     #[test]
-    fn cancel_synchronous_io_ends_a_process_start_that_waits_on_a_batch_oplock_break() {
+    fn a_process_start_on_a_batch_oplock_break_ends_at_a_cancel_or_when_the_holder_lets_go() {
         let fixture = Fixture::new();
         let program = fixture.path("held.exe");
         std::fs::copy(test_exe(), &program).expect("copy the test program");
@@ -6478,7 +6501,7 @@ pub(crate) mod tests {
         let (done, ended) = mpsc::channel();
         let worker = {
             let (program, directory) = (program.clone(), fixture.0.clone());
-            std::thread::spawn(move || {
+            Arc::new(std::thread::spawn(move || {
                 let arguments = crate::jobs::tests::child_arguments(&["sleep", "0"]);
                 let started = spawn(
                     &SpawnRequest {
@@ -6492,7 +6515,7 @@ pub(crate) mod tests {
                     job.handle(),
                 );
                 let _ = done.send(started.map(|spawned| drop(Owned(spawned.process))));
-            })
+            }))
         };
         assert!(
             oplock.broken(WAIT),
@@ -6502,19 +6525,32 @@ pub(crate) mod tests {
             ended.recv_timeout(Duration::from_millis(500)).is_err(),
             "the start waits on the break"
         );
-        assert!(
-            cancel_pending_io(&worker),
-            "the start waits as synchronous I/O"
-        );
-        let (started, extra) = cancel_until(&worker, &ended);
-        // CreateProcessW makes more than one open of the image, and each one waits on the break.
-        println!("OBSERVATION T314 U3: start {started:?} after {extra} extra cancels");
-        assert_eq!(
-            started.expect("the start returns"),
-            Err(crate::spawn::SpawnError::OwnershipFailed),
-            "CancelSynchronousIo ends each image open, and no process starts (research U3)"
-        );
-        drop(oplock);
+        match cancel_until(&worker, &ended) {
+            Canceled::Ended(started, calls) => {
+                println!(
+                    "OBSERVATION T314 U3: the start ended after {calls} cancel calls: {started:?}"
+                );
+                assert_eq!(
+                    started,
+                    Err(crate::spawn::SpawnError::OwnershipFailed),
+                    "a cancel ends the start, and no process starts"
+                );
+            }
+            Canceled::CallWaits => {
+                let released = Instant::now();
+                drop(oplock);
+                let started = ended.recv_timeout(CLOSE_WAIT);
+                println!(
+                    "OBSERVATION T314 U3: a cancel call waited, and the start ended {:?} after the holder let go: {started:?}",
+                    released.elapsed()
+                );
+                assert!(
+                    started.is_ok(),
+                    "the start ends within 5 s after the holder lets go"
+                );
+            }
+            Canceled::NoEnd => panic!("30 cancel calls returned, and the start did not end"),
+        }
     }
 
     // ---- T314: the other frames as walks (contract §6 "Walks") ----
@@ -6595,17 +6631,14 @@ pub(crate) mod tests {
         assert!(oplock.broken(WAIT), "the image open waits on the break");
         assert_eq!(harness.reply(&call), start_deadline(&call));
         assert!(
-            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
-            "the stop ends the start (research U3)"
-        );
-        assert!(
             harness.jobs.job_handle(&operation).is_none(),
             "the start deadline closes the operation Job"
         );
+        // Research U3: a cancel ends the start, or the start waits until the holder lets go. The reply never waits for it.
         drop(oplock);
         assert!(
             eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
-            "the walk thread ends"
+            "the start ends within 5 s after the holder lets go"
         );
         assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
     }
@@ -6656,14 +6689,11 @@ pub(crate) mod tests {
             "closeJob never waits on the open (T314 D7)"
         );
         assert_eq!(harness.reply(&closed), stopped(&closed));
-        assert!(
-            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
-            "the stop ends both starts"
-        );
+        // Research U3: a cancel ends each start, or a start waits until the holder lets go. No reply waits for it.
         drop(oplock);
         assert!(
             eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
-            "the walk thread ends"
+            "both starts end within 5 s after the holder lets go"
         );
         assert_eq!(harness.replies_for(&canceled).len(), 1, "one reply");
         assert_eq!(harness.replies_for(&closed).len(), 1, "one reply");

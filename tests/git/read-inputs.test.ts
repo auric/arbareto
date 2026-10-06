@@ -196,6 +196,25 @@ describe("generations (contract §2, §9)", () => {
     TIMEOUT_MS,
   );
 
+  caseTest(
+    "T322",
+    "a readWorkspace with an old last-observed generation returns a fresh result of a newer generation, never REPOSITORY_CHANGED",
+    ["shell-double"],
+    () =>
+      withService("t322-workspace-old", async (service) => {
+        const repo = join(buildF02(gitPath(), "t322-workspace-old").root, "repo");
+        const { repositoryId, generation } = await service.register(repo);
+        const current = await advance(service, repo, repositoryId, generation);
+        // A new staged change after `current`, so only a fresh read can show it.
+        put(repo, "keep.txt", "keep fresh\n");
+        fixtureGit(gitPath(), repo, ["add", "--", "keep.txt"]);
+        const response = await service.readWorkspace(repositoryId, { refresh: false, check: "full" }, generation);
+        expect({ state: response.state, code: response.code }).toEqual({ state: "succeeded", code: undefined });
+        expect(response.result!.generation).toBeGreaterThan(current);
+      }),
+    TIMEOUT_MS,
+  );
+
   test.todo("a readComparison with an old repositoryGeneration gives REPOSITORY_CHANGED and starts no Git process (needs T105/T115)", async () => {
     const git = gitPath();
     const service = await openService({ git, name: "t072-comparison-stale" });

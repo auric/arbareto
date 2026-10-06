@@ -184,6 +184,28 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
   );
 
   caseTest(
+    "T322",
+    "F19 encoding: an encoding header with an ESC and a DEL byte gives the label without them",
+    ["shell-double"],
+    () =>
+      withService("t322-encoding-control", async (service) => {
+        const built = buildF19(gitPath(), "t322-encoding-control", "encoding");
+        const repo = repoOf(built);
+        const tip = built.facts.notes.tip as string;
+        const tree = git(repo, ["rev-parse", `${tip}^{tree}`]).toString("utf8").trim();
+        const ident = `${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> 1767225604 +0000`;
+        const raw = `tree ${tree}\nparent ${tip}\nauthor ${ident}\ncommitter ${ident}\nencoding ISO\x1b-8859\x7f-1\n\ncontrol\n`;
+        const oid = git(repo, ["hash-object", "-t", "commit", "-w", "--stdin"], raw).toString("utf8").trim();
+        git(repo, ["update-ref", "refs/heads/main", oid, tip]);
+        // Oracle: the stored header holds both control bytes.
+        expect(rawCommits(repo, [oid])[0]!.includes(Buffer.from("encoding ISO\x1b-8859\x7f-1\n"))).toBe(true);
+        const row = (await history(service, repo)).result!.rows[0]!;
+        expect({ oid: row.oid, encoding: row.encoding }).toEqual({ oid, encoding: "ISO-8859-1" });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
     TASK,
     "F01 unborn gives an empty complete page with the unborn head",
     ["shell-double"],

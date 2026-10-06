@@ -19,7 +19,7 @@ use windows::Win32::System::JobObjects::{
     JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
     JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
-    SetInformationJobObject,
+    SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO;
 #[cfg(test)]
@@ -71,6 +71,13 @@ impl Job {
     pub fn assign(&self, process: HANDLE) -> windows::core::Result<()> {
         // SAFETY: the caller keeps `process` open for the call, and `self` keeps the Job open.
         unsafe { AssignProcessToJobObject(self.handle, process) }
+    }
+
+    /// Ends every process in the Job at once. A start can still hold a clone of the Job, so the drop of the entry alone ends nothing.
+    /// Kill-on-close still ends a process that such a start adds later.
+    fn terminate(&self) {
+        // SAFETY: `self` keeps the Job open for the call.
+        let _ = unsafe { TerminateJobObject(self.handle, 1) };
     }
 
     fn accounting(&self) -> windows::core::Result<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION> {
@@ -206,18 +213,21 @@ struct State {
 }
 
 impl State {
+    /// Ends every process of the Job, then drops the entry.
     fn remove(&mut self, operation_id: &str) {
         if let Some(entry) = self.jobs.remove(operation_id) {
+            entry.job.terminate();
             self.operations.remove(&entry.key);
         }
     }
 
-    /// Closes each Job that `close` selects. Dropping an entry closes its Job handle.
+    /// Ends every process of each Job that `close` selects, then drops its entry.
     fn remove_where(&mut self, mut close: impl FnMut(&Entry) -> bool) {
         let (operations, jobs) = (&mut self.operations, &mut self.jobs);
         jobs.retain(|_, entry| {
             let keep = !close(entry);
             if !keep {
+                entry.job.terminate();
                 operations.remove(&entry.key);
             }
             keep
@@ -1299,6 +1309,36 @@ pub(crate) mod tests {
         );
         // SAFETY: the test owns the process handle and closes it once.
         let _ = unsafe { CloseHandle(process) };
+        supervisor.shutdown();
+    }
+
+    #[test]
+    fn close_ends_the_running_processes_of_a_job_that_a_start_still_holds() {
+        let supervisor = Supervisor::start().expect("start");
+        supervisor.open("op-held").expect("open");
+        let (sleeper, _) = child_in_job(&supervisor, "op-held", 0, "stay");
+        let (entered, started) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let holder = {
+            let supervisor = Arc::clone(&supervisor);
+            std::thread::spawn(move || {
+                supervisor
+                    .with_job("op-held", |_| {
+                        let _ = entered.send(());
+                        // The seam: a start whose image open waits.
+                        let _ = released.recv_timeout(WAIT);
+                    })
+                    .expect("a running Job");
+            })
+        };
+        started.recv_timeout(WAIT).expect("the start runs");
+        supervisor.close("op-held");
+        assert!(
+            exits_within(sleeper.handle(), CLOSE_BOUND),
+            "close ends the processes that run already (T314 review fix 1)"
+        );
+        release.send(()).expect("release");
+        holder.join().expect("holder");
         supervisor.shutdown();
     }
 

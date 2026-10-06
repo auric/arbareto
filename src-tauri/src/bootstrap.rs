@@ -344,6 +344,14 @@ impl Contexts {
         self.state().live(bootstrap_id, now).cloned()
     }
 
+    /// Removes a live context and returns it, so one context serves one bind. Then `get` gives `UNKNOWN_TARGET`.
+    pub fn take(&self, bootstrap_id: &str, now: Instant) -> Result<Context, &'static str> {
+        let mut state = self.state();
+        let context = state.live(bootstrap_id, now)?.clone();
+        state.contexts.remove(bootstrap_id);
+        Ok(context)
+    }
+
     /// Checks the arguments against the permitted probe of the context. A refused array gives `INVALID_REQUEST`.
     pub fn permits(
         &self,

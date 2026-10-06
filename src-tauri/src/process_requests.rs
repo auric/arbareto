@@ -285,6 +285,14 @@ struct Target {
     wsl: Option<(wsl::Installation, String)>,
 }
 
+/// The frame facts of a `resolveGit` finish.
+struct Moved<'a> {
+    bootstrap_id: &'a str,
+    operation_id: &'a str,
+    resolved: &'a Path,
+    now: Instant,
+}
+
 enum RunInput {
     Closed,
     Bytes(Vec<u8>),
@@ -790,7 +798,7 @@ impl ProcessRequests {
                     let (me, call) = (Arc::clone(&me), call.clone());
                     Box::new(move || {
                         me.state().calls.remove(&call);
-                        Some(json!({ "type": "refused", "callId": call, "code": code }))
+                        Some(refusal(&call, code))
                     })
                 };
                 if let Err(code) = me.revalidate(&target, now) {
@@ -1324,7 +1332,7 @@ impl ProcessRequests {
                 if matches!(reply, Reply::Start) {
                     me.state().calls.remove(&call);
                 }
-                stop_walk(&stop, &worker);
+                stop_walk(&stop);
                 if let Some(sent) = sent {
                     me.send_frame(generation, reply.frame(), sent);
                 }
@@ -1333,7 +1341,7 @@ impl ProcessRequests {
         };
         if watchdog.is_err() {
             state.walks.remove(call_id);
-            stop_walk(&stop, &worker);
+            stop_walk(&stop);
             return Err(OWNERSHIP);
         }
         Ok(())
@@ -1420,6 +1428,10 @@ impl ProcessRequests {
             let bootstrap = bootstrap.clone();
             move || closer.destroy(&bootstrap)
         };
+        let revalidate = {
+            let (contexts, bootstrap) = (Arc::clone(&self.contexts), bootstrap.clone());
+            move || contexts.revalidate(&bootstrap, now)
+        };
         let mut state = self.state();
         if git_form {
             let version = request["version"].as_str().ok_or(INVALID)?;
@@ -1462,39 +1474,26 @@ impl ProcessRequests {
                 operation_id,
                 read_at,
                 move |_| {
-                    let revalidated = me.contexts.revalidate(&bootstrap, now);
+                    let revalidated = revalidate();
                     Box::new(move || {
-                        if let Err(code) = revalidated {
-                            return Some(
-                                json!({ "type": "refused", "callId": call, "code": code }),
-                            );
+                        let saved = (!confirm).then(|| proposal.clone());
+                        let reply = me.bind(revalidated, &bootstrap, now, generation, &call, |state| {
+                            if confirm {
+                                me.confirm_git(proposal, identity, &git, &call, generation);
+                                return None;
+                            }
+                            if !state.issued.insert(git.clone()) {
+                                return Some(refusal(&call, INVALID));
+                            }
+                            let program = proposal.executable_path;
+                            state.gits.insert(git, Git::Windows { program, identity });
+                            Some(json!({ "type": "register", "callId": call, "result": "approved" }))
+                        });
+                        let approved = reply.as_ref().is_some_and(|r| r["result"] == "approved");
+                        if let (true, Some(saved), Some(save)) = (approved, saved, me.startup_git.get()) {
+                            save(saved);
                         }
-                        me.contexts.destroy(&bootstrap);
-                        if confirm {
-                            me.confirm_git(proposal, identity, &git, &call);
-                            return None;
-                        }
-                        let mut state = me.state();
-                        if generation != me.current() {
-                            return None;
-                        }
-                        if !state.issued.insert(git.clone()) {
-                            return Some(
-                                json!({ "type": "refused", "callId": call, "code": INVALID }),
-                            );
-                        }
-                        state.gits.insert(
-                            git,
-                            Git::Windows {
-                                program: proposal.executable_path.clone(),
-                                identity,
-                            },
-                        );
-                        drop(state);
-                        if let Some(save) = me.startup_git.get() {
-                            save(proposal);
-                        }
-                        Some(json!({ "type": "register", "callId": call, "result": "approved" }))
+                        reply
                     })
                 },
                 destroy,
@@ -1546,30 +1545,46 @@ impl ProcessRequests {
                 operation_id,
                 read_at,
                 move |_| {
-                    let revalidated = me.contexts.revalidate(&bootstrap, now);
+                    let revalidated = revalidate();
                     Box::new(move || {
-                        if let Err(code) = revalidated {
-                            return Some(
-                                json!({ "type": "refused", "callId": call, "code": code }),
-                            );
-                        }
-                        me.contexts.destroy(&bootstrap);
-                        let mut state = me.state();
-                        if generation != me.current() {
-                            return None;
-                        }
-                        if !state.issued.insert(repository_id.clone()) {
-                            return Some(
-                                json!({ "type": "refused", "callId": call, "code": INVALID }),
-                            );
-                        }
-                        state.repositories.insert(repository_id, repository);
-                        Some(json!({ "type": "register", "callId": call, "result": "approved" }))
+                        me.bind(revalidated, &bootstrap, now, generation, &call, |state| {
+                            if !state.issued.insert(repository_id.clone()) {
+                                return Some(refusal(&call, INVALID));
+                            }
+                            state.repositories.insert(repository_id, repository);
+                            Some(
+                                json!({ "type": "register", "callId": call, "result": "approved" }),
+                            )
+                        })
                     })
                 },
                 destroy,
             )
         }
+    }
+
+    /// The finish of a Windows `register` walk. Under the state lock, a current generation takes the context, then runs `bind`.
+    /// A context that another frame took first gives `UNKNOWN_TARGET`, so one context binds once.
+    fn bind(
+        &self,
+        revalidated: Result<(), Code>,
+        bootstrap_id: &str,
+        now: Instant,
+        generation: u64,
+        call_id: &str,
+        bind: impl FnOnce(&mut State) -> Option<Value>,
+    ) -> Option<Value> {
+        if let Err(code) = revalidated {
+            return Some(refusal(call_id, code));
+        }
+        let mut state = self.state();
+        if generation != self.current() {
+            return None;
+        }
+        if self.contexts.take(bootstrap_id, now).is_err() {
+            return Some(refusal(call_id, UNKNOWN));
+        }
+        bind(&mut state)
     }
 
     /// Contract §6 `wslDistros` and §11 "Route": the context path, and for a WSL prefix the distro facts.
@@ -1875,18 +1890,14 @@ impl ProcessRequests {
                     .first()
                     .is_some_and(|found| found.as_ref() == Ok(&bound.identity));
                 Box::new(move || {
-                    let mut state = me.state();
-                    if generation != me.current() {
-                        return None;
-                    }
-                    let live = me.contexts.get(&bootstrap, Instant::now()).is_ok();
-                    me.contexts.destroy(&bootstrap);
-                    state.wsl_bound.remove(&bootstrap);
-                    if !same || !live || !state.issued.insert(repository_id.clone()) {
-                        return Some(json!({ "type": "refused", "callId": call, "code": UNKNOWN }));
-                    }
-                    state.repositories.insert(repository_id, repository);
-                    Some(json!({ "type": "register", "callId": call, "result": "approved" }))
+                    me.bind_wsl(
+                        generation,
+                        same,
+                        &bootstrap,
+                        &repository_id,
+                        repository,
+                        &call,
+                    )
                 })
             },
             move || {
@@ -1894,6 +1905,32 @@ impl ProcessRequests {
                 closer.state().wsl_bound.remove(&destroyed);
             },
         )
+    }
+
+    /// The finish of the WSL reread. Under the state lock, only a current generation binds, and the context serves one bind.
+    /// A changed or failed read, or a context that is gone, gives `UNKNOWN_TARGET` (gaps.md W1).
+    fn bind_wsl(
+        &self,
+        generation: u64,
+        same: bool,
+        bootstrap_id: &str,
+        repository_id: &str,
+        repository: Repository,
+        call_id: &str,
+    ) -> Option<Value> {
+        let mut state = self.state();
+        if generation != self.current() {
+            return None;
+        }
+        let live = self.contexts.take(bootstrap_id, Instant::now()).is_ok();
+        state.wsl_bound.remove(bootstrap_id);
+        if !same || !live || !state.issued.insert(repository_id.to_string()) {
+            return Some(refusal(call_id, UNKNOWN));
+        }
+        state
+            .repositories
+            .insert(repository_id.to_string(), repository);
+        Some(json!({ "type": "register", "callId": call_id, "result": "approved" }))
     }
 
     /// gaps.md W3: the Perl probe of a WSL repository, on its own thread, in the Job of the request operation.
@@ -1994,6 +2031,7 @@ impl ProcessRequests {
         }
         own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let generation = self.current();
         let (bootstrap, operation, call) = (
             bootstrap_id.to_string(),
             operation_id.to_string(),
@@ -2013,30 +2051,70 @@ impl ProcessRequests {
                     .then(|| read_identity(&resolved).ok())
                     .flatten();
                 Box::new(move || {
-                    let refused = json!({ "type": "refused", "callId": call, "code": INVALID });
-                    let Some(identity) = identity else {
-                        return Some(refused);
+                    let moved = Moved {
+                        bootstrap_id: &bootstrap,
+                        operation_id: &operation,
+                        resolved: &resolved,
+                        now,
                     };
-                    let moved = me.contexts.create_moved(&context, &resolved, identity, now);
-                    me.contexts.destroy(&bootstrap);
-                    let mut state = me.state();
-                    if let Err(code) = own(&mut state, &me.contexts, &moved, &operation, now) {
-                        return Some(json!({ "type": "refused", "callId": call, "code": code }));
-                    }
-                    Some(json!({ "type": "resolveGit", "callId": call, "bootstrapId": moved }))
+                    me.resolve_finish(generation, &moved, identity, &call)
                 })
             },
             || {},
         )
     }
 
+    /// The finish of a `resolveGit` walk. Under the state lock, a current generation takes the first context once.
+    /// It then binds the new context to the resolved file. A context that another frame took gives `UNKNOWN_TARGET`.
+    fn resolve_finish(
+        &self,
+        generation: u64,
+        moved: &Moved,
+        identity: Option<Identity>,
+        call_id: &str,
+    ) -> Option<Value> {
+        let Some(identity) = identity else {
+            return Some(refusal(call_id, INVALID));
+        };
+        let mut state = self.state();
+        if generation != self.current() {
+            return None;
+        }
+        let Ok(first) = self.contexts.take(moved.bootstrap_id, moved.now) else {
+            return Some(refusal(call_id, UNKNOWN));
+        };
+        let id = self
+            .contexts
+            .create_moved(&first, moved.resolved, identity, moved.now);
+        if let Err(code) = own(
+            &mut state,
+            &self.contexts,
+            &id,
+            moved.operation_id,
+            moved.now,
+        ) {
+            return Some(refusal(call_id, code));
+        }
+        Some(json!({ "type": "resolveGit", "callId": call_id, "bootstrapId": id }))
+    }
+
     /// Shows the Git selection confirmation on its own thread, so the frame reader keeps running.
     /// Only Use this Git binds the ID. A reply after a service exit is dropped and binds nothing.
-    fn confirm_git(&self, proposal: ConfirmedGit, identity: Identity, git_id: &str, call_id: &str) {
+    fn confirm_git(
+        &self,
+        proposal: ConfirmedGit,
+        identity: Identity,
+        git_id: &str,
+        call_id: &str,
+        generation: u64,
+    ) {
         let Some(me) = self.me.upgrade() else {
             return;
         };
-        let generation = self.current();
+        // A walk of an older session shows no dialog.
+        if generation != self.current() {
+            return;
+        }
         let (git_id, call_id) = (git_id.to_string(), call_id.to_string());
         std::thread::spawn(move || {
             let mut registered =
@@ -2224,17 +2302,19 @@ fn reply_with(reply: Value) -> Finish {
     Box::new(move || Some(reply))
 }
 
-/// Sets the stop flag and the stop Event of a walk, then cancels the synchronous I/O of its thread (contract §6 "Walks").
+fn refusal(call_id: &str, code: Code) -> Value {
+    json!({ "type": "refused", "callId": call_id, "code": code })
+}
+
+/// Sets the stop flag and the stop Event of a walk (contract §6 "Walks"). `cancel_io` then ends its synchronous I/O.
 /// The Event ends the `wsl.exe` of a WSL walk, so the stop never closes the operation Job.
-fn stop_walk(stop: &WalkStop, worker: &JoinHandle<()>) {
+fn stop_walk(stop: &WalkStop) {
     stop.flag.store(true, Ordering::SeqCst);
     // SAFETY: `stop` keeps the Event open for the call.
     let _ = unsafe { SetEvent(stop.event.0) };
-    // SAFETY: `worker` keeps the thread handle open for the call. A thread outside I/O gives `ERROR_NOT_FOUND`.
-    let _ = unsafe { CancelSynchronousIo(HANDLE(worker.as_raw_handle())) };
 }
 
-/// Repeats `CancelSynchronousIo` on a stopped walk thread until it ends, for at most `CLOSE_WAIT`.
+/// Calls `CancelSynchronousIo` on a stopped walk thread until it ends, for at most `CLOSE_WAIT`.
 /// A process start makes several opens, and each one can wait on an oplock break (research U3).
 /// A cancel that comes before a driver queues its I/O can also leave the I/O waiting.
 fn cancel_io(worker: &JoinHandle<()>) {
@@ -2835,7 +2915,7 @@ pub(crate) mod tests {
 
     // ---- Harness ----
 
-    fn uuid() -> String {
+    pub(crate) fn uuid() -> String {
         static NEXT: AtomicU32 = AtomicU32::new(1);
         format!(
             "{:08x}-0000-4000-8000-{:012x}",
@@ -5587,9 +5667,12 @@ pub(crate) mod tests {
         wsl.host.hold(false);
         assert!(
             eventually(WAIT, || wsl.host.commands().len() > commands),
+            "the reread runs"
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || wsl.harness.requests.active_walks() == 0),
             "the reread ends"
         );
-        std::thread::sleep(Duration::from_millis(500));
         let state = wsl.harness.requests.state();
         assert!(
             state.repositories.is_empty() && state.issued.is_empty(),
@@ -6520,7 +6603,10 @@ pub(crate) mod tests {
             "the start deadline closes the operation Job"
         );
         drop(oplock);
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the walk thread ends"
+        );
         assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
     }
 
@@ -6575,7 +6661,10 @@ pub(crate) mod tests {
             "the stop ends both starts"
         );
         drop(oplock);
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the walk thread ends"
+        );
         assert_eq!(harness.replies_for(&canceled).len(), 1, "one reply");
         assert_eq!(harness.replies_for(&closed).len(), 1, "one reply");
     }
@@ -6603,7 +6692,10 @@ pub(crate) mod tests {
             "CancelSynchronousIo ends the held open"
         );
         drop(hold);
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the walk thread ends"
+        );
         assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
     }
 
@@ -6666,7 +6758,10 @@ pub(crate) mod tests {
             "CancelSynchronousIo ends the held open"
         );
         drop(hold);
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the walk thread ends"
+        );
         assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
     }
 
@@ -6687,8 +6782,6 @@ pub(crate) mod tests {
         assert!(hold.waiting(1, WAIT), "the identity read waits");
         harness.send(json!({ "type": "cancel", "callId": call }));
         harness.send(json!({ "type": "closeJob", "operationId": operation }));
-        std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(harness.requests.active_walks(), 1, "the walk still runs");
         drop(hold);
         assert_eq!(
             harness.reply(&call),
@@ -6745,6 +6838,194 @@ pub(crate) mod tests {
         );
     }
 
+    /// Waits for two replies. Returns how many replies `ok` accepts, and the other replies.
+    fn split_replies(
+        harness: &Harness,
+        calls: [&str; 2],
+        ok: impl Fn(&Value) -> bool,
+    ) -> (usize, Vec<Value>) {
+        let replies = calls.map(|call| harness.reply(call));
+        let succeeded = replies.iter().filter(|reply| ok(reply)).count();
+        let others = replies.into_iter().filter(|reply| !ok(reply)).collect();
+        (succeeded, others)
+    }
+
+    #[test]
+    fn two_register_frames_on_one_context_bind_it_once() {
+        let harness = Harness::child();
+        let (free, _) = copied_workspace(&harness, "free");
+        let worktree = harness.fixture.path("repo");
+        std::fs::create_dir_all(worktree.join(".git")).expect("worktree");
+        let discovery = harness
+            .contexts
+            .create(ContextKind::RepositoryDiscovery, &worktree, Instant::now())
+            .expect("discovery context");
+        let hold = Hold::new(&worktree);
+        let (operation, git_directory) = (uuid(), worktree.join(".git"));
+        let calls = [uuid(), uuid()];
+        for call in &calls {
+            let body = json!({
+                "type": "register", "callId": call, "operationId": operation, "bootstrapId": discovery, "gitInstallationId": free.git,
+                "repositoryId": uuid(), "worktreeRoot": worktree, "gitDirectory": git_directory, "commonDirectory": git_directory,
+            });
+            assert!(
+                harness.send_within(body, CLOSE_WAIT),
+                "the reader stays free"
+            );
+        }
+        assert!(hold.waiting(2, WAIT), "both identity reads wait");
+        drop(hold);
+        let (approved, others) = split_replies(&harness, [&calls[0], &calls[1]], |reply| {
+            reply["result"] == "approved"
+        });
+        assert_eq!(approved, 1, "one context binds one repository ID");
+        assert_eq!(others[0]["code"], "UNKNOWN_TARGET", "{others:?}");
+    }
+
+    #[test]
+    fn one_git_probe_context_serves_either_register_or_resolve_git() {
+        let harness = Harness::child();
+        let program = git_copy(&harness, "Git\\cmd");
+        let resolved = git_copy(&harness, "Git\\core");
+        let startup = harness
+            .contexts
+            .create_startup(&program, Instant::now())
+            .expect("startup context");
+        let (held, held_resolved) = (Hold::new(&program), Hold::new(&resolved));
+        let (operation, register, resolve) = (uuid(), uuid(), uuid());
+        let bodies = [
+            json!({ "type": "register", "callId": register, "operationId": operation, "bootstrapId": startup, "gitInstallationId": uuid(), "version": "2.55.0.windows.3", "digest": DIGEST, "confirm": false }),
+            json!({ "type": "resolveGit", "callId": resolve, "operationId": operation, "bootstrapId": startup, "executablePath": resolved }),
+        ];
+        for body in bodies {
+            assert!(
+                harness.send_within(body, CLOSE_WAIT),
+                "the reader stays free"
+            );
+        }
+        assert!(
+            held.waiting(1, WAIT) && held_resolved.waiting(1, WAIT),
+            "both reads wait"
+        );
+        drop((held, held_resolved));
+        let (used, others) = split_replies(&harness, [&register, &resolve], |reply| {
+            reply["result"] == "approved" || reply["bootstrapId"].is_string()
+        });
+        assert_eq!(used, 1, "one frame uses the context");
+        assert_eq!(others[0]["code"], "UNKNOWN_TARGET", "{others:?}");
+    }
+
+    #[test]
+    fn a_git_confirmation_of_an_older_session_shows_no_dialog() {
+        let harness = Harness::child();
+        let (shown, dialogs) = mpsc::channel();
+        let shown = Mutex::new(shown);
+        harness
+            .requests
+            .set_git_confirmation(Box::new(move |_, _, _| {
+                let _ = shown.lock().expect("shown").send(());
+                Registered::Declined
+            }));
+        let generation = harness.requests.current();
+        harness.requests.service_exited();
+        let program = test_exe();
+        let proposal = ConfirmedGit {
+            selected_path: program.clone(),
+            executable_path: program.clone(),
+            version: "2.55.0.windows.3".to_string(),
+            digest: DIGEST.to_string(),
+        };
+        let identity = read_identity(&program).expect("identity");
+        harness
+            .requests
+            .confirm_git(proposal.clone(), identity, &uuid(), &uuid(), generation);
+        harness.requests.confirm_git(
+            proposal,
+            identity,
+            &uuid(),
+            &uuid(),
+            harness.requests.current(),
+        );
+        dialogs.recv_timeout(WAIT).expect("the current dialog");
+        assert!(
+            dialogs.recv_timeout(Duration::from_secs(1)).is_err(),
+            "the walk of the older session shows no dialog (T314 review fix 4)"
+        );
+    }
+
+    #[test]
+    fn a_resolve_git_finish_of_an_older_session_keeps_the_first_context_and_binds_nothing() {
+        let harness = Harness::child();
+        let wrapper = git_copy(&harness, "cmd");
+        let resolved = git_copy(&harness, "git-core");
+        let now = Instant::now();
+        let candidate = harness
+            .contexts
+            .create(ContextKind::GitProbe, &wrapper, now)
+            .expect("context");
+        let generation = harness.requests.current();
+        harness.requests.service_exited();
+        let (operation, call) = (uuid(), uuid());
+        let moved = Moved {
+            bootstrap_id: &candidate,
+            operation_id: &operation,
+            resolved: &resolved,
+            now,
+        };
+        let identity = read_identity(&resolved).ok();
+        assert_eq!(
+            harness
+                .requests
+                .resolve_finish(generation, &moved, identity, &call),
+            None
+        );
+        assert!(
+            harness.contexts.get(&candidate, now).is_ok(),
+            "the first context stays (T314 review fix 5)"
+        );
+        assert!(harness.requests.state().owners.is_empty(), "no new owner");
+    }
+
+    #[test]
+    fn a_wsl_reread_finish_of_an_older_session_binds_nothing() {
+        let harness = Harness::child();
+        let discovery = harness
+            .contexts
+            .create(
+                ContextKind::RepositoryDiscovery,
+                Path::new(WSL_PATH),
+                Instant::now(),
+            )
+            .expect("pending WSL context");
+        let generation = harness.requests.current();
+        harness.requests.service_exited();
+        let git_directory = PathBuf::from(format!(r"{WSL_PATH}\.git"));
+        let repository = Repository {
+            worktree_root: PathBuf::from(WSL_PATH),
+            git_directory: git_directory.clone(),
+            common_directory: git_directory,
+            git_installation_id: uuid(),
+        };
+        let (repository_id, call) = (uuid(), uuid());
+        // The same identity and a live context: only the generation check refuses the bind (review S3).
+        assert_eq!(
+            harness.requests.bind_wsl(
+                generation,
+                true,
+                &discovery,
+                &repository_id,
+                repository,
+                &call
+            ),
+            None
+        );
+        let state = harness.requests.state();
+        assert!(
+            state.repositories.is_empty() && state.issued.is_empty(),
+            "a reread of an older session binds nothing"
+        );
+    }
+
     #[test]
     fn a_resolve_git_whose_open_waits_replies_deadline_and_keeps_the_first_context() {
         let harness = short_harness();
@@ -6771,7 +7052,10 @@ pub(crate) mod tests {
             "CancelSynchronousIo ends the held open"
         );
         drop(hold);
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the walk thread ends"
+        );
         assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
     }
 

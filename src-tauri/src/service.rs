@@ -654,6 +654,8 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
         } => {
             let call_id = call_id.ok_or(INVALID)?;
             let common = PathBuf::from(common_directory.as_str());
+            // A service exit after the frame read changes the epoch, and the late finish then takes no mutex.
+            let epoch = markers.epoch();
             let (markers, call) = (Arc::clone(markers), call_id.to_string());
             let (operation, kind) = (operation_id.to_string(), kind.to_string());
             let worktree = PathBuf::from(worktree_root.as_str());
@@ -670,7 +672,7 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
                         worktree_root: &worktree,
                         common_directory: &common,
                     };
-                    self::started(&markers, requests, &started, &call, identity)
+                    self::started(&markers, requests, &started, &call, epoch, identity)
                 },
             )?;
             Ok(None)
@@ -704,13 +706,12 @@ fn revoke(
     common_directory: &Path,
 ) -> Option<Value> {
     // The path match needs no identity, so it comes before the walk (contract §6 "Walks").
-    trust.revoke_with(common_directory, &|_| None, |_| 0);
+    trust.revoke_path(common_directory);
     let reply = |call: &str, ended: u32| json!({ "type": "revoke", "callId": call, "endedProcesses": ended });
     if !requests.identity_read_needed(common_directory, |guid| trust.holds_guid(guid)) {
         return Some(reply(call_id, 0));
     }
-    let (trust, jobs) = (Arc::clone(trust), Arc::clone(jobs));
-    let (path, call) = (common_directory.to_path_buf(), call_id.to_string());
+    let (trust, jobs, call) = (Arc::clone(trust), Arc::clone(jobs), call_id.to_string());
     let walked = requests.frame_walk(
         "trust",
         "revoke",
@@ -718,7 +719,7 @@ fn revoke(
         "",
         common_directory.to_path_buf(),
         move |_, identity| {
-            let ended = trust.revoke_with(&path, &|_| identity.clone(), |tag| jobs.revoke(tag));
+            let ended = trust.revoke_identity(identity.as_ref(), |tag| jobs.revoke(tag));
             reply(&call, ended)
         },
     );
@@ -731,9 +732,10 @@ fn started(
     requests: &ProcessRequests,
     started: &Started,
     call_id: &str,
+    epoch: u64,
     identity: Option<PhysicalIdentity>,
 ) -> Value {
-    let reply = markers.started_with(started, &|_| identity.clone());
+    let reply = markers.started_with(started, epoch, &|_| identity.clone());
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
     if let StartedReply::Marker { identity, .. } = &reply {
         requests.tag(started.operation_id, identity.clone());
@@ -804,6 +806,7 @@ mod tests {
     use crate::bootstrap::tests::Hold;
     use crate::dialogs::tests::{Fake, Press};
     use crate::jobs::tests::{Fixture, eventually};
+    use crate::process_requests::tests::uuid;
 
     const CALL: &str = "0f0f0f0f-0000-4000-8000-0000000000cc";
     const REPOSITORY: &str = "0f0f0f0f-0000-4000-8000-0000000000dd";
@@ -822,15 +825,6 @@ mod tests {
         jobs: Arc<Supervisor>,
         sent: Sent,
         fixture: Fixture,
-    }
-
-    /// A new UUID-shaped call ID.
-    fn call() -> String {
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        format!(
-            "0f0f0f0f-0000-4000-8000-{:012x}",
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        )
     }
 
     impl Shell {
@@ -1318,7 +1312,7 @@ mod tests {
         let worktree = shell.folder("repo");
         let common = shell.folder("repo\\.git");
         let mut hold = Some(Hold::new(&common));
-        let call = call();
+        let call = uuid();
         let (returned, reply) = returns_at_once(&mut hold, || {
             shell.mutation(started_frame(&call, FIRST, &worktree))
         });
@@ -1375,7 +1369,7 @@ mod tests {
         approve(&shell, &linked, &linked_git, &link);
         assert_eq!(shell.stores.trust.records().len(), 2);
         let mut hold = Some(Hold::new(&common));
-        let call = call();
+        let call = uuid();
         let (returned, reply) = returns_at_once(&mut hold, || {
             revoke(
                 &shell.stores.trust,
@@ -1404,7 +1398,7 @@ mod tests {
             "the record with only that identity stays at the deadline"
         );
         drop(hold);
-        let again = self::call();
+        let again = uuid();
         let returned = revoke(
             &shell.stores.trust,
             &shell.requests,

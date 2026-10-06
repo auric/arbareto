@@ -450,6 +450,19 @@ describe("native runner input", () => {
     channel.reply("process", exit(callId, { exitCode: null }));
     expect(await result).toEqual({ exitCode: null, activeDescendants: 0 });
   });
+
+  // Contract §6 "Walks" (T314): a `run` start can end with `refused` before the shell reads the `cancel`. That reply ends the call too.
+  test("a canceled run ends at a refused reply", async () => {
+    const channel = createChannelDouble();
+    const controller = new AbortController();
+    const result = channel.runner.run(call({ signal: controller.signal }));
+    const { callId } = channel.last("run");
+    controller.abort();
+    expect(channel.bodies("cancel")).toEqual([{ type: "cancel", callId }]);
+    expect(channel.reply("process", { type: "refused", callId, code: "GIT_CHANGED" })).toBe(true);
+    await expect(result).rejects.toMatchObject({ code: "GIT_CHANGED" });
+    expect(channel.reply("process", exit(callId, { exitCode: null }))).toBe(true);
+  });
 });
 
 describe("native runner identity, lingering count, and registration", () => {

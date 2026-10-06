@@ -1419,6 +1419,16 @@ Future records must identify scenario, build/package digest, environment, fixtur
 - Cargo did not reach the `arbareto` sources. No `-sys` build script named a missing library, so the apt package list stays unchanged.
 - Cause: `src-tauri/Cargo.toml` lists `windows` and `webview2-com` without a target gate. T290 moves them to `[target.'cfg(windows)'.dependencies]`.
 
+**T291 Linux portability check, 2026-10-06.** A session in the local WSL distro `Ubuntu-26.04` (Ubuntu 26.04.1) ran the check. It was not a cloud session. A Linux run qualifies nothing and ticks no task.
+
+- Toolchain: `ARBARETO_LOCAL_TOOLS=1` was set, so the run used rustup stable `rustc 1.99.0 (b940084d7 2026-09-28)`, not the pinned 1.98.0.
+- `cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu` exited 0 with 0 warnings.
+- `bun test tests/contracts tests/git/portable-imports.test.ts`: 1556 pass, 17 skip, 7 todo, 0 fail.
+- `cargo test --locked --lib --target x86_64-unknown-linux-gnu`: 22 passed.
+- Control mutation: the removal of `#[cfg(windows)]` above `mod jobs;` gave exit 101. The first error was `E0432 unresolved import crate::bootstrap` at `src/jobs.rs:29`. The restore gave exit 0.
+- The full Linux run `bun test tests/contracts tests/git` on that branch gave 2163 pass, 54 skip, 25 todo, 0 fail.
+- Five Linux-only test fixes came first, in commit `c60ebcb`. All five changed tests only. No product code changed.
+
 **T090 batch 2 verification, 2026-10-06.** The run used main `2b82dbb` in the worktree `D:\dev\rozvio-l1`. Both commands exited with code 0.
 
 - `bunx --bun tsc --noEmit` printed nothing.

@@ -171,6 +171,7 @@ export function recordProcess(directory: string): void {
 const S_IXUSR = 0o100n;
 // include/uapi/asm-generic/fcntl.h: `O_PATH` is 010000000. x86-64 and arm64 use the generic value. Node exports no `O_PATH`.
 const O_PATH = 0o10000000;
+// This list also guards the FIONREAD ioctl value.
 const GENERIC_FCNTL_ARCHES = ["x64", "arm64"];
 
 type FactRoot = FileFactsRequest["files"][number]["root"];

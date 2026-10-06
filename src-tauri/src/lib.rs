@@ -1,36 +1,68 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+#[cfg(windows)]
 mod bootstrap;
+#[cfg(windows)]
 mod dialogs;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod env_sanitize;
 #[cfg(windows)]
 mod file_facts;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod framing;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod git_env;
+#[cfg(windows)]
 mod ipc;
+#[cfg(windows)]
 mod jobs;
+#[cfg(windows)]
 mod platform;
+#[cfg(windows)]
 mod process_requests;
+#[cfg(windows)]
 mod schema;
+#[cfg(windows)]
 mod service;
+#[cfg(windows)]
 mod settings;
+#[cfg(windows)]
 mod spawn;
+#[cfg(windows)]
 mod webview;
+#[cfg(windows)]
 mod wsl;
 
+#[cfg(windows)]
 use std::sync::{Arc, Mutex};
 
+#[cfg(windows)]
 use tauri::{App, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+#[cfg(windows)]
 use crate::dialogs::{Dialogs, Native};
+#[cfg(windows)]
 use crate::ipc::{Ipc, MAIN_WINDOW};
+#[cfg(windows)]
 use crate::service::{Facts, Service, Stores};
+#[cfg(windows)]
 use crate::settings::{Bounds, Markers, Trust};
 
 /// The native settings file in the application config directory (data-model §1).
+#[cfg(windows)]
 const SETTINGS_FILE: &str = "settings.json";
 
+#[cfg(not(windows))]
+pub fn run() {
+    eprintln!(
+        "Arbareto supports only Windows. This build cannot run on {}.",
+        std::env::consts::OS
+    );
+    std::process::exit(1);
+}
+
+#[cfg(windows)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -71,6 +103,7 @@ pub fn run() {
 }
 
 /// The cold-start order of plan.md "Cold-start critical path".
+#[cfg(windows)]
 fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let service = Service::start(app.handle()).ok();
     let facts = platform::read();
@@ -137,6 +170,7 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// The hidden main window with clamped bounds (plan.md "Chosen layout, sizes, and DPI"). The capability grants only this label.
+#[cfg(windows)]
 fn main_window(app: &App, stored: Option<Bounds>) -> tauri::Result<WebviewWindow> {
     let (minimum_width, minimum_height) = settings::MINIMUM_SIZE;
     let mut builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
@@ -154,6 +188,7 @@ fn main_window(app: &App, stored: Option<Bounds>) -> tauri::Result<WebviewWindow
 }
 
 /// The work area of the primary monitor in DIPs.
+#[cfg(windows)]
 fn work_area(app: &App) -> Option<Bounds> {
     let monitor = app.primary_monitor().ok()??;
     let scale = monitor.scale_factor();

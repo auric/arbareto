@@ -1067,10 +1067,6 @@ struct Answers {
 /// The anchor process of one WSL mutation. Its Job holds it, and its stdin stays open until `close`.
 /// `exchange` waits up to the probe deadline, so `close` and `last` do not take its lock.
 pub struct Anchor {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the handle stays open as long as the anchor")
-    )]
     process: OwnedHandle,
     stdin: Mutex<Option<File>>,
     /// Lets one exchange run at a time.
@@ -1163,6 +1159,12 @@ impl Anchor {
 
     pub fn last(&self) -> Option<(u32, u64)> {
         lock(&self.answers.0).last
+    }
+
+    /// Ends an anchor that no Job entry keeps.
+    pub fn end(&self) {
+        // SAFETY: `process` keeps the handle open for the call.
+        let _ = unsafe { TerminateProcess(HANDLE(self.process.as_raw_handle()), 1) };
     }
 
     /// `ended` closes the stdin of the anchor.

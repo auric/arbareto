@@ -133,8 +133,8 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             Stores {
                 settings_path,
                 settings: Mutex::new(settings),
-                markers: Markers::open(&data.join("recovery")),
-                trust: Trust::open(&data.join("trust")),
+                markers: Arc::new(Markers::open(&data.join("recovery"))),
+                trust: Arc::new(Trust::open(&data.join("trust"))),
             },
         ),
         None => false,

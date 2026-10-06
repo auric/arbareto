@@ -417,6 +417,20 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
     TEST_TIMEOUT_MS,
   );
 
+  // Contract §6 "Walks" (T314): `register` and `resolveGit` are walks, and a deadline reply gives DEADLINE.
+  test(
+    "a register or resolveGit deadline reply gives DEADLINE",
+    async () => {
+      const exe = stub("register-deadline", MINIMUM);
+      const registerDeadline: GitRunner = { ...counted, register: async () => ({ stop: "deadline" }) };
+      expect(await probeGit(registerDeadline, { bootstrapId: runner.addContext("gitProbe", exe), executablePath: exe })).toEqual({ ok: false, gitCode: "DEADLINE", minimumVersion: MINIMUM });
+      const { wrapper } = wrapperLayout("resolve-deadline");
+      const resolveDeadline: GitRunner = { ...counted, resolveGit: async () => ({ stop: "deadline" }) };
+      expect(await probeGit(resolveDeadline, { bootstrapId: runner.addContext("gitProbe", wrapper), executablePath: wrapper })).toEqual({ ok: false, gitCode: "DEADLINE", minimumVersion: MINIMUM });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   // Contract §6 "Startup contexts": the saved Git fields that the handshake carries.
   const savedOf = (selectedPath: string, executablePath: string, version = MINIMUM) => ({ selectedPath, executablePath, version, digest: sha256(executablePath) });
   const NEW_VERSION = "2.56.0.windows.1";

@@ -156,6 +156,7 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
     } catch (error) {
       return runnerRefused(error);
     }
+    if ("stop" in reply) return deadline;
     if (reply.result !== "approved") return unavailable;
     // Contract §3 `chooseRepository`: Cancel preserves the current workspace.
     if (target.signal.aborted) {

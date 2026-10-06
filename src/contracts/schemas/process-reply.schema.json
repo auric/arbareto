@@ -308,6 +308,31 @@
       "properties": {
         "type": {
           "type": "string",
+          "const": "lingeringCount"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "deadline": {
+          "type": "string",
+          "const": "deadline"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "deadline"
+      ],
+      "additionalProperties": false,
+      "title": "LingeringCountDeadline"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
           "const": "register"
         },
         "callId": {
@@ -373,6 +398,31 @@
       "properties": {
         "type": {
           "type": "string",
+          "const": "register"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "deadline": {
+          "type": "string",
+          "const": "deadline"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "deadline"
+      ],
+      "additionalProperties": false,
+      "title": "RegisterDeadline"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
           "const": "resolveGit"
         },
         "callId": {
@@ -393,6 +443,31 @@
       ],
       "additionalProperties": false,
       "title": "ResolveGitReply"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "resolveGit"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "deadline": {
+          "type": "string",
+          "const": "deadline"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "deadline"
+      ],
+      "additionalProperties": false,
+      "title": "ResolveGitDeadline"
     },
     {
       "type": "object",

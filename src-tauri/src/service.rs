@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::bootstrap::Contexts;
+use crate::bootstrap::{Contexts, PhysicalIdentity};
 use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered, WslProposal};
 use crate::env_sanitize::sanitize;
 use crate::framing::{FrameError, read_frame, write_frame};
@@ -52,8 +52,9 @@ pub struct Facts {
 pub struct Stores {
     pub settings_path: PathBuf,
     pub settings: Mutex<Settings>,
-    pub markers: Markers,
-    pub trust: Trust,
+    /// A frame walk holds a clone until its reply (contract §6 "Walks").
+    pub markers: Arc<Markers>,
+    pub trust: Arc<Trust>,
 }
 
 /// The compiled Git service, its Job, and the frame routes of its pipes (contract §1 and §6).
@@ -320,15 +321,16 @@ impl Service {
             TrustRequest::Revoke {
                 common_directory, ..
             } => {
-                let ended = stores.trust.revoke_with(
+                let reply = revoke(
+                    &stores.trust,
+                    &self.requests,
+                    &self.jobs,
+                    call_id,
                     Path::new(common_directory.as_str()),
-                    &|path| self.requests.read_physical_identity(path),
-                    |tag| self.jobs.revoke(tag),
                 );
-                self.send(
-                    "trust",
-                    json!({ "type": "revoke", "callId": call_id, "endedProcesses": ended }),
-                );
+                if let Some(reply) = reply {
+                    self.send("trust", reply);
+                }
             }
             // T228 builds the `confirmRun` dialog. Until then, the shell answers as Cancel.
             TrustRequest::ConfirmRun { .. } => {
@@ -639,7 +641,8 @@ fn store_git(stores: &Stores, git: ConfirmedGit) {
 }
 
 /// The `mutation` frames of contract §6 "Channel frames". Returns the reply. `ended` and `resolved` get none.
-fn mutation(markers: &Markers, requests: &ProcessRequests, request: &Value) -> Option<Value> {
+/// The walk of `started` sends its reply later (contract §6 "Walks").
+fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value) -> Option<Value> {
     let call_id = call_id(request);
     let handled = schema::mutation_request(request).and_then(|request| match request {
         MutationRequest::Started {
@@ -650,14 +653,29 @@ fn mutation(markers: &Markers, requests: &ProcessRequests, request: &Value) -> O
             ..
         } => {
             let call_id = call_id.ok_or(INVALID)?;
-            let kind = kind.to_string();
-            let started = Started {
-                operation_id: &operation_id,
-                kind: &kind,
-                worktree_root: Path::new(worktree_root.as_str()),
-                common_directory: Path::new(common_directory.as_str()),
-            };
-            Ok(Some(self::started(markers, requests, &started, call_id)))
+            let common = PathBuf::from(common_directory.as_str());
+            // A service exit after the frame read changes the epoch, and the late finish then takes no mutex.
+            let epoch = markers.epoch();
+            let (markers, call) = (Arc::clone(markers), call_id.to_string());
+            let (operation, kind) = (operation_id.to_string(), kind.to_string());
+            let worktree = PathBuf::from(worktree_root.as_str());
+            requests.frame_walk(
+                "mutation",
+                "started",
+                call_id,
+                &operation_id,
+                common.clone(),
+                move |requests, identity| {
+                    let started = Started {
+                        operation_id: &operation,
+                        kind: &kind,
+                        worktree_root: &worktree,
+                        common_directory: &common,
+                    };
+                    self::started(&markers, requests, &started, &call, epoch, identity)
+                },
+            )?;
+            Ok(None)
         }
         MutationRequest::Ended {
             operation_id,
@@ -679,14 +697,45 @@ fn mutation(markers: &Markers, requests: &ProcessRequests, request: &Value) -> O
     }
 }
 
+/// The `trust` frame `revoke` (contract §7 "Trust approval store"). Returns the reply, or `None` when its walk sends it later.
+fn revoke(
+    trust: &Arc<Trust>,
+    requests: &ProcessRequests,
+    jobs: &Arc<Supervisor>,
+    call_id: &str,
+    common_directory: &Path,
+) -> Option<Value> {
+    // The path match needs no identity, so it comes before the walk (contract §6 "Walks").
+    trust.revoke_path(common_directory);
+    let reply = |call: &str, ended: u32| json!({ "type": "revoke", "callId": call, "endedProcesses": ended });
+    if !requests.identity_read_needed(common_directory, |guid| trust.holds_guid(guid)) {
+        return Some(reply(call_id, 0));
+    }
+    let (trust, jobs, call) = (Arc::clone(trust), Arc::clone(jobs), call_id.to_string());
+    let walked = requests.frame_walk(
+        "trust",
+        "revoke",
+        call_id,
+        "",
+        common_directory.to_path_buf(),
+        move |_, identity| {
+            let ended = trust.revoke_identity(identity.as_ref(), |tag| jobs.revoke(tag));
+            reply(&call, ended)
+        },
+    );
+    walked.err().map(|code| refused(call_id, code))
+}
+
 /// Replies only after the marker file is flushed, or with the failure class (contract §6 "Recovery markers").
 fn started(
     markers: &Markers,
     requests: &ProcessRequests,
     started: &Started,
     call_id: &str,
+    epoch: u64,
+    identity: Option<PhysicalIdentity>,
 ) -> Value {
-    let reply = markers.started_with(started, &|path| requests.read_physical_identity(path));
+    let reply = markers.started_with(started, epoch, &|_| identity.clone());
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
     if let StartedReply::Marker { identity, .. } = &reply {
         requests.tag(started.operation_id, identity.clone());
@@ -754,8 +803,10 @@ fn renderer_marker(marker: &Marker) -> Value {
 mod tests {
     use super::*;
 
+    use crate::bootstrap::tests::Hold;
     use crate::dialogs::tests::{Fake, Press};
-    use crate::jobs::tests::Fixture;
+    use crate::jobs::tests::{Fixture, eventually};
+    use crate::process_requests::tests::uuid;
 
     const CALL: &str = "0f0f0f0f-0000-4000-8000-0000000000cc";
     const REPOSITORY: &str = "0f0f0f0f-0000-4000-8000-0000000000dd";
@@ -763,45 +814,93 @@ mod tests {
     const SECOND: &str = "0f0f0f0f-0000-4000-8000-0000000000e2";
     const THIRD: &str = "0f0f0f0f-0000-4000-8000-0000000000e3";
 
+    /// The frames that the process requests of a test shell send.
+    type Sent = Arc<(Mutex<Vec<Value>>, std::sync::Condvar)>;
+
     /// The native stores, contexts, and process requests of one test shell. The fixture folder drops last.
     struct Shell {
         stores: Stores,
         contexts: Arc<Contexts>,
         requests: Arc<ProcessRequests>,
         jobs: Arc<Supervisor>,
+        sent: Sent,
         fixture: Fixture,
     }
 
     impl Shell {
         fn new() -> Shell {
+            Shell::with_deadline(Duration::from_millis(WALK_DEADLINE_MS))
+        }
+
+        fn with_deadline(walk_deadline: Duration) -> Shell {
             let fixture = Fixture::new();
             let launch_directory = fixture.path("launch");
             std::fs::create_dir_all(&launch_directory).expect("launch directory");
             let contexts = Arc::new(Contexts::new(""));
             let jobs = Supervisor::start().expect("start the supervisor");
+            let sent: Sent = Arc::default();
+            let sink: ReplySink = {
+                let sent = Arc::clone(&sent);
+                Arc::new(move |body: String| {
+                    let (list, changed) = &*sent;
+                    list.lock()
+                        .expect("sent")
+                        .push(serde_json::from_str(&body).expect("frame"));
+                    changed.notify_all();
+                })
+            };
             let requests = ProcessRequests::new(
                 Config {
                     launch_directory,
                     base_environment: Vec::new(),
                     argument_prefix: Vec::new(),
-                    walk_deadline: Duration::from_millis(WALK_DEADLINE_MS),
+                    walk_deadline,
                 },
                 Arc::clone(&contexts),
                 Arc::clone(&jobs),
-                Arc::new(|_: String| {}),
+                sink,
             );
             Shell {
                 stores: Stores {
                     settings_path: fixture.path("settings.json"),
                     settings: Mutex::new(Settings::default()),
-                    markers: Markers::open(&fixture.path("recovery")),
-                    trust: Trust::open(&fixture.path("trust")),
+                    markers: Arc::new(Markers::open(&fixture.path("recovery"))),
+                    trust: Arc::new(Trust::open(&fixture.path("trust"))),
                 },
                 contexts,
                 requests,
                 jobs,
+                sent,
                 fixture,
             }
+        }
+
+        /// Takes the first sent frame for `call`. `None` after 10 s.
+        fn take_sent(&self, call: &str) -> Option<Value> {
+            let (list, changed) = &*self.sent;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut list = list.lock().expect("sent");
+            loop {
+                let found = list.iter().position(|frame| {
+                    frame
+                        .as_object()
+                        .and_then(|frame| frame.values().find_map(|v| v.get("callId")))
+                        == Some(&json!(call))
+                });
+                if let Some(at) = found {
+                    return Some(list.remove(at));
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return None;
+                }
+                list = changed.wait_timeout(list, left).expect("sent").0;
+            }
+        }
+
+        /// The reply body of a frame handler: its return value, or the frame that a walk sends later.
+        fn answer(&self, kind: &str, call: &str, returned: Option<Value>) -> Option<Value> {
+            returned.or_else(|| self.take_sent(call).map(|frame| frame[kind].clone()))
         }
 
         fn folder(&self, name: &str) -> PathBuf {
@@ -841,10 +940,8 @@ mod tests {
         }
 
         fn started(&self, operation: &str, worktree: &Path) -> Option<Value> {
-            self.mutation(json!({
-                "type": "started", "callId": CALL, "operationId": operation, "repositoryId": REPOSITORY,
-                "kind": "commit", "worktreeRoot": worktree, "commonDirectory": worktree.join(".git"),
-            }))
+            let returned = self.mutation(started_frame(CALL, operation, worktree));
+            self.answer("mutation", CALL, returned)
         }
 
         fn ended(&self, operation: &str) -> Option<Value> {
@@ -1184,6 +1281,138 @@ mod tests {
         assert!(
             shell.started(THIRD, &worktree).expect("reply")["markerId"].is_string(),
             "ended released the mutex"
+        );
+    }
+
+    fn started_frame(call: &str, operation: &str, worktree: &Path) -> Value {
+        json!({
+            "type": "started", "callId": call, "operationId": operation, "repositoryId": REPOSITORY,
+            "kind": "commit", "worktreeRoot": worktree, "commonDirectory": worktree.join(".git"),
+        })
+    }
+
+    /// Runs `handler` on another thread. False when it still runs after 5 s. The hold then goes, so the thread ends.
+    fn returns_at_once<T: Send>(
+        hold: &mut Option<Hold>,
+        handler: impl FnOnce() -> T + Send,
+    ) -> (bool, T) {
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(handler);
+            let returned = eventually(Duration::from_secs(5), || handle.is_finished());
+            if !returned {
+                hold.take();
+            }
+            (returned, handle.join().expect("handler"))
+        })
+    }
+
+    #[test]
+    fn a_started_frame_whose_open_waits_never_blocks_the_reader_and_replies_deadline() {
+        let shell = Shell::with_deadline(Duration::from_secs(2));
+        let worktree = shell.folder("repo");
+        let common = shell.folder("repo\\.git");
+        let mut hold = Some(Hold::new(&common));
+        let call = uuid();
+        let (returned, reply) = returns_at_once(&mut hold, || {
+            shell.mutation(started_frame(&call, FIRST, &worktree))
+        });
+        assert!(returned, "the frame reader never waits on the open");
+        assert_eq!(reply, None, "the walk sends the reply");
+        assert_eq!(
+            shell.take_sent(&call),
+            Some(
+                json!({ "kind": "mutation", "mutation": { "type": "started", "callId": call, "deadline": "deadline" } })
+            )
+        );
+        assert_eq!(shell.marker_files(), 0, "no marker");
+        drop(hold);
+        assert!(
+            shell.started(SECOND, &worktree).expect("reply")["markerId"].is_string(),
+            "the deadline took no mutex"
+        );
+    }
+
+    /// Writes a stored trust record of the worktree with that common directory.
+    fn approve(shell: &Shell, worktree: &Path, git_directory: &Path, common: &Path) {
+        let confirmed = shell.stores.trust.confirm_with(
+            &Confirm {
+                worktree_root: worktree.to_path_buf(),
+                git_directory: git_directory.to_path_buf(),
+                common_directory: common.to_path_buf(),
+                git_selected_path: shell.fixture.path("git.exe"),
+                fingerprint: "a".repeat(64),
+                persist: true,
+                bound: None,
+            },
+            &crate::bootstrap::native_identity,
+            |_| true,
+        );
+        assert!(
+            matches!(confirmed, settings::Confirmed::Approved { record: Some(_) }),
+            "stored"
+        );
+    }
+
+    #[test]
+    fn a_revoke_frame_deletes_the_path_records_at_once_and_replies_deadline_while_its_open_waits() {
+        let shell = Shell::with_deadline(Duration::from_secs(2));
+        let main = shell.folder("main");
+        let common = shell.folder("main\\.git");
+        let link = shell.fixture.path("link");
+        assert!(
+            crate::process_requests::tests::junction(&link, &common),
+            "junction"
+        );
+        let linked = shell.folder("linked");
+        let linked_git = shell.folder("linked\\gitdir");
+        approve(&shell, &main, &common, &common);
+        approve(&shell, &linked, &linked_git, &link);
+        assert_eq!(shell.stores.trust.records().len(), 2);
+        let mut hold = Some(Hold::new(&common));
+        let call = uuid();
+        let (returned, reply) = returns_at_once(&mut hold, || {
+            revoke(
+                &shell.stores.trust,
+                &shell.requests,
+                &shell.jobs,
+                &call,
+                &common,
+            )
+        });
+        assert!(returned, "the frame reader never waits on the open");
+        assert_eq!(reply, None, "the walk sends the reply");
+        assert_eq!(
+            shell.stores.trust.records().len(),
+            1,
+            "the record with that path goes before the walk"
+        );
+        assert_eq!(
+            shell.take_sent(&call),
+            Some(
+                json!({ "kind": "trust", "trust": { "type": "revoke", "callId": call, "deadline": "deadline" } })
+            )
+        );
+        assert_eq!(
+            shell.stores.trust.records().len(),
+            1,
+            "the record with only that identity stays at the deadline"
+        );
+        drop(hold);
+        let again = uuid();
+        let returned = revoke(
+            &shell.stores.trust,
+            &shell.requests,
+            &shell.jobs,
+            &again,
+            &common,
+        );
+        assert_eq!(
+            shell.answer("trust", &again, returned),
+            Some(json!({ "type": "revoke", "callId": again, "endedProcesses": 0 }))
+        );
+        assert!(
+            shell.stores.trust.records().is_empty(),
+            "the identity match goes"
         );
     }
 }

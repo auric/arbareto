@@ -19,7 +19,7 @@ use windows::Win32::System::JobObjects::{
     JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
     JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
-    SetInformationJobObject,
+    SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO;
 #[cfg(test)]
@@ -71,6 +71,13 @@ impl Job {
     pub fn assign(&self, process: HANDLE) -> windows::core::Result<()> {
         // SAFETY: the caller keeps `process` open for the call, and `self` keeps the Job open.
         unsafe { AssignProcessToJobObject(self.handle, process) }
+    }
+
+    /// Ends every process in the Job at once. A start can still hold a clone of the Job, so the drop of the entry alone ends nothing.
+    /// Kill-on-close still ends a process that such a start adds later.
+    fn terminate(&self) {
+        // SAFETY: `self` keeps the Job open for the call.
+        let _ = unsafe { TerminateJobObject(self.handle, 1) };
     }
 
     fn accounting(&self) -> windows::core::Result<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION> {
@@ -175,7 +182,8 @@ impl Drop for Port {
 }
 
 struct Entry {
-    job: Job,
+    /// A start holds a clone, so a `close` during the start never waits for it.
+    job: Arc<Job>,
     key: usize,
     tag: Option<PhysicalIdentity>,
     lingering: bool,
@@ -205,18 +213,21 @@ struct State {
 }
 
 impl State {
+    /// Ends every process of the Job, then drops the entry.
     fn remove(&mut self, operation_id: &str) {
         if let Some(entry) = self.jobs.remove(operation_id) {
+            entry.job.terminate();
             self.operations.remove(&entry.key);
         }
     }
 
-    /// Closes each Job that `close` selects. Dropping an entry closes its Job handle.
+    /// Ends every process of each Job that `close` selects, then drops its entry.
     fn remove_where(&mut self, mut close: impl FnMut(&Entry) -> bool) {
         let (operations, jobs) = (&mut self.operations, &mut self.jobs);
         jobs.retain(|_, entry| {
             let keep = !close(entry);
             if !keep {
+                entry.job.terminate();
                 operations.remove(&entry.key);
             }
             keep
@@ -346,7 +357,7 @@ impl Supervisor {
         state.jobs.insert(
             operation_id.to_string(),
             Entry {
-                job,
+                job: Arc::new(job),
                 key,
                 tag: None,
                 lingering: false,
@@ -365,35 +376,48 @@ impl Supervisor {
         }
     }
 
-    /// Runs `start` with the handle of a running operation Job. The held lock keeps that Job open and out of the lingering set.
+    /// Runs `start` with the handle of a running operation Job, without the state lock.
+    /// The image open of a process start can wait on an oplock break, and `close` must never wait for it (T314 D7).
+    /// The clone keeps the Job open during `start`. After a `close`, the drop of the clone ends the new process.
     pub fn with_job<T>(
         &self,
         operation_id: &str,
         start: impl FnOnce(HANDLE) -> T,
     ) -> windows::core::Result<T> {
-        let state = self.shared.state();
-        match state.jobs.get(operation_id) {
-            Some(entry) if !entry.lingering => Ok(start(entry.job.handle())),
-            _ => Err(windows::core::Error::from_hresult(E_INVALIDARG)),
-        }
+        let job = match self.shared.state().jobs.get(operation_id) {
+            Some(entry) if !entry.lingering => Arc::clone(&entry.job),
+            _ => return Err(windows::core::Error::from_hresult(E_INVALIDARG)),
+        };
+        Ok(start(job.handle()))
     }
 
     /// Starts the anchor of a WSL mutation in its running Job before the first execution process. A later call keeps that anchor.
+    /// The start runs without the state lock, as in `with_job`. An anchor that finds its Job closed or anchored ends at once.
     pub fn start_anchor(
         &self,
         operation_id: &str,
         command: &wsl::Command,
         current_dir: &Path,
     ) -> Result<(), SpawnError> {
+        let job = match self.shared.state().jobs.get(operation_id) {
+            Some(entry) if !entry.lingering && entry.wsl.has_anchor() => return Ok(()),
+            Some(entry) if !entry.lingering => Arc::clone(&entry.job),
+            _ => return Err(SpawnError::OwnershipFailed),
+        };
+        let anchor = wsl::Anchor::start(command, job.handle(), current_dir)?;
         let mut state = self.shared.state();
         match state.jobs.get_mut(operation_id) {
-            Some(entry) if !entry.lingering => {
-                let job = entry.job.handle();
-                entry
-                    .wsl
-                    .before_execution(|| wsl::Anchor::start(command, job, current_dir))
+            Some(entry) if !entry.lingering && Arc::ptr_eq(&entry.job, &job) => {
+                if entry.wsl.has_anchor() {
+                    anchor.end();
+                    return Ok(());
+                }
+                entry.wsl.before_execution(|| Ok(anchor))
             }
-            _ => Err(SpawnError::OwnershipFailed),
+            _ => {
+                anchor.end();
+                Err(SpawnError::OwnershipFailed)
+            }
         }
     }
 
@@ -480,6 +504,14 @@ impl Supervisor {
             .jobs
             .get(operation_id)
             .is_some_and(|entry| entry.lingering)
+    }
+
+    /// True when a lingering Job has a WSL tag with this distro GUID (T314 D4).
+    pub fn lingering_holds(&self, guid: &str) -> bool {
+        self.shared.state().jobs.values().any(|entry| {
+            entry.lingering
+                && matches!(&entry.tag, Some(PhysicalIdentity::Wsl(tag)) if tag.guid == guid)
+        })
     }
 
     /// The sum of the active process counts of the lingering Jobs with this tag.
@@ -1220,6 +1252,93 @@ pub(crate) mod tests {
             supervisor.job_handle("op-close").is_none(),
             "the handle is closed"
         );
+        supervisor.shutdown();
+    }
+
+    #[test]
+    fn close_never_waits_for_a_start_and_ends_the_process_that_the_start_makes() {
+        let supervisor = Supervisor::start().expect("start");
+        supervisor.open("op-start").expect("open");
+        let (entered, started) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let starter = {
+            let supervisor = Arc::clone(&supervisor);
+            std::thread::spawn(move || {
+                supervisor
+                    .with_job("op-start", |job| {
+                        let _ = entered.send(());
+                        // The seam: a start whose image open waits.
+                        let _ = released.recv_timeout(WAIT);
+                        let arguments = child_arguments(&["sleep", "60000"]);
+                        crate::spawn::spawn(
+                            &crate::spawn::SpawnRequest {
+                                program: &test_exe(),
+                                arguments: &arguments,
+                                environment: &std::env::vars_os().collect::<Vec<_>>(),
+                                current_dir: &std::env::temp_dir(),
+                                wsl: false,
+                                input: crate::spawn::Input::Closed,
+                            },
+                            job,
+                        )
+                        .expect("a child in the Job")
+                        .process
+                        .0 as usize
+                    })
+                    .expect("a running Job")
+            })
+        };
+        started.recv_timeout(WAIT).expect("the start runs");
+        let (closed, done) = mpsc::channel();
+        {
+            let supervisor = Arc::clone(&supervisor);
+            std::thread::spawn(move || {
+                supervisor.close("op-start");
+                let _ = closed.send(());
+            });
+        }
+        assert!(
+            done.recv_timeout(CLOSE_BOUND).is_ok(),
+            "close does not wait for the start (T314 D7)"
+        );
+        release.send(()).expect("release");
+        let process = HANDLE(starter.join().expect("starter") as *mut core::ffi::c_void);
+        assert!(
+            exits_within(process, CLOSE_BOUND),
+            "the process of a start after the close ends with the Job"
+        );
+        // SAFETY: the test owns the process handle and closes it once.
+        let _ = unsafe { CloseHandle(process) };
+        supervisor.shutdown();
+    }
+
+    #[test]
+    fn close_ends_the_running_processes_of_a_job_that_a_start_still_holds() {
+        let supervisor = Supervisor::start().expect("start");
+        supervisor.open("op-held").expect("open");
+        let (sleeper, _) = child_in_job(&supervisor, "op-held", 0, "stay");
+        let (entered, started) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let holder = {
+            let supervisor = Arc::clone(&supervisor);
+            std::thread::spawn(move || {
+                supervisor
+                    .with_job("op-held", |_| {
+                        let _ = entered.send(());
+                        // The seam: a start whose image open waits.
+                        let _ = released.recv_timeout(WAIT);
+                    })
+                    .expect("a running Job");
+            })
+        };
+        started.recv_timeout(WAIT).expect("the start runs");
+        supervisor.close("op-held");
+        assert!(
+            exits_within(sleeper.handle(), CLOSE_BOUND),
+            "close ends the processes that run already (T314 review fix 1)"
+        );
+        release.send(()).expect("release");
+        holder.join().expect("holder");
         supervisor.shutdown();
     }
 

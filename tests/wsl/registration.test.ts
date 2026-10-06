@@ -144,6 +144,14 @@ describe("WSL registration seams (T207)", () => {
     expect(approved).toMatchObject({ ok: true, reused: true, changed: false, git: { gitInstallationId: session.gitInstallationId, pathEnv: "/home/u/bin:/usr/bin" } });
   });
 
+  // Contract §6 "Walks" (T314): a `register` deadline reply gives DEADLINE.
+  test("a register deadline reply gives DEADLINE", async () => {
+    const probed = { distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin" };
+    const runner = { register: async () => ({ stop: "deadline" }) } as unknown as GitRunner;
+    const approved = await approveWslGit(runner, { operationId: crypto.randomUUID(), bootstrapId: crypto.randomUUID() }, probed, undefined, undefined);
+    expect(approved).toEqual({ ok: false, code: "DEADLINE" });
+  });
+
   const seamed = (host: WslHost, change: Parameters<typeof seamProbe>[1]) => {
     const pair = setup(host);
     pair.runner.inject.wslProbe = { stdout: seamProbe(host, change) };

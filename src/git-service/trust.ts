@@ -1564,6 +1564,8 @@ export function createTrust({ runner, environment, configFiles = () => undefined
         if (error instanceof RunnerRefusal) return { result: "failed", code: error.code };
         throw error;
       }
+      // Contract §5 "Deadline outcomes" (T314): the service revocation stays, and the shell closed no lingering Job.
+      if ("stop" in reply) return { result: "failed", code: "DEADLINE" };
       if (!("endedProcesses" in reply)) return { result: "failed", code: "INVALID_REQUEST" };
       return { result: "succeeded", value: { endedProcesses: reply.endedProcesses } };
     },

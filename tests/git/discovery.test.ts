@@ -619,6 +619,15 @@ describe("runner refusals during registration (contract §6)", () => {
       TIMEOUT_MS,
     );
   }
+
+  // Contract §6 "Walks" (T314): the identity read of a `register` is a walk, and its deadline reply gives DEADLINE.
+  caseTest(
+    "T314",
+    "a register deadline reply gives DEADLINE",
+    ["shell-double"],
+    async () => expect(await registerWith("t314-register-deadline", (r) => ({ ...r, register: async () => ({ stop: "deadline" as const }) }))).toEqual({ ok: false, code: "DEADLINE" }),
+    TIMEOUT_MS,
+  );
 });
 
 describe("F08 object format and HEAD (data-model §2)", () => {

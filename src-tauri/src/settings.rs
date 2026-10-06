@@ -847,6 +847,8 @@ struct MarkerState {
 pub struct Markers {
     folder: PathBuf,
     state: Mutex<MarkerState>,
+    /// The count of service exits. A `started` of an older epoch takes no mutex. Its lock orders each take before or after a release of every mutex.
+    epoch: Mutex<u64>,
     mutexes: Option<Sender<Command>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -863,6 +865,7 @@ impl Markers {
                 damaged: HashMap::new(),
                 fault: None,
             }),
+            epoch: Mutex::new(0),
             mutexes: Some(sender),
             thread: Some(std::thread::spawn(move || mutex_thread(receiver))),
         }
@@ -892,7 +895,17 @@ impl Markers {
         }
     }
 
-    pub fn started_with(&self, request: &Started, read: IdentityReader) -> StartedReply {
+    /// The epoch of the current service session.
+    pub fn epoch(&self) -> u64 {
+        *lock(&self.epoch)
+    }
+
+    pub fn started_with(
+        &self,
+        request: &Started,
+        epoch: u64,
+        read: IdentityReader,
+    ) -> StartedReply {
         let failure = |failure| StartedReply::Failure {
             failure,
             folder: self.folder.clone(),
@@ -900,7 +913,15 @@ impl Markers {
         let Some(identity) = read(request.common_directory) else {
             return failure("other");
         };
-        match self.take(request.operation_id, mutex_name(&identity)) {
+        let taken = {
+            let current = lock(&self.epoch);
+            // A service exit came after the frame read. Its release of every mutex ran, so a take now would stay held.
+            if *current != epoch {
+                return failure("other");
+            }
+            self.take(request.operation_id, mutex_name(&identity))
+        };
+        match taken {
             Taken::Yes => {}
             Taken::Busy => return StartedReply::Busy,
             Taken::Failed => return failure("other"),
@@ -949,6 +970,8 @@ impl Markers {
 
     /// Releases every mutex after a service exit, when the operation Jobs close. The marker files stay.
     pub fn service_exited(&self) {
+        let mut epoch = lock(&self.epoch);
+        *epoch += 1;
         self.release(None);
     }
 
@@ -1330,26 +1353,40 @@ impl Trust {
         Some(record)
     }
 
-    /// Deletes the records of every worktree of the common directory.
-    /// `close` closes the lingering Jobs with that identity tag and returns the ended process count.
-    pub fn revoke_with(
+    /// Deletes the records whose common-directory path equals `common_directory`. This part of a revoke needs no identity.
+    pub fn revoke_path(&self, common_directory: &Path) {
+        let mut state = lock(&self.state);
+        self.remove(&mut state, |record| {
+            record.value["commonDirectory"].as_str() == common_directory.to_str()
+        });
+    }
+
+    /// Deletes the records of every worktree with that common-directory identity.
+    /// `close` closes the lingering Jobs with that identity tag and returns the ended process count. No identity gives 0.
+    pub fn revoke_identity(
         &self,
-        common_directory: &Path,
-        read: IdentityReader,
+        identity: Option<&PhysicalIdentity>,
         close: impl FnOnce(&PhysicalIdentity) -> u32,
     ) -> u32 {
-        let identity = read(common_directory);
-        let common = identity.as_ref().map(PhysicalIdentity::reply);
+        let Some(identity) = identity else {
+            return 0;
+        };
+        let common = identity.reply();
         {
             let mut state = lock(&self.state);
             self.remove(&mut state, |record| {
-                record.value["commonDirectory"].as_str() == common_directory.to_str()
-                    || common
-                        .as_ref()
-                        .is_some_and(|common| record.value["commonIdentity"] == *common)
+                record.value["commonIdentity"] == common
             });
         }
-        identity.map_or(0, |identity| close(&identity))
+        close(identity)
+    }
+
+    /// True when a record has a WSL common-directory identity with this distro GUID (T314 D4).
+    pub fn holds_guid(&self, guid: &str) -> bool {
+        lock(&self.state)
+            .records
+            .iter()
+            .any(|record| record.value["commonIdentity"]["distroGuid"] == guid)
     }
 
     /// Every record in the handshake form. Each call rereads the folder, so records of other instances also appear.
@@ -2076,7 +2113,11 @@ mod tests {
         let repository = repository(&fixture, "repo");
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
-        let id = marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
+        let id = marker_id(markers.started_with(
+            &started(&repository, "op-1"),
+            markers.epoch(),
+            &native_identity,
+        ));
         assert!(is_identifier(&id), "{id}");
         assert_eq!(entries(&recovery), [format!("{id}.json")]);
         let file: Value = serde_json::from_slice(
@@ -2119,7 +2160,11 @@ mod tests {
         let holder = start(&["mutex", &name_of(&repository), "hold"]);
         assert_eq!(holder.lines.wait("MUTEX", WAIT), "taken");
         assert_eq!(
-            markers.started_with(&started(&repository, "op-1"), &native_identity),
+            markers.started_with(
+                &started(&repository, "op-1"),
+                markers.epoch(),
+                &native_identity
+            ),
             StartedReply::Busy
         );
         assert_eq!(entries(&recovery), Vec::<String>::new());
@@ -2136,7 +2181,11 @@ mod tests {
             exits_within(holder.handle(), WAIT),
             "the holder exits without a release"
         );
-        marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
+        marker_id(markers.started_with(
+            &started(&repository, "op-1"),
+            markers.epoch(),
+            &native_identity,
+        ));
     }
 
     #[test]
@@ -2146,14 +2195,20 @@ mod tests {
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
         let name = name_of(&repository);
-        let first =
-            marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
+        let first = marker_id(markers.started_with(
+            &started(&repository, "op-1"),
+            markers.epoch(),
+            &native_identity,
+        ));
         assert!(!mutex_is_free(&name), "started holds the mutex");
         markers.ended("op-1");
         assert!(mutex_is_free(&name), "ended releases the mutex");
         assert_eq!(entries(&recovery), [format!("{first}.json")]);
-        let second =
-            marker_id(markers.started_with(&started(&repository, "op-2"), &native_identity));
+        let second = marker_id(markers.started_with(
+            &started(&repository, "op-2"),
+            markers.epoch(),
+            &native_identity,
+        ));
         assert_ne!(first, second);
         markers.ended("op-2");
     }
@@ -2200,7 +2255,11 @@ mod tests {
         let repository = repository(&fixture, "repo");
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
-        let id = marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
+        let id = marker_id(markers.started_with(
+            &started(&repository, "op-1"),
+            markers.epoch(),
+            &native_identity,
+        ));
         markers.ended("op-1");
         markers.resolved(&id);
         assert_eq!(entries(&recovery), Vec::<String>::new());
@@ -2330,7 +2389,11 @@ mod tests {
             for (os_error, failure) in cases {
                 markers.fail_next(stage, os_error);
                 assert_eq!(
-                    markers.started_with(&started(&repository, "op-1"), &native_identity),
+                    markers.started_with(
+                        &started(&repository, "op-1"),
+                        markers.epoch(),
+                        &native_identity
+                    ),
                     StartedReply::Failure {
                         failure,
                         folder: recovery.clone()
@@ -2357,7 +2420,7 @@ mod tests {
             common: fixture.path("gone\\.git"),
         };
         assert_eq!(
-            markers.started_with(&started(&absent, "op-1"), &native_identity),
+            markers.started_with(&started(&absent, "op-1"), markers.epoch(), &native_identity),
             StartedReply::Failure {
                 failure: "other",
                 folder: recovery.clone()
@@ -2367,13 +2430,40 @@ mod tests {
     }
 
     #[test]
+    fn a_started_of_an_older_epoch_takes_no_mutex_and_writes_no_marker() {
+        let fixture = Fixture::new();
+        let recovery = fixture.path("recovery");
+        let repository = repository(&fixture, "repo");
+        let markers = Markers::open(&recovery);
+        let epoch = markers.epoch();
+        markers.service_exited();
+        assert_eq!(
+            markers.started_with(&started(&repository, "op-1"), epoch, &native_identity),
+            StartedReply::Failure {
+                failure: "other",
+                folder: recovery.clone()
+            },
+            "a service exit came after the frame read (T314 review fix 3)"
+        );
+        assert_eq!(entries(&recovery), Vec::<String>::new(), "no marker");
+        marker_id(markers.started_with(
+            &started(&repository, "op-2"),
+            markers.epoch(),
+            &native_identity,
+        ));
+        markers.ended("op-2");
+    }
+
+    #[test]
     fn the_marker_reply_carries_the_identity_that_named_the_mutex() {
         let fixture = Fixture::new();
         let repository = repository(&fixture, "repo");
         let markers = Markers::open(&fixture.path("recovery"));
-        let StartedReply::Marker { identity, .. } =
-            markers.started_with(&started(&repository, "op-1"), &native_identity)
-        else {
+        let StartedReply::Marker { identity, .. } = markers.started_with(
+            &started(&repository, "op-1"),
+            markers.epoch(),
+            &native_identity,
+        ) else {
             panic!("expected a marker");
         };
         assert_eq!(
@@ -2444,7 +2534,11 @@ mod tests {
         let repository = repository(&fixture, "repo");
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
-        let id = marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
+        let id = marker_id(markers.started_with(
+            &started(&repository, "op-1"),
+            markers.epoch(),
+            &native_identity,
+        ));
         markers.ended("op-1");
         assert!(!markers.dismiss(&id, |_| false), "declined");
         assert_eq!(entries(&recovery), [format!("{id}.json")]);
@@ -2663,7 +2757,8 @@ mod tests {
             approved(&trust, &confirm(worktree, FINGERPRINT, true)).expect("stored");
         }
         let mut tag = None;
-        let ended = trust.revoke_with(&main.common, &native_identity, |identity| {
+        trust.revoke_path(&main.common);
+        let ended = trust.revoke_identity(native_identity(&main.common).as_ref(), |identity| {
             tag = Some(identity.clone());
             3
         });
@@ -2678,13 +2773,44 @@ mod tests {
     }
 
     #[test]
-    fn revoke_with_an_unreadable_identity_returns_0() {
+    fn holds_guid_finds_only_a_record_with_a_wsl_identity_of_that_distro() {
+        const DISTRO: &str = "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}";
+        let fixture = Fixture::new();
+        let trust = Trust::open(&fixture.path("trust"));
+        approved(
+            &trust,
+            &confirm(&main_worktree(&fixture, "repo"), FINGERPRINT, true),
+        )
+        .expect("stored");
+        assert!(!trust.holds_guid(DISTRO), "a Windows record");
+        let wsl = main_worktree(&fixture, "wsl");
+        let root = wsl.root.clone();
+        let read = move |path: &Path| {
+            Some(PhysicalIdentity::Wsl(crate::wsl::WslIdentity {
+                guid: DISTRO.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: if path == root { "10" } else { "11" }.to_string(),
+            }))
+        };
+        let confirmed = trust.confirm_with(&confirm(&wsl, FINGERPRINT, true), &read, |_| true);
+        assert!(matches!(confirmed, Confirmed::Approved { record: Some(_) }));
+        assert!(trust.holds_guid(DISTRO), "a WSL record of the distro");
+        assert!(
+            !trust.holds_guid("{00000000-0000-0000-0000-000000000000}"),
+            "another distro"
+        );
+    }
+
+    #[test]
+    fn a_revoke_with_an_unreadable_identity_returns_0() {
         let fixture = Fixture::new();
         let main = main_worktree(&fixture, "repo");
         let trust = Trust::open(&fixture.path("trust"));
         approved(&trust, &confirm(&main, FINGERPRINT, true)).expect("stored");
         let mut closed = false;
-        let ended = trust.revoke_with(&fixture.path("gone\\.git"), &native_identity, |_| {
+        let gone = fixture.path("gone\\.git");
+        trust.revoke_path(&gone);
+        let ended = trust.revoke_identity(native_identity(&gone).as_ref(), |_| {
             closed = true;
             5
         });
@@ -2705,7 +2831,8 @@ mod tests {
             git_directory: fixture.path("repo-b\\.git"),
             common: fixture.path("repo-b\\.git"),
         };
-        trust.revoke_with(&moved.common, &native_identity, |_| 0);
+        trust.revoke_path(&moved.common);
+        trust.revoke_identity(native_identity(&moved.common).as_ref(), |_| 0);
         assert_eq!(
             trust.records(),
             Vec::<Value>::new(),
@@ -2850,8 +2977,16 @@ mod tests {
         let second = repository(&fixture, "other");
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
-        let a = marker_id(markers.started_with(&started(&first, "op-1"), &native_identity));
-        let b = marker_id(markers.started_with(&started(&second, "op-2"), &native_identity));
+        let a = marker_id(markers.started_with(
+            &started(&first, "op-1"),
+            markers.epoch(),
+            &native_identity,
+        ));
+        let b = marker_id(markers.started_with(
+            &started(&second, "op-2"),
+            markers.epoch(),
+            &native_identity,
+        ));
         markers.service_exited();
         assert!(mutex_is_free(&name_of(&first)));
         assert!(mutex_is_free(&name_of(&second)));

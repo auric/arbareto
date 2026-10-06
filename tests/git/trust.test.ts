@@ -2367,6 +2367,33 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
     TIMEOUT_MS,
   );
 
+  // Contract §11 "Trust and environment" (W11): a WSL Git path without a UNC form. `readTrust` gives the `approveTrust` refusal, so no approval is offered.
+  caseTest(
+    "T318",
+    "readTrust of a WSL Git path without a UNC form gives the approveTrust refusal before any listing",
+    W,
+    () =>
+      withService({ name: "t318-git-path" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t318-git-path"));
+        const installation = await admitted(service);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = registrations.get(await registerIn(registrations, service, repo, installation))!;
+        // Only the distro and the Git path of the WSL Git enter the refusal text.
+        const workspace = { ...registered, wsl: { distro: "Ubuntu-24.04", path: "/opt/a:b/git" } } as Workspace;
+        const runner: GitRunner = { ...service.runner, run: () => Promise.reject(new Error("the listing ran")) };
+        const trust = createTrust({ runner, environment: serviceEnv() });
+        const target = { operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, installation: { ...installation, selectedPath: null } };
+        const refused = {
+          result: "failed",
+          code: "UNSUPPORTED_REPOSITORY",
+          value: { remedy: { text: "The Git path /opt/a:b/git in Ubuntu-24.04 holds a name that Windows cannot show. Install Git in another folder of the distro, then approve again." } },
+        } as const;
+        expect(await trust.readTrust(target, 0)).toEqual(refused);
+        expect(await trust.approveTrust(target, "0".repeat(64))).toEqual(refused);
+      }),
+    TIMEOUT_MS,
+  );
+
   // Every identity chunk of one decision settles before the listing ends, so no walk call stays pending past `closeJob`.
   caseTest(
     "T312",

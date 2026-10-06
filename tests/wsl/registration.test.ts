@@ -5,17 +5,21 @@
 // The F24 floor case and the seam cases need no Git 2.55.0 (tasks.md "Test harness rules"). They run before the other cases.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { createCollector, type GitRunner } from "../../src/git-service/git-runner";
-import { requestWslIdentities } from "../../src/git-service/identity";
-import { approveWslGit } from "../../src/git-service/wsl";
+import { createCollector, type GitRunner, type WslRunner } from "../../src/git-service/git-runner";
+import { requestWslIdentities, type PhysicalIdentity } from "../../src/git-service/identity";
+import { dismissWslMarker, type DismissalOutcome } from "../../src/git-service/registration";
+import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "../../src/git-service/wsl";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { printOrigin } from "../origin";
-import { buildF21, buildF24, buildF26, globalConfig, SEAM_INODE, seamProbe, seamRepository, startSession, type ProbeChange, type WslSession } from "./fixtures";
+import { buildF21, buildF24, buildF26, globalConfig, SEAM_GIT_INODE, SEAM_INODE, seamProbe, seamRepository, startSession, type ProbeChange, type WslSession } from "./fixtures";
 import { inDistro, isUbuntu, listScopes, parseProbe, uncPath, useWslFolder, WSL_EXE, wslTest, type WslHost } from "./wsl-host";
 
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
+printOrigin("../../src/git-service/registration.ts", import.meta.dir);
+printOrigin("../../src/git-service/wsl.ts", import.meta.dir);
+printOrigin("../../src/git-service/discovery.ts", import.meta.dir);
 
 const CASE_TIMEOUT_MS = 180_000;
 const MINIMUM = "2.55.0";
@@ -227,6 +231,118 @@ describe("WSL registration seams (T207)", () => {
       CASE_TIMEOUT_MS,
     );
   }
+
+  // T318, contract §6 "Dismissal" and decision W13: the WSL marker allowances. Every other result keeps STATE_UNKNOWN.
+  const refresh: DismissalOutcome = { ok: false, code: "STATE_UNKNOWN", result: { remedy: { text: "Open this repository and use Refresh." } } };
+  const OTHER_INODE = "9999";
+  const markerOf = (host: WslHost, inode: string) => ({ commonIdentity: { distroGuid: host.guid, fileSystemId: host.probe.gitfs!.split(":")[1]!, inode } });
+  const dismiss = (runner: GitRunner & WslRunner & { addContext: BunRunner["addContext"] }, path: string, options: { marker?: { commonIdentity: PhysicalIdentity }; session?: WslGit } = {}) => {
+    const bootstrapId = runner.addContext("repositoryDiscovery", path);
+    const marker = options.marker ?? { commonIdentity: { distroGuid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", fileSystemId: "1", inode: OTHER_INODE } };
+    return dismissWslMarker(runner, { operationId: crypto.randomUUID(), bootstrapId, signal: new AbortController().signal, starting: () => {} }, marker, options.session);
+  };
+  // The approved session Git of the distro, as a registration of `path` approves it through the injected probe.
+  async function sessionGit(runner: BunRunner, path: string): Promise<WslGit> {
+    const operationId = crypto.randomUUID();
+    const bootstrapId = runner.addContext("repositoryDiscovery", path);
+    const signal = new AbortController().signal;
+    const route = routeRegistration(await runner.wslDistros({ operationId, bootstrapId }));
+    if ("ok" in route || route.kind !== "wsl") throw new Error(`route: ${JSON.stringify(route)}`);
+    const probed = await probeWslGit(runner, route, { operationId, bootstrapId, signal, starting: () => {} });
+    if (!probed.ok) throw new Error(`probe: ${JSON.stringify(probed)}`);
+    const approved = await approveWslGit(runner, { operationId, bootstrapId }, probed.git, undefined, undefined);
+    if (!approved.ok) throw new Error(`approve: ${JSON.stringify(approved)}`);
+    return approved.git;
+  }
+
+  wslTest(
+    "a WSL marker dismissal is allowed when the list does not name the distro, and no process starts",
+    [],
+    async (host) => {
+      const { runner } = setup(host);
+      const missing = `arbareto-missing-${crypto.randomUUID().slice(0, 8)}`;
+      expect(await dismiss(runner, `\\\\wsl.localhost\\${missing}\\home\\u\\r`)).toEqual({ ok: true });
+      expect(runner.spawned).toBe(0);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  // A listed distro without its registration key is no unlisted distro. The dismissal stays refused.
+  test("a WSL marker dismissal for a listed distro without a registration key gives STATE_UNKNOWN", async () => {
+    const path = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\u\\r";
+    const runner = {
+      addContext: () => crypto.randomUUID(),
+      wslDistros: async () => ({ path, wslExecutable: WSL_EXE, listed: ["Ubuntu-24.04"], running: [], keys: [], saved: [] }),
+      wslProbe: () => Promise.reject(new Error("no probe")),
+    } as unknown as GitRunner & WslRunner & { addContext: BunRunner["addContext"] };
+    expect(await dismiss(runner, path)).toEqual(refresh);
+  });
+
+  const dismissalCases: [string, ProbeChange, DismissalOutcome][] = [
+    ["selstat absent", { selstat: "absent" }, { ok: true }],
+    ["selstat error", { selstat: "error" }, refresh],
+    ["selstat ok and no session Git", {}, refresh],
+    // Contract §11 "Git per distro": the program checks come before the path lines.
+    ["selstat absent without /usr/bin/perl", { selstat: "absent", absent: ["perl"] }, refresh],
+  ];
+  for (const [label, change, expected] of dismissalCases) {
+    wslTest(
+      `a WSL marker dismissal with a probe ${label} gives ${expected.ok ? "allowed" : expected.code}`,
+      [],
+      async (host) => {
+        const { runner } = seamed(host, { version: `git version ${MINIMUM}`, ...change });
+        expect(await dismiss(runner, folder(host))).toEqual(expected);
+        expect(runner.wslConfirmations).toEqual([]);
+        expectNoScope(host);
+      },
+      CASE_TIMEOUT_MS,
+    );
+  }
+
+  wslTest(
+    "a WSL marker dismissal whose probe passes its deadline gives DEADLINE",
+    [],
+    async (host) => {
+      const { runner } = setup(host);
+      runner.inject.wslProbe = { deadline: true };
+      expect(await dismiss(runner, folder(host))).toEqual({ ok: false, code: "DEADLINE" });
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "W13: a WSL marker dismissal is allowed when discovery call 1 of the session Git exits nonzero",
+    ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"],
+    async (host) => {
+      const { runner } = seamed(host, { version: `git version ${MINIMUM}` });
+      const session = await sessionGit(runner, folder(host));
+      // The probe seam reports the folder, and the real distro Git meets no folder there.
+      const gone = uncPath(host, `${host.folder}/gone-${crypto.randomUUID().slice(0, 8)}`);
+      expect(await dismiss(runner, gone, { marker: markerOf(host, SEAM_GIT_INODE), session })).toEqual({ ok: true });
+      expect(runner.spawned).toBe(1);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "W13: a WSL marker dismissal is allowed only when the common-directory identity differs from the marker",
+    ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"],
+    async (host) => {
+      const { runner } = setup(host);
+      const repo = seamRepository(host, runner);
+      const session = await sessionGit(runner, repo.path);
+      expect(await dismiss(runner, repo.path, { marker: markerOf(host, OTHER_INODE), session })).toEqual({ ok: true });
+      expect(await dismiss(runner, repo.path, { marker: markerOf(host, SEAM_GIT_INODE), session })).toEqual(refresh);
+      // A session Git of another path than the probe found runs no discovery.
+      expect(await dismiss(runner, repo.path, { marker: markerOf(host, OTHER_INODE), session: { ...session, path: "/usr/local/bin/git" } })).toEqual(refresh);
+      expect(runner.spawned).toBe(0);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
 
   wslTest(
     "a Git file identity with a type other than ef53 gives GIT_UNSUPPORTED reason no-fs-uuid",

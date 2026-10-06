@@ -230,12 +230,12 @@ export interface WslProbeTarget {
   starting(): void;
 }
 
-// Contract §11 "Distro start" and "Git per distro". `canceled` means that the signal ended the probe.
-export async function probeWslGit(
+// Contract §11 "Distro start": the probe run and its parsed lines. `canceled` means that the signal ended the probe.
+export async function runWslProbe(
   runner: WslRunner,
   route: Extract<WslRoute, { kind: "wsl" }>,
   target: WslProbeTarget,
-): Promise<{ ok: true; git: Omit<WslGit, "gitInstallationId"> } | WslRefusal | { ok: false; canceled: true }> {
+): Promise<{ ok: true; facts: WslProbeFacts } | WslRefusal | { ok: false; canceled: true }> {
   if (!route.running) target.starting();
   const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
@@ -261,8 +261,18 @@ export async function probeWslGit(
     return { ok: false, code: "WSL_UNAVAILABLE", result: { reason: "start-failed", text: TEXT["start-failed"](route.distro), ...(detail === "" ? {} : { detail }) } };
   }
   const parsed = stdout.limited ? null : parseWslProbe(stdout.take());
-  if (parsed === null) return { ok: false, code: "MALFORMED_GIT_OUTPUT" };
-  const checked = checkWslProbe(route.distro, parsed, route.wslExecutable);
+  return parsed === null ? { ok: false, code: "MALFORMED_GIT_OUTPUT" } : { ok: true, facts: parsed };
+}
+
+// Contract §11 "Distro start" and "Git per distro". `canceled` means that the signal ended the probe.
+export async function probeWslGit(
+  runner: WslRunner,
+  route: Extract<WslRoute, { kind: "wsl" }>,
+  target: WslProbeTarget,
+): Promise<{ ok: true; git: Omit<WslGit, "gitInstallationId"> } | WslRefusal | { ok: false; canceled: true }> {
+  const probe = await runWslProbe(runner, route, target);
+  if (!probe.ok) return probe;
+  const checked = checkWslProbe(route.distro, probe.facts, route.wslExecutable);
   return checked.ok ? { ok: true, git: { ...checked.git, guid: route.guid } } : checked;
 }
 

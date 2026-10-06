@@ -1376,6 +1376,10 @@ const sameWorktreeRecord = (record: TrustRecord, w: Workspace) =>
     sameIdentity(record.worktreeIdentity[1]!, w.worktreeIdentity[1])) ||
   (samePath(record.commonDirectory, w.commonDirectory) && samePath(record.worktreeRoot, w.worktreeRoot));
 
+// T212 decision W8: `confirm` needs the UNC form of the WSL Git path. Without it, `readTrust` and `approveTrust` refuse with the §11 code before any listing.
+// Only a WSL Git path has no UNC form (`ReadInstallation`).
+const unmappableGit = (w: Workspace): TrustOutcome<never> => ({ result: "failed", code: "UNSUPPORTED_REPOSITORY", value: { remedy: { text: gitPathText(w.wsl!) } } });
+
 const stopped = (outcome: Exclude<ListingOutcome, { ok: true }>): TrustOutcome<never> =>
   "stop" in outcome ? { result: outcome.stop } : { result: "failed", code: outcome.code, ...(outcome.text === undefined ? {} : { value: { remedy: { text: outcome.text } } }) };
 
@@ -1466,6 +1470,7 @@ export function createTrust({ runner, environment, configFiles = () => undefined
 
     // Contract §3 `readTrust`. The result issues the fingerprint and the generation that `approveTrust` names.
     async readTrust(target: TrustTarget, generation: number): Promise<TrustOutcome<ReadTrustValue>> {
+      if (target.installation.selectedPath === null) return unmappableGit(target.workspace);
       const outcome = await list(target);
       if (!outcome.ok) return stopped(outcome);
       // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read issues nothing.
@@ -1493,9 +1498,7 @@ export function createTrust({ runner, environment, configFiles = () => undefined
     async approveTrust(target: TrustTarget, fingerprint: string): Promise<TrustOutcome<{ trustId: string; persistence: "stored" | "session"; saveFailed: boolean }>> {
       const w = target.workspace;
       const gitSelectedPath = target.installation.selectedPath;
-      // T212 decision W8: `confirm` needs the UNC form of the WSL Git path. Without it, the §11 code of an unmappable path refuses before the native confirmation.
-      // Only a WSL Git path has no UNC form (`ReadInstallation`).
-      if (gitSelectedPath === null) return { result: "failed", code: "UNSUPPORTED_REPOSITORY", value: { remedy: { text: gitPathText(w.wsl!) } } };
+      if (gitSelectedPath === null) return unmappableGit(w);
       const outcome = await list(target);
       if (!outcome.ok) return stopped(outcome);
       const { listing } = outcome;

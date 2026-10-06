@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REGISTERED_WORKSPACES } from "../../src/contracts/limits";
+import { probeGit } from "../../src/git-service/git-installation";
+import * as registrationModule from "../../src/git-service/registration";
+import { createWorkspaceReader } from "../../src/git-service/status";
+import { createTrust } from "../../src/git-service/trust";
+import * as watchModule from "../../src/git-service/watch";
 import { printOrigin } from "../origin";
-import { fixtureGit, useFixtureRoot } from "./fixture-root";
+import { FIXTURE_ROOT, fixtureGit, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF02, buildF06, buildF07, put } from "./fixtures";
 import { GIT } from "./git-binary";
 import { caseTest, openService, type Refusal, type Service } from "./service-harness";
@@ -13,10 +19,17 @@ import { caseTest, openService, type Refusal, type Service } from "./service-har
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/registration.ts", import.meta.dir);
 printOrigin("../../src/git-service/read-scheduler.ts", import.meta.dir);
+printOrigin("../../src/git-service/session.ts", import.meta.dir);
+printOrigin("../../src/git-service/status.ts", import.meta.dir);
+printOrigin("../../src/git-service/watch.ts", import.meta.dir);
 
 const TASK = "T072";
+const RELEASE_TASK = "T321";
 const TIMEOUT_MS = 120_000;
 const ALTERNATING_TIMEOUT_MS = 600_000;
+// Task T075 and spec SC-007: a hint within 2 seconds.
+const HINT_BUDGET_MS = 2_000;
+const WAIT_MS = 30_000;
 
 useFixtureRoot();
 
@@ -294,6 +307,168 @@ describe("registration reuse and release (contract §6)", () => {
         expect(new Set(ids).size).toBe(REGISTERED_WORKSPACES);
         const ninth = await service.chooseRepository(join(built.root, names[REGISTERED_WORKSPACES]!));
         expect({ refused: ninth.state !== "succeeded", code: ninth.code, limit: (ninth.result as Refusal | undefined)?.limit }).toEqual({ refused: true, code: "WORKSPACE_LIMIT", limit: REGISTERED_WORKSPACES });
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+// The seam: the registrations of the service report each ID in `busy` as a workspace with an unfinished mutation, and record their `release` frames.
+async function withBusySeam(name: string, body: (service: Service, seam: { busy: Set<string>; releases: unknown[] }) => Promise<void>): Promise<void> {
+  const seam = { busy: new Set<string>(), releases: [] as unknown[] };
+  const real = registrationModule.createRegistrations;
+  const spy = spyOn(registrationModule, "createRegistrations").mockImplementation((options) =>
+    real({
+      ...options,
+      unfinishedMutation: (repositoryId) => seam.busy.has(repositoryId),
+      runner: {
+        ...options.runner,
+        release: (target) => {
+          seam.releases.push(target);
+          options.runner.release(target);
+        },
+      },
+    }),
+  );
+  try {
+    await withService(name, (service) => body(service, seam));
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+// Real Git headers of the repository, so only the injected records differ from a real listing.
+const statusHeaders = (git: string, repo: string): Buffer => {
+  const out = ownedGit(git, FIXTURE_ROOT, repo, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=no"]);
+  return Buffer.concat(out.toString("latin1").split("\0").filter((r) => r.startsWith("# ")).map((r) => Buffer.from(`${r}\0`, "latin1")));
+};
+const isStatus = (args: readonly string[]) => args.includes("status") && args.includes("--porcelain=v2");
+
+describe("unfinished mutations and release effects (contract §6 \"Registration reuse and release\")", () => {
+  caseTest(
+    RELEASE_TASK,
+    "with an unfinished mutation in a registered workspace, chooseRepository of another common directory gives BUSY, sends no release, and both registered workspaces stay",
+    ["shell-double"],
+    () =>
+      withBusySeam("t321-busy-repository", async (service, seam) => {
+        const git = gitPath();
+        const built = buildF07(git, "t321-busy-repository");
+        const a = await service.register(join(built.root, "wt-a"));
+        const b = await service.register(join(built.root, "wt-b"));
+        const other = join(buildF02(git, "t321-busy-repository-other").root, "repo");
+        seam.busy.add(a.repositoryId);
+        const response = await service.chooseRepository(other);
+        expect({ state: response.state, code: response.code, releases: seam.releases }).toEqual({ state: "failed", code: "BUSY", releases: [] });
+        for (const { repositoryId } of [a, b]) {
+          const read = await codeAndSpawns(service, () => service.readWorkspace(repositoryId));
+          expect({ repositoryId, state: read.state, ran: read.runs > 0 }).toEqual({ repositoryId, state: "succeeded", ran: true });
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    RELEASE_TASK,
+    "with an unfinished mutation in a workspace of the current Git, a chooseGit that issues a new gitInstallationId gives BUSY and sends no release of that workspace or of the current Git",
+    ["shell-double"],
+    () =>
+      withBusySeam("t321-busy-git", async (service, seam) => {
+        const git = gitPath();
+        const repo = join(buildF02(git, "t321-busy-git").root, "repo");
+        const { repositoryId } = await service.register(repo);
+        const chooseGit = () => service.request("chooseGit", { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        seam.busy.add(repositoryId);
+        const busy = await chooseGit();
+        expect({ state: busy.state, code: busy.code, releases: seam.releases }).toEqual({ state: "failed", code: "BUSY", releases: [] });
+        const read = await codeAndSpawns(service, () => service.readWorkspace(repositoryId));
+        expect({ state: read.state, ran: read.runs > 0 }).toEqual({ state: "succeeded", ran: true });
+        // Without the unfinished mutation, the same chooseGit issues a new gitInstallationId and releases the workspace and the current Git.
+        seam.busy.clear();
+        const chosen = await chooseGit();
+        expect({ state: chosen.state, releases: seam.releases }).toEqual({ state: "succeeded", releases: [{ repositoryId }, { gitInstallationId: expect.any(String) }] });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    RELEASE_TASK,
+    "a release stops the watchers of the released workspace: an external change there gives no hint",
+    ["shell-double"],
+    async () => {
+      const real = watchModule.watchWorkspace;
+      const watched: { hints: number }[] = [];
+      const spy = spyOn(watchModule, "watchWorkspace").mockImplementation((directories, onHint) => {
+        const record = { hints: 0 };
+        watched.push(record);
+        return real(directories, (lost) => {
+          record.hints++;
+          onHint(lost);
+        });
+      });
+      try {
+        await withService("t321-release-watch", async (service) => {
+          const git = gitPath();
+          const repo = join(buildF02(git, "t321-release-watch").root, "repo");
+          const other = join(buildF06(git, "t321-release-watch-other").root, "repo");
+          await service.register(repo);
+          expect(watched.length).toBe(1);
+          const own = watched[0]!;
+          // The watcher is live before the release.
+          const before = own.hints;
+          writeFileSync(join(repo, "t321-before.txt"), "before\n");
+          const until = performance.now() + WAIT_MS;
+          while (own.hints === before) {
+            if (performance.now() > until) throw new Error(`no watcher hint within ${WAIT_MS} ms`);
+            await Bun.sleep(10);
+          }
+          expect((await service.chooseRepository(other)).state).toBe("succeeded");
+          expect(watched.length).toBe(2);
+          const released = own.hints;
+          writeFileSync(join(repo, "t321-after.txt"), "after\n");
+          await Bun.sleep(HINT_BUDGET_MS);
+          expect(own.hints).toBe(released);
+        });
+      } finally {
+        spy.mockRestore();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  // The session also refuses a released `repositoryId` before `readEntries` runs (the request check in `session.ts`). This case checks the reader alone.
+  caseTest(
+    RELEASE_TASK,
+    "after a release, readEntries with a cursor of the released snapshot gives UNKNOWN_TARGET and starts no Git process",
+    ["shell-double"],
+    () =>
+      withService("t321-release-entries", async (service) => {
+        const git = gitPath();
+        const repo = join(buildF02(git, "t321-release-entries").root, "repo");
+        const other = join(buildF06(git, "t321-release-entries-other").root, "repo");
+        // Untracked records with 4,000-byte names fill more than one Status page.
+        const listing = Buffer.concat([statusHeaders(git, repo), ...Array.from({ length: 1200 }, (_, i) => Buffer.from(`? u/${String(i).padStart(4, "0")}${"n".repeat(4000)}\0`))]);
+        service.runner.inject.stdout = (call) => (isStatus(call.arguments) ? listing : undefined);
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const { installation } = probed;
+        const reader = createWorkspaceReader({ runner: service.runner, trust: createTrust({ runner: service.runner, environment: serviceEnv(), configFiles: () => installation.configFiles }) });
+        // `session.ts` wires `onRelease` to the reader release in the same way.
+        const registrations = registrationModule.createRegistrations({ runner: service.runner, unfinishedMutation: () => false, onRelease: (w) => reader.release(w.repositoryId) });
+        const register = async (path: string) => {
+          const outcome = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", path), installation, signal: new AbortController().signal });
+          if (!outcome.ok || !("repositoryId" in outcome.result)) throw new Error(`registration failed: ${JSON.stringify(outcome)}`);
+          return outcome.result.repositoryId;
+        };
+        const repositoryId = await register(repo);
+        const read = await reader.readWorkspace({ operationId: crypto.randomUUID(), signal: new AbortController().signal, installation, workspace: registrations.get(repositoryId)!, refresh: false, check: "full" });
+        if (read.result !== "succeeded") throw new Error(`read ended ${read.result}`);
+        const { generation, snapshotId, cursor } = read.value;
+        if (cursor === null) throw new Error("the snapshot has one page");
+        expect(reader.readEntries(repositoryId, generation, snapshotId, cursor).ok).toBe(true);
+        await register(other);
+        expect(registrations.has(repositoryId)).toBe(false);
+        const before = service.runner.calls.length;
+        const page = reader.readEntries(repositoryId, generation, snapshotId, cursor);
+        expect({ page, runs: service.runner.calls.length - before }).toEqual({ page: { ok: false, code: "UNKNOWN_TARGET" }, runs: 0 });
       }),
     TIMEOUT_MS,
   );

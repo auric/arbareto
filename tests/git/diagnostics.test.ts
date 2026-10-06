@@ -206,6 +206,37 @@ describe("credential canaries through the service (contract §7, data-model §7 
   );
 });
 
+describe("output tail containment (contract §7)", () => {
+  // A plain canary, not a URL, so the redaction leaves it in the output tail.
+  const TAIL_CANARY = `${CANARY}OUTPUT-TAIL`;
+
+  caseTest(
+    "T321",
+    "a canary in the stderr of a refused discovery call 1 appears only in outputTail, never in the session log, a progress event, or a diagnostic",
+    ["shell-double"],
+    async () => {
+      const git = gitPath();
+      const repo = join(buildF02(git, "t321-output-tail").root, "repo");
+      // Git dies on a bad numeric value and prints that value (Git `config.c` `die_bad_number`).
+      fixtureGit(git, repo, ["config", "core.abbrev", TAIL_CANARY]);
+      const service = await openService({ git, name: "t321-output-tail" });
+      try {
+        const refused = await service.chooseRepository(repo);
+        const outputTail = (refused.result as { outputTail?: string } | undefined)?.outputTail;
+        expect({ state: refused.state, code: refused.code, canary: outputTail?.includes(TAIL_CANARY) }).toEqual({ state: "failed", code: "REPOSITORY_UNAVAILABLE", canary: true });
+        const fields = leaks(service.responses).map((leak) => leak.slice(0, leak.indexOf(": ")));
+        expect({ count: fields.length, outsideTail: fields.filter((field) => !field.endsWith(".result.outputTail")) }).toEqual({ count: 1, outsideTail: [] });
+        expect(leaks(service.log())).toEqual([]);
+        expect(leaks(service.progress)).toEqual([]);
+        expect(leaks(diagnostics(service.responses))).toEqual([]);
+      } finally {
+        await service.dispose();
+      }
+    },
+    TIMEOUT_MS,
+  );
+});
+
 describe("inert repository text (contract §1, §9 \"Commit failure output\")", () => {
   // Windows refuses `<`, `>`, `:`, `"`, `/`, `\`, `|`, `?`, and `*` in names, so the markup sits in the commit subject.
   const NAMES = ["$(ni arbareto-t073-marker).txt", "`whoami`.txt", "%PATH%.txt", ";& calc.txt", "{{constructor}}.txt"];

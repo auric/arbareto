@@ -336,7 +336,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | Ordinary read deadline | 30 seconds. It starts when the read takes its slot, not while it waits. `reviewSubmodules`, the `updateSubmodules` preflight, and its level reads have no total read deadline. Each of their Git commands has the 30-second deadline below, and the submodule review bound limits the command count. |
 | Commit process deadline | 120 seconds, followed by interruption and reconciliation |
 | Other Git process deadline | 30 seconds for each bootstrap probe, and for each `applyHunk` or `applyFile` Git step. The same deadline applies to each commit preflight read, `reviewSubmodules` read, and mutation reconciliation read. It also applies to each `updateSubmodules` preflight read, level read, and check read (§12). "Deadline outcomes" below states the result. |
-| Walk deadline | 30 seconds for each `identity` and `fileFacts` request (§6 "Walks"). It starts when the shell reads the request frame. It equals the other Git process deadline, because each request is one step of a read, a registration, or a mutation check. |
+| Walk deadline | 30 seconds for each walk (§6 "Walks"): each `identity`, `fileFacts`, `lingeringCount`, `register`, `started`, `revoke`, and `resolveGit` request, and the start of each `run`. It starts when the shell reads the request frame. A `run` `limits` deadline starts when its process starts. It equals the other Git process deadline, because each request is one step of a read, a registration, or a mutation check. |
 | Submodule update process | Inactivity deadline: each update process ends after 300 seconds without output or an I/O sum change. Each has a ceiling of 4 hours (§12 "Deadlines and Cancel"). |
 | Stall notice | 15 seconds without an output byte and without a change of the I/O sum. It applies to the commit process and to each submodule update process. It shows a notice and ends nothing (§6 "Activity and stall notice"). |
 | Submodule review | 256 submodules at all depths, 8 nesting levels below the superproject, and 1 MiB for each `.gitmodules` source. Each folder of the §12 kept-directory walk counts as one submodule. A larger set gives `UNSUPPORTED_SUBMODULE` with reason `limit` (§12). |
@@ -354,6 +354,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 
 - A bootstrap probe deadline destroys the context. The registration or dismissal gives `DEADLINE`.
 - A walk deadline (§6 "Walks") has the outcome of a Git process deadline in the same step. A registration or dismissal gives `DEADLINE`. Each read follows its own bullet here. In an ordinary read, the read deadline starts first, so it expires first.
+- A `started` deadline ends the mutation `failed` with `DEADLINE`, because no Git process ran and no marker exists. A `revoke` deadline ends `revokeTrust` `failed` with `DEADLINE`, and the service revocation stays. A `lingeringCount` deadline adds no lingering sentence (§9 "Lingering count"). A `resolveGit` deadline gives `DEADLINE`.
 - An ordinary read deadline closes the operation Job. The service then re-reads the repository state. A canceled or failed read that held a slot gets the same re-read. The re-read is discovery call 1 (§6 "Registration bootstrap"), and it has the 5-second reconciliation target. When the re-read refuses, its refusal replaces the read result. Otherwise the read ends `failed` with `DEADLINE`, `canceled`, or its failure code.
 - A deadline of an `applyHunk` or `applyFile` Git step moves the mutation to `reconciling` (data-model §7). So does a commit preflight read deadline. Neither publication nor Git execution has started. Without observed effects, the result is `failed` with `DEADLINE`. The service releases its owned lock only after the Job closes.
 - A mutation reconciliation read deadline fails reconciliation. The outcome is `unknown`, and the recovery marker stays (§8).
@@ -567,7 +568,7 @@ The owning shell keeps each marker file open without delete sharing. At startup,
 
 A damaged marker needs no repository context. The shell creates no context and forwards only its marker ID, so the service allows the dismissal.
 
-For a WSL marker, the shell always creates a context. The service allows the dismissal when `wslDistros` does not list the distro of the path, or when the §11 probe reports the path `absent`.
+For a WSL marker, the shell always creates a context. The service allows the dismissal when the distro of the path is absent from the `wslDistros` `listed` set, or when the §11 probe reports the path `absent`. A listed distro without a registration key is not absent. A WSL marker also gets the two Windows allowances: WSL discovery call 1 exits nonzero (`REPOSITORY_UNAVAILABLE`), or the common-directory WSL identity differs from the marker identity. Any other result gives `STATE_UNKNOWN`.
 
 When dismissal is allowed, the shell shows a native confirmation. It names the worktree path, the operation kind, and the start time. For a damaged marker, it names the file name instead. It states that the operation outcome stays unknown. Its buttons are Dismiss and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Only the Dismiss button deletes the file. A dismissed marker never counts as a resolved outcome.
 
@@ -588,16 +589,16 @@ This subsection defines the bodies of `process`, `mutation`, and `trust` frames.
 | --- | --- | --- |
 | `run` | `callId`, `operationId`, `contextKind`, the context IDs, `arguments`, `environmentPolicy`, `limits`. Optional: `input` or `inputBytes`, `transactionId` with `indexFile`. | Validates each field by "Process fields" and the rules below. Starts one process, or replies `refused`. |
 | `input` | `callId`, `data`. | Writes the chunk to the child stdin, then replies `inputWritten`. |
-| `cancel` | `callId`. | For a `run` call, it closes the Job of the operation that owns that call, with every descendant. Each process of that operation then gets `exit`. For an `identity` or `fileFacts` call, it stops that walk, and no reply follows ("Walks"). A cancel for an ended call is dropped. |
+| `cancel` | `callId`. | For a `run` call, it closes the Job of the operation that owns that call, with every descendant. Each process of that operation then gets `exit`. A `run` whose start did not end gets `exit` too ("Walks"). For an `identity` or `fileFacts` call, it stops that walk, and no reply follows ("Walks"). The shell drops a cancel for an ended call and for any other walk. |
 | `identity` | `callId`, `operationId`, `contextKind`, the context IDs, `paths`: 1 to 8 paths. | Replies `identity` with one entry per path, in request order, or with `deadline` ("Walks"). |
-| `lingeringCount` | `callId`, `operationId`, `commonDirectory`. | Replies `lingeringCount` with the active process count of the lingering Jobs with that tag. An unreadable identity gives 0. |
+| `lingeringCount` | `callId`, `operationId`, `commonDirectory`. | Replies `lingeringCount` with the active process count of the lingering Jobs with that tag, or with `deadline` ("Walks"). An unreadable identity gives 0. |
 | `fileFacts` | `callId`, `operationId`, `contextKind` `registeredOperation`, `gitInstallationId`, `repositoryId`, `digest`, `files`. | Replies `fileFacts` with one fact per entry, in request order ("File facts" below), or with `deadline` ("Walks"). |
-| `register` | `callId`, `operationId`, `bootstrapId`, `gitInstallationId`, and either `version`, `digest`, and `confirm`, or `repositoryId`, `worktreeRoot`, `gitDirectory`, and `commonDirectory`. `version` is the parsed version text, such as `2.55.0.windows.3`, not the full output line. `digest` is the SHA-256 of the probed file as 64 lowercase hex digits. | Binds the issued ID to the native context of `bootstrapId`. A `register` without the confirmation is valid only in a startup context. The shell then saves the Git ("Startup contexts"). |
+| `register` | `callId`, `operationId`, `bootstrapId`, `gitInstallationId`, and either `version`, `digest`, and `confirm`, or `repositoryId`, `worktreeRoot`, `gitDirectory`, and `commonDirectory`. `version` is the parsed version text, such as `2.55.0.windows.3`, not the full output line. `digest` is the SHA-256 of the probed file as 64 lowercase hex digits. | Binds the issued ID to the native context of `bootstrapId`. Before the bind, the shell reads the context identity again, as a walk ("Walks"). A `register` without the confirmation is valid only in a startup context. The shell then saves the Git ("Startup contexts"). |
 | `resolveGit` | `callId`, `operationId`, and `bootstrapId` of a live `gitProbe` context. `executablePath`: `git.exe` in the folder that `--exec-path` printed (§3 "Git proposal"). | It refuses another file name and a path that is not a regular file with `INVALID_REQUEST`. This rule also covers a startup context. The service checks the installation root ("Startup contexts"). Otherwise it destroys the context, binds a new `gitProbe` context of that operation to the file, and replies `resolveGit`. The new context keeps the selected path and the startup state. On other platforms, the service expects the file name `git`. |
 | `wslDistros` | `callId`, `operationId`, and the `bootstrapId` of a live `repositoryDiscovery` context of that operation. | Replies `wslDistros` with the context path ("WSL frames" below). Only for a path with the §11 WSL prefix, it also runs the §11 list calls and reads the registration keys. A Windows path starts no process. |
 | `wslProbe` | `callId`, `operationId`, the `bootstrapId` of a live `repositoryDiscovery` context of that operation, `distro`, and `limits` `{deadlineMs}` with 1 to 60,000. | Runs the §11 bootstrap probe in that distro, without the wrapper. It answers as `run` does, with `output` and `exit`. It binds the parsed facts to the context once (§11 "Git per distro"). A second `wslProbe` on a bound context gets `refused` with `INVALID_REQUEST`. |
 | `release` | Exactly one of `repositoryId` or `gitInstallationId`. | Removes the binding. A later request with that ID gets `refused` with `UNKNOWN_TARGET`. |
-| `closeJob` | `operationId`. | Closes that operation Job with every descendant, and stops each walk of that operation ("Walks"). The ID is then inactive. |
+| `closeJob` | `operationId`. | Closes that operation Job with every descendant. It stops each `identity` and `fileFacts` walk and each `run` start of that operation ("Walks"). The ID is then inactive. |
 
 `run` request fields. Every field is required, except where the row says otherwise.
 
@@ -648,15 +649,15 @@ Streamed input:
 | `exit` | `callId`, `exitCode`, `activeDescendants`, optional `deadline`. | The last reply of a `run`. It follows every `output` of that call. |
 | `refused` | `callId`, `code`. | The request started nothing. Valid for each request with `callId`. |
 | `identity` | `callId`, and either `identities` or `deadline`. | Each entry is an identity reply ("Process fields") or `{"code":"UNSUPPORTED_REPOSITORY"}`. A refusal for a not-found path also carries `"reason":"absent"` ("Process fields"). `deadline` is `deadline` when the walk passed its §5 deadline. That reply holds no identity. |
-| `lingeringCount` | `callId`, `count`. | Nonnegative safe integer. |
+| `lingeringCount` | `callId`, and either `count` or `deadline`. | `count` is a nonnegative safe integer. `deadline` is `deadline` when the walk passed its §5 deadline. |
 | `fileFacts` | `callId`, and either `facts` or `deadline`. | One fact per request entry, in request order ("File facts" below). `deadline` is `deadline` when the walk passed its §5 deadline. That reply holds no fact. |
-| `register` | `callId`, `result`: `approved`, `declined`, or `another`. With `another`, also `bootstrapId` and `executablePath` of the new `gitProbe` context. `executablePath` is a native absolute path by the channel path rule. | Git with `confirm: true`: the Git selection confirmation result. Otherwise `approved`. |
-| `resolveGit` | `callId`, `bootstrapId`. | The new `gitProbe` context for the resolved file. The first context ID is no longer valid. |
+| `register` | `callId`, and either `result` or `deadline`. `result`: `approved`, `declined`, or `another`. With `another`, also `bootstrapId` and `executablePath` of the new `gitProbe` context. `executablePath` is a native absolute path by the channel path rule. | Git with `confirm: true`: the Git selection confirmation result. Otherwise `approved`. `deadline` is `deadline` when the identity read passed its §5 deadline. The shell then destroyed the context and bound no ID. |
+| `resolveGit` | `callId`, and either `bootstrapId` or `deadline`. | The new `gitProbe` context for the resolved file. The first context ID is no longer valid. `deadline` is `deadline` when the walk passed its §5 deadline. |
 | `wslDistros` | `callId`, `path`. With the §11 WSL prefix, also `wslExecutable`, `listed`, `running`, `keys`, and `saved`, or `code` `WSL_UNAVAILABLE` with `reason` `wsl-missing`. | `path` is the context path, always present. `wslExecutable` is the `%SystemRoot%\System32\wsl.exe` path that remedy commands name (§11 "Remedy commands"). `listed` and `running` are the names that the two §11 list calls print. `keys` holds the registration key of each listed name: its `name`, its `guid`, and its `version`. `saved` holds the saved Git of each listed GUID (§11 "Git per distro"). |
 
-- `exitCode` is an integer from 0 to 4,294,967,295. It is `null` when a Job close ended the process.
-- `deadline` is `deadline`, `inactivity`, or `ceiling`. It names the expired limit.
-- `activeDescendants` is the active process count of the Job at the exit ("Lingering Jobs").
+- `exitCode` is an integer from 0 to 4,294,967,295. It is `null` when a Job close ended the process, or when no process started ("Walks").
+- `deadline` is `deadline`, `inactivity`, or `ceiling`. It names the expired limit. A `run` start past the §5 walk deadline gives `deadline`.
+- `activeDescendants` is the active process count of the Job at the exit ("Lingering Jobs"). It is 0 when no process started.
 - `refused` codes: `INVALID_REQUEST` for a field that breaks a rule. `UNKNOWN_TARGET` for an inactive or unbound ID or an expired context.
 - More `refused` codes: `GIT_CHANGED` for a changed executable identity. `PROCESS_OWNERSHIP_FAILED` for a failed start in the Job or a failed resume.
 
@@ -664,14 +665,32 @@ Streamed input:
 
 **Byte caps.** The shell forwards every byte before the completion signal. It enforces only the chunk size and the queue depth. The service retains at most 64 KiB per stream for diagnostics (§5). It counts every forwarded stderr byte of the operation. At 4 MiB it sends `cancel` (§9). An `updateSubmodules` process counts its own 4 MiB. A stream above its §5 result bound also gets `cancel`.
 
-**Walks.** An `identity` or `fileFacts` request is a walk. The shell runs each walk on its own thread, so the frame reader never waits on a file open.
+**Walks.** A walk is the part of a request that opens a file or waits on a process before the shell replies. The shell runs each walk on its own thread with a watchdog, so the frame reader never waits on a file open or a process.
 
-- The §5 walk deadline starts when the shell reads the request. At the deadline, the shell sends the reply with `deadline` and stops the walk.
-- A `cancel` with the `callId` of a walk stops that walk. No reply follows. A `closeJob` stops each walk of its operation. A service exit stops every walk.
+| Request | Walk | Deadline reply |
+| --- | --- | --- |
+| `identity` | Each identity read. | `identity` with `deadline`. It holds no identity. |
+| `fileFacts` | Each open, query, and read. | `fileFacts` with `deadline`. It holds no fact. |
+| `run` | The start: the identity reads before execution, the Job open, and the process start. The `limits` deadline starts when the process starts. | `exit` with `exitCode` null, `activeDescendants` 0, and `deadline` `deadline`. The shell closes the operation Job. |
+| `lingeringCount` | The identity read of `commonDirectory`. | `lingeringCount` with `deadline`. |
+| `register` | The identity read of the context path. In a WSL context, this is the §11 identity probe. | `register` with `deadline`. The shell destroys the context and binds no ID. |
+| `started` | The identity read of `commonDirectory`. | `started` with `deadline`. The shell takes no mutex, writes no marker, and tags no Job. |
+| `revoke` | The identity read of `commonDirectory`. | `revoke` with `deadline`. The shell closes no lingering Job. |
+| `resolveGit` | The file check and the identity read of `executablePath`. | `resolveGit` with `deadline`. The shell keeps the first context and binds no new context. |
+
+- A deadline reply is `{"type":"<request type>","callId":"<callId>","deadline":"deadline"}`, except for `run`.
+- The §5 walk deadline starts when the shell reads the request. At the deadline, the shell sends the deadline reply and stops the walk.
+- Only the watchdog sends the reply and makes the changes of a walk: a bind, a context destroy, a mutex, a marker, a Job tag, a Job close, a record deletion, or a process start. So no change follows a deadline reply or a stop.
+- A `cancel` with the `callId` of an `identity` or `fileFacts` walk stops that walk. No reply follows. A `closeJob` stops each `identity` and `fileFacts` walk of its operation.
+- A `cancel` or `closeJob` also stops a `run` start. The shell closes the operation Job and replies `exit` with `exitCode` null and `activeDescendants` 0.
+- `cancel` and `closeJob` never stop a `lingeringCount`, `register`, `started`, `revoke`, or `resolveGit` walk. The service has no abort for these calls, so each one waits for its reply or its deadline reply.
+- A service exit stops every walk. No reply follows.
 - To stop a walk, the shell sets a stop flag and calls `CancelSynchronousIo` on the walk thread (Microsoft Learn "Canceling Pending I/O Operations"). The walk checks the flag before each open, query, and read. The shell never sends a fact or an identity from a stopped walk.
-- The service does not wait for the shell after it sends `cancel` for a walk. It ends that call as canceled at once. A later reply with that `callId` is dropped ("Errors").
+- The service does not wait for the shell after it sends `cancel` for an `identity` or `fileFacts` walk. It ends that call as canceled at once. A later reply with that `callId` is dropped ("Errors"). For a `run`, the service waits for `exit`, as for every `run`.
+- An `input` chunk that comes before the process starts waits in the queue of its call. The 8-chunk rule applies ("Streamed input"). A start that ends without a process drops the waiting chunks.
+- `revoke` deletes each record whose `commonDirectory` equals the request path before its walk starts. That deletion needs no identity.
 - Limit: a driver can ignore a cancel, and a cancel can come between the flag check and the next open. The walk thread then waits until its I/O returns. No reply waits for it. The shell does not bound the count of such threads.
-- WSL `identity` and `fileFacts` requests are walks too (§11). They follow the same deadline, `deadline` reply, `cancel`, and `closeJob` rules. A stop of a WSL walk ends the walk's own `wsl.exe` process, never the operation Job, because `CancelSynchronousIo` cannot stop a process wait.
+- A WSL `identity` or `fileFacts` request is a walk too (§11). It follows the same deadline, deadline reply, and stop rules. A stop of a WSL walk ends the walk's own `wsl.exe` process, never the operation Job, because `CancelSynchronousIo` cannot stop a process wait.
 
 **WSL frames.** `wslDistros` and `wslProbe` exist only for WSL routing (§11).
 
@@ -679,25 +698,26 @@ Streamed input:
 - The reply always holds the context path `path`. It holds `wslExecutable`, the list results, the keys, and the saved Gits, or `WSL_UNAVAILABLE` with reason `wsl-missing`, only when the path has the WSL prefix of `src/contracts/wsl-route.ts` (`PREFIX`). For a Windows path, the shell starts no process.
 - A service on another platform never sends `wslDistros`, because WSL routing exists only on Windows (§11 "Route").
 - The WSL form of `register` holds only `callId`, `operationId`, `bootstrapId`, `gitInstallationId`, and `confirm`. The shell issues the ID only from the facts that `wslProbe` bound. For the repository form in a WSL context, all three paths must lie under `\\wsl.localhost\<bound distro>\`, and `gitInstallationId` must name a WSL installation with the bound GUID. Otherwise the shell refuses with `INVALID_REQUEST`.
+- In a WSL context, a changed or failed `register` probe destroys the context and gives `refused` with `UNKNOWN_TARGET`. A probe past the walk deadline gives `register` with `deadline`.
 
 **Mutation frames.** "Recovery markers" defines their use.
 
 | `type` | Fields | Reply |
 | --- | --- | --- |
-| `started` | `callId`, `operationId`, `repositoryId`, `kind`: one mutation name of §3, `worktreeRoot`, `commonDirectory`. | `{type, callId, markerId}`, `{type, callId, busy: true}`, or `{type, callId, failure, folder}`. |
+| `started` | `callId`, `operationId`, `repositoryId`, `kind`: one mutation name of §3, `worktreeRoot`, `commonDirectory`. | `{type, callId, markerId}`, `{type, callId, busy: true}`, `{type, callId, failure, folder}`, or `{type, callId, deadline: "deadline"}` ("Walks"). |
 | `ended` | `operationId`, `endProcesses`: boolean. | None. Only after a `started` reply with `markerId`. |
 | `resolved` | `markerId`. | None. |
 
 - `failure` is `disk-full`, `access-denied`, or `other`. `folder` is the `recovery` folder path.
 - An unreadable common-directory identity gives `failure` `other`.
-- A `busy` or failure reply holds no mutex and no marker. The service then sends `closeJob`, not `ended`.
+- A `busy`, failure, or `deadline` reply holds no mutex and no marker. The service then sends `closeJob`, not `ended`.
 
 **Trust frames.** §7 "Trust approval store" defines their use.
 
 | `type` | Fields | Reply |
 | --- | --- | --- |
 | `confirm` | `callId`, `worktreeRoot`, `gitDirectory`, `commonDirectory`, `gitSelectedPath`, `fingerprint`, `persist`: boolean. With `persist: false`, also `bound`. | `{type, callId, result}`: `approved` or `declined`. `approved` also carries `stored`. With `stored: true`, the reply also holds `record` in the handshake record form. `stored: false` has no `record`. It follows `persist: false` or a failed record write (§7 "Trust approval store"). |
-| `revoke` | `callId`, `commonDirectory`. | `{type, callId, endedProcesses}`: a nonnegative safe integer. |
+| `revoke` | `callId`, `commonDirectory`. | `{type, callId, endedProcesses}`: a nonnegative safe integer. Or `{type, callId, deadline: "deadline"}` ("Walks"). |
 | `confirmRun` | `callId`, `worktreeRoot`, `submodulePaths`: 1 to 256 paths in display order, `programCount`: at least 1, `uncheckedCount`: 0 to `programCount`. | `{type, callId, result}`: `approved` or `declined`. |
 
 - `fingerprint` is 64 lowercase hex digits. `gitSelectedPath` is a native absolute path by the channel path rule.
@@ -1247,6 +1267,7 @@ WSL2 repositories are in this slice (spec FR-039 to FR-046). Git inside the dist
 - The renderer sends Cancel as `cancel` with the `operationId` from the accepted event of the registration request (§2). Cancel closes the probe Job. Registration ends `canceled`, and the current workspace stays unchanged. The distro can keep starting after Cancel, and the app does not stop it.
 - A deadline gives `DEADLINE`. A `wsl.exe` failure gives `WSL_UNAVAILABLE` with reason `start-failed`. The result carries the bounded `wsl.exe` error text as plain text, such as `Wsl/Service/WSL_E_DISTRO_NOT_FOUND` (P3).
 - After registration, any WSL process can start a stopped distro again. The ordinary §5 deadlines then apply. A read that meets a slow start can end `failed` with `DEADLINE`, and the next poll reads again.
+- The identity probes of `lingeringCount`, `started`, and `revoke` follow the same rule, with the §5 walk deadline. `lingeringCount` and `revoke` skip the probe when its result cannot change the reply. That is the case when no lingering Job tag holds the distro GUID of the repository. For `revoke`, no trust record outside the path match may hold that GUID either. The reply is then `count` 0 or `endedProcesses` 0, and no `wsl.exe` starts.
 
 ### Git per distro
 
@@ -1350,8 +1371,6 @@ A Windows Job holds `wsl.exe`, not the Linux processes. A Linux process that det
   - A Linux name without a Windows form fails the listing.
   - The probe reads no `HOME`, so a `~/` value counts as repository-controlled. This only adds approval prompts.
   - Letter-case folding of record paths on WSL UNC paths changes only the label.
-  - `readTrust` reports `stored` for a Git path without a UNC form, and `approveTrust` then refuses it (T318).
-  - WSL marker dismissal has no service handler yet (T318).
 - A WSL `confirm` frame and its `TrustRecord` carry `gitSelectedPath` as the UNC form of the approved Git path, `\\wsl.localhost\<distro>\…`. The service maps the Linux path by the "Route" rule (`wslIdentityPath` in `src/contracts/wsl-route.ts`). `gitSelectedPath` stays required. A distro rename changes this path, so the next read needs approval again (§7 "Trust approval store"). A Linux Git path that the rule cannot map refuses `approveTrust` before any dialog, with `UNSUPPORTED_REPOSITORY` and the remedy "The Git path <path> in <distro> holds a name that Windows cannot show. Install Git in another folder of the distro, then approve again." No session approval follows.
 - A WSL repository never shares a trust listing (§7 "Shared listing"). WSL polls use no stat tuple ("Change polling"), and no probe tested the tuple for distro configuration files.
 - Every `wsl.exe` process gets an empty `WSLENV` ("Process launch" above). WSL forwards only the variables that `WSLENV` names (P4 forwarded `GIT_TRACE` through it). So no Windows variable reaches Linux Git, and that includes the `GIT_*` variables that §7 preserves for Git for Windows. The distro's own configuration and environment apply.

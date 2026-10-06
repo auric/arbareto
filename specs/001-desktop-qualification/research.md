@@ -1360,6 +1360,17 @@ Future records must identify scenario, build/package digest, environment, fixtur
 - Release binary boot, not installed: the release `arbareto.exe` opened the `Arbareto` window with the children `arbareto-git.exe` and `msedgewebview2.exe`. The view showed this text, line by line, and a Select Git action: "Build: 0.1.0 744b19bb91555fd2313902e5e266148b0e5941ed"; "Unsigned local test package"; "Platform scope: qualification-target"; "Detected Git version: none"; "Minimum Git version: 2.55.0.windows.3"; "Qualification: unverified"; "Git changed: GIT_CHANGED". The saved Git is the wrapper `C:\Git\cmd\git.exe`, so `GIT_CHANGED` is the expected result. `CloseMainWindow()` closed the app with exit code 0, and no process stayed.
 - Installed-package check, 2026-10-03: the user installed the 744b19b package as the current user. The saved Git was the wrapper C:\Git\cmd\git.exe, so the boot view showed GIT_CHANGED. Select Git proposed C:\Git\mingw64\libexec\git-core\git.exe, version 2.55.0.windows.3, and the user chose Use this Git. The boot view then showed the selected Git as admitted. After a restart, the app kept the selection without a prompt, so the saved path and digest revalidated. T065 passes.
 
+**T289 Linux portability check, 2026-10-06.** A cloud session on Linux x86_64 ran at main `5bb4e34`. A Linux run qualifies nothing and ticks no task.
+
+- Signature check: `gpg --status-fd 1 --verify` of `rust-1.98.0-x86_64-unknown-linux-gnu.tar.xz.asc` exited 0 with `VALIDSIG 108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE`. `sha256sum` gave the pinned `ed8ee2df70909c88cbaf87a6cfa3920dac00b537de12a6abe6906641e0f5952f`.
+- `ARBARETO_CLOUD_RUST=1 ARBARETO_FORCE_CLOUD_SETUP=1 bash .claude/cloud-setup.sh` exited 0. `cargo fetch --locked` for the Linux target passed.
+- `rustc --version` printed `rustc 1.98.0 (88d9e12ae 2026-08-18)`. `cargo --version` printed `cargo 1.98.0 (797e8a9bc 2026-08-05)`. Both resolve to `/usr/local/bin`.
+- `cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu` exited 101. This is the expected red result before T290.
+- First error: `` error[E0425]: cannot find type `IMarshal` in module `windows_core::imp` `` at `windows-future-0.3.2/src/bindings.rs:87:51`. The crate stopped with ``could not compile `windows-future` (lib) due to 16 previous errors``.
+- `cargo tree -i windows-future` shows that `windows-future` 0.3.2 comes through `windows` 0.62.2. `arbareto`, `webview2-com` 0.39.1, and `webview2-com-sys` 0.39.1 pull in `windows`.
+- Cargo did not reach the `arbareto` sources. No `-sys` build script named a missing library, so the apt package list stays unchanged.
+- Cause: `src-tauri/Cargo.toml` lists `windows` and `webview2-com` without a target gate. T290 moves them to `[target.'cfg(windows)'.dependencies]`.
+
 ### Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here (plan.md, Constitution Check). A record names the batch, the reviewer, the reviewed scope, and the findings. It also names the causes, corrections, and unverified claims. T116 records the batch 3 review here. One review runs per batch; no automatic review loop runs.

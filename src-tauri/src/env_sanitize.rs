@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 use std::ffi::{OsStr, OsString};
-use std::os::windows::ffi::OsStrExt;
 
 /// Bun 1.4.2 reads each name at startup. Research R7 lists each read site.
 const STARTUP_CONTROLS: [&str; 30] = [
@@ -60,11 +59,10 @@ pub(crate) fn name_is(name: &OsStr, ascii: &str) -> bool {
 }
 
 pub(crate) fn name_starts_with(name: &OsStr, ascii: &str) -> bool {
-    let mut units = name.encode_wide();
+    let mut units = name.as_encoded_bytes().iter();
     ascii.bytes().all(|byte| {
         units
             .next()
-            .and_then(|unit| u8::try_from(unit).ok())
             .is_some_and(|unit| unit.eq_ignore_ascii_case(&byte))
     })
 }

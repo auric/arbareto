@@ -1157,7 +1157,18 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
         });
         const { repositoryId } = await second.register(repo);
         expect((await trustOf(second, repositoryId)).state).toBe("approved");
-        expect(outcome(await second.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        const read = await second.readWorkspace(repositoryId);
+        if (outcome(read).state !== "succeeded") {
+          // `RecordedCall` holds no stderr byte count. `exit` is the recorded GitExit.
+          const dump = {
+            response: read,
+            calls: second.runner.calls.map((c) => ({ operationId: c.operationId, contextKind: c.contextKind, arguments: c.arguments, refused: c.refused, exit: c.exit })),
+            identityReplies: second.runner.identityCalls.map((c) => ({ operationId: c.operationId, paths: c.paths, replies: c.replies })),
+            fileFacts: second.runner.fileFactCalls.map((c) => ({ operationId: c.operationId, facts: c.facts })),
+          };
+          console.log(`OBSERVATION t071-changed-digest readWorkspace\n${JSON.stringify(dump, null, 2)}\nEND OBSERVATION`);
+        }
+        expect(outcome(read)).toEqual(SUCCEEDED);
       }),
     TIMEOUT_MS,
   );

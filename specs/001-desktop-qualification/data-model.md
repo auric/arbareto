@@ -69,7 +69,7 @@ Resolve paths through Git before filesystem canonicalization. Never derive paths
 
 On Windows, the shell supplies every volume and file identity (contract §6). An identity is the 64-bit volume serial number plus the 128-bit file ID. Keep this platform behavior outside shared Git semantics.
 
-A WSL identity is the distro GUID, the UUID-derived file-system ID, and the inode number (contract §11). Both come from `stat`. The Linux device number is not part of it, because it can change between distro starts. A file system without a stable ID gives `UNSUPPORTED_REPOSITORY` with reason `no-fs-uuid`. Only ext2, ext3, and ext4 derive the ID from their UUID. `FileIdInfo` fails on WSL paths. Both prefixes of one folder give one normalized UNC identity, so they give one `repositoryId`. A worktree, Git directory, or common directory on the other side gives `UNSUPPORTED_REPOSITORY` with reason `mixed-location`.
+A WSL identity is the distro GUID, the UUID-derived file-system ID, and the inode number (contract §11). Both IDs come from `stat`. Its canonical text is `<distroGuid>:<fileSystemId>:<inode>` (contract §6 "Process fields"), and its SHA-256 gives `worktreeKey`. One trust record or recovery marker holds one identity kind. The Linux device number is not part of it, because it can change between distro starts. A file system without a stable ID gives `UNSUPPORTED_REPOSITORY` with reason `no-fs-uuid`. Only ext2, ext3, and ext4 derive the ID from their UUID. `FileIdInfo` fails on WSL paths. Both prefixes of one folder give one normalized UNC identity, so they give one `repositoryId`. A worktree, Git directory, or common directory on the other side gives `UNSUPPORTED_REPOSITORY` with reason `mixed-location`.
 
 WSL start and poll transitions:
 

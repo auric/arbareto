@@ -1959,6 +1959,23 @@ The probes ran on 2026-09-30 on the host above. They used only session scratch f
 - Design change, 2026-10-01 (spec Clarifications): every wrapper mode now runs its program through `setsid --wait`, not only `network` mode. Reason: a WSL hook in `mutation` mode could open `/dev/tty` on the hidden console and wait until the commit deadline. R14 probe S10 showed that `setsid --wait` under `CREATE_NO_WINDOW` blocks the `/dev/tty` open and passes the exit status. Consequence: Git's children get no `SIGHUP` at the wrapper exit, so the P1 S6 result no longer describes the product. A plain background child now lingers in its scope, as on Windows. The anchor counts it, and the Job close ends it. A distro without `setsid` is refused with reason `no-setsid`.
 - Re-probe needed for that change, before T209 can pass. The probe must show this under `setsid --wait` inside a scope in `mutation` mode. A plain, a `nohup`, and a `setsid` child each survive Git's exit. The anchor counts all three, and a Job close ends them within 1 second. A hook that opens `/dev/tty` fails at once. Git's own `daemonize()` still detaches maintenance inside the scope. T209 runs these cases and reports them here. No probe has run them yet.
 
+### WSL file facts and identity (T212, 2026-10-06)
+
+**Decision** (user, 2026-10-06: "Require Perl"): one fixed Perl script, `/usr/bin/perl`, answers the WSL `fileFacts` requests. The WSL identity probe uses Perl for its failure result too (contract §11). A distro without `/usr/bin/perl` gets `WSL_UNAVAILABLE` with reason `no-perl` at registration.
+
+**Gap 3 evidence**:
+
+- GNU coreutils and findutils report no errno. `stat --printf` exits 1 for every failure, and the cause is only in the message text. `find -printf` exits 0 when all files are OK and above 0 when some error occurred (findutils manual), with no cause per file. `readlink` exits 1 for "not a link" and for an error alike. `test -e` is false for `ENOENT`, `EACCES`, and `EIO` alike. A message text is no contract (CLAUDE.md "No heuristics").
+- `head -c | sha256sum` hides a `head` failure behind the pipe, and dash has no `pipefail` (unverified for dash 0.5.12 and later). `env` and `sh -c exec` give errno-based exit statuses 126 and 127, but only by running the file.
+- Perl `$!` gives the numeric `errno` in numeric context (perlvar). `Fcntl` gives `O_NOFOLLOW` and `O_DIRECTORY`, and `chdir(HANDLE)` uses `fchdir`, so the walk is relative to handles, as on Windows.
+- `perl-base` is `[essential]` in Debian bookworm and Ubuntu noble (packages.debian.org, packages.ubuntu.com). The noble file list holds `/usr/bin/perl`, `Errno.pm`, `Fcntl.pm`, and `POSIX.pm`. `Digest::SHA` is in `libperl`, not `perl-base` (unverified), so the shell computes the digests.
+- Fedora, Arch, openSUSE, and AlmaLinux: their full `git` package brings `/usr/bin/perl`, and `git-core` alone does not. Unverified.
+- The script passed `perl -c` and a smoke run on Cygwin Perl 5.42 against a scratch tree. It has not run on Linux. No distro ran in that session.
+
+**Rejected: a shell walk over `\\wsl.localhost`**. `FileIdInfo` fails with error 50 on that share (P5). No probe covered relative `NtOpenFile`, `OBJ_DONT_REPARSE`, or `FILE_OPEN_REPARSE_POINT` on the 9P redirector. Linux symbolic links show as unfollowable Linux targets (microsoft/WSL#5118) or as LX symlink tags, which give tag `other` and so `unchecked`. `OBJ_CASE_INSENSITIVE` meets case-sensitive ext4, and the share shows no execute bits. A link that the server resolves would be followed below a root, against spec Clarifications 2026-10-05. A probe (P9) must run before any change of this decision.
+
+**Open measurements in T212**: W6, the `fileFacts` cost per WSL read against the 0.4-second WSL full-read budget (each request starts one `wsl.exe` at 150 to 260 ms). W7, the 60-second context lifetime against a cold distro start. T212 reports both numbers, and the main session decides later.
+
 Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-commands), [WSLENV](https://learn.microsoft.com/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl-with-wslenv), [wsl.conf](https://learn.microsoft.com/windows/wsl/wsl-config#wslconf), [systemd in WSL](https://learn.microsoft.com/windows/wsl/systemd), [background tasks](https://devblogs.microsoft.com/commandline/background-task-support-in-wsl/), Git Extensions source clone (PathUtil.cs, GitExecutor.cs, GitStatusMonitor.cs), git-config(1) `maintenance.autoDetach`, pid_namespaces(7).
 
 ## R14. Submodule initialization and update

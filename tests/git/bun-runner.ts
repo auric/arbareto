@@ -340,6 +340,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     files: { root: FileFactsRequest["files"][number]["root"]; path: string[] }[];
     facts: FileFact[];
     bytesRead: number[];
+    // The raw NTSTATUS of each `error` fact on Windows (`win32.ts`). Absent on Linux and for WSL.
+    statuses?: (number | null)[];
   }[] = [];
   // The functions that stop the running calls of each operation.
   const halts = new Map<string, Set<() => void>>();
@@ -866,8 +868,8 @@ export function createBunRunner(options: BunRunnerOptions) {
           fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead: facts.map(() => 0) });
           return facts;
         }
-        const { facts, bytesRead } = readFileFacts(roots, request.digest, request.files);
-        fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead });
+        const { facts, bytesRead, statuses } = readFileFacts(roots, request.digest, request.files);
+        fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead, statuses });
         return facts;
       });
     },
@@ -932,6 +934,7 @@ export function createBunRunner(options: BunRunnerOptions) {
 
     release(target) {
       checkRelease(target);
+      frames.push({ type: "release", ...target });
       if ("repositoryId" in target) repositories.delete(target.repositoryId);
       else {
         gits.delete(target.gitInstallationId);

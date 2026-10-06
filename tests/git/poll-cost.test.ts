@@ -308,7 +308,7 @@ for (const spec of [PERF_M, PERF_L]) {
               const differences = [
                 ...factChanges(before, between).map((d) => `during readWorkspace: ${d}`),
                 ...factChanges(between, after).map((d) => `during readHistory: ${d}`),
-                ...service.runner.fileFactCalls.slice(factCalls).filter((c) => c.facts.some((f) => f.kind === "error")).map((c) => `fileFacts error in ${c.operationId}: ${JSON.stringify(c.facts)}`),
+                ...service.runner.fileFactCalls.slice(factCalls).filter((c) => c.facts.some((f) => f.kind === "error")).map((c) => `fileFacts error in ${c.operationId}: ${JSON.stringify(c.facts)}, NTSTATUS ${JSON.stringify(c.statuses?.map((s) => (s === null ? null : `0x${s.toString(16)}`)))}`),
               ];
               const listings = { ownListing: own.calls.filter((c) => isListing(c.arguments)).length, sharedListing: shared.calls.filter((c) => isListing(c.arguments)).length };
               if (differences.length === 0) {
@@ -321,11 +321,21 @@ for (const spec of [PERF_M, PERF_L]) {
               }
               // Contract §7 "Held history steps": each history step runs once.
               for (const args of [shallowPathArgs(), revListArgs(facts.tip, full.result.identity.objectFormat), batchCommandArgs()]) expect({ args, runs: countOf(shared.calls, args) }).toEqual({ args, runs: 1 });
+              const changeCalls = service.runner.fileFactCalls.length;
               const changes = await readFacts(service, () => service.readWorkspace(repositoryId, CHANGES));
-              expect(changes.calls.length).toBe(0);
-              add('no-change readWorkspace check "changes"', changes);
+              // Contract §8 "Change check": an unknown or changed tuple fact requires a full read.
+              const unknown = [
+                ...differences,
+                ...service.runner.fileFactCalls.slice(changeCalls).filter((c) => c.facts.some((f) => f.kind === "error")).map((c) => `fileFacts error in ${c.operationId}: ${JSON.stringify(c.facts)}, NTSTATUS ${JSON.stringify(c.statuses?.map((s) => (s === null ? null : `0x${s.toString(16)}`)))}`),
+                ...factChanges(after, statFacts(tuplePaths)).map((d) => `during the "changes" read: ${d}`),
+              ];
+              if (unknown.length === 0) {
+                expect(changes.calls.length).toBe(0);
+                add('no-change readWorkspace check "changes"', changes);
+              } else console.log(`OBSERVATION ${TASK}: fixture ${fixture} run ${run}: the "changes" read is not counted, because a tuple fact was unknown or differed: ${unknown.join("; ")}`);
             });
           }
+          expect(samples.get('no-change readWorkspace check "changes"')!.length).toBeGreaterThan(0);
           for (const kind of KINDS) reportKind(fixture, kind, samples.get(kind)!);
         },
         TIMEOUT_MS[spec.name]! * 2,

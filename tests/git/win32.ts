@@ -224,6 +224,9 @@ const OBJECT_ATTRIBUTES_BYTES = 48;
 
 type FactRoot = FileFactsRequest["files"][number]["root"];
 type Opened = { handle: Pointer } | { status: number };
+let keepAlive: unknown;
+// The raw NTSTATUS of the last `error` fact. Test diagnostics only; the contract reply holds no status.
+let errorStatus: number | null = null;
 
 // Opens `name` relative to `parent`, as src-tauri/src/file_facts.rs `open` does. An empty name opens the same file again.
 // `OBJ_DONT_REPARSE` fails the open at each reparse point that the I/O manager would follow.
@@ -244,12 +247,19 @@ function ntOpen(parent: Pointer, name: string, read: boolean, reparsePoint: bool
   const handle = new BigUint64Array(1);
   const access = FILE_READ_ATTRIBUTES | SYNCHRONIZE | (read ? FILE_READ_DATA : 0);
   const options = FILE_SYNCHRONOUS_IO_NONALERT | (reparsePoint ? FILE_OPEN_REPARSE_POINT : 0);
-  const status = ntdll().NtOpenFile(ptr(handle), access, ptr(attributes), ptr(new BigUint64Array(2)), FILE_SHARE_ALL, options);
+  const io = new BigUint64Array(2);
+  const status = ntdll().NtOpenFile(ptr(handle), access, ptr(attributes), ptr(io), FILE_SHARE_ALL, options);
+  // `ptr()` returns a plain number, and `bun:ffi` does not manage memory (Bun docs "FFI", "Memory management").
+  // The call reaches `units` and `objectName` only through raw pointers. A store to module state keeps every buffer reachable until the call returns.
+  keepAlive = [units, objectName, attributes, io];
   return failed(status) ? { status } : { handle: Number(handle[0]) as Pointer };
 }
 
 function query(handle: Pointer, info: Uint8Array, infoClass: number): number {
-  return ntdll().NtQueryInformationFile(handle, ptr(new BigUint64Array(2)), ptr(info), info.length, infoClass);
+  const io = new BigUint64Array(2);
+  const status = ntdll().NtQueryInformationFile(handle, ptr(io), ptr(info), info.length, infoClass);
+  keepAlive = io;
+  return status;
 }
 
 // Reads at most `limit` bytes from the current position of a synchronous handle.
@@ -268,6 +278,7 @@ function readData(handle: Pointer, limit: number): Uint8Array | { status: number
 
 // Contract §6 "File facts": the `error` code of each status.
 function errorFact(component: number, status: number): FileFact {
+  errorStatus = status;
   const code = status === STATUS_ACCESS_DENIED ? "access-denied" : status === STATUS_SHARING_VIOLATION ? "sharing-violation" : status === STATUS_IO_DEVICE_ERROR ? "io-error" : "other-error";
   return { kind: "error", component, code };
 }
@@ -311,22 +322,26 @@ function link(handle: Pointer, tag: number, component: number): FileFact {
 
 // Contract §6 "File facts", by the rules of src-tauri/src/file_facts.rs `walk`. One fact per entry, in request order.
 // `bytesRead` counts the file data bytes of each entry. Each component opens relative to its parent handle, so no link below a root is followed.
-export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, files: FileFactsRequest["files"]): { facts: FileFact[]; bytesRead: number[] } {
+// `statuses` holds the raw NTSTATUS of each `error` fact, and null for other facts. A root open maps its Win32 error through `ROOT_STATUS`.
+export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, files: FileFactsRequest["files"]): { facts: FileFact[]; bytesRead: number[]; statuses: (number | null)[] } {
   // The digested bytes that the request can still take. Null after the first file that passed the total.
   let budget: number | null = TRUST_DIGEST_TOTAL_BYTES;
   const facts: FileFact[] = [];
   const bytesRead: number[] = [];
+  const statuses: (number | null)[] = [];
   for (const { root, path } of files) {
     const opened: Pointer[] = [];
     const read = { bytes: 0 };
+    errorStatus = null;
     try {
       facts.push(entryFact(roots[root], path, opened, read));
     } finally {
       for (const handle of opened) kernel32().CloseHandle(handle);
     }
     bytesRead.push(read.bytes);
+    statuses.push(facts.at(-1)!.kind === "error" ? errorStatus : null);
   }
-  return { facts, bytesRead };
+  return { facts, bytesRead, statuses };
 
   // `component` counts the components of `path` from 1. Component 0 is the root, opened as the identity request opens a path.
   function entryFact(rootPath: string, path: readonly string[], opened: Pointer[], read: { bytes: number }): FileFact {

@@ -502,7 +502,7 @@ export function buildF08(git: string, name: string, variant: "sha1" | "sha256" |
   return { id: "F08", variant, root, facts };
 }
 
-export type F10Variant = "lock" | "merge" | "rebase" | "cherry-pick" | "revert" | "split-index" | "split-config" | "flags" | "sparse";
+export type F10Variant = "lock" | "merge" | "rebase" | "cherry-pick" | "sequencer" | "am" | "revert" | "split-index" | "split-config" | "flags" | "sparse";
 
 // F10: locks, conflicts, unfinished operations, split index, index flags, and a sparse checkout with a full index.
 // The global-scope `core.splitIndex` case and `GIT_TEST_SPLIT_INDEX` belong to the test, because the owned global file serves every fixture in a run.
@@ -559,6 +559,34 @@ export function buildF10(git: string, name: string, variant: F10Variant): Built 
       normalizeIndex(r);
       facts.repos.repo = conflictFacts("CHERRY_PICK_HEAD");
       break;
+    case "sequencer": {
+      // The first pick conflicts. A plain `git commit` then removes CHERRY_PICK_HEAD, and `sequencer/` stays for the second pick.
+      side("side", base, "side\n");
+      run(r, ["checkout", "-q", "side"]);
+      put(r.dir, "second.txt", "second\n");
+      add(r, "second.txt");
+      refs["refs/heads/side"] = commit(r, "second");
+      run(r, ["checkout", "-q", "main"]);
+      onMain("main\n", "main");
+      run(r, ["cherry-pick", "side~1", "side"], { allowExit: [1] });
+      put(r.dir, "conflict.txt", "resolved\n");
+      add(r, "conflict.txt");
+      run(r, ["commit", "-q", "--no-verify", "--no-edit"]);
+      refs["refs/heads/main"] = rev(r, "HEAD");
+      normalizeIndex(r);
+      facts.repos.repo = repoFacts(r, { refs, markers: ["sequencer"] });
+      break;
+    }
+    case "am": {
+      // The patch changes the `base` line that main replaced, so `git am` stops and keeps `rebase-apply/applying`.
+      side("side", base, "side\n");
+      onMain("main\n", "main");
+      const patch = run(r, ["format-patch", "-1", "--stdout", "side"]);
+      run(r, ["am", "-q"], { input: Buffer.from(patch), allowExit: [128] });
+      normalizeIndex(r);
+      facts.repos.repo = repoFacts(r, { refs, markers: ["rebase-apply/applying"] });
+      break;
+    }
     case "revert": {
       const middle = onMain("middle\n", "middle");
       onMain("last\n", "last");

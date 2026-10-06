@@ -1988,6 +1988,39 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
   );
 
   caseTest(
+    "T322",
+    "a missing include.path target that appears between a full readWorkspace and a readHistory of its generation makes the readHistory start its own config list",
+    W,
+    () =>
+      withService({ name: "t322-new-candidate" }, async (service) => {
+        const built = buildF02(gitPath(), "t322-new-candidate");
+        const repo = repoOf(built);
+        const target = join(built.root, "t322-include.gitconfig");
+        config(repo, "include.path", slash(target));
+        expect(existsSync(target)).toBe(false);
+        const { repositoryId } = await service.register(repo);
+        // The first read after registration keeps no tuple (contract §7 "Shared listing").
+        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+
+        let from = service.runner.calls.length;
+        let workspace = await service.readWorkspace(repositoryId);
+        let history = await service.readHistory(repositoryId, workspace.result!.generation);
+        expect({ history: outcome(history), workspace: outcome(workspace) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
+        expect(listings(service, from)).toEqual({ configList: 1, hooksPath: 1 });
+
+        from = service.runner.calls.length;
+        workspace = await service.readWorkspace(repositoryId);
+        writeFileSync(target, "[t322]\n\tnote = new\n");
+        // Oracle: Git reads the new target with the scope of the file that names it.
+        expect(configListing(repo).filter((e) => e.key === "t322.note").map((e) => ({ scope: e.scope, origin: originPath(e.origin, repo) }))).toEqual([{ scope: "local", origin: samePath(target) }]);
+        history = await service.readHistory(repositoryId, workspace.result!.generation);
+        expect({ history: outcome(history), workspace: outcome(workspace) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
+        expect(listings(service, from)).toEqual({ configList: 2, hooksPath: 2 });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
     "T080",
     "a readHistory that waits for the shared listing of a held readWorkspace ends canceled after cancel, while the readWorkspace still waits",
     W,

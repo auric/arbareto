@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import * as LIMITS from "../../src/contracts/limits";
 import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
 import { createRegistrations, type Workspace } from "../../src/git-service/registration";
@@ -280,6 +280,35 @@ describe("F10 conflicts and index flags", () => {
           for (const path of built.facts.repos.repo!.conflicted) expect({ path, categories: categories[b64(path)] }).toEqual({ path, categories: ["conflicted"] });
           expect(categories).toEqual(oracleCategories(git, f(built)));
           expect(["conflicted", operation]).toContain(result.operationState);
+        }),
+      TIMEOUT_MS,
+    );
+  }
+
+  // Git `wt-status.c` `wt_status_get_state` reads these Git-directory paths. Data-model §2 has no value for `git am`.
+  const MARKERS = ["MERGE_HEAD", "rebase-apply", "rebase-apply/applying", "rebase-merge", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"] as const;
+  const STATES = [
+    { label: "F02 clean copy", name: "t322-normal", build: (git: string, name: string) => buildF02(git, name), present: [], expected: "normal" },
+    { label: "F10 sequencer", name: "t322-sequencer", build: (git: string, name: string) => buildF10(git, name, "sequencer"), present: ["sequencer"], expected: "sequencer-active" },
+    { label: "F10 am", name: "t322-am", build: (git: string, name: string) => buildF10(git, name, "am"), present: ["rebase-apply", "rebase-apply/applying"], expected: "unknown" },
+  ] as const;
+
+  for (const { label, name, build, present, expected } of STATES) {
+    caseTest(
+      "T322",
+      `${label}: the Git-directory markers ${present.length === 0 ? "are absent" : present.join(" and ")} and no unmerged entry give operationState ${expected}`,
+      ["shell-double"],
+      () =>
+        withService(name, async (service) => {
+          const git = gitPath();
+          const repo = f(build(git, name));
+          const paths = ownedGit(git, FIXTURE_ROOT, repo, ["rev-parse", ...MARKERS.flatMap((m) => ["--git-path", m])]).toString("utf8").trimEnd().split("\n");
+          expect(paths.length).toBe(MARKERS.length);
+          const exists = MARKERS.filter((_, i) => existsSync(resolve(repo, paths[i]!)));
+          expect(exists).toEqual([...present]);
+          if (exists.includes("sequencer")) expect(statSync(resolve(repo, paths[MARKERS.indexOf("sequencer")]!)).isDirectory()).toBe(true);
+          expect(indexEntries(git, repo).filter((e) => e.stage !== 0)).toEqual([]);
+          expect((await readSucceeded(service, repo)).operationState).toBe(expected);
         }),
       TIMEOUT_MS,
     );

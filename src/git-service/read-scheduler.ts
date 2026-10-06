@@ -46,7 +46,7 @@ function report(job: Job, end: ReadEnd<unknown, unknown>): void {
   try {
     job.end(end);
   } catch {
-    // ponytail: a throwing `end` loses its terminal response. T089 bounds the frames that `respond` can refuse.
+    // `respond` sends OUTPUT_LIMIT for a response above the frame bound (contract §2). Another throw is a failed pipe write, which no response can reach.
   }
 }
 

@@ -16,7 +16,7 @@ import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
 import { createRegistrations, type RegistrationOutcome } from "./registration";
 import { createWorkspaceReader, type ReadOutcome } from "./status";
-import { isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
+import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
 
@@ -63,19 +63,30 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
 
   // Contract §2: the envelope fields that the response of a validated request repeats, by `requestId`.
   const echoes = new Map<string, { operation: string; repositoryGeneration?: number; selectionId?: string }>();
-  const respond = (response: Response) => {
+  // Returns the response that the writer sent.
+  const respond = (response: Response): Response => {
     if (response.state === "rejected" && !codeFitsState("rejected", response.code)) throw new Error("rejected response needs an error code");
     const echo = response.requestId === null ? undefined : echoes.get(response.requestId);
-    if (echo === undefined) return writer.write({ kind: "public", response });
-    echoes.delete(response.requestId!);
-    // Contract §2: a `readWorkspace` response with a result carries the generation of that result.
-    const generation = echo.operation === "readWorkspace" && isObject(response.result) && typeof response.result.generation === "number" ? response.result.generation : echo.repositoryGeneration;
-    writer.write({
-      kind: "public",
-      response: { ...response, ...(generation === undefined ? {} : { repositoryGeneration: generation }), ...(echo.selectionId === undefined ? {} : { selectionId: echo.selectionId }) },
-    });
+    const send = (sent: Response) => {
+      // Contract §2: a `readWorkspace` response with a result carries the generation of that result.
+      const generation = echo?.operation === "readWorkspace" && isObject(sent.result) && typeof sent.result.generation === "number" ? sent.result.generation : echo?.repositoryGeneration;
+      writer.write({
+        kind: "public",
+        response: { ...sent, ...(generation === undefined ? {} : { repositoryGeneration: generation }), ...(echo?.selectionId === undefined ? {} : { selectionId: echo.selectionId }) },
+      });
+      return sent;
+    };
+    try {
+      return send(response);
+    } catch (error) {
+      if (!(error instanceof FrameBoundError)) throw error;
+      // Contract §2: a response that cannot be encoded within the frame bound becomes a terminal `failed` response with OUTPUT_LIMIT.
+      return send({ requestId: response.requestId, ...(response.operationId === undefined ? {} : { operationId: response.operationId }), state: "failed", code: "OUTPUT_LIMIT" });
+    } finally {
+      if (echo !== undefined) echoes.delete(response.requestId!);
+    }
   };
-  const reject = (requestId: string | null, code: ErrorCode) => respond({ requestId, state: "rejected", code });
+  const reject = (requestId: string | null, code: ErrorCode) => void respond({ requestId, state: "rejected", code });
   const requestIdOf = (envelope: unknown) => (isObject(envelope) && isIdentifier(envelope.requestId) ? envelope.requestId : null);
   // Contract §1: the shell forwards a body that its own JSON parse accepts. So a plain parse finds the `requestId` of a refused body.
   const plainRequestId = (body: Uint8Array) => {
@@ -178,7 +189,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     registrations.register(target).then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
   };
 
-  // T080 wiring of `approveTrust` and `revokeTrust`. T089 moves them behind `read-scheduler.ts`.
+  // `approveTrust` and `revokeTrust` take no read slot. Contract §6: a release cancels neither, and `approveTrust` waits for the native confirmation.
   // `accept` runs the acceptance check of contract §9 before any Git process. A refusal ends `rejected`.
   const trustOperation = <R>(
     request: Extract<ServiceRequest, { operation: "readTrust" | "approveTrust" | "revokeTrust" }>,

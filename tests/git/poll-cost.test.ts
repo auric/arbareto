@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect } from "bun:test";
+import { readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { batchCommandArgs, configListArgs, discoveryLayoutArgs, discoveryProfiles, hooksPathArgs, revListArgs, shallowPathArgs, statusArgs } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { copyPerfFixture, ensurePerfFixture, PERF_L, PERF_M, type PerfFacts, type PerfSpec } from "../windows/perf-fixtures";
-import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
+import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { GIT } from "./git-binary";
 import type { RecordedCall } from "./bun-runner";
 import { caseTest, openService, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
@@ -198,6 +200,35 @@ async function readFacts<R>(service: Service, read: () => Promise<ServiceRespons
   return { wallMs, bytes: Buffer.byteLength(JSON.stringify(response)), calls, result: response.result! };
 }
 
+// Contract §7 "Shared listing": the tuple files are the index, HEAD, packed-refs, the branch ref file, and each config origin.
+function tupleFiles(repo: string): string[] {
+  const gitDir = join(repo, ".git");
+  const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+  if (!head.startsWith("ref: ")) throw new Error(`HEAD is not a symbolic ref: ${head}`);
+  const config = Bun.spawnSync([gitPath(), "config", "list", "--show-origin", "-z"], { cwd: repo, env: serviceEnv() });
+  if (config.exitCode !== 0) throw new Error(`git config list exited ${config.exitCode}`);
+  // `-z` prints origin NUL key LF value NUL for each entry.
+  const fields = config.stdout.toString().split("\0").slice(0, -1);
+  const origins = new Set<string>();
+  for (let i = 0; i < fields.length; i += 2) if (fields[i]!.startsWith("file:")) origins.add(resolve(repo, fields[i]!.slice("file:".length)));
+  return [join(gitDir, "index"), join(gitDir, "HEAD"), join(gitDir, "packed-refs"), join(gitDir, head.slice("ref: ".length)), ...origins];
+}
+
+function statFacts(paths: readonly string[]): Map<string, string> {
+  const facts = new Map<string, string>();
+  for (const path of paths) {
+    try {
+      const s = statSync(path, { bigint: true });
+      facts.set(path, `${s.size}:${s.mtimeNs}`);
+    } catch (e) {
+      facts.set(path, `error:${(e as NodeJS.ErrnoException).code}`);
+    }
+  }
+  return facts;
+}
+
+const factChanges = (a: Map<string, string>, b: Map<string, string>) => [...a].filter(([path, fact]) => b.get(path) !== fact).map(([path, fact]) => `${path}: ${fact} -> ${b.get(path)}`);
+
 const KINDS = ["discovery", "trust listing", 'readWorkspace check "full"', 'no-change readWorkspace check "changes"', "readHistory with its own trust listing", "readHistory with a shared trust listing"] as const;
 type Kind = (typeof KINDS)[number];
 
@@ -239,6 +270,7 @@ for (const spec of [PERF_M, PERF_L]) {
         async () => {
           const { repo, facts } = copyOf(spec, commitGraph);
           expect(facts.commitGraph).toBe(commitGraph);
+          const tuplePaths = tupleFiles(repo);
           const samples = new Map<Kind, ReadFacts[]>(KINDS.map((kind) => [kind, []]));
           const add = (kind: Kind, sample: ReadFacts) => samples.get(kind)!.push(sample);
           for (let run = 0; run < RUNS; run++) {
@@ -262,14 +294,31 @@ for (const spec of [PERF_M, PERF_L]) {
               const { repositoryId } = await service.register(repo);
               // T088 decision E6: the first full read after registration has no tuple before its listing, so it shares no listing. This warm-up read is not a sample.
               await readFacts(service, () => service.readWorkspace(repositoryId, FULL));
+              const factCalls = service.runner.fileFactCalls.length;
+              const before = statFacts(tuplePaths);
               const full = await readFacts(service, () => service.readWorkspace(repositoryId, FULL));
+              const between = statFacts(tuplePaths);
               expect(countOf(full.calls, statusArgs())).toBe(1);
               add('readWorkspace check "full"', full);
               const shared = await readFacts(service, () => service.readHistory(repositoryId, full.result.generation));
+              const after = statFacts(tuplePaths);
               add("readHistory with a shared trust listing", shared);
-              // Contract §7 "Shared listing": the shared listing removes exactly the 2 listing processes from the second read.
-              expect({ ownListing: own.calls.filter((c) => isListing(c.arguments)).length, sharedListing: shared.calls.filter((c) => isListing(c.arguments)).length }).toEqual({ ownListing: 2, sharedListing: 0 });
-              expect(sortedArgs(shared.calls)).toEqual(sortedArgs(own.calls.filter((c) => !isListing(c.arguments))));
+              // Contract §7 "Shared listing": any tuple difference or unknown fact requires an own listing.
+              // Blind spot: a `stat` failure inside the service is not visible to the test.
+              const differences = [
+                ...factChanges(before, between).map((d) => `during readWorkspace: ${d}`),
+                ...factChanges(between, after).map((d) => `during readHistory: ${d}`),
+                ...service.runner.fileFactCalls.slice(factCalls).filter((c) => c.facts.some((f) => f.kind === "error")).map((c) => `fileFacts error in ${c.operationId}: ${JSON.stringify(c.facts)}`),
+              ];
+              const listings = { ownListing: own.calls.filter((c) => isListing(c.arguments)).length, sharedListing: shared.calls.filter((c) => isListing(c.arguments)).length };
+              if (differences.length === 0) {
+                // The shared listing removes exactly the 2 listing processes from the second read.
+                expect(listings).toEqual({ ownListing: 2, sharedListing: 0 });
+                expect(sortedArgs(shared.calls)).toEqual(sortedArgs(own.calls.filter((c) => !isListing(c.arguments))));
+              } else {
+                console.log(`OBSERVATION ${TASK}: fixture ${fixture} run ${run}: tuple facts differ, so readHistory runs its own listing: ${differences.join("; ")}`);
+                expect(listings).toEqual({ ownListing: 2, sharedListing: 2 });
+              }
               // Contract §7 "Held history steps": each history step runs once.
               for (const args of [shallowPathArgs(), revListArgs(facts.tip, full.result.identity.objectFormat), batchCommandArgs()]) expect({ args, runs: countOf(shared.calls, args) }).toEqual({ args, runs: 1 });
               const changes = await readFacts(service, () => service.readWorkspace(repositoryId, CHANGES));

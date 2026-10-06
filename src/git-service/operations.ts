@@ -26,7 +26,8 @@ interface Entry {
 const isTerminal = (state: string) => (TERMINAL_STATES as readonly string[]).includes(state);
 
 export function createOperationRegistry(
-  respond: (response: Response) => void,
+  // Returns the response that it sent, when that differs from its argument (contract §2 frame bound).
+  respond: (response: Response) => Response | void,
   progress: (event: ProgressEvent) => void,
   log: SessionLog,
   runner: Pick<GitRunner, "closeJob" | "ended">,
@@ -69,8 +70,11 @@ export function createOperationRegistry(
       if (event.type === "marker-recorded") e.marker = true;
       if (actions.includes("signal-owned-processes")) e.controller.abort();
       if (terminalResponse) {
+        const response: Response = { requestId: e.requestId, operationId, state: e.view.state as TerminalState, ...(e.view.code ? { code: e.view.code as ErrorCode } : {}), ...(result === undefined ? {} : { result }) };
+        const sent = respond(response);
+        // `getOperation` reports the terminal state of the response that the renderer got.
+        if (sent && sent !== response) e.view = { ...e.view, state: sent.state, ...(sent.code === undefined ? {} : { code: sent.code }) };
         const code = e.view.code as ErrorCode | undefined;
-        respond({ requestId: e.requestId, operationId, state: e.view.state as TerminalState, ...(code ? { code } : {}), ...(result === undefined ? {} : { result }) });
         log.record({
           kind: e.view.operation as OperationName,
           operationId,

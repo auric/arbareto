@@ -788,7 +788,7 @@ export function buildF16History(git: string, name: string, variant: F16HistoryVa
   return { id: "F16", variant: `history-${variant}`, root, facts };
 }
 
-export type F17Variant = "trust" | "partial-reset-soft" | "partial-read-tree";
+export type F17Variant = "trust" | "partial-reset-soft" | "partial-read-tree" | "partial-tree-none";
 
 // F17: hostile repository content and repository-scope programs with execution canaries. The partial-clone variants make a new clone on each call.
 export function buildF17(git: string, name: string, variant: F17Variant): Built {
@@ -841,12 +841,20 @@ export function buildF17(git: string, name: string, variant: F17Variant): Built 
     tips.push(commit(src, `version ${i}`));
   }
   const url = pathToFileURL(src.dir).href;
-  run({ git, dir: root, pre: [] }, ["clone", "-q", "--filter=blob:none", url, "clone"]);
+  // partial-tree-none: the HEAD commit is present, and its root tree is missing. The clone has no index.
+  const treeNone = variant === "partial-tree-none";
+  run({ git, dir: root, pre: [] }, ["clone", "-q", ...(treeNone ? ["--filter=tree:0", "--no-checkout"] : ["--filter=blob:none"]), url, "clone"]);
   const c: Repo = { git, dir: join(root, "clone"), pre: ["--no-lazy-fetch"] };
   lineEndings(c);
   run(c, ["config", "remote.origin.uploadpack", canary(root, facts, "uploadpack", 'exec git-upload-pack "$@"\n')]);
   const old = tips[0]!;
   const tip = tips[3]!;
+  if (treeNone) {
+    facts.repos.clone = repoFacts(c, { refs: { "refs/heads/main": tip, "refs/remotes/origin/HEAD": tip, "refs/remotes/origin/main": tip } });
+    facts.notes.missingTree = run(src, ["rev-parse", `${tip}^{tree}`]).trim();
+    facts.notes.commits = { old, tip };
+    return { id: "F17", variant, root, facts };
+  }
   if (variant === "partial-reset-soft") run(c, ["reset", "-q", "--soft", "HEAD~3"]);
   else run(c, ["read-tree", "HEAD~3"]);
   normalizeIndex(c);

@@ -142,7 +142,7 @@ describeGit("fixture builders", (git) => {
     test(`F08 ${variant}`, () => check(git, `F08 ${variant}`, (n) => F.buildF08(git, n, variant)), TIMEOUT);
   }
 
-  for (const variant of ["lock", "merge", "rebase", "cherry-pick", "revert", "split-index", "split-config", "flags", "sparse"] as const) {
+  for (const variant of ["lock", "merge", "rebase", "cherry-pick", "sequencer", "revert", "split-index", "split-config", "flags", "sparse"] as const) {
     test(`F10 ${variant}`, () =>
       check(git, `F10 ${variant}`, (n) => F.buildF10(git, n, variant), (g, b) => {
         const gitDir = join(b.root, "repo", ".git");

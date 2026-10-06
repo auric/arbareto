@@ -387,7 +387,7 @@ describe("unfinished mutations and release effects (contract §6 \"Registration 
 
   caseTest(
     RELEASE_TASK,
-    "with an unfinished mutation in a workspace of the current Git, a chooseGit that issues a new gitInstallationId gives BUSY and sends no release of that workspace or of the current Git",
+    "with an unfinished mutation in a workspace of the current Git, a chooseGit that issues a new gitInstallationId gives BUSY, sends no release of that workspace or of the current Git, and sends one release of the new ID",
     ["shell-double"],
     () =>
       withBusySeam("t321-busy-git", async (service, seam) => {
@@ -395,15 +395,22 @@ describe("unfinished mutations and release effects (contract §6 \"Registration 
         const repo = join(buildF02(git, "t321-busy-git").root, "repo");
         const { repositoryId } = await service.register(repo);
         const chooseGit = () => service.request("chooseGit", { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        // The startup `chooseGit` of the harness is the only earlier response with a `gitInstallationId`.
+        const current = (service.responses.find((r) => typeof (r.result as { gitInstallationId?: unknown } | undefined)?.gitInstallationId === "string")!.result as { gitInstallationId: string }).gitInstallationId;
         seam.busy.add(repositoryId);
+        const framesBefore = service.runner.frames.length;
         const busy = await chooseGit();
         expect({ state: busy.state, code: busy.code, releases: seam.releases }).toEqual({ state: "failed", code: "BUSY", releases: [] });
+        // The shell bound the new ID before the BUSY reply, so the service sends exactly one `release` for it.
+        const shellReleases = service.runner.frames.slice(framesBefore).filter((f) => f.type === "release");
+        expect(shellReleases).toEqual([{ type: "release", gitInstallationId: expect.any(String) }]);
+        expect(shellReleases[0]!.gitInstallationId).not.toBe(current);
         const read = await codeAndSpawns(service, () => service.readWorkspace(repositoryId));
         expect({ state: read.state, ran: read.runs > 0 }).toEqual({ state: "succeeded", ran: true });
         // Without the unfinished mutation, the same chooseGit issues a new gitInstallationId and releases the workspace and the current Git.
         seam.busy.clear();
         const chosen = await chooseGit();
-        expect({ state: chosen.state, releases: seam.releases }).toEqual({ state: "succeeded", releases: [{ repositoryId }, { gitInstallationId: expect.any(String) }] });
+        expect({ state: chosen.state, releases: seam.releases }).toEqual({ state: "succeeded", releases: [{ repositoryId }, { gitInstallationId: current }] });
       }),
     TIMEOUT_MS,
   );

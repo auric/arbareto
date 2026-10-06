@@ -8,15 +8,14 @@
 const REPO = "DietrichGebert/ponytail";
 const UPSTREAM_DIR = "skills/ponytail-review";
 const MAX_BYTES = 256 * 1024;
+const TIMEOUT_MS = 7000;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const dir = import.meta.dir;
 const sourcePath = `${dir}/SOURCE.md`;
 
-async function get(url: string, accept?: string): Promise<Uint8Array> {
+async function get(url: string): Promise<Uint8Array> {
   if (!url.startsWith("https://")) throw new Error(`refused non-HTTPS URL ${url}`);
-  const headers: Record<string, string> = { "User-Agent": "arbareto-ponytail-update" };
-  if (accept) headers.Accept = accept;
-  const res = await fetch(url, { headers, redirect: "error" });
+  const res = await fetch(url, { headers: { "User-Agent": "arbareto-ponytail-update" }, redirect: "error" });
   if (!res.ok || !res.body) throw new Error(`GET ${url} returned HTTP ${res.status}`);
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -30,12 +29,21 @@ async function get(url: string, accept?: string): Promise<Uint8Array> {
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
+// Unauthenticated cloud requests to api.github.com get HTTP 403. github.com/<repo>/releases/latest redirects to the latest release tag.
 async function latest(): Promise<{ tag: string; sha: string }> {
-  const release = JSON.parse(text(await get(`https://api.github.com/repos/${REPO}/releases/latest`, "application/vnd.github+json")));
-  const tag = release.tag_name;
-  if (typeof tag !== "string" || !/^v?\d+\.\d+\.\d+$/.test(tag)) throw new Error(`unexpected release tag ${JSON.stringify(tag)}`);
-  // The commits endpoint peels annotated tags to the commit.
-  const sha = text(await get(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(tag)}`, "application/vnd.github.sha")).trim();
+  const url = `https://github.com/${REPO}/releases/latest`;
+  const res = await fetch(url, { headers: { "User-Agent": "arbareto-ponytail-update" }, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
+  const location = res.headers.get("location") ?? "";
+  const prefix = `https://github.com/${REPO}/releases/tag/`;
+  const tag = location.startsWith(prefix) ? decodeURIComponent(location.slice(prefix.length)) : "";
+  if (res.status !== 302 || !/^v?\d+\.\d+\.\d+$/.test(tag)) throw new Error(`GET ${url} returned HTTP ${res.status} to ${JSON.stringify(location)}`);
+  // The "^{}" line peels an annotated tag to its commit. A lightweight tag has no such line.
+  const ref = `refs/tags/${tag}`;
+  const git = Bun.spawn(["git", "ls-remote", "--exit-code", `https://github.com/${REPO}.git`, ref, `${ref}^{}`], { stdout: "pipe", stderr: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: TIMEOUT_MS });
+  const [out, code] = await Promise.all([new Response(git.stdout).text(), git.exited]);
+  if (code !== 0) throw new Error(`git ls-remote ${ref} exited with ${code}`);
+  const refs = new Map(out.split("\n").filter(Boolean).map((line) => line.split("\t") as [string, string]).map(([sha, name]) => [name, sha]));
+  const sha = refs.get(`${ref}^{}`) ?? refs.get(ref) ?? "";
   if (!SHA_RE.test(sha)) throw new Error(`unexpected commit SHA for ${tag}`);
   return { tag, sha };
 }

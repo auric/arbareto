@@ -7,7 +7,7 @@
 # Hook stdout enters the session context. So the full output goes to ${TMPDIR:-/tmp}/arbareto-cloud-setup.log, and only the script's own messages go to stdout.
 # It installs Git 2.55 or newer from the git-core PPA and Bun 1.4.2, then runs "bun install --frozen-lockfile".
 # It installs specify-cli 1.0.12 from PyPI with "uv tool install", or with "pip install --user" when uv is absent. A failed install does not stop the session.
-# It installs CodeGraph 1.6.0 from the upstream GitHub release. It builds the index with "codegraph init -y", or runs "codegraph sync" when .codegraph/ exists. A failed step does not stop the session.
+# It installs CodeGraph 1.6.0 from the upstream GitHub release. It builds the index with "codegraph init -y", or runs "codegraph sync" when .codegraph/codegraph.db exists. A failed step does not stop the session.
 # The CodeGraph bundle contains its own Node runtime. The script does not install Node.
 # It runs "bun .claude/skills/ponytail-review/update.ts --check". Only a "behind" result prints a line to stdout.
 # It writes .specify/feature.json, which Git ignores, when the file is absent. The Spec Kit scripts read the active feature from it.
@@ -84,7 +84,8 @@ if [ -e "$image_bun" ] && [ "$("$image_bun" --version 2>/dev/null || true)" != "
   ln -sf /usr/local/bin/bun /root/.bun/bin/bunx
   hash -r
 fi
-[ "$(readlink -f "$(command -v bun)")" = /usr/local/bin/bun ] || echo "Warning: 'bun' on PATH is $(command -v bun), not /usr/local/bin/bun." >&3
+# The image can link /usr/local/bin/bun to /root/.bun/bin/bun. Compare resolved paths on both sides.
+[ "$(readlink -f "$(command -v bun)")" = "$(readlink -f /usr/local/bin/bun)" ] || echo "Warning: 'bun' on PATH is $(command -v bun), not /usr/local/bin/bun." >&3
 
 # Bash ignores "set -e" on the left side of "||". Each step must chain with "&&".
 # The bin/codegraph launcher resolves its symlink to find the bundle.
@@ -127,7 +128,8 @@ if repo_root="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)
   (cd "$repo_root" && /usr/local/bin/bun install --frozen-lockfile) || echo "bun install failed. Run 'bun install --frozen-lockfile' in the session." >&3
   # telemetry.getcodegraph.com is not on the allowlist.
   if [ -x /usr/local/bin/codegraph ]; then
-    if [ -d "$repo_root/.codegraph" ]; then
+    # Git tracks .codegraph/.gitignore, so the folder always exists. Only the database marks an index.
+    if [ -e "$repo_root/.codegraph/codegraph.db" ]; then
       (cd "$repo_root" && CODEGRAPH_TELEMETRY=0 /usr/local/bin/codegraph sync) || echo "codegraph sync failed. Run 'codegraph sync' in the session." >&3
     else
       (cd "$repo_root" && CODEGRAPH_TELEMETRY=0 /usr/local/bin/codegraph init -y) || echo "codegraph init failed. Run 'codegraph init -y' in the session." >&3

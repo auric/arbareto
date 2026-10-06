@@ -69,6 +69,8 @@ export interface CommitObject {
   oid: string;
   size: number;
   content: Uint8Array;
+  // The `tree` header value.
+  tree: string;
   // The raw `parent` headers. They include parents that a shallow boundary hides from the traversal.
   parents: string[];
   // The `encoding` header value, or null without the header.
@@ -88,7 +90,7 @@ export const HEADER_BYTES = 64 + " commit ".length + 20;
 
 // Upstream commit.c `parse_commit_buffer`: the header starts with one `tree` line, then the `parent` lines follow directly.
 // Upstream commit.c `get_header`: a header line ends at LF, and the header block ends at the first empty line.
-function readHeaders(content: Uint8Array, hex: RegExp): { parents: string[]; encoding: string | null } | null {
+function readHeaders(content: Uint8Array, hex: RegExp): { tree: string; parents: string[]; encoding: string | null } | null {
   const blank = Buffer.from(content.buffer, content.byteOffset, content.byteLength).indexOf("\n\n");
   const lines = latin1(content.subarray(0, blank === -1 ? content.length : blank)).split("\n");
   const tree = lines[0]!;
@@ -101,7 +103,7 @@ function readHeaders(content: Uint8Array, hex: RegExp): { parents: string[]; enc
     parents.push(parent);
   }
   const encoding = lines.slice(i).find((line) => line.startsWith("encoding "));
-  return { parents, encoding: encoding === undefined ? null : new TextDecoder().decode(Buffer.from(encoding.slice("encoding ".length), "latin1")) };
+  return { tree: tree.slice("tree ".length), parents, encoding: encoding === undefined ? null : new TextDecoder().decode(Buffer.from(encoding.slice("encoding ".length), "latin1")) };
 }
 
 // Input: the stdout of `batchCommandArgs` (`cat-file --batch-command -Z`) for one `contents <oid>` command per `requested` OID.
@@ -135,7 +137,7 @@ export function parseCommitObjects(stdout: Uint8Array, requested: readonly strin
     if (headers.parents.length > HISTORY_PARENTS_PER_COMMIT) return { objects, completeness: limited("HISTORY_PARENTS_PER_COMMIT") };
     if (references + headers.parents.length > HISTORY_PARENTS_PER_PAGE) return { objects, completeness: limited("HISTORY_PARENTS_PER_PAGE") };
     references += headers.parents.length;
-    objects.push({ oid, size, content, parents: headers.parents, encoding: headers.encoding });
+    objects.push({ oid, size, content, tree: headers.tree, parents: headers.parents, encoding: headers.encoding });
     at = start + size + 1;
   }
   if (at !== stdout.length) return { objects, completeness: MALFORMED };

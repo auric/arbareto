@@ -9,6 +9,7 @@ import type { ChangeEntry, ReadEntriesResult, WorkspaceRefusal, WorkspaceSnapsho
 import type { ErrorCode } from "../contracts/errors";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
+  HISTORY_COMMIT_OBJECT_BYTES,
   IDENTITY_PATHS,
   MUTATION_RAW_INDEX_BYTES,
   STATUS_LISTING_BYTES,
@@ -18,6 +19,8 @@ import {
 import { NATIVE } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import {
+  batchCommandArgs,
+  headOidArgs,
   headTargetArgs,
   indexEntryArgs,
   isObjectId,
@@ -33,6 +36,7 @@ import {
 } from "./commands";
 import { hunkEligibility, IndexFormatError, type HunkEligibility } from "./eligibility";
 import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
+import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
 import { sameIdentity } from "./identity";
 import { contextOf, encodedBytes, isMissing, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -439,6 +443,31 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     return objectCheckOutcome(step, out, oids);
   }
 
+  // Git can fail before it prints `# branch.oid`. git-rev-parse(1) `--verify -q`: on success, Git prints the full object ID. Other results give null.
+  async function headCommit(t: ReadWorkspaceTarget): Promise<string | null | "canceled" | "deadline"> {
+    const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+    const step = await run(t, headOidArgs(), out);
+    if (t.signal.aborted) return "canceled";
+    if ("refused" in step) return null;
+    if (step.exit.deadline !== undefined) return "deadline";
+    if (out.limited || step.exit.exitCode !== 0) return null;
+    const bytes = out.take();
+    if (bytes.length < 2 || bytes[bytes.length - 1] !== NEWLINE || bytes.indexOf(NEWLINE) !== bytes.length - 1) return null;
+    const oid = latin1(bytes.subarray(0, -1));
+    return isObjectId(oid, t.workspace.objectFormat) ? oid : null;
+  }
+
+  // Contract §7 "Missing objects": the tree ID of the HEAD commit, within the §5 "History commit object" bound. A commit object that cannot be read gives null.
+  async function headTree(t: ReadWorkspaceTarget, oid: string): Promise<string | null | "canceled" | "deadline"> {
+    const out = createCollector({ maxBytes: HISTORY_COMMIT_OBJECT_BYTES + HEADER_BYTES + 2 });
+    const step = await run(t, batchCommandArgs(), out, new TextEncoder().encode(`contents ${oid}\0`));
+    if (t.signal.aborted) return "canceled";
+    if ("refused" in step) return null;
+    if (step.exit.deadline !== undefined) return "deadline";
+    if (out.limited || step.exit.exitCode !== 0) return null;
+    return parseCommitObjects(out.take(), [oid], t.workspace.objectFormat).objects[0]?.tree ?? null;
+  }
+
   function recoveryOf(st: WorkspaceState): RecoveryState {
     if (st.unavailable) return "unavailable";
     return st.refreshing > 0 ? "refreshing" : "ready";
@@ -548,9 +577,16 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
       if (t.signal.aborted) return end({ result: "canceled" });
       if (promisor === "canceled" || promisor === "deadline") return end({ result: promisor });
       if (promisor !== true) return refusal("GIT_FAILED");
-      // Contract §7 "Missing objects": the HEAD commit and the index entries. A gitlink names a commit of another repository.
+      // Contract §7 "Missing objects": the HEAD commit, the HEAD tree, and the index entries. A gitlink names a commit of another repository.
       const oids = new Set<string>();
-      if (parsed.state !== "failed" && parsed.branch.oid !== null) oids.add(parsed.branch.oid);
+      const commit = parsed.state !== "failed" && parsed.branch.oid !== null ? parsed.branch.oid : await headCommit(t);
+      if (commit === "canceled" || commit === "deadline") return end({ result: commit });
+      if (commit !== null) {
+        oids.add(commit);
+        const tree = await headTree(t, commit);
+        if (tree === "canceled" || tree === "deadline") return end({ result: tree });
+        if (tree !== null) oids.add(tree);
+      }
       for (const e of listedEntries ?? []) if (e.mode !== "160000") oids.add(e.oid);
       const checked = await objectCheck(t, [...oids]);
       if (checked === "canceled" || checked === "deadline") return end({ result: checked });

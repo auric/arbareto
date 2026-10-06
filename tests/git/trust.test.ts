@@ -26,6 +26,7 @@ printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 printOrigin("../../src/git-service/trust.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-installation.ts", import.meta.dir);
 printOrigin("../../src/git-service/registration.ts", import.meta.dir);
+printOrigin("../../src/git-service/status.ts", import.meta.dir);
 
 const TASK = "T071";
 const TIMEOUT_MS = 120_000;
@@ -527,6 +528,38 @@ describe("partial clone (contract §7 \"Missing objects\")", () => {
         expect(checks.some((c) => c.input !== undefined && new TextDecoder().decode(c.input).split(/\s/).includes(missing))).toBe(true);
         expect(noLazyFetchFirst(service)).toEqual([]);
         expect(catFile()).not.toBe(0);
+        expect(existsSync(uploadpack)).toBe(false);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T319",
+    "F17 partial-tree-none: a status read that needs the missing HEAD tree ends limited with OBJECT_MISSING and the remedy text, and its object check input holds that tree ID",
+    W,
+    () =>
+      withService({ name: "t319-missing-tree" }, async (service) => {
+        const built = buildF17(gitPath(), "t319-missing-tree", "partial-tree-none");
+        const clone = repoOf(built, "clone");
+        const uploadpack = join(built.root, built.facts.canaries.uploadpack!);
+        const tree = built.facts.notes.missingTree as string;
+        const catFile = (oid: string) => Bun.spawnSync([gitPath(), "--no-lazy-fetch", "cat-file", "-e", oid], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
+        // Oracle: the HEAD commit is present, and its root tree is missing.
+        expect(catFile("HEAD")).toBe(0);
+        expect(git(clone, ["--no-lazy-fetch", "cat-file", "commit", "HEAD"])).toStartWith(`tree ${tree}\n`);
+        expect(catFile(tree)).not.toBe(0);
+        // Oracle: Git's own status with these options fails on the missing tree.
+        git(clone, ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--find-renames", "--ignore-submodules=dirty"], { allowExit: [128] });
+
+        const { repositoryId } = await service.register(clone);
+        const read = await service.readWorkspace(repositoryId);
+        expect(outcome(read)).toEqual({ state: "limited", code: "OBJECT_MISSING" });
+        expect(read.result?.completeness).toMatchObject({ state: "limited", code: "OBJECT_MISSING" });
+        expect(JSON.stringify(read)).toContain(OBJECT_MISSING_REMEDY);
+        const checks = service.runner.calls.filter((c) => subcommand(c.arguments) === "cat-file" && c.arguments.includes("--batch-check"));
+        expect(checks.some((c) => c.input !== undefined && new TextDecoder().decode(c.input).split(/\s/).includes(tree))).toBe(true);
+        expect(noLazyFetchFirst(service)).toEqual([]);
+        expect(catFile(tree)).not.toBe(0);
         expect(existsSync(uploadpack)).toBe(false);
       }),
     TIMEOUT_MS,

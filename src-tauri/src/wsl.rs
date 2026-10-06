@@ -26,14 +26,14 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use windows::Win32::Foundation::{ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW,
     RegGetValueW, RegOpenKeyExW,
 };
 use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
+    GetExitCodeProcess, TerminateProcess, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows::core::{HSTRING, PWSTR, w};
 
@@ -245,6 +245,9 @@ pub trait Host {
             deadline: false,
         }
     }
+    /// The process of one walk (contract §6 "Walks"): as `run_until`, and the set `stop` Event ends that process at once.
+    /// It has no default body, so each host decides how a stop ends its process.
+    fn run_walk(&self, command: &Command, cap: usize, deadline: Duration, stop: HANDLE) -> Ended;
     /// Starts one streamed Git process of a `run` (contract §11 "Process launch").
     fn start(&self, _command: &Command) -> Result<Spawned, SpawnError> {
         Err(SpawnError::OwnershipFailed)
@@ -624,6 +627,7 @@ fn identity_line(guid: &str, line: &str) -> Result<WslIdentity, Refusal> {
 
 /// gaps.md W4: one identity probe for every path of a request, through the wrapper in `probe` mode, in the unit `n`.
 /// A path without a leading slash gets `Invalid` and no process sees it. A failed probe gives `Failed` for each other path.
+/// `walk`: the stop Event and the deadline of a walk (contract §6 "Walks"). Without it, the probe deadline applies.
 pub fn identities(
     host: &dyn Host,
     installation: &Installation,
@@ -631,6 +635,7 @@ pub fn identities(
     n: u32,
     paths: &[String],
     base: &[(OsString, OsString)],
+    walk: Option<(HANDLE, Duration)>,
 ) -> Vec<Result<WslIdentity, Refusal>> {
     // A path that starts with `-` would become an option.
     let probed: Vec<&String> = paths.iter().filter(|path| path.starts_with('/')).collect();
@@ -651,8 +656,14 @@ pub fn identities(
             base,
             Stdin::Closed,
         );
-        let text = host
-            .run(&command)
+        let output = match walk {
+            Some((stop, deadline)) => {
+                host.run_walk(&command, RETAINED_BYTES, deadline, stop)
+                    .output
+            }
+            None => host.run(&command),
+        };
+        let text = output
             .filter(|out| out.exit_code == Some(0))
             .and_then(|out| String::from_utf8(out.stdout).ok());
         let found: Vec<&str> = text
@@ -1272,13 +1283,13 @@ impl Host for JobHost<'_> {
     }
 
     fn run_until(&self, command: &Command, cap: usize, deadline: Duration) -> Ended {
-        match spawn(&command.spawn_request(self.current_dir), self.job) {
-            Ok(spawned) => collect(spawned, cap, deadline),
-            Err(_) => Ended {
-                output: None,
-                deadline: false,
-            },
-        }
+        let start = || spawn(&command.spawn_request(self.current_dir), self.job);
+        start_and_collect(start, cap, deadline, None)
+    }
+
+    fn run_walk(&self, command: &Command, cap: usize, deadline: Duration, stop: HANDLE) -> Ended {
+        let start = || spawn(&command.spawn_request(self.current_dir), self.job);
+        start_and_collect(start, cap, deadline, Some(stop))
     }
 
     fn keys(&self) -> Vec<Key> {
@@ -1300,17 +1311,11 @@ impl Host for OperationHost {
     }
 
     fn run_until(&self, command: &Command, cap: usize, deadline: Duration) -> Ended {
-        let request = command.spawn_request(&self.current_dir);
-        match self
-            .jobs
-            .with_job(&self.operation_id, |job| spawn(&request, job))
-        {
-            Ok(Ok(spawned)) => collect(spawned, cap, deadline),
-            _ => Ended {
-                output: None,
-                deadline: false,
-            },
-        }
+        start_and_collect(|| self.start(command), cap, deadline, None)
+    }
+
+    fn run_walk(&self, command: &Command, cap: usize, deadline: Duration, stop: HANDLE) -> Ended {
+        start_and_collect(|| self.start(command), cap, deadline, Some(stop))
     }
 
     fn keys(&self) -> Vec<Key> {
@@ -1355,8 +1360,34 @@ pub fn distros_reply(reply: &mut Value, facts: Result<Distros, Reason>, saved: &
     reply["saved"] = json!(saved);
 }
 
+/// A process that did not start or did not end, without output.
+const NO_OUTPUT: Ended = Ended {
+    output: None,
+    deadline: false,
+};
+
+/// Starts one `wsl.exe` with `start` and collects it. A walk whose stop Event is already set starts no process (contract §6 "Walks").
+fn start_and_collect(
+    start: impl FnOnce() -> Result<Spawned, SpawnError>,
+    cap: usize,
+    deadline: Duration,
+    stop: Option<HANDLE>,
+) -> Ended {
+    // SAFETY: the caller keeps the Event open for the call.
+    if stop.is_some_and(|stop| unsafe { WaitForSingleObject(stop, 0) } == WAIT_OBJECT_0) {
+        return NO_OUTPUT;
+    }
+    start().map_or(NO_OUTPUT, |spawned| collect(spawned, cap, deadline, stop))
+}
+
 /// Waits for one `wsl.exe` process within the probe deadline and keeps at most `cap` bytes of its stdout.
-fn collect(spawned: Spawned, cap: usize, deadline: Duration) -> Ended {
+/// A set `stop` Event ends the process as the deadline does. It ends only this `wsl.exe`, never its Job (contract §6 "Walks").
+pub(crate) fn collect(
+    spawned: Spawned,
+    cap: usize,
+    deadline: Duration,
+    stop: Option<HANDLE>,
+) -> Ended {
     // SAFETY: `spawn` returned an open process handle that this call owns.
     let process = unsafe { OwnedHandle::from_raw_handle(spawned.process.0) };
     let handle = HANDLE(process.as_raw_handle());
@@ -1364,14 +1395,19 @@ fn collect(spawned: Spawned, cap: usize, deadline: Duration) -> Ended {
     let stdout = retain(spawned.stdout, cap);
     let _stderr = retain(spawned.stderr, RETAINED_BYTES);
     let wait_ms = u32::try_from(deadline.as_millis()).unwrap_or(u32::MAX - 1);
-    // SAFETY: `process` keeps the handle open for the call.
-    if unsafe { WaitForSingleObject(handle, wait_ms) } != WAIT_OBJECT_0 {
+    let waited = match stop {
+        // SAFETY: `process` and the caller keep both handles open for the call.
+        Some(stop) => unsafe { WaitForMultipleObjects(&[handle, stop], false, wait_ms) },
+        // SAFETY: `process` keeps the handle open for the call.
+        None => unsafe { WaitForSingleObject(handle, wait_ms) },
+    };
+    if waited != WAIT_OBJECT_0 {
         // The trap of the wrapper ends the scope when `wsl.exe` ends (contract §11 "Process launch").
         // SAFETY: `process` keeps the handle open for the call.
         let _ = unsafe { TerminateProcess(handle, 1) };
         return Ended {
             output: None,
-            deadline: true,
+            deadline: waited == WAIT_TIMEOUT,
         };
     }
     let mut code = 0u32;
@@ -1382,9 +1418,16 @@ fn collect(spawned: Spawned, cap: usize, deadline: Duration) -> Ended {
             deadline: false,
         };
     }
-    // The pipe ends when `wsl.exe` ends. The probe deadline bounds the wait for the last bytes.
+    // The pipe ends when `wsl.exe` ends. The probe deadline bounds the wait for the last bytes. A set stop Event ends the wait.
     while Arc::strong_count(&stdout) > 1 && started.elapsed() < deadline + PROBE_DEADLINE {
-        std::thread::sleep(Duration::from_millis(10));
+        match stop {
+            // SAFETY: the caller keeps the Event open for the call.
+            Some(stop) if unsafe { WaitForSingleObject(stop, 10) } == WAIT_OBJECT_0 => {
+                return NO_OUTPUT;
+            }
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
     }
     let stdout = lock(&stdout).clone();
     Ended {
@@ -1613,6 +1656,19 @@ mod tests {
         fn keys(&self) -> Vec<Key> {
             self.keys.clone()
         }
+
+        fn run_walk(
+            &self,
+            command: &Command,
+            _cap: usize,
+            _deadline: Duration,
+            _stop: HANDLE,
+        ) -> Ended {
+            Ended {
+                output: self.run(command),
+                deadline: false,
+            }
+        }
     }
 
     fn key(guid: &str, name: &str, version: u32) -> Key {
@@ -1754,6 +1810,92 @@ mod tests {
                 host.commands.borrow().len()
             );
         }
+    }
+
+    // ---- T212 decision W9: the stop Event of a walk ----
+
+    /// A manual-reset Event without a name, owned by the caller.
+    fn walk_event() -> OwnedHandle {
+        // SAFETY: no name and no security attributes. The returned handle is open and owned.
+        let event =
+            unsafe { windows::Win32::System::Threading::CreateEventW(None, true, false, None) }
+                .expect("event");
+        // SAFETY: `CreateEventW` returned an open handle that nothing else owns.
+        unsafe { OwnedHandle::from_raw_handle(event.0) }
+    }
+
+    fn set(event: &OwnedHandle) {
+        // SAFETY: `event` keeps the handle open for the call.
+        unsafe { windows::Win32::System::Threading::SetEvent(HANDLE(event.as_raw_handle())) }
+            .expect("set event");
+    }
+
+    /// Review V1: after `wsl.exe` ends, a set stop Event also ends the wait for the last stdout bytes.
+    #[test]
+    fn a_set_stop_ends_the_wait_for_stdout_after_the_process_ended() {
+        use std::os::windows::io::IntoRawHandle;
+        let child = std::process::Command::new(test_exe())
+            .args(crate::jobs::tests::child_arguments(&["sleep", "0"]))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("child");
+        // The writers stay open, so the readers never see end-of-file.
+        let (stdout, _stdout_writer) = std::io::pipe().expect("pipe");
+        let (stderr, _stderr_writer) = std::io::pipe().expect("pipe");
+        let spawned = Spawned {
+            process: HANDLE(child.into_raw_handle()),
+            pid: 0,
+            stdin: None,
+            stdout: File::from(OwnedHandle::from(stdout)),
+            stderr: File::from(OwnedHandle::from(stderr)),
+        };
+        let event = walk_event();
+        let stop = HANDLE(event.as_raw_handle());
+        let started = Instant::now();
+        let ended = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(500));
+                set(&event);
+            });
+            collect(spawned, 64, Duration::from_secs(5), Some(stop))
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the stop ends the stdout wait: {:?}",
+            started.elapsed()
+        );
+        assert!(ended.output.is_none(), "a stopped walk keeps no output");
+    }
+
+    /// Review S3: a walk whose stop Event is already set starts no `wsl.exe`.
+    #[test]
+    fn a_walk_with_a_set_stop_starts_no_process() {
+        let job = Job::create().expect("Job");
+        let directory = std::env::temp_dir();
+        let host = JobHost {
+            job: job.handle(),
+            current_dir: &directory,
+        };
+        let command = Command {
+            program: test_exe(),
+            arguments: crate::jobs::tests::child_arguments(&["sleep", "60000"]),
+            environment: std::env::vars_os().collect(),
+            stdin: Stdin::Closed,
+        };
+        let event = walk_event();
+        set(&event);
+        let ended = host.run_walk(
+            &command,
+            64,
+            Duration::from_secs(5),
+            HANDLE(event.as_raw_handle()),
+        );
+        assert!(ended.output.is_none());
+        assert_eq!(
+            job.total_processes().expect("accounting"),
+            0,
+            "no process started"
+        );
     }
 
     // ---- T205: process launch ----
@@ -2061,7 +2203,7 @@ mod tests {
             );
             let host = FakeHost::new(Vec::new(), Vec::new());
             assert_eq!(
-                identities(&host, &inst, operation, 1, &strings(&["/r"]), &base()),
+                identities(&host, &inst, operation, 1, &strings(&["/r"]), &base(), None),
                 vec![Err(Refusal::Invalid)],
                 "{operation:?}"
             );
@@ -2478,7 +2620,7 @@ mod tests {
         );
         let inst = installation();
         let paths = strings(&["/home/user/r a$b", "/gone", "/denied", "/mnt/c/r"]);
-        let found = identities(&host, &inst, OPERATION, 7, &paths, &base());
+        let found = identities(&host, &inst, OPERATION, 7, &paths, &base(), None);
         assert_eq!(
             found[0].as_ref().expect("identity").reply(),
             json!({ "distroGuid": GUID, "fileSystemId": "fedc9aa3bd65bc57", "inode": "123456" })
@@ -2587,7 +2729,7 @@ mod tests {
         ] {
             let host = FakeHost::new(outputs, Vec::new());
             assert_eq!(
-                identities(&host, &inst, OPERATION, 1, &paths, &base()),
+                identities(&host, &inst, OPERATION, 1, &paths, &base(), None),
                 vec![Err(Refusal::Failed), Err(Refusal::Failed)]
             );
         }
@@ -2596,7 +2738,7 @@ mod tests {
             vec![output(0, "id 2 ef53:1\nid 3 ef53:1 extra\n")],
             Vec::new(),
         );
-        let found = identities(&host, &inst, OPERATION, 1, &paths, &base());
+        let found = identities(&host, &inst, OPERATION, 1, &paths, &base(), None);
         assert!(found[0].is_ok());
         assert_eq!(found[1], Err(Refusal::Failed));
     }
@@ -2623,7 +2765,15 @@ mod tests {
             );
             let host = FakeHost::new(Vec::new(), Vec::new());
             assert_eq!(
-                identities(&host, &inst, OPERATION, 1, &strings(&[directory]), &base()),
+                identities(
+                    &host,
+                    &inst,
+                    OPERATION,
+                    1,
+                    &strings(&[directory]),
+                    &base(),
+                    None
+                ),
                 vec![Err(Refusal::Invalid)],
                 "{directory:?}"
             );
@@ -3221,6 +3371,7 @@ mod tests {
             1,
             &strings(&["/"]),
             &environment,
+            None,
         );
         match found[0].clone() {
             Ok(found) => {

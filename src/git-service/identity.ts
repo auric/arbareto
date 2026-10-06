@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { FileIdentity, IdentityReply, WslIdentity } from "../contracts/channel";
-import type { GitRunner, ProcessContext } from "./git-runner";
+import type { GitRunner, ProcessContext, WalkStop } from "./git-runner";
 import { identityRefusal, MIXED_LOCATION_REFUSAL, NO_FS_UUID_REFUSAL, type WslGit, type WslRefusal } from "./wsl";
 
 // Contract §6 "Registration bootstrap": the remedy of an identity refusal.
@@ -11,7 +11,10 @@ export const IDENTITY_REMEDY = "Open the repository from an NTFS or ReFS volume"
 // A Windows identity, or a WSL identity (contract §11 "Paths and file access").
 export type PhysicalIdentity = FileIdentity | WslIdentity;
 
-export type IdentityResult = { ok: true; identities: FileIdentity[] } | { ok: false; code: "UNSUPPORTED_REPOSITORY"; remedy: typeof IDENTITY_REMEDY };
+export type IdentityResult =
+  | { ok: true; identities: FileIdentity[] }
+  | { ok: false; code: "UNSUPPORTED_REPOSITORY"; remedy: typeof IDENTITY_REMEDY }
+  | { ok: false; stop: WalkStop["stop"] };
 
 // MS-FSCC: the all-zero and the all-ones file ID name no file (research R2).
 const NO_FILE = /^(0{32}|f{32})$/;
@@ -20,8 +23,9 @@ const refused: IdentityResult = { ok: false, code: "UNSUPPORTED_REPOSITORY", rem
 
 // Contract §6: the shell supplies each physical identity. The service never reads one through `fs.stat`.
 // The replies keep the order of `paths`. A `RunnerRefusal` keeps its own code and rejects the call.
-export async function requestIdentities(runner: GitRunner, operationId: string, context: ProcessContext, paths: readonly string[]): Promise<IdentityResult> {
-  const replies: unknown[] = await runner.identities(operationId, context, paths);
+export async function requestIdentities(runner: GitRunner, operationId: string, context: ProcessContext, paths: readonly string[], signal: AbortSignal): Promise<IdentityResult> {
+  const replies: unknown[] | WalkStop = await runner.identities(operationId, context, paths, signal);
+  if (!Array.isArray(replies)) return { ok: false, stop: replies.stop };
   if (replies.length !== paths.length) return refused;
   const identities: FileIdentity[] = [];
   for (const reply of replies) {
@@ -40,8 +44,10 @@ export async function requestWslIdentities(
   context: ProcessContext,
   paths: readonly string[],
   git: Pick<WslGit, "guid" | "distro">,
-): Promise<{ ok: true; identities: WslIdentity[] } | WslRefusal> {
-  const replies: unknown[] = await runner.identities(operationId, context, paths);
+  signal: AbortSignal,
+): Promise<{ ok: true; identities: WslIdentity[] } | WslRefusal | { ok: false; stop: WalkStop["stop"] }> {
+  const replies: unknown[] | WalkStop = await runner.identities(operationId, context, paths, signal);
+  if (!Array.isArray(replies)) return { ok: false, stop: replies.stop };
   const failed = identityRefusal(git.distro);
   if (replies.length !== paths.length) return failed;
   const identities: WslIdentity[] = [];

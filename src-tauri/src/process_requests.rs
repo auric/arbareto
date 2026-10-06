@@ -8,12 +8,15 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
@@ -46,6 +49,8 @@ pub const PATH_UNITS: usize = 32_767;
 pub const BOOTSTRAP_DEADLINE_MS: u64 = 30_000;
 pub const REGISTERED_DEADLINE_MS: u64 = 120_000;
 pub const STALL_MS: u64 = 15_000;
+/// Contract §5 "Walk deadline": each `identity` and `fileFacts` request.
+pub const WALK_DEADLINE_MS: u64 = 30_000;
 /// Contract §6 "Context rules": `register` field `version` is printable ASCII.
 pub const VERSION_BYTES: usize = 64;
 /// Contract §5 "JSON nesting".
@@ -107,6 +112,8 @@ pub struct Config {
     /// Arguments before the request arguments at the `CreateProcessW` boundary, after validation.
     /// The product passes none. Tests pass the libtest arguments that re-execute the test binary.
     pub argument_prefix: Vec<String>,
+    /// The product passes `WALK_DEADLINE_MS`. Tests pass a shorter deadline.
+    pub walk_deadline: Duration,
 }
 
 /// The Git that `register` bound to a `gitInstallationId`.
@@ -142,6 +149,33 @@ struct Call {
     closed: bool,
 }
 
+/// The first event decides the reply of a walk (contract §6 "Walks").
+enum WalkEvent {
+    Done(Value),
+    Stop,
+}
+
+/// A walk until its watchdog takes the first event.
+struct Walk {
+    operation_id: String,
+    events: mpsc::Sender<WalkEvent>,
+}
+
+/// Ends a walk thread, also at a panic. The count drops first. Then the watchdog gets `Done`, or `Stop` without a reply.
+struct WalkEnd {
+    me: Arc<ProcessRequests>,
+    events: mpsc::Sender<WalkEvent>,
+    reply: Option<Value>,
+}
+
+impl Drop for WalkEnd {
+    fn drop(&mut self) {
+        self.me.walk_threads.fetch_sub(1, Ordering::SeqCst);
+        let event = self.reply.take().map_or(WalkEvent::Stop, WalkEvent::Done);
+        let _ = self.events.send(event);
+    }
+}
+
 #[derive(Default)]
 struct State {
     /// Operations after `ended` or `closeJob`, oldest first. Every other operation is active from its first request.
@@ -155,6 +189,8 @@ struct State {
     /// Each Git that the user approved with Use this Git, by `gitInstallationId`.
     confirmed: HashMap<String, ConfirmedGit>,
     calls: HashMap<String, Call>,
+    /// `run` calls and walks share one `callId` namespace.
+    walks: HashMap<String, Walk>,
     /// The mutations whose `started` reply carried a marker ID, until `ended`.
     started: HashSet<String>,
     /// The facts that `wslProbe` bound to each WSL `repositoryDiscovery` context, once (gaps.md W1).
@@ -222,6 +258,8 @@ pub struct ProcessRequests {
     /// A service exit starts a new generation. Replies of an older generation are dropped.
     generation: AtomicU64,
     peak: AtomicUsize,
+    /// The walks whose work did not return yet.
+    walk_threads: AtomicUsize,
     /// Without it, a `register` with `confirm: true` gets `declined`.
     git_confirmation: OnceLock<GitConfirmation>,
     startup_git: OnceLock<StartupGit>,
@@ -249,6 +287,7 @@ impl ProcessRequests {
             state: Mutex::new(State::default()),
             generation: AtomicU64::new(0),
             peak: AtomicUsize::new(0),
+            walk_threads: AtomicUsize::new(0),
             git_confirmation: OnceLock::new(),
             startup_git: OnceLock::new(),
             wsl_saved: OnceLock::new(),
@@ -398,6 +437,9 @@ impl ProcessRequests {
     /// Drops every pending call, and closes every operation Job outside the lingering set.
     pub fn service_exited(&self) {
         let mut state = self.state();
+        for walk in state.walks.values() {
+            let _ = walk.events.send(WalkEvent::Stop);
+        }
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.jobs.service_exited();
         *state = State::default();
@@ -407,6 +449,12 @@ impl ProcessRequests {
     #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn peak_queued_chunks(&self) -> usize {
         self.peak.load(Ordering::SeqCst)
+    }
+
+    /// Test hook: the walks whose work did not return yet.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
+    pub fn active_walks(&self) -> usize {
+        self.walk_threads.load(Ordering::SeqCst)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -506,7 +554,7 @@ impl ProcessRequests {
         };
 
         let mut state = self.state();
-        if state.calls.contains_key(call_id) {
+        if state.calls.contains_key(call_id) || state.walks.contains_key(call_id) {
             return Err(INVALID);
         }
         check_active(&state, operation_id)?;
@@ -820,11 +868,14 @@ impl ProcessRequests {
         // A cancel for an ended call is dropped.
         if let Some(operation_id) = state.calls.get(call_id).map(|c| c.operation_id.clone()) {
             close_job_of(&self.jobs, &mut state, &operation_id);
+        } else if let Some(walk) = state.walks.get(call_id) {
+            let _ = walk.events.send(WalkEvent::Stop);
         }
         Ok(())
     }
 
     fn identity(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
         keys(
             request,
             &["type", "callId", "operationId", "contextKind", "paths"],
@@ -839,40 +890,60 @@ impl ProcessRequests {
             .iter()
             .map(path)
             .collect::<Result<_, _>>()?;
-        let (wsl, n) = {
-            let mut state = self.state();
-            check_active(&state, operation_id)?;
-            let target = self.target(&mut state, request, kind, operation_id)?;
-            let n = target
-                .wsl
-                .as_ref()
-                .map(|_| Self::next_unit(&mut state, operation_id));
-            (target.wsl, n)
-        };
+        let mut state = self.state();
+        check_active(&state, operation_id)?;
+        let target = self.target(&mut state, request, kind, operation_id)?;
+        if let Some((installation, _)) = target.wsl {
+            let n = Self::next_unit(&mut state, operation_id);
+            drop(state);
+            return self.wsl_identity(&installation, operation_id, n, &paths, call_id);
+        }
+        let call = call_id.to_string();
+        self.spawn_walk(
+            state,
+            "identity",
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let identities: Vec<Value> = paths
+                    .iter()
+                    .take_while(|_| !stop.load(Ordering::SeqCst))
+                    .map_while(|path| identity_reply(path, stop))
+                    .collect();
+                json!({ "type": "identity", "callId": call, "identities": identities })
+            },
+        )
+    }
+
+    /// gaps.md W4: one identity probe for the request, on its own thread. A path outside the distro gets the refusal alone.
+    fn wsl_identity(
+        &self,
+        installation: &wsl::Installation,
+        operation_id: &str,
+        n: u32,
+        paths: &[PathBuf],
+        call_id: &str,
+    ) -> Result<(), Code> {
         let generation = self.current();
-        let Some((installation, _)) = wsl else {
-            let identities: Vec<Value> = paths.iter().map(|path| identity_reply(path)).collect();
-            self.send(
-                generation,
-                json!({ "type": "identity", "callId": call_id, "identities": identities }),
-            );
-            return Ok(());
-        };
-        // gaps.md W4: one identity probe for the request, on its own thread. A path outside the distro gets the refusal alone.
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let linux: Vec<String> = paths
             .iter()
             .map(|path| wsl::linux_path(path, &installation.distro).unwrap_or_default())
             .collect();
-        let (operation_id, call_id) = (operation_id.to_string(), call_id.to_string());
+        let (installation, operation_id, call_id) = (
+            installation.clone(),
+            operation_id.to_string(),
+            call_id.to_string(),
+        );
         std::thread::spawn(move || {
             let host = me.wsl_host(&operation_id);
             let identities: Vec<Value> = wsl::identities(
                 &*host,
                 &installation,
                 &operation_id,
-                n.unwrap_or(1),
+                n,
                 &linux,
                 &me.config.base_environment,
             )
@@ -892,40 +963,123 @@ impl ProcessRequests {
     }
 
     fn file_facts(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
         let parsed = file_facts::parse(request)?;
-        let (roots, wsl, n) = {
-            let mut state = self.state();
-            check_active(&state, parsed.operation_id)?;
-            let target = self.target(&mut state, request, Kind::Registered, parsed.operation_id)?;
-            let id = request["repositoryId"].as_str().ok_or(INVALID)?;
-            let repository = state.repositories.get(id).ok_or(UNKNOWN)?;
-            let roots = [
-                repository.worktree_root.clone(),
-                repository.git_directory.clone(),
-                repository.common_directory.clone(),
-            ];
-            let n = target
-                .wsl
-                .as_ref()
-                .map(|_| Self::next_unit(&mut state, parsed.operation_id));
-            (roots, target.wsl, n)
-        };
-        if let Some((installation, _)) = wsl {
-            return self.wsl_file_facts(&parsed, &installation, &roots, n.unwrap_or(1), call_id);
+        let mut state = self.state();
+        check_active(&state, parsed.operation_id)?;
+        let target = self.target(&mut state, request, Kind::Registered, parsed.operation_id)?;
+        let id = request["repositoryId"].as_str().ok_or(INVALID)?;
+        let repository = state.repositories.get(id).ok_or(UNKNOWN)?;
+        let roots = [
+            repository.worktree_root.clone(),
+            repository.git_directory.clone(),
+            repository.common_directory.clone(),
+        ];
+        if let Some((installation, _)) = target.wsl {
+            let n = Self::next_unit(&mut state, parsed.operation_id);
+            drop(state);
+            return self.wsl_file_facts(&parsed, &installation, &roots, n, call_id);
         }
         // A Windows Git never reads a WSL repository (contract §11 "Route").
         if roots.iter().any(|root| file_facts::is_wsl_path(root)) {
             return Err(INVALID);
         }
-        let facts = file_facts::walk(
-            [&roots[0], &roots[1], &roots[2]],
-            parsed.digest,
-            &parsed.files,
+        let (digest, files, call) = (parsed.digest, parsed.files, call_id.to_string());
+        self.spawn_walk(
+            state,
+            "fileFacts",
+            call_id,
+            parsed.operation_id,
+            read_at,
+            move |stop| {
+                let facts =
+                    file_facts::walk([&roots[0], &roots[1], &roots[2]], digest, &files, stop);
+                json!({ "type": "fileFacts", "callId": call, "facts": facts })
+            },
+        )
+    }
+
+    /// Runs `work` on its own thread with a watchdog thread (contract §6 "Walks").
+    /// Only the watchdog sends a reply, so a walk gets one reply or none.
+    fn spawn_walk(
+        &self,
+        mut state: MutexGuard<'_, State>,
+        kind: &'static str,
+        call_id: &str,
+        operation_id: &str,
+        read_at: Instant,
+        work: impl FnOnce(&AtomicBool) -> Value + Send + 'static,
+    ) -> Result<(), Code> {
+        if state.calls.contains_key(call_id) || state.walks.contains_key(call_id) {
+            return Err(INVALID);
+        }
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (events, received) = mpsc::channel();
+        state.walks.insert(
+            call_id.to_string(),
+            Walk {
+                operation_id: operation_id.to_string(),
+                events: events.clone(),
+            },
         );
-        self.send(
-            self.current(),
-            json!({ "type": "fileFacts", "callId": call_id, "facts": facts }),
-        );
+        let generation = self.current();
+        drop(state);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        self.walk_threads.fetch_add(1, Ordering::SeqCst);
+        let worker = {
+            let (me, stop) = (Arc::clone(&me), Arc::clone(&stop));
+            std::thread::Builder::new().spawn(move || {
+                let mut end = WalkEnd {
+                    me,
+                    events,
+                    reply: None,
+                };
+                end.reply = Some(work(&stop));
+            })
+        };
+        let worker = match worker {
+            Ok(worker) => Arc::new(worker),
+            Err(_) => {
+                self.walk_threads.fetch_sub(1, Ordering::SeqCst);
+                self.state().walks.remove(call_id);
+                return Err(OWNERSHIP);
+            }
+        };
+        let (deadline, call) = (read_at + self.config.walk_deadline, call_id.to_string());
+        let watchdog = {
+            let (worker, stop) = (Arc::clone(&worker), Arc::clone(&stop));
+            std::thread::Builder::new().spawn(move || {
+                let event =
+                    received.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+                // `cancel` and `closeJob` send `Stop` under the state lock while `walks` holds the walk.
+                // So after the removal, the queue holds each such `Stop`.
+                let stopped = {
+                    let mut state = me.state();
+                    state.walks.remove(&call);
+                    received
+                        .try_iter()
+                        .any(|event| matches!(event, WalkEvent::Stop))
+                };
+                let reply = match event {
+                    _ if stopped => None,
+                    Ok(WalkEvent::Done(reply)) => return me.send(generation, reply),
+                    Err(RecvTimeoutError::Timeout) => {
+                        Some(json!({ "type": kind, "callId": call, "deadline": "deadline" }))
+                    }
+                    Ok(WalkEvent::Stop) | Err(RecvTimeoutError::Disconnected) => None,
+                };
+                stop_walk(&stop, &worker);
+                if let Some(reply) = reply {
+                    me.send(generation, reply);
+                }
+            })
+        };
+        if watchdog.is_err() {
+            self.state().walks.remove(call_id);
+            stop_walk(&stop, &worker);
+            return Err(OWNERSHIP);
+        }
         Ok(())
     }
 
@@ -1574,6 +1728,11 @@ impl ProcessRequests {
         let operation_id = identifier(&request["operationId"])?;
         let mut state = self.state();
         close_job_of(&self.jobs, &mut state, operation_id);
+        for walk in state.walks.values() {
+            if walk.operation_id == operation_id {
+                let _ = walk.events.send(WalkEvent::Stop);
+            }
+        }
         deactivate(&mut state, operation_id);
         Ok(())
     }
@@ -1696,6 +1855,13 @@ impl Drop for Owned {
             let _ = CloseHandle(self.0);
         }
     }
+}
+
+/// Sets the stop flag of a walk, then cancels the synchronous I/O of its thread (contract §6 "Walks").
+fn stop_walk(stop: &AtomicBool, worker: &JoinHandle<()>) {
+    stop.store(true, Ordering::SeqCst);
+    // SAFETY: `worker` keeps the thread handle open for the call. A thread outside I/O gives `ERROR_NOT_FOUND`.
+    let _ = unsafe { CancelSynchronousIo(HANDLE(worker.as_raw_handle())) };
 }
 
 /// True when the handle signals within `timeout`.
@@ -2232,6 +2398,13 @@ pub(crate) mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use serde_json::{Map, Value, json};
+    use windows::Win32::Foundation::ERROR_IO_PENDING;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_OVERLAPPED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    use windows::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
+    use windows::Win32::System::Ioctl::FSCTL_REQUEST_BATCH_OPLOCK;
+    use windows::Win32::System::Threading::CreateEventW;
 
     use crate::bootstrap::{ContextKind, read_identity};
     use crate::jobs::tests::{
@@ -2334,6 +2507,7 @@ pub(crate) mod tests {
                 Fixture::new(),
                 CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
                 std::env::vars_os().collect(),
+                Duration::from_millis(WALK_DEADLINE_MS),
             )
         }
 
@@ -2341,6 +2515,7 @@ pub(crate) mod tests {
             fixture: Fixture,
             argument_prefix: Vec<String>,
             base_environment: Vec<(OsString, OsString)>,
+            walk_deadline: Duration,
         ) -> Harness {
             let contexts = Arc::new(Contexts::new(&uuid()));
             let jobs = Supervisor::start().expect("start the supervisor");
@@ -2383,6 +2558,7 @@ pub(crate) mod tests {
                 launch_directory,
                 base_environment,
                 argument_prefix,
+                walk_deadline,
             };
             let requests =
                 ProcessRequests::new(config, Arc::clone(&contexts), Arc::clone(&jobs), sink);
@@ -2400,6 +2576,18 @@ pub(crate) mod tests {
         fn send(&self, inner: Value) {
             self.requests
                 .handle(&json!({ "kind": "process", "process": inner }).to_string());
+        }
+
+        /// Handles the frame on another thread. False when the handler still runs after `bound`.
+        fn send_within(&self, inner: Value, bound: Duration) -> bool {
+            let requests = Arc::clone(&self.requests);
+            let body = json!({ "kind": "process", "process": inner }).to_string();
+            let (done, handled) = mpsc::channel();
+            std::thread::spawn(move || {
+                requests.handle(&body);
+                let _ = done.send(());
+            });
+            handled.recv_timeout(bound).is_ok()
         }
 
         fn wait_reply(
@@ -3873,6 +4061,8 @@ pub(crate) mod tests {
         assert!(state.owners.len() <= 1, "owners");
         assert!(state.started.is_empty(), "started");
         assert!(state.calls.is_empty(), "calls");
+        assert!(state.walks.is_empty(), "walks");
+        assert_eq!(harness.requests.active_walks(), 0, "walk threads");
     }
 
     #[test]
@@ -5099,6 +5289,278 @@ pub(crate) mod tests {
         assert_eq!(harness.reply(&extra), refused(&extra, "INVALID_REQUEST"));
     }
 
+    // ---- Walks (contract §6 "Walks") ----
+
+    /// A batch oplock on one file (Microsoft Learn `FSCTL_REQUEST_BATCH_OPLOCK`).
+    /// An open with only `FILE_READ_ATTRIBUTES` and `SYNCHRONIZE` breaks no batch oplock (MS-FSA 2.1.4.12).
+    /// So only the digest data open of a walk waits on the break, until the holder closes its handle.
+    struct Oplock {
+        file: Option<File>,
+        overlapped: Option<Box<OVERLAPPED>>,
+        event: Owned,
+    }
+
+    impl Oplock {
+        /// `None` when the file system grants no batch oplock.
+        fn request(path: &Path) -> Option<Oplock> {
+            use std::os::windows::fs::OpenOptionsExt;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+                .custom_flags(FILE_FLAG_OVERLAPPED.0)
+                .open(path)
+                .ok()?;
+            // SAFETY: a manual-reset event without a name and without security attributes.
+            let event = Owned(unsafe { CreateEventW(None, true, false, None) }.ok()?);
+            let mut overlapped = Box::new(OVERLAPPED {
+                hEvent: event.0,
+                ..Default::default()
+            });
+            // SAFETY: `file` is open for overlapped I/O. `overlapped` stays allocated until the request completes (Drop).
+            let requested = unsafe {
+                DeviceIoControl(
+                    HANDLE(file.as_raw_handle()),
+                    FSCTL_REQUEST_BATCH_OPLOCK,
+                    None,
+                    0,
+                    None,
+                    0,
+                    None,
+                    Some(&raw mut *overlapped),
+                )
+            };
+            // Microsoft Learn: `ERROR_IO_PENDING` means that the oplock is granted.
+            if requested.err()?.code() != ERROR_IO_PENDING.to_hresult() {
+                return None;
+            }
+            Some(Oplock {
+                file: Some(file),
+                overlapped: Some(overlapped),
+                event,
+            })
+        }
+
+        /// True when an open broke the oplock within `timeout`.
+        fn broken(&self, timeout: Duration) -> bool {
+            wait(self.event.0, timeout)
+        }
+    }
+
+    impl Drop for Oplock {
+        /// The close releases each open that waits on the break.
+        fn drop(&mut self) {
+            drop(self.file.take());
+            // The kernel writes the OVERLAPPED until the request completes.
+            if !wait(self.event.0, CLOSE_WAIT) {
+                std::mem::forget(self.overlapped.take());
+            }
+        }
+    }
+
+    /// A repository whose hooks folder holds each of `names` with the content "abc".
+    fn hooks_workspace(harness: &Harness, names: &[&str]) -> Workspace {
+        let workspace = harness.child_workspace("repo");
+        std::fs::create_dir(workspace.worktree.join(".git").join("hooks")).expect("hooks");
+        for name in names {
+            std::fs::write(hook(&workspace, name), "abc").expect("hook");
+        }
+        workspace
+    }
+
+    fn hook(workspace: &Workspace, name: &str) -> PathBuf {
+        workspace.worktree.join(".git").join("hooks").join(name)
+    }
+
+    fn hook_facts(call: &str, operation: &str, workspace: &Workspace, name: &str) -> Value {
+        let mut body = file_facts_body(
+            call,
+            workspace,
+            json!([{ "root": "gitDirectory", "path": ["hooks", name] }]),
+        );
+        body["operationId"] = json!(operation);
+        body
+    }
+
+    /// Sends a digest walk of the hook under `oplock`. Returns once its data open waits on the break.
+    fn blocked_walk(
+        harness: &Harness,
+        workspace: &Workspace,
+        oplock: &Oplock,
+        name: &str,
+        operation: &str,
+    ) -> String {
+        let call = uuid();
+        assert!(
+            harness.send_within(hook_facts(&call, operation, workspace, name), CLOSE_WAIT),
+            "the frame reader never waits on a walk"
+        );
+        assert!(
+            oplock.broken(WAIT),
+            "the data open of the walk waits on the oplock break"
+        );
+        call
+    }
+
+    const SKIP_OPLOCK: &str = "SKIP walk: missing capability batch-oplock (unverified)";
+
+    #[test]
+    fn a_walk_past_its_deadline_replies_deadline_and_no_fact() {
+        // Only the held walk runs in this harness. Before its data open, it makes one root open, two relative opens, and two queries on a local volume.
+        // So the walk blocks in that open long before the 2 s deadline.
+        let harness = Harness::new(
+            Fixture::new(),
+            Vec::new(),
+            Vec::new(),
+            Duration::from_secs(2),
+        );
+        let workspace = hooks_workspace(&harness, &["held"]);
+        let Some(oplock) = Oplock::request(&hook(&workspace, "held")) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = blocked_walk(&harness, &workspace, &oplock, "held", &uuid());
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "fileFacts", "callId": call, "deadline": "deadline" })
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "CancelSynchronousIo ends the wait on the oplock break (research U1)"
+        );
+        drop(oplock);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            harness.replies_for(&call).len(),
+            1,
+            "the deadline reply is the only reply"
+        );
+    }
+
+    #[test]
+    fn a_canceled_walk_ends_without_a_reply() {
+        let harness = Harness::child();
+        let workspace = hooks_workspace(&harness, &["held", "free"]);
+        let Some(oplock) = Oplock::request(&hook(&workspace, "held")) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = blocked_walk(&harness, &workspace, &oplock, "held", &uuid());
+        let free = uuid();
+        harness.send(hook_facts(&free, &uuid(), &workspace, "free"));
+        assert_eq!(
+            harness.reply(&free)["facts"][0]["digest"],
+            crate::file_facts::tests::ABC,
+            "a second walk gets its fact while the first walk waits"
+        );
+        harness.send(json!({ "type": "cancel", "callId": call }));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "cancel stops the walk, and CancelSynchronousIo ends its wait on the oplock break (research U1)"
+        );
+        drop(oplock);
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            harness.replies_for(&call).is_empty(),
+            "a canceled walk gets no reply"
+        );
+    }
+
+    #[test]
+    fn close_job_stops_each_walk_of_its_operation_and_a_service_exit_stops_every_walk() {
+        let harness = Harness::child();
+        let workspace = hooks_workspace(&harness, &["closed", "other"]);
+        let (Some(closed_lock), Some(other_lock)) = (
+            Oplock::request(&hook(&workspace, "closed")),
+            Oplock::request(&hook(&workspace, "other")),
+        ) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let operation = uuid();
+        let closed = blocked_walk(&harness, &workspace, &closed_lock, "closed", &operation);
+        let other = blocked_walk(&harness, &workspace, &other_lock, "other", &uuid());
+        harness.send(json!({ "type": "closeJob", "operationId": operation }));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 1),
+            "closeJob stops the walk of its operation"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            harness.requests.active_walks(),
+            1,
+            "the walk of another operation still waits"
+        );
+        harness.requests.service_exited();
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "a service exit stops every walk"
+        );
+        drop(closed_lock);
+        drop(other_lock);
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            harness.replies_for(&closed).is_empty() && harness.replies_for(&other).is_empty(),
+            "a stopped walk gets no reply"
+        );
+    }
+
+    #[test]
+    fn a_cancel_after_the_walk_ended_but_before_its_reply_gives_no_reply() {
+        let harness = Harness::child();
+        let workspace = hooks_workspace(&harness, &["held"]);
+        let Some(oplock) = Oplock::request(&hook(&workspace, "held")) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = blocked_walk(&harness, &workspace, &oplock, "held", &uuid());
+        // The seam: the state lock holds the watchdog after the walk ends.
+        let state = harness.requests.state();
+        drop(oplock);
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the walk ends after the oplock holder closes"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        // `cancel` sends exactly this event under the state lock. The reader cannot run `cancel` while this test holds the lock.
+        let _ = state.walks[call.as_str()].events.send(WalkEvent::Stop);
+        drop(state);
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            harness.replies_for(&call).is_empty(),
+            "a cancel before the reply wins over a finished walk"
+        );
+        assert!(harness.requests.state().walks.is_empty(), "walks");
+    }
+
+    #[test]
+    fn a_walk_whose_work_panics_ends_without_a_reply() {
+        let harness = Harness::new(
+            Fixture::new(),
+            Vec::new(),
+            Vec::new(),
+            Duration::from_millis(300),
+        );
+        let call = uuid();
+        let state = harness.requests.state();
+        harness
+            .requests
+            .spawn_walk(state, "fileFacts", &call, &uuid(), Instant::now(), |_| {
+                panic!("a test panic in a walk")
+            })
+            .expect("spawn the walk");
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the count drops at the panic"
+        );
+        // The wait passes the 300 ms deadline, so a deadline reply would arrive within it.
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(
+            harness.replies_for(&call).is_empty(),
+            "a panic gives no reply and no deadline label"
+        );
+        assert!(harness.requests.state().walks.is_empty(), "walks");
+    }
+
     // ---- Terminal input and console variants (contract §6 "Console and input", plan.md F11, research.md R14 S17) ----
 
     fn search_path(name: &str) -> Option<PathBuf> {
@@ -5208,7 +5670,12 @@ pub(crate) mod tests {
             let fixture = Fixture::new();
             let home = fixture.path("home");
             let environment = owned_environment(&home);
-            let harness = Harness::new(fixture, Vec::new(), environment.clone());
+            let harness = Harness::new(
+                fixture,
+                Vec::new(),
+                environment.clone(),
+                Duration::from_millis(WALK_DEADLINE_MS),
+            );
             let hook = hook(&harness.fixture);
             std::fs::create_dir_all(home.join(".config")).expect("home");
             std::fs::write(

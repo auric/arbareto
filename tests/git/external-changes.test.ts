@@ -88,15 +88,15 @@ async function watching(directories: string[], body: (hints: number[]) => Promis
 }
 
 // The seam: each `fs.watch` call gives a watcher that only the test drives, in call order.
-async function withFakeWatch(body: (fakes: EventEmitter[]) => Promise<void>): Promise<void> {
-  const fakes: EventEmitter[] = [];
+async function withFakeWatch(body: (fakes: (EventEmitter & { close: () => void })[], spy: ReturnType<typeof spyOn<typeof fs, "watch">>) => Promise<void>): Promise<void> {
+  const fakes: (EventEmitter & { close: () => void })[] = [];
   const spy = spyOn(fs, "watch").mockImplementation((() => {
     const fake = Object.assign(new EventEmitter(), { close: () => {} });
     fakes.push(fake);
     return fake;
   }) as never);
   try {
-    await body(fakes);
+    await body(fakes, spy);
   } finally {
     spy.mockRestore();
   }
@@ -232,19 +232,76 @@ describe("watcher hints (L, real files)", () => {
 
   caseTest(
     "T088",
-    "a change event without a file name gives a hint (Bun 1.4.2 reports an event overflow this way)",
+    "a change event without a file name gives a hint and re-arms the watch (T088 decision E8)",
+    [],
+    () =>
+      withFakeWatch(async (fakes, spy) => {
+        const directory = fakeWatchDirectory("t088-overflow");
+        const hints: boolean[] = [];
+        const stop = watchWorkspace([directory], (lost) => hints.push(lost));
+        try {
+          expect(fakes.length).toBe(1);
+          const closed = spyOn(fakes[0]!, "close");
+          fakes[0]!.emit("change", "rename", null);
+          expect({ closes: closed.mock.calls.length, watched: spy.mock.calls.map((call) => call[0]) }).toEqual({ closes: 1, watched: [directory, directory] });
+          await Bun.sleep(HINT_BUDGET_MS);
+          expect(hints).toEqual([false]);
+          fakes[1]!.emit("change", "change", "watched.txt");
+          await Bun.sleep(HINT_BUDGET_MS);
+          expect(hints).toEqual([false, false]);
+        } finally {
+          stop();
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T088",
+    "a re-arm that fails after a change event without a file name gives a lost hint (T088 decision E8)",
+    [],
+    () =>
+      withFakeWatch(async (fakes, spy) => {
+        const hints: boolean[] = [];
+        const stop = watchWorkspace([fakeWatchDirectory("t088-rearm-failed")], (lost) => hints.push(lost));
+        try {
+          spy.mockImplementationOnce(() => {
+            throw new Error("t088 re-arm failed");
+          });
+          fakes[0]!.emit("change", "rename", null);
+          await Bun.sleep(HINT_BUDGET_MS);
+          expect({ watches: spy.mock.calls.length, hints }).toEqual({ watches: 2, hints: [true] });
+        } finally {
+          stop();
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T088",
+    "an event during a pending identity check schedules one more check, so a later loss gives a lost hint (T088 decision E9)",
     [],
     () =>
       withFakeWatch(async (fakes) => {
+        const directory = fakeWatchDirectory("t088-recheck");
+        const pending: ((error: NodeJS.ErrnoException | null, stats?: fs.BigIntStats) => void)[] = [];
+        const stat = spyOn(fs, "stat").mockImplementation(((_path: string, _options: unknown, done: (typeof pending)[number]) => {
+          pending.push(done);
+        }) as never);
         const hints: boolean[] = [];
-        const stop = watchWorkspace([fakeWatchDirectory("t088-overflow")], (lost) => hints.push(lost));
+        const stop = watchWorkspace([directory], (lost) => hints.push(lost));
         try {
-          expect(fakes.length).toBe(1);
-          fakes[0]!.emit("change", "rename", null);
-          await Bun.sleep(HINT_BUDGET_MS);
-          expect(hints).toEqual([false]);
+          fakes[0]!.emit("change", "change", "watched.txt");
+          await waitFor("the first identity check", () => pending.length === 1);
+          fakes[0]!.emit("change", "change", "watched.txt");
+          pending[0]!(null, statSync(directory, { bigint: true }));
+          await waitFor("the second identity check", () => pending.length === 2);
+          pending[1]!(Object.assign(new Error("t088 removed"), { code: "ENOENT" }));
+          expect(hints).toContain(true);
         } finally {
           stop();
+          stat.mockRestore();
         }
       }),
     TIMEOUT_MS,
@@ -619,6 +676,44 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
     TIMEOUT_MS,
   );
 
+  // Contract §5 "Deadline outcomes": a walk deadline in the change check ends the read as a Git step deadline does. It never becomes a full read.
+  caseTest(
+    "T312",
+    'a walk deadline in the change check of a check "changes" read ends the read with deadline and starts no Git process',
+    W,
+    () =>
+      withService({ name: "t312-change-check-deadline", watchHints: false }, async (service) => {
+        const git = gitPath();
+        const repo = repoOf(buildF18(git, "t312-change-check-deadline", "files"));
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const { installation } = probed;
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal: new AbortController().signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        let stopped = 0;
+        let deadline = false;
+        const runner: GitRunner = {
+          ...service.runner,
+          fileFacts: (request, signal) => (deadline ? Promise.resolve((stopped++, { stop: "deadline" as const })) : service.runner.fileFacts(request, signal)),
+        };
+        const reader = createWorkspaceReader({ runner, trust: createTrust({ runner, environment: serviceEnv(), configFiles: () => installation.configFiles }) });
+        const poll = async (check: "full" | "changes") => {
+          const before = service.runner.calls.length;
+          const outcome = await reader.readWorkspace({ operationId: crypto.randomUUID(), signal: new AbortController().signal, installation, workspace, refresh: false, check });
+          return { result: outcome.result, runs: service.runner.calls.length - before };
+        };
+        await poll("full");
+        await poll("changes");
+        expect(await poll("changes")).toEqual({ result: "succeeded", runs: 0 });
+        deadline = true;
+        expect(await poll("changes")).toEqual({ result: "deadline", runs: 0 });
+        expect(stopped).toBeGreaterThan(0);
+      }),
+    TIMEOUT_MS,
+  );
+
   // Contract §6 "File facts": an `error` fact names no file state. So a tuple with it proves nothing, and the reads keep and share no tuple.
   caseTest(
     "T309",
@@ -640,9 +735,9 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
         let stubbed = 0;
         const runner: GitRunner = {
           ...service.runner,
-          async fileFacts(request) {
-            const facts = await service.runner.fileFacts(request);
-            if (listing > 0 || request.digest) return facts;
+          async fileFacts(request, signal) {
+            const facts = await service.runner.fileFacts(request, signal);
+            if (listing > 0 || request.digest || !Array.isArray(facts)) return facts;
             stubbed++;
             return facts.map((fact, i) => (i === 0 ? { kind: "error", component: request.files[0]!.path.length, code: "sharing-violation" } : fact));
           },

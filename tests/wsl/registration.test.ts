@@ -127,7 +127,7 @@ describe("WSL registration seams (T207)", () => {
     const path = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\u\\r";
     for (const reply of [{ code: "UNSUPPORTED_REPOSITORY" }, { code: "UNSUPPORTED_REPOSITORY", reason: "absent" }, { distroGuid: "{8f51b15e-5f05-4b6d-8d78-5765530f558a}", fileSystemId: "1", inode: "2" }]) {
       const runner = { identities: async () => [reply] } as unknown as GitRunner;
-      expect({ reply, outcome: await requestWslIdentities(runner, crypto.randomUUID(), context, [path], git) }).toEqual({ reply, outcome: refused });
+      expect({ reply, outcome: await requestWslIdentities(runner, crypto.randomUUID(), context, [path], git, new AbortController().signal) }).toEqual({ reply, outcome: refused });
     }
   });
 

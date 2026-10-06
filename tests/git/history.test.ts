@@ -459,10 +459,14 @@ describe("trust gate (contract §7)", () => {
       withService("t070-trust", async (service) => {
         const built = buildF17(gitPath(), "t070-trust", "trust");
         const repo = repoOf(built);
-        const commits = oracleTraversal(repo, refState(gitPath(), repo).headOid!).flatMap((row) => [row.oid, ...row.parents]);
+        const tip = refState(gitPath(), repo).headOid!;
+        const commits = oracleTraversal(repo, tip).flatMap((row) => [row.oid, ...row.parents]);
         expect(commits.length).toBeGreaterThan(0);
         const { repositoryId, generation } = await service.register(repo);
-        // The listing waits until `rev-list` starts, and `rev-list` waits at its stdout. So only the refused gate can end `rev-list`.
+        // A real `rev-list` writes less than one pipe buffer, so it can exit before the gate decides. The double sends the real Git bytes as the `rev-list` output.
+        const traversal = git(repo, ["--no-optional-locks", "rev-list", "--parents", "--max-count=100", "--date-order", tip]);
+        service.runner.inject.stdout = (call) => (isRevList(call) ? traversal : undefined);
+        // The listing waits until `rev-list` starts. The injected `rev-list` waits at its stdout barrier. So only the refused gate can end `rev-list`.
         const releaseListing = service.runner.pauseStdout(once(isConfigList));
         const releaseRevList = service.runner.pauseStdout(once(isRevList));
         try {
@@ -474,6 +478,7 @@ describe("trust gate (contract §7)", () => {
           expect({ code: response.code, succeeded: response.state === "succeeded" }).toEqual({ code: "TRUST_REQUIRED", succeeded: false });
           // Contract §7 "Held history steps": the refused gate ends every held step. The recorded `rev-list` ended without an exit status.
           expect(service.runner.calls.filter(isRevList).map((c) => c.exit?.exitCode)).toEqual([null]);
+          expect(service.runner.calls.filter((c) => c.arguments.includes("cat-file"))).toEqual([]);
         } finally {
           releaseListing();
           releaseRevList();

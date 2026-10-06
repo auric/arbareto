@@ -318,7 +318,12 @@ export const ExitReply = z
     deadline: z.enum(["deadline", "inactivity", "ceiling"]).optional(),
   })
   .meta({ title: "Exit" });
-export const IdentityListReply = z.strictObject({ type: z.literal("identity"), ...call, identities: z.array(IdentityReply) }).meta({ title: "IdentityList" });
+// Contract §6 "Walks": a walk past its §5 deadline replies `deadline` and holds no identity or fact.
+const walkDeadline = { ...call, deadline: z.literal("deadline") };
+export const IdentityListReply = z.union([
+  z.strictObject({ type: z.literal("identity"), ...call, identities: z.array(IdentityReply) }).meta({ title: "IdentityList" }),
+  z.strictObject({ type: z.literal("identity"), ...walkDeadline }).meta({ title: "IdentityDeadline" }),
+]);
 export const LingeringCountReply = z.strictObject({ type: z.literal("lingeringCount"), ...call, count: Count }).meta({ title: "LingeringCountReply" });
 export const RegisterReply = z.union([
   z.strictObject({ type: z.literal("register"), ...call, result: z.enum(["approved", "declined"]) }).meta({ title: "RegisterResult" }),
@@ -368,20 +373,21 @@ export const FileFact = z.union([
   z.strictObject({ kind: z.literal("error"), component: Count, code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "FileFactError" }),
 ]);
 export type FileFact = z.infer<typeof FileFact>;
-export const FileFactsReply = z
-  .strictObject({ type: z.literal("fileFacts"), ...call, facts: z.array(FileFact).min(1).max(FILE_FACT_ENTRIES) })
-  .meta({ title: "FileFactsReply" });
+export const FileFactsReply = z.union([
+  z.strictObject({ type: z.literal("fileFacts"), ...call, facts: z.array(FileFact).min(1).max(FILE_FACT_ENTRIES) }).meta({ title: "FileFactsReply" }),
+  z.strictObject({ type: z.literal("fileFacts"), ...walkDeadline }).meta({ title: "FileFactsDeadline" }),
+]);
 export const ProcessReply = z.union([
   OutputReply,
   ActivityReply,
   InputWrittenReply,
   ExitReply,
   Refused,
-  IdentityListReply,
+  ...IdentityListReply.options,
   LingeringCountReply,
   ...RegisterReply.options,
   ResolveGitReply,
-  FileFactsReply,
+  ...FileFactsReply.options,
   ...WslDistrosReply.options,
 ]);
 

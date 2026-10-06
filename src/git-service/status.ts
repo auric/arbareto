@@ -32,7 +32,7 @@ import {
   type OperationMarker,
 } from "./commands";
 import { hunkEligibility, IndexFormatError, type HunkEligibility } from "./eligibility";
-import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
 import { sameIdentity } from "./identity";
 import { contextOf, encodedBytes, isMissing, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -185,15 +185,15 @@ function parseIndexListing(bytes: Uint8Array, objectFormat: Workspace["objectFor
 // Research R2 "T081 record": porcelain v2 shows an intent-to-add entry as the ordinary record `.A` with `mH` and `mI` `000000`.
 const intentToAdd = (r: StatusRecord) => r.kind === "ordinary" && r.xy === ".A" && r.modes[0] === "000000" && r.modes[1] === "000000";
 
-// Sends one identity request (contract §6 "Process fields") and returns its replies in path order.
-export type IdentityRequest = (paths: string[]) => Promise<unknown[]>;
+// Sends one identity request (contract §6 "Process fields") and returns its replies in path order, or the walk stop.
+export type IdentityRequest = (paths: string[]) => Promise<unknown[] | WalkStop>;
 
 // Git `promisor-remote.c` `promisor_remote_config` (git-for-windows v2.56.0.windows.1): a true `remote.<name>.promisor` or any `remote.<name>.partialclonefilter` names a promisor remote.
 // `parse_config_key` gives the empty name to a key without a subsection. `promisor_remote_new` refuses a name that starts with `/`.
 // `setup.c` `read_repository_format` reads `extensions.partialclone` only from `<common directory>/config`, and only when that file sets `core.repositoryformatversion`.
 // The shell identity of the origin file decides that file, never the path text. Git prints the section and the variable in lowercase.
-// `unknown`: an identity that the shell cannot give, so the check cannot complete.
-export async function hasPromisor(entries: readonly ConfigEntry[], w: Workspace, identify: IdentityRequest): Promise<boolean | "unknown"> {
+// `unknown`: an identity that the shell cannot give, so the check cannot complete. A walk stop ends the check with its stop.
+export async function hasPromisor(entries: readonly ConfigEntry[], w: Workspace, identify: IdentityRequest): Promise<boolean | "unknown" | WalkStop["stop"]> {
   const remote = entries.some((e) => {
     if (!e.key.startsWith("remote.")) return false;
     const dot = e.key.lastIndexOf(".");
@@ -211,7 +211,11 @@ export async function hasPromisor(entries: readonly ConfigEntry[], w: Workspace,
   const paths = [...new Set([formatFile, ...format.map((e) => fileOf(e)!)])];
   const replies: unknown[] = [];
   try {
-    for (let at = 0; at < paths.length; at += IDENTITY_PATHS) replies.push(...(await identify(paths.slice(at, at + IDENTITY_PATHS))));
+    for (let at = 0; at < paths.length; at += IDENTITY_PATHS) {
+      const answer = await identify(paths.slice(at, at + IDENTITY_PATHS));
+      if (!Array.isArray(answer)) return answer.stop;
+      replies.push(...answer);
+    }
   } catch (error) {
     if (error instanceof RunnerRefusal) return "unknown";
     throw error;
@@ -292,12 +296,20 @@ interface TupleFacts {
 const entryKey = (entry: ProgramFile) => JSON.stringify([entry.root, ...entry.path]);
 
 // The program-file entries come through phase-1 `fileFacts` requests of `operationId`, never through a file call (contract §7 "Program file digests").
-// Null: a fact is unknown, so no compare can prove that nothing changed.
-async function tupleFacts(runner: GitRunner, operationId: string, w: Workspace, files: readonly TupleFile[], programs: readonly ProgramFile[]): Promise<TupleFacts | null> {
+// Null: a fact is unknown, so no compare can prove that nothing changed. A walk stop ends the caller with its stop.
+async function tupleFacts(
+  runner: GitRunner,
+  operationId: string,
+  w: Workspace,
+  files: readonly TupleFile[],
+  programs: readonly ProgramFile[],
+  signal: AbortSignal,
+): Promise<TupleFacts | WalkStop | null> {
   const stats = await statFiles(files);
   if (stats === null) return null;
-  const facts = await readProgramFiles(runner, operationId, w, programs);
-  return facts === null ? null : { stats, programs: new Map(programs.map((entry, i) => [entryKey(entry), facts[i]!])) };
+  const facts = await readProgramFiles(runner, operationId, w, programs, signal);
+  if (facts === null || !Array.isArray(facts)) return facts;
+  return { stats, programs: new Map(programs.map((entry, i) => [entryKey(entry), facts[i]!])) };
 }
 
 const tupleText = (files: readonly TupleFile[], programs: readonly ProgramFile[], facts: TupleFacts) =>
@@ -305,12 +317,13 @@ const tupleText = (files: readonly TupleFile[], programs: readonly ProgramFile[]
 
 // Contract §7 "Shared listing" and §8 "Change check": the tuple of the last listing of the workspace.
 // Null: a candidate needs a fact that the service does not hold, so no compare can prove that nothing changed.
-async function listingTuple(runner: GitRunner, w: Workspace, st: WorkspaceState, operationId: string): Promise<string | null> {
+async function listingTuple(runner: GitRunner, w: Workspace, st: WorkspaceState, operationId: string, signal: AbortSignal): Promise<string | WalkStop | null> {
   if (st.changeFiles === null || !st.changeFiles.complete) return null;
   const { configPaths, programFiles } = st.changeFiles;
   const files = tupleFiles(w, st, st.head ?? w.head, configPaths);
-  const facts = files && (await tupleFacts(runner, operationId, w, files, programFiles));
-  return files === null || facts === null ? null : tupleText(files, programFiles, facts);
+  if (files === null) return null;
+  const facts = await tupleFacts(runner, operationId, w, files, programFiles, signal);
+  return facts === null || "stop" in facts ? facts : tupleText(files, programFiles, facts);
 }
 
 // Contract §5 "Status page": the pages of `entries` within the bound. `kept` is below the entry count when one entry cannot fit a page.
@@ -467,9 +480,10 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     const known = st.changeFiles?.complete ? st.changeFiles : null;
     const prior = tupled ? tupleFiles(w, st, assumed, known?.configPaths ?? []) : null;
     const priorPrograms = known?.programFiles ?? [];
-    const before = prior === null ? null : await tupleFacts(runner, t.operationId, w, prior, priorPrograms);
+    const before = prior === null ? null : await tupleFacts(runner, t.operationId, w, prior, priorPrograms, t.signal);
     // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read records nothing.
     if (t.signal.aborted) return end({ result: "canceled" });
+    if (before !== null && "stop" in before) return end({ result: before.stop });
     const listing = trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
     if (prior !== null && before !== null && known !== null) trust.shared.record(w.repositoryId, { tuple: tupleText(prior, priorPrograms, before), listing, generation: () => ownerGeneration });
     else trust.shared.release(w.repositoryId);
@@ -530,8 +544,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     const indexFailed = indexExit.exitCode !== 0 && !indexOut.limited;
     if (statusFailed || indexFailed) {
       // A promisor check that cannot complete gives GIT_FAILED, as an object check that cannot complete does.
-      const promisor = await hasPromisor(lst.entries, w, (paths) => runner.identities(t.operationId, contextOf(w), paths));
+      const promisor = await hasPromisor(lst.entries, w, (paths) => runner.identities(t.operationId, contextOf(w), paths, t.signal));
       if (t.signal.aborted) return end({ result: "canceled" });
+      if (promisor === "canceled" || promisor === "deadline") return end({ result: promisor });
       if (promisor !== true) return refusal("GIT_FAILED");
       // Contract §7 "Missing objects": the HEAD commit and the index entries. A gitlink names a commit of another repository.
       const oids = new Set<string>();
@@ -722,8 +737,10 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
       const kept = st.kept;
       // Contract §11 "Change polling": a WSL workspace has no watcher and uses no stat tuple, so each of its reads runs in full.
       if (t.check === "changes" && !t.refresh && kept !== null && kept.hints === st.hints && !st.unwatched && !st.unavailable && t.workspace.wsl === undefined) {
-        const facts = await tupleFacts(runner, t.operationId, t.workspace, kept.files, kept.programs);
+        const facts = await tupleFacts(runner, t.operationId, t.workspace, kept.files, kept.programs, t.signal);
         if (t.signal.aborted) return { result: "canceled" };
+        // Contract §5 "Deadline outcomes": a walk deadline ends the read as a Git step deadline does, never with a full read.
+        if (facts !== null && "stop" in facts) return { result: facts.stop };
         const same = facts !== null && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
         if (same && policyOf(t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st) } };
       }
@@ -767,7 +784,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     },
 
     // Contract §7 "Shared listing": `readHistory` reads this tuple again before it reuses a listing.
-    listingTuple: (w: Workspace, operationId: string): Promise<string | null> => listingTuple(runner, w, stateOfWorkspace(w.repositoryId), operationId),
+    listingTuple: (w: Workspace, operationId: string, signal: AbortSignal): Promise<string | WalkStop | null> => listingTuple(runner, w, stateOfWorkspace(w.repositoryId), operationId, signal),
 
     // A watcher hint marks the workspace dirty (contract §8 "Token invalidation"). `lost`: later changes can give no hint.
     hint(repositoryId: string, lost: boolean): void {

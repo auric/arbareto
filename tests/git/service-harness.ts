@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import type { Handshake } from "../../src/contracts/channel";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
+import { FrameBoundError, type Frame } from "../../src/git-service/transport";
 import { printOrigin } from "../origin";
 import { createBunRunner, createTrustStore, type BunRunner, type CallMatch, type TrustStore } from "./bun-runner";
 import { FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
@@ -80,14 +81,15 @@ function symlinkCreation(): boolean {
   }
 }
 
-// Present when `mkfifo` makes a FIFO in a folder. Windows has no FIFO in a folder. An MSYS `mkfifo` there makes no native FIFO.
+// Present when `mkfifo` exits 0 and `lstat` reports a FIFO at the path. Windows has no FIFO in a folder.
+// An MSYS `mkfifo` on Windows exits 0 and leaves no entry at the native path.
 function fifoCreation(): boolean {
   if (WINDOWS || Bun.which("mkfifo") === null) return false;
   const dir = mkdtempSync(join(tmpdir(), "arbareto-fifo-"));
   try {
     const fifo = join(dir, "probe");
     const made = Bun.spawnSync(["mkfifo", fifo], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-    return made.exitCode === 0 && lstatSync(fifo).isFIFO();
+    return made.exitCode === 0 && lstatSync(fifo, { throwIfNoEntry: false })?.isFIFO() === true;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -179,6 +181,8 @@ export interface OpenOptions extends ServiceSeams {
   gitSelectedPath?: string;
   trustStore?: TrustStore;
   restarted?: boolean;
+  // Test seam: the writer refuses each frame that this accepts, as `encodeFrame` refuses a frame above the bound.
+  refuseFrame?: (frame: Frame) => boolean;
 }
 
 export interface ServiceResponse<R = unknown> {
@@ -295,6 +299,8 @@ export interface Service {
   sessionId: string;
   responses: ServiceResponse[];
   progress: unknown[];
+  // The frames that `refuseFrame` refused.
+  refused: Frame[];
   // `performance.now()` at the first response of each `requestId`.
   responseAt: Map<string, number>;
   log(): readonly unknown[];
@@ -325,7 +331,7 @@ const RESPONSE_WAIT_MS = READ_DEADLINE_MS + RECONCILIATION_TARGET_MS;
 // Contract §5 "Private/reply frame": a pipe frame body holds at most 16 MiB of encoded JSON.
 export function checkFrame(frame: object): void {
   const bytes = Buffer.byteLength(JSON.stringify(frame));
-  if (bytes > PIPE_FRAME_BYTES) throw new RangeError(`a service frame of ${bytes} bytes is above the ${PIPE_FRAME_BYTES}-byte frame bound`);
+  if (bytes > PIPE_FRAME_BYTES) throw new FrameBoundError(`a service frame of ${bytes} bytes is above the ${PIPE_FRAME_BYTES}-byte frame bound`);
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -337,6 +343,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
   const runner = createBunRunner({ git: options.git, directory: fixtureDir(options.name), environment, trustStore });
   const responses: ServiceResponse[] = [];
   const progress: unknown[] = [];
+  const refused: Frame[] = [];
   const responseAt = new Map<string, number>();
   const firstResponse = new Map<string, ServiceResponse>();
   const acceptedBy = new Map<string, string>();
@@ -382,6 +389,10 @@ export async function openService(options: OpenOptions): Promise<Service> {
 
   const writer: SessionOptions["writer"] = {
     write(frame) {
+      if (options.refuseFrame?.(frame)) {
+        refused.push(frame);
+        throw new FrameBoundError("refused by the refuseFrame seam");
+      }
       try {
         checkFrame(frame);
       } catch (error) {
@@ -452,6 +463,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     sessionId,
     responses,
     progress,
+    refused,
     responseAt,
     log: () => session.log.entries(),
     send(operation, payload, envelope = {}) {

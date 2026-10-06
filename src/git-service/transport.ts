@@ -70,10 +70,13 @@ export async function* readFrames(stream: ReadableStream<Uint8Array>): AsyncGene
 
 const encoder = new TextEncoder();
 
+// `encodeFrame` throws it for a body above the frame bound. Contract §2 turns such a response into `failed` with OUTPUT_LIMIT.
+export class FrameBoundError extends RangeError {}
+
 export function encodeFrame(frame: Frame): Uint8Array {
   if (!isFrameKind(frame.kind)) throw new TypeError("frame kind refused");
   const body = encoder.encode(JSON.stringify(frame));
-  if (body.length > PIPE_FRAME_BYTES) throw new RangeError("frame above the pipe frame bound");
+  if (body.length > PIPE_FRAME_BYTES) throw new FrameBoundError("frame above the pipe frame bound");
   const out = new Uint8Array(4 + body.length);
   new DataView(out.buffer).setUint32(0, body.length, true);
   out.set(body, 4);

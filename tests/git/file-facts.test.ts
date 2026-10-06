@@ -36,6 +36,8 @@ const EPOCH_1601_TICKS = 116_444_736_000_000_000n;
 // The FIFO case ends within this bound. A helper opens the write end at the bound, so a blocked open or read in the double returns.
 const FIFO_BOUND_MS = 5000;
 const HELPER_EXIT_MS = 5000;
+// A held walk that neither its deadline nor an abort ends stays unsettled past this bound.
+const WALK_BOUND_MS = 5000;
 
 const id = () => crypto.randomUUID();
 
@@ -114,7 +116,8 @@ describe("file facts (contract §6 \"File facts\")", () => {
   async function facts(digest: boolean, files: Entry[], repository = repositoryId): Promise<FileFact[]> {
     const call = request(digest, files, repository);
     expect(ProcessRequest.safeParse({ type: "fileFacts", callId: id(), ...call }).success).toBe(true);
-    const reply = await runner.fileFacts(call);
+    const reply = await runner.fileFacts(call, new AbortController().signal);
+    if (!Array.isArray(reply)) throw new Error(`walk stop: ${reply.stop}`);
     expect(reply).toHaveLength(files.length);
     for (const fact of reply) expect(FileFact.safeParse(fact).success).toBe(true);
     return reply;
@@ -125,7 +128,7 @@ describe("file facts (contract §6 \"File facts\")", () => {
   // The refused code, or "replied". Any other error fails the case.
   async function outcome(call: unknown): Promise<string> {
     try {
-      await runner.fileFacts(call as FileFactsRequest);
+      await runner.fileFacts(call as FileFactsRequest, new AbortController().signal);
       return "replied";
     } catch (error) {
       if (error instanceof RunnerRefusal) return error.code;
@@ -486,6 +489,59 @@ describe("file facts (contract §6 \"File facts\")", () => {
     },
     CASE_TIMEOUT_MS,
   );
+
+  // T312, contract §6 "Walks": the double holds a walk at the `holdWalk` seam. The walk deadline and an abort end the walk without a value.
+  // Each walk kind: its call, and the count of walks that read and answered.
+  const walkKinds: [string, (signal: AbortSignal) => Promise<unknown>, () => number][] = [
+    ["fileFacts", (signal) => runner.fileFacts(request(true, [gitDir("hooks", "pre-commit")]), signal), () => runner.fileFactCalls.length],
+    ["identities", (signal) => runner.identities(id(), { contextKind: "registeredOperation", gitInstallationId, repositoryId }, [hooks], signal), () => runner.identityCalls.filter((c) => c.replies.length > 0).length],
+  ];
+  // The result, or "unsettled" after the bound of the case.
+  const within = <T>(result: Promise<T>) => Promise.race([result, Bun.sleep(WALK_BOUND_MS).then(() => "unsettled" as const)]);
+
+  for (const [kind, walk, answered] of walkKinds) {
+    caseTest(
+      "T312",
+      `a held ${kind} walk past its deadline gives the deadline stop and no value`,
+      W,
+      async () => {
+        runner.inject.holdWalk = () => new Promise<void>(() => {});
+        runner.inject.deadlineMs = 50;
+        try {
+          const before = answered();
+          expect(await within(walk(new AbortController().signal))).toEqual({ stop: "deadline" });
+          expect(answered()).toBe(before);
+        } finally {
+          runner.inject.holdWalk = null;
+          runner.inject.deadlineMs = null;
+        }
+      },
+      CASE_TIMEOUT_MS,
+    );
+
+    caseTest(
+      "T312",
+      `an abort ends a held ${kind} walk at once with the canceled stop, and the walk reads nothing after the hold`,
+      W,
+      async () => {
+        let release = () => {};
+        runner.inject.holdWalk = () => new Promise<void>((resolve) => (release = resolve));
+        try {
+          const before = answered();
+          const controller = new AbortController();
+          const result = walk(controller.signal);
+          controller.abort();
+          expect(await within(result)).toEqual({ stop: "canceled" });
+          release();
+          await Bun.sleep(50);
+          expect(answered()).toBe(before);
+        } finally {
+          runner.inject.holdWalk = null;
+        }
+      },
+      CASE_TIMEOUT_MS,
+    );
+  }
 });
 
 // POSIX mode 0100 denies the read and keeps the execute bit. On Windows, an ACL entry denies the data read (`RD`).

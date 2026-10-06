@@ -175,7 +175,10 @@ async function probeCandidate(
   if ("gitCode" in read) return failure(read.gitCode);
   const digest = read.digest;
   try {
-    const [file] = await runner.identities(operationId, context, [target.executablePath]);
+    const identity = await runner.identities(operationId, context, [target.executablePath], signal);
+    // Contract §5 "Deadline outcomes": a walk deadline gives DEADLINE, as a bootstrap probe deadline does.
+    if (!Array.isArray(identity)) return identity.stop === "deadline" ? failure("DEADLINE") : { ok: false, canceled: true };
+    const [file] = identity;
     // Contract §6 "Registration bootstrap": a failed identity call refuses registration with UNSUPPORTED_REPOSITORY.
     if ("code" in file) return failure(file.code);
     const execPath = await runProbe(runner, operationId, context, ["--exec-path"], signal);

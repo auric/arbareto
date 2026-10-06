@@ -22,7 +22,7 @@ import { wslIdentityPath } from "../contracts/wsl-route";
 import { gitPathText } from "./wsl";
 import { configListArgs, HOOK_EVENTS, hooksPathArgs } from "./commands";
 import type { ReadInstallation } from "./snapshot";
-import { createCollector, RunnerRefusal, type FileFactsRequest, type GitRunner } from "./git-runner";
+import { createCollector, RunnerRefusal, type FileFactsRequest, type GitRunner, type WalkStop } from "./git-runner";
 import { sameIdentity, type PhysicalIdentity } from "./identity";
 import type { Workspace } from "./registration";
 
@@ -456,7 +456,7 @@ function ancestry(path: string, rules: Rules): { path: string; below: string[] }
   return chain;
 }
 
-type PlaceFailure = { ok: false; stop: "canceled" } | { ok: false; code: ErrorCode };
+type PlaceFailure = { ok: false; stop: WalkStop["stop"] } | { ok: false; code: ErrorCode };
 
 // Contract §7 "Inside and outside" for protected paths.
 function createPlaces(runner: GitRunner, target: ListingTarget, roots: Roots, identityPath: View["identityPath"]) {
@@ -509,19 +509,22 @@ function createPlaces(runner: GitRunner, target: ListingTarget, roots: Roots, id
       }
       const chunks: [string, string][][] = [];
       for (let at = 0; at < forms.length; at += IDENTITY_PATHS) chunks.push(forms.slice(at, at + IDENTITY_PATHS));
-      let answers: unknown[][];
-      try {
-        answers = await Promise.all(chunks.map((chunk) => runner.identities(operationId, context, chunk.map(([, form]) => form))));
-      } catch (error) {
-        if (error instanceof RunnerRefusal) return { ok: false, code: error.code };
-        throw error;
+      // Every chunk settles before the decision ends, so no identity call outlives the listing.
+      const settled = await Promise.allSettled(chunks.map((chunk) => runner.identities(operationId, context, chunk.map(([, form]) => form), signal)));
+      const answers: (unknown[] | WalkStop)[] = [];
+      for (const result of settled) {
+        if (result.status === "fulfilled") answers.push(result.value);
+        else if (result.reason instanceof RunnerRefusal) return { ok: false, code: result.reason.code };
+        else throw result.reason;
       }
       if (signal.aborted) return { ok: false, stop: "canceled" };
       for (const [i, chunk] of chunks.entries()) {
+        const answer = answers[i]!;
+        if (!Array.isArray(answer)) return { ok: false, stop: answer.stop };
         // Contract §6 "Errors": a malformed reply fails the call with PROCESS_OWNERSHIP_FAILED.
-        if (answers[i]!.length !== chunk.length) return { ok: false, code: "PROCESS_OWNERSHIP_FAILED" };
+        if (answer.length !== chunk.length) return { ok: false, code: "PROCESS_OWNERSHIP_FAILED" };
         for (const [j, [path]] of chunk.entries()) {
-          const reply = IdentityReply.safeParse(answers[i]![j]);
+          const reply = IdentityReply.safeParse(answer[j]);
           if (!reply.success) return { ok: false, code: "PROCESS_OWNERSHIP_FAILED" };
           // An identity of another form or another distro can never match a root, so the reply is malformed.
           const data = reply.data;
@@ -706,19 +709,27 @@ function settled(at: Inside, hops: Hop[]): Walked | null {
   return at.below.every(isComponent) ? null : { kind: "unresolved", bound: "name", hops };
 }
 
-// Contract §5 "File facts": at most 64 entries per request. A refusal keeps its code.
-async function requestFacts(runner: GitRunner, operationId: string, w: Workspace, digest: boolean, files: readonly FactEntry[]): Promise<FileFact[] | { code: ErrorCode }> {
+// Contract §5 "File facts": at most 64 entries per request. A refusal keeps its code, and a walk stop ends the requests.
+async function requestFacts(
+  runner: GitRunner,
+  operationId: string,
+  w: Workspace,
+  digest: boolean,
+  files: readonly FactEntry[],
+  signal: AbortSignal,
+): Promise<FileFact[] | { code: ErrorCode } | WalkStop> {
   const context = { operationId, contextKind: "registeredOperation" as const, gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId };
   const out: FileFact[] = [];
   for (let i = 0; i < files.length; i += FILE_FACT_ENTRIES) {
     const chunk = files.slice(i, i + FILE_FACT_ENTRIES).map(({ root, path }) => ({ root, path: [...path] }));
-    let reply: FileFact[];
+    let reply: FileFact[] | WalkStop;
     try {
-      reply = await runner.fileFacts({ ...context, digest, files: chunk });
+      reply = await runner.fileFacts({ ...context, digest, files: chunk }, signal);
     } catch (error) {
       if (error instanceof RunnerRefusal) return { code: error.code };
       throw error;
     }
+    if (!Array.isArray(reply)) return reply;
     // Contract §6 "Errors": a malformed reply fails the call with PROCESS_OWNERSHIP_FAILED.
     if (reply.length !== chunk.length) return { code: "PROCESS_OWNERSHIP_FAILED" };
     out.push(...reply);
@@ -728,9 +739,11 @@ async function requestFacts(runner: GitRunner, operationId: string, w: Workspace
 
 // Contract §8 "Change check": the facts of the program-file entries of a listing, read again with phase-1 requests.
 // Null: a refusal, a malformed reply, or an `error` fact. Then no compare can prove that nothing changed.
-export async function readProgramFiles(runner: GitRunner, operationId: string, w: Workspace, files: readonly ProgramFile[]): Promise<FileFact[] | null> {
-  const reply = await requestFacts(runner, operationId, w, false, files);
-  return Array.isArray(reply) && reply.every((fact) => fact.kind !== "error") ? reply : null;
+// A walk stop is no unknown fact. It ends the check with the outcome of its step (contract §5 "Deadline outcomes").
+export async function readProgramFiles(runner: GitRunner, operationId: string, w: Workspace, files: readonly ProgramFile[], signal: AbortSignal): Promise<FileFact[] | WalkStop | null> {
+  const reply = await requestFacts(runner, operationId, w, false, files, signal);
+  if (!Array.isArray(reply)) return "stop" in reply ? reply : null;
+  return reply.every((fact) => fact.kind !== "error") ? reply : null;
 }
 
 // Contract §7 "Program file digests". The service reads repository-controlled program and hook paths only through these requests.
@@ -742,9 +755,10 @@ function createFactReader(runner: GitRunner, target: ListingTarget, roots: Roots
 
   async function send(digest: boolean, places: readonly Inside[]): Promise<FileFact[] | ListingFailure> {
     if (signal.aborted) return { ok: false, stop: "canceled" };
-    const reply = await requestFacts(runner, operationId, w, digest, places.map((at) => ({ root: at.root, path: at.below })));
+    const reply = await requestFacts(runner, operationId, w, digest, places.map((at) => ({ root: at.root, path: at.below })), signal);
     if (signal.aborted) return { ok: false, stop: "canceled" };
-    return Array.isArray(reply) ? reply : { ok: false, code: reply.code };
+    if (Array.isArray(reply)) return reply;
+    return "stop" in reply ? { ok: false, stop: reply.stop } : { ok: false, code: reply.code };
   }
 
   // Phase 1 (`digest: false`) for each place without a fact.

@@ -115,11 +115,15 @@ export type RegisterReply = { result: "approved" | "declined" } | { result: "ano
 // Contract §6 "File facts": the `FileFacts` frame without `type` and `callId`.
 export type FileFactsRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "fileFacts" }>, "type" | "callId">;
 
+// Contract §6 "Walks": an `identity` or `fileFacts` call without its value.
+// `deadline`: the walk passed its §5 deadline. `canceled`: the signal aborted the call, and the service sent `cancel`.
+export type WalkStop = { stop: "canceled" | "deadline" };
+
 export interface GitRunner {
   run(call: GitCall): Promise<GitExit>;
-  identities(operationId: string, context: ProcessContext, paths: readonly string[]): Promise<IdentityReply[]>;
+  identities(operationId: string, context: ProcessContext, paths: readonly string[], signal: AbortSignal): Promise<IdentityReply[] | WalkStop>;
   // Replies with one fact per entry, in request order.
-  fileFacts(request: FileFactsRequest): Promise<FileFact[]>;
+  fileFacts(request: FileFactsRequest, signal: AbortSignal): Promise<FileFact[] | WalkStop>;
   lingeringCount(operationId: string, commonDirectory: string): Promise<number>;
   register(request: RegisterRequest): Promise<RegisterReply>;
   // Replies with the `bootstrapId` of the new `gitProbe` context for `executablePath`.

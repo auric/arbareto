@@ -176,6 +176,24 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
     TEST_TIMEOUT_MS,
   );
 
+  // Contract §5 "Deadline outcomes": a walk deadline of a probe gives DEADLINE, as a bootstrap probe deadline does.
+  test(
+    "an identity walk that ends deadline gives DEADLINE, and one that ends canceled gives the canceled result, and no probe runs",
+    async () => {
+      const exe = stub("walk-stop", MINIMUM);
+      for (const [stop, expected] of [
+        ["deadline", { ok: false, gitCode: "DEADLINE", minimumVersion: MINIMUM }],
+        ["canceled", { ok: false, canceled: true }],
+      ] as const) {
+        runs.length = 0;
+        const stopped: GitRunner = { ...counted, identities: async () => ({ stop }) };
+        expect(await probeGit(stopped, { bootstrapId: runner.addContext("gitProbe", exe), executablePath: exe })).toEqual(expected);
+        expect(runs).toEqual([]);
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   test(
     "an admitted Git records executablePath, executableIdentity, and version",
     async () => {

@@ -80,7 +80,7 @@ describe("WSL identity across start orders (T252)", () => {
           contexts.push({ d, path, bootstrapId, gitInstallationId, operationId });
         }
         const identity = async (c: Context): Promise<WslIdentityReply> => {
-          const [reply] = (await runner.identities(c.operationId, { contextKind: "repositoryDiscovery", bootstrapId: c.bootstrapId, gitInstallationId: c.gitInstallationId }, [c.path])) as unknown as WslIdentityReply[];
+          const [reply] = (await runner.identities(c.operationId, { contextKind: "repositoryDiscovery", bootstrapId: c.bootstrapId, gitInstallationId: c.gitInstallationId }, [c.path], new AbortController().signal)) as unknown as WslIdentityReply[];
           // The identity read gives the inode, so it is the inode check of the test harness rules.
           if (!reply || "code" in reply || reply.inode !== c.d.inode) throw new FixtureLost(c.d.host.folder);
           return reply;

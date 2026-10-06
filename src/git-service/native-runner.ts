@@ -46,12 +46,16 @@ import {
   type RegisterReply,
   type StartedReply,
   type TrustReply,
+  type WalkStop,
 } from "./git-runner";
 import type { Frame, FrameKind, FrameWriter } from "./transport";
 
 // Contract §6 "Channel frames": the service side of the `process`, `mutation`, and `trust` frames.
 
 type Body = Record<string, unknown>;
+
+const DEADLINE: WalkStop = { stop: "deadline" };
+const CANCELED: WalkStop = { stop: "canceled" };
 
 const isObject = (v: unknown): v is Body => typeof v === "object" && v !== null && !Array.isArray(v);
 const ownershipFailed = () => new RunnerRefusal("PROCESS_OWNERSHIP_FAILED", "shell reply refused");
@@ -94,12 +98,20 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
   const send = (kind: FrameKind, body: Body) => writer.write({ kind, [kind]: body });
 
   // A request other than `run`. A malformed reply fails the call at once.
-  function ask<T>(kind: FrameKind, body: Body, parse: (reply: Body) => T | undefined): Promise<T> {
+  // Contract §6 "Walks": an abort of `canceled.signal` sends `cancel` and resolves `canceled.value` at once. An aborted signal sends nothing.
+  function ask<T>(kind: FrameKind, body: Body, parse: (reply: Body) => T | undefined, canceled?: { signal: AbortSignal; value: T }): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      if (canceled?.signal.aborted) return resolve(canceled.value);
       const callId = crypto.randomUUID();
+      const abort = () => {
+        pending.delete(callId);
+        resolve(canceled!.value);
+        send(kind, { type: "cancel", callId });
+      };
       pending.set(callId, {
         handle(replyKind, reply) {
           pending.delete(callId);
+          canceled?.signal.removeEventListener("abort", abort);
           const refused = replyKind === kind ? Refused.safeParse(reply) : undefined;
           if (refused?.success) {
             reject(new RunnerRefusal(refused.data.code));
@@ -119,7 +131,9 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
       } catch (error) {
         pending.delete(callId);
         reject(error);
+        return;
       }
+      canceled?.signal.addEventListener("abort", abort, { once: true });
     });
   }
 
@@ -256,23 +270,30 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
       });
     },
 
-    async identities(operationId, context, paths) {
+    async identities(operationId, context, paths, signal) {
       if (!isIdentifier(operationId) || !checkContext(context)) invalid("identity context");
       checkIdentityPaths(paths);
-      return ask<IdentityReply[]>("process", { type: "identity", operationId, ...context, paths: [...paths] }, (r) => {
+      const body = { type: "identity", operationId, ...context, paths: [...paths] };
+      const parse = (r: Body): IdentityReply[] | WalkStop | undefined => {
         const reply = IdentityListReply.safeParse(r);
-        return reply.success && reply.data.identities.length === paths.length ? reply.data.identities : undefined;
-      });
+        if (!reply.success) return undefined;
+        if ("deadline" in reply.data) return DEADLINE;
+        return reply.data.identities.length === paths.length ? reply.data.identities : undefined;
+      };
+      return ask("process", body, parse, { signal, value: CANCELED });
     },
 
-    async fileFacts(request) {
+    async fileFacts(request, signal) {
       checkFileFacts(request);
       const { operationId, contextKind, gitInstallationId, repositoryId, digest, files } = request;
       const body = { type: "fileFacts", operationId, contextKind, gitInstallationId, repositoryId, digest, files: files.map(({ root, path }) => ({ root, path: [...path] })) };
-      return ask<FileFact[]>("process", body, (r) => {
+      const parse = (r: Body): FileFact[] | WalkStop | undefined => {
         const reply = FileFactsReply.safeParse(r);
-        return reply.success && reply.data.facts.length === files.length && reply.data.facts.every((fact, i) => factFits(request, fact, files[i]!.path.length)) ? reply.data.facts : undefined;
-      });
+        if (!reply.success) return undefined;
+        if ("deadline" in reply.data) return DEADLINE;
+        return reply.data.facts.length === files.length && reply.data.facts.every((fact, i) => factFits(request, fact, files[i]!.path.length)) ? reply.data.facts : undefined;
+      };
+      return ask("process", body, parse, { signal, value: CANCELED });
     },
 
     async lingeringCount(operationId, commonDirectory) {

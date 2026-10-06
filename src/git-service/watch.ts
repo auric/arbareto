@@ -42,43 +42,69 @@ export function watchWorkspace(directories: readonly string[], onHint: (lost: bo
 }
 
 function watchDirectory(directory: string, changed: () => void, lost: () => void): () => void {
-  let watcher: FSWatcher;
+  let watcher: FSWatcher | undefined;
   let identity: BigIntStats;
-  try {
-    identity = statSync(directory, { bigint: true });
-    watcher = watch(directory, { recursive: true });
-  } catch {
-    lost();
-    return () => {};
-  }
   let check: ReturnType<typeof setTimeout> | undefined;
+  let checking = false;
+  let recheck = false;
   let stopped = false;
   const stop = () => {
     if (stopped) return;
     stopped = true;
     clearTimeout(check);
-    watcher.close();
+    watcher?.close();
   };
   const lose = () => {
     if (stopped) return;
     stop();
     lost();
   };
-  watcher.on("error", lose);
-  // Bun 1.4.2 reports lost events (an overflow) as a `change` event with a null file name. So every event is a hint, whatever its file name.
-  watcher.on("change", () => {
-    if (stopped) return;
-    changed();
-    // Bun 1.4.2 on Windows repeats events without an error after the watched directory is removed. The directory identity decides, at most once per debounce time.
-    check ??= setTimeout(
-      () =>
-        stat(directory, { bigint: true }, (error, now) => {
-          check = undefined;
-          if (error !== null || now.dev !== identity.dev || now.ino !== identity.ino) lose();
-        }),
-      WATCH_DEBOUNCE_MS,
-    );
-  });
+  // Bun 1.4.2 on Windows repeats events without an error after the watched directory is removed. The directory identity decides, at most once per debounce time.
+  const verify = () => {
+    check = setTimeout(() => {
+      check = undefined;
+      checking = true;
+      stat(directory, { bigint: true }, (error, now) => {
+        checking = false;
+        if (stopped) return;
+        if (error !== null || now.dev !== identity.dev || now.ino !== identity.ino) return lose();
+        // T088 decision E9: the stat can miss a change that came while it ran.
+        if (recheck) {
+          recheck = false;
+          verify();
+        }
+      });
+    }, WATCH_DEBOUNCE_MS);
+  };
+  const arm = () => {
+    const armed = watch(directory, { recursive: true });
+    armed.on("error", lose);
+    armed.on("change", (_event, name) => {
+      if (stopped) return;
+      // Bun 1.4.2 reports lost events (an overflow) as a null file name. On Linux it also reports a removed or replaced root this way, and then that watch stays silent. T088 decision E8.
+      if (name === null) {
+        watcher?.close();
+        watcher = undefined;
+        try {
+          watcher = arm();
+        } catch {
+          lose();
+          return;
+        }
+      }
+      changed();
+      if (checking) recheck = true;
+      else if (check === undefined) verify();
+    });
+    return armed;
+  };
+  try {
+    identity = statSync(directory, { bigint: true });
+    watcher = arm();
+  } catch {
+    lost();
+    return () => {};
+  }
   return stop;
 }
 

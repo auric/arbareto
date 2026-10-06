@@ -336,6 +336,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 | Ordinary read deadline | 30 seconds. It starts when the read takes its slot, not while it waits. `reviewSubmodules`, the `updateSubmodules` preflight, and its level reads have no total read deadline. Each of their Git commands has the 30-second deadline below, and the submodule review bound limits the command count. |
 | Commit process deadline | 120 seconds, followed by interruption and reconciliation |
 | Other Git process deadline | 30 seconds for each bootstrap probe, and for each `applyHunk` or `applyFile` Git step. The same deadline applies to each commit preflight read, `reviewSubmodules` read, and mutation reconciliation read. It also applies to each `updateSubmodules` preflight read, level read, and check read (§12). "Deadline outcomes" below states the result. |
+| Walk deadline | 30 seconds for each `identity` and `fileFacts` request (§6 "Walks"). It starts when the shell reads the request frame. It equals the other Git process deadline, because each request is one step of a read, a registration, or a mutation check. |
 | Submodule update process | Inactivity deadline: each update process ends after 300 seconds without output or an I/O sum change. Each has a ceiling of 4 hours (§12 "Deadlines and Cancel"). |
 | Stall notice | 15 seconds without an output byte and without a change of the I/O sum. It applies to the commit process and to each submodule update process. It shows a notice and ends nothing (§6 "Activity and stall notice"). |
 | Submodule review | 256 submodules at all depths, 8 nesting levels below the superproject, and 1 MiB for each `.gitmodules` source. Each folder of the §12 kept-directory walk counts as one submodule. A larger set gives `UNSUPPORTED_SUBMODULE` with reason `limit` (§12). |
@@ -352,6 +353,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 **Deadline outcomes.** Every Git process has a deadline. A deadline closes the Job of that process at once, with every descendant.
 
 - A bootstrap probe deadline destroys the context. The registration or dismissal gives `DEADLINE`.
+- A walk deadline (§6 "Walks") has the outcome of a Git process deadline in the same step. A registration or dismissal gives `DEADLINE`. Each read follows its own bullet here. In an ordinary read, the read deadline starts first, so it expires first.
 - An ordinary read deadline closes the operation Job. The service then re-reads the repository state. A canceled or failed read that held a slot gets the same re-read. The re-read is discovery call 1 (§6 "Registration bootstrap"), and it has the 5-second reconciliation target. When the re-read refuses, its refusal replaces the read result. Otherwise the read ends `failed` with `DEADLINE`, `canceled`, or its failure code.
 - A deadline of an `applyHunk` or `applyFile` Git step moves the mutation to `reconciling` (data-model §7). So does a commit preflight read deadline. Neither publication nor Git execution has started. Without observed effects, the result is `failed` with `DEADLINE`. The service releases its owned lock only after the Job closes.
 - A mutation reconciliation read deadline fails reconciliation. The outcome is `unknown`, and the recovery marker stays (§8).
@@ -458,7 +460,7 @@ Every private process frame carries `kind` `process` (§1). "Channel frames" bel
 | `transactionId` | Service-owned candidate-index context where an approved design requires it. |
 | `limits` | Cannot exceed contract caps. A `network` request carries the §12 inactivity limit and ceiling, and the shell enforces both. A commit request and each `network` request carry the 15-second stall threshold ("Activity and stall notice"). `deadlineMs` is at most 30 seconds for a bootstrap context, 60 seconds for a WSL distro start, else 120 seconds. Only the `network` policy carries the inactivity limit and the ceiling. |
 
-An identity request is a `process` frame with `operationId`, `contextKind`, and the bootstrap or repository ID. It carries at most 8 absolute paths. Each path has at most 32,767 UTF-16 units and no NUL. The shell opens each path with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`. It follows junctions and reads no file data. It returns only each identity or the refusal `{"code":"UNSUPPORTED_REPOSITORY"}`. A refusal also carries `"reason":"absent"` only when the open fails with Win32 `ERROR_FILE_NOT_FOUND` (2) or `ERROR_PATH_NOT_FOUND` (3). The Linux double gives it for `ENOENT`. The zod form is `IdentityRefused` in `src/contracts/channel.ts`. Only `reason` `absent` means that a path is missing. Any other refusal refuses the read or registration with its existing refusal form. A Windows identity reply is `{"volumeSerial":"<16 lowercase hex digits>","fileId":"<32 lowercase hex digits>"}` from `FILE_ID_INFO`. `volumeSerial` is the 64-bit `VolumeSerialNumber`, and `fileId` is the 128-bit `FILE_ID_128` `Identifier` bytes in array order. A path can lie outside the selected directory, because a linked worktree's common directory can live elsewhere.
+An identity request is a `process` frame with `operationId`, `contextKind`, and the bootstrap or repository ID. It carries at most 8 absolute paths. Each path has at most 32,767 UTF-16 units and no NUL. The shell opens each path with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`. It follows junctions and reads no file data. It returns only each identity or the refusal `{"code":"UNSUPPORTED_REPOSITORY"}`. A refusal also carries `"reason":"absent"` only when the open fails with Win32 `ERROR_FILE_NOT_FOUND` (2) or `ERROR_PATH_NOT_FOUND` (3). The Linux double gives it for `ENOENT`. The zod form is `IdentityRefused` in `src/contracts/channel.ts`. Only `reason` `absent` means that a path is missing. Any other refusal refuses the read or registration with its existing refusal form. A Windows identity reply is `{"volumeSerial":"<16 lowercase hex digits>","fileId":"<32 lowercase hex digits>"}` from `FILE_ID_INFO`. `volumeSerial` is the 64-bit `VolumeSerialNumber`, and `fileId` is the 128-bit `FILE_ID_128` `Identifier` bytes in array order. A path can lie outside the selected directory, because a linked worktree's common directory can live elsewhere. The request is a walk ("Channel frames", "Walks").
 
 Supply the executable through `CreateProcessW.lpApplicationName`. Preserve structured arguments until the tested Windows quoting boundary. Never insert an intermediate command shell.
 
@@ -572,7 +574,7 @@ This subsection defines the bodies of `process`, `mutation`, and `trust` frames.
 - `callId`: the service issues a new UUID-shaped identifier for each request that expects a reply. Every reply repeats `callId`.
 - A reply repeats the request `type`, except the `run` and `input` replies and `refused`.
 - `ended`, `resolved`, `release`, and `closeJob` carry no `callId` and get no reply.
-- `cancel` and `input` carry the `callId` of their `run` request.
+- `input` carries the `callId` of its `run` request. `cancel` carries the `callId` of a `run`, `identity`, or `fileFacts` request.
 - Paths are native absolute paths with 1 to 32,767 UTF-16 units and no NUL or lone surrogate. On Windows, a path starts with a drive letter and a separator, or with two separators and a server name and a share name. It never starts with the device prefix `\\.\` or `\\?\`, with either separator. On other platforms, a path starts with `/`. The service checks this rule through `src/contracts/native-path.ts`. The shell checks it through `Path::is_absolute` and the device-prefix check.
 - Bytes travel as standard base64 with padding. A decoded chunk holds 1 to 65,536 bytes.
 
@@ -582,14 +584,14 @@ This subsection defines the bodies of `process`, `mutation`, and `trust` frames.
 | --- | --- | --- |
 | `run` | `callId`, `operationId`, `contextKind`, the context IDs, `arguments`, `environmentPolicy`, `limits`. Optional: `input` or `inputBytes`, `transactionId` with `indexFile`. | Validates each field by "Process fields" and the rules below. Starts one process, or replies `refused`. |
 | `input` | `callId`, `data`. | Writes the chunk to the child stdin, then replies `inputWritten`. |
-| `cancel` | `callId`. | Closes the Job of the operation that owns that call, with every descendant. Each process of that operation then gets `exit`. A cancel for an ended call is dropped. |
-| `identity` | `callId`, `operationId`, `contextKind`, the context IDs, `paths`: 1 to 8 paths. | Replies `identity` with one entry per path, in request order. |
+| `cancel` | `callId`. | For a `run` call, it closes the Job of the operation that owns that call, with every descendant. Each process of that operation then gets `exit`. For an `identity` or `fileFacts` call, it stops that walk, and no reply follows ("Walks"). A cancel for an ended call is dropped. |
+| `identity` | `callId`, `operationId`, `contextKind`, the context IDs, `paths`: 1 to 8 paths. | Replies `identity` with one entry per path, in request order, or with `deadline` ("Walks"). |
 | `lingeringCount` | `callId`, `operationId`, `commonDirectory`. | Replies `lingeringCount` with the active process count of the lingering Jobs with that tag. An unreadable identity gives 0. |
-| `fileFacts` | `callId`, `operationId`, `contextKind` `registeredOperation`, `gitInstallationId`, `repositoryId`, `digest`, `files`. | Replies `fileFacts` with one fact per entry, in request order ("File facts" below). |
+| `fileFacts` | `callId`, `operationId`, `contextKind` `registeredOperation`, `gitInstallationId`, `repositoryId`, `digest`, `files`. | Replies `fileFacts` with one fact per entry, in request order ("File facts" below), or with `deadline` ("Walks"). |
 | `register` | `callId`, `operationId`, `bootstrapId`, `gitInstallationId`, and either `version`, `digest`, and `confirm`, or `repositoryId`, `worktreeRoot`, `gitDirectory`, and `commonDirectory`. `version` is the parsed version text, such as `2.55.0.windows.3`, not the full output line. `digest` is the SHA-256 of the probed file as 64 lowercase hex digits. | Binds the issued ID to the native context of `bootstrapId`. A `register` without the confirmation is valid only in a startup context. The shell then saves the Git ("Startup contexts"). |
 | `resolveGit` | `callId`, `operationId`, and `bootstrapId` of a live `gitProbe` context. `executablePath`: `git.exe` in the folder that `--exec-path` printed (§3 "Git proposal"). | It refuses another file name and a path that is not a regular file with `INVALID_REQUEST`. This rule also covers a startup context. The service checks the installation root ("Startup contexts"). Otherwise it destroys the context, binds a new `gitProbe` context of that operation to the file, and replies `resolveGit`. The new context keeps the selected path and the startup state. On other platforms, the service expects the file name `git`. |
 | `release` | Exactly one of `repositoryId` or `gitInstallationId`. | Removes the binding. A later request with that ID gets `refused` with `UNKNOWN_TARGET`. |
-| `closeJob` | `operationId`. | Closes that operation Job with every descendant. The ID is then inactive. |
+| `closeJob` | `operationId`. | Closes that operation Job with every descendant, and stops each walk of that operation ("Walks"). The ID is then inactive. |
 
 `run` request fields. Every field is required, except where the row says otherwise.
 
@@ -639,9 +641,9 @@ Streamed input:
 | `inputWritten` | `callId`. | The shell wrote one `input` chunk to the child stdin. |
 | `exit` | `callId`, `exitCode`, `activeDescendants`, optional `deadline`. | The last reply of a `run`. It follows every `output` of that call. |
 | `refused` | `callId`, `code`. | The request started nothing. Valid for each request with `callId`. |
-| `identity` | `callId`, `identities`. | Each entry is an identity reply ("Process fields") or `{"code":"UNSUPPORTED_REPOSITORY"}`. A refusal for a not-found path also carries `"reason":"absent"` ("Process fields"). |
+| `identity` | `callId`, and either `identities` or `deadline`. | Each entry is an identity reply ("Process fields") or `{"code":"UNSUPPORTED_REPOSITORY"}`. A refusal for a not-found path also carries `"reason":"absent"` ("Process fields"). `deadline` is `deadline` when the walk passed its §5 deadline. That reply holds no identity. |
 | `lingeringCount` | `callId`, `count`. | Nonnegative safe integer. |
-| `fileFacts` | `callId`, `facts`. | One fact per request entry, in request order ("File facts" below). |
+| `fileFacts` | `callId`, and either `facts` or `deadline`. | One fact per request entry, in request order ("File facts" below). `deadline` is `deadline` when the walk passed its §5 deadline. That reply holds no fact. |
 | `register` | `callId`, `result`: `approved`, `declined`, or `another`. With `another`, also `bootstrapId` and `executablePath` of the new `gitProbe` context. `executablePath` is a native absolute path by the channel path rule. | Git with `confirm: true`: the Git selection confirmation result. Otherwise `approved`. |
 | `resolveGit` | `callId`, `bootstrapId`. | The new `gitProbe` context for the resolved file. The first context ID is no longer valid. |
 
@@ -654,6 +656,14 @@ Streamed input:
 **Backpressure.** The shell keeps at most 8 chunks per stream. A chunk leaves the queue when its frame write returns. A full queue stops the reads of that child pipe, so Git waits on its write. The service handles each frame before it reads the next frame. It never queues output frames itself. Streamed input uses `inputWritten` instead, so the shell never blocks its service pipe reader.
 
 **Byte caps.** The shell forwards every byte before the completion signal. It enforces only the chunk size and the queue depth. The service retains at most 64 KiB per stream for diagnostics (§5). It counts every forwarded stderr byte of the operation. At 4 MiB it sends `cancel` (§9). An `updateSubmodules` process counts its own 4 MiB. A stream above its §5 result bound also gets `cancel`.
+
+**Walks.** An `identity` or `fileFacts` request is a walk. The shell runs each walk on its own thread, so the frame reader never waits on a file open.
+
+- The §5 walk deadline starts when the shell reads the request. At the deadline, the shell sends the reply with `deadline` and stops the walk.
+- A `cancel` with the `callId` of a walk stops that walk. No reply follows. A `closeJob` stops each walk of its operation. A service exit stops every walk.
+- To stop a walk, the shell sets a stop flag and calls `CancelSynchronousIo` on the walk thread (Microsoft Learn "Canceling Pending I/O Operations"). The walk checks the flag before each open, query, and read. The shell never sends a fact or an identity from a stopped walk.
+- The service does not wait for the shell after it sends `cancel` for a walk. It ends that call as canceled at once. A later reply with that `callId` is dropped ("Errors").
+- Limit: a driver can ignore a cancel, and a cancel can come between the flag check and the next open. The walk thread then waits until its I/O returns. No reply waits for it. The shell does not bound the count of such threads.
 
 **Mutation frames.** "Recovery markers" defines their use.
 
@@ -687,7 +697,7 @@ Streamed input:
 - For a `run` call, that reply also makes the service send `cancel`. It ignores later output and waits for `exit`. The call then fails with `PROCESS_OWNERSHIP_FAILED`.
 - A malformed `exit` fails its call at once with `PROCESS_OWNERSHIP_FAILED`. So does a malformed reply to a request other than `run`.
 - The shell answers a malformed request that holds a valid `callId` with `refused` and `INVALID_REQUEST`. It drops every other malformed frame.
-- A service exit drops every pending call. The shell keeps the lingering set ("Lingering Jobs").
+- A service exit drops every pending call and stops every walk. The shell keeps the lingering set ("Lingering Jobs").
 
 ### File facts
 
@@ -729,7 +739,8 @@ Shell behavior:
 - The §5 byte bounds apply in request order. The shell checks the 1 MiB per-file bound first. A file above 1 MiB always gets bound `file-bytes` and no digest. Only files within 1 MiB count toward the 8 MiB request total, with their digested bytes. The first file within 1 MiB that would pass that total gets bound `total-bytes` and no digest, and so does each later file within 1 MiB.
 - A WSL repository gets the §11 "Trust and environment" rule.
 - Limit: an SMB server can resolve a junction on its own side, where `OBJ_DONT_REPARSE` cannot see it. So a root on an SMB share can give a fact through such a junction. That junction can target only the volumes of that server.
-- Limit: as the identity request does, the walk runs synchronously, with no deadline and no cancel. T312 adds both for `fileFacts` and the identity request. T312 also owns the SMB junction limit above.
+- Git opens the same path through the same server, so the server resolves the same junction for Git. The fact and its digest therefore describe the bytes that Git runs. The junction text names a server path, which the service cannot map to a client path (§7). So a detected junction would give only `unchecked`. Decision D30 (T312): this limit stays.
+- The walk has the §5 walk deadline and stops at `cancel` ("Channel frames", "Walks").
 
 Reply facts. Each fact holds `kind` and the fields of its kind.
 

@@ -593,9 +593,29 @@ describe("runner refusals during registration (contract §6)", () => {
       `${label} in the identity reply gives UNSUPPORTED_REPOSITORY with the NTFS or ReFS remedy`,
       ["shell-double"],
       async () => {
-        const outcome = await registerWith(`t068-identity-${label.split(" ").at(-1)!.toLowerCase()}`, (r) => ({ ...r, identities: async (...args) => change(await r.identities(...args)) }));
+        const outcome = await registerWith(`t068-identity-${label.split(" ").at(-1)!.toLowerCase()}`, (r) => ({
+          ...r,
+          identities: async (...args) => {
+            const replies = await r.identities(...args);
+            return Array.isArray(replies) ? change(replies) : replies;
+          },
+        }));
         expect(outcome).toEqual({ ok: false, code: "UNSUPPORTED_REPOSITORY", result: { remedy: { text: REMEDY.fileId } } });
       },
+      TIMEOUT_MS,
+    );
+  }
+
+  // Contract §5 "Deadline outcomes": a walk deadline of a registration gives DEADLINE. The service holds only `bootstrapId`, so no refusal names the folder.
+  for (const [stop, code] of [
+    ["deadline", "DEADLINE"],
+    ["canceled", "CANCELED"],
+  ] as const) {
+    caseTest(
+      "T312",
+      `an identity walk that ends ${stop} gives ${code}`,
+      ["shell-double"],
+      async () => expect(await registerWith(`t312-identity-${stop}`, (r) => ({ ...r, identities: async () => ({ stop }) }))).toEqual({ ok: false, code }),
       TIMEOUT_MS,
     );
   }

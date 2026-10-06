@@ -19,6 +19,8 @@ printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 useFixtureRoot();
 
 const id = () => crypto.randomUUID();
+// A signal that no test aborts.
+const SIGNAL = new AbortController().signal;
 const F07_TIMEOUT_MS = 120_000;
 const REFUSED = { ok: false, code: "UNSUPPORTED_REPOSITORY", remedy: "Open the repository from an NTFS or ReFS volume" } as const;
 
@@ -36,7 +38,7 @@ describeGit(
     });
     const request = (path: string, paths: string[]) => {
       const { operationId, context } = discovery(path);
-      return requestIdentities(runner, operationId, context, paths);
+      return requestIdentities(runner, operationId, context, paths, SIGNAL);
     };
     // The Git-resolved worktree root, Git directory, and common directory.
     const resolved = (dir: string) => fixtureGit(git, dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"]).trimEnd().split("\n");
@@ -101,17 +103,17 @@ describeGit(
     test("a malformed entry or a reply of the wrong length gives UNSUPPORTED_REPOSITORY", async () => {
       const replying = (replies: unknown[]) => ({ ...runner, identities: async () => replies }) as unknown as GitRunner;
       const { operationId, context } = discovery(repo);
-      expect(await requestIdentities(replying([{ volumeSerial: "0123456789abcdef" }]), operationId, context, [repo])).toEqual(REFUSED);
-      expect(await requestIdentities(replying([]), operationId, context, [repo])).toEqual(REFUSED);
+      expect(await requestIdentities(replying([{ volumeSerial: "0123456789abcdef" }]), operationId, context, [repo], SIGNAL)).toEqual(REFUSED);
+      expect(await requestIdentities(replying([]), operationId, context, [repo], SIGNAL)).toEqual(REFUSED);
       expect(IDENTITY_REMEDY).toBe(REFUSED.remedy);
     });
 
     test("a runner refusal keeps its own code", async () => {
       const refusing = { ...runner, identities: async () => Promise.reject(new RunnerRefusal("GIT_CHANGED")) } as unknown as GitRunner;
       const { operationId, context } = discovery(repo);
-      await expect(requestIdentities(refusing, operationId, context, [repo])).rejects.toMatchObject({ code: "GIT_CHANGED" });
+      await expect(requestIdentities(refusing, operationId, context, [repo], SIGNAL)).rejects.toMatchObject({ code: "GIT_CHANGED" });
       const unknown: ProcessContext = { contextKind: "repositoryDiscovery", bootstrapId: id(), gitInstallationId };
-      await expect(requestIdentities(runner, id(), unknown, [repo])).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
+      await expect(requestIdentities(runner, id(), unknown, [repo], SIGNAL)).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
       await expect(request(repo, Array(9).fill(repo))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     });
 

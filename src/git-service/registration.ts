@@ -55,6 +55,8 @@ const runnerRefused = (error: unknown): RegistrationOutcome => {
 // Contract §6 "Registration bootstrap": a failed identity refuses registration.
 const identityRefused: RegistrationOutcome = { ok: false, code: "UNSUPPORTED_REPOSITORY", result: { remedy: { text: IDENTITY_REMEDY } } };
 const canceled: RegistrationOutcome = { ok: false, code: "CANCELED" };
+// Contract §5 "Deadline outcomes": a walk deadline of a registration gives DEADLINE.
+const deadline: RegistrationOutcome = { ok: false, code: "DEADLINE" };
 
 // Contract §3 "Worktree key": the SHA-256 of the 8 volume serial bytes and the 16 file ID bytes, in the hex order of the identity reply.
 export function worktreeKey(identity: FileIdentity): string {
@@ -138,11 +140,11 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
       const { worktreeRoot, gitDirectory, commonDirectory } = discovered.repository;
       let identities;
       try {
-        identities = await requestIdentities(runner, operationId, context, [worktreeRoot, gitDirectory, commonDirectory]);
+        identities = await requestIdentities(runner, operationId, context, [worktreeRoot, gitDirectory, commonDirectory], signal);
       } catch (error) {
         return runnerRefused(error);
       }
-      if (!identities.ok) return identityRefused;
+      if (!identities.ok) return "stop" in identities ? (identities.stop === "deadline" ? deadline : canceled) : identityRefused;
       return exclusive(() => commit(target, discovered.repository, identities.identities));
     },
     has: (repositoryId: string): boolean => workspaces.has(repositoryId),

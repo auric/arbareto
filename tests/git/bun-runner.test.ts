@@ -268,7 +268,10 @@ describeGit("bun runner", (git) => {
 
   test("identity requests read FileIdInfo, and an all-zero or all-ones file ID is refused", async () => {
     const operationId = id();
-    const [a, b, again] = await runner.identities(operationId, context, [repo, commonDirectory, repo]);
+    const signal = new AbortController().signal;
+    const replies = await runner.identities(operationId, context, [repo, commonDirectory, repo], signal);
+    if (!Array.isArray(replies)) throw new Error(`walk stop: ${replies.stop}`);
+    const [a, b, again] = replies;
     expect(JSON.stringify(again)).toBe(JSON.stringify(a));
     expect(JSON.stringify(b)).not.toBe(JSON.stringify(a));
     expect(Object.keys(a)).toEqual(["volumeSerial", "fileId"]);
@@ -276,10 +279,10 @@ describeGit("bun runner", (git) => {
     expect((a as { fileId: string }).fileId).toMatch(/^[0-9a-f]{32}$/);
     runner.inject.fileIds.set(repo, new Uint8Array(16));
     runner.inject.fileIds.set(commonDirectory, new Uint8Array(16).fill(0xff));
-    expect(await runner.identities(operationId, context, [repo, commonDirectory])).toEqual([{ code: "UNSUPPORTED_REPOSITORY" }, { code: "UNSUPPORTED_REPOSITORY" }]);
+    expect(await runner.identities(operationId, context, [repo, commonDirectory], signal)).toEqual([{ code: "UNSUPPORTED_REPOSITORY" }, { code: "UNSUPPORTED_REPOSITORY" }]);
     runner.inject.fileIds.clear();
     // Contract §6 "Process fields": only a not-found open adds `reason` `absent`.
-    expect(await runner.identities(operationId, context, [join(repo, "absent"), join(repo, "absent", "child")])).toEqual([
+    expect(await runner.identities(operationId, context, [join(repo, "absent"), join(repo, "absent", "child")], signal)).toEqual([
       { code: "UNSUPPORTED_REPOSITORY", reason: "absent" },
       { code: "UNSUPPORTED_REPOSITORY", reason: "absent" },
     ]);

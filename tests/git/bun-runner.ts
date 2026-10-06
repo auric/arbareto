@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
 import wslProcess from "../../src/contracts/wsl-process.json";
-import { NATIVE_CHUNK_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, NATIVE_CHUNK_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { isIdentifier } from "../../src/contracts/operations";
 import {
   checkCall,
@@ -38,6 +38,7 @@ import {
   type ProcessContext,
   type RegisterReply,
   type TrustRecord,
+  type WalkStop,
 } from "../../src/git-service/git-runner";
 import { printOrigin } from "../origin";
 import { isWindowsProgram } from "../../src/contracts/wsl-route";
@@ -308,6 +309,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     deadlineMs: null as number | null,
     // Runs after each WSL process exits, before its exit reply.
     afterWslExit: null as ((call: GitCall) => Promise<void>) | null,
+    // Each `identity` and `fileFacts` walk waits for this promise before it reads (contract §6 "Walks").
+    holdWalk: null as (() => Promise<void>) | null,
     // Bytes replace the process of a call. No process starts, and the bytes go to stdout in 64 KiB chunks. The exit code is 0, or null after abort, closeJob, or a limited stdout collector.
     stdout: undefined as ((call: { arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
   };
@@ -329,6 +332,26 @@ export function createBunRunner(options: BunRunnerOptions) {
   let disposed = false;
 
   const identityOf = (path: string): IdentityReply => inject.identities.get(path) ?? readIdentity(path, inject.fileIds.get(path));
+
+  // Contract §6 "Walks": the walk deadline and an abort end the hold without a value. The read stays synchronous, as in the shell, so no stop interrupts it.
+  async function walk<T>(signal: AbortSignal, read: () => T | Promise<T>): Promise<T | WalkStop> {
+    if (signal.aborted) return { stop: "canceled" };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort = () => {};
+    const stopped = new Promise<WalkStop>((resolve) => {
+      // Contract §5 "Walk deadline": it equals the other Git process deadline.
+      timer = setTimeout(() => resolve({ stop: "deadline" }), inject.deadlineMs ?? GIT_PROCESS_DEADLINE_MS);
+      abort = () => resolve({ stop: "canceled" });
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      const stop = await Promise.race([(inject.holdWalk?.() ?? Promise.resolve()).then(() => null), stopped]);
+      return stop ?? (await read());
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    }
+  }
 
   function scan(operationId?: string): void {
     for (const name of readdirSync(recordsDirectory)) {
@@ -727,36 +750,40 @@ export function createBunRunner(options: BunRunnerOptions) {
       }
     },
 
-    // A refused request keeps an empty `replies` list.
-    async identities(operationId, context, paths) {
+    // A refused or stopped request keeps an empty `replies` list.
+    async identities(operationId, context, paths, signal) {
       const recorded = { at: performance.now(), operationId: text(operationId), paths: Array.isArray(paths) ? [...paths] : [], replies: [] as unknown[] };
       identityCalls.push(recorded);
       if (!isIdentifier(operationId) || !checkContext(context)) throw new RunnerRefusal("INVALID_REQUEST", "identity context");
       checkIdentityPaths(paths);
       const target = resolveTarget(operationId, context);
-      if (!target.wsl) {
-        const replies = paths.map(identityOf);
+      return walk(signal, async () => {
+        if (!target.wsl) {
+          const replies = paths.map(identityOf);
+          recorded.replies = replies;
+          return replies;
+        }
+        const replies: WslIdentityReply[] = [];
+        for (const path of paths) replies.push(await wslIdentity(operationId, target.wsl, path));
         recorded.replies = replies;
-        return replies;
-      }
-      const replies: WslIdentityReply[] = [];
-      for (const path of paths) replies.push(await wslIdentity(operationId, target.wsl, path));
-      recorded.replies = replies;
-      return replies as unknown as IdentityReply[];
+        return replies as unknown as IdentityReply[];
+      });
     },
 
     // src-tauri/src/process_requests.rs `file_facts`: the fields, the target, then the WSL roots. The walk is synchronous, as in the shell.
-    async fileFacts(request) {
+    async fileFacts(request, signal) {
       checkFileFacts(request);
       const { operationId, contextKind, gitInstallationId, repositoryId } = request;
       resolveTarget(operationId, { contextKind, gitInstallationId, repositoryId });
       const roots = repositories.get(repositoryId)!;
       // Contract §11 "Trust and environment": the shell refuses a WSL repository until T212 adds the WSL form.
       if (Object.values(roots).some((root) => WSL_PREFIX.test(root))) throw new RunnerRefusal("INVALID_REQUEST", "WSL file facts");
-      const { facts, bytesRead } = readFileFacts(roots, request.digest, request.files);
-      const files = request.files.map(({ root, path }) => ({ root, path: [...path] }));
-      fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead });
-      return facts;
+      return walk(signal, () => {
+        const { facts, bytesRead } = readFileFacts(roots, request.digest, request.files);
+        const files = request.files.map(({ root, path }) => ({ root, path: [...path] }));
+        fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead });
+        return facts;
+      });
     },
 
     async lingeringCount(operationId, commonDirectory) {

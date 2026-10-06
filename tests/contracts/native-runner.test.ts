@@ -27,6 +27,8 @@ type Sent = Record<string, unknown> & { kind: string };
 
 const MIB = 1024 * 1024;
 const id = () => crypto.randomUUID();
+// A signal that no test aborts.
+const SIGNAL = new AbortController().signal;
 const REPO = isWindows ? "C:\\repo" : "/repo";
 const GIT_DIR = isWindows ? "C:\\repo\\.git" : "/repo/.git";
 const GIT_PATH = isWindows ? "C:\\Program Files\\Git\\cmd\\git.exe" : "/usr/bin/git";
@@ -167,7 +169,7 @@ describe("native runner run requests", () => {
       call({ arguments: ["--no-lazy-fetch", "x".repeat(WINDOWS_COMMAND_LINE_UNITS)] }),
     ];
     for (const c of refused) await expect(channel.runner.run(c)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-    await expect(channel.runner.identities(id(), registered(), ["C:\\repo\\\ud800"])).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(channel.runner.identities(id(), registered(), ["C:\\repo\\\ud800"], SIGNAL)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     await expect(channel.runner.lingeringCount(id(), "relative\\path")).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     expect(channel.sent).toEqual([]);
     void channel.runner.run(call({ arguments: ["--no-lazy-fetch", "log", "\ud83d\ude00"] }));
@@ -184,7 +186,7 @@ describe("native runner run requests", () => {
       expect(channel.bodies("cancel")).toEqual([]);
     }
     const channel = createChannelDouble();
-    const result = channel.runner.identities(id(), registered(), [REPO]);
+    const result = channel.runner.identities(id(), registered(), [REPO], SIGNAL);
     expect(channel.reply("process", { type: "refused", callId: channel.last("identity").callId, code: "UNKNOWN_TARGET" })).toBe(true);
     await expect(result).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
   });
@@ -455,7 +457,7 @@ describe("native runner identity, lingering count, and registration", () => {
     const channel = createChannelDouble();
     const context = { contextKind: "repositoryDiscovery", bootstrapId: id(), gitInstallationId: id() } as const;
     const operationId = id();
-    const result = channel.runner.identities(operationId, context, [REPO, GIT_DIR, REPO]);
+    const result = channel.runner.identities(operationId, context, [REPO, GIT_DIR, REPO], SIGNAL);
     const request = channel.last("identity");
     expect(request).toEqual({ type: "identity", callId: request.callId, operationId, ...context, paths: [REPO, GIT_DIR, REPO] });
     const identities: IdentityReply[] = [IDENTITY, { code: "UNSUPPORTED_REPOSITORY" }, { code: "UNSUPPORTED_REPOSITORY", reason: "absent" }];
@@ -468,12 +470,12 @@ describe("native runner identity, lingering count, and registration", () => {
       { code: "UNSUPPORTED_REPOSITORY", reason: "access-denied" },
       { ...IDENTITY, fileId: "0".repeat(31) },
     ]) {
-      const bad = channel.runner.identities(operationId, context, [REPO]);
+      const bad = channel.runner.identities(operationId, context, [REPO], SIGNAL);
       expect(channel.reply("process", { type: "identity", callId: channel.last("identity").callId, identities: [entry] })).toBe(false);
       await expect(bad).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
     }
-    await expect(channel.runner.identities(operationId, context, Array(9).fill(REPO))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-    await expect(channel.runner.identities(operationId, context, [])).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(channel.runner.identities(operationId, context, Array(9).fill(REPO), SIGNAL)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(channel.runner.identities(operationId, context, [], SIGNAL)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
   });
 
   test("lingeringCount replies with a count", async () => {
@@ -621,7 +623,7 @@ describe("native runner file facts", () => {
   test("fileFacts sends the FileFacts frame and returns one fact per entry", async () => {
     const channel = createChannelDouble();
     const sent = request(false);
-    const result = channel.runner.fileFacts(sent);
+    const result = channel.runner.fileFacts(sent, SIGNAL);
     const frame = channel.last("fileFacts");
     expect(Object.keys(channel.sent.at(-1)!)).toEqual(["kind", "process"]);
     expect(frame).toEqual({ type: "fileFacts", callId: frame.callId, ...sent });
@@ -633,7 +635,7 @@ describe("native runner file facts", () => {
     expect(channel.reply("process", { type: "fileFacts", callId: frame.callId, facts })).toBe(true);
     expect(await result).toEqual(facts);
 
-    const digested = channel.runner.fileFacts(request(true));
+    const digested = channel.runner.fileFacts(request(true), SIGNAL);
     const files: FileFact[] = [
       { kind: "file", size: 3, lastWrite: "12", digest: "a".repeat(64) },
       { kind: "file", size: 2_000_000, lastWrite: "12", bound: "file-bytes" },
@@ -654,21 +656,84 @@ describe("native runner file facts", () => {
     ["an unknown fact kind", false, [{ kind: "nope" }, ABSENT]],
   ] as const)("a reply with %s fails the call with PROCESS_OWNERSHIP_FAILED", async (_label, digest, facts) => {
     const channel = createChannelDouble();
-    const result = channel.runner.fileFacts(request(digest));
+    const result = channel.runner.fileFacts(request(digest), SIGNAL);
     expect(channel.reply("process", { type: "fileFacts", callId: channel.last("fileFacts").callId, facts })).toBe(false);
     await expect(result).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
   });
 
   test("a refused reply gives its code, and an invalid request sends nothing", async () => {
     const channel = createChannelDouble();
-    const refused = channel.runner.fileFacts(request(false));
+    const refused = channel.runner.fileFacts(request(false), SIGNAL);
     expect(channel.reply("process", { type: "refused", callId: channel.last("fileFacts").callId, code: "UNKNOWN_TARGET" })).toBe(true);
     await expect(refused).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
     const before = channel.sent.length;
     for (const files of [[], [{ root: "worktreeRoot" as const, path: [".."] }], [{ root: "worktreeRoot" as const, path: [] }]]) {
-      await expect(channel.runner.fileFacts({ ...request(false), files })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      await expect(channel.runner.fileFacts({ ...request(false), files }, SIGNAL)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     }
     expect(channel.sent.length).toBe(before);
+  });
+});
+
+// Contract §6 "Walks": an `identity` or `fileFacts` request ends with its value, the `deadline` reply, or an abort.
+describe("native runner walks", () => {
+  const facts = () => ({
+    operationId: id(),
+    contextKind: "registeredOperation" as const,
+    gitInstallationId: id(),
+    repositoryId: id(),
+    digest: false,
+    files: [{ root: "gitDirectory" as const, path: ["hooks"] }],
+  });
+  // Starts one walk of each kind and returns its request type with the pending result.
+  const walks = (channel: ReturnType<typeof createChannelDouble>, signal: AbortSignal) => [
+    ["fileFacts", channel.runner.fileFacts(facts(), signal)] as const,
+    ["identity", channel.runner.identities(id(), registered(), [REPO], signal)] as const,
+  ];
+
+  test("a deadline reply gives the deadline stop", async () => {
+    const channel = createChannelDouble();
+    for (const [type, result] of walks(channel, new AbortController().signal)) {
+      expect(channel.reply("process", { type, callId: channel.last(type).callId, deadline: "deadline" })).toBe(true);
+      expect(await result).toEqual({ stop: "deadline" });
+    }
+  });
+
+  test("an abort sends one cancel with the walk callId and ends the call at once, and a later reply is dropped", async () => {
+    const channel = createChannelDouble();
+    const controller = new AbortController();
+    const started = walks(channel, controller.signal);
+    const callIds = started.map(([type]) => channel.last(type).callId);
+    controller.abort();
+    controller.abort();
+    for (const [, result] of started) expect(await result).toEqual({ stop: "canceled" });
+    expect(channel.bodies("cancel")).toEqual(callIds.map((callId) => ({ type: "cancel", callId })));
+    expect(channel.reply("process", { type: "fileFacts", callId: callIds[0], facts: [{ kind: "absent" }] })).toBe(true);
+    expect(channel.reply("process", { type: "identity", callId: callIds[1], identities: [IDENTITY] })).toBe(true);
+  });
+
+  test("an aborted signal sends no frame", async () => {
+    const channel = createChannelDouble();
+    const controller = new AbortController();
+    controller.abort();
+    for (const [, result] of walks(channel, controller.signal)) expect(await result).toEqual({ stop: "canceled" });
+    expect(channel.sent).toEqual([]);
+  });
+
+  test.each([
+    ["facts and deadline", { facts: [{ kind: "absent" }], deadline: "deadline" }],
+    ["the deadline inactivity", { deadline: "inactivity" }],
+  ])("a fileFacts reply with %s fails the call with PROCESS_OWNERSHIP_FAILED", async (_label, fields) => {
+    const channel = createChannelDouble();
+    const result = channel.runner.fileFacts(facts(), new AbortController().signal);
+    expect(channel.reply("process", { type: "fileFacts", callId: channel.last("fileFacts").callId, ...fields })).toBe(false);
+    await expect(result).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+  });
+
+  test("an identity reply with identities and deadline fails the call with PROCESS_OWNERSHIP_FAILED", async () => {
+    const channel = createChannelDouble();
+    const result = channel.runner.identities(id(), registered(), [REPO], new AbortController().signal);
+    expect(channel.reply("process", { type: "identity", callId: channel.last("identity").callId, identities: [IDENTITY], deadline: "deadline" })).toBe(false);
+    await expect(result).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
   });
 });
 

@@ -619,6 +619,44 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
     TIMEOUT_MS,
   );
 
+  // Contract §5 "Deadline outcomes": a walk deadline in the change check ends the read as a Git step deadline does. It never becomes a full read.
+  caseTest(
+    "T312",
+    'a walk deadline in the change check of a check "changes" read ends the read with deadline and starts no Git process',
+    W,
+    () =>
+      withService({ name: "t312-change-check-deadline", watchHints: false }, async (service) => {
+        const git = gitPath();
+        const repo = repoOf(buildF18(git, "t312-change-check-deadline", "files"));
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const { installation } = probed;
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal: new AbortController().signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        let stopped = 0;
+        let deadline = false;
+        const runner: GitRunner = {
+          ...service.runner,
+          fileFacts: (request, signal) => (deadline ? Promise.resolve((stopped++, { stop: "deadline" as const })) : service.runner.fileFacts(request, signal)),
+        };
+        const reader = createWorkspaceReader({ runner, trust: createTrust({ runner, environment: serviceEnv(), configFiles: () => installation.configFiles }) });
+        const poll = async (check: "full" | "changes") => {
+          const before = service.runner.calls.length;
+          const outcome = await reader.readWorkspace({ operationId: crypto.randomUUID(), signal: new AbortController().signal, installation, workspace, refresh: false, check });
+          return { result: outcome.result, runs: service.runner.calls.length - before };
+        };
+        await poll("full");
+        await poll("changes");
+        expect(await poll("changes")).toEqual({ result: "succeeded", runs: 0 });
+        deadline = true;
+        expect(await poll("changes")).toEqual({ result: "deadline", runs: 0 });
+        expect(stopped).toBeGreaterThan(0);
+      }),
+    TIMEOUT_MS,
+  );
+
   // Contract §6 "File facts": an `error` fact names no file state. So a tuple with it proves nothing, and the reads keep and share no tuple.
   caseTest(
     "T309",
@@ -640,9 +678,9 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
         let stubbed = 0;
         const runner: GitRunner = {
           ...service.runner,
-          async fileFacts(request) {
-            const facts = await service.runner.fileFacts(request);
-            if (listing > 0 || request.digest) return facts;
+          async fileFacts(request, signal) {
+            const facts = await service.runner.fileFacts(request, signal);
+            if (listing > 0 || request.digest || !Array.isArray(facts)) return facts;
             stubbed++;
             return facts.map((fact, i) => (i === 0 ? { kind: "error", component: request.files[0]!.path.length, code: "sharing-violation" } : fact));
           },

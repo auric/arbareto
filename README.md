@@ -43,9 +43,10 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `bun run test:git`
 - `bun run test:windows` (needs `bun run build:service` first; skips without the service binary)
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml`
+- `cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu` (Linux portability check)
 - Run the app for development: `bun run dev`
 
-Cloud sessions: paste [.claude/cloud-setup.sh](.claude/cloud-setup.sh) into the cloud environment's setup script field. The cloud runs Bun and TypeScript work only.
+Cloud sessions: paste [.claude/cloud-setup.sh](.claude/cloud-setup.sh) into the cloud environment's setup script field. The cloud runs Bun and TypeScript work and the Linux portability check.
 
 ## License
 

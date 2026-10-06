@@ -3,15 +3,16 @@
 
 // Linux calls of the `bun-runner.ts` test double. Run as a script, the file is a fixture process that records itself and lingers.
 
-import { dlopen, FFIType } from "bun:ffi";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { createHash } from "node:crypto";
 import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_TOTAL_BYTES } from "../../src/contracts/limits";
 import type { FileFact, FileFactsRequest } from "../../src/git-service/git-runner";
 
-const { ptr: P, u32, i32 } = FFIType;
-const open = () => dlopen("libc.so.6", { mkfifo: { args: [P, u32], returns: i32 } }).symbols;
+const { ptr: P, u32, u64, i32 } = FFIType;
+const open = () =>
+  dlopen("libc.so.6", { mkfifo: { args: [P, u32], returns: i32 }, ioctl: { args: [i32, u64, P], returns: i32 } }).symbols;
 let symbols: ReturnType<typeof open> | undefined;
 
 // `libc.so.6` and `/proc` exist only on Linux. The import of this file must not open or read them (tests/git/portable-imports.test.ts).
@@ -24,8 +25,10 @@ function libc(): ReturnType<typeof open> {
   return (symbols ??= open());
 }
 
-// pipe(7): a new pipe holds 16 pages. That is 64 KiB with the 4 KiB pages of x86-64.
+// One `peekPipe` call keeps at most this many bytes. pipe(7): a writer can change the pipe capacity with F_SETPIPE_SZ.
 const PIPE_BYTES = 64 * 1024;
+// include/uapi/asm-generic/ioctls.h: FIONREAD is 0x541B. x86-64 and arm64 use the generic value.
+const FIONREAD = 0x541b;
 const TERMINATE_POLL_MS = 10;
 const TERMINATE_WAIT_MS = 5000;
 
@@ -44,6 +47,7 @@ export interface InboundPipe {
 // The read end must be open before `Bun.spawn`. Otherwise the child blocks in its open, and `Bun.spawn` hangs in `vfork`.
 export function createInboundPipe(bufferBytes: number): InboundPipe {
   if (bufferBytes !== PIPE_BYTES) throw new Error(`tests/git/linux.ts gives only ${PIPE_BYTES}-byte pipes, not ${bufferBytes}`);
+  if (!GENERIC_FCNTL_ARCHES.includes(process.arch)) throw new Error(`tests/git/linux.ts has no FIONREAD value for ${process.arch}`);
   const { FIXTURE_ROOT } = require("./fixture-root") as typeof import("./fixture-root");
   const directory = join(FIXTURE_ROOT, "pipes");
   if (!existsSync(directory)) mkdirSync(directory);
@@ -58,25 +62,34 @@ export function createInboundPipe(bufferBytes: number): InboundPipe {
   }
 }
 
-// The bytes that the pipe holds, or null at end-of-file. One call reads at most 64 KiB and keeps the bytes for `readPipe`.
+// pipe(7): FIONREAD gives the count of unread bytes in the pipe.
+function unread(fd: number): number {
+  const count = new Int32Array(1);
+  if (libc().ioctl(fd, FIONREAD, ptr(count)) !== 0) throw new Error(`ioctl FIONREAD failed for descriptor ${fd}`);
+  return count[0]!;
+}
+
+// The bytes that the pipe holds, or null at end-of-file: the kept bytes plus the unread bytes in the pipe.
+// One call reads at most 64 KiB and keeps the bytes for `readPipe`.
 // Before a writer opens the FIFO, `read` gives a false end-of-file. So call it only after `Bun.spawn` returns.
 export function peekPipe(pipe: InboundPipe): number | null {
-  if (pipe.end > pipe.start) return pipe.end - pipe.start;
-  if (pipe.ended) return null;
-  let read: number;
-  try {
-    read = readSync(pipe.fd, pipe.buffer, 0, PIPE_BYTES, null);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EAGAIN") return 0;
-    throw error;
+  if (pipe.end === pipe.start) {
+    if (pipe.ended) return null;
+    let read: number;
+    try {
+      read = readSync(pipe.fd, pipe.buffer, 0, PIPE_BYTES, null);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EAGAIN") return 0;
+      throw error;
+    }
+    if (read === 0) {
+      pipe.ended = true;
+      return null;
+    }
+    pipe.start = 0;
+    pipe.end = read;
   }
-  if (read === 0) {
-    pipe.ended = true;
-    return null;
-  }
-  pipe.start = 0;
-  pipe.end = read;
-  return read;
+  return pipe.end - pipe.start + unread(pipe.fd);
 }
 
 // Takes at most `buffer.length` of the bytes that `peekPipe` kept. The call never reads the FIFO.

@@ -2428,9 +2428,13 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
     "T312",
     "a refused identity chunk ends the listing only after every other chunk of that decision settles",
     W,
-    () =>
-      withService({ name: "t312-identity-chunks" }, async (service) => {
-        const repo = repoOf(buildF02(gitPath(), "t312-identity-chunks"));
+    () => {
+      const built = buildF02(gitPath(), "t312-identity-chunks");
+      const repo = repoOf(built);
+      // The listing asks the global file and each ancestor. Nine folders below the fixture root give more than 8 paths on every host.
+      const global = put(built.root, "1/2/3/4/5/6/7/8/.gitconfig", readFileSync(FIXTURE_GLOBAL_CONFIG, "utf8"));
+      const environment = serviceEnv({ GIT_CONFIG_GLOBAL: global });
+      return withService({ name: "t312-identity-chunks", environment }, async (service) => {
         const installation = await admitted(service);
         const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
         const workspace = registrations.get(await registerIn(registrations, service, repo, installation))!;
@@ -2450,7 +2454,7 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
             }
           },
         };
-        const trust = createTrust({ runner, environment: serviceEnv() });
+        const trust = createTrust({ runner, environment });
         // The calls still open when the listing ends.
         let open = -1;
         const listing = trust.listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace }).then((outcome) => {
@@ -2458,12 +2462,13 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
           return outcome;
         });
         for (const until = performance.now() + 30_000; started < 2 && performance.now() < until; ) await Bun.sleep(10);
-        // The origins of the fixture global configuration need more than one identity chunk of 8 paths.
+        // The global file and its ancestors need more than one identity chunk of 8 paths.
         expect(started).toBeGreaterThanOrEqual(2);
         release();
         expect(await listing).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
         expect(open).toBe(0);
-      }),
+      });
+    },
     TIMEOUT_MS,
   );
 });

@@ -150,6 +150,27 @@ describeGit("bun runner", (git) => {
     expect(cat.stdout.bytes).toBe(BLOB_BYTES);
   });
 
+  // pipe(7): F_SETPIPE_SZ returns the new capacity. The child fails unless its stderr pipe holds all its bytes before the exit.
+  test.skipIf(process.platform !== "linux")("the call forwards every byte of a pipe that the child enlarged (needs Linux F_SETPIPE_SZ)", async () => {
+    const script = fixturePath("enlarge-pipe.ts");
+    writeFileSync(
+      script,
+      [
+        `import { dlopen, FFIType } from "bun:ffi";`,
+        `import { writeSync } from "node:fs";`,
+        `const { i32 } = FFIType;`,
+        `const { fcntl } = dlopen("libc.so.6", { fcntl: { args: [i32, i32, i32], returns: i32 } }).symbols;`,
+        // include/uapi/linux/fcntl.h: F_SETPIPE_SZ is F_LINUX_SPECIFIC_BASE (1024) + 7.
+        `if (fcntl(2, 1031, 262144) < 262144) process.exit(1);`,
+        `const bytes = new Uint8Array(200000);`,
+        `for (let done = 0; done < bytes.length; ) done += writeSync(2, bytes, done);`,
+      ].join("\n"),
+    );
+    const c = call({ arguments: ["--no-lazy-fetch", "-c", `alias.z=!"${slash(process.execPath)}" "${slash(script)}"`, "z"] });
+    expect(await runner.run(c)).toEqual({ exitCode: 0, activeDescendants: 0 });
+    expect(c.stderr.bytes).toBe(200_000);
+  });
+
   test(
     "a deadline ends the process, and the call resolves with exitCode null",
     async () => {

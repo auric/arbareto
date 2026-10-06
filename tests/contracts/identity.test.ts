@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { IdentityReply, Marker, PhysicalIdentity, TrustRecord, WslIdentity } from "../../src/contracts/channel";
 import { WSL_UNAVAILABLE_REASONS } from "../../src/contracts/errors";
+import { isWindows } from "../../src/contracts/native-path";
 import wslProcess from "../../src/contracts/wsl-process.json";
 import { worktreeKey } from "../../src/git-service/registration";
 
@@ -56,14 +57,14 @@ describe("WSL identity form (gaps.md W2)", () => {
 
 describe("records and markers hold one identity form (gaps.md W2)", () => {
   const record = (common: object, worktree: object[]) => ({
-    commonDirectory: "C:\\repo\\.git",
+    commonDirectory: isWindows ? "C:\\repo\\.git" : "/repo/.git",
     commonIdentity: common,
-    worktreeRoot: "C:\\repo",
-    gitDirectory: "C:\\repo\\.git",
+    worktreeRoot: isWindows ? "C:\\repo" : "/repo",
+    gitDirectory: isWindows ? "C:\\repo\\.git" : "/repo/.git",
     worktreeIdentity: worktree,
     configurationFingerprint: "a".repeat(64),
     approvedAt: "2026-10-06T08:00:00Z",
-    gitSelectedPath: "C:\\Git\\cmd\\git.exe",
+    gitSelectedPath: isWindows ? "C:\\Git\\cmd\\git.exe" : "/usr/bin/git",
   });
   const other = { ...WSL, inode: "3" };
 
@@ -83,8 +84,8 @@ describe("records and markers hold one identity form (gaps.md W2)", () => {
       markerId: "0f0f0f0f-0000-4000-8000-000000000001",
       kind: "commit",
       startedAt: "2026-10-06T08:00:00Z",
-      worktreeRoot: "C:\\repo",
-      commonDirectory: "C:\\repo\\.git",
+      worktreeRoot: isWindows ? "C:\\repo" : "/repo",
+      commonDirectory: isWindows ? "C:\\repo\\.git" : "/repo/.git",
       commonIdentity,
     });
     expect(fits(Marker, marker(WINDOWS))).toBe(true);

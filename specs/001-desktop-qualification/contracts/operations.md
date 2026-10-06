@@ -685,11 +685,11 @@ Streamed input:
 - A `cancel` or `closeJob` also stops a `run` start. The shell closes the operation Job and replies `exit` with `exitCode` null and `activeDescendants` 0.
 - `cancel` and `closeJob` never stop a `lingeringCount`, `register`, `started`, `revoke`, or `resolveGit` walk. The service has no abort for these calls, so each one waits for its reply or its deadline reply.
 - A service exit stops every walk. No reply follows.
-- To stop a walk, the shell sets a stop flag and calls `CancelSynchronousIo` on the walk thread (Microsoft Learn "Canceling Pending I/O Operations"). The walk checks the flag before each open, query, and read. The shell never sends a fact or an identity from a stopped walk.
+- To stop a walk, the shell sets a stop flag and calls `CancelSynchronousIo` on the walk thread (Microsoft Learn "Canceling Pending I/O Operations"). The shell repeats the call every 10 milliseconds until the walk thread ends, for at most 5 seconds. A process start makes more than one open, and each open can wait (research R5 U3). The walk checks the flag before each open, query, and read. The shell never sends a fact or an identity from a stopped walk.
 - The service does not wait for the shell after it sends `cancel` for an `identity` or `fileFacts` walk. It ends that call as canceled at once. A later reply with that `callId` is dropped ("Errors"). For a `run`, the service waits for `exit`, as for every `run`.
 - An `input` chunk that comes before the process starts waits in the queue of its call. The 8-chunk rule applies ("Streamed input"). A start that ends without a process drops the waiting chunks.
 - `revoke` deletes each record whose `commonDirectory` equals the request path before its walk starts. That deletion needs no identity.
-- Limit: a driver can ignore a cancel, and a cancel can come between the flag check and the next open. The walk thread then waits until its I/O returns. No reply waits for it. The shell does not bound the count of such threads.
+- Limit: a driver can ignore a cancel, and a cancel can come between the flag check and the next open. The walk thread then waits until its I/O returns. No reply waits for it. The shell does not bound the count of such threads. A `CancelSynchronousIo` call can itself wait while the I/O is not cancelable (research R5 U3). Only the watchdog thread waits then, after its reply.
 - A WSL `identity` or `fileFacts` request is a walk too (§11). It follows the same deadline, deadline reply, and stop rules. A stop of a WSL walk ends the walk's own `wsl.exe` process, never the operation Job, because `CancelSynchronousIo` cannot stop a process wait.
 
 **WSL frames.** `wslDistros` and `wslProbe` exist only for WSL routing (§11).

@@ -4,19 +4,23 @@
 // T207: WSL registration through `chooseRepository` (contract §3, §11). `src/git-service/wsl.ts` (T212) serves it.
 // The F24 floor case and the seam cases need no Git 2.55.0 (tasks.md "Test harness rules"). They run before the other cases.
 
-import { afterEach, describe, expect } from "bun:test";
-import { createCollector } from "../../src/git-service/git-runner";
+import { afterEach, describe, expect, test } from "bun:test";
+import { createCollector, type GitRunner } from "../../src/git-service/git-runner";
+import { requestWslIdentities } from "../../src/git-service/identity";
+import { approveWslGit } from "../../src/git-service/wsl";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { printOrigin } from "../origin";
-import { buildF21, buildF24, buildF26, globalConfig, seamProbe, startSession, type WslSession } from "./fixtures";
-import { inDistro, listScopes, parseProbe, uncPath, useWslFolder, wslTest, type WslHost } from "./wsl-host";
+import { buildF21, buildF24, buildF26, globalConfig, SEAM_INODE, seamProbe, seamRepository, startSession, type ProbeChange, type WslSession } from "./fixtures";
+import { inDistro, isUbuntu, listScopes, parseProbe, uncPath, useWslFolder, WSL_EXE, wslTest, type WslHost } from "./wsl-host";
 
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 
 const CASE_TIMEOUT_MS = 180_000;
 const MINIMUM = "2.55.0";
+// Contract §11 "Git per distro": the third sentence of an Ubuntu version refusal.
+const PPA_TEXT = "This command adds the official git-core PPA and installs its Git.";
 
 useFixtureRoot();
 useWslFolder();
@@ -64,15 +68,32 @@ describe("WSL registration (T207)", () => {
 
       const { runner, s } = setup(host);
       const response = await s.response(s.chooseRepository(f24.path));
-      expect(response).toMatchObject({
-        state: "failed",
-        code: "GIT_UNSUPPORTED",
-        result: { reason: "version", detectedVersion: found, minimumVersion: MINIMUM, text: `Git ${found} in ${host.distro} is older than 2.55.0. Install Git 2.55.0 or later in the distro.` },
-      });
+      // Contract §11: an Ubuntu distro adds the PPA sentence. The next case checks its command.
+      const text = `Git ${found} in ${host.distro} is older than 2.55.0. Install Git 2.55.0 or later in the distro.${isUbuntu(probe) ? ` ${PPA_TEXT}` : ""}`;
+      expect(response).toMatchObject({ state: "failed", code: "GIT_UNSUPPORTED", result: { reason: "version", detectedVersion: found, minimumVersion: MINIMUM, text } });
       // Only the probe ran. No confirmation, no Git registration, and no Git command.
       expect(runner.spawned).toBe(1);
       expect(runner.wslConfirmations).toEqual([]);
       expect(runner.wslSaved.size).toBe(0);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "F24 on an Ubuntu distro: the version refusal carries the Git PPA remedy command byte for byte",
+    ["distro-git-below-2.55", "ubuntu-distro"],
+    async (host) => {
+      const { runner, s } = setup(host);
+      const response = await s.response(s.chooseRepository(uncPath(host, host.folder)));
+      expect(response).toMatchObject({ state: "failed", code: "GIT_UNSUPPORTED", result: { reason: "version", detectedVersion: host.gitVersion, minimumVersion: MINIMUM } });
+      expect(response.result?.text).toBe(`Git ${host.gitVersion} in ${host.distro} is older than 2.55.0. Install Git 2.55.0 or later in the distro. ${PPA_TEXT}`);
+      // Contract §11 "Git per distro": the app never runs this command.
+      expect(response.result?.command).toBe(
+        `& '${WSL_EXE}' --distribution '${host.distro}' --user root --cd / --exec /bin/sh -c 'add-apt-repository -y ppa:git-core/ppa && apt-get update && apt-get install -y git'`,
+      );
+      expect(runner.spawned).toBe(1);
+      expect(runner.wslConfirmations).toEqual([]);
       expectNoScope(host);
     },
     CASE_TIMEOUT_MS,
@@ -98,6 +119,27 @@ describe("WSL registration (T207)", () => {
 });
 
 describe("WSL registration seams (T207)", () => {
+  // T212 review S3: a failed WSL identity read carries the WSL remedy, not the NTFS or ReFS one.
+  test("a failed or foreign WSL identity reply refuses with the WSL identity remedy", async () => {
+    const git = { guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", distro: "Ubuntu-24.04" };
+    const refused = { ok: false, code: "UNSUPPORTED_REPOSITORY", result: { text: "Arbareto cannot read the identity of this folder in Ubuntu-24.04. Check that the folder exists on the distro's own disk." } } as const;
+    const context = { contextKind: "repositoryDiscovery" as const, bootstrapId: crypto.randomUUID(), gitInstallationId: crypto.randomUUID() };
+    const path = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\u\\r";
+    for (const reply of [{ code: "UNSUPPORTED_REPOSITORY" }, { code: "UNSUPPORTED_REPOSITORY", reason: "absent" }, { distroGuid: "{8f51b15e-5f05-4b6d-8d78-5765530f558a}", fileSystemId: "1", inode: "2" }]) {
+      const runner = { identities: async () => [reply] } as unknown as GitRunner;
+      expect({ reply, outcome: await requestWslIdentities(runner, crypto.randomUUID(), context, [path], git) }).toEqual({ reply, outcome: refused });
+    }
+  });
+
+  // T212 review S4: Linux Git reads `PATH` when it runs, so the bare-name rule takes the `PATH` of the latest probe.
+  test("a reused session Git takes the PATH of the latest probe and asks for no confirmation", async () => {
+    const session = { gitInstallationId: crypto.randomUUID(), distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin" };
+    const { gitInstallationId: _id, ...probed } = { ...session, pathEnv: "/home/u/bin:/usr/bin" };
+    const runner = { register: () => Promise.reject(new Error("no confirmation")) } as unknown as GitRunner;
+    const approved = await approveWslGit(runner, { operationId: crypto.randomUUID(), bootstrapId: crypto.randomUUID() }, probed, session, undefined);
+    expect(approved).toMatchObject({ ok: true, reused: true, changed: false, git: { gitInstallationId: session.gitInstallationId, pathEnv: "/home/u/bin:/usr/bin" } });
+  });
+
   const seamed = (host: WslHost, change: Parameters<typeof seamProbe>[1]) => {
     const pair = setup(host);
     pair.runner.inject.wslProbe = { stdout: seamProbe(host, change) };
@@ -116,6 +158,24 @@ describe("WSL registration seams (T207)", () => {
         code: "WSL_UNAVAILABLE",
         result: { reason: "no-setsid", text: `Arbareto needs the setsid program in ${host.distro}. Install the util-linux package in the distro, then open the folder again.` },
       });
+      expect(runner.wslConfirmations).toEqual([]);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "a version refusal in a distro whose os-release ID is not ubuntu carries no command",
+    [],
+    async (host) => {
+      const { runner, s } = seamed(host, { version: "git version 2.43.0", osid: "debian" });
+      const response = await s.response(s.chooseRepository(folder(host)));
+      expect(response).toMatchObject({
+        state: "failed",
+        code: "GIT_UNSUPPORTED",
+        result: { reason: "version", detectedVersion: "2.43.0", minimumVersion: MINIMUM, text: `Git 2.43.0 in ${host.distro} is older than 2.55.0. Install Git 2.55.0 or later in the distro.` },
+      });
+      expect(response.result).not.toHaveProperty("command");
       expect(runner.wslConfirmations).toEqual([]);
       expectNoScope(host);
     },
@@ -141,25 +201,32 @@ describe("WSL registration seams (T207)", () => {
     );
   }
 
-  wslTest(
-    "an identity probe with type 1021994 (tmpfs) gives UNSUPPORTED_REPOSITORY reason no-fs-uuid before any Git command",
-    [],
-    async (host) => {
-      const { runner, s } = seamed(host, { version: `git version ${MINIMUM}` });
-      runner.inject.wslStat.set(folder(host), { inode: "4242\n", fileSystem: "1021994:9a8b7c6d5e4f3021\n" });
-      const response = await s.response(s.chooseRepository(folder(host)));
-      expect(response).toMatchObject({
-        state: "failed",
-        code: "UNSUPPORTED_REPOSITORY",
-        result: { reason: "no-fs-uuid", text: "Arbareto cannot read a file-system UUID for this folder. Open a folder on the distro's own disk." },
-      });
-      // Contract §6 "Registration bootstrap": the selected directory identity comes before execution.
-      expect(runner.spawned).toBe(0);
-      expect(runner.wslIdentityLog.map((e) => e.path)).toContain(folder(host));
-      expectNoScope(host);
-    },
-    CASE_TIMEOUT_MS,
-  );
+  // gaps.md W1: the probe prints the context path lines, and the service refuses the path before any Git rule after the path programs.
+  const pathCases: [string, ProbeChange, string, Record<string, string>][] = [
+    ["selfs type 1021994 (tmpfs)", { selfs: "1021994:9a8b7c6d5e4f3021" }, "UNSUPPORTED_REPOSITORY", { reason: "no-fs-uuid", text: "Arbareto cannot read a file-system UUID for this folder. Open a folder on the distro's own disk." }],
+    ["selfs type 1021997 (v9fs)", { selfs: "1021997:9a8b7c6d5e4f3021" }, "UNSUPPORTED_REPOSITORY", { reason: "mixed-location", text: "The worktree and its Git directories must all lie inside one WSL distro, or all on Windows." }],
+    ["selstat absent", { selstat: "absent" }, "UNSUPPORTED_REPOSITORY", { text: "Arbareto cannot read the identity of this folder in DISTRO. Check that the folder exists on the distro's own disk." }],
+    ["selstat error", { selstat: "error" }, "UNSUPPORTED_REPOSITORY", { text: "Arbareto cannot read the identity of this folder in DISTRO. Check that the folder exists on the distro's own disk." }],
+    ["a selino line that is no canonical inode", { selino: "0042" }, "UNSUPPORTED_REPOSITORY", { text: "Arbareto cannot read the identity of this folder in DISTRO. Check that the folder exists on the distro's own disk." }],
+    ["no /usr/bin/perl", { absent: ["perl"] }, "WSL_UNAVAILABLE", { reason: "no-perl", text: "Arbareto needs Perl in DISTRO to check hook and program files. Install the distro's perl package, then open the repository again." }],
+  ];
+  for (const [label, change, code, result] of pathCases) {
+    wslTest(
+      `a probe with ${label} gives ${code} ${result.reason ?? "with the WSL identity remedy"} before the Git confirmation`,
+      [],
+      async (host) => {
+        const { runner, s } = seamed(host, { version: `git version ${MINIMUM}`, ...change });
+        const response = await s.response(s.chooseRepository(folder(host)));
+        const expected = Object.fromEntries(Object.entries(result).map(([k, v]) => [k, v.replace("DISTRO", host.distro)]));
+        expect(response).toMatchObject({ state: "failed", code, result: expected });
+        // Contract §6 "Registration bootstrap": the selected directory identity comes before execution.
+        expect(runner.spawned).toBe(0);
+        expect(runner.wslConfirmations).toEqual([]);
+        expectNoScope(host);
+      },
+      CASE_TIMEOUT_MS,
+    );
+  }
 
   wslTest(
     "a Git file identity with a type other than ef53 gives GIT_UNSUPPORTED reason no-fs-uuid",
@@ -247,7 +314,8 @@ describe("WSL registration seams (T207)", () => {
       const bootstrapId = runner.addContext("repositoryDiscovery", path);
       // A register before any probe has no bound facts.
       await expect(runner.register({ operationId, bootstrapId, gitInstallationId: crypto.randomUUID(), confirm: true } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-      runner.inject.wslProbe = { stdout: seamProbe(host) };
+      // The shell binds only a probe that passes every contract §11 rule, the Git floor included.
+      runner.inject.wslProbe = { stdout: seamProbe(host, { version: `git version ${MINIMUM}` }) };
       expect(await probe(bootstrapId, operationId)).toMatchObject({ exitCode: 0 });
       // A Linux program path from the service is refused.
       const programs = { distro: host.distro, git: "/tmp/evil", systemdRun: "/tmp/evil", systemctl: "/tmp/evil", setsid: "/tmp/evil" };
@@ -255,20 +323,65 @@ describe("WSL registration seams (T207)", () => {
       expect(runner.wslConfirmations).toEqual([]);
       const gitInstallationId = crypto.randomUUID();
       expect(await runner.register({ operationId, bootstrapId, gitInstallationId, confirm: true } as never)).toEqual({ result: "approved" });
-      expect(runner.wslConfirmations).toEqual([{ distro: host.distro, path: host.probe.paths.git, version: host.gitVersion ?? "" }]);
+      expect(runner.wslConfirmations).toEqual([{ distro: host.distro, path: host.probe.paths.git, version: MINIMUM }]);
       expect(runner.wslSaved.get(host.guid)).toEqual({
         distro: host.distro,
         git: host.probe.paths.git,
-        version: host.gitVersion ?? "",
+        version: MINIMUM,
         gitIdentity: `${host.probe.gitfs?.split(":")[1]}:${host.probe.gitfile}`,
       });
       // A probe that fails a contract §11 rule binds nothing.
       const other = crypto.randomUUID();
       const unbound = runner.addContext("repositoryDiscovery", path);
-      runner.inject.wslProbe = { stdout: seamProbe(host, { absent: ["setsid"] }) };
+      runner.inject.wslProbe = { stdout: seamProbe(host, { version: `git version ${MINIMUM}`, absent: ["setsid"] }) };
       expect(await probe(unbound, other)).toMatchObject({ exitCode: 0 });
       await expect(runner.register({ operationId: other, bootstrapId: unbound, gitInstallationId: crypto.randomUUID(), confirm: true } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
       expect(runner.wslConfirmations).toHaveLength(1);
+      // gaps.md W1: a context binds once, so a second probe of a bound context is refused.
+      runner.inject.wslProbe = { stdout: seamProbe(host, { version: `git version ${MINIMUM}` }) };
+      await expect(probe(bootstrapId, operationId)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  // gaps.md W1 and W2: a registration that starts no process. The discovery output and the identities are seams.
+  const SEAM_NEEDS = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"] as const;
+
+  wslTest(
+    "a seam WSL registration binds the context identity at the probe, and worktreeKey is the SHA-256 of the identity text",
+    SEAM_NEEDS,
+    async (host) => {
+      const { runner, s } = setup(host);
+      const repo = seamRepository(host, runner);
+      const requestId = s.chooseRepository(repo.path);
+      // No process starts at context creation (gaps.md W1).
+      expect(runner.spawned).toBe(0);
+      const response = await s.response(requestId);
+      expect(response).toMatchObject({ state: "succeeded" });
+      const fileSystemId = host.probe.gitfs!.split(":")[1]!;
+      const key = new Bun.CryptoHasher("sha256").update(`${host.guid}:${fileSystemId}:${SEAM_INODE}`).digest("hex");
+      expect((response.result as { worktreeKey: string }).worktreeKey).toBe(key);
+      expect(runner.spawned).toBe(0);
+      // The shell read the context identity again before `register` (gaps.md W1).
+      expect(runner.wslIdentityLog.filter((e) => e.path === repo.path)).toHaveLength(2);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "a context identity that changes between the probe and register gives UNKNOWN_TARGET and registers nothing",
+    SEAM_NEEDS,
+    async (host) => {
+      const { runner, s } = setup(host);
+      const repo = seamRepository(host, runner);
+      // The selected folder now reads as another inode than the probe bound.
+      runner.inject.wslStat.set(repo.path, { inode: "9999", fileSystem: host.probe.gitfs! });
+      expect(await s.response(s.chooseRepository(repo.path))).toMatchObject({ state: "failed", code: "UNKNOWN_TARGET" });
+      // A later registration of the same folder through a new context still works, so nothing stayed bound.
+      runner.inject.wslStat.set(repo.path, { inode: SEAM_INODE, fileSystem: host.probe.gitfs! });
+      expect(await s.response(s.chooseRepository(repo.path))).toMatchObject({ state: "succeeded" });
+      expectNoScope(host);
     },
     CASE_TIMEOUT_MS,
   );
@@ -292,7 +405,8 @@ describe("WSL registration with Git 2.55.0 (T207)", () => {
       expect(results[0]!.worktreeKey).toMatch(/^[0-9a-f]{64}$/);
       // The worktree root identity holds the file-system ID and the inode, and no device number.
       const root = runner.wslIdentityLog.find((e) => e.path === uncPath(host, f21.repo.dir));
-      expect(root?.reply).toEqual({ distroGuid: host.guid, fileSystemId: expect.stringMatching(/^[0-9a-f]+$/), inode: expect.stringMatching(/^\d+$/), fileSystemType: "ef53" });
+      // gaps.md W2: the canonical form, with no file-system type.
+      expect(root?.reply).toEqual({ distroGuid: host.guid, fileSystemId: expect.stringMatching(/^[1-9a-f][0-9a-f]{0,15}$/), inode: expect.stringMatching(/^[1-9]\d*$/) });
       const device = inDistro(host.distro, ["/usr/bin/stat", "--format=%d", "--", f21.repo.dir]).trim();
       console.log(`OBSERVATION T207: F21 stat %d ${device}, identity ${JSON.stringify(root?.reply)}`);
       expect(JSON.stringify(runner.wslIdentityLog)).not.toContain(`"${device}"`);

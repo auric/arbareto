@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { DamagedMarker, TRUST_BOUNDS, UtcTime } from "./channel";
-import { ERROR_CODES, TERMINAL_STATES, type ErrorCode } from "./errors";
+import { ERROR_CODES, TERMINAL_STATES, WSL_UNAVAILABLE_REASONS, type ErrorCode } from "./errors";
 import * as limits from "./limits";
 import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REGISTERED_WORKSPACES } from "./limits";
 import { ChannelPath, Count, Fingerprint, Identifier, isOperationName, MutationKind, OPERATION_NAMES, SHELL_ONLY, Text, type OperationName } from "./operations";
@@ -253,6 +253,18 @@ export const RegistrationResult = z.union([
     })
     .meta({ title: "RegistrationRefused" }),
   z.strictObject({ limit: z.literal(REGISTERED_WORKSPACES) }).meta({ title: "WorkspaceLimit" }),
+  // Contract §9 and §11: a WSL refusal. `reason` names the §9 reason of the response code, and `text` holds its §9 or §11 text.
+  // `detail` holds the bounded `wsl.exe` text of `start-failed`. `command` holds the Git PPA remedy of an Ubuntu distro.
+  z
+    .strictObject({
+      reason: z.enum([...WSL_UNAVAILABLE_REASONS, "version", "windows-git", "no-fs-uuid", "wsl-path", "mixed-location"]).optional(),
+      text: z.string(),
+      detectedVersion: z.string().optional(),
+      minimumVersion: z.string().optional(),
+      detail: OutputTail.optional(),
+      command: z.string().optional(),
+    })
+    .meta({ title: "WslRefused" }),
 ]);
 export type RegistrationResult = z.infer<typeof RegistrationResult>;
 export const ChooseRepositoryResult = RegistrationResult;

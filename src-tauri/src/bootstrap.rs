@@ -10,6 +10,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE};
+
+use crate::file_facts::is_wsl_path;
+use crate::wsl::WslIdentity;
 use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx,
@@ -47,6 +50,43 @@ impl Identity {
     }
 }
 
+/// A Windows identity or a WSL identity (contract §6 "Process fields", gaps.md W2).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PhysicalIdentity {
+    Windows(Identity),
+    Wsl(WslIdentity),
+}
+
+impl PhysicalIdentity {
+    pub fn reply(&self) -> serde_json::Value {
+        match self {
+            PhysicalIdentity::Windows(identity) => identity.reply(),
+            PhysicalIdentity::Wsl(identity) => identity.reply(),
+        }
+    }
+
+    /// The identity text: `volumeSerial` then `fileId` without a separator, or `<distroGuid>:<fileSystemId>:<inode>`.
+    /// The mutex name, the trust record file name, and the lingering Job tag use its SHA-256.
+    pub fn text(&self) -> String {
+        match self {
+            PhysicalIdentity::Windows(identity) => format!(
+                "{:016x}{}",
+                identity.volume_serial,
+                crate::settings::hex(&identity.file_id)
+            ),
+            PhysicalIdentity::Wsl(identity) => identity.text(),
+        }
+    }
+}
+
+/// The identity of a bootstrap context. A WSL path binds no identity at creation (gaps.md W1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextIdentity {
+    Windows(Identity),
+    /// The shell binds the §11 identity at `wslProbe` and reads it again before `register`.
+    Wsl,
+}
+
 /// Opens `path` with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`.
 pub(crate) fn open(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new()
@@ -71,6 +111,11 @@ pub fn is_absent(path: &Path) -> bool {
 /// Opens `path` as `open` does, then reads `FileIdInfo`.
 pub fn read_identity(path: &Path) -> Result<Identity, &'static str> {
     file_identity(&open(path).map_err(|_| "UNSUPPORTED_REPOSITORY")?)
+}
+
+/// The `FileIdInfo` identity of a path as a physical identity. A WSL path gives none (contract §11 "Route").
+pub fn native_identity(path: &Path) -> Option<PhysicalIdentity> {
+    read_identity(path).ok().map(PhysicalIdentity::Windows)
 }
 
 /// One entry of an identity reply (contract §6 "Process fields"). Only a not-found open adds `reason` `absent`.
@@ -113,7 +158,7 @@ pub enum ContextKind {
 pub struct Context {
     pub kind: ContextKind,
     pub path: PathBuf,
-    pub identity: Identity,
+    pub identity: ContextIdentity,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "only tests read the session of a context")
@@ -249,10 +294,15 @@ impl Contexts {
         startup: bool,
         now: Instant,
     ) -> Result<String, &'static str> {
-        let identity = read_identity(path).map_err(|code| match kind {
-            ContextKind::GitProbe => "GIT_UNAVAILABLE",
-            ContextKind::RepositoryDiscovery => code,
-        })?;
+        // gaps.md W1: a WSL folder starts no process and reads no identity at creation. A process could start a stopped distro.
+        let identity = if kind == ContextKind::RepositoryDiscovery && is_wsl_path(path) {
+            ContextIdentity::Wsl
+        } else {
+            ContextIdentity::Windows(read_identity(path).map_err(|code| match kind {
+                ContextKind::GitProbe => "GIT_UNAVAILABLE",
+                ContextKind::RepositoryDiscovery => code,
+            })?)
+        };
         let mut state = self.state();
         state.contexts.retain(|_, context| now < context.expires_at);
         let id = state.next_id();
@@ -323,7 +373,9 @@ impl Contexts {
     /// The code is `GIT_CHANGED` for `gitProbe` and `UNKNOWN_TARGET` for `repositoryDiscovery`.
     pub fn revalidate(&self, bootstrap_id: &str, now: Instant) -> Result<(), &'static str> {
         let context = self.get(bootstrap_id, now)?;
-        if read_identity(&context.path) == Ok(context.identity) {
+        // A WSL context revalidates only through the §11 identity probe of `process_requests.rs`.
+        if matches!(context.identity, ContextIdentity::Windows(identity) if read_identity(&context.path) == Ok(identity))
+        {
             return Ok(());
         }
         self.destroy(bootstrap_id);
@@ -473,7 +525,10 @@ mod tests {
         let context = contexts.get(&id, now).expect("get");
         assert_eq!(context.kind, ContextKind::GitProbe);
         assert_eq!(context.path, git);
-        assert_eq!(context.identity, read_identity(&git).expect("identity"));
+        assert_eq!(
+            context.identity,
+            ContextIdentity::Windows(read_identity(&git).expect("identity"))
+        );
         assert_eq!(context.session_id, SESSION);
         assert_eq!(context.expires_at, now + CONTEXT_LIFETIME);
         assert!(
@@ -487,6 +542,36 @@ mod tests {
         );
         let unknown = "33333333-3333-4333-8333-333333333333";
         assert_eq!(contexts.get(unknown, now).err(), Some("UNKNOWN_TARGET"));
+    }
+
+    #[test]
+    fn a_wsl_path_creates_a_pending_context_without_a_process_or_file_id_info() {
+        let contexts = Contexts::new(SESSION);
+        let now = Instant::now();
+        // No such distro or folder exists, so a `FileIdInfo` read would fail the creation.
+        for path in [
+            r"\\wsl.localhost\arbareto-no-distro\home\u\repo",
+            r"\\WSL$\arbareto-no-distro\home\u\repo",
+            "//wsl.localhost/arbareto-no-distro/home/u/repo",
+        ] {
+            let id = contexts
+                .create(ContextKind::RepositoryDiscovery, Path::new(path), now)
+                .expect("a pending WSL context");
+            let context = contexts.get(&id, now).expect("get");
+            assert_eq!(context.identity, ContextIdentity::Wsl, "{path}");
+            // gaps.md W1: only the §11 identity probe can revalidate it.
+            assert_eq!(contexts.revalidate(&id, now), Err("UNKNOWN_TARGET"));
+            assert!(contexts.get(&id, now).is_err(), "destroyed");
+        }
+        // A Git probe context of a WSL path stays a `FileIdInfo` read.
+        assert_eq!(
+            contexts.create(
+                ContextKind::GitProbe,
+                Path::new(r"\\wsl.localhost\arbareto-no-distro\usr\bin\git"),
+                now
+            ),
+            Err("GIT_UNAVAILABLE")
+        );
     }
 
     #[test]

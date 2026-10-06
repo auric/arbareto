@@ -8,7 +8,8 @@ import * as fs from "node:fs";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
-import { buildF21, buildF25, buildF26, distroGit, globalConfig, startSession, writeLinux, type WslSession } from "./fixtures";
+import { OPERATION_MARKERS } from "../../src/git-service/commands";
+import { buildF21, buildF25, buildF26, distroGit, globalConfig, seamRepository, startSession, writeLinux, type WslSession } from "./fixtures";
 import { inDistro, uncPath, useWslFolder, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 const CASE_TIMEOUT_MS = 180_000;
@@ -84,7 +85,7 @@ describe("WSL reads (T208)", () => {
   );
 
   wslTest(
-    "program-file digests read the file through the UNC path, and an edit gives TRUST_CHANGED",
+    "program-file digests come from the WSL fileFacts probe, and an edit gives TRUST_CHANGED",
     NEEDS,
     async (host) => {
       const f25 = buildF25(host);
@@ -176,3 +177,34 @@ describe("WSL reads (T208)", () => {
   );
 });
 
+
+// T212 review: a seam read whose Git output is fixed, so it needs no Git 2.55.0. Only the trust listing `fileFacts` probe runs in the distro.
+describe("WSL read seams (T212)", () => {
+  wslTest(
+    "a clean WSL repository reads operation state normal from its Linux marker paths, and the read resolves no change-tuple ref file",
+    ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"],
+    async (host) => {
+      const { runner, s } = setup(host);
+      const repo = seamRepository(host, runner);
+      const registration = runner.inject.stdout!;
+      // Linux Git prints Linux paths for `rev-parse --path-format=absolute --git-path`.
+      const reads: [string, string][] = [
+        ["--git-path MERGE_HEAD", OPERATION_MARKERS.map((name) => `${repo.linux}/.git/${name}`).join("\n") + "\n"],
+        ["--git-path refs/", `${repo.linux}/.git/refs/heads/main\n`],
+        ["status --porcelain=v2", `# branch.oid ${"1".repeat(40)}\0# branch.head main\0`],
+        ["ls-files", ""],
+      ];
+      runner.inject.stdout = (call) => {
+        const text = call.arguments.join(" ");
+        const found = reads.find(([marker]) => text.includes(marker));
+        return found ? new TextEncoder().encode(found[1]) : registration(call);
+      };
+      const w = await register(s, repo.path);
+      const response = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+      expect(response).toMatchObject({ state: "succeeded", result: { operationState: "normal" } });
+      // Contract §11 "Change polling": a WSL read uses no stat tuple, so it resolves no ref file for one.
+      expect(runner.calls.filter((call) => call.arguments.join(" ").includes("--git-path refs/"))).toEqual([]);
+    },
+    CASE_TIMEOUT_MS,
+  );
+});

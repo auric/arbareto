@@ -32,6 +32,8 @@ export class FixtureLost extends Error {
 export interface WslResult {
   exitCode: number | null;
   stdout: string;
+  // The raw stdout bytes.
+  bytes: Uint8Array;
   stderr: string;
 }
 
@@ -44,7 +46,7 @@ export function wslExec(args: string[], options: { input?: Uint8Array; timeoutMs
     stderr: "pipe",
     timeout: options.timeoutMs ?? CALL_TIMEOUT_MS,
   });
-  return { exitCode: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
+  return { exitCode: proc.exitCode, stdout: proc.stdout.toString(), bytes: new Uint8Array(proc.stdout), stderr: proc.stderr.toString() };
 }
 
 // Runs one program in the distro with `--exec`. Throws on a nonzero exit unless `allowExit` names it.
@@ -66,6 +68,12 @@ export interface ProbeFacts {
   gitfile?: string;
   pathEnv?: string;
   scope?: string;
+  // The value of the first `ID=` line of `/etc/os-release`, as the file holds it.
+  osid?: string;
+  // The context path facts (gaps.md W1): `stat -f %t:%i`, `stat %i`, and the Perl `stat` result.
+  selfs?: string;
+  selino?: string;
+  selstat?: string;
 }
 
 export function parseProbe(text: string): ProbeFacts {
@@ -81,9 +89,96 @@ export function parseProbe(text: string): ProbeFacts {
     else if (kind === "gitfile") facts.gitfile = value;
     else if (kind === "pathenv") facts.pathEnv = value;
     else if (kind === "scope") facts.scope = value;
+    else if (kind === "osid") facts.osid = value;
+    else if (kind === "selfs") facts.selfs = value;
+    else if (kind === "selino") facts.selino = value;
+    else if (kind === "selstat") facts.selstat = value;
   }
   return facts;
 }
+
+// ---- The `fileFacts` Perl probe (gaps.md W3) ----
+
+export const FACTS_TEXT: string = wslProcess.fileFacts.join("\n");
+export const IDENTITY_TEXT: string = wslProcess.identity.join("\n");
+
+// One request entry: the root index (0 worktree root, 1 Git directory, 2 common directory) and the components.
+export type FactEntry = { root: 0 | 1 | 2; path: string[] };
+
+// Stdin of the probe: each entry as its root index, its component count, and its components, each ended by NUL.
+export function factsInput(entries: readonly FactEntry[]): Uint8Array {
+  const tokens = entries.flatMap((e) => [String(e.root), String(e.path.length), ...e.path]);
+  return new TextEncoder().encode(tokens.map((t) => `${t}\0`).join(""));
+}
+
+export type FactRecord =
+  | { kind: "absent" }
+  | { kind: "other" }
+  | { kind: "directory"; executable: boolean }
+  | { kind: "link"; component: number; target: Uint8Array }
+  | { kind: "file"; size: bigint; mtime: bigint; ownerExecute: boolean; executable: boolean; content: "none" | "file-bytes" | "total-bytes" | Uint8Array }
+  | { kind: "error"; component: number; code: string };
+
+// The record grammar: NUL-ended ASCII tokens, and `N` raw bytes after a length token. Null: the output breaks the grammar.
+export function parseFactRecords(bytes: Uint8Array): FactRecord[] | null {
+  let at = 0;
+  const token = (): string | null => {
+    const end = bytes.indexOf(0, at);
+    if (end < 0) return null;
+    const text = new TextDecoder("latin1").decode(bytes.subarray(at, end));
+    at = end + 1;
+    return /^[\x21-\x7e]+$/.test(text) ? text : null;
+  };
+  const number = (): bigint | null => {
+    const text = token();
+    return text !== null && /^(?:0|-?[1-9][0-9]*)$/.test(text) ? BigInt(text) : null;
+  };
+  const flag = (): boolean | null => {
+    const text = token();
+    return text === "1" ? true : text === "0" ? false : null;
+  };
+  const raw = (length: bigint | null): Uint8Array | null => {
+    if (length === null || length < 0n || at + Number(length) > bytes.length) return null;
+    const out = bytes.slice(at, at + Number(length));
+    at += Number(length);
+    return out;
+  };
+  const records: FactRecord[] = [];
+  while (at < bytes.length) {
+    const kind = token();
+    if (kind === "absent" || kind === "other") records.push({ kind });
+    else if (kind === "directory") {
+      const executable = flag();
+      if (executable === null) return null;
+      records.push({ kind, executable });
+    } else if (kind === "link") {
+      const component = number();
+      const target = raw(number());
+      if (component === null || target === null) return null;
+      records.push({ kind, component: Number(component), target });
+    } else if (kind === "file") {
+      const [size, mtime, ownerExecute, executable, form] = [number(), number(), flag(), flag(), token()];
+      if (size === null || mtime === null || ownerExecute === null || executable === null) return null;
+      let content: "none" | "file-bytes" | "total-bytes" | Uint8Array;
+      if (form === "none" || form === "file-bytes" || form === "total-bytes") content = form;
+      else if (form === "data") {
+        const data = raw(number());
+        if (data === null) return null;
+        content = data;
+      } else return null;
+      records.push({ kind, size, mtime, ownerExecute, executable, content });
+    } else if (kind === "error") {
+      const component = number();
+      const code = token();
+      if (component === null || code === null) return null;
+      records.push({ kind, component: Number(component), code });
+    } else return null;
+  }
+  return records;
+}
+
+// Contract §11: Ubuntu means `ID=ubuntu`. os-release(5): the value can also stand in double or single quotes.
+export const isUbuntu = (facts: ProbeFacts): boolean => ["ubuntu", '"ubuntu"', "'ubuntu'"].includes(facts.osid ?? "");
 
 export interface RegistryKey {
   guid: string;
@@ -98,12 +193,15 @@ export function registryKeys(): RegistryKey[] {
   const keys: RegistryKey[] = [];
   let current: Partial<RegistryKey> | null = null;
   for (const line of proc.stdout.toString().split(/\r?\n/)) {
-    const guid = /\\Lxss\\(\{[0-9a-fA-F-]+\})$/.exec(line)?.[1];
+    // Registry key names ignore letter case, so the GUID form folds `A` to `F` (gaps.md W2).
+    const guid = /\\Lxss\\(\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\})$/.exec(line)?.[1];
     if (guid) {
-      current = { guid };
+      current = { guid: guid.toLowerCase() };
       keys.push(current as RegistryKey);
       continue;
     }
+    // A subkey of another name form is no distro key.
+    if (/^HKEY_CURRENT_USER\\.*\\Lxss\\/.test(line)) current = null;
     const value = /^\s+(DistributionName|Version)\s+REG_(?:SZ|DWORD)\s+(.*)$/.exec(line);
     if (current && value) {
       if (value[1] === "DistributionName") current.name = value[2];
@@ -129,7 +227,7 @@ export interface WslHost {
   folder: string;
 }
 
-export type WslCapability = "wsl" | "wsl2-distro" | "systemd-user-manager" | "setsid" | "distro-git-2.55" | "distro-git-below-2.55" | "wsl-fixture-fs-id" | "two-test-distros";
+export type WslCapability = "wsl" | "wsl2-distro" | "systemd-user-manager" | "setsid" | "distro-git-2.55" | "distro-git-below-2.55" | "wsl-fixture-fs-id" | "two-test-distros" | "ubuntu-distro" | "perl" | "non-root-user";
 
 function gitAtLeastFloor(version: string | null): boolean {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version ?? "");
@@ -191,11 +289,15 @@ export function missingCapability(needs: readonly WslCapability[] = []): WslCapa
   for (const need of needs) {
     if (need === "systemd-user-manager" && host.probe.scope !== "0") return need;
     if (need === "setsid" && !host.probe.paths.setsid) return need;
+    if (need === "perl" && !host.probe.paths.perl) return need;
     if (need === "distro-git-2.55" && !gitAtLeastFloor(host.gitVersion)) return need;
     // The F24 floor case needs a distro Git below the floor (test harness rules).
     if (need === "distro-git-below-2.55" && (host.gitVersion === null || gitAtLeastFloor(host.gitVersion))) return need;
     if (need === "wsl-fixture-fs-id" && fixtureFileSystem() !== "ef53") return need;
     if (need === "two-test-distros" && orderDistros() === null) return need;
+    if (need === "ubuntu-distro" && !isUbuntu(host.probe)) return need;
+    // Root passes every permission check, so a mode-000 folder gives no `EACCES`.
+    if (need === "non-root-user" && userId(host) === "0") return need;
   }
   return null;
 }
@@ -239,6 +341,13 @@ export function removeOwnedFolder(host: Pick<WslHost, "distro" | "home" | "folde
 
 // The type check of the folder itself, before any fixture exists. Each file creates the folder again.
 let fixtureType: string | null | undefined;
+// The `id -u` decimal user ID of the default distro user.
+let uid: string | undefined;
+function userId(host: Pick<WslHost, "distro">): string {
+  uid ??= inDistro(host.distro, ["/usr/bin/id", "-u"]).trim();
+  return uid;
+}
+
 function fixtureFileSystem(): string | null {
   if (fixtureType !== undefined) return fixtureType;
   const host = wslHost();

@@ -29,6 +29,8 @@ const MAPPED = /[-]/;
 // The characters that `wslpath -w` mapped into U+F000 to U+F0FF on the reference distro (2026-10-04).
 const UNMAPPABLE = /[\u0001-\u001F"*:<>?\\|]/;
 
+export const hasWslPrefix = (path: string): boolean => PREFIX.test(path);
+
 // `wslpath -u` drops empty and `.` segments, resolves `..`, and takes `/` as a separator too (reference distro, 2026-10-04).
 function segments(rest: string): string[] {
   const out: string[] = [];
@@ -74,15 +76,16 @@ export function wslUnitName(operationId: string, n: number): string {
   return `arbareto-${operationId}-${n}.scope`;
 }
 
-export type WslRemedyKind = "add" | "restore-staged" | "rm-cached" | "hook";
+export type WslRemedyKind = "add" | "restore-staged" | "rm-cached" | "hook" | "git-ppa";
 
 export interface WslRemedyValues {
   // `%SystemRoot%\System32\wsl.exe`. The caller reads the system folder.
   wslExecutable: string;
   distro: string;
-  gitPath: string;
+  // The `git-ppa` form takes no Git path, worktree root, or entry path.
+  gitPath?: string;
   // The Linux worktree root.
-  worktreeRoot: string;
+  worktreeRoot?: string;
   // The Git path bytes of the entry. The `hook` form takes none.
   path?: string | Uint8Array;
 }
@@ -93,6 +96,8 @@ const TEMPLATES: Record<WslRemedyKind, string> = {
   "restore-staged": `${HEAD} --literal-pathspecs -C {root} restore --staged -- {path}`,
   "rm-cached": `${HEAD} --literal-pathspecs -C {root} rm --cached -- {path}`,
   hook: `${HEAD} --no-lazy-fetch -C {root} hook run --ignore-missing pre-commit`,
+  // Contract §11 "Git per distro": the script is a fixed literal. The app never runs this command.
+  "git-ppa": "& {wsl} --distribution {distro} --user root --cd / --exec /bin/sh -c 'add-apt-repository -y ppa:git-core/ppa && apt-get update && apt-get install -y git'",
 };
 
 // Contract §11 "Remedy commands" on the contract §4 builder. No probe passed U+005C through `wsl.exe`,
@@ -100,9 +105,9 @@ const TEMPLATES: Record<WslRemedyKind, string> = {
 export function buildWslRemedy(kind: WslRemedyKind, values: WslRemedyValues): RemedyCommand {
   const linux: Record<string, RemedyValue> = {
     distro: { kind: "distroName", text: values.distro },
-    git: { kind: "gitPath", text: values.gitPath, form: "linux" },
-    root: { kind: "worktreeRoot", text: values.worktreeRoot, form: "linux" },
-    ...(kind === "hook" ? {} : { path: { kind: "path", text: values.path ?? "", form: "linux" } }),
+    ...(values.gitPath === undefined ? {} : { git: { kind: "gitPath", text: values.gitPath, form: "linux" } }),
+    ...(values.worktreeRoot === undefined ? {} : { root: { kind: "worktreeRoot", text: values.worktreeRoot, form: "linux" } }),
+    ...(kind === "hook" || kind === "git-ppa" ? {} : { path: { kind: "path", text: values.path ?? "", form: "linux" } }),
   };
   for (const value of Object.values(linux)) {
     const text = typeof value.text === "string" ? value.text : new TextDecoder().decode(value.text);
@@ -122,12 +127,14 @@ export function isWindowsProgram(path: string, mz: boolean): boolean {
 }
 
 const MINIMUM_PARTS = WSL_MINIMUM_GIT_VERSION.split(".").map(BigInt);
+// The shell parses each part as an unsigned 64-bit number (`src-tauri/src/wsl.rs` `admitted_version`).
+const PART_MAX = 2n ** 64n - 1n;
 
 // `versionText` is the `git --version` output line. The rule compares `major.minor.patch` numerically.
 export function checkWslGit(git: { path: string; mz: boolean; versionText: string }): WslGitCheck {
   if (isWindowsProgram(git.path, git.mz) || git.versionText.includes(".windows.")) return { ok: false, code: "GIT_UNSUPPORTED", reason: "windows-git" };
   const m = /^git version ((\d+)\.(\d+)\.(\d+)\S*)$/.exec(git.versionText);
-  if (!m) {
+  if (!m || m.slice(2, 5).some((part) => BigInt(part) > PART_MAX)) {
     // Contract §11: the text names the found version, also an unparseable one.
     const found = git.versionText.replace(/^git version /, "");
     return { ok: false, code: "GIT_UNSUPPORTED", reason: "version", ...(found === "" ? {} : { detectedVersion: found }), minimumVersion: WSL_MINIMUM_GIT_VERSION };

@@ -2,22 +2,20 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 //! The shell side of contract §11 "WSL repositories": distro checks, `wsl.exe` process requests,
-//! the mutation anchor, and the WSL identity probes.
+//! the mutation anchor, the bootstrap probe, the identity probe, and the `fileFacts` probe.
 //!
-//! Proposed §6 frames for T212 (the T206 double in `tests/git/bun-runner.ts` answers the same shapes):
-//! - `wslDistros` with a `repositoryDiscovery` context: the context path, `distros` facts, and the saved Git of each listed GUID.
-//!   The service holds only the bootstrap ID, so it routes that path.
-//! - `wslProbe` with that context and a listed `distro`: `probe_command`, deadline at most 60 seconds.
-//!   The shell parses the probe output itself and binds the `Installation` and the Git identity to the context.
-//!   Output that fails a §11 rule binds nothing. The service still gets the output for its own §11 refusals.
-//! - `register` WSL form: only the context ID, the issued `gitInstallationId`, and `confirm`.
+//! The §6 WSL frames (`WslRequest` in `src/contracts/channel.ts`; the double in `tests/git/bun-runner.ts` answers the same shapes):
+//! - `wslDistros` with a `repositoryDiscovery` context: the context path, and for a WSL prefix the `distros` facts,
+//!   `wsl.exe`, and the saved Git of each listed GUID. The service holds only the bootstrap ID, so it routes that path.
+//! - `wslProbe` with that context and a listed `distro`: `probe_command` with the Linux path of the context, deadline at most 60 seconds.
+//!   The shell binds the `bind_probe` facts and the context identity once. Output that fails a §11 rule binds nothing.
+//! - `register` WSL form: only the context ID, the issued `gitInstallationId`, and `confirm: true`.
 //!   The shell issues the ID only from the bound facts. The service never names a Linux program.
-//! - `run` and `identity` against a WSL Git: `git_command` and `identity`. A mutation starts its anchor first.
+//! - `register` repository form in a WSL context: the shell reads the context identity again with `identities` first.
+//! - `run`, `identity`, and `fileFacts` against a WSL Git: `git_command`, `identities`, and `file_facts_command`.
+//!   A mutation starts its anchor before its first Git process.
 
-// No frame handler calls this module yet. `jobs.rs` routes the anchor counts of a WSL mutation Job.
-// T212 wires the WSL frames into `process_requests.rs` and `bootstrap.rs`, and starts the anchor through `Supervisor::start_anchor`.
-#![cfg_attr(not(test), expect(dead_code, reason = "T212 wires the WSL frames"))]
-
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -39,13 +37,17 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{HSTRING, PWSTR, w};
 
+use crate::jobs::Supervisor;
 use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, is_identifier};
-use crate::spawn::{Input, SpawnError, SpawnRequest, spawn};
+use crate::settings::SavedWslGit;
+use crate::spawn::{Input, SpawnError, SpawnRequest, Spawned, spawn};
 
 /// Contract §11 "Paths and file access": the identity probes run this fixed path.
 pub const STAT: &str = "/usr/bin/stat";
-/// Contract §5 "Diagnostic bytes retained": 64 KiB per stream. A list call or a `stat` probe prints far less.
-const RETAINED_BYTES: usize = 64 * 1024;
+/// gaps.md W3 and W4: the `fileFacts` probe and the identity probe run this fixed path. The bootstrap probe checks it.
+pub const PERL: &str = "/usr/bin/perl";
+/// Contract §5 "Diagnostic bytes retained": 64 KiB per stream. A list call or a probe prints far less.
+pub const RETAINED_BYTES: usize = 64 * 1024;
 /// Contract §11 "Distro checks": the list calls use the §5 probe deadline. The identity probes and the anchor answer use it too.
 const PROBE_DEADLINE: Duration = Duration::from_millis(BOOTSTRAP_DEADLINE_MS);
 const INVALID: Code = "INVALID_REQUEST";
@@ -57,6 +59,10 @@ pub struct Texts {
     pub wrapper: String,
     pub anchor: String,
     pub probe: String,
+    /// gaps.md W4: the identity probe, a `/bin/sh` text with `stat`, `perl`, and the paths as arguments.
+    pub identity: String,
+    /// gaps.md W3: the Perl `fileFacts` probe.
+    pub file_facts: String,
 }
 
 pub fn texts() -> &'static Texts {
@@ -78,6 +84,8 @@ pub fn texts() -> &'static Texts {
             wrapper: text("wrapper"),
             anchor: text("anchor"),
             probe: text("probe"),
+            identity: text("identity"),
+            file_facts: text("fileFacts"),
         }
     })
 }
@@ -219,11 +227,32 @@ pub struct Output {
     pub stdout: Vec<u8>,
 }
 
+/// The end of one process with its own deadline. `deadline`: the deadline ended it, and `output` is `None`.
+pub struct Ended {
+    pub output: Option<Output>,
+    pub deadline: bool,
+}
+
 /// The process and registry calls of this module. Tests inject them.
 pub trait Host {
     /// Runs one `wsl.exe` process to its end. `None`: it did not start or did not end within the probe deadline.
     fn run(&self, command: &Command) -> Option<Output>;
     fn keys(&self) -> Vec<Key>;
+    /// As `run`, with at most `cap` bytes of stdout and the given deadline. An injected host answers as `run`.
+    fn run_until(&self, command: &Command, _cap: usize, _deadline: Duration) -> Ended {
+        Ended {
+            output: self.run(command),
+            deadline: false,
+        }
+    }
+    /// Starts one streamed Git process of a `run` (contract §11 "Process launch").
+    fn start(&self, _command: &Command) -> Result<Spawned, SpawnError> {
+        Err(SpawnError::OwnershipFailed)
+    }
+    /// Starts the anchor of a mutation before its first Git process (contract §11 "Process ownership").
+    fn anchor(&self, _command: &Command) -> Result<(), SpawnError> {
+        Err(SpawnError::OwnershipFailed)
+    }
 }
 
 pub fn list_command(running: bool, base: &[(OsString, OsString)]) -> Command {
@@ -310,6 +339,7 @@ pub enum Mode {
     Probe,
     Read,
     Mutation,
+    #[cfg_attr(not(test), expect(dead_code, reason = "T233 starts the network mode"))]
     Network,
 }
 
@@ -332,9 +362,47 @@ pub fn unit_name(operation_id: &str, n: u32) -> Result<String, Code> {
     Ok(format!("arbareto-{operation_id}-{n}.scope"))
 }
 
+/// Contract §11 "Route": the Linux path of a UNC path in `distro`. Both prefixes, both separators, and the
+/// letter case of the prefix and of the distro name do not matter. `wslpath -u` drops empty and `.` segments and resolves `..`.
+/// `None`: no WSL path of that distro, or a segment with a character in U+F000 to U+F0FF (reason `wsl-path`).
+pub fn linux_path(path: &Path, distro: &str) -> Option<String> {
+    let text = path.to_str()?;
+    let separator = |c: char| c == '\\' || c == '/';
+    let mut chars = text.chars();
+    if !(chars.next().is_some_and(separator) && chars.next().is_some_and(separator)) {
+        return None;
+    }
+    let mut parts = chars.as_str().split(separator);
+    let server = parts.next()?;
+    let named = parts.next()?;
+    if !(server.eq_ignore_ascii_case("wsl$") || server.eq_ignore_ascii_case("wsl.localhost"))
+        || !named.eq_ignore_ascii_case(distro)
+    {
+        return None;
+    }
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in parts {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            _ if segment
+                .chars()
+                .any(|c| ('\u{f000}'..='\u{f0ff}').contains(&c)) =>
+            {
+                return None;
+            }
+            _ => segments.push(segment),
+        }
+    }
+    Some(format!("/{}", segments.join("/")))
+}
+
 /// The bootstrap Git probe. It runs without the wrapper (contract §11 "Git per distro").
-pub fn probe_command(distro: &str, base: &[(OsString, OsString)]) -> Command {
-    shell_command(distro, &texts().probe, &[], base, Stdin::Closed)
+/// gaps.md W1: the one argument is the Linux path of the context, which the shell computes by the §11 "Route" rule.
+pub fn probe_command(distro: &str, linux_path: &str, base: &[(OsString, OsString)]) -> Command {
+    shell_command(distro, &texts().probe, &[linux_path], base, Stdin::Closed)
 }
 
 /// One program through the wrapper, in its own scope.
@@ -417,24 +485,15 @@ pub fn anchor_command(
     ))
 }
 
-/// A request for another distro or Git path than the registered installation is refused.
-pub fn pinned(installation: &Installation, distro: &str, git: &str) -> Result<(), Code> {
-    if installation.distro == distro && installation.git == git {
-        Ok(())
-    } else {
-        Err(INVALID)
-    }
-}
-
 // ---- Identity ----
 
 /// A WSL identity: the distro GUID, the `statfs` ID, and the inode. It holds no device number (contract §11).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A WSL identity in the canonical form of gaps.md W2: the lowercase braced GUID, the GNU `stat -f %i` hex, and the decimal inode.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WslIdentity {
     pub guid: String,
     pub file_system_id: String,
     pub inode: String,
-    pub file_system_type: String,
 }
 
 impl WslIdentity {
@@ -443,7 +502,27 @@ impl WslIdentity {
             "distroGuid": self.guid,
             "fileSystemId": self.file_system_id,
             "inode": self.inode,
-            "fileSystemType": self.file_system_type,
+        })
+    }
+
+    /// The identity text `<distroGuid>:<fileSystemId>:<inode>`.
+    pub fn text(&self) -> String {
+        format!("{}:{}:{}", self.guid, self.file_system_id, self.inode)
+    }
+
+    /// The reply form. Any other text is no identity.
+    pub fn parse(value: &Value) -> Option<WslIdentity> {
+        let object = value.as_object().filter(|object| object.len() == 3)?;
+        let field = |key: &str| object.get(key).and_then(Value::as_str);
+        let (guid, id, inode) = (
+            field("distroGuid")?,
+            field("fileSystemId")?,
+            field("inode")?,
+        );
+        (is_guid(guid) && is_file_system_id(id) && is_inode(inode)).then(|| WslIdentity {
+            guid: guid.to_string(),
+            file_system_id: id.to_string(),
+            inode: inode.to_string(),
         })
     }
 }
@@ -454,6 +533,8 @@ pub enum Refusal {
     NoFsUuid,
     /// Type `v9fs`, magic `1021997`: a Windows drive.
     MixedLocation,
+    /// Perl `stat` set `ENOENT` or `ENOTDIR` (gaps.md W4).
+    Absent,
     /// A failed or malformed probe, as a failed `FileIdInfo` call (contract §6).
     Failed,
     /// An operation ID or a path that the request rules refuse.
@@ -469,6 +550,7 @@ impl Refusal {
             Refusal::MixedLocation => {
                 json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "mixed-location" })
             }
+            Refusal::Absent => json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" }),
             Refusal::Failed => json!({ "code": "UNSUPPORTED_REPOSITORY" }),
             Refusal::Invalid => json!({ "code": INVALID }),
         }
@@ -483,70 +565,121 @@ fn is_decimal(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// One output line with its line end.
-fn line(bytes: &[u8]) -> Option<&str> {
-    std::str::from_utf8(bytes)
-        .ok()?
-        .strip_suffix('\n')
-        .filter(|line| !line.contains('\n'))
+/// The `Lxss` subkey form with `A` to `F` folded to lowercase: braces around 8-4-4-4-12 hex digits (gaps.md W2).
+pub fn is_guid(text: &str) -> bool {
+    let Some(inner) = text.strip_prefix('{').and_then(|t| t.strip_suffix('}')) else {
+        return false;
+    };
+    let groups: Vec<&str> = inner.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(group, length)| group.len() == length && is_hex(group))
 }
 
-/// GNU `stat --file-system` prints `%t` and `%i` in lowercase hex. Only type `ef53` derives its ID from the UUID (research R13 P7).
-pub fn classify(guid: &str, inode: &[u8], file_system: &[u8]) -> Result<WslIdentity, Refusal> {
-    let inode = line(inode)
-        .filter(|i| is_decimal(i))
-        .ok_or(Refusal::Failed)?;
-    let (kind, id) = line(file_system)
-        .and_then(|fs| fs.split_once(':'))
+/// GNU `stat -f %i` prints `f_fsid` with `%jx`, so the canonical text has 1 to 16 digits and no leading zero.
+fn is_file_system_id(text: &str) -> bool {
+    is_hex(text) && text.len() <= 16 && !text.starts_with('0')
+}
+
+/// A 64-bit inode number in decimal without a leading zero.
+fn is_inode(text: &str) -> bool {
+    is_decimal(text) && !text.starts_with('0') && text.parse::<u64>().is_ok()
+}
+
+/// One `stat %i` and `stat -f %t:%i` pair. Only type `ef53` derives its ID from the UUID (research R13 P7).
+/// Other text than the canonical form is a failed probe (gaps.md W2).
+pub fn classify(guid: &str, inode: &str, file_system: &str) -> Result<WslIdentity, Refusal> {
+    let (kind, id) = file_system
+        .split_once(':')
         .filter(|(kind, id)| is_hex(kind) && is_hex(id))
         .ok_or(Refusal::Failed)?;
     match kind {
-        "1021997" => Err(Refusal::MixedLocation),
-        "ef53" if id.bytes().any(|b| b != b'0') => Ok(WslIdentity {
-            guid: guid.to_string(),
-            file_system_id: id.to_string(),
-            inode: inode.to_string(),
-            file_system_type: kind.to_string(),
-        }),
-        _ => Err(Refusal::NoFsUuid),
+        "1021997" => return Err(Refusal::MixedLocation),
+        "ef53" if id.bytes().any(|b| b != b'0') => {}
+        _ => return Err(Refusal::NoFsUuid),
+    }
+    if !is_guid(guid) || !is_file_system_id(id) || !is_inode(inode) {
+        return Err(Refusal::Failed);
+    }
+    Ok(WslIdentity {
+        guid: guid.to_string(),
+        file_system_id: id.to_string(),
+        inode: inode.to_string(),
+    })
+}
+
+/// One output line of the identity probe: `id <inode> <type>:<ID>`, or the Perl `stat` result `absent` or `fail`.
+fn identity_line(guid: &str, line: &str) -> Result<WslIdentity, Refusal> {
+    if line == "absent" {
+        return Err(Refusal::Absent);
+    }
+    let mut parts = line.split(' ');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("id"), Some(inode), Some(file_system), None) => classify(guid, inode, file_system),
+        _ => Err(Refusal::Failed),
     }
 }
 
-/// The two `stat` probes through the wrapper in `probe` mode. They use the units `n` and `n + 1`.
-pub fn identity(
+/// gaps.md W4: one identity probe for every path of a request, through the wrapper in `probe` mode, in the unit `n`.
+/// A path without a leading slash gets `Invalid` and no process sees it. A failed probe gives `Failed` for each other path.
+pub fn identities(
     host: &dyn Host,
     installation: &Installation,
     operation_id: &str,
     n: u32,
-    path: &str,
+    paths: &[String],
     base: &[(OsString, OsString)],
-) -> Result<WslIdentity, Refusal> {
-    // A path that starts with `-` would become a `stat` option.
-    if !path.starts_with('/') {
-        return Err(Refusal::Invalid);
-    }
-    let probe = |unit: u32, options: &[&str]| {
-        let unit = unit_name(operation_id, unit).map_err(|_| Refusal::Invalid)?;
-        let mut arguments = strings(options);
-        arguments.push(path.to_string());
+) -> Vec<Result<WslIdentity, Refusal>> {
+    // A path that starts with `-` would become an option.
+    let probed: Vec<&String> = paths.iter().filter(|path| path.starts_with('/')).collect();
+    let mut lines: Vec<Result<WslIdentity, Refusal>> = Vec::new();
+    if !probed.is_empty() {
+        let Ok(unit) = unit_name(operation_id, n) else {
+            return paths.iter().map(|_| Err(Refusal::Invalid)).collect();
+        };
+        let mut arguments = strings(&["-c", &texts().identity, "sh", STAT, PERL]);
+        arguments.extend(probed.iter().map(|path| (*path).clone()));
         let command = wrapped(
             installation,
             Mode::Probe,
             &unit,
             None,
-            STAT,
+            "/bin/sh",
             &arguments,
             base,
             Stdin::Closed,
         );
-        host.run(&command)
+        let text = host
+            .run(&command)
             .filter(|out| out.exit_code == Some(0))
-            .map(|out| out.stdout)
-            .ok_or(Refusal::Failed)
-    };
-    let inode = probe(n, &["--dereference", "--format=%i"])?;
-    let file_system = probe(n + 1, &["--dereference", "--file-system", "--format=%t:%i"])?;
-    classify(&installation.guid, &inode, &file_system)
+            .and_then(|out| String::from_utf8(out.stdout).ok());
+        let found: Vec<&str> = text
+            .as_deref()
+            .and_then(|text| text.strip_suffix('\n'))
+            .map(|text| text.split('\n').collect())
+            .unwrap_or_default();
+        lines = if found.len() == probed.len() {
+            found
+                .iter()
+                .map(|line| identity_line(&installation.guid, line))
+                .collect()
+        } else {
+            probed.iter().map(|_| Err(Refusal::Failed)).collect()
+        };
+    }
+    let mut lines = lines.into_iter();
+    paths
+        .iter()
+        .map(|path| {
+            if path.starts_with('/') {
+                lines.next().unwrap_or(Err(Refusal::Failed))
+            } else {
+                Err(Refusal::Invalid)
+            }
+        })
+        .collect()
 }
 
 /// The identity of the Git file from the probe lines `gitfs` and `gitfile` (contract §11 "Git per distro").
@@ -580,6 +713,310 @@ pub fn git_identity(file_system: &str, file: &str) -> Result<GitIdentity, (Code,
         inode: inode.to_string(),
         size: size.to_string(),
         modified: modified.to_string(),
+    })
+}
+
+/// The facts that the shell binds from one probe that passes every §11 rule (contract §11 "Git per distro").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bound {
+    pub installation: Installation,
+    /// The version token of `git version <token>`.
+    pub version: String,
+    pub git_identity: GitIdentity,
+    /// The identity of the context path (gaps.md W1).
+    pub identity: WslIdentity,
+}
+
+/// The programs that the probe of `src/contracts/wsl-process.json` resolves.
+const PROBED: [&str; 7] = [
+    "git",
+    "systemd-run",
+    "systemctl",
+    "setsid",
+    "stat",
+    "env",
+    "perl",
+];
+/// The other line kinds of that probe.
+const PROBE_FACTS: [&str; 9] = [
+    "pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat",
+];
+/// Contract §11 "Git per distro": the Git floor.
+const MINIMUM_GIT: [u64; 3] = [2, 55, 0];
+
+/// `<major>.<minor>.<patch>` and a suffix without white space, at least the floor, and no `.windows.` text.
+fn admitted_version(text: &str) -> Option<&str> {
+    let token = text.strip_prefix("git version ")?;
+    if token.is_empty() || token.contains(char::is_whitespace) || token.contains(".windows.") {
+        return None;
+    }
+    let mut parts = token.splitn(3, '.');
+    let mut numbers = [0u64; 3];
+    for (index, number) in numbers.iter_mut().enumerate() {
+        let part = parts.next()?;
+        // The patch part can carry a suffix, such as `0.rc1`.
+        let digits = if index == 2 {
+            &part[..part
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(part.len())]
+        } else {
+            part
+        };
+        if !is_decimal(digits) {
+            return None;
+        }
+        *number = digits.parse().ok()?;
+    }
+    (numbers >= MINIMUM_GIT).then_some(token)
+}
+
+/// Parses the probe output and applies the §11 rules. Output that fails a rule binds nothing.
+/// Each line kind appears at most once, so a line end inside a value cannot replace a fact.
+pub fn bind_probe(distro: &str, guid: &str, output: &[u8]) -> Option<Bound> {
+    let text = std::str::from_utf8(output).ok()?;
+    let mut facts: HashMap<String, &str> = HashMap::new();
+    for line in text.strip_suffix('\n')?.split('\n') {
+        let (kind, rest) = line.split_once(' ')?;
+        let (key, value) = match kind {
+            "path" | "magic" => {
+                let (name, value) = rest.split_once(' ')?;
+                (
+                    PROBED.contains(&name).then(|| format!("{kind} {name}"))?,
+                    value,
+                )
+            }
+            "absent" => (
+                PROBED.contains(&rest).then(|| format!("absent {rest}"))?,
+                "",
+            ),
+            _ => (PROBE_FACTS.contains(&kind).then(|| kind.to_string())?, rest),
+        };
+        if facts.insert(key, value).is_some() {
+            return None;
+        }
+    }
+    // The probe prints `absent` only for a program without `path` and `magic` lines.
+    let both = |name: &&str| {
+        ["path", "magic"]
+            .iter()
+            .any(|kind| facts.contains_key(&format!("{kind} {name}")))
+    };
+    if PROBED
+        .iter()
+        .any(|name| facts.contains_key(&format!("absent {name}")) && both(name))
+    {
+        return None;
+    }
+    // Contract §11: a resolved path under `/mnt/` or a file that starts with `MZ` is a Windows program.
+    let program = |name: &str| -> Option<String> {
+        let path = *facts.get(&format!("path {name}"))?;
+        let native = path.starts_with('/') && !path.starts_with("/mnt/");
+        (native && facts.get(&format!("magic {name}")) == Some(&"-")).then(|| path.to_string())
+    };
+    let [git, systemd_run, systemctl, setsid, stat, env, perl] = PROBED.map(program);
+    if stat.is_none() || env.is_none() || perl.is_none() || facts.get("scope") != Some(&"0") {
+        return None;
+    }
+    let version = admitted_version(facts.get("version")?)?.to_string();
+    let git_identity = git_identity(facts.get("gitfs")?, facts.get("gitfile")?).ok()?;
+    // gaps.md W1: the context identity binds with the Git facts, or nothing binds.
+    if facts.get("selstat") != Some(&"ok") {
+        return None;
+    }
+    let identity = classify(guid, facts.get("selino")?, facts.get("selfs")?).ok()?;
+    Some(Bound {
+        installation: Installation {
+            distro: distro.to_string(),
+            guid: guid.to_string(),
+            git: git?,
+            systemd_run: systemd_run?,
+            systemctl: systemctl?,
+            setsid: setsid?,
+        },
+        version,
+        git_identity,
+        identity,
+    })
+}
+
+// ---- WSL `fileFacts` (gaps.md W3) ----
+
+/// Contract §5 "File facts": 1 MiB per file and 8 MiB per request.
+const FACT_FILE_BYTES: usize = 1_048_576;
+const FACT_TOTAL_BYTES: usize = 8_388_608;
+/// A Linux link text has at most `PATH_MAX` − 1 bytes.
+const LINK_TARGET_BYTES: usize = 4_095;
+/// The stdout cap of one request: the data bytes, and 64 entries of a link text and their record tokens.
+pub const FACTS_OUTPUT_BYTES: usize = FACT_TOTAL_BYTES + 64 * (LINK_TARGET_BYTES + 64);
+/// The `error` codes of contract §6 "File facts".
+const FACT_ERRORS: [&str; 3] = ["access-denied", "io-error", "other-error"];
+
+/// One request entry: the root index (0 worktree root, 1 Git directory, 2 common directory) and the components.
+pub struct FactEntry {
+    pub root: usize,
+    pub path: Vec<String>,
+}
+
+/// The Perl probe through the wrapper in `probe` mode. The arguments are `digest` and the three Linux roots.
+/// Stdin holds each entry as its root index, its component count, and its components, each ended by NUL.
+pub fn file_facts_command(
+    installation: &Installation,
+    unit: &str,
+    digest: bool,
+    roots: &[String; 3],
+    entries: &[FactEntry],
+    base: &[(OsString, OsString)],
+) -> Command {
+    let mut input = Vec::new();
+    for entry in entries {
+        let head = [entry.root.to_string(), entry.path.len().to_string()];
+        for token in head.iter().chain(&entry.path) {
+            input.extend_from_slice(token.as_bytes());
+            input.push(0);
+        }
+    }
+    let mut arguments = strings(&[
+        "-e",
+        &texts().file_facts,
+        "--",
+        if digest { "1" } else { "0" },
+    ]);
+    arguments.extend(roots.iter().cloned());
+    wrapped(
+        installation,
+        Mode::Probe,
+        unit,
+        None,
+        PERL,
+        &arguments,
+        base,
+        Stdin::Bytes(input),
+    )
+}
+
+/// The record grammar: NUL-ended ASCII tokens, and `N` raw bytes after a length token.
+struct Records<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Records<'a> {
+    fn token(&mut self) -> Option<&'a str> {
+        let end = self.at + self.bytes[self.at..].iter().position(|&b| b == 0)?;
+        let token = std::str::from_utf8(&self.bytes[self.at..end]).ok()?;
+        self.at = end + 1;
+        (!token.is_empty() && token.bytes().all(|b| b.is_ascii_graphic())).then_some(token)
+    }
+
+    fn number<T: std::str::FromStr>(&mut self) -> Option<T> {
+        let text = self.token()?;
+        let digits = text.strip_prefix('-').unwrap_or(text);
+        (is_decimal(digits) && (digits == "0" || !digits.starts_with('0')) && text != "-0")
+            .then(|| text.parse().ok())
+            .flatten()
+    }
+
+    fn flag(&mut self) -> Option<bool> {
+        match self.token()? {
+            "1" => Some(true),
+            "0" => Some(false),
+            _ => None,
+        }
+    }
+
+    fn raw(&mut self, length: usize) -> Option<&'a [u8]> {
+        let end = self
+            .at
+            .checked_add(length)
+            .filter(|&end| end <= self.bytes.len())?;
+        let raw = &self.bytes[self.at..end];
+        self.at = end;
+        Some(raw)
+    }
+}
+
+/// One fact of contract §6 "File facts" from one record. `total` counts the digested bytes of the request.
+fn fact(
+    records: &mut Records,
+    components: usize,
+    digest: bool,
+    total: &mut usize,
+) -> Option<Value> {
+    Some(match records.token()? {
+        kind @ ("absent" | "other") => json!({ "kind": kind }),
+        "directory" => json!({ "kind": "directory", "executable": records.flag()? }),
+        "link" => {
+            let component: usize = records.number()?;
+            let length: usize = records.number()?;
+            if !(1..=components).contains(&component) || !(1..=LINK_TARGET_BYTES).contains(&length)
+            {
+                return None;
+            }
+            match std::str::from_utf8(records.raw(length)?) {
+                Ok(target) => json!({
+                    "kind": "link", "component": component, "tag": "symlink",
+                    "target": target, "relative": !target.starts_with('/'),
+                }),
+                Err(_) => json!({ "kind": "link", "component": component, "tag": "other" }),
+            }
+        }
+        "file" => {
+            let size: u64 = records.number().filter(|&size| size < (1 << 53))?;
+            // Perl `lstat` gives `st_mtime` in seconds only.
+            let modified: i64 = records.number()?;
+            let last_write = modified.checked_mul(1_000_000_000)?;
+            let (owner, executable) = (records.flag()?, records.flag()?);
+            let mut file = json!({
+                "kind": "file", "size": size, "lastWrite": last_write.to_string(),
+                "executable": executable, "ownerExecute": owner,
+            });
+            match (records.token()?, digest) {
+                ("none", false) => {}
+                (bound @ ("file-bytes" | "total-bytes"), true) => file["bound"] = json!(bound),
+                ("data", true) => {
+                    let length: usize = records.number().filter(|&n| n <= FACT_FILE_BYTES)?;
+                    *total = total
+                        .checked_add(length)
+                        .filter(|&n| n <= FACT_TOTAL_BYTES)?;
+                    file["digest"] = json!(crate::settings::hex(&crate::settings::sha256(
+                        records.raw(length)?
+                    )));
+                }
+                _ => return None,
+            }
+            file
+        }
+        "error" => {
+            let component: usize = records.number().filter(|&c| c <= components)?;
+            let code = records.token().filter(|code| FACT_ERRORS.contains(code))?;
+            json!({ "kind": "error", "component": component, "code": code })
+        }
+        _ => return None,
+    })
+}
+
+/// Maps the probe output to one fact per entry. A failed check, an exit status other than 0, or output past the cap
+/// gives each entry `error` with component 0 and code `other-error` (gaps.md W3). The shell never parses stderr.
+pub fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: bool) -> Vec<Value> {
+    let parsed = output
+        .filter(|out| out.exit_code == Some(0) && out.stdout.len() <= FACTS_OUTPUT_BYTES)
+        .and_then(|out| {
+            let mut records = Records {
+                bytes: &out.stdout,
+                at: 0,
+            };
+            let mut total = 0;
+            let facts: Option<Vec<Value>> = entries
+                .iter()
+                .map(|entry| fact(&mut records, entry.path.len(), digest, &mut total))
+                .collect();
+            facts.filter(|_| records.at == out.stdout.len())
+        });
+    parsed.unwrap_or_else(|| {
+        entries
+            .iter()
+            .map(|_| json!({ "kind": "error", "component": 0, "code": "other-error" }))
+            .collect()
     })
 }
 
@@ -619,6 +1056,10 @@ struct Answers {
 /// The anchor process of one WSL mutation. Its Job holds it, and its stdin stays open until `close`.
 /// `exchange` waits up to the probe deadline, so `close` and `last` do not take its lock.
 pub struct Anchor {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the handle stays open as long as the anchor")
+    )]
     process: OwnedHandle,
     stdin: Mutex<Option<File>>,
     /// Lets one exchange run at a time.
@@ -718,6 +1159,7 @@ impl Anchor {
         *lock(&self.stdin) = None;
     }
 
+    #[cfg(test)]
     pub fn running(&self) -> bool {
         // SAFETY: `process` keeps the handle open for the call.
         unsafe { WaitForSingleObject(HANDLE(self.process.as_raw_handle()), 0) != WAIT_OBJECT_0 }
@@ -781,6 +1223,7 @@ impl Mutation {
         }
     }
 
+    #[cfg(test)]
     pub fn anchor_running(&self) -> bool {
         self.anchor.as_ref().is_some_and(|anchor| anchor.running())
     }
@@ -794,16 +1237,17 @@ impl Mutation {
     }
 }
 
-// ---- The host of the product ----
+// ---- The hosts ----
 
-/// Runs each `wsl.exe` process in one operation Job and reads the registration keys.
+/// Test host: runs each `wsl.exe` process in one given Job and reads the registration keys.
+#[cfg(test)]
 pub struct JobHost<'a> {
     pub job: HANDLE,
     pub current_dir: &'a Path,
 }
 
-/// Reads at most `RETAINED_BYTES` and discards the rest until end-of-file, so the writer never blocks.
-fn retain(mut pipe: File) -> Arc<Mutex<Vec<u8>>> {
+/// Reads at most `cap` bytes and discards the rest until end-of-file, so the writer never blocks.
+fn retain(mut pipe: File, cap: usize) -> Arc<Mutex<Vec<u8>>> {
     let kept = Arc::new(Mutex::new(Vec::new()));
     let shared = Arc::clone(&kept);
     std::thread::spawn(move || {
@@ -813,46 +1257,142 @@ fn retain(mut pipe: File) -> Arc<Mutex<Vec<u8>>> {
                 break;
             }
             let mut kept = lock(&shared);
-            let room = RETAINED_BYTES.saturating_sub(kept.len());
+            let room = cap.saturating_sub(kept.len());
             kept.extend_from_slice(&buffer[..read.min(room)]);
         }
     });
     kept
 }
 
+#[cfg(test)]
 impl Host for JobHost<'_> {
     fn run(&self, command: &Command) -> Option<Output> {
-        let spawned = spawn(&command.spawn_request(self.current_dir), self.job).ok()?;
-        // SAFETY: `spawn` returned an open process handle that this call owns.
-        let process = unsafe { OwnedHandle::from_raw_handle(spawned.process.0) };
-        let handle = HANDLE(process.as_raw_handle());
-        let started = Instant::now();
-        let stdout = retain(spawned.stdout);
-        let _stderr = retain(spawned.stderr);
-        let wait_ms = u32::try_from(PROBE_DEADLINE.as_millis()).unwrap_or(u32::MAX - 1);
-        // SAFETY: `process` keeps the handle open for the call.
-        if unsafe { WaitForSingleObject(handle, wait_ms) } != WAIT_OBJECT_0 {
-            // The trap of the wrapper ends the scope when `wsl.exe` ends (contract §11 "Process launch").
-            // SAFETY: `process` keeps the handle open for the call.
-            let _ = unsafe { TerminateProcess(handle, 1) };
-            return None;
+        self.run_until(command, RETAINED_BYTES, PROBE_DEADLINE)
+            .output
+    }
+
+    fn run_until(&self, command: &Command, cap: usize, deadline: Duration) -> Ended {
+        match spawn(&command.spawn_request(self.current_dir), self.job) {
+            Ok(spawned) => collect(spawned, cap, deadline),
+            Err(_) => Ended {
+                output: None,
+                deadline: false,
+            },
         }
-        let mut code = 0u32;
-        // SAFETY: `process` keeps the handle open, and `code` is a live local.
-        unsafe { GetExitCodeProcess(handle, &mut code) }.ok()?;
-        // The pipe ends when `wsl.exe` ends. The deadline bounds the wait for the last bytes.
-        while Arc::strong_count(&stdout) > 1 && started.elapsed() < PROBE_DEADLINE {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let stdout = lock(&stdout).clone();
-        Some(Output {
-            exit_code: Some(code),
-            stdout,
-        })
     }
 
     fn keys(&self) -> Vec<Key> {
         read_keys()
+    }
+}
+
+/// Runs each `wsl.exe` process in the Job of one operation. The Job lock covers only the start.
+pub struct OperationHost {
+    pub jobs: Arc<Supervisor>,
+    pub operation_id: String,
+    pub current_dir: PathBuf,
+}
+
+impl Host for OperationHost {
+    fn run(&self, command: &Command) -> Option<Output> {
+        self.run_until(command, RETAINED_BYTES, PROBE_DEADLINE)
+            .output
+    }
+
+    fn run_until(&self, command: &Command, cap: usize, deadline: Duration) -> Ended {
+        let request = command.spawn_request(&self.current_dir);
+        match self
+            .jobs
+            .with_job(&self.operation_id, |job| spawn(&request, job))
+        {
+            Ok(Ok(spawned)) => collect(spawned, cap, deadline),
+            _ => Ended {
+                output: None,
+                deadline: false,
+            },
+        }
+    }
+
+    fn keys(&self) -> Vec<Key> {
+        read_keys()
+    }
+
+    fn start(&self, command: &Command) -> Result<Spawned, SpawnError> {
+        let request = command.spawn_request(&self.current_dir);
+        self.jobs
+            .with_job(&self.operation_id, |job| spawn(&request, job))
+            .unwrap_or(Err(SpawnError::OwnershipFailed))
+    }
+
+    fn anchor(&self, command: &Command) -> Result<(), SpawnError> {
+        self.jobs
+            .start_anchor(&self.operation_id, command, &self.current_dir)
+    }
+}
+
+/// Contract §6 `wslDistros`: the list results, the keys of the listed names, `wsl.exe`, and the saved Git of each listed GUID.
+/// A missing `wsl.exe` or a failed list call gives `WSL_UNAVAILABLE` with reason `wsl-missing` (contract §11 "Distro checks").
+pub fn distros_reply(reply: &mut Value, facts: Result<Distros, Reason>, saved: &[SavedWslGit]) {
+    let (Ok(facts), Some(program)) = (facts, wsl_program().to_str().map(str::to_string)) else {
+        reply["code"] = json!("WSL_UNAVAILABLE");
+        reply["reason"] = json!(Reason::WslMissing.as_str());
+        return;
+    };
+    let keys: Vec<Value> = facts
+        .keys
+        .iter()
+        .map(|key| json!({ "guid": key.guid, "name": key.name, "version": key.version }))
+        .collect();
+    let saved: Vec<Value> = saved
+        .iter()
+        .filter(|git| facts.keys.iter().any(|key| key.guid == git.guid))
+        .map(|git| json!({ "guid": git.guid, "distro": git.distro, "git": git.git, "version": git.version, "gitIdentity": git.identity }))
+        .collect();
+    reply["wslExecutable"] = json!(program);
+    reply["listed"] = json!(facts.listed);
+    reply["running"] = json!(facts.running);
+    reply["keys"] = json!(keys);
+    reply["saved"] = json!(saved);
+}
+
+/// Waits for one `wsl.exe` process within the probe deadline and keeps at most `cap` bytes of its stdout.
+fn collect(spawned: Spawned, cap: usize, deadline: Duration) -> Ended {
+    // SAFETY: `spawn` returned an open process handle that this call owns.
+    let process = unsafe { OwnedHandle::from_raw_handle(spawned.process.0) };
+    let handle = HANDLE(process.as_raw_handle());
+    let started = Instant::now();
+    let stdout = retain(spawned.stdout, cap);
+    let _stderr = retain(spawned.stderr, RETAINED_BYTES);
+    let wait_ms = u32::try_from(deadline.as_millis()).unwrap_or(u32::MAX - 1);
+    // SAFETY: `process` keeps the handle open for the call.
+    if unsafe { WaitForSingleObject(handle, wait_ms) } != WAIT_OBJECT_0 {
+        // The trap of the wrapper ends the scope when `wsl.exe` ends (contract §11 "Process launch").
+        // SAFETY: `process` keeps the handle open for the call.
+        let _ = unsafe { TerminateProcess(handle, 1) };
+        return Ended {
+            output: None,
+            deadline: true,
+        };
+    }
+    let mut code = 0u32;
+    // SAFETY: `process` keeps the handle open, and `code` is a live local.
+    if unsafe { GetExitCodeProcess(handle, &mut code) }.is_err() {
+        return Ended {
+            output: None,
+            deadline: false,
+        };
+    }
+    // The pipe ends when `wsl.exe` ends. The probe deadline bounds the wait for the last bytes.
+    while Arc::strong_count(&stdout) > 1 && started.elapsed() < deadline + PROBE_DEADLINE {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let stdout = lock(&stdout).clone();
+    Ended {
+        output: Some(Output {
+            exit_code: Some(code),
+            stdout,
+        }),
+        deadline: false,
     }
 }
 
@@ -893,9 +1433,14 @@ fn read_keys() -> Vec<Key> {
         if status != ERROR_SUCCESS {
             break;
         }
-        let Ok(guid) = String::from_utf16(&name[..length as usize]) else {
+        // Registry key names ignore letter case, so folding `A` to `F` is exact. Another name form is no distro key (gaps.md W2).
+        let Ok(key) = String::from_utf16(&name[..length as usize]) else {
             continue;
         };
+        let guid = key.to_ascii_lowercase();
+        if !is_guid(&guid) {
+            continue;
+        }
         if let (Some(name), Some(version)) = (string_value(lxss, &guid), version_value(lxss, &guid))
         {
             keys.push(Key {
@@ -981,7 +1526,6 @@ mod tests {
     use serde_json::{Value, json};
     use windows::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
 
-    use crate::bootstrap::Identity;
     use crate::jobs::tests::{Fixture, eventually, start_child, test_exe, wait_file};
     use crate::jobs::{Job, Supervisor};
     use crate::spawn::{Input, creation_flags};
@@ -1093,7 +1637,7 @@ mod tests {
         vec![
             list_command(false, &base()),
             list_command(true, &base()),
-            probe_command("Ubuntu-24.04", &base()),
+            probe_command("Ubuntu-24.04", "/home/user/r a$b", &base()),
             git_command(
                 &inst,
                 Mode::Read,
@@ -1434,20 +1978,6 @@ mod tests {
     }
 
     #[test]
-    fn a_request_with_another_distro_or_git_path_is_refused() {
-        let inst = installation();
-        assert_eq!(pinned(&inst, "Ubuntu-24.04", "/usr/local/bin/git"), Ok(()));
-        for (distro, git) in [
-            ("Ubuntu", "/usr/local/bin/git"),
-            ("ubuntu-24.04", "/usr/local/bin/git"),
-            ("Ubuntu-24.04", "/usr/bin/git"),
-            ("Ubuntu-24.04", "/usr/local/bin/git/"),
-        ] {
-            assert_eq!(pinned(&inst, distro, git), Err("INVALID_REQUEST"));
-        }
-    }
-
-    #[test]
     fn each_wrapper_process_closes_stdin_after_its_input_and_the_anchor_keeps_it_open() {
         let inst = installation();
         let arguments = strings(&["--no-lazy-fetch", "status"]);
@@ -1487,7 +2017,7 @@ mod tests {
             anchor.spawn_request(&directory).input,
             Input::Stream
         ));
-        let probe = probe_command("Ubuntu-24.04", &base());
+        let probe = probe_command("Ubuntu-24.04", "/home/user/r a$b", &base());
         assert!(matches!(
             probe.spawn_request(&directory).input,
             Input::Closed
@@ -1531,8 +2061,8 @@ mod tests {
             );
             let host = FakeHost::new(Vec::new(), Vec::new());
             assert_eq!(
-                identity(&host, &inst, operation, 1, "/r", &base()).err(),
-                Some(Refusal::Invalid),
+                identities(&host, &inst, operation, 1, &strings(&["/r"]), &base()),
+                vec![Err(Refusal::Invalid)],
                 "{operation:?}"
             );
             assert!(host.commands.borrow().is_empty());
@@ -1751,11 +2281,12 @@ mod tests {
 
     // ---- T211: the anchor in the operation Job ----
 
-    fn wsl_tag() -> Identity {
-        Identity {
-            volume_serial: 0x5753_4c00_0000_0211,
-            file_id: [0x21; 16],
-        }
+    fn wsl_tag() -> crate::bootstrap::PhysicalIdentity {
+        crate::bootstrap::PhysicalIdentity::Wsl(WslIdentity {
+            guid: GUID.to_string(),
+            file_system_id: "fedc9aa3bd65bc57".to_string(),
+            inode: "2".to_string(),
+        })
     }
 
     /// A WSL mutation Job with its anchor and three injected Git processes.
@@ -1934,56 +2465,47 @@ mod tests {
         );
     }
 
-    // ---- T205: identity requests ----
+    // ---- Identity requests (gaps.md W2 and W4) ----
 
     #[test]
-    fn the_identity_request_runs_the_two_stat_probes_and_returns_no_device_number() {
+    fn the_identity_request_runs_one_probe_for_all_paths_and_returns_no_device_number() {
         let host = FakeHost::new(
-            vec![output(0, "123456\n"), output(0, "ef53:fedc9aa3bd65bc57\n")],
+            vec![output(
+                0,
+                "id 123456 ef53:fedc9aa3bd65bc57\nabsent\nfail\nid 7 1021997:abc\n",
+            )],
             Vec::new(),
         );
         let inst = installation();
-        let found =
-            identity(&host, &inst, OPERATION, 7, "/home/user/r a$b", &base()).expect("identity");
+        let paths = strings(&["/home/user/r a$b", "/gone", "/denied", "/mnt/c/r"]);
+        let found = identities(&host, &inst, OPERATION, 7, &paths, &base());
         assert_eq!(
-            found.reply(),
-            json!({
-                "distroGuid": GUID,
-                "fileSystemId": "fedc9aa3bd65bc57",
-                "inode": "123456",
-                "fileSystemType": "ef53",
-            })
+            found[0].as_ref().expect("identity").reply(),
+            json!({ "distroGuid": GUID, "fileSystemId": "fedc9aa3bd65bc57", "inode": "123456" })
+        );
+        assert_eq!(
+            found[1..].to_vec(),
+            vec![
+                Err(Refusal::Absent),
+                Err(Refusal::Failed),
+                Err(Refusal::MixedLocation)
+            ]
         );
         let commands = host.commands.borrow();
-        let expected = |unit: u32, stat: &[&str]| {
-            wrapped(
-                &inst,
-                Mode::Probe,
-                &unit_name(OPERATION, unit).expect("unit"),
-                None,
-                "/usr/bin/stat",
-                &strings(stat),
-                &base(),
-                Stdin::Closed,
-            )
-            .arguments
-        };
-        assert_eq!(
-            commands[0].arguments,
-            expected(7, &["--dereference", "--format=%i", "/home/user/r a$b"])
+        assert_eq!(commands.len(), 1, "one wsl.exe start for the request");
+        let mut arguments = strings(&["-c", &json_text("identity"), "sh", STAT, PERL]);
+        arguments.extend(paths.iter().cloned());
+        let expected = wrapped(
+            &inst,
+            Mode::Probe,
+            &unit_name(OPERATION, 7).expect("unit"),
+            None,
+            "/bin/sh",
+            &arguments,
+            &base(),
+            Stdin::Closed,
         );
-        assert_eq!(
-            commands[1].arguments,
-            expected(
-                8,
-                &[
-                    "--dereference",
-                    "--file-system",
-                    "--format=%t:%i",
-                    "/home/user/r a$b"
-                ]
-            )
-        );
+        assert_eq!(commands[0].arguments, expected.arguments);
         assert!(
             commands
                 .iter()
@@ -1993,39 +2515,45 @@ mod tests {
     }
 
     #[test]
-    fn only_type_ef53_with_a_nonzero_id_gives_an_identity() {
-        assert!(classify(GUID, b"2\n", b"ef53:fedc9aa3bd65bc57\n").is_ok());
-        assert!(classify(GUID, b"2\n", b"ef53:1\n").is_ok());
+    fn only_type_ef53_with_a_nonzero_id_in_the_canonical_form_gives_an_identity() {
+        assert!(classify(GUID, "2", "ef53:fedc9aa3bd65bc57").is_ok());
+        assert!(classify(GUID, "18446744073709551615", "ef53:1").is_ok());
         assert_eq!(
-            classify(GUID, b"2\n", b"1021997:100000000\n").err(),
+            classify(GUID, "2", "1021997:100000000").err(),
             Some(Refusal::MixedLocation)
         );
         for file_system in [
-            &b"1021994:abc\n"[..],
-            b"58465342:fd00\n",
-            b"9123683e:1\n",
-            b"ef53:0\n",
-            b"ef53:0000000000000000\n",
+            "1021994:abc",
+            "58465342:fd00",
+            "9123683e:1",
+            "ef53:0",
+            "ef53:0000000000000000",
         ] {
             assert_eq!(
-                classify(GUID, b"2\n", file_system).err(),
+                classify(GUID, "2", file_system).err(),
                 Some(Refusal::NoFsUuid),
-                "{}",
-                String::from_utf8_lossy(file_system)
+                "{file_system}"
             );
         }
-        for (inode, file_system) in [
-            (&b""[..], &b"ef53:1\n"[..]),
-            (b"x\n", b"ef53:1\n"),
-            (b"1 2\n", b"ef53:1\n"),
-            (b"2\n", b""),
-            (b"2\n", b"ef53\n"),
-            (b"2\n", b"ef53:xyz\n"),
-            (b"2\n", b"ef53:1\nextra\n"),
+        let upper = GUID.to_ascii_uppercase();
+        for (guid, inode, file_system) in [
+            (GUID, "", "ef53:1"),
+            (GUID, "x", "ef53:1"),
+            (GUID, "0", "ef53:1"),
+            (GUID, "018", "ef53:1"),
+            (GUID, "18446744073709551616", "ef53:1"),
+            (GUID, "2", ""),
+            (GUID, "2", "ef53"),
+            (GUID, "2", "ef53:xyz"),
+            (GUID, "2", "ef53:0fedc9aa3bd65bc57"),
+            (GUID, "2", "ef53:fedc9aa3bd65bc57a"),
+            (upper.as_str(), "2", "ef53:1"),
+            ("c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00", "2", "ef53:1"),
         ] {
             assert_eq!(
-                classify(GUID, inode, file_system).err(),
-                Some(Refusal::Failed)
+                classify(guid, inode, file_system).err(),
+                Some(Refusal::Failed),
+                "{guid} {inode} {file_system}"
             );
         }
         assert_eq!(
@@ -2037,26 +2565,40 @@ mod tests {
             json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "mixed-location" })
         );
         assert_eq!(
+            Refusal::Absent.reply(),
+            json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" })
+        );
+        assert_eq!(
             Refusal::Failed.reply(),
             json!({ "code": "UNSUPPORTED_REPOSITORY" })
         );
     }
 
     #[test]
-    fn a_failed_stat_probe_refuses_the_identity() {
+    fn a_failed_identity_probe_refuses_every_path() {
         let inst = installation();
+        let paths = strings(&["/r", "/s"]);
         for outputs in [
             vec![None],
-            vec![output(1, "2\n")],
-            vec![output(0, "2\n"), output(1, "ef53:1\n")],
-            vec![output(0, "2\n"), None],
+            vec![output(1, "id 2 ef53:1\nid 3 ef53:1\n")],
+            vec![output(0, "id 2 ef53:1\n")],
+            vec![output(0, "id 2 ef53:1\nid 3 ef53:1\nid 4 ef53:1\n")],
+            vec![output(0, "id 2 ef53:1\nid 3 ef53:1")],
         ] {
             let host = FakeHost::new(outputs, Vec::new());
             assert_eq!(
-                identity(&host, &inst, OPERATION, 1, "/r", &base()).err(),
-                Some(Refusal::Failed)
+                identities(&host, &inst, OPERATION, 1, &paths, &base()),
+                vec![Err(Refusal::Failed), Err(Refusal::Failed)]
             );
         }
+        // A malformed line fails only its own path.
+        let host = FakeHost::new(
+            vec![output(0, "id 2 ef53:1\nid 3 ef53:1 extra\n")],
+            Vec::new(),
+        );
+        let found = identities(&host, &inst, OPERATION, 1, &paths, &base());
+        assert!(found[0].is_ok());
+        assert_eq!(found[1], Err(Refusal::Failed));
     }
 
     #[test]
@@ -2081,18 +2623,205 @@ mod tests {
             );
             let host = FakeHost::new(Vec::new(), Vec::new());
             assert_eq!(
-                identity(&host, &inst, OPERATION, 1, directory, &base()).err(),
-                Some(Refusal::Invalid),
+                identities(&host, &inst, OPERATION, 1, &strings(&[directory]), &base()),
+                vec![Err(Refusal::Invalid)],
                 "{directory:?}"
             );
             assert!(
                 host.commands.borrow().is_empty(),
-                "no stat for {directory:?}"
+                "no probe for {directory:?}"
             );
         }
         assert_eq!(
             Refusal::Invalid.reply(),
             json!({ "code": "INVALID_REQUEST" })
+        );
+    }
+
+    // ---- The `fileFacts` probe (gaps.md W3) ----
+
+    fn entries(paths: &[(usize, &[&str])]) -> Vec<FactEntry> {
+        paths
+            .iter()
+            .map(|(root, path)| FactEntry {
+                root: *root,
+                path: strings(path),
+            })
+            .collect()
+    }
+
+    fn facts_output(bytes: &[u8]) -> Option<Output> {
+        Some(Output {
+            exit_code: Some(0),
+            stdout: bytes.to_vec(),
+        })
+    }
+
+    #[test]
+    fn the_file_facts_command_runs_perl_through_the_wrapper_with_the_entries_on_stdin() {
+        let inst = installation();
+        let roots = [
+            "/home/u/r".to_string(),
+            "/home/u/r/.git".to_string(),
+            "/home/u/r/.git".to_string(),
+        ];
+        let command = file_facts_command(
+            &inst,
+            "arbareto-x-3.scope",
+            true,
+            &roots,
+            &entries(&[(1, &["hooks", "pre-commit"]), (0, &["a b"])]),
+            &base(),
+        );
+        let mut arguments = strings(&["-e", &json_text("fileFacts"), "--", "1"]);
+        arguments.extend(roots.iter().cloned());
+        let expected = wrapped(
+            &inst,
+            Mode::Probe,
+            "arbareto-x-3.scope",
+            None,
+            PERL,
+            &arguments,
+            &base(),
+            Stdin::Closed,
+        );
+        assert_eq!(command.arguments, expected.arguments);
+        let Stdin::Bytes(input) = &command.stdin else {
+            panic!("stdin bytes");
+        };
+        assert_eq!(
+            input.as_slice(),
+            b"1\x002\x00hooks\x00pre-commit\x000\x001\x00a b\x00"
+        );
+    }
+
+    #[test]
+    fn each_record_maps_to_its_fact_and_the_shell_computes_each_digest() {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"absent\0other\0directory\x001\0");
+        out.extend_from_slice(b"link\x002\x009\0plain.txt");
+        out.extend_from_slice(b"link\x001\x002\0/x");
+        out.extend_from_slice(b"link\x001\x001\0\xff");
+        out.extend_from_slice(b"file\x006\x00-2\x001\x000\x00data\x006\0plain\n");
+        out.extend_from_slice(b"file\x002097152\x001751487822\x000\x000\x00file-bytes\0");
+        out.extend_from_slice(b"error\x000\x00access-denied\0");
+        let list = entries(&[
+            (0, &["a"]),
+            (0, &["b"]),
+            (0, &["c"]),
+            (0, &["d", "e"]),
+            (0, &["f"]),
+            (0, &["g"]),
+            (0, &["h"]),
+            (0, &["i"]),
+            (2, &["j"]),
+        ]);
+        let facts = file_facts_reply(facts_output(&out), &list, true);
+        assert_eq!(
+            facts,
+            vec![
+                json!({ "kind": "absent" }),
+                json!({ "kind": "other" }),
+                json!({ "kind": "directory", "executable": true }),
+                json!({ "kind": "link", "component": 2, "tag": "symlink", "target": "plain.txt", "relative": true }),
+                json!({ "kind": "link", "component": 1, "tag": "symlink", "target": "/x", "relative": false }),
+                json!({ "kind": "link", "component": 1, "tag": "other" }),
+                json!({ "kind": "file", "size": 6, "lastWrite": "-2000000000", "executable": false, "ownerExecute": true,
+                    "digest": crate::settings::hex(&crate::settings::sha256(b"plain\n")) }),
+                json!({ "kind": "file", "size": 2097152, "lastWrite": "1751487822000000000", "executable": false, "ownerExecute": false, "bound": "file-bytes" }),
+                json!({ "kind": "error", "component": 0, "code": "access-denied" }),
+            ]
+        );
+        let without = file_facts_reply(
+            facts_output(b"file\x006\x001\x000\x001\x00none\0"),
+            &entries(&[(0, &["a"])]),
+            false,
+        );
+        assert_eq!(
+            without,
+            vec![
+                json!({ "kind": "file", "size": 6, "lastWrite": "1000000000", "executable": true, "ownerExecute": false })
+            ]
+        );
+    }
+
+    #[test]
+    fn a_probe_output_that_breaks_a_check_gives_each_entry_other_error() {
+        let one = entries(&[(0, &["a"])]);
+        let failed = vec![json!({ "kind": "error", "component": 0, "code": "other-error" })];
+        let mut big = b"file\x001\x001\x000\x000\x00data\x001048577\0".to_vec();
+        big.resize(big.len() + 1_048_577, b'a');
+        let overflow = format!("file\x001\x00{}\x000\x000\x00none\0", i64::MAX);
+        for (output, digest) in [
+            (None, false),
+            (
+                Some(Output {
+                    exit_code: Some(3),
+                    stdout: b"absent\0".to_vec(),
+                }),
+                false,
+            ),
+            (
+                Some(Output {
+                    exit_code: Some(255),
+                    stdout: b"absent\0".to_vec(),
+                }),
+                false,
+            ),
+            (facts_output(b"absent\0absent\0"), false),
+            (facts_output(b"absent\0trailing"), false),
+            (facts_output(b"absent"), false),
+            (facts_output(b""), false),
+            (facts_output(b"link\x002\x001\0x"), false),
+            (facts_output(b"link\x001\x004096\0x"), false),
+            (facts_output(b"error\x002\x00io-error\0"), false),
+            (facts_output(b"error\x000\x00EACCES\0"), false),
+            (
+                facts_output(b"file\x001\x001\x000\x000\x00data\x001\0a"),
+                false,
+            ),
+            (facts_output(b"file\x001\x001\x000\x000\x00none\0"), true),
+            (facts_output(b"file\x001\x0001\x000\x000\x00none\0"), false),
+            (facts_output(b"directory\x002\0"), false),
+            (facts_output(overflow.as_bytes()), false),
+            (facts_output(&big), true),
+            // A link text has at least one byte.
+            (facts_output(b"link\x001\x000\0"), false),
+            // Output past the cap.
+            (facts_output(&vec![0; FACTS_OUTPUT_BYTES + 1]), false),
+        ] {
+            assert_eq!(file_facts_reply(output, &one, digest), failed);
+        }
+        // A data length above the file bound fails before it counts toward the total, so the sum cannot overflow.
+        let two = entries(&[(0, &["a"]), (0, &["b"])]);
+        let huge = format!(
+            "file\x001\x001\x000\x000\x00data\x001\0afile\x001\x001\x000\x000\x00data\x00{}\0",
+            usize::MAX
+        );
+        assert_eq!(
+            file_facts_reply(facts_output(huge.as_bytes()), &two, true),
+            vec![json!({ "kind": "error", "component": 0, "code": "other-error" }); 2]
+        );
+        // The data of one request stays within 8 MiB in request order.
+        let nine = entries(&[
+            (0, &["1"]),
+            (0, &["2"]),
+            (0, &["3"]),
+            (0, &["4"]),
+            (0, &["5"]),
+            (0, &["6"]),
+            (0, &["7"]),
+            (0, &["8"]),
+            (0, &["9"]),
+        ]);
+        let mut sum = Vec::new();
+        for _ in 0..9 {
+            sum.extend_from_slice(b"file\x001048576\x001\x000\x000\x00data\x001048576\0");
+            sum.resize(sum.len() + 1_048_576, 0);
+        }
+        assert_eq!(
+            file_facts_reply(facts_output(&sum), &nine, true),
+            vec![json!({ "kind": "error", "component": 0, "code": "other-error" }); 9]
         );
     }
 
@@ -2102,7 +2831,7 @@ mod tests {
     fn the_git_probe_runs_the_contract_text_without_the_wrapper() {
         let probe = json_text("probe");
         assert_eq!(
-            probe_command("Ubuntu-24.04", &base()).arguments,
+            probe_command("Ubuntu-24.04", "/home/user/r a$b", &base()).arguments,
             strings(&[
                 "--distribution",
                 "Ubuntu-24.04",
@@ -2112,17 +2841,20 @@ mod tests {
                 "/bin/sh",
                 "-c",
                 probe.as_str(),
-                "sh"
+                "sh",
+                "/home/user/r a$b"
             ])
         );
         for needle in [
             "export LC_ALL=C",
+            "sel=$1",
             "command -v",
             "readlink -f",
             "head -c 2",
             "--version",
             "/usr/bin/stat",
             "/usr/bin/env",
+            "/usr/bin/perl",
             "--dereference --file-system --format=%t:%i",
             "--dereference --format=%i:%s:%Y",
             "--user --scope",
@@ -2232,7 +2964,7 @@ mod tests {
         let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
         let out = reference
             .host()
-            .run(&probe_command(&reference.distro, &environment))
+            .run(&probe_command(&reference.distro, "/", &environment))
             .expect("probe ran");
         assert_eq!(out.exit_code, Some(0), "probe exit");
         let text = String::from_utf8(out.stdout).expect("UTF-8");
@@ -2267,6 +2999,191 @@ mod tests {
         })
     }
 
+    // ---- The `wslDistros` reply (contract §6 "Channel frames") ----
+
+    fn saved_git(guid: &str) -> SavedWslGit {
+        SavedWslGit {
+            guid: guid.to_string(),
+            distro: "Ubuntu-24.04".to_string(),
+            git: "/usr/bin/git".to_string(),
+            version: "2.55.0".to_string(),
+            identity: "fedc9aa3bd65bc57:43750:4066232:1751487822".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_wsl_distros_reply_holds_the_lists_the_keys_wsl_exe_and_only_the_saved_git_of_a_listed_guid()
+     {
+        let path = json!({ "type": "wslDistros", "callId": OPERATION, "path": r"\\wsl.localhost\Ubuntu-24.04\home\u\r" });
+        let facts = Distros {
+            listed: vec!["Ubuntu-24.04".to_string(), "Debian".to_string()],
+            running: vec!["Debian".to_string()],
+            keys: vec![Key {
+                guid: GUID.to_string(),
+                name: "Ubuntu-24.04".to_string(),
+                version: 2,
+            }],
+        };
+        let mut reply = path.clone();
+        distros_reply(
+            &mut reply,
+            Ok(facts),
+            &[saved_git(GUID), saved_git(OTHER_GUID)],
+        );
+        let mut expected = path.clone();
+        expected["wslExecutable"] = json!(wsl_program().to_str().expect("UTF-8"));
+        expected["listed"] = json!(["Ubuntu-24.04", "Debian"]);
+        expected["running"] = json!(["Debian"]);
+        expected["keys"] = json!([{ "guid": GUID, "name": "Ubuntu-24.04", "version": 2 }]);
+        expected["saved"] = json!([{ "guid": GUID, "distro": "Ubuntu-24.04", "git": "/usr/bin/git", "version": "2.55.0", "gitIdentity": "fedc9aa3bd65bc57:43750:4066232:1751487822" }]);
+        assert_eq!(reply, expected);
+        let mut refused = path.clone();
+        distros_reply(&mut refused, Err(Reason::WslMissing), &[saved_git(GUID)]);
+        let mut expected = path;
+        expected["code"] = json!("WSL_UNAVAILABLE");
+        expected["reason"] = json!("wsl-missing");
+        assert_eq!(refused, expected);
+    }
+
+    // ---- The Git probe parse (contract §11 "Git per distro") ----
+
+    /// The reference distro output of the `src/contracts/wsl-process.json` probe on 2026-10-06, with Git 2.55.0.
+    fn probe_output(change: &[(&str, Option<&str>)]) -> String {
+        let mut lines: Vec<(String, String)> = [
+            ("path git", "/usr/bin/git"),
+            ("magic git", "-"),
+            ("path systemd-run", "/usr/bin/systemd-run"),
+            ("magic systemd-run", "-"),
+            ("path systemctl", "/usr/bin/systemctl"),
+            ("magic systemctl", "-"),
+            ("path setsid", "/usr/bin/setsid"),
+            ("magic setsid", "-"),
+            ("path stat", "/usr/bin/stat"),
+            ("magic stat", "-"),
+            ("path env", "/usr/bin/env"),
+            ("magic env", "-"),
+            ("path perl", "/usr/bin/perl"),
+            ("magic perl", "-"),
+            ("pathenv", "/usr/local/bin:/usr/bin:/mnt/c/Windows/system32"),
+            ("osid", "ubuntu"),
+            ("version", "git version 2.55.0"),
+            ("gitfs", "ef53:fedc9aa3bd65bc57"),
+            ("gitfile", "43750:4066232:1751487822"),
+            ("selfs", "ef53:fedc9aa3bd65bc57"),
+            ("selino", "123456"),
+            ("selstat", "ok"),
+            ("scope", "0"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        for (key, value) in change {
+            match value {
+                Some(value) => match lines.iter_mut().find(|(k, _)| k == key) {
+                    Some(line) => line.1 = value.to_string(),
+                    None => lines.push((key.to_string(), value.to_string())),
+                },
+                None => lines.retain(|(k, _)| k != key),
+            }
+        }
+        lines.iter().map(|(k, v)| format!("{k} {v}\n")).collect()
+    }
+
+    fn bound(change: &[(&str, Option<&str>)]) -> Option<Bound> {
+        bind_probe("Ubuntu-24.04", GUID, probe_output(change).as_bytes())
+    }
+
+    #[test]
+    fn a_probe_that_passes_every_section_11_rule_binds_the_installation_version_and_git_identity() {
+        let bound = bound(&[]).expect("bound");
+        assert_eq!(
+            bound.installation,
+            Installation {
+                distro: "Ubuntu-24.04".to_string(),
+                guid: GUID.to_string(),
+                git: "/usr/bin/git".to_string(),
+                systemd_run: "/usr/bin/systemd-run".to_string(),
+                systemctl: "/usr/bin/systemctl".to_string(),
+                setsid: "/usr/bin/setsid".to_string(),
+            }
+        );
+        assert_eq!(bound.version, "2.55.0");
+        assert_eq!(
+            bound.git_identity,
+            GitIdentity {
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "43750".to_string(),
+                size: "4066232".to_string(),
+                modified: "1751487822".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_probe_parse_accepts_an_osid_line_in_any_os_release_form_and_without_one() {
+        for osid in [
+            Some("ubuntu"),
+            Some("\"ubuntu\""),
+            Some("debian"),
+            Some(""),
+            None,
+        ] {
+            assert!(bound(&[("osid", osid)]).is_some(), "{osid:?}");
+        }
+    }
+
+    #[test]
+    fn a_probe_that_fails_a_section_11_rule_binds_nothing() {
+        let refused: &[&[(&str, Option<&str>)]] = &[
+            &[("path git", None)],
+            &[("path setsid", None)],
+            &[("path stat", None)],
+            &[("path env", None)],
+            &[("path systemctl", None)],
+            &[("magic git", Some("MZ"))],
+            &[("magic setsid", Some("MZ"))],
+            &[("path git", Some("/mnt/c/Git/cmd/git.exe"))],
+            &[("path systemd-run", Some("relative/systemd-run"))],
+            &[("scope", Some("1"))],
+            &[("scope", None)],
+            &[("version", Some("git version 2.43.0"))],
+            &[("version", Some("git version 2.55.0.windows.1"))],
+            &[("version", Some("git version two"))],
+            &[("gitfs", Some("1021994:9a8b7c6d5e4f3021"))],
+            &[("gitfile", None)],
+            &[("unknown", Some("line"))],
+            &[("osid", Some("ubuntu\nversion git version 9.0.0"))],
+            // gaps.md W1: the context path lines.
+            &[("selfs", None)],
+            &[("selfs", Some("ef53"))],
+            &[("selfs", Some("EF53:fedc9aa3bd65bc57"))],
+            &[("selfs", Some("ef53:0fedc9aa3bd65bc57"))],
+            &[("selino", None)],
+            &[("selino", Some("0042"))],
+            &[("selino", Some("18446744073709551616"))],
+            &[("selstat", Some("error"))],
+            &[("selstat", Some("absent"))],
+            &[("selstat", None)],
+            // gaps.md W3: `/usr/bin/perl`.
+            &[("path perl", None)],
+            &[("magic perl", Some("MZ"))],
+            // A program is either absent or found, never both.
+            &[("absent", Some("perl"))],
+            &[("absent", Some("git"))],
+            &[("path setsid", None), ("absent", Some("setsid"))],
+        ];
+        for change in refused.iter().copied() {
+            assert!(bound(change).is_none(), "{change:?}");
+        }
+        // A repeated line binds nothing, so an embedded line end cannot replace a fact.
+        let doubled = format!("{}version git version 3.0.0\n", probe_output(&[]));
+        assert!(bind_probe("Ubuntu-24.04", GUID, doubled.as_bytes()).is_none());
+        // Strict UTF-8 (contract §11 "Distro checks").
+        let mut bytes = probe_output(&[]).into_bytes();
+        bytes.extend_from_slice(b"osid \xff\n");
+        assert!(bind_probe("Ubuntu-24.04", GUID, &bytes).is_none());
+    }
+
     #[test]
     fn the_real_list_calls_decode_as_utf8_and_each_listed_name_has_a_wsl2_key() {
         let Some(reference) = reference() else {
@@ -2297,11 +3214,18 @@ mod tests {
         };
         let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
         let operation = "0f0f0f0f-0000-4000-8000-0000000000bb";
-        match identity(&reference.host(), &inst, operation, 1, "/", &environment) {
+        let found = identities(
+            &reference.host(),
+            &inst,
+            operation,
+            1,
+            &strings(&["/"]),
+            &environment,
+        );
+        match found[0].clone() {
             Ok(found) => {
-                println!("OBSERVATION T205: identity of / {}", found.reply());
+                println!("OBSERVATION T212: identity of / {}", found.reply());
                 assert_eq!(found.inode, "2");
-                assert_eq!(found.file_system_type, "ef53");
             }
             Err(Refusal::NoFsUuid) => skip("wsl-fixture-fs-id"),
             Err(other) => panic!("identity refused: {other:?}"),

@@ -1,30 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import type { FileIdentity, ProcessContext } from "../contracts/channel";
+import type { ProcessContext } from "../contracts/channel";
 import type { RegistrationResult } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { REGISTERED_WORKSPACES } from "../contracts/limits";
 import { DISCOVERY_REMEDIES, discoverRepository, type DiscoveredRepository, type DiscoveryRefusal } from "./discovery";
 import type { GitInstallation } from "./git-installation";
 import { RunnerRefusal, type GitRunner } from "./git-runner";
-import { IDENTITY_REMEDY, requestIdentities, sameIdentity } from "./identity";
+import { IDENTITY_REMEDY, requestIdentities, requestWslIdentities, sameIdentity, type PhysicalIdentity } from "./identity";
+import type { WslGit } from "./wsl";
 
 // Data-model §2: one registered workspace of this service session.
 export interface Workspace extends DiscoveredRepository {
   repositoryId: string;
   gitInstallationId: string;
   // The identities of `worktreeRoot` and `gitDirectory`, in that order.
-  worktreeIdentity: [FileIdentity, FileIdentity];
-  commonIdentity: FileIdentity;
+  worktreeIdentity: [PhysicalIdentity, PhysicalIdentity];
+  commonIdentity: PhysicalIdentity;
   worktreeKey: string;
   generation: number;
+  // Contract §11: the WSL Git of a WSL workspace. Its paths above are the UNC identity paths.
+  wsl?: WslGit;
 }
 
 export interface RegistrationTarget {
   operationId: string;
   bootstrapId: string;
-  installation: GitInstallation;
+  installation: Pick<GitInstallation, "gitInstallationId" | "selectedPath">;
   signal: AbortSignal;
 }
 
@@ -57,8 +60,11 @@ const identityRefused: RegistrationOutcome = { ok: false, code: "UNSUPPORTED_REP
 const canceled: RegistrationOutcome = { ok: false, code: "CANCELED" };
 
 // Contract §3 "Worktree key": the SHA-256 of the 8 volume serial bytes and the 16 file ID bytes, in the hex order of the identity reply.
-export function worktreeKey(identity: FileIdentity): string {
-  return new Bun.CryptoHasher("sha256").update(Buffer.from(identity.volumeSerial + identity.fileId, "hex")).digest("hex");
+// A WSL worktree: the SHA-256 of the UTF-8 text `<distroGuid>:<fileSystemId>:<inode>`, each field as the identity reply holds it.
+export function worktreeKey(identity: PhysicalIdentity): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  if ("distroGuid" in identity) return hasher.update(`${identity.distroGuid}:${identity.fileSystemId}:${identity.inode}`).digest("hex");
+  return hasher.update(Buffer.from(identity.volumeSerial + identity.fileId, "hex")).digest("hex");
 }
 
 const registered = (w: Workspace): RegistrationOutcome => ({ ok: true, result: { repositoryId: w.repositoryId, generation: w.generation, worktreeKey: w.worktreeKey } });
@@ -81,9 +87,9 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
 
   // Contract §6 "Registration reuse and release". The caller holds `exclusive`.
   // A registered workspace matches only with the same worktree identity and the same `gitInstallationId`.
-  async function commit(target: RegistrationTarget, repository: DiscoveredRepository, identities: FileIdentity[]): Promise<RegistrationOutcome> {
+  async function commit(target: RegistrationTarget, repository: DiscoveredRepository, identities: PhysicalIdentity[], wsl?: WslGit): Promise<RegistrationOutcome> {
     if (target.signal.aborted) return canceled;
-    const [rootIdentity, gitIdentity, commonIdentity] = identities as [FileIdentity, FileIdentity, FileIdentity];
+    const [rootIdentity, gitIdentity, commonIdentity] = identities as [PhysicalIdentity, PhysicalIdentity, PhysicalIdentity];
     const all = [...workspaces.values()];
     const same = all.find(
       (w) => w.gitInstallationId === target.installation.gitInstallationId && sameIdentity(w.worktreeIdentity[0], rootIdentity) && sameIdentity(w.worktreeIdentity[1], gitIdentity),
@@ -117,6 +123,7 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
       commonIdentity,
       worktreeKey: worktreeKey(rootIdentity),
       generation: 0,
+      ...(wsl ? { wsl } : {}),
     };
     workspaces.set(repositoryId, workspace);
     onRegister?.(workspace);
@@ -144,6 +151,24 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
       }
       if (!identities.ok) return identityRefused;
       return exclusive(() => commit(target, discovered.repository, identities.identities));
+    },
+    // Contract §11: a WSL registration with the WSL Git of the route distro.
+    // gaps.md W1: the probe bound the selected folder identity, so the first request here is discovery.
+    async registerWsl(target: Omit<RegistrationTarget, "installation">, git: WslGit): Promise<RegistrationOutcome> {
+      const { operationId, bootstrapId, signal } = target;
+      const { gitInstallationId } = git;
+      const context: ProcessContext = { contextKind: "repositoryDiscovery", bootstrapId, gitInstallationId };
+      try {
+        const discovered = await discoverRepository(runner, { operationId, bootstrapId, gitInstallationId, gitSelectedPath: git.path, signal, wsl: { distro: git.distro } });
+        if (!discovered.ok) return refused(discovered.refusal);
+        const { worktreeRoot, gitDirectory, commonDirectory } = discovered.repository;
+        const found = await requestWslIdentities(runner, operationId, context, [worktreeRoot, gitDirectory, commonDirectory], git);
+        if (!found.ok) return found;
+        const installation = { gitInstallationId, selectedPath: git.path };
+        return exclusive(() => commit({ ...target, installation }, discovered.repository, found.identities, git));
+      } catch (error) {
+        return runnerRefused(error);
+      }
     },
     has: (repositoryId: string): boolean => workspaces.has(repositoryId),
     get: (repositoryId: string): Workspace | undefined => workspaces.get(repositoryId),

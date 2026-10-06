@@ -1,0 +1,5 @@
+{
+  "schema": "registration-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"version\",\"detectedVersion\":\"2.43.0\",\"minimumVersion\":\"2.55.0\",\"text\":\"Git 2.43.0 in Ubuntu-24.04 is older than 2.55.0. Install Git 2.55.0 or later in the distro. This command adds the official git-core PPA and installs its Git.\",\"command\":\"& 'C:\\\\Windows\\\\System32\\\\wsl.exe' --distribution 'Ubuntu-24.04' --user root --cd / --exec /bin/sh -c 'add-apt-repository -y ppa:git-core/ppa && apt-get update && apt-get install -y git'\"}"
+}

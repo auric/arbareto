@@ -8,23 +8,51 @@
       "pattern": "^[^\\u0000]*$"
     },
     "commonIdentity": {
-      "type": "object",
-      "properties": {
-        "volumeSerial": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{16}$"
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "volumeSerial": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            },
+            "fileId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            }
+          },
+          "required": [
+            "volumeSerial",
+            "fileId"
+          ],
+          "additionalProperties": false,
+          "title": "FileIdentity"
         },
-        "fileId": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{32}$"
+        {
+          "type": "object",
+          "properties": {
+            "distroGuid": {
+              "type": "string",
+              "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+            },
+            "fileSystemId": {
+              "type": "string",
+              "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
+            },
+            "inode": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,19}$"
+            }
+          },
+          "required": [
+            "distroGuid",
+            "fileSystemId",
+            "inode"
+          ],
+          "additionalProperties": false,
+          "title": "WslIdentity"
         }
-      },
-      "required": [
-        "volumeSerial",
-        "fileId"
-      ],
-      "additionalProperties": false,
-      "title": "FileIdentity"
+      ]
     },
     "worktreeRoot": {
       "type": "string",
@@ -41,23 +69,51 @@
       "maxItems": 2,
       "type": "array",
       "items": {
-        "type": "object",
-        "properties": {
-          "volumeSerial": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{16}$"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "volumeSerial": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              },
+              "fileId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              }
+            },
+            "required": [
+              "volumeSerial",
+              "fileId"
+            ],
+            "additionalProperties": false,
+            "title": "FileIdentity"
           },
-          "fileId": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{32}$"
+          {
+            "type": "object",
+            "properties": {
+              "distroGuid": {
+                "type": "string",
+                "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+              },
+              "fileSystemId": {
+                "type": "string",
+                "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
+              },
+              "inode": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]{0,19}$"
+              }
+            },
+            "required": [
+              "distroGuid",
+              "fileSystemId",
+              "inode"
+            ],
+            "additionalProperties": false,
+            "title": "WslIdentity"
           }
-        },
-        "required": [
-          "volumeSerial",
-          "fileId"
-        ],
-        "additionalProperties": false,
-        "title": "FileIdentity"
+        ]
       }
     },
     "configurationFingerprint": {

@@ -10,20 +10,25 @@ import {
   RegisteredLimits,
   RegisterGitCall,
   RegisterRepositoryCall,
+  RegisterWslCall,
   ReleaseCall,
   ResolveGitCall,
   StartedCall,
   TrustCall,
+  WslDistrosCall,
+  WslProbeCall,
   type FileFact,
   type FileIdentity,
   type IdentityReply,
   type MarkerFailure,
   type MutationStarted,
-  type RegisterRequest,
+  type RegisterRequest as RegisterRequestBase,
   type ResolveGitRequest,
   type TrustBound,
   type TrustRecord,
   type TrustRequest,
+  type WslDistrosResult,
+  type WslIdentity,
 } from "../contracts/channel";
 import {
   COMMIT_PROCESS_DEADLINE_MS,
@@ -41,7 +46,10 @@ import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operat
 import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
 
 export { isChannelPath } from "../contracts/operations";
-export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, RegisterRequest, ResolveGitRequest, TrustBound, TrustRecord, TrustRequest };
+export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, ResolveGitRequest, TrustBound, TrustRecord, TrustRequest, WslDistrosCall, WslDistrosResult, WslIdentity };
+
+// Contract §6 "Channel frames" `register`: the Git form, the repository form, or the WSL form (§11).
+export type RegisterRequest = RegisterRequestBase | RegisterWslCall;
 
 // Contract §7 environment policies. `mutation-trace2` exists only after a supporting T091 result.
 export type EnvironmentPolicy = "probe" | "read" | "mutation" | "network";
@@ -124,6 +132,21 @@ export interface GitRunner {
   trust(request: TrustRequest): Promise<TrustReply>;
 }
 
+// Contract §6 "Channel frames" `wslProbe`: the frame fields and the output collectors of the streamed probe.
+export interface WslProbeRun extends WslProbeCall {
+  stdout: Collector;
+  stderr: Collector;
+  signal: AbortSignal;
+}
+
+// Contract §11: the WSL frames. Only a Windows service sends them.
+export interface WslRunner {
+  // The context path, and for a WSL prefix also the distro facts.
+  wslDistros(call: WslDistrosCall): Promise<WslDistrosResult>;
+  // Streams and exits as `run`.
+  wslProbe(call: WslProbeRun): Promise<GitExit>;
+}
+
 export { REFUSED_CODES } from "../contracts/channel";
 export type RefusedCode = "INVALID_REQUEST" | "UNKNOWN_TARGET" | "GIT_CHANGED" | "PROCESS_OWNERSHIP_FAILED";
 
@@ -201,11 +224,22 @@ export function checkFileFacts(request: FileFactsRequest): void {
   if (!valid || !fits(ProcessRequest, { type: "fileFacts", callId: crypto.randomUUID(), ...request })) refuse("fileFacts");
 }
 
-// Returns true for a Git registration with `confirm: true`. Only that request can reply `declined` or `another`.
-export function checkRegister(request: RegisterRequest): boolean {
+// The replies that each register form permits. Only a Git registration with `confirm: true` can reply `another`.
+export function checkRegister(request: RegisterRequest): "approved" | "confirm" | "wsl" {
   const git = RegisterGitCall.safeParse(request);
-  if (git.success) return git.data.confirm;
-  return fits(RegisterRepositoryCall, request) ? false : refuse("register");
+  if (git.success) return git.data.confirm ? "confirm" : "approved";
+  if (fits(RegisterRepositoryCall, request)) return "approved";
+  return fits(RegisterWslCall, request) ? "wsl" : refuse("register");
+}
+
+export function checkWslDistros(call: WslDistrosCall): void {
+  if (!fits(WslDistrosCall, call)) refuse("wslDistros");
+}
+
+// The schema checks the frame fields. The collectors and the signal stay local.
+export function checkWslProbe(call: WslProbeRun): void {
+  const { stdout: _stdout, stderr: _stderr, signal: _signal, ...frame } = call;
+  if (!fits(WslProbeCall, frame)) refuse("wslProbe");
 }
 
 export function checkResolveGit(request: ResolveGitRequest): void {
@@ -274,11 +308,12 @@ export function createCollector(options: { maxBytes: number; maxRecords?: number
 // Contract §6 "Byte caps": one count of forwarded stderr bytes per operation. A `network` call counts only its own bytes.
 export function createDiagnosticCounter() {
   const totals = new Map<string, number>();
-  const reached = (call: GitCall) =>
+  type Counted = Pick<GitCall, "operationId" | "environmentPolicy" | "stderr">;
+  const reached = (call: Counted) =>
     (call.environmentPolicy === "network" ? call.stderr.bytes : (totals.get(call.operationId) ?? 0)) >= UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION;
   return {
     // Counts one forwarded stderr chunk after the collector took it. Returns true when the service must send `cancel`.
-    add(call: GitCall, bytes: number): boolean {
+    add(call: Counted, bytes: number): boolean {
       if (call.environmentPolicy !== "network") totals.set(call.operationId, (totals.get(call.operationId) ?? 0) + bytes);
       return reached(call);
     },

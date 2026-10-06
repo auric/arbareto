@@ -17,6 +17,7 @@ import {
   ResolveGitReply,
   RevokeReply,
   StartedReply as StartedReplySchema,
+  WslDistrosReply,
 } from "../contracts/channel";
 import { INLINE_PROCESS_INPUT_BYTES, NATIVE_CHUNK_BYTES, UNACKNOWLEDGED_INPUT_CHUNKS } from "../contracts/limits";
 import { isChannelPath, isIdentifier } from "../contracts/operations";
@@ -30,12 +31,17 @@ import {
   checkResolveGit,
   checkStarted,
   checkTrust,
+  checkWslDistros,
+  checkWslProbe,
   createDiagnosticCounter,
   RunnerRefusal,
   type FileFact,
   type FileFactsRequest,
+  type GitCall,
   type GitExit,
   type GitRunner,
+  type WslDistrosResult,
+  type WslRunner,
   type IdentityReply,
   type RegisterReply,
   type StartedReply,
@@ -73,12 +79,15 @@ function factFits(request: FileFactsRequest, fact: FileFact, components: number)
   return request.digest ? fact.digest !== undefined || fact.bound !== undefined : fact.digest === undefined && fact.bound === undefined;
 }
 
+// The fields of a streamed call that the reply handling reads.
+type Streamed = Pick<GitCall, "operationId" | "environmentPolicy" | "limits" | "stdout" | "stderr" | "signal" | "onActivity">;
+
 interface Pending {
   // Returns false for a reply that breaks its shape. The session then sends a `public` rejection (contract §6 "Errors").
   handle(kind: FrameKind, reply: Body): boolean;
 }
 
-export function createNativeRunner(writer: FrameWriter): GitRunner & { receive(frame: Frame): boolean } {
+export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner & { receive(frame: Frame): boolean } {
   const pending = new Map<string, Pending>();
   const diagnostics = createDiagnosticCounter();
 
@@ -114,114 +123,136 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & { receive(f
     });
   }
 
+  // A `run` or `wslProbe` request: `output` and `activity` replies, then one `exit` (contract §6 "Process replies").
+  function stream(call: Streamed, body: Body, streamed?: Uint8Array): Promise<GitExit> {
+    call.signal.throwIfAborted();
+    const callId = crypto.randomUUID();
+    let sentBytes = 0;
+    let unacknowledged = 0;
+    let canceled = false;
+    let broken = false;
+    const cancel = () => {
+      if (canceled) return;
+      canceled = true;
+      send("process", { type: "cancel", callId });
+    };
+    // Contract §6 "Streamed input": at most 8 chunks of one call wait for `inputWritten`.
+    const pump = () => {
+      while (streamed && !canceled && unacknowledged < UNACKNOWLEDGED_INPUT_CHUNKS && sentBytes < streamed.length) {
+        const chunk = streamed.subarray(sentBytes, sentBytes + NATIVE_CHUNK_BYTES);
+        send("process", { type: "input", callId, data: chunk.toBase64() });
+        sentBytes += chunk.length;
+        unacknowledged++;
+      }
+    };
+
+    return new Promise<GitExit>((resolve, reject) => {
+      const finish = (outcome: GitExit | Error) => {
+        pending.delete(callId);
+        call.signal.removeEventListener("abort", cancel);
+        if (outcome instanceof Error) reject(outcome);
+        else resolve(outcome);
+      };
+      // Contract §6 "Errors": the service sends `cancel`, ignores later output, and fails the call at the `exit`.
+      const malformed = () => {
+        broken = true;
+        cancel();
+        return false;
+      };
+      pending.set(callId, {
+        handle(kind, reply) {
+          if (kind !== "process") return malformed();
+          if (reply.type === "exit") {
+            const exit = ExitReply.safeParse(reply);
+            if (!exit.success) {
+              finish(ownershipFailed());
+              return false;
+            }
+            if (broken) {
+              finish(ownershipFailed());
+              return true;
+            }
+            const { exitCode, activeDescendants, deadline } = exit.data;
+            finish({ exitCode, activeDescendants, ...(deadline ? { deadline } : {}), ...(diagnostics.reached(call) ? { diagnosticLimit: true } : {}) });
+            return true;
+          }
+          const refused = Refused.safeParse(reply);
+          if (refused.success) {
+            finish(broken ? ownershipFailed() : new RunnerRefusal(refused.data.code));
+            return true;
+          }
+          if (broken) return true;
+          const output = OutputReply.safeParse(reply);
+          if (output.success) {
+            const bytes = decodeChunk(output.data.data);
+            if (!bytes) return malformed();
+            if (output.data.stream === "stdout") {
+              call.stdout.push(bytes);
+              // Contract §6 "Byte caps": a stream above its result bound gets `cancel`.
+              if (call.stdout.limited) cancel();
+            } else {
+              call.stderr.push(bytes);
+              if (diagnostics.add(call, bytes.length)) cancel();
+            }
+            return true;
+          }
+          // Only a call with `stallMs` gets `activity`.
+          const activity = ActivityReply.safeParse(reply);
+          if (activity.success && call.limits.stallMs !== undefined) {
+            call.onActivity?.(activity.data.state);
+            return true;
+          }
+          if (unacknowledged > 0 && InputWrittenReply.safeParse(reply).success) {
+            unacknowledged--;
+            pump();
+            return true;
+          }
+          return malformed();
+        },
+      });
+      call.signal.addEventListener("abort", cancel, { once: true });
+      try {
+        send("process", { ...body, callId });
+        pump();
+      } catch (error) {
+        finish(error as Error);
+      }
+    });
+  }
+
   return {
     async run(call) {
       checkCall(call);
-      call.signal.throwIfAborted();
-      const callId = crypto.randomUUID();
       const input = call.input?.length ? call.input : undefined;
       const streamed = input && input.length > INLINE_PROCESS_INPUT_BYTES ? input : undefined;
-      let sentBytes = 0;
-      let unacknowledged = 0;
-      let canceled = false;
-      let broken = false;
-      const cancel = () => {
-        if (canceled) return;
-        canceled = true;
-        send("process", { type: "cancel", callId });
+      const { context, operationId, environmentPolicy, transaction, limits } = call;
+      const body = {
+        type: "run",
+        operationId,
+        ...context,
+        arguments: [...call.arguments],
+        ...(streamed ? { inputBytes: streamed.length } : input ? { input: input.toBase64() } : {}),
+        environmentPolicy,
+        ...(transaction ? { transactionId: transaction.transactionId, indexFile: transaction.indexFile } : {}),
+        limits: { ...limits },
       };
-      // Contract §6 "Streamed input": at most 8 chunks of one call wait for `inputWritten`.
-      const pump = () => {
-        while (streamed && !canceled && unacknowledged < UNACKNOWLEDGED_INPUT_CHUNKS && sentBytes < streamed.length) {
-          const chunk = streamed.subarray(sentBytes, sentBytes + NATIVE_CHUNK_BYTES);
-          send("process", { type: "input", callId, data: chunk.toBase64() });
-          sentBytes += chunk.length;
-          unacknowledged++;
-        }
-      };
+      return stream(call, body, streamed);
+    },
 
-      return new Promise<GitExit>((resolve, reject) => {
-        const finish = (outcome: GitExit | Error) => {
-          pending.delete(callId);
-          call.signal.removeEventListener("abort", cancel);
-          if (outcome instanceof Error) reject(outcome);
-          else resolve(outcome);
-        };
-        // Contract §6 "Errors": the service sends `cancel`, ignores later output, and fails the call at the `exit`.
-        const malformed = () => {
-          broken = true;
-          cancel();
-          return false;
-        };
-        pending.set(callId, {
-          handle(kind, reply) {
-            if (kind !== "process") return malformed();
-            if (reply.type === "exit") {
-              const exit = ExitReply.safeParse(reply);
-              if (!exit.success) {
-                finish(ownershipFailed());
-                return false;
-              }
-              if (broken) {
-                finish(ownershipFailed());
-                return true;
-              }
-              const { exitCode, activeDescendants, deadline } = exit.data;
-              finish({ exitCode, activeDescendants, ...(deadline ? { deadline } : {}), ...(diagnostics.reached(call) ? { diagnosticLimit: true } : {}) });
-              return true;
-            }
-            const refused = Refused.safeParse(reply);
-            if (refused.success) {
-              finish(broken ? ownershipFailed() : new RunnerRefusal(refused.data.code));
-              return true;
-            }
-            if (broken) return true;
-            const output = OutputReply.safeParse(reply);
-            if (output.success) {
-              const bytes = decodeChunk(output.data.data);
-              if (!bytes) return malformed();
-              if (output.data.stream === "stdout") {
-                call.stdout.push(bytes);
-                // Contract §6 "Byte caps": a stream above its result bound gets `cancel`.
-                if (call.stdout.limited) cancel();
-              } else {
-                call.stderr.push(bytes);
-                if (diagnostics.add(call, bytes.length)) cancel();
-              }
-              return true;
-            }
-            // Only a call with `stallMs` gets `activity`.
-            const activity = ActivityReply.safeParse(reply);
-            if (activity.success && call.limits.stallMs !== undefined) {
-              call.onActivity?.(activity.data.state);
-              return true;
-            }
-            if (unacknowledged > 0 && InputWrittenReply.safeParse(reply).success) {
-              unacknowledged--;
-              pump();
-              return true;
-            }
-            return malformed();
-          },
-        });
-        call.signal.addEventListener("abort", cancel, { once: true });
-        const { context, operationId, environmentPolicy, transaction, limits } = call;
-        try {
-          send("process", {
-            type: "run",
-            callId,
-            operationId,
-            ...context,
-            arguments: [...call.arguments],
-            ...(streamed ? { inputBytes: streamed.length } : input ? { input: input.toBase64() } : {}),
-            environmentPolicy,
-            ...(transaction ? { transactionId: transaction.transactionId, indexFile: transaction.indexFile } : {}),
-            limits: { ...limits },
-          });
-          pump();
-        } catch (error) {
-          finish(error as Error);
-        }
+    // Contract §11 "Git per distro": the probe runs without arguments, so it has the `probe` policy and no streamed input.
+    async wslProbe(probe) {
+      checkWslProbe(probe);
+      const { operationId, bootstrapId, distro, limits, stdout, stderr, signal } = probe;
+      return stream({ operationId, environmentPolicy: "probe", limits, stdout, stderr, signal }, { type: "wslProbe", operationId, bootstrapId, distro, limits: { ...limits } });
+    },
+
+    async wslDistros(call) {
+      checkWslDistros(call);
+      return ask<WslDistrosResult>("process", { type: "wslDistros", ...call }, (r) => {
+        const reply = WslDistrosReply.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
       });
     },
 
@@ -250,15 +281,16 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & { receive(f
     },
 
     async register(request) {
-      const confirm = checkRegister(request);
+      const permits = checkRegister(request);
       return ask<RegisterReply>("process", { type: "register", ...request }, (r) => {
         const reply = RegisterReplySchema.safeParse(r);
         if (!reply.success) return undefined;
-        // Contract §6 "Process replies": only a Git registration with `confirm: true` gets another result.
+        // Contract §6 "Process replies": only a registration with `confirm: true` gets another result. Only the Git form gets `another`.
         const data = reply.data;
         if (data.result === "approved") return { result: "approved" };
-        if (!confirm) return undefined;
-        return "bootstrapId" in data ? { result: "another", bootstrapId: data.bootstrapId, executablePath: data.executablePath } : { result: "declined" };
+        if (permits === "approved") return undefined;
+        if ("bootstrapId" in data) return permits === "confirm" ? { result: "another", bootstrapId: data.bootstrapId, executablePath: data.executablePath } : undefined;
+        return { result: "declined" };
       });
     },
 

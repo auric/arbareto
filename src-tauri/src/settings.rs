@@ -27,9 +27,10 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 use windows::core::HSTRING;
 
-use crate::bootstrap::{Identity, read_identity};
+use crate::bootstrap::{Identity, PhysicalIdentity};
 use crate::process_requests::{VERSION_BYTES, is_identifier, path};
 use crate::schema;
+use crate::wsl::WslIdentity;
 
 // ---- Settings file (data-model §1) ----
 
@@ -59,10 +60,6 @@ pub struct SavedWslGit {
 }
 
 /// Use this Git replaces the entry of the same distro GUID.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "T212 wires the WSL register frame")
-)]
 pub fn remember_wsl_git(settings: &mut Settings, git: SavedWslGit) {
     settings.wsl_gits.retain(|saved| saved.guid != git.guid);
     settings.wsl_gits.push(git);
@@ -70,7 +67,7 @@ pub fn remember_wsl_git(settings: &mut Settings, git: SavedWslGit) {
 
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "T212 wires the WSL register frame")
+    expect(dead_code, reason = "wslDistros reads the saved WSL Gits as a list")
 )]
 pub fn saved_wsl_git<'a>(settings: &'a Settings, guid: &str) -> Option<&'a SavedWslGit> {
     settings.wsl_gits.iter().find(|saved| saved.guid == guid)
@@ -480,10 +477,15 @@ fn identity(value: &Value) -> Option<Identity> {
     })
 }
 
-/// The identity text `volumeSerial` then `fileId`, as the identity reply writes them, without a separator.
-fn identity_text(identity: &Identity) -> String {
-    format!("{:016x}{}", identity.volume_serial, hex(&identity.file_id))
+/// A Windows or a WSL identity reply (gaps.md W2).
+fn physical_identity(value: &Value) -> Option<PhysicalIdentity> {
+    identity(value)
+        .map(PhysicalIdentity::Windows)
+        .or_else(|| WslIdentity::parse(value).map(PhysicalIdentity::Wsl))
 }
+
+/// Reads the identity of a frame path. The product reads a WSL path through the identity probe of its registered repository.
+pub type IdentityReader<'a> = &'a dyn Fn(&Path) -> Option<PhysicalIdentity>;
 
 /// A UTC time in RFC 3339 form, as `src/contracts/channel.ts` `UtcTime` checks it. Returns the sort key.
 pub(crate) fn utc_time(text: &str) -> Option<(&str, u32)> {
@@ -582,7 +584,7 @@ pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// A random UUID-shaped version 4 identifier from the system RNG.
-fn random_id() -> io::Result<String> {
+pub(crate) fn random_id() -> io::Result<String> {
     let mut bytes = [0u8; 16];
     // SAFETY: `bytes` is a live local.
     let status = unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
@@ -628,7 +630,7 @@ pub struct Marker {
     pub started_at: String,
     pub worktree_root: PathBuf,
     pub common_directory: PathBuf,
-    pub common_identity: Identity,
+    pub common_identity: PhysicalIdentity,
 }
 
 impl Marker {
@@ -660,7 +662,7 @@ impl Marker {
                 .to_string(),
             worktree_root: channel_path(object.get("worktreeRoot")?)?,
             common_directory: channel_path(object.get("commonDirectory")?)?,
-            common_identity: identity(object.get("commonIdentity")?)?,
+            common_identity: physical_identity(object.get("commonIdentity")?)?,
         })
     }
 }
@@ -693,7 +695,7 @@ pub enum StartedReply {
     /// `identity` is the common-directory identity that named the mutex.
     Marker {
         marker_id: String,
-        identity: Identity,
+        identity: PhysicalIdentity,
     },
     Busy,
     /// `failure` is `disk-full`, `access-denied`, or `other`. `folder` is the `recovery` folder.
@@ -731,10 +733,10 @@ pub struct Scan {
 }
 
 /// The name `Local\Arbareto-mutation-<SHA-256 of the identity>` (contract §6 "Recovery markers").
-pub fn mutex_name(identity: &Identity) -> String {
+pub fn mutex_name(identity: &PhysicalIdentity) -> String {
     format!(
         "Local\\Arbareto-mutation-{}",
-        hex(&sha256(identity_text(identity).as_bytes()))
+        hex(&sha256(identity.text().as_bytes()))
     )
 }
 
@@ -890,12 +892,12 @@ impl Markers {
         }
     }
 
-    pub fn started(&self, request: &Started) -> StartedReply {
+    pub fn started_with(&self, request: &Started, read: IdentityReader) -> StartedReply {
         let failure = |failure| StartedReply::Failure {
             failure,
             folder: self.folder.clone(),
         };
-        let Ok(identity) = read_identity(request.common_directory) else {
+        let Some(identity) = read(request.common_directory) else {
             return failure("other");
         };
         match self.take(request.operation_id, mutex_name(&identity)) {
@@ -903,7 +905,7 @@ impl Markers {
             Taken::Busy => return StartedReply::Busy,
             Taken::Failed => return failure("other"),
         }
-        match self.write(request, identity) {
+        match self.write(request, identity.clone()) {
             Ok(marker_id) => StartedReply::Marker {
                 marker_id,
                 identity,
@@ -915,7 +917,7 @@ impl Markers {
         }
     }
 
-    fn write(&self, request: &Started, identity: Identity) -> io::Result<String> {
+    fn write(&self, request: &Started, identity: PhysicalIdentity) -> io::Result<String> {
         let marker = Marker {
             marker_id: random_id()?,
             kind: request.kind.to_string(),
@@ -1188,11 +1190,11 @@ struct Identities {
 }
 
 impl Identities {
-    fn read(request: &Confirm) -> Option<Identities> {
-        let common = read_identity(&request.common_directory).ok()?;
-        let root = read_identity(&request.worktree_root).ok()?;
-        let git_directory = read_identity(&request.git_directory).ok()?;
-        let key = [common, root, git_directory].map(|identity| identity_text(&identity));
+    fn read(request: &Confirm, read: IdentityReader) -> Option<Identities> {
+        let common = read(&request.common_directory)?;
+        let root = read(&request.worktree_root)?;
+        let git_directory = read(&request.git_directory)?;
+        let key = [&common, &root, &git_directory].map(PhysicalIdentity::text);
         Some(Identities {
             common: common.reply(),
             worktree: json!([root.reply(), git_directory.reply()]),
@@ -1266,11 +1268,16 @@ impl Trust {
     }
 
     /// Shows the confirmation through `accept`, then writes or deletes records.
-    pub fn confirm(&self, request: &Confirm, accept: impl FnOnce(&Confirm) -> bool) -> Confirmed {
+    pub fn confirm_with(
+        &self,
+        request: &Confirm,
+        read: IdentityReader,
+        accept: impl FnOnce(&Confirm) -> bool,
+    ) -> Confirmed {
         if !accept(request) {
             return Confirmed::Declined;
         }
-        let identities = Identities::read(request);
+        let identities = Identities::read(request, read);
         let mut state = lock(&self.state);
         if !request.persist {
             self.remove(&mut state, |record| {
@@ -1325,9 +1332,14 @@ impl Trust {
 
     /// Deletes the records of every worktree of the common directory.
     /// `close` closes the lingering Jobs with that identity tag and returns the ended process count.
-    pub fn revoke(&self, common_directory: &Path, close: impl FnOnce(&Identity) -> u32) -> u32 {
-        let identity = read_identity(common_directory).ok();
-        let common = identity.map(|identity| identity.reply());
+    pub fn revoke_with(
+        &self,
+        common_directory: &Path,
+        read: IdentityReader,
+        close: impl FnOnce(&PhysicalIdentity) -> u32,
+    ) -> u32 {
+        let identity = read(common_directory);
+        let common = identity.as_ref().map(PhysicalIdentity::reply);
         {
             let mut state = lock(&self.state);
             self.remove(&mut state, |record| {
@@ -1372,7 +1384,7 @@ mod tests {
     use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
     use windows::core::HSTRING;
 
-    use crate::bootstrap::read_identity;
+    use crate::bootstrap::{native_identity, read_identity};
     use crate::jobs::tests::{Fixture, Lines, Started as Child, WAIT, exits_within, test_exe};
     use crate::process_requests::is_identifier;
 
@@ -1992,7 +2004,9 @@ mod tests {
     }
 
     fn name_of(repository: &Repository) -> String {
-        mutex_name(&read_identity(&repository.common).expect("identity"))
+        mutex_name(&crate::bootstrap::PhysicalIdentity::Windows(
+            read_identity(&repository.common).expect("identity"),
+        ))
     }
 
     /// A marker file in the handshake form, written as another instance would leave it.
@@ -2021,6 +2035,10 @@ mod tests {
             volume_serial: 1,
             file_id: [3; 16],
         };
+        let (first, second) = (
+            crate::bootstrap::PhysicalIdentity::Windows(first),
+            crate::bootstrap::PhysicalIdentity::Windows(second),
+        );
         let name = mutex_name(&first);
         let hex = name
             .strip_prefix("Local\\Arbareto-mutation-")
@@ -2034,13 +2052,31 @@ mod tests {
         assert_ne!(mutex_name(&second), name, "another identity");
     }
 
+    /// gaps.md W2: the identity text and its SHA-256 match the contract vector of the service `worktreeKey`.
+    #[test]
+    fn the_wsl_identity_text_and_key_match_the_contract_vector() {
+        let identity = crate::bootstrap::PhysicalIdentity::Wsl(crate::wsl::WslIdentity {
+            guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}".to_string(),
+            file_system_id: "fedc9aa3bd65bc57".to_string(),
+            inode: "2".to_string(),
+        });
+        assert_eq!(
+            identity.text(),
+            "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}:fedc9aa3bd65bc57:2"
+        );
+        assert_eq!(
+            mutex_name(&identity),
+            "Local\\Arbareto-mutation-d35b7df970a300771b81b46358abc1283b4307e394398f6097f740d0b6c495f6"
+        );
+    }
+
     #[test]
     fn started_writes_one_marker_file_with_the_common_directory_identity() {
         let fixture = Fixture::new();
         let repository = repository(&fixture, "repo");
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
-        let id = marker_id(markers.started(&started(&repository, "op-1")));
+        let id = marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
         assert!(is_identifier(&id), "{id}");
         assert_eq!(entries(&recovery), [format!("{id}.json")]);
         let file: Value = serde_json::from_slice(
@@ -2083,7 +2119,7 @@ mod tests {
         let holder = start(&["mutex", &name_of(&repository), "hold"]);
         assert_eq!(holder.lines.wait("MUTEX", WAIT), "taken");
         assert_eq!(
-            markers.started(&started(&repository, "op-1")),
+            markers.started_with(&started(&repository, "op-1"), &native_identity),
             StartedReply::Busy
         );
         assert_eq!(entries(&recovery), Vec::<String>::new());
@@ -2100,7 +2136,7 @@ mod tests {
             exits_within(holder.handle(), WAIT),
             "the holder exits without a release"
         );
-        marker_id(markers.started(&started(&repository, "op-1")));
+        marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
     }
 
     #[test]
@@ -2110,12 +2146,14 @@ mod tests {
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
         let name = name_of(&repository);
-        let first = marker_id(markers.started(&started(&repository, "op-1")));
+        let first =
+            marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
         assert!(!mutex_is_free(&name), "started holds the mutex");
         markers.ended("op-1");
         assert!(mutex_is_free(&name), "ended releases the mutex");
         assert_eq!(entries(&recovery), [format!("{first}.json")]);
-        let second = marker_id(markers.started(&started(&repository, "op-2")));
+        let second =
+            marker_id(markers.started_with(&started(&repository, "op-2"), &native_identity));
         assert_ne!(first, second);
         markers.ended("op-2");
     }
@@ -2146,7 +2184,9 @@ mod tests {
         assert_eq!(scan.markers[0].common_directory, repository.common);
         assert_eq!(
             scan.markers[0].common_identity,
-            read_identity(&repository.common).expect("identity")
+            crate::bootstrap::PhysicalIdentity::Windows(
+                read_identity(&repository.common).expect("identity")
+            )
         );
         assert!(
             std::fs::remove_file(&path).is_err(),
@@ -2160,7 +2200,7 @@ mod tests {
         let repository = repository(&fixture, "repo");
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
-        let id = marker_id(markers.started(&started(&repository, "op-1")));
+        let id = marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
         markers.ended("op-1");
         markers.resolved(&id);
         assert_eq!(entries(&recovery), Vec::<String>::new());
@@ -2290,7 +2330,7 @@ mod tests {
             for (os_error, failure) in cases {
                 markers.fail_next(stage, os_error);
                 assert_eq!(
-                    markers.started(&started(&repository, "op-1")),
+                    markers.started_with(&started(&repository, "op-1"), &native_identity),
                     StartedReply::Failure {
                         failure,
                         folder: recovery.clone()
@@ -2317,7 +2357,7 @@ mod tests {
             common: fixture.path("gone\\.git"),
         };
         assert_eq!(
-            markers.started(&started(&absent, "op-1")),
+            markers.started_with(&started(&absent, "op-1"), &native_identity),
             StartedReply::Failure {
                 failure: "other",
                 folder: recovery.clone()
@@ -2331,13 +2371,16 @@ mod tests {
         let fixture = Fixture::new();
         let repository = repository(&fixture, "repo");
         let markers = Markers::open(&fixture.path("recovery"));
-        let StartedReply::Marker { identity, .. } = markers.started(&started(&repository, "op-1"))
+        let StartedReply::Marker { identity, .. } =
+            markers.started_with(&started(&repository, "op-1"), &native_identity)
         else {
             panic!("expected a marker");
         };
         assert_eq!(
             identity,
-            read_identity(&repository.common).expect("identity")
+            crate::bootstrap::PhysicalIdentity::Windows(
+                read_identity(&repository.common).expect("identity")
+            )
         );
         assert_eq!(mutex_name(&identity), name_of(&repository));
         markers.ended("op-1");
@@ -2373,10 +2416,10 @@ mod tests {
         assert_eq!(
             StartedReply::Marker {
                 marker_id: "m-1".to_string(),
-                identity: Identity {
+                identity: crate::bootstrap::PhysicalIdentity::Windows(Identity {
                     volume_serial: 1,
                     file_id: [2; 16]
-                }
+                })
             }
             .reply(call),
             json!({ "type": "started", "callId": call, "markerId": "m-1" })
@@ -2401,7 +2444,7 @@ mod tests {
         let repository = repository(&fixture, "repo");
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
-        let id = marker_id(markers.started(&started(&repository, "op-1")));
+        let id = marker_id(markers.started_with(&started(&repository, "op-1"), &native_identity));
         markers.ended("op-1");
         assert!(!markers.dismiss(&id, |_| false), "declined");
         assert_eq!(entries(&recovery), [format!("{id}.json")]);
@@ -2464,7 +2507,7 @@ mod tests {
     }
 
     fn approved(trust: &Trust, request: &Confirm) -> Option<Value> {
-        match trust.confirm(request, |_| true) {
+        match trust.confirm_with(request, &native_identity, |_| true) {
             Confirmed::Approved { record } => record,
             Confirmed::Declined => panic!("an accepted confirmation approves"),
         }
@@ -2498,7 +2541,7 @@ mod tests {
         let trust = Trust::open(&folder);
         let request = confirm(&worktree, FINGERPRINT, true);
         let mut shown = None;
-        let reply = trust.confirm(&request, |shown_request| {
+        let reply = trust.confirm_with(&request, &native_identity, |shown_request| {
             shown = Some(shown_request.clone());
             true
         });
@@ -2557,7 +2600,11 @@ mod tests {
         let folder = fixture.path("trust");
         let trust = Trust::open(&folder);
         assert_eq!(
-            trust.confirm(&confirm(&worktree, FINGERPRINT, true), |_| false),
+            trust.confirm_with(
+                &confirm(&worktree, FINGERPRINT, true),
+                &native_identity,
+                |_| false
+            ),
             Confirmed::Declined
         );
         assert_eq!(trust.records(), Vec::<Value>::new());
@@ -2616,12 +2663,17 @@ mod tests {
             approved(&trust, &confirm(worktree, FINGERPRINT, true)).expect("stored");
         }
         let mut tag = None;
-        let ended = trust.revoke(&main.common, |identity| {
-            tag = Some(*identity);
+        let ended = trust.revoke_with(&main.common, &native_identity, |identity| {
+            tag = Some(identity.clone());
             3
         });
         assert_eq!(ended, 3, "the reply carries the count of the close by tag");
-        assert_eq!(tag, Some(read_identity(&main.common).expect("identity")));
+        assert_eq!(
+            tag,
+            Some(crate::bootstrap::PhysicalIdentity::Windows(
+                read_identity(&main.common).expect("identity")
+            ))
+        );
         assert_eq!(roots(&trust), [text(&other.root)]);
     }
 
@@ -2632,7 +2684,7 @@ mod tests {
         let trust = Trust::open(&fixture.path("trust"));
         approved(&trust, &confirm(&main, FINGERPRINT, true)).expect("stored");
         let mut closed = false;
-        let ended = trust.revoke(&fixture.path("gone\\.git"), |_| {
+        let ended = trust.revoke_with(&fixture.path("gone\\.git"), &native_identity, |_| {
             closed = true;
             5
         });
@@ -2653,7 +2705,7 @@ mod tests {
             git_directory: fixture.path("repo-b\\.git"),
             common: fixture.path("repo-b\\.git"),
         };
-        trust.revoke(&moved.common, |_| 0);
+        trust.revoke_with(&moved.common, &native_identity, |_| 0);
         assert_eq!(
             trust.records(),
             Vec::<Value>::new(),
@@ -2798,8 +2850,8 @@ mod tests {
         let second = repository(&fixture, "other");
         let recovery = fixture.path("recovery");
         let markers = Markers::open(&recovery);
-        let a = marker_id(markers.started(&started(&first, "op-1")));
-        let b = marker_id(markers.started(&started(&second, "op-2")));
+        let a = marker_id(markers.started_with(&started(&first, "op-1"), &native_identity));
+        let b = marker_id(markers.started_with(&started(&second, "op-2"), &native_identity));
         markers.service_exited();
         assert!(mutex_is_free(&name_of(&first)));
         assert!(mutex_is_free(&name_of(&second)));

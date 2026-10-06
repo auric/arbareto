@@ -209,18 +209,27 @@ export interface PolicyInput {
   git: Pick<GitInstallation, "gitInstallationId" | "executablePath" | "executableIdentity">;
 }
 
-export function policyFingerprint(input: PolicyInput): string {
+// The WSL Git of a WSL workspace: the contract §11 Git file identity and the version token. It has no digest.
+export type WslPolicyGit = { gitInstallationId: string; executablePath: string; wsl: { identity: string; version: string } };
+
+// The Git of a read: the policy fingerprint fields and the trust record path (contract §7 `gitSelectedPath`).
+// Null: a WSL Git path without a UNC form (contract §11 `wslIdentityPath`). No trust record can name it.
+export type ReadInstallation = (PolicyInput["git"] | WslPolicyGit) & { selectedPath: string | null };
+
+export function policyFingerprint(input: Omit<PolicyInput, "git"> & { git: PolicyInput["git"] | WslPolicyGit }): string {
   const { attributes, trust, configurationFingerprint, git } = input;
   if (!Fingerprint.safeParse(configurationFingerprint).success) throw new TypeError("configurationFingerprint");
   if (trust.trustId !== null && !Identifier.safeParse(trust.trustId).success) throw new TypeError("trustId");
-  const { file, versionOutput, digest } = git.executableIdentity;
-  return new Digest()
+  const hash = new Digest()
     .field("attributes", attributes)
     .field("trustState", trust.state)
     .field("trustId", trust.trustId)
     .field("configuration", configurationFingerprint)
     .field("gitInstallationId", git.gitInstallationId)
-    .field("executablePath", git.executablePath)
+    .field("executablePath", git.executablePath);
+  if ("wsl" in git) return hash.field("wslGitIdentity", git.wsl.identity).field("wslGitVersion", git.wsl.version).hex();
+  const { file, versionOutput, digest } = git.executableIdentity;
+  return hash
     .field("volumeSerial", "volumeSerial" in file ? file.volumeSerial : null)
     .field("fileId", "fileId" in file ? file.fileId : null)
     .field("identityCode", "code" in file ? file.code : null)

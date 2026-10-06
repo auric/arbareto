@@ -14,6 +14,7 @@ import {
   TrustRecord,
   TrustReply,
   TrustRequest,
+  WslRequest,
 } from "./channel";
 import {
   ApproveTrustResult,
@@ -64,6 +65,7 @@ export const EXPORTED = {
   "mutation-reply": MutationReply,
   "trust-request": TrustRequest,
   "trust-reply": TrustReply,
+  "wsl-request": WslRequest,
 } as const;
 
 const SUFFIX = ".schema.json";

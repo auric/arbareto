@@ -3,7 +3,7 @@
 
 // A test double of the shell end of `src/git-service/git-runner.ts`. It runs real Git through `Bun.spawn` argument arrays.
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
-// T206 adds the contract §11 WSL process requests. Their frame shapes are a proposal for T212 and the contract owner (see `WslDistrosReply`).
+// T206 adds the contract §11 WSL process requests. T212 takes their types from the zod frames of `src/contracts/channel.ts`.
 
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import policyFile from "../../src/contracts/git-environment.json";
 import wslProcess from "../../src/contracts/wsl-process.json";
 import { NATIVE_CHUNK_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { isIdentifier } from "../../src/contracts/operations";
+import type { IdentityReply as IdentityReplyFrame, RegisterWslCall, WslDistrosResult, WslSavedGit as WslSavedGitFrame } from "../../src/contracts/channel";
 import {
   checkCall,
   checkContext,
@@ -38,10 +39,12 @@ import {
   type ProcessContext,
   type RegisterReply,
   type TrustRecord,
+  type WslDistrosCall,
+  type WslProbeRun,
 } from "../../src/git-service/git-runner";
 import { printOrigin } from "../origin";
 import { isWindowsProgram } from "../../src/contracts/wsl-route";
-import { listDistros, parseProbe, registryKeys, WSL_EXE, wslExec, type RegistryKey } from "../wsl/wsl-host";
+import { FACTS_TEXT, factsInput, IDENTITY_TEXT, listDistros, parseFactRecords, registryKeys, WSL_EXE, wslExec, type FactEntry, type FactRecord } from "../wsl/wsl-host";
 import type { InboundPipe } from "./win32";
 
 // The host module of the double. The generic harness loads it only through this path (tests/git/portable-imports.test.ts).
@@ -102,46 +105,13 @@ export interface WslInstallation {
 }
 
 // The native settings record of one approved WSL Git (contract §11 "Git per distro").
-export interface WslSavedGit {
-  guid: string;
-  distro: string;
-  git: string;
-  version: string;
-  gitIdentity: string;
-}
+export type WslSavedGit = WslSavedGitFrame;
 
-// Proposed `wslDistros` reply: the two list calls, the registration keys of the listed names (contract §11 "Distro checks"),
-// and the saved Git of each listed GUID. A later probe with another Git identity gives `GIT_CHANGED`.
-// `path` is the native context path. The service holds only the bootstrap ID, so it routes this path (contract §11 "Route").
-export type WslDistrosReply = { path: string; listed: string[]; running: string[]; keys: RegistryKey[]; saved: WslSavedGit[] } | { code: "WSL_UNAVAILABLE"; reason: "wsl-missing" };
+// The facts that the shell parsed from one successful probe of a `repositoryDiscovery` context, with the context identity (gaps.md W1).
+type WslBound = WslInstallation & { version: string; gitIdentity: string; identity: WslIdentityReply };
 
-// Proposed `register` Git form for a WSL Git. The shell takes the distro, the Git path, the helper paths, the version, and the Git identity
-// from the probe facts that it bound to this `repositoryDiscovery` context at `wslProbe`. The service never names a Linux program.
-export interface WslRegisterRequest {
-  operationId: string;
-  bootstrapId: string;
-  gitInstallationId: string;
-  confirm: true;
-}
-
-// The facts that the shell parsed from one successful probe of a `repositoryDiscovery` context.
-type WslBound = WslInstallation & { version: string; gitIdentity: string };
-
-// Proposed WSL identity reply (contract §11 "Paths and file access"). It holds no device number.
-export type WslIdentityReply =
-  | { distroGuid: string; fileSystemId: string; inode: string; fileSystemType: string }
-  | { code: "UNSUPPORTED_REPOSITORY"; reason?: "no-fs-uuid" | "mixed-location" };
-
-// Proposed `wslProbe` request: the fixed Git probe text in the distro of a `repositoryDiscovery` context, without the wrapper.
-export interface WslProbeCall {
-  operationId: string;
-  bootstrapId: string;
-  distro: string;
-  limits: { deadlineMs: number };
-  stdout: GitCall["stdout"];
-  stderr: GitCall["stderr"];
-  signal: AbortSignal;
-}
+// A WSL identity reply (contract §11 "Paths and file access"). It holds no device number.
+export type WslIdentityReply = Exclude<IdentityReplyFrame, { volumeSerial: string }>;
 
 // A seam result that replaces the real probe. No process starts for it.
 export interface WslProbeSeam {
@@ -160,32 +130,116 @@ function wslParts(path: string): { distro: string; linux: string } | null {
 
 // Mirrors `RETAINED_BYTES` of `src-tauri/src/wsl.rs`: the shell parses at most 64 KiB of probe output.
 const WSL_PROBE_RETAINED_BYTES = 64 * 1024;
-const WSL_HELPERS = ["git", "systemd-run", "systemctl", "setsid"] as const;
+const WSL_PROBED = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl"];
+const WSL_PROBE_FACTS = ["pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat"];
+const WSL_FLOOR = [2n, 55n, 0n];
+// gaps.md W3 and W4: the fixed programs of the identity and `fileFacts` probes.
+const WSL_STAT = "/usr/bin/stat";
+const WSL_PERL = "/usr/bin/perl";
+const MAX_INODE = 0xffff_ffff_ffff_ffffn;
 
-// The shell parse of the contract §11 probe output. Output that fails a §11 rule binds nothing.
-function bindProbe(distro: string, text: string): WslBound | null {
-  const facts = parseProbe(text);
-  const paths = WSL_HELPERS.map((name) => {
-    const path = facts.paths[name];
-    return path?.startsWith("/") && !isWindowsProgram(path, facts.magic[name] === "MZ") ? path : undefined;
-  });
-  const [git, systemdRun, systemctl, setsid] = paths;
-  const fileSystem = /^ef53:([0-9a-f]+)$/.exec(facts.gitfs ?? "")?.[1];
-  const version = /^git version (\S+)$/.exec(facts.version ?? "")?.[1];
+// Mirrors `src-tauri/src/wsl.rs` `bind_probe`: strict UTF-8 lines, each line kind at most once, and every §11 rule. Output that fails a rule binds nothing.
+function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+  if (!text.endsWith("\n")) return null;
+  const facts = new Map<string, string>();
+  for (const line of text.slice(0, -1).split("\n")) {
+    const [kind = "", ...rest] = line.split(" ");
+    let key: string | undefined;
+    let value = rest.join(" ");
+    if (kind === "path" || kind === "magic") {
+      key = WSL_PROBED.includes(rest[0] ?? "") && rest.length > 1 ? `${kind} ${rest[0]}` : undefined;
+      value = rest.slice(1).join(" ");
+    } else if (kind === "absent") key = WSL_PROBED.includes(value) ? `absent ${value}` : undefined;
+    else if (WSL_PROBE_FACTS.includes(kind) && rest.length > 0) key = kind;
+    if (key === undefined || facts.has(key)) return null;
+    facts.set(key, value);
+  }
+  // The probe prints `absent` only for a program without `path` and `magic` lines.
+  if (WSL_PROBED.some((name) => facts.has(`absent ${name}`) && (facts.has(`path ${name}`) || facts.has(`magic ${name}`)))) return null;
+  const program = (name: string) => {
+    const path = facts.get(`path ${name}`);
+    return path?.startsWith("/") && facts.get(`magic ${name}`) === "-" && !isWindowsProgram(path, false) ? path : undefined;
+  };
+  const [git, systemdRun, systemctl, setsid, stat, env, perl] = WSL_PROBED.map(program);
+  // Contract §11 "Git per distro": the floor, and no `.windows.` version.
+  const version = /^git version ((\d+)\.(\d+)\.(\d+)\S*)$/.exec(facts.get("version") ?? "");
+  const parts = version?.slice(2, 5).map(BigInt) ?? [];
+  const differs = WSL_FLOOR.findIndex((min, i) => parts[i] !== min);
+  const floor = version !== null && !version[1]!.includes(".windows.") && (differs < 0 || parts[differs]! > WSL_FLOOR[differs]!);
+  const fileSystem = /^ef53:([0-9a-f]+)$/.exec(facts.get("gitfs") ?? "")?.[1];
+  const gitfile = facts.get("gitfile") ?? "";
   const guid = registryKeys().find((k) => k.name === distro && k.version === 2)?.guid;
-  if (!git || !systemdRun || !systemctl || !setsid || facts.scope !== "0" || !version || !guid) return null;
-  if (!fileSystem || /^0+$/.test(fileSystem) || !/^\d+:\d+:\d+$/.test(facts.gitfile ?? "")) return null;
-  return { distro, guid, git, systemdRun, systemctl, setsid, version, gitIdentity: `${fileSystem}:${facts.gitfile}` };
+  if (!git || !systemdRun || !systemctl || !setsid || !stat || !env || !perl || facts.get("scope") !== "0" || !floor || !guid) return null;
+  if (!fileSystem || /^0+$/.test(fileSystem) || !/^\d+:\d+:\d+$/.test(gitfile)) return null;
+  // gaps.md W1: the context identity binds with the Git facts, or nothing binds.
+  const identity = facts.get("selstat") === "ok" ? classifyIdentity(guid, facts.get("selino") ?? "", facts.get("selfs") ?? "") : null;
+  if (identity === null || "code" in identity) return null;
+  return { distro, guid, git, systemdRun, systemctl, setsid, version: version[1]!, gitIdentity: `${fileSystem}:${gitfile}`, identity };
 }
 
-// Mirrors `src-tauri/src/wsl.rs` `classify`.
+// Mirrors `src-tauri/src/wsl.rs` `classify`: only type `ef53` with a nonzero ID, in the canonical form of gaps.md W2.
 function classifyIdentity(guid: string, inode: string, fileSystem: string): WslIdentityReply {
-  const ino = /^(\d+)\n$/.exec(inode)?.[1];
-  const fs = /^([0-9a-f]+):([0-9a-f]+)\n$/.exec(fileSystem);
-  if (!ino || !fs) return { code: "UNSUPPORTED_REPOSITORY" };
+  const fs = /^([0-9a-f]+):([0-9a-f]+)$/.exec(fileSystem);
+  if (!fs) return { code: "UNSUPPORTED_REPOSITORY" };
   if (fs[1] === "1021997") return { code: "UNSUPPORTED_REPOSITORY", reason: "mixed-location" };
   if (fs[1] !== "ef53" || /^0+$/.test(fs[2]!)) return { code: "UNSUPPORTED_REPOSITORY", reason: "no-fs-uuid" };
-  return { distroGuid: guid, fileSystemId: fs[2]!, inode: ino, fileSystemType: fs[1]! };
+  if (!/^[1-9a-f][0-9a-f]{0,15}$/.test(fs[2]!) || !/^[1-9][0-9]{0,19}$/.test(inode) || BigInt(inode) > MAX_INODE) return { code: "UNSUPPORTED_REPOSITORY" };
+  return { distroGuid: guid, fileSystemId: fs[2]!, inode };
+}
+
+// gaps.md W4: one line per path of the identity probe. `id <inode> <type>:<ID>`, or the Perl `stat` result `absent` or `fail`.
+function identityLine(guid: string, line: string | undefined): WslIdentityReply {
+  if (line === "absent") return { code: "UNSUPPORTED_REPOSITORY", reason: "absent" };
+  const id = /^id (\S+) (\S+)$/.exec(line ?? "");
+  return id ? classifyIdentity(guid, id[1]!, id[2]!) : { code: "UNSUPPORTED_REPOSITORY" };
+}
+
+// Mirrors the `src-tauri/src/wsl.rs` record checks of gaps.md W3. A failed check gives every entry `error` 0 `other-error`.
+const FILE_BOUND = 1_048_576n;
+const TOTAL_BOUND = 8_388_608n;
+const LINK_BYTES = 4_095;
+function mapFacts(records: FactRecord[] | null, entries: readonly FactEntry[], digest: boolean): FileFact[] {
+  const failed: FileFact[] = entries.map(() => ({ kind: "error", component: 0, code: "other-error" }));
+  if (records === null || records.length !== entries.length) return failed;
+  let total = 0n;
+  const facts: FileFact[] = [];
+  for (const [i, record] of records.entries()) {
+    const length = entries[i]!.path.length;
+    if (record.kind === "absent" || record.kind === "other") facts.push({ kind: record.kind });
+    else if (record.kind === "directory") facts.push({ kind: "directory", executable: record.executable });
+    else if (record.kind === "error") {
+      if (record.component > length || !["access-denied", "io-error", "other-error"].includes(record.code)) return failed;
+      facts.push({ kind: "error", component: record.component, code: record.code as "access-denied" });
+    } else if (record.kind === "link") {
+      if (record.component < 1 || record.component > length || record.target.length < 1 || record.target.length > LINK_BYTES) return failed;
+      let target: string | null = null;
+      try {
+        target = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(record.target);
+      } catch {}
+      facts.push(target === null ? { kind: "link", component: record.component, tag: "other" } : { kind: "link", component: record.component, tag: "symlink", target, relative: !target.startsWith("/") });
+    } else {
+      const lastWrite = record.mtime * 1_000_000_000n;
+      if (record.size > BigInt(Number.MAX_SAFE_INTEGER) || BigInt.asIntN(64, lastWrite) !== lastWrite) return failed;
+      const base = { kind: "file" as const, size: Number(record.size), lastWrite: String(lastWrite), ownerExecute: record.ownerExecute, executable: record.executable };
+      if (record.content === "none") {
+        if (digest) return failed;
+        facts.push(base);
+      } else if (!digest) return failed;
+      else if (typeof record.content === "string") facts.push({ ...base, bound: record.content });
+      else {
+        total += BigInt(record.content.length);
+        if (BigInt(record.content.length) > FILE_BOUND || total > TOTAL_BOUND) return failed;
+        facts.push({ ...base, digest: new Bun.CryptoHasher("sha256").update(record.content).digest("hex") });
+      }
+    }
+  }
+  return facts;
 }
 
 interface WslAnchor {
@@ -267,7 +321,7 @@ export function createBunRunner(options: BunRunnerOptions) {
   const trustStore = options.trustStore ?? createTrustStore();
   const contexts = new Map<string, { kind: "gitProbe" | "repositoryDiscovery"; path: string; owner?: string; identity?: IdentityReply }>();
   const gits = new Map<string, string>();
-  const repositories = new Map<string, { worktreeRoot: string; gitDirectory: string; commonDirectory: string }>();
+  const repositories = new Map<string, { worktreeRoot: string; gitDirectory: string; commonDirectory: string; gitInstallationId: string }>();
   const issued = new Set<string>();
   const inactive = new Set<string>();
   const running = new Map<string, Set<Subprocess>>();
@@ -299,10 +353,11 @@ export function createBunRunner(options: BunRunnerOptions) {
     identities: new Map<string, IdentityReply>(),
     // File IDs by path, such as all zeros or all ones, that replace the `FileIdInfo` result.
     fileIds: new Map<string, Uint8Array>(),
-    // WSL seams (T207, T209): a probe result, a running list, `stat` probe outputs by UNC path, and the WSL Git confirmation result.
+    // WSL seams (T207, T209): a probe result, a running list, identity probe results by UNC path, and the WSL Git confirmation result.
+    // A `wslStat` entry is the `stat %i` and `stat -f %t:%i` texts of the identity probe, or the Perl `stat` result `absent` (gaps.md W4).
     wslProbe: null as WslProbeSeam | null,
     wslRunning: null as string[] | null,
-    wslStat: new Map<string, { inode: string; fileSystem: string }>(),
+    wslStat: new Map<string, { inode: string; fileSystem: string } | "absent">(),
     wslConfirm: "approved" as "approved" | "declined",
     // A test-injected deadline. A shorter value than the request limit ends the process as the shell deadline does.
     deadlineMs: null as number | null,
@@ -328,7 +383,7 @@ export function createBunRunner(options: BunRunnerOptions) {
   let spawned = 0;
   let disposed = false;
 
-  const identityOf = (path: string): IdentityReply => inject.identities.get(path) ?? readIdentity(path, inject.fileIds.get(path));
+  const identityOfWindows = (path: string): IdentityReply => inject.identities.get(path) ?? readIdentity(path, inject.fileIds.get(path));
 
   function scan(operationId?: string): void {
     for (const name of readdirSync(recordsDirectory)) {
@@ -361,7 +416,10 @@ export function createBunRunner(options: BunRunnerOptions) {
       const program = gits.get(context.gitInstallationId);
       const repository = repositories.get(context.repositoryId);
       if (!program || !repository) throw unknownTarget();
-      return { program, cwd: repository.worktreeRoot, wsl: wslGits.get(context.gitInstallationId) };
+      const wsl = wslGits.get(context.gitInstallationId);
+      // Contract §11: a WSL repository never runs Git for Windows.
+      if (!wsl && wslParts(repository.worktreeRoot) !== null) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
+      return { program, cwd: repository.worktreeRoot, wsl };
     }
     const bound = contexts.get(context.bootstrapId);
     if (!bound || bound.kind !== context.contextKind || (bound.owner ?? operationId) !== operationId) throw unknownTarget();
@@ -369,7 +427,11 @@ export function createBunRunner(options: BunRunnerOptions) {
     if (context.contextKind === "gitProbe") return { program: bound.path, cwd: launchDirectory };
     const program = gits.get(context.gitInstallationId);
     if (!program) throw unknownTarget();
-    return { program, cwd: bound.path, wsl: wslGits.get(context.gitInstallationId) };
+    // gaps.md W1: a WSL context runs only the WSL Git of its bound distro, and a Windows context only a Windows Git.
+    const wsl = wslGits.get(context.gitInstallationId);
+    const parts = wslParts(bound.path);
+    if ((parts === null) !== (wsl === undefined) || (wsl && wslBound.get(context.bootstrapId)?.guid !== wsl.guid)) throw new RunnerRefusal("INVALID_REQUEST", "WSL context");
+    return { program, cwd: bound.path, wsl };
   }
 
   // Contract §11 "Process launch". Only the fixture isolation of `wslGlobalConfig` reaches Linux.
@@ -440,21 +502,41 @@ export function createBunRunner(options: BunRunnerOptions) {
     return anchor;
   }
 
-  // Contract §11 "Paths and file access": the two `stat` probes through the wrapper in `probe` mode.
-  async function wslIdentity(operationId: string, inst: WslInstallation, path: string): Promise<WslIdentityReply> {
-    const parts = wslParts(path);
-    let reply: WslIdentityReply = { code: "UNSUPPORTED_REPOSITORY" };
-    const injected = inject.wslStat.get(path);
-    if (injected) reply = classifyIdentity(inst.guid, injected.inode, injected.fileSystem);
-    else if (parts && parts.distro.toLowerCase() === inst.distro.toLowerCase()) {
-      const stat = (args: string[]) => {
-        const result = wslExec(wslWrapped(inst, operationId, "probe", "", "/usr/bin/stat", [...args, parts.linux]), { env: wslEnvironment() });
-        return result.exitCode === 0 ? result.stdout : "";
-      };
-      reply = classifyIdentity(inst.guid, stat(["--dereference", "--format=%i"]), stat(["--dereference", "--file-system", "--format=%t:%i"]));
+  // gaps.md W4: one identity probe per request through the wrapper in `probe` mode, with one output line per path.
+  // An injected path takes its seam result. A path outside the distro of the installation gets the refusal alone.
+  function wslIdentities(operationId: string, inst: WslInstallation, paths: readonly string[]): WslIdentityReply[] {
+    const linux = paths.map((path) => {
+      const parts = wslParts(path);
+      return !inject.wslStat.has(path) && parts && parts.distro.toLowerCase() === inst.distro.toLowerCase() ? parts.linux : null;
+    });
+    const probed = linux.filter((p): p is string => p !== null);
+    let lines: string[] = [];
+    if (probed.length > 0) {
+      const result = wslExec(wslWrapped(inst, operationId, "probe", "", "/bin/sh", ["-c", IDENTITY_TEXT, "sh", WSL_STAT, WSL_PERL, ...probed]), { env: wslEnvironment() });
+      lines = result.exitCode === 0 && result.stdout.endsWith("\n") ? result.stdout.slice(0, -1).split("\n") : [];
+      if (lines.length !== probed.length) lines = [];
     }
-    wslIdentityLog.push({ path, reply });
-    return reply;
+    let next = 0;
+    return paths.map((path, i) => {
+      const injected = inject.wslStat.get(path);
+      let reply: WslIdentityReply;
+      if (injected === "absent") reply = { code: "UNSUPPORTED_REPOSITORY", reason: "absent" };
+      else if (injected) reply = classifyIdentity(inst.guid, injected.inode.trimEnd(), injected.fileSystem.trimEnd());
+      else reply = linux[i] === null ? { code: "UNSUPPORTED_REPOSITORY" } : identityLine(inst.guid, lines[next++]);
+      wslIdentityLog.push({ path, reply });
+      return reply;
+    });
+  }
+
+  // gaps.md W3: the fixed Perl probe through the wrapper in `probe` mode. The three roots go as Linux paths.
+  function wslFileFacts(operationId: string, inst: WslInstallation, roots: { worktreeRoot: string; gitDirectory: string; commonDirectory: string }, digest: boolean, files: FileFactsRequest["files"]): FileFact[] {
+    const order = ["worktreeRoot", "gitDirectory", "commonDirectory"] as const;
+    const entries: FactEntry[] = files.map(({ root, path }) => ({ root: order.indexOf(root) as 0 | 1 | 2, path: [...path] }));
+    const linux = order.map((name) => wslParts(roots[name]));
+    if (linux.some((parts) => !parts || parts.distro.toLowerCase() !== inst.distro.toLowerCase())) return mapFacts(null, entries, digest);
+    const args = ["-e", FACTS_TEXT, "--", digest ? "1" : "0", ...linux.map((parts) => parts!.linux)];
+    const result = wslExec(wslWrapped(inst, operationId, "probe", "", WSL_PERL, args), { env: wslEnvironment(), input: factsInput(entries) });
+    return mapFacts(result.exitCode === 0 ? parseFactRecords(result.bytes) : null, entries, digest);
   }
 
   // Test end: ends every scope of an operation that this double started.
@@ -661,7 +743,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     wslAnchors.delete(operationId);
   }
 
-  async function registerWsl(request: WslRegisterRequest): Promise<RegisterReply> {
+  async function registerWsl(request: RegisterWslCall): Promise<RegisterReply> {
     const fields = Object.keys(request).sort().join(",");
     const ids = [request.operationId, request.bootstrapId, request.gitInstallationId].every(isIdentifier);
     if (fields !== "bootstrapId,confirm,gitInstallationId,operationId" || !ids || request.confirm !== true) throw new RunnerRefusal("INVALID_REQUEST", "WSL register");
@@ -735,14 +817,13 @@ export function createBunRunner(options: BunRunnerOptions) {
       checkIdentityPaths(paths);
       const target = resolveTarget(operationId, context);
       if (!target.wsl) {
-        const replies = paths.map(identityOf);
+        const replies = paths.map(identityOfWindows);
         recorded.replies = replies;
         return replies;
       }
-      const replies: WslIdentityReply[] = [];
-      for (const path of paths) replies.push(await wslIdentity(operationId, target.wsl, path));
+      const replies = wslIdentities(operationId, target.wsl, paths);
       recorded.replies = replies;
-      return replies as unknown as IdentityReply[];
+      return replies;
     },
 
     // src-tauri/src/process_requests.rs `file_facts`: the fields, the target, then the WSL roots. The walk is synchronous, as in the shell.
@@ -750,11 +831,16 @@ export function createBunRunner(options: BunRunnerOptions) {
       checkFileFacts(request);
       const { operationId, contextKind, gitInstallationId, repositoryId } = request;
       resolveTarget(operationId, { contextKind, gitInstallationId, repositoryId });
-      const roots = repositories.get(repositoryId)!;
-      // Contract §11 "Trust and environment": the shell refuses a WSL repository until T212 adds the WSL form.
-      if (Object.values(roots).some((root) => WSL_PREFIX.test(root))) throw new RunnerRefusal("INVALID_REQUEST", "WSL file facts");
-      const { facts, bytesRead } = readFileFacts(roots, request.digest, request.files);
+      const { gitInstallationId: _git, ...roots } = repositories.get(repositoryId)!;
       const files = request.files.map(({ root, path }) => ({ root, path: [...path] }));
+      // gaps.md W3: a WSL repository gets the Perl probe of its installation. The double records no read bytes for it.
+      const wsl = wslGits.get(gitInstallationId);
+      if (wsl) {
+        const facts = wslFileFacts(operationId, wsl, roots, request.digest, request.files);
+        fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead: facts.map(() => 0) });
+        return facts;
+      }
+      const { facts, bytesRead } = readFileFacts(roots, request.digest, request.files);
       fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead });
       return facts;
     },
@@ -766,8 +852,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     },
 
     async register(request) {
-      if (!("version" in request) && !("repositoryId" in request)) return registerWsl(request as unknown as WslRegisterRequest);
-      const confirm = checkRegister(request);
+      if (!("version" in request) && !("repositoryId" in request)) return registerWsl(request);
+      const confirm = checkRegister(request) === "confirm";
       const bound = contexts.get(request.bootstrapId);
       if (inactive.has(request.operationId) || !bound || (bound.owner ?? request.operationId) !== request.operationId) throw unknownTarget();
       if ("version" in request) {
@@ -783,11 +869,25 @@ export function createBunRunner(options: BunRunnerOptions) {
       }
       if (bound.kind !== "repositoryDiscovery" || !gits.has(request.gitInstallationId)) throw unknownTarget();
       if (issued.has(request.repositoryId)) throw new RunnerRefusal("INVALID_REQUEST", "issued ID");
+      const { worktreeRoot, gitDirectory, commonDirectory, gitInstallationId } = request;
+      const parts = wslParts(bound.path);
+      if (parts) {
+        // gaps.md W1: the three paths lie in the bound distro, the Git is the WSL Git of the bound GUID, and the context identity reads again.
+        const facts = wslBound.get(request.bootstrapId);
+        const wsl = wslGits.get(gitInstallationId);
+        const prefix = `\\\\wsl.localhost\\${facts?.distro}\\`;
+        if (!facts || !wsl || wsl.guid !== facts.guid || ![worktreeRoot, gitDirectory, commonDirectory].every((p) => p.startsWith(prefix))) throw new RunnerRefusal("INVALID_REQUEST", "WSL register");
+        const [now] = wslIdentities(request.operationId, wsl, [bound.path]);
+        if (!sameIdentity(now, facts.identity)) {
+          contexts.delete(request.bootstrapId);
+          wslBound.delete(request.bootstrapId);
+          throw unknownTarget();
+        }
+      }
       contexts.delete(request.bootstrapId);
       wslBound.delete(request.bootstrapId);
       issued.add(request.repositoryId);
-      const { worktreeRoot, gitDirectory, commonDirectory } = request;
-      repositories.set(request.repositoryId, { worktreeRoot, gitDirectory, commonDirectory });
+      repositories.set(request.repositoryId, { worktreeRoot, gitDirectory, commonDirectory, gitInstallationId });
       return { result: "approved" };
     },
 
@@ -853,6 +953,13 @@ export function createBunRunner(options: BunRunnerOptions) {
 
     async trust(request) {
       checkTrust(request);
+      // gaps.md W2: a WSL path reads through the identity probe of the registered repository whose stored paths hold it. Otherwise it is unreadable.
+      const identityOf = (path: string): IdentityReply => {
+        if (!WSL_PREFIX.test(path)) return identityOfWindows(path);
+        const repository = [...repositories.values()].find((r) => [r.worktreeRoot, r.gitDirectory, r.commonDirectory].includes(path));
+        const wsl = repository && wslGits.get(repository.gitInstallationId);
+        return wsl ? wslIdentities(crypto.randomUUID(), wsl, [path])[0]! : { code: "UNSUPPORTED_REPOSITORY" };
+      };
       if (request.type === "revoke") {
         const identity = identityOf(request.commonDirectory);
         trustStore.records = trustStore.records.filter((r) => r.commonDirectory !== request.commonDirectory && !sameIdentity(r.commonIdentity, identity));
@@ -888,24 +995,28 @@ export function createBunRunner(options: BunRunnerOptions) {
     },
   };
 
-  // Proposed `wslDistros` request: a `repositoryDiscovery` context whose path is a WSL path.
-  async function wslDistros(operationId: string, bootstrapId: string): Promise<WslDistrosReply> {
+  // Contract §6 `wslDistros`: any live `repositoryDiscovery` context of the operation. Only a path with a WSL prefix runs the list calls.
+  async function wslDistros({ operationId, bootstrapId }: WslDistrosCall): Promise<WslDistrosResult> {
     const bound = contexts.get(bootstrapId);
-    if (inactive.has(operationId) || bound?.kind !== "repositoryDiscovery" || (bound.owner ?? operationId) !== operationId || !wslParts(bound.path)) throw unknownTarget();
+    if (!isIdentifier(operationId) || !isIdentifier(bootstrapId)) throw new RunnerRefusal("INVALID_REQUEST", "wslDistros");
+    if (inactive.has(operationId) || bound?.kind !== "repositoryDiscovery" || (bound.owner ?? operationId) !== operationId) throw unknownTarget();
     bound.owner = operationId;
+    const path = bound.path;
+    if (!WSL_PREFIX.test(path)) return { path };
     const listed = listDistros(false);
     const running = inject.wslRunning ?? listDistros(true);
-    if (listed === null || running === null) return { code: "WSL_UNAVAILABLE", reason: "wsl-missing" };
+    if (listed === null || running === null) return { path, code: "WSL_UNAVAILABLE", reason: "wsl-missing" };
     const keys = registryKeys().filter((k) => listed.includes(k.name));
     const saved = keys.flatMap((k) => {
       const git = wslSaved.get(k.guid);
       return git ? [{ guid: k.guid, ...git }] : [];
     });
-    return { path: bound.path, listed, running, keys, saved };
+    return { path, wslExecutable: WSL_EXE, listed, running, keys, saved };
   }
 
-  // Proposed `wslProbe` request (contract §11 "Git per distro"). It runs without the wrapper and without `--no-lazy-fetch`.
-  async function wslProbe(call: WslProbeCall): Promise<GitExit> {
+  const wslProbing = new Set<string>();
+  // Contract §6 `wslProbe` (contract §11 "Git per distro"). It runs without the wrapper and without `--no-lazy-fetch`.
+  async function wslProbe(call: WslProbeRun): Promise<GitExit> {
     const bound = contexts.get(call.bootstrapId);
     if (inactive.has(call.operationId) || bound?.kind !== "repositoryDiscovery" || (bound.owner ?? call.operationId) !== call.operationId) throw unknownTarget();
     const parts = wslParts(bound.path);
@@ -913,42 +1024,50 @@ export function createBunRunner(options: BunRunnerOptions) {
     if (!parts || parts.distro.toLowerCase() !== call.distro.toLowerCase() || !Number.isSafeInteger(deadline) || deadline < 1 || deadline > WSL_START_CAP_MS) {
       throw new RunnerRefusal("INVALID_REQUEST", "wslProbe");
     }
+    // gaps.md W1: a context binds once, because a rebind would defeat the revalidation at `register`.
+    // The shell reserves the bind when the probe arrives, so a second probe in flight cannot bind again.
+    if (wslBound.has(call.bootstrapId) || wslProbing.has(call.bootstrapId)) throw new RunnerRefusal("INVALID_REQUEST", "bound WSL context");
     bound.owner = call.operationId;
-    wslBound.delete(call.bootstrapId);
-    // The shell keeps its own copy of the forwarded stdout and parses it at the exit.
-    const seen: Uint8Array[] = [];
-    let seenBytes = 0;
-    const stdout: Collector = {
-      push(chunk) {
-        const kept = chunk.slice(0, WSL_PROBE_RETAINED_BYTES - seenBytes);
-        seen.push(kept);
-        seenBytes += kept.length;
-        call.stdout.push(chunk);
-      },
-      get bytes() {
-        return call.stdout.bytes;
-      },
-      get records() {
-        return call.stdout.records;
-      },
-      get limited() {
-        return call.stdout.limited;
-      },
-    };
-    const asCall = { ...call, stdout, context: { contextKind: "repositoryDiscovery", bootstrapId: call.bootstrapId }, arguments: [], environmentPolicy: "probe" } as unknown as GitCall;
-    const seam = inject.wslProbe;
-    let exit: GitExit;
-    if (!seam) exit = await execute(asCall, [WSL_EXE, ...wslHead(call.distro), WSL_TEXTS.probe, "sh"], launchDirectory, wslEnvironment());
-    else {
-      for (let held = holding(startBarriers, asCall); held; held = holding(startBarriers, asCall)) await held.promise;
-      call.signal.throwIfAborted();
-      if (seam.stdout) stdout.push(new TextEncoder().encode(seam.stdout));
-      if (seam.stderr) call.stderr.push(new TextEncoder().encode(seam.stderr));
-      exit = seam.deadline ? { exitCode: null, activeDescendants: 0, deadline: "deadline" } : { exitCode: seam.exitCode ?? 0, activeDescendants: 0 };
+    wslProbing.add(call.bootstrapId);
+    try {
+      // The shell keeps its own copy of the forwarded stdout and parses it at the exit.
+      const seen: Uint8Array[] = [];
+      let seenBytes = 0;
+      const stdout: Collector = {
+        push(chunk) {
+          const kept = chunk.slice(0, WSL_PROBE_RETAINED_BYTES - seenBytes);
+          seen.push(kept);
+          seenBytes += kept.length;
+          call.stdout.push(chunk);
+        },
+        get bytes() {
+          return call.stdout.bytes;
+        },
+        get records() {
+          return call.stdout.records;
+        },
+        get limited() {
+          return call.stdout.limited;
+        },
+      };
+      const asCall = { ...call, stdout, context: { contextKind: "repositoryDiscovery", bootstrapId: call.bootstrapId }, arguments: [], environmentPolicy: "probe" } as unknown as GitCall;
+      const seam = inject.wslProbe;
+      let exit: GitExit;
+      // The probe takes the Linux path of the context (gaps.md W1).
+      if (!seam) exit = await execute(asCall, [WSL_EXE, ...wslHead(call.distro), WSL_TEXTS.probe, "sh", parts.linux], launchDirectory, wslEnvironment());
+      else {
+        for (let held = holding(startBarriers, asCall); held; held = holding(startBarriers, asCall)) await held.promise;
+        call.signal.throwIfAborted();
+        if (seam.stdout) stdout.push(new TextEncoder().encode(seam.stdout));
+        if (seam.stderr) call.stderr.push(new TextEncoder().encode(seam.stderr));
+        exit = seam.deadline ? { exitCode: null, activeDescendants: 0, deadline: "deadline" } : { exitCode: seam.exitCode ?? 0, activeDescendants: 0 };
+      }
+      const facts = exit.exitCode === 0 && !exit.deadline ? bindProbe(call.distro, Buffer.concat(seen)) : null;
+      if (facts) wslBound.set(call.bootstrapId, facts);
+      return exit;
+    } finally {
+      wslProbing.delete(call.bootstrapId);
     }
-    const facts = exit.exitCode === 0 && !exit.deadline ? bindProbe(call.distro, new TextDecoder().decode(Buffer.concat(seen))) : null;
-    if (facts) wslBound.set(call.bootstrapId, facts);
-    return exit;
   }
 
   return {
@@ -978,7 +1097,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Returns the bootstrap ID of a new native context.
     addContext(kind: "gitProbe" | "repositoryDiscovery", path: string): string {
       const bootstrapId = crypto.randomUUID();
-      contexts.set(bootstrapId, { kind, path, ...(kind === "repositoryDiscovery" ? { identity: readIdentity(path) } : {}) });
+      // gaps.md W1: a WSL path binds no identity and starts no process at creation.
+      contexts.set(bootstrapId, { kind, path, ...(kind === "repositoryDiscovery" && !WSL_PREFIX.test(path) ? { identity: readIdentity(path) } : {}) });
       return bootstrapId;
     },
     // The path of a live native context, or `undefined` after its end.

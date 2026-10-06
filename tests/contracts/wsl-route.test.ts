@@ -171,7 +171,7 @@ describe("WSL route (T204, contract §11 Route)", () => {
 describe("WSL_UNAVAILABLE (T204, contract §9)", () => {
   test("the code exists and carries exactly the seven reasons", () => {
     expect(ERROR_CODES).toContain("WSL_UNAVAILABLE");
-    expect([...WSL_UNAVAILABLE_REASONS]).toEqual(["wsl-missing", "distro-missing", "not-wsl2", "no-user-manager", "no-setsid", "no-coreutils", "start-failed"]);
+    expect([...WSL_UNAVAILABLE_REASONS]).toEqual(["wsl-missing", "distro-missing", "not-wsl2", "no-user-manager", "no-setsid", "no-coreutils", "no-perl", "start-failed"]);
   });
 
   test("the reasons live in the contract error types (T210)", () => {
@@ -224,6 +224,28 @@ describe("WSL remedy commands (T204, contract §11 Remedy commands)", () => {
   });
 });
 
+describe("WSL Git PPA remedy (T212, contract §11 Git per distro)", () => {
+  const WSL_EXE = "C:\\Windows\\System32\\wsl.exe";
+  const QUOTES = ["'", "\u2018", "\u2019", "\u201A", "\u201B"];
+  // The command runs the distro as root with a fixed script literal.
+  const SCRIPT = "'add-apt-repository -y ppa:git-core/ppa && apt-get update && apt-get install -y git'";
+  const ppa = (distro: string) => buildWslRemedy("git-ppa", { wslExecutable: WSL_EXE, distro });
+
+  test("the Git PPA form", () => {
+    expect(ppa("Ubuntu-24.04")).toEqual({ command: `& 'C:\\Windows\\System32\\wsl.exe' --distribution 'Ubuntu-24.04' --user root --cd / --exec /bin/sh -c ${SCRIPT}` });
+  });
+
+  test("the Git PPA form doubles each PowerShell quote character in the distro name", () => {
+    for (const q of QUOTES) {
+      expect(ppa(`Ub${q}untu`)).toEqual({ command: `& 'C:\\Windows\\System32\\wsl.exe' --distribution 'Ub${q}${q}untu' --user root --cd / --exec /bin/sh -c ${SCRIPT}` });
+    }
+  });
+
+  test("a distro name with U+005C or a §4 refused character gives no PPA command", () => {
+    for (const bad of ["Ub\\untu", 'Ub"untu', "Ub\u0007untu"]) expect(ppa(bad)).toMatchObject({ command: null });
+  });
+});
+
 describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
   const git = (versionText: string, path = "/usr/bin/git", mz = false) => checkWslGit({ path, mz, versionText });
 
@@ -255,6 +277,14 @@ describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
     expect(git("git version 2.55")).toEqual({ ...refused, detectedVersion: "2.55" });
     expect(git("version 2.55.0")).toEqual({ ...refused, detectedVersion: "version 2.55.0" });
     expect(git("")).toEqual(refused);
+  });
+
+  // T212 review S5: the shell parses each part as an unsigned 64-bit number, so a larger part is an unparseable version.
+  test("a version part above 2^64 - 1 gives reason version with its raw text", () => {
+    for (const found of ["2.18446744073709551616.0", "18446744073709551616.0.0", "2.55.18446744073709551616"]) {
+      expect(git(`git version ${found}`)).toEqual({ ok: false, code: "GIT_UNSUPPORTED", reason: "version", detectedVersion: found, minimumVersion: "2.55.0" });
+    }
+    expect(git("git version 2.18446744073709551615.0")).toEqual({ ok: true, version: "2.18446744073709551615.0" });
   });
 
   test("a .windows. version, a path under /mnt/, and a file that starts with MZ give reason windows-git", () => {

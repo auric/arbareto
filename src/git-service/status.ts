@@ -16,6 +16,7 @@ import {
   STATUS_PAGE_BYTES,
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
+import { wslIdentityPath } from "../contracts/wsl-route";
 import {
   headTargetArgs,
   indexEntryArgs,
@@ -31,7 +32,6 @@ import {
   type OperationMarker,
 } from "./commands";
 import { hunkEligibility, IndexFormatError, type HunkEligibility } from "./eligibility";
-import type { GitInstallation } from "./git-installation";
 import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
 import { sameIdentity } from "./identity";
 import { contextOf, encodedBytes, isMissing, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead } from "./read-steps";
@@ -48,6 +48,7 @@ import {
   type LimitName,
   type Observation,
   type OperationState,
+  type ReadInstallation,
   type ReadWorkingVersionOptions,
   type WorkingVersion,
 } from "./snapshot";
@@ -62,7 +63,7 @@ export const OBJECT_MISSING_REMEDY =
 export interface ReadWorkspaceTarget {
   operationId: string;
   signal: AbortSignal;
-  installation: GitInstallation;
+  installation: ReadInstallation;
   workspace: Workspace;
   refresh: boolean;
   // Contract §3: `changes` compares the contract §8 stat tuple first. Absent means `full`.
@@ -349,14 +350,16 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
   let started = 0;
 
   // Data-model §4 `policyFingerprint`.
-  const policyOf = (w: Workspace, listing: TrustListing, installation: GitInstallation) => {
+  const policyOf = (w: Workspace, listing: TrustListing, installation: ReadInstallation) => {
     const view = trust.view(w, listing, installation);
-    return policyFingerprint({ attributes: EMPTY, trust: { state: view.state, trustId: view.trustId ?? null }, configurationFingerprint: listing.fingerprint, git: installation });
+    const input = { attributes: EMPTY, trust: { state: view.state, trustId: view.trustId ?? null }, configurationFingerprint: listing.fingerprint };
+    return policyFingerprint({ ...input, git: installation });
   };
 
   const run = (t: ProcessTarget, args: string[], stdout: Collector, input?: Uint8Array): Promise<Step> => runRead(runner, t, args, stdout, input);
 
   // The `count` paths that a `rev-parse --git-path` call prints, one per line. Null: the call or its output failed.
+  // Contract §11 "Paths and file access": Linux Git prints Linux paths, and the service takes their UNC form. A name without one gives null.
   async function gitPaths(t: ProcessTarget, args: string[], count: number): Promise<string[] | null> {
     const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
     const step = await run(t, args, out);
@@ -369,7 +372,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     } catch {
       return null;
     }
-    return lines.length === count && lines.every((line) => isChannelPath(line)) ? lines : null;
+    const wsl = t.workspace.wsl;
+    const paths = wsl === undefined ? lines : lines.map((line) => wslIdentityPath(wsl.distro, line));
+    return paths.length === count && paths.every((path): path is string => path !== null && isChannelPath(path)) ? paths : null;
   }
 
   // Git resolves the marker paths once for each workspace. A failed resolution is not kept.
@@ -451,14 +456,16 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     // Contract §7 "Shared listing": the tuple comes before the listing starts. `readWorkspace` always runs its own listing.
     const hints = st.hints;
     const assumed = st.head ?? w.head;
+    // Contract §11 "Change polling" and "Trust and environment": a WSL read uses no stat tuple and never shares a listing, so it computes no tuple.
+    const tupled = w.wsl === undefined;
     // T088 decision E7: Git resolves the branch ref file once for each new HEAD target. So the change check starts no Git process.
-    const ref = branchRef(w, assumed);
+    const ref = tupled ? branchRef(w, assumed) : null;
     if (ref !== null && !st.refFiles.has(ref) && isRefName(ref)) {
       const lines = await gitPaths(t, refPathArgs(ref), 1);
       if (lines !== null) st.refFiles.set(ref, lines[0]!);
     }
     const known = st.changeFiles?.complete ? st.changeFiles : null;
-    const prior = tupleFiles(w, st, assumed, known?.configPaths ?? []);
+    const prior = tupled ? tupleFiles(w, st, assumed, known?.configPaths ?? []) : null;
     const priorPrograms = known?.programFiles ?? [];
     const before = prior === null ? null : await tupleFacts(runner, t.operationId, w, prior, priorPrograms);
     // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read records nothing.
@@ -713,7 +720,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
       // Contract §8 "Change check": without a hint and with an equal tuple, the last snapshot returns and no Git process starts.
       // A trust approval or revocation changes the policy without a file change, so the policy must also be equal.
       const kept = st.kept;
-      if (t.check === "changes" && !t.refresh && kept !== null && kept.hints === st.hints && !st.unwatched && !st.unavailable) {
+      // Contract §11 "Change polling": a WSL workspace has no watcher and uses no stat tuple, so each of its reads runs in full.
+      if (t.check === "changes" && !t.refresh && kept !== null && kept.hints === st.hints && !st.unwatched && !st.unavailable && t.workspace.wsl === undefined) {
         const facts = await tupleFacts(runner, t.operationId, t.workspace, kept.files, kept.programs);
         if (t.signal.aborted) return { result: "canceled" };
         const same = facts !== null && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;

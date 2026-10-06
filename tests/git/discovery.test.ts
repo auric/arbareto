@@ -450,6 +450,38 @@ describe("F07 worktree identities (data-model §2, contract §3 \"Worktree key\"
   );
 });
 
+describe("Windows worktree key known answer (contract §3 \"Worktree key\")", () => {
+  // The identity reply of the worktree root: volume serial 0x0123456789ABCDEF and the file ID bytes 00 11 22 ... FF in array order.
+  const VOLUME_SERIAL = 0x0123456789abcdefn;
+  const FILE_ID = Array.from({ length: 16 }, (_, i) => i * 0x11);
+  const REPLY: IdentityReply = { volumeSerial: "0123456789abcdef", fileId: "00112233445566778899aabbccddeeff" };
+  // `sha256sum` of the same 24 bytes, computed outside this repository.
+  const KNOWN_KEY = "b66aafd73088ede7ee5a4baecc19477a220e228e1c2c559d2df436a65d3da453";
+
+  caseTest(
+    "T321",
+    "the worktreeKey of a Windows worktree is the SHA-256 of the 8 big-endian volume serial bytes and then the 16 file ID bytes",
+    ["shell-double"],
+    () =>
+      withDouble("t321-worktree-key", async (double) => {
+        const input = new Uint8Array(24);
+        new DataView(input.buffer).setBigUint64(0, VOLUME_SERIAL, false);
+        input.set(FILE_ID, 8);
+        expect(sha256(input)).toBe(KNOWN_KEY);
+        const repo = join(buildF08(gitPath(), "t321-worktree-key", "sha1").root, "repo");
+        const outcome = await double.register(repo, (r) => ({
+          ...r,
+          identities: async (...args) => {
+            const replies = await r.identities(...args);
+            return Array.isArray(replies) ? [REPLY, ...replies.slice(1)] : replies;
+          },
+        }));
+        expect(outcome.ok && "worktreeKey" in outcome.result ? outcome.result.worktreeKey : outcome).toBe(KNOWN_KEY);
+      }),
+    TIMEOUT_MS,
+  );
+});
+
 describe("registration refusals (contract §6, data-model §2)", () => {
   caseTest(
     TASK,

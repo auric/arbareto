@@ -16,7 +16,7 @@ import {
 import { NATIVE } from "../contracts/native-path";
 import { batchCommandArgs, headOidArgs, headRefExistsArgs, headTargetArgs, isObjectId, isRefName, objectCheckArgs, revListArgs, shallowPathArgs, type ObjectFormat } from "./commands";
 import type { GitInstallation } from "./git-installation";
-import { createCollector, isChannelPath, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, isChannelPath, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
 import { HEADER_BYTES, parseCommitObjects, parseTraversal, type CommitObject, type CommitObjects, type Traversal } from "./history-parser";
 import { contextOf, encodedBytes, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -48,8 +48,8 @@ export interface HistoryReaderOptions {
   runner: GitRunner;
   trust: Trust;
   // The contract §8 change tuple of the last listing of the workspace (`WorkspaceReader.listingTuple`). Its `fileFacts` requests belong to `operationId`.
-  // Null: no compare can prove that nothing changed.
-  listingTuple(w: Workspace, operationId: string): Promise<string | null>;
+  // Null: no compare can prove that nothing changed. A walk stop ends the listing with its stop.
+  listingTuple(w: Workspace, operationId: string, signal: AbortSignal): Promise<string | WalkStop | null>;
   // Data-model §2 `unavailable` (`WorkspaceReader.markUnavailable`).
   markUnavailable(repositoryId: string): void;
 }
@@ -334,11 +334,14 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
   // Contract §7 "Shared listing": the listing of a `readWorkspace` of the request generation, after the tuple recheck. Otherwise an own listing.
   async function listingFor(t: ReadHistoryTarget): Promise<ListingOutcome> {
     const w = t.workspace;
-    const tuple = await listingTuple(w, t.operationId);
-    if (tuple !== null) {
-      const shared = await trust.shared.reuse(w.repositoryId, t.generation, tuple, t.signal);
+    const tuple = await listingTuple(w, t.operationId, t.signal);
+    if (tuple !== null && typeof tuple === "object") return { ok: false, stop: tuple.stop };
+    const shared = tuple === null ? null : await trust.shared.reuse(w.repositoryId, t.generation, tuple, t.signal);
+    if (shared !== null) {
       // The tuple is read again after the shared listing ends, so an edit during that listing also forces an own listing.
-      if (shared !== null && (await listingTuple(w, t.operationId)) === tuple) return { ok: true, listing: shared };
+      const again = await listingTuple(w, t.operationId, t.signal);
+      if (again !== null && typeof again === "object") return { ok: false, stop: again.stop };
+      if (again === tuple) return { ok: true, listing: shared };
     }
     if (t.signal.aborted) return { ok: false, stop: "canceled" };
     return trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
@@ -386,9 +389,10 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
     const missing = objects.completeness.state === "limited" && objects.completeness.code === "OBJECT_MISSING";
     if (missing) {
       const w = t.workspace;
-      const promisor = await hasPromisor(listing.entries, w, (paths) => runner.identities(t.operationId, contextOf(w), paths));
+      const promisor = await hasPromisor(listing.entries, w, (paths) => runner.identities(t.operationId, contextOf(w), paths, t.signal));
       // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read marks nothing.
       if (t.signal.aborted) return { result: "canceled" };
+      if (promisor === "canceled" || promisor === "deadline") return { result: promisor };
       // A promisor check that cannot complete gives GIT_FAILED, as an object check that cannot complete does.
       if (promisor === "unknown") return refusal("GIT_FAILED");
       if (!promisor) {

@@ -13,7 +13,7 @@ import { configListArgs, hooksPathArgs } from "../../src/git-service/commands";
 import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
 import { RunnerRefusal, type GitRunner } from "../../src/git-service/git-runner";
 import { createRegistrations, type Workspace } from "../../src/git-service/registration";
-import { createTrust, parseMaybeBool, redactUrlUserInfo, relativePathEntries, type ChangeFiles } from "../../src/git-service/trust";
+import { createTrust, parseMaybeBool, readProgramFiles, redactUrlUserInfo, relativePathEntries, type ChangeFiles } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot, type OwnedGitOptions } from "./fixture-root";
 import { buildF02, buildF07, buildF08, buildF17, put, type Built } from "./fixtures";
@@ -2318,9 +2318,9 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
         // The first `fileFacts` request reads the hooks folder, after both listing processes ended (contract §7 "Program file digests").
         const runner: GitRunner = {
           ...service.runner,
-          fileFacts(request) {
+          fileFacts(request, signal) {
             controller.abort();
-            return service.runner.fileFacts(request);
+            return service.runner.fileFacts(request, signal);
           },
         };
         const trust = createTrust({ runner, environment: serviceEnv() });
@@ -2329,6 +2329,84 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
         const listed = await trust.listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace });
         if (!listed.ok) throw new Error(`listing: ${JSON.stringify(listed)}`);
         expect(trust.acceptApprove(workspace.repositoryId, listed.listing.fingerprint, 0)).toBe("TRUST_CHANGED");
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §5 "Deadline outcomes": a walk deadline has the outcome of a Git process deadline in the same step.
+  caseTest(
+    "T312",
+    "a walk deadline ends the listing with the deadline stop and readTrust with deadline, and readProgramFiles passes the stop up",
+    W,
+    () =>
+      withService({ name: "t312-walk-deadline" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t312-walk-deadline"));
+        const installation = await admitted(service);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const workspace = registrations.get(await registerIn(registrations, service, repo, installation))!;
+        const signal = new AbortController().signal;
+        const listing = () => ({ operationId: crypto.randomUUID(), signal, workspace });
+        let asked = 0;
+        const identityDeadline: GitRunner = { ...service.runner, identities: async () => (asked++, { stop: "deadline" }) };
+        const factsDeadline: GitRunner = { ...service.runner, fileFacts: async () => ({ stop: "deadline" }) };
+        // The global configuration file of the fixture lies outside the roots, so its origin gets an identity request.
+        const factCalls = service.runner.fileFactCalls.length;
+        const identityTrust = createTrust({ runner: identityDeadline, environment: serviceEnv() });
+        const stoppedListing = await identityTrust.listTrust(listing());
+        expect(asked).toBeGreaterThan(0);
+        expect(stoppedListing).toEqual({ ok: false, stop: "deadline" });
+        expect(service.runner.fileFactCalls.length).toBe(factCalls);
+        for (const runner of [identityDeadline, factsDeadline]) {
+          const trust = createTrust({ runner, environment: serviceEnv() });
+          expect(await trust.listTrust(listing())).toEqual({ ok: false, stop: "deadline" });
+          expect(await trust.readTrust({ ...listing(), installation }, 0)).toEqual({ result: "deadline" });
+        }
+        const hooksFolder = { root: "gitDirectory" as const, path: ["hooks"], fact: { kind: "directory" as const } };
+        expect(await readProgramFiles(factsDeadline, crypto.randomUUID(), workspace, [hooksFolder], signal)).toEqual({ stop: "deadline" });
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Every identity chunk of one decision settles before the listing ends, so no walk call stays pending past `closeJob`.
+  caseTest(
+    "T312",
+    "a refused identity chunk ends the listing only after every other chunk of that decision settles",
+    W,
+    () =>
+      withService({ name: "t312-identity-chunks" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t312-identity-chunks"));
+        const installation = await admitted(service);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const workspace = registrations.get(await registerIn(registrations, service, repo, installation))!;
+        let [started, settled] = [0, 0];
+        let release = () => {};
+        const held = new Promise<void>((resolve) => (release = resolve));
+        const runner: GitRunner = {
+          ...service.runner,
+          identities: async (...args) => {
+            const first = started++ === 0;
+            try {
+              if (first) throw new RunnerRefusal("UNKNOWN_TARGET");
+              await held;
+              return await service.runner.identities(...args);
+            } finally {
+              settled++;
+            }
+          },
+        };
+        const trust = createTrust({ runner, environment: serviceEnv() });
+        // The calls still open when the listing ends.
+        let open = -1;
+        const listing = trust.listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace }).then((outcome) => {
+          open = started - settled;
+          return outcome;
+        });
+        for (const until = performance.now() + 30_000; started < 2 && performance.now() < until; ) await Bun.sleep(10);
+        // The origins of the fixture global configuration need more than one identity chunk of 8 paths.
+        expect(started).toBeGreaterThanOrEqual(2);
+        release();
+        expect(await listing).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
+        expect(open).toBe(0);
       }),
     TIMEOUT_MS,
   );

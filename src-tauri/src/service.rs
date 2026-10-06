@@ -21,8 +21,8 @@ use crate::ipc::{
 };
 use crate::jobs::{Job, Supervisor};
 use crate::process_requests::{
-    CHUNK_BYTES, Code, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, decode_strict,
-    is_identifier, wait,
+    CHUNK_BYTES, Code, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
+    decode_strict, is_identifier, wait,
 };
 use crate::schema::{self, mutation_request::MutationRequest, trust_request::TrustRequest};
 use crate::settings::{
@@ -99,6 +99,7 @@ impl Service {
                 launch_directory: launch_directory.clone(),
                 base_environment: environment.clone(),
                 argument_prefix: Vec::new(),
+                walk_deadline: Duration::from_millis(WALK_DEADLINE_MS),
             },
             Arc::clone(&contexts),
             Arc::clone(&jobs),
@@ -750,6 +751,7 @@ mod tests {
                     launch_directory,
                     base_environment: Vec::new(),
                     argument_prefix: Vec::new(),
+                    walk_deadline: Duration::from_millis(WALK_DEADLINE_MS),
                 },
                 Arc::clone(&contexts),
                 Arc::clone(&jobs),
@@ -950,7 +952,8 @@ mod tests {
             .prepare(&picked, "chooseRepository", json!({}))
             .expect("prepare")
             .expect("a context");
-        let failed = json!({ "requestId": CALL, "state": "failed", "code": "REPOSITORY_UNAVAILABLE" });
+        let failed =
+            json!({ "requestId": CALL, "state": "failed", "code": "REPOSITORY_UNAVAILABLE" });
         assert_eq!(
             shell.finish(&picked, "chooseRepository", &prepared, failed.clone()),
             failed

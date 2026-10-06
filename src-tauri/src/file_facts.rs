@@ -6,6 +6,7 @@
 
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path, Prefix};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -19,7 +20,7 @@ use windows::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_IO_DEVICE, ERROR_PATH_NOT_FOUND,
     ERROR_SHARING_VIOLATION, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE,
-    STATUS_ACCESS_DENIED, STATUS_END_OF_FILE, STATUS_IO_DEVICE_ERROR,
+    STATUS_ACCESS_DENIED, STATUS_CANCELLED, STATUS_END_OF_FILE, STATUS_IO_DEVICE_ERROR,
     STATUS_IO_REPARSE_TAG_NOT_HANDLED, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
     STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION, STATUS_UNSUCCESSFUL,
     UNICODE_STRING, WIN32_ERROR,
@@ -52,7 +53,7 @@ pub(crate) struct Request<'a> {
     pub(crate) operation_id: &'a str,
     pub(crate) digest: bool,
     /// The index in `ROOTS` and the name components of each entry.
-    pub(crate) files: Vec<(usize, Vec<&'a str>)>,
+    pub(crate) files: Vec<(usize, Vec<String>)>,
 }
 
 /// The fields of a `fileFacts` frame. It reads no file.
@@ -91,7 +92,7 @@ pub(crate) fn parse(request: &Fields) -> Result<Request<'_>, Code> {
     })
 }
 
-fn entry(value: &Value) -> Result<(usize, Vec<&str>), Code> {
+fn entry(value: &Value) -> Result<(usize, Vec<String>), Code> {
     let entry = value.as_object().ok_or(INVALID)?;
     keys(entry, &["root", "path"], &[])?;
     let root = ROOTS
@@ -106,6 +107,7 @@ fn entry(value: &Value) -> Result<(usize, Vec<&str>), Code> {
         .map(|name| {
             name.as_str()
                 .filter(|name| is_component(name))
+                .map(str::to_string)
                 .ok_or(INVALID)
         })
         .collect::<Result<_, _>>()?;
@@ -149,39 +151,59 @@ pub(crate) fn is_wsl_path(path: &Path) -> bool {
 }
 
 /// One fact per entry, in request order.
-pub(crate) fn walk(roots: [&Path; 3], digest: bool, files: &[(usize, Vec<&str>)]) -> Vec<Value> {
+/// After `stop` is set, each open, query, and read fails with `STATUS_CANCELLED`, and the shell sends no fact (contract §6 "Walks").
+pub(crate) fn walk(
+    roots: [&Path; 3],
+    digest: bool,
+    files: &[(usize, Vec<String>)],
+    stop: &AtomicBool,
+) -> Vec<Value> {
     // The digested bytes that the request can still take. `None` after the first file that passed the total.
     let mut budget = Some(TOTAL_BYTES);
     files
         .iter()
-        .map(|(root, path)| fact(roots[*root], path, digest, &mut budget))
+        .map(|(root, path)| fact(roots[*root], path, digest, &mut budget, stop))
         .collect()
 }
 
 /// `component` counts the components of `path` from 1. Component 0 is the root.
-fn fact(root: &Path, path: &[&str], digest: bool, budget: &mut Option<u64>) -> Value {
+fn fact(
+    root: &Path,
+    path: &[String],
+    digest: bool,
+    budget: &mut Option<u64>,
+    stop: &AtomicBool,
+) -> Value {
     let (last, middle) = path.split_last().expect("parse gives 1 or more components");
-    let mut parent = match open_root(root) {
+    let mut parent = match open_root(root, stop) {
         Ok(handle) => handle,
         Err(status) => return not_opened(status, 0),
     };
     for (component, name) in (1..).zip(middle) {
-        parent = match open(&parent, name, false, false) {
+        parent = match open(&parent, name, false, false, stop) {
             Ok(handle) => handle,
             Err(status) if is_reparse_point(status) => {
-                return reparse_point(&parent, name, component, None);
+                return reparse_point(&parent, name, component, None, stop);
             }
             Err(status) => return not_opened(status, component),
         };
     }
     let component = path.len();
-    match open(&parent, last, false, false) {
-        Ok(handle) => file_fact(&handle, component, digest, budget),
+    match open(&parent, last, false, false, stop) {
+        Ok(handle) => file_fact(&handle, component, digest, budget, stop),
         Err(status) if is_reparse_point(status) => {
-            reparse_point(&parent, last, component, Some(digest))
+            reparse_point(&parent, last, component, Some(digest), stop)
         }
         Err(status) => not_opened(status, component),
     }
+}
+
+/// Contract §6 "Walks": a stopped walk opens, queries, and reads nothing more.
+fn check(stop: &AtomicBool) -> Result<(), NTSTATUS> {
+    if stop.load(Ordering::SeqCst) {
+        return Err(STATUS_CANCELLED);
+    }
+    Ok(())
 }
 
 /// `OBJ_DONT_REPARSE` stops the open at a reparse point that the I/O manager would follow.
@@ -191,7 +213,8 @@ fn is_reparse_point(status: NTSTATUS) -> bool {
 }
 
 /// Opens a root as the identity request opens a path.
-fn open_root(root: &Path) -> Result<OwnedHandle, NTSTATUS> {
+fn open_root(root: &Path, stop: &AtomicBool) -> Result<OwnedHandle, NTSTATUS> {
+    check(stop)?;
     open_for_identity(root)
         .map(OwnedHandle::from)
         // Contract §6 "File facts" pairs each of these Win32 errors with its status.
@@ -217,7 +240,9 @@ fn open(
     name: &str,
     read: bool,
     reparse_point: bool,
+    stop: &AtomicBool,
 ) -> Result<OwnedHandle, NTSTATUS> {
+    check(stop)?;
     let mut units: Vec<u16> = name.encode_utf16().collect();
     // `is_component` keeps the name within 255 units, so the byte length fits a `u16`.
     let length = (units.len() * 2) as u16;
@@ -274,7 +299,12 @@ struct StandardInformation {
 }
 
 /// Reads one information class. `T` must be the structure of `class`.
-fn query<T: Default>(handle: &OwnedHandle, class: FILE_INFORMATION_CLASS) -> Result<T, NTSTATUS> {
+fn query<T: Default>(
+    handle: &OwnedHandle,
+    class: FILE_INFORMATION_CLASS,
+    stop: &AtomicBool,
+) -> Result<T, NTSTATUS> {
+    check(stop)?;
     let mut info = T::default();
     let mut io = IO_STATUS_BLOCK::default();
     // SAFETY: `handle` is open, and `info` is a live local of the passed size.
@@ -319,15 +349,16 @@ fn file_fact(
     component: usize,
     digest: bool,
     budget: &mut Option<u64>,
+    stop: &AtomicBool,
 ) -> Value {
-    let standard = match query::<StandardInformation>(handle, FileStandardInformation) {
+    let standard = match query::<StandardInformation>(handle, FileStandardInformation, stop) {
         Ok(standard) => standard,
         Err(status) => return error(component, status),
     };
     if standard.directory != 0 {
         return json!({ "kind": "directory" });
     }
-    let basic = match query::<FILE_BASIC_INFORMATION>(handle, FileBasicInformation) {
+    let basic = match query::<FILE_BASIC_INFORMATION>(handle, FileBasicInformation, stop) {
         Ok(basic) => basic,
         Err(status) => return error(component, status),
     };
@@ -336,8 +367,10 @@ fn file_fact(
         return fact;
     }
     // An empty name relative to the handle opens the same file again, as `ReOpenFile` does.
-    let data =
-        || open(handle, "", true, false).and_then(|data| read(raw(&data), FILE_BYTES as usize + 1));
+    let data = || {
+        open(handle, "", true, false, stop)
+            .and_then(|data| read(raw(&data), FILE_BYTES as usize + 1, stop))
+    };
     let bound = match *budget {
         _ if standard.end_of_file as u64 > FILE_BYTES => "file-bytes",
         None => "total-bytes",
@@ -360,10 +393,11 @@ fn file_fact(
 }
 
 /// Reads at most `limit` bytes from the current position of a synchronous handle.
-fn read(handle: HANDLE, limit: usize) -> Result<Vec<u8>, NTSTATUS> {
+fn read(handle: HANDLE, limit: usize, stop: &AtomicBool) -> Result<Vec<u8>, NTSTATUS> {
     let mut bytes = vec![0u8; limit];
     let mut filled = 0;
     while filled < limit {
+        check(stop)?;
         let rest = &mut bytes[filled..];
         let mut io = IO_STATUS_BLOCK::default();
         // SAFETY: the caller keeps the synchronous handle open, and `rest` has the passed length.
@@ -393,22 +427,29 @@ fn read(handle: HANDLE, limit: usize) -> Result<Vec<u8>, NTSTATUS> {
 }
 
 /// A component whose open stopped at a reparse point. `last` holds `digest` for the final component.
-fn reparse_point(parent: &OwnedHandle, name: &str, component: usize, last: Option<bool>) -> Value {
-    let handle = match open(parent, name, false, true) {
+fn reparse_point(
+    parent: &OwnedHandle,
+    name: &str,
+    component: usize,
+    last: Option<bool>,
+    stop: &AtomicBool,
+) -> Value {
+    let handle = match open(parent, name, false, true, stop) {
         Ok(handle) => handle,
         Err(status) => return not_opened(status, component),
     };
-    let tag = match query::<FILE_ATTRIBUTE_TAG_INFORMATION>(&handle, FileAttributeTagInformation) {
-        Ok(info) => info.ReparseTag,
-        Err(status) => return error(component, status),
-    };
+    let tag =
+        match query::<FILE_ATTRIBUTE_TAG_INFORMATION>(&handle, FileAttributeTagInformation, stop) {
+            Ok(info) => info.ReparseTag,
+            Err(status) => return error(component, status),
+        };
     if tag & NAME_SURROGATE != 0 {
-        return link(&handle, tag, component);
+        return link(&handle, tag, component, stop);
     }
     match last {
         None => json!({ "kind": "other" }),
         Some(digest) => {
-            let fact = file_fact(&handle, component, false, &mut None);
+            let fact = file_fact(&handle, component, false, &mut None, stop);
             // Logical bytes need an open that follows the reparse point, so a digest is not possible.
             if digest && fact["kind"] == "file" {
                 error(component, STATUS_REPARSE_POINT_ENCOUNTERED)
@@ -420,12 +461,15 @@ fn reparse_point(parent: &OwnedHandle, name: &str, component: usize, last: Optio
 }
 
 /// A name-surrogate reparse point. Only a symlink or a junction with well-formed text carries `target` and `relative`.
-fn link(handle: &OwnedHandle, tag: u32, component: usize) -> Value {
+fn link(handle: &OwnedHandle, tag: u32, component: usize, stop: &AtomicBool) -> Value {
     let name = match tag {
         IO_REPARSE_TAG_SYMLINK => "symlink",
         IO_REPARSE_TAG_MOUNT_POINT => "junction",
         _ => return json!({ "kind": "link", "component": component, "tag": "other" }),
     };
+    if let Err(status) = check(stop) {
+        return error(component, status);
+    }
     let mut data = vec![0u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize];
     let mut io = IO_STATUS_BLOCK::default();
     // SAFETY: `handle` is open and synchronous, and `data` has the passed length.
@@ -514,6 +558,8 @@ pub(crate) mod tests {
     const MIB: usize = 1 << 20;
     const WORKTREE: usize = 0;
     const GIT: usize = 1;
+    /// A stop flag that no test sets.
+    static RUN: AtomicBool = AtomicBool::new(false);
 
     /// A worktree with `.git/hooks/pre-commit` ("abc"), and a folder outside the roots with its own `pre-commit`.
     struct Repo {
@@ -546,11 +592,11 @@ pub(crate) mod tests {
         }
 
         fn facts(&self, digest: bool, files: &[(usize, &[&str])]) -> Vec<Value> {
-            let files: Vec<(usize, Vec<&str>)> = files
+            let files: Vec<(usize, Vec<String>)> = files
                 .iter()
-                .map(|(root, path)| (*root, path.to_vec()))
+                .map(|(root, path)| (*root, path.iter().map(|name| name.to_string()).collect()))
                 .collect();
-            walk([&self.worktree, &self.git, &self.git], digest, &files)
+            walk([&self.worktree, &self.git, &self.git], digest, &files, &RUN)
         }
     }
 
@@ -599,7 +645,12 @@ pub(crate) mod tests {
         );
         let gone = repo.worktree.join("gone");
         assert_eq!(
-            walk([&gone, &gone, &gone], true, &[(GIT, vec!["hooks"])]),
+            walk(
+                [&gone, &gone, &gone],
+                true,
+                &[(GIT, vec!["hooks".to_string()])],
+                &RUN
+            ),
             vec![json!({ "kind": "absent" })],
             "a missing root"
         );
@@ -609,7 +660,8 @@ pub(crate) mod tests {
             walk(
                 [&invalid, &invalid, &invalid],
                 true,
-                &[(GIT, vec!["hooks"])]
+                &[(GIT, vec!["hooks".to_string()])],
+                &RUN
             ),
             vec![json!({ "kind": "error", "component": 0, "code": "other-error" })],
             "component 0 is the root"
@@ -716,7 +768,8 @@ pub(crate) mod tests {
         let path = fixture.path("large");
         std::fs::write(&path, vec![b'a'; 2 * MIB]).expect("large file");
         let mut file = std::fs::File::open(&path).expect("open");
-        let bytes = read(HANDLE(file.as_raw_handle()), FILE_BYTES as usize + 1).expect("read");
+        let bytes =
+            read(HANDLE(file.as_raw_handle()), FILE_BYTES as usize + 1, &RUN).expect("read");
         assert_eq!(bytes.len(), MIB + 1);
         assert_eq!(
             file.stream_position().expect("position"),

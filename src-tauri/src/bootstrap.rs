@@ -7,6 +7,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE};
@@ -74,8 +75,10 @@ pub fn read_identity(path: &Path) -> Result<Identity, &'static str> {
 }
 
 /// One entry of an identity reply (contract §6 "Process fields"). Only a not-found open adds `reason` `absent`.
-pub fn identity_reply(path: &Path) -> serde_json::Value {
-    match open(path) {
+/// `None` when `stop` is set after the open (contract §6 "Walks").
+pub fn identity_reply(path: &Path, stop: &AtomicBool) -> Option<serde_json::Value> {
+    Some(match open(path) {
+        Ok(_) if stop.load(Ordering::SeqCst) => return None,
         Ok(file) => file_identity(&file).map_or_else(
             |code| serde_json::json!({ "code": code }),
             |identity| identity.reply(),
@@ -84,7 +87,7 @@ pub fn identity_reply(path: &Path) -> serde_json::Value {
             serde_json::json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" })
         }
         Err(_) => serde_json::json!({ "code": "UNSUPPORTED_REPOSITORY" }),
-    }
+    })
 }
 
 /// Reads `FileIdInfo` through the handle of `file`.
@@ -434,6 +437,23 @@ mod tests {
         assert_eq!(
             other_identity.volume_serial, identity.volume_serial,
             "same volume"
+        );
+    }
+
+    #[test]
+    fn a_set_stop_flag_gives_no_identity_entry_after_the_open() {
+        let fixture = Fixture::new();
+        let path = fixture.path("file");
+        std::fs::write(&path, "abc").expect("fixture file");
+        let expected = read_identity(&path).expect("identity").reply();
+        assert_eq!(
+            identity_reply(&path, &AtomicBool::new(false)),
+            Some(expected)
+        );
+        assert_eq!(
+            identity_reply(&path, &AtomicBool::new(true)),
+            None,
+            "the walk queries no identity after a stop (contract §6 \"Walks\")"
         );
     }
 

@@ -1985,7 +1985,25 @@ The probes ran on 2026-09-30 on the host above. They used only session scratch f
 
 **Rejected: a shell walk over `\\wsl.localhost`**. `FileIdInfo` fails with error 50 on that share (P5). No probe covered relative `NtOpenFile`, `OBJ_DONT_REPARSE`, or `FILE_OPEN_REPARSE_POINT` on the 9P redirector. Linux symbolic links show as unfollowable Linux targets (microsoft/WSL#5118) or as LX symlink tags, which give tag `other` and so `unchecked`. `OBJ_CASE_INSENSITIVE` meets case-sensitive ext4, and the share shows no execute bits. A link that the server resolves would be followed below a root, against spec Clarifications 2026-10-05. A probe (P9) must run before any change of this decision.
 
-**Open measurements in T212**: W6, the `fileFacts` cost per WSL read against the 0.4-second WSL full-read budget (each request starts one `wsl.exe` at 150 to 260 ms). W7, the 60-second context lifetime against a cold distro start. T212 reports both numbers, and the main session decides later.
+**Open measurements in T212**: W6, the `fileFacts` cost per WSL read against the WSL full-read budget (each request starts one `wsl.exe` at 150 to 260 ms). W7, the 60-second context lifetime against a cold distro start. T212 reports both numbers, and the main session decides later. W6 result: the probe-mode wrapper cost 208 ms, Perl phase 1 for 29 entries 242 ms (187 to 376 ms), phase 2 for 2 digests 202 ms, and the identity script for 3 paths 206 ms. The estimated full read as built is 1.3 to 1.5 seconds in 6 serial stages of up to 10 `wsl.exe` starts. That broke the 0.4-second budget, so probe P10 ran.
+
+### Probe P10: pre-started `wsl.exe` processes (2026-10-06)
+
+**Decision** (user, 2026-10-06: "Relax targets only"): Arbareto starts no `wsl.exe` processes in advance. The WSL targets follow the current cost: WSL full read at most 1.5 seconds, WSL outside change within 4.5 seconds, WSL warm reopen within 4 seconds, and WSL cold open within 5.2 seconds (spec Clarifications, 2026-10-06; plan.md "WSL budgets"). T245 confirms them in the packaged run.
+
+**Method**: reference distro `Ubuntu-24.04`, warm, Windows 11. A spare `wsl.exe --exec /usr/bin/perl -e <waiter>` blocked on stdin. A take wrote one length-prefixed argv frame, the waiter wrote one ack byte and ran `exec` on the frame argv. W-M lived in an owned `<home>/arbareto-fixtures-*` folder. No distro configuration changed. 25 runs per form, and 30 runs for `git status`.
+
+**Results**:
+
+- Gate (perf.md recommendation 3): a spare stage must cost at most 50 ms, and Linux `git status` on W-M at most 0.2 seconds.
+- Spare stage, from frame write to exit, median: 12.6 ms for a bare `true` (9.6 to 27.6 ms), and 85.7 ms for the wrapper with `true` (61.2 to 104.5 ms). It fails the 50 ms bar. Cold `wsl.exe` start to exit: 247.4 ms for the wrapper with `true`. The ack came after 0.4 ms.
+- Inside Linux, medians: `true` 1.8 ms, `setsid --wait true` 3.4 ms, a `systemd-run` scope with `true` 17.9 ms, `systemctl kill` 20.2 ms, and the read-mode wrapper with `true` 51.6 ms. So the systemd scope wrapper alone costs about 52 ms per process, and a spare cannot reach the bar while every process runs in its own scope.
+- Linux `git status` on W-M through the product arguments: median 28.7 ms (21.2 to 58.5 ms, n=30). It passes the 0.2-second bar.
+- Job membership: a running spare joins a pool Job and then the operation Job (nested Jobs). Closing the operation Job ended the spare after 7 to 8 ms, and the Linux scope was gone about 0.7 seconds later. The inner `C:\Program Files\WSL\wsl.exe` child cannot join the operation Job: `AssignProcessToJobObject` failed with error 5. A `TerminateProcess` of the outer or the inner `wsl.exe` still ended the whole tree.
+
+**Rejected: pre-started spares.** A spare stage costs 86 ms, above the 50 ms bar, because the per-process systemd scope costs about 52 ms inside Linux. The inner `wsl.exe` also stays outside the operation Job. Spares would also keep the distro running and pin the approved program paths. So the user relaxed the targets instead.
+
+Evidence: the P10 scripts and logs (`latency.log`, `wrapper-linux.log`, `status-linux.log`, `job-nested3.log`, `job-suspended.log`, `tree-inner.log`, `tree-outer.log`) in the session scratchpad of 2026-10-06, and the T212 read-cost analysis (`perf.md`).
 
 Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-commands), [WSLENV](https://learn.microsoft.com/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl-with-wslenv), [wsl.conf](https://learn.microsoft.com/windows/wsl/wsl-config#wslconf), [systemd in WSL](https://learn.microsoft.com/windows/wsl/systemd), [background tasks](https://devblogs.microsoft.com/commandline/background-task-support-in-wsl/), Git Extensions source clone (PathUtil.cs, GitExecutor.cs, GitStatusMonitor.cs), git-config(1) `maintenance.autoDetach`, pid_namespaces(7).
 

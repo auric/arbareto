@@ -427,6 +427,8 @@ Discovery probes run under a fixed C locale, so Git messages stay unlocalized. D
 
 A WSL path gets its route, identity, Git, and process rules from §11. A `repositoryDiscovery` context of a WSL path starts no process at creation and reads no identity. `wslProbe` binds its identity once (§11 "Git per distro"). Before `register`, the shell reads that identity again with the §11 identity probe. A changed identity or a failed read destroys the context, and the shell refuses with `UNKNOWN_TARGET`. Discovery `run` requests of a WSL context get no identity read, because each read starts `wsl.exe` (research R13). Limit: no identity protects the selection between the folder dialog and `wslProbe`.
 
+On a Windows service, `chooseRepository` and `restoreWorkspace` are accepted without a selected Windows Git. The service sends `wslDistros` first, because only its reply shows whether the path is a WSL path. A Windows path without a selected Windows Git then ends `failed` with `GIT_UNAVAILABLE`. A WSL path continues with the §11 route. A non-Windows service keeps the `rejected` `GIT_UNAVAILABLE` refusal at acceptance.
+
 No discovery profile loads the index, because an index load can run a command-valued `core.fsmonitor` before trust approval. So discovery never runs `rev-parse --shared-index-path` (research R2). Split-index state comes from the raw index bytes (§4). A research R2 probe ran every discovery and trust-listing query with repository canaries, and none ran.
 
 The service constructs the fixed probe arrays and parses their results. Native code validates the context and selected target, not Git semantics.

@@ -1438,7 +1438,8 @@ Skips. Each capability skip is `unverified`:
 | other platform | 13 POSIX golden vectors and 2 POSIX program-digest cases. These are platform skips, not capability skips. | not applicable on Windows |
 
 - The run also counted 25 `todo` tests. They are not capability skips.
-- The run printed no F10 or F15 `OBSERVATION` line. The F05 and F07 records are in the lines below.
+- The F10 observations print with the tag `T081`, not `F10`. They come from the F10 flags test at `tests/git/snapshot.test.ts:325`, where `TASK` is `T081`. The three `OBSERVATION T081` lines in the block below hold them. The F05 and F07 records are also in that block.
+- F15 prints no `OBSERVATION` line. Its batch 2 results are passing tests. A plain folder gives the merged `REPOSITORY_UNAVAILABLE` refusal (T310), through discovery and through `chooseRepository` (`tests/git/discovery.test.ts:198`, `:472`). A removed path gives the `UNKNOWN_TARGET` refusal of the context check, not the merged refusal (`discovery.test.ts:491`). Git's ownership refusal under `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` and all eight hostile names give the merged refusal, and no marker file appears (`discovery.test.ts:162`, `:178`). So the service no longer classifies the dubious-ownership stderr (R5 "Heuristics review (2026-10-05)", T310). The F15 fixture check passes (`tests/git/fixtures.test.ts:156`). The subcases `other-account-owner` and `disposable-volume` stay `unverified` (table above).
 
 Control mutation, 2026-10-06, worktree `D:\dev\rozvio-l1` at main `9a76a90`:
 

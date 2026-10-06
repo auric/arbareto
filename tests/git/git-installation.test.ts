@@ -590,7 +590,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
       const frames: { response?: Record<string, unknown> }[] = [];
       const session = createSession({
         writer: { write: (frame) => void frames.push(frame as never), flush: async () => {} },
-        runner: { ...counted, receive: () => false } as SessionOptions["runner"],
+        runner: { ...counted, receive: () => false } as unknown as SessionOptions["runner"],
         fail: () => {},
       });
       const handshake = {

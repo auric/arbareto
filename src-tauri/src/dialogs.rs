@@ -255,10 +255,6 @@ pub fn wsl_git_confirmation(proposal: &WslProposal) -> Confirmation {
 }
 
 /// Only Use this Git approves. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "T212 wires the WSL register frame")
-)]
 pub fn confirm_wsl_git(native: &dyn Native, proposal: &WslProposal) -> bool {
     let confirmation = wsl_git_confirmation(proposal);
     native.confirm(&confirmation) == Some(confirmation.accept_button)
@@ -673,7 +669,9 @@ pub(crate) mod tests {
             kind: "applyFile".to_string(),
             started_at: "2026-10-03T09:15:00Z".to_string(),
             worktree_root: worktree,
-            common_identity: read_identity(&common).expect("identity"),
+            common_identity: crate::bootstrap::PhysicalIdentity::Windows(
+                read_identity(&common).expect("identity"),
+            ),
             common_directory: common,
         }
     }

@@ -11,10 +11,13 @@ use serde_json::Value;
 
 use crate::process_requests::{Code, path};
 use crate::settings::{TRUST_RECORD_BYTES, utc_time};
+use crate::wsl::WslIdentity;
 
 const INVALID: Code = "INVALID_REQUEST";
 /// Contract §5 "Submodule review": at most 256 submodules.
 const SUBMODULE_PATHS: usize = 256;
+/// Contract §6 "Channel frames" `limits.deadlineMs`: a WSL distro start probe has at most 60 seconds.
+pub const WSL_START_DEADLINE_MS: u64 = 60_000;
 
 macro_rules! generated {
     ($($module:ident),*) => {
@@ -33,7 +36,8 @@ generated!(
     trust_request,
     trust_record,
     handshake,
-    progress
+    progress,
+    wsl_request
 );
 
 /// serde also reads a struct from a JSON array, but the schema permits only an object there.
@@ -127,9 +131,38 @@ pub fn trust_request(value: &Value) -> Result<trust_request::TrustRequest, Code>
     }
 }
 
+/// A WSL `process` request (contract §6 "Channel frames", §11). typify drops the `deadlineMs` range and the `confirm: true` constant.
+pub fn wsl_request(value: &Value) -> Result<wsl_request::WslRequest, Code> {
+    use wsl_request::WslRequest;
+    let request: WslRequest = typed(value)?;
+    let fits = match &request {
+        WslRequest::WslDistros { .. } => true,
+        WslRequest::WslProbe { limits, .. } => limits.deadline_ms.get() <= WSL_START_DEADLINE_MS,
+        WslRequest::Register { confirm, .. } => *confirm,
+    };
+    if fits { Ok(request) } else { Err(INVALID) }
+}
+
+/// One record holds one identity form, and a WSL record holds one distro GUID (gaps.md W2).
+/// JSON Schema has neither rule nor the 64-bit inode bound, so the shell checks them here.
+fn one_identity_form(record: &Value) -> bool {
+    let identities = [
+        &record["commonIdentity"],
+        &record["worktreeIdentity"][0],
+        &record["worktreeIdentity"][1],
+    ];
+    let wsl: Vec<Option<WslIdentity>> = identities.iter().map(|v| WslIdentity::parse(v)).collect();
+    let windows = identities.iter().all(|v| v.get("volumeSerial").is_some());
+    windows
+        || wsl
+            .iter()
+            .all(|w| w.as_ref().map(|w| &w.guid) == wsl[0].as_ref().map(|w| &w.guid) && w.is_some())
+}
+
 /// A stored trust record in the handshake form (contract §7 "Trust approval store"), within 4 KiB of JSON (contract §5).
 pub fn trust_record(value: &Value) -> bool {
     typed::<trust_record::TrustRecord>(value).is_ok()
+        && one_identity_form(value)
         && paths(
             value,
             &[
@@ -223,6 +256,7 @@ mod tests {
             "trust-record" => strict(text).and_then(|value| valid(trust_record(&value))),
             "handshake" => strict(text).and_then(|value| handshake(&value).map(drop)),
             "progress" => strict(text).and_then(|value| valid(progress(&value))),
+            "wsl-request" => strict(text).and_then(|value| wsl_request(&value).map(drop)),
             // The shell checks `process` frames by hand (contract §6 "Channel frames"). Only `fileFacts` vectors exist.
             "process-request" => match strict(text) {
                 Ok(value) if value["type"] == "fileFacts" => value
@@ -272,7 +306,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 58 } else { 54 },
+            if cfg!(windows) { 72 } else { 68 },
             "shell-read vectors"
         );
     }

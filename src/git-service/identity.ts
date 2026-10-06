@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { FileIdentity } from "../contracts/channel";
+import { FileIdentity, IdentityReply, WslIdentity } from "../contracts/channel";
 import type { GitRunner, ProcessContext, WalkStop } from "./git-runner";
+import { identityRefusal, MIXED_LOCATION_REFUSAL, NO_FS_UUID_REFUSAL, type WslGit, type WslRefusal } from "./wsl";
 
 // Contract §6 "Registration bootstrap": the remedy of an identity refusal.
 export const IDENTITY_REMEDY = "Open the repository from an NTFS or ReFS volume";
+
+// A Windows identity, or a WSL identity (contract §11 "Paths and file access").
+export type PhysicalIdentity = FileIdentity | WslIdentity;
 
 export type IdentityResult =
   | { ok: true; identities: FileIdentity[] }
@@ -32,4 +36,36 @@ export async function requestIdentities(runner: GitRunner, operationId: string, 
   return { ok: true, identities };
 }
 
-export const sameIdentity = (a: FileIdentity, b: FileIdentity): boolean => a.volumeSerial === b.volumeSerial && a.fileId === b.fileId;
+// Contract §11 "Paths and file access": the identity probe of a WSL Git gives each identity. The shell gives an identity only for type `ef53`.
+// Type `1021997` (`v9fs`) is a Windows drive. Each reply must name the distro GUID of the installation (gaps.md W2). Another failure gets the WSL identity remedy.
+export async function requestWslIdentities(
+  runner: GitRunner,
+  operationId: string,
+  context: ProcessContext,
+  paths: readonly string[],
+  git: Pick<WslGit, "guid" | "distro">,
+  signal: AbortSignal,
+): Promise<{ ok: true; identities: WslIdentity[] } | WslRefusal | { ok: false; stop: WalkStop["stop"] }> {
+  const replies: unknown[] | WalkStop = await runner.identities(operationId, context, paths, signal);
+  if (!Array.isArray(replies)) return { ok: false, stop: replies.stop };
+  const failed = identityRefusal(git.distro);
+  if (replies.length !== paths.length) return failed;
+  const identities: WslIdentity[] = [];
+  for (const reply of replies) {
+    const identity = WslIdentity.safeParse(reply);
+    if (identity.success) {
+      if (identity.data.distroGuid !== git.guid) return failed;
+      identities.push(identity.data);
+      continue;
+    }
+    const refusal = IdentityReply.safeParse(reply);
+    const reason = refusal.success && "code" in refusal.data ? refusal.data.reason : undefined;
+    return reason === "mixed-location" ? MIXED_LOCATION_REFUSAL : reason === "no-fs-uuid" ? NO_FS_UUID_REFUSAL : failed;
+  }
+  return { ok: true, identities };
+}
+
+export const sameIdentity = (a: PhysicalIdentity, b: PhysicalIdentity): boolean =>
+  "distroGuid" in a
+    ? "distroGuid" in b && a.distroGuid === b.distroGuid && a.fileSystemId === b.fileSystemId && a.inode === b.inode
+    : "volumeSerial" in b && a.volumeSerial === b.volumeSerial && a.fileId === b.fileId;

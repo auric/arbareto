@@ -15,7 +15,7 @@ import {
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { batchCommandArgs, headOidArgs, headRefExistsArgs, headTargetArgs, isObjectId, isRefName, objectCheckArgs, revListArgs, shallowPathArgs, type ObjectFormat } from "./commands";
-import type { GitInstallation } from "./git-installation";
+import type { ReadInstallation } from "./snapshot";
 import { createCollector, isChannelPath, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
 import { HEADER_BYTES, parseCommitObjects, parseTraversal, type CommitObject, type CommitObjects, type Traversal } from "./history-parser";
 import { contextOf, encodedBytes, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead, type ReadStep } from "./read-steps";
@@ -31,7 +31,7 @@ export const DAMAGED_STORE_REMEDY =
 export interface ReadHistoryTarget {
   operationId: string;
   signal: AbortSignal;
-  installation: GitInstallation;
+  installation: ReadInstallation;
   workspace: Workspace;
   // The envelope `repositoryGeneration`. The page binds it, and a shared listing must belong to it (contract §7 "Shared listing").
   generation: number;
@@ -334,7 +334,8 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
   // Contract §7 "Shared listing": the listing of a `readWorkspace` of the request generation, after the tuple recheck. Otherwise an own listing.
   async function listingFor(t: ReadHistoryTarget): Promise<ListingOutcome> {
     const w = t.workspace;
-    const tuple = await listingTuple(w, t.operationId, t.signal);
+    // Contract §11 "Trust and environment": a WSL repository never shares a trust listing.
+    const tuple = w.wsl === undefined ? await listingTuple(w, t.operationId, t.signal) : null;
     if (tuple !== null && typeof tuple === "object") return { ok: false, stop: tuple.stop };
     const shared = tuple === null ? null : await trust.shared.reuse(w.repositoryId, t.generation, tuple, t.signal);
     if (shared !== null) {

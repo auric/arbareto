@@ -4,7 +4,7 @@
 // Contract §7 "Startup, trust, and environment": the trust listing, the read gate, the configuration fingerprint, and the trust operations.
 // Upstream rules cite git-for-windows 49d759b (v2.56.0.windows.1), the revision of the T280 probe (research R5).
 
-import { IdentityReply, type FileFact, type FileIdentity, type TrustBound, type TrustRecord } from "../contracts/channel";
+import { IdentityReply, type FileFact, type TrustBound, type TrustRecord } from "../contracts/channel";
 import type { ConfigScope } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import {
@@ -17,11 +17,13 @@ import {
   TRUST_INPUT_BYTES,
   TRUST_LINK_HOPS,
 } from "../contracts/limits";
-import { NATIVE } from "../contracts/native-path";
+import { NATIVE, PATH_RULES } from "../contracts/native-path";
+import { wslIdentityPath } from "../contracts/wsl-route";
+import { gitPathText } from "./wsl";
 import { configListArgs, HOOK_EVENTS, hooksPathArgs } from "./commands";
-import type { GitInstallation } from "./git-installation";
+import type { ReadInstallation } from "./snapshot";
 import { createCollector, RunnerRefusal, type FileFactsRequest, type GitRunner, type WalkStop } from "./git-runner";
-import { sameIdentity } from "./identity";
+import { sameIdentity, type PhysicalIdentity } from "./identity";
 import type { Workspace } from "./registration";
 
 // ---- URL user information (contract §7) ----
@@ -313,7 +315,7 @@ function programKey(p: KeyParts): ProgramKey | null {
 
 export type Program = { kind: "path"; text: string } | { kind: "bare"; name: string } | { kind: "unresolved" };
 
-function programOf(form: ProgramForm, value: string, home: string | undefined): Program {
+function programOf(form: ProgramForm, value: string, home: string | undefined, rules: Rules): Program {
   let word: string | null;
   if (form === "shell") word = shellProgram(value);
   else if (form === "split") word = splitCmdlineProgram(value);
@@ -322,12 +324,16 @@ function programOf(form: ProgramForm, value: string, home: string | undefined): 
     word = path === null ? null : form === "monitor" ? shellProgram(path) : path;
   }
   if (word === null || word === "") return { kind: "unresolved" };
-  return NATIVE.separator.test(word) ? { kind: "path", text: word } : { kind: "bare", name: word };
+  return rules.separator.test(word) ? { kind: "path", text: word } : { kind: "bare", name: word };
 }
 
 // ---- Repository-controlled resolution (contract §7) ----
 
+// The path rules of a listing. A WSL workspace takes the POSIX rules (contract §11 "Trust and environment").
+type Rules = typeof NATIVE;
+
 interface Layout {
+  rules: Rules;
   // The worktree root is the directory where each `registeredOperation` Git process runs (contract §6 "Process fields").
   root: string;
   pathEntries: string[];
@@ -335,12 +341,12 @@ interface Layout {
   home: string | undefined;
 }
 
-const resolveIn = (root: string, path: string) => NATIVE.path.resolve(root, path);
-const folded = (path: string) => NATIVE.fold(NATIVE.path.resolve(path));
+const resolveIn = (layout: Layout, path: string) => layout.rules.path.resolve(layout.root, path);
+const folded = (rules: Rules, path: string) => rules.fold(rules.path.resolve(path));
 
 // The file of a `file:` origin, resolved against the directory where Git ran. Null for another origin type.
-function originFile(entry: ConfigEntry, root: string): string | null {
-  return entry.origin.startsWith("file:") ? resolveIn(root, entry.origin.slice("file:".length)) : null;
+function originFile(entry: ConfigEntry, layout: Layout): string | null {
+  return entry.origin.startsWith("file:") ? resolveIn(layout, entry.origin.slice("file:".length)) : null;
 }
 
 // The relative child `PATH` entries in order. Both the control rule and the bare-name lookup take them from here.
@@ -358,7 +364,7 @@ const repositoryScope = (entry: ConfigEntry) => entry.scope === "local" || entry
 
 // The three program rules. A program that the service cannot name counts as repository-controlled.
 function programControlled(program: Program, layout: Layout, placeOf: (path: string) => Place): boolean {
-  if (program.kind === "path") return placeOf(resolveIn(layout.root, program.text)).inside;
+  if (program.kind === "path") return placeOf(resolveIn(layout, program.text)).inside;
   if (program.kind === "bare") return layout.relativeEntries.length > 0;
   return true;
 }
@@ -372,22 +378,50 @@ type RootName = FactEntry["root"];
 const ROOT_NAMES: readonly RootName[] = ["worktreeRoot", "gitDirectory", "commonDirectory"];
 
 interface Roots {
+  rules: Rules;
   paths: Record<RootName, string>;
   components: Record<RootName, string[]>;
 }
 
 // The components of an absolute path after text normalization. A file system root, such as `/`, keeps one component.
-function componentsOf(path: string): string[] {
-  const parts = NATIVE.path.resolve(path).split(NATIVE.separator);
+function componentsOf(path: string, rules: Rules): string[] {
+  const parts = rules.path.resolve(path).split(rules.separator);
   if (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
   return parts;
 }
 
-const pathOf = (parts: readonly string[]): string => (parts.length === 1 ? parts[0]! + NATIVE.path.sep : parts.join(NATIVE.path.sep));
+const pathOf = (parts: readonly string[], rules: Rules): string => (parts.length === 1 ? parts[0]! + rules.path.sep : parts.join(rules.path.sep));
 
-function rootsOf(w: Workspace): Roots {
-  const paths: Record<RootName, string> = { worktreeRoot: w.worktreeRoot, gitDirectory: w.gitDirectory, commonDirectory: w.commonDirectory };
-  return { paths, components: { worktreeRoot: componentsOf(w.worktreeRoot), gitDirectory: componentsOf(w.gitDirectory), commonDirectory: componentsOf(w.commonDirectory) } };
+function rootsOf(paths: Record<RootName, string>, rules: Rules): Roots {
+  const components = { worktreeRoot: componentsOf(paths.worktreeRoot, rules), gitDirectory: componentsOf(paths.gitDirectory, rules), commonDirectory: componentsOf(paths.commonDirectory, rules) };
+  return { rules, paths, components };
+}
+
+// One listing view of a workspace: the path rules, the roots in their form, the child `PATH` and `HOME`, and the path of an identity request.
+interface View {
+  rules: Rules;
+  roots: Record<RootName, string>;
+  path: string | undefined;
+  home: string | undefined;
+  // Contract §6 "Process fields": an identity request names a Windows path. Null: the path has no such form.
+  identityPath: (path: string) => string | null;
+}
+
+// Contract §11 "Trust and environment": a WSL workspace lists with the POSIX rules on the Linux paths of its distro, because Linux Git prints those.
+// Its roots hold the `wslIdentityPath` form `\\wsl.localhost\<distro>\<name>…`, so the Linux path is `/` and the names after the distro.
+// The bare-name rule takes the `PATH` of the Git probe. The probe reads no `HOME`, so a `~/` value stays unresolved.
+function viewOf(w: Workspace, environment: ServiceEnvironment): View {
+  const roots = { worktreeRoot: w.worktreeRoot, gitDirectory: w.gitDirectory, commonDirectory: w.commonDirectory };
+  if (w.wsl === undefined) return { rules: NATIVE, roots, path: environmentValue(environment, "PATH"), home: environmentValue(environment, "HOME"), identityPath: (path) => path };
+  const { distro, pathEnv } = w.wsl;
+  const linux = (unc: string) => `/${unc.split("\\").slice(4).join("/")}`;
+  return {
+    rules: PATH_RULES.posix,
+    roots: { worktreeRoot: linux(roots.worktreeRoot), gitDirectory: linux(roots.gitDirectory), commonDirectory: linux(roots.commonDirectory) },
+    path: pathEnv,
+    home: undefined,
+    identityPath: (path) => wslIdentityPath(distro, path),
+  };
 }
 
 // `below`: the components below the root. An empty list names the root itself.
@@ -397,27 +431,27 @@ type Place = Inside | { inside: false };
 const outside: Place = { inside: false };
 
 // Contract §7: by text, a path lies under a root when its components start with the components of the root. The longest matching root wins.
-// `NATIVE.fold` folds only the ASCII letters on Windows. A text match proves "inside" only. It never proves "outside".
+// The Windows `fold` folds only the ASCII letters. A text match proves "inside" only. It never proves "outside".
 function textPlace(parts: readonly string[], roots: Roots): Place {
   let best: RootName | null = null;
   for (const name of ROOT_NAMES) {
     const base = roots.components[name];
     if (base.length > parts.length || (best !== null && base.length <= roots.components[best].length)) continue;
-    if (base.every((part, i) => NATIVE.fold(part) === NATIVE.fold(parts[i]!))) best = name;
+    if (base.every((part, i) => roots.rules.fold(part) === roots.rules.fold(parts[i]!))) best = name;
   }
   return best === null ? outside : { inside: true, root: best, below: parts.slice(roots.components[best].length) };
 }
 
 // The service never opens a repository-controlled path outside the roots. Such a path takes only this rule.
-const placeByText = (path: string, roots: Roots): Place => textPlace(componentsOf(path), roots);
+const placeByText = (path: string, roots: Roots): Place => textPlace(componentsOf(path, roots.rules), roots);
 
-const pathAt = (roots: Roots, at: Inside): string => NATIVE.path.join(roots.paths[at.root], ...at.below);
+const pathAt = (roots: Roots, at: Inside): string => roots.rules.path.join(roots.paths[at.root], ...at.below);
 
 // The path and each text ancestor, deepest first, with the components below each one.
-function ancestry(path: string): { path: string; below: string[] }[] {
+function ancestry(path: string, rules: Rules): { path: string; below: string[] }[] {
   const chain = [{ path, below: [] as string[] }];
-  for (let at = path, parent = NATIVE.path.dirname(at); parent !== at; at = parent, parent = NATIVE.path.dirname(at)) {
-    chain.push({ path: parent, below: [NATIVE.path.basename(at), ...chain[chain.length - 1]!.below] });
+  for (let at = path, parent = rules.path.dirname(at); parent !== at; at = parent, parent = rules.path.dirname(at)) {
+    chain.push({ path: parent, below: [rules.path.basename(at), ...chain[chain.length - 1]!.below] });
   }
   return chain;
 }
@@ -425,26 +459,27 @@ function ancestry(path: string): { path: string; below: string[] }[] {
 type PlaceFailure = { ok: false; stop: WalkStop["stop"] } | { ok: false; code: ErrorCode };
 
 // Contract §7 "Inside and outside" for protected paths.
-function createPlaces(runner: GitRunner, target: ListingTarget, roots: Roots) {
+function createPlaces(runner: GitRunner, target: ListingTarget, roots: Roots, identityPath: View["identityPath"]) {
   const { workspace: w, operationId, signal } = target;
-  const identities: { root: RootName; identity: FileIdentity }[] = [
+  const identities: { root: RootName; identity: PhysicalIdentity }[] = [
     { root: "worktreeRoot", identity: w.worktreeIdentity[0] },
     { root: "gitDirectory", identity: w.worktreeIdentity[1] },
     { root: "commonDirectory", identity: w.commonIdentity },
   ];
   const context = { contextKind: "registeredOperation" as const, gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId };
   // Null: the shell reported the path absent. Only a not-found open gives that reason (contract §6 "Process fields").
-  const replies = new Map<string, FileIdentity | null>();
+  // `foreign`: the path exists on a file system that holds no root.
+  const replies = new Map<string, PhysicalIdentity | "foreign" | null>();
   const places = new Map<string, Place>();
 
   // The deepest ancestor with a root identity maps the path below that root.
   // Without a match, the path is outside only when each absent reply names a deeper path than each identity reply.
   // An absent reply for an ancestor of an existing path shows a change during the requests.
   function placeOf(path: string): Place | null {
-    const chain = ancestry(path);
+    const chain = ancestry(path, roots.rules);
     for (const { path: at, below } of chain) {
       const identity = replies.get(at);
-      const root = identity ? identities.find((r) => sameIdentity(r.identity, identity)) : undefined;
+      const root = typeof identity === "object" && identity !== null ? identities.find((r) => sameIdentity(r.identity, identity)) : undefined;
       if (root !== undefined) return { inside: true, root: root.root, below };
     }
     const first = chain.findIndex(({ path: at }) => replies.get(at) !== null);
@@ -460,15 +495,22 @@ function createPlaces(runner: GitRunner, target: ListingTarget, roots: Roots) {
       for (const path of open) {
         const text = placeByText(path, roots);
         if (text.inside) places.set(path, text);
-        else if (NATIVE.isUncOrDevice(path)) places.set(path, outside);
-        else for (const { path: at } of ancestry(path)) if (!replies.has(at)) asked.add(at);
+        else if (roots.rules.isUncOrDevice(path)) places.set(path, outside);
+        else for (const { path: at } of ancestry(path, roots.rules)) if (!replies.has(at)) asked.add(at);
       }
       // Contract §6 "Process fields": one identity request carries at most 8 paths.
-      const all = [...asked];
-      const chunks: string[][] = [];
-      for (let at = 0; at < all.length; at += IDENTITY_PATHS) chunks.push(all.slice(at, at + IDENTITY_PATHS));
+      // Each asked path with the path form of its request.
+      const forms: [string, string][] = [];
+      for (const path of asked) {
+        const form = identityPath(path);
+        // A path without a request form has no identity, so its place stays unknown.
+        if (form === null) return { ok: false, code: "REPOSITORY_UNAVAILABLE" };
+        forms.push([path, form]);
+      }
+      const chunks: [string, string][][] = [];
+      for (let at = 0; at < forms.length; at += IDENTITY_PATHS) chunks.push(forms.slice(at, at + IDENTITY_PATHS));
       // Every chunk settles before the decision ends, so no identity call outlives the listing.
-      const settled = await Promise.allSettled(chunks.map((chunk) => runner.identities(operationId, context, chunk, signal)));
+      const settled = await Promise.allSettled(chunks.map((chunk) => runner.identities(operationId, context, chunk.map(([, form]) => form), signal)));
       const answers: (unknown[] | WalkStop)[] = [];
       for (const result of settled) {
         if (result.status === "fulfilled") answers.push(result.value);
@@ -481,12 +523,19 @@ function createPlaces(runner: GitRunner, target: ListingTarget, roots: Roots) {
         if (!Array.isArray(answer)) return { ok: false, stop: answer.stop };
         // Contract §6 "Errors": a malformed reply fails the call with PROCESS_OWNERSHIP_FAILED.
         if (answer.length !== chunk.length) return { ok: false, code: "PROCESS_OWNERSHIP_FAILED" };
-        for (const [j, path] of chunk.entries()) {
+        for (const [j, [path]] of chunk.entries()) {
           const reply = IdentityReply.safeParse(answer[j]);
           if (!reply.success) return { ok: false, code: "PROCESS_OWNERSHIP_FAILED" };
+          // An identity of another form or another distro can never match a root, so the reply is malformed.
+          const data = reply.data;
+          if (!("code" in data) && (w.wsl === undefined ? "distroGuid" in data : !("distroGuid" in data) || data.distroGuid !== w.wsl.guid)) {
+            return { ok: false, code: "PROCESS_OWNERSHIP_FAILED" };
+          }
+          // T212 decision W10: WSL roots lie on ext4 (contract §11), so a path on another file system cannot alias a root.
+          const foreign = w.wsl !== undefined && "code" in reply.data && (reply.data.reason === "mixed-location" || reply.data.reason === "no-fs-uuid");
           // Any other identity error leaves the place unknown, so the listing fails as an unknown identity does below.
-          if ("code" in reply.data && reply.data.reason !== "absent") return { ok: false, code: "REPOSITORY_UNAVAILABLE" };
-          replies.set(path, "code" in reply.data ? null : reply.data);
+          if ("code" in reply.data && reply.data.reason !== "absent" && !foreign) return { ok: false, code: "REPOSITORY_UNAVAILABLE" };
+          replies.set(path, foreign ? "foreign" : "code" in reply.data ? null : reply.data);
         }
       }
       for (const path of open) {
@@ -620,8 +669,8 @@ const CHANGED = "the file changed during the read";
 // Contract §6 "File facts" component rule: 1 to 255 UTF-16 units, no lone surrogate, and the native name rule.
 const isComponent = (name: string) => name.length >= 1 && name.length <= FILE_FACT_COMPONENT_UNITS && name.isWellFormed() && NATIVE.isComponent(name);
 
-// Entries that differ only in ASCII letter case name one file on Windows, so the key folds as `NATIVE.fold` does.
-const factKey = (at: Inside) => JSON.stringify([at.root, ...at.below.map(NATIVE.fold)]);
+// Entries that differ only in ASCII letter case name one file on Windows, so the key folds as the Windows `fold` does.
+const keyOf = (at: Inside, rules: Rules) => JSON.stringify([at.root, ...at.below.map(rules.fold)]);
 
 // Contract §7 "Program file digests": one link hop, by text. Null: the link cannot be resolved.
 function follow(at: Inside, link: LinkFact, roots: Roots): Inside | { inside: false; location: string } | null {
@@ -631,7 +680,7 @@ function follow(at: Inside, link: LinkFact, roots: Roots): Inside | { inside: fa
   const rest = at.below.slice(link.component);
   let parts: string[];
   if (link.relative) {
-    const names = link.target.split(NATIVE.separator);
+    const names = link.target.split(roots.rules.separator);
     // A run of `..` components may start the target. A later `..`, a `.`, and an empty or root-relative start break the component rule.
     let up = 0;
     while (names[up] === "..") up++;
@@ -639,17 +688,17 @@ function follow(at: Inside, link: LinkFact, roots: Roots): Inside | { inside: fa
     if (up >= folder.length || !names.slice(up).every(isComponent)) return null;
     parts = [...folder.slice(0, folder.length - up), ...names.slice(up)];
   } else {
-    // `NATIVE.linkTarget` maps the absolute target text. Contract §7: a UNC target and an unmapped form cannot be resolved.
-    const mapped = NATIVE.linkTarget(link.target);
-    if (mapped === null || NATIVE.isUncOrDevice(mapped)) return null;
+    // `linkTarget` maps the absolute target text. Contract §7: a UNC target and an unmapped form cannot be resolved.
+    const mapped = roots.rules.linkTarget(link.target);
+    if (mapped === null || roots.rules.isUncOrDevice(mapped)) return null;
     // The first component is the drive or the empty name before the root separator.
-    const names = mapped.split(NATIVE.separator);
+    const names = mapped.split(roots.rules.separator);
     if (!names.slice(1).every(isComponent)) return null;
     parts = names;
   }
   const full = [...parts, ...rest];
   const place = textPlace(full, roots);
-  if (!place.inside) return { inside: false, location: pathOf(full) };
+  if (!place.inside) return { inside: false, location: pathOf(full, roots.rules) };
   return place.below.every(isComponent) ? place : null;
 }
 
@@ -715,12 +764,12 @@ function createFactReader(runner: GitRunner, target: ListingTarget, roots: Roots
   // Phase 1 (`digest: false`) for each place without a fact.
   async function ask(places: readonly Inside[]): Promise<ListingFailure | null> {
     const open = new Map<string, Inside>();
-    for (const at of places) if (!facts.has(factKey(at))) open.set(factKey(at), at);
+    for (const at of places) if (!facts.has(keyOf(at, roots.rules))) open.set(keyOf(at, roots.rules), at);
     const pending = [...open.values()];
     const reply = await send(false, pending);
     if (!Array.isArray(reply)) return reply;
     for (const [i, at] of pending.entries()) {
-      facts.set(factKey(at), reply[i]!);
+      facts.set(keyOf(at, roots.rules), reply[i]!);
       programFiles.push({ root: at.root, path: [...at.below], fact: reply[i]! });
     }
     return null;
@@ -729,17 +778,17 @@ function createFactReader(runner: GitRunner, target: ListingTarget, roots: Roots
   return {
     programFiles,
 
-    // Phase 1. Each link adds one request round, at most 8 hops (contract §5). The result maps the `factKey` of each start.
+    // Phase 1. Each link adds one request round, at most 8 hops (contract §5). The result maps the `keyOf` key of each start.
     async walk(starts: readonly Inside[]): Promise<Map<string, Walked> | ListingFailure> {
       const states = new Map<string, { at: Inside; hops: Hop[]; done: Walked | null }>();
-      for (const at of starts) if (!states.has(factKey(at))) states.set(factKey(at), { at, hops: [], done: settled(at, []) });
+      for (const at of starts) if (!states.has(keyOf(at, roots.rules))) states.set(keyOf(at, roots.rules), { at, hops: [], done: settled(at, []) });
       for (let round = 0; round <= TRUST_LINK_HOPS; round++) {
         const open = [...states.values()].filter((s) => s.done === null);
         if (open.length === 0) break;
         const failure = await ask(open.map((s) => s.at));
         if (failure !== null) return failure;
         for (const s of open) {
-          const fact = facts.get(factKey(s.at))!;
+          const fact = facts.get(keyOf(s.at, roots.rules))!;
           if (fact.kind === "error") return unreadable(pathAt(roots, { ...s.at, below: s.at.below.slice(0, fact.component) }), fact.code);
           if (fact.kind !== "link") {
             s.done = { kind: "fact", at: s.at, fact, hops: s.hops };
@@ -767,30 +816,31 @@ function createFactReader(runner: GitRunner, target: ListingTarget, roots: Roots
 
 // Contract §7 fact table, column "Listed as a hook". hook.c `find_hook`: POSIX Git lists an entry after `access(X_OK)`.
 // Git for Windows lists each existing entry.
-function listedHook(walked: Walked): boolean {
+function listedHook(walked: Walked, rules: Rules): boolean {
   if (walked.kind !== "fact") return true;
   const { fact } = walked;
   if (fact.kind === "absent") return false;
-  if (!NATIVE.executeBit) return true;
+  if (!rules.executeBit) return true;
   return (fact.kind === "file" || fact.kind === "directory") && fact.executable === true;
 }
 
 // run-command.c `is_executable` (POSIX) and compat/mingw.c `lookup_prog` (Windows). POSIX Git tests only the `S_IXUSR` bit, never `access(X_OK)`.
 // A link outside the roots, or one that cannot be resolved, counts as found, because Git can start its target.
-function programFound(walked: Walked, suffixed: boolean): boolean {
+function programFound(walked: Walked, suffixed: boolean, rules: Rules): boolean {
   if (walked.kind !== "fact") return true;
   const { fact } = walked;
   if (fact.kind === "absent") return false;
-  if (NATIVE.executeBit) return fact.kind === "file" && fact.ownerExecute === true;
+  if (rules.executeBit) return fact.kind === "file" && fact.ownerExecute === true;
   return suffixed || fact.kind !== "directory";
 }
 
 // Contract §7 "Program file digests": the bare-name candidates in each relative child `PATH` entry, resolved against the worktree root.
 function bareCandidates(name: string, layout: Layout): { entry: string; candidates: { path: string; suffixed: boolean }[] }[] {
-  const suffixes = NATIVE.programSuffixes.filter((suffix) => suffix === "" || !NATIVE.fold(name).endsWith(NATIVE.fold(suffix)));
+  const { rules } = layout;
+  const suffixes = rules.programSuffixes.filter((suffix) => suffix === "" || !rules.fold(name).endsWith(rules.fold(suffix)));
   const out: { entry: string; candidates: { path: string; suffixed: boolean }[] }[] = [];
   for (const entry of layout.relativeEntries) {
-    out.push({ entry, candidates: suffixes.map((suffix) => ({ path: NATIVE.path.resolve(layout.root, entry, name + suffix), suffixed: suffix !== "" })) });
+    out.push({ entry, candidates: suffixes.map((suffix) => ({ path: rules.path.resolve(layout.root, entry, name + suffix), suffixed: suffix !== "" })) });
   }
   return out;
 }
@@ -812,7 +862,7 @@ function lookupBareName(name: string, layout: Layout, placeOf: (path: string) =>
       const place = placeOf(path);
       if (!place.inside) continue;
       const walked = walkedAt(place);
-      if (programFound(walked, suffixed)) return { relative, found: path, walked };
+      if (programFound(walked, suffixed, layout.rules)) return { relative, found: path, walked };
     }
   }
   return { relative, found: null, walked: null };
@@ -857,32 +907,33 @@ export interface ChangeFiles {
 
 // Git `config.c` `do_git_config_sequence` and `handle_path_include`, resolved from the `git var` lines, the environment seam, and the listing.
 // `configFiles` holds the kept `git var` lines of the installation (contract §7 "Configuration file paths"). Git already applied its overrides to them.
-function configPaths(entries: readonly ConfigEntry[], workspace: Workspace, layout: Layout, configFiles: readonly string[] | undefined): { paths: string[]; complete: boolean } {
+function configPaths(entries: readonly ConfigEntry[], roots: Roots, layout: Layout, configFiles: readonly string[] | undefined): { paths: string[]; complete: boolean } {
+  const { rules } = layout;
   const paths: string[] = [];
   let complete = true;
-  const add = (path: string) => paths.push(resolveIn(layout.root, path));
+  const add = (path: string) => paths.push(resolveIn(layout, path));
   for (const entry of entries) {
-    const file = originFile(entry, layout.root);
+    const file = originFile(entry, layout);
     if (file !== null) paths.push(file);
   }
   if (configFiles === undefined) complete = false;
   else for (const file of configFiles) add(file);
-  add(NATIVE.path.join(workspace.commonDirectory, "config"));
+  add(rules.path.join(roots.paths.commonDirectory, "config"));
   // Contract §8: `config.worktree` is a candidate when `extensions.worktreeConfig` is set.
-  if (entries.some((e) => e.key.toLowerCase() === "extensions.worktreeconfig" && parseMaybeBool(e.value) === 1)) add(NATIVE.path.join(workspace.gitDirectory, "config.worktree"));
+  if (entries.some((e) => e.key.toLowerCase() === "extensions.worktreeconfig" && parseMaybeBool(e.value) === 1)) add(rules.path.join(roots.paths.gitDirectory, "config.worktree"));
   for (const entry of entries) {
     const parts = keyParts(entry.key);
     if (parts === null || parts.variable !== "path" || !(parts.section === "include" ? parts.subsection === null : parts.section === "includeif" && parts.subsection !== null)) continue;
     if (entry.value === null) continue;
     const target = interpolatePath(entry.value, layout.home);
-    const file = originFile(entry, layout.root);
+    const file = originFile(entry, layout);
     if (target === null || !entry.exact) complete = false;
-    else if (NATIVE.isAbsolute(target)) add(target);
+    else if (rules.isAbsolute(target)) add(target);
     // A relative include needs a file origin. Git refuses another one.
-    else if (file !== null) paths.push(NATIVE.path.resolve(NATIVE.path.dirname(file), target));
+    else if (file !== null) paths.push(rules.path.resolve(rules.path.dirname(file), target));
   }
   const seen = new Set<string>();
-  return { paths: paths.filter((path) => !seen.has(folded(path)) && seen.add(folded(path))), complete };
+  return { paths: paths.filter((path) => !seen.has(folded(rules, path)) && seen.add(folded(rules, path))), complete };
 }
 
 // ---- The listing ----
@@ -956,50 +1007,51 @@ export async function listTrust(runner: GitRunner, target: ListingTarget, enviro
   if (!hooks.stdout.limited && hooks.exit.exitCode !== 0) return { ok: false, code: "GIT_FAILED" };
   const entries = parseConfigListing(config.stdout.take(), config.stdout.limited);
   if (entries === null) return { ok: false, code: "MALFORMED_GIT_OUTPUT" };
-  let hooksDirectory: string | null = null;
+  let hooksText: string | null = null;
   if (!hooks.stdout.limited) {
     const raw = hooks.stdout.take();
     const text = raw.length > 1 && raw[raw.length - 1] === NEWLINE ? decode(raw.subarray(0, -1)) : null;
     if (text === null || !text.exact || text.text.includes("\n")) return { ok: false, code: "MALFORMED_GIT_OUTPUT" };
-    // Contract §7: resolve the printed directory against the directory where Git ran.
-    hooksDirectory = resolveIn(workspace.worktreeRoot, text.text);
+    hooksText = text.text;
   }
-  return buildListing(runner, target, entries, hooksDirectory, inputLimited, environment, configFiles);
+  return buildListing(runner, target, entries, hooksText, inputLimited, viewOf(workspace, environment), configFiles);
 }
 
 async function buildListing(
   runner: GitRunner,
   target: ListingTarget,
   entries: ConfigEntry[],
-  hooksDirectory: string | null,
+  hooksText: string | null,
   inputLimited: boolean,
-  environment: ServiceEnvironment,
+  view: View,
   configFiles: readonly string[] | undefined,
 ): Promise<ListingOutcome> {
-  const { workspace } = target;
-  const path = environmentValue(environment, "PATH");
-  const roots = rootsOf(workspace);
+  const { rules, path } = view;
+  const roots = rootsOf(view.roots, rules);
   const layout: Layout = {
-    root: workspace.worktreeRoot,
-    pathEntries: path === undefined || path === "" ? [] : path.split(NATIVE.path.delimiter),
-    relativeEntries: relativePathEntries(path),
-    home: environmentValue(environment, "HOME"),
+    rules,
+    root: roots.paths.worktreeRoot,
+    pathEntries: path === undefined || path === "" ? [] : path.split(rules.path.delimiter),
+    relativeEntries: relativePathEntries(path, rules),
+    home: view.home,
   };
-  const places = createPlaces(runner, target, roots);
+  // Contract §7: resolve the printed directory against the directory where Git ran.
+  const hooksDirectory = hooksText === null ? null : resolveIn(layout, hooksText);
+  const places = createPlaces(runner, target, roots, view.identityPath);
   const placeFor = (at: string, controlled: boolean): Place => (controlled ? placeByText(at, roots) : places.at(at));
 
   // Contract §7 "Repository-controlled resolution", the two entry rules. An origin that Git printed in another encoding counts as inside.
   // The origin places decide which values are repository-controlled. So they come before the identity requests for those values.
   const origins: string[] = [];
   for (const entry of entries) {
-    const file = repositoryScope(entry) || !entry.exact ? null : originFile(entry, layout.root);
+    const file = repositoryScope(entry) || !entry.exact ? null : originFile(entry, layout);
     if (file !== null) origins.push(file);
   }
   const originFailure = await places.decide(origins);
   if (originFailure !== null) return originFailure;
   const entryControlled = (entry: ConfigEntry): boolean => {
     if (repositoryScope(entry)) return true;
-    const file = originFile(entry, layout.root);
+    const file = originFile(entry, layout);
     return file !== null && (!entry.exact || places.at(file).inside);
   };
 
@@ -1013,7 +1065,7 @@ async function buildListing(
     if (!kind || last.get(entry.key) !== entry || entry.value === null || entry.value === "") continue;
     // fsmonitor-settings.c: a boolean `core.fsmonitor` names the built-in daemon, not a command (contract §7).
     if (kind.form === "monitor" && parseMaybeBool(entry.value) !== -1) continue;
-    const program = entry.exact ? programOf(kind.form, entry.value, layout.home) : ({ kind: "unresolved" } as const);
+    const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules) : ({ kind: "unresolved" } as const);
     programs.push({ entry, kind, program, controlled: entryControlled(entry) });
   }
   const hooksPath = last.get("core.hookspath");
@@ -1023,7 +1075,7 @@ async function buildListing(
   const protectedPaths: string[] = [];
   for (const { program, controlled } of programs) {
     if (controlled) continue;
-    if (program.kind === "path") protectedPaths.push(resolveIn(layout.root, program.text));
+    if (program.kind === "path") protectedPaths.push(resolveIn(layout, program.text));
     else if (program.kind === "bare") for (const { candidates } of bareCandidates(program.name, layout)) protectedPaths.push(...candidates.map((c) => c.path));
   }
   if (hooksDirectory !== null && !hooksPathControlled) protectedPaths.push(hooksDirectory);
@@ -1052,11 +1104,11 @@ async function buildListing(
   const starts: Inside[] = [];
   if (folderPlace.inside) {
     starts.push(folderPlace);
-    for (const event of HOOK_EVENTS) for (const suffix of NATIVE.hookSuffixes) starts.push(eventAt(folderPlace, event + suffix));
+    for (const event of HOOK_EVENTS) for (const suffix of rules.hookSuffixes) starts.push(eventAt(folderPlace, event + suffix));
   }
   for (const [i, { repositoryControlled, program }] of integrations.entries()) {
     if (!repositoryControlled) continue;
-    const paths = program.kind === "path" ? [resolveIn(layout.root, program.text)] : program.kind === "bare" ? bareCandidates(program.name, layout).flatMap((e) => e.candidates.map((c) => c.path)) : [];
+    const paths = program.kind === "path" ? [resolveIn(layout, program.text)] : program.kind === "bare" ? bareCandidates(program.name, layout).flatMap((e) => e.candidates.map((c) => c.path)) : [];
     for (const path of paths) {
       const place = programPlace(i, path);
       if (place.inside) starts.push(place);
@@ -1066,7 +1118,7 @@ async function buildListing(
   const walked = await reader.walk(starts);
   if (!(walked instanceof Map)) return walked;
   const walkedAt = (at: Inside): Walked => {
-    const found = walked.get(factKey(at));
+    const found = walked.get(keyOf(at, rules));
     if (found === undefined) throw new Error(`trust listing: no phase-1 fact for ${pathAt(roots, at)}`);
     return found;
   };
@@ -1076,11 +1128,11 @@ async function buildListing(
   const listedFolder: { hook: FolderHook; walked: Walked }[] = [];
   if (folderPlace.inside && folderWalk!.kind === "fact") {
     for (const event of HOOK_EVENTS) {
-      for (const suffix of NATIVE.hookSuffixes) {
+      for (const suffix of rules.hookSuffixes) {
         const entry = walkedAt(eventAt(folderPlace, event + suffix));
         // hook.c `find_hook`: Git for Windows tries `<event>.exe` only when `<event>` does not exist.
         if (entry.kind === "fact" && entry.fact.kind === "absent") continue;
-        if (listedHook(entry)) listedFolder.push({ hook: { event, path: NATIVE.path.join(hooksDirectory!, event + suffix) }, walked: entry });
+        if (listedHook(entry, rules)) listedFolder.push({ hook: { event, path: rules.path.join(hooksDirectory!, event + suffix) }, walked: entry });
         break;
       }
     }
@@ -1096,7 +1148,7 @@ async function buildListing(
     if (!integration.repositoryControlled) continue;
     const { program } = integration;
     if (program.kind === "path") {
-      const place = programPlace(i, resolveIn(layout.root, program.text));
+      const place = programPlace(i, resolveIn(layout, program.text));
       if (place.inside) ordered.push(walkedAt(place));
     } else if (program.kind === "bare") {
       const lookup = lookupBareName(program.name, layout, (at) => programPlace(i, at), walkedAt);
@@ -1110,8 +1162,8 @@ async function buildListing(
   const slots = new Map<string, number>();
   const phase2: Inside[] = [];
   for (const entry of ordered) {
-    if (entry.kind !== "fact" || entry.fact.kind !== "file" || slots.has(factKey(entry.at))) continue;
-    slots.set(factKey(entry.at), slots.size);
+    if (entry.kind !== "fact" || entry.fact.kind !== "file" || slots.has(keyOf(entry.at, rules))) continue;
+    slots.set(keyOf(entry.at, rules), slots.size);
     if (slots.size <= TRUST_DIGEST_FILES) phase2.push(entry.at);
   }
   const digested = await reader.digests(phase2);
@@ -1122,13 +1174,13 @@ async function buildListing(
     if (fact.kind === "error") return unreadable(pathAt(roots, { ...at, below: at.below.slice(0, fact.component) }), fact.code);
     if (fact.kind !== "file") return unreadable(pathAt(roots, at), CHANGED);
     // Contract §6 "File facts": with `digest: true`, a file fact holds `digest` or `bound`.
-    if (fact.digest !== undefined) states.set(factKey(at), { kind: "digest", digest: fact.digest });
-    else if (fact.bound !== undefined) states.set(factKey(at), { kind: "unchecked", bound: fact.bound });
+    if (fact.digest !== undefined) states.set(keyOf(at, rules), { kind: "digest", digest: fact.digest });
+    else if (fact.bound !== undefined) states.set(keyOf(at, rules), { kind: "unchecked", bound: fact.bound });
     else return { ok: false, code: "PROCESS_OWNERSHIP_FAILED" };
   }
   const stateOf = (entry: Extract<Walked, { kind: "fact" }>): FileState => {
-    if ((slots.get(factKey(entry.at)) ?? 0) >= TRUST_DIGEST_FILES) return { kind: "unchecked", bound: "file-count" };
-    return states.get(factKey(entry.at)) ?? { kind: "absent" };
+    if ((slots.get(keyOf(entry.at, rules)) ?? 0) >= TRUST_DIGEST_FILES) return { kind: "unchecked", bound: "file-count" };
+    return states.get(keyOf(entry.at, rules)) ?? { kind: "absent" };
   };
 
   // Contract §5: the first reached bound is reported.
@@ -1164,14 +1216,14 @@ async function buildListing(
     const { program } = integration;
     digest.field("integration", integration.key).field("program", program.kind);
     if (program.kind === "path") {
-      const location = resolveIn(layout.root, program.text);
+      const location = resolveIn(layout, program.text);
       const place = programPlace(i, location);
       digest.field("location", location);
       if (place.inside) fileFields(walkedAt(place));
       else digest.field("file", "outside");
     } else if (program.kind === "bare") {
       const lookup = lookups.get(integration)!;
-      digest.field("name", program.name).field("path", layout.pathEntries.join(NATIVE.path.delimiter));
+      digest.field("name", program.name).field("path", layout.pathEntries.join(rules.path.delimiter));
       for (const entry of lookup.relative) digest.field("relativeEntry", entry);
       digest.field("found", lookup.found);
       if (lookup.walked === null) digest.field("file", "absent");
@@ -1188,7 +1240,7 @@ async function buildListing(
     reads: inputLimited || integrations.some((i) => i.reads && i.repositoryControlled),
     commit: inputLimited || hooksPathControlled || folderUnlisted || commitHooks || integrations.some((i) => i.commit && i.repositoryControlled),
   };
-  const config = configPaths(entries, workspace, layout, configFiles);
+  const config = configPaths(entries, roots, layout, configFiles);
   return {
     ok: true,
     listing: {
@@ -1289,7 +1341,7 @@ export type TrustOutcome<R> =
   | { result: "deadline" };
 
 export interface TrustTarget extends ListingTarget {
-  installation: GitInstallation;
+  installation: ReadInstallation;
 }
 
 export interface ReadTrustValue {
@@ -1306,7 +1358,7 @@ export interface ReadTrustValue {
 }
 
 interface WorktreeTrust {
-  common: FileIdentity;
+  common: PhysicalIdentity;
   commonDirectory: string;
   trustId?: string;
   // A session approval: over a digest bound, or after a failed store. It takes precedence over a stored record.
@@ -1354,22 +1406,23 @@ export function createTrust({ runner, environment, configFiles = () => undefined
   const trustIdOf = (t: WorktreeTrust) => (t.trustId ??= crypto.randomUUID());
 
   // Contract §7 "Trust approval store": the state from the records and the session approvals.
-  function stateOf(w: Workspace, fingerprint: string, gitSelectedPath: string): { state: TrustState; trustId?: string; session: boolean } {
+  function stateOf(w: Workspace, fingerprint: string, gitSelectedPath: string | null): { state: TrustState; trustId?: string; session: boolean } {
     const t = worktree(w);
+    const sameGit = (path: string) => gitSelectedPath !== null && samePath(path, gitSelectedPath);
     if (t.revoked) return { state: "revoked", session: false };
     if (t.approval !== undefined) {
-      const same = t.approval.fingerprint === fingerprint && samePath(t.approval.gitSelectedPath, gitSelectedPath);
+      const same = t.approval.fingerprint === fingerprint && sameGit(t.approval.gitSelectedPath);
       return { state: same ? "approved" : "changed", trustId: trustIdOf(t), session: true };
     }
     const matching = records.filter((r) => sameIdentity(r.commonIdentity, w.commonIdentity) && sameIdentity(r.worktreeIdentity[0]!, w.worktreeIdentity[0]) && sameIdentity(r.worktreeIdentity[1]!, w.worktreeIdentity[1]));
-    if (matching.some((r) => r.configurationFingerprint === fingerprint && samePath(r.gitSelectedPath, gitSelectedPath))) return { state: "approved", trustId: trustIdOf(t), session: false };
+    if (matching.some((r) => r.configurationFingerprint === fingerprint && sameGit(r.gitSelectedPath))) return { state: "approved", trustId: trustIdOf(t), session: false };
     if (matching.length > 0 || records.some((r) => samePath(r.commonDirectory, w.commonDirectory) && samePath(r.worktreeRoot, w.worktreeRoot))) {
       return { state: "changed", trustId: trustIdOf(t), session: false };
     }
     return { state: "untrusted", session: false };
   }
 
-  function view(w: Workspace, listing: TrustListing, installation: GitInstallation): TrustView {
+  function view(w: Workspace, listing: TrustListing, installation: ReadInstallation): TrustView {
     const { state, trustId, session } = stateOf(w, listing.fingerprint, installation.selectedPath);
     return {
       state,
@@ -1382,7 +1435,7 @@ export function createTrust({ runner, environment, configFiles = () => undefined
   }
 
   // Contract §7: the gate of reads and of `commit`. Null: the operation may run. An input-limited listing can never pass.
-  function gate(w: Workspace, listing: TrustListing, installation: GitInstallation, kind: "reads" | "commit"): "TRUST_REQUIRED" | "TRUST_CHANGED" | null {
+  function gate(w: Workspace, listing: TrustListing, installation: ReadInstallation, kind: "reads" | "commit"): "TRUST_REQUIRED" | "TRUST_CHANGED" | null {
     if (!listing.approvalRequired[kind]) return null;
     const { state } = stateOf(w, listing.fingerprint, installation.selectedPath);
     if (state === "approved" && !listing.inputLimited) return null;
@@ -1438,14 +1491,17 @@ export function createTrust({ runner, environment, configFiles = () => undefined
 
     // Contract §3 `approveTrust` and §7 "Trust approval store". The service stores nothing itself. The shell writes the record.
     async approveTrust(target: TrustTarget, fingerprint: string): Promise<TrustOutcome<{ trustId: string; persistence: "stored" | "session"; saveFailed: boolean }>> {
+      const w = target.workspace;
+      const gitSelectedPath = target.installation.selectedPath;
+      // T212 decision W8: `confirm` needs the UNC form of the WSL Git path. Without it, the §11 code of an unmappable path refuses before the native confirmation.
+      // Only a WSL Git path has no UNC form (`ReadInstallation`).
+      if (gitSelectedPath === null) return { result: "failed", code: "UNSUPPORTED_REPOSITORY", value: { remedy: { text: gitPathText(w.wsl!) } } };
       const outcome = await list(target);
       if (!outcome.ok) return stopped(outcome);
       const { listing } = outcome;
       if (listing.inputLimited) return { result: "failed", code: "OUTPUT_LIMIT" };
       if (listing.fingerprint !== fingerprint) return { result: "failed", code: "TRUST_CHANGED" };
-      const w = target.workspace;
       const persist = listing.bound === undefined;
-      const gitSelectedPath = target.installation.selectedPath;
       let reply;
       try {
         reply = await runner.trust({

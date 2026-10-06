@@ -193,14 +193,25 @@ export interface ProbeChange {
   gitfs?: string;
   gitfile?: string;
   scope?: string;
+  osid?: string;
+  // Another resolved Git path. No process runs it in a seam case.
+  git?: string;
+  // The context path lines (gaps.md W1). The defaults give the seam identity of `SEAM_INODE` on the disk of the distro Git.
+  selfs?: string;
+  selino?: string;
+  selstat?: string;
 }
+
+// The seam inode of a context folder, and of the Git directory below it.
+export const SEAM_INODE = "4242";
+export const SEAM_GIT_INODE = "4243";
 
 // A Git probe output in the `src/contracts/wsl-process.json` line format. It starts from the real facts of the distro.
 export function seamProbe(host: WslHost, change: ProbeChange = {}): string {
   const facts = host.probe;
   const out: string[] = [];
-  for (const name of ["git", "systemd-run", "systemctl", "setsid", "stat", "env"]) {
-    const path = facts.paths[name];
+  for (const name of ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl"]) {
+    const path = name === "git" ? (change.git ?? facts.paths.git) : facts.paths[name];
     if (change.absent?.includes(name) || !path) out.push(`absent ${name}`);
     else out.push(`path ${name} ${path}`, `magic ${name} ${facts.magic[name] ?? "-"}`);
   }
@@ -209,8 +220,45 @@ export function seamProbe(host: WslHost, change: ProbeChange = {}): string {
     out.push(`version ${change.version ?? facts.version ?? ""}`);
     if (!change.absent?.includes("stat")) out.push(`gitfs ${change.gitfs ?? facts.gitfs ?? ""}`, `gitfile ${change.gitfile ?? facts.gitfile ?? ""}`);
   }
+  if (!change.absent?.includes("stat")) out.push(`selfs ${change.selfs ?? facts.gitfs ?? ""}`, `selino ${change.selino ?? SEAM_INODE}`);
+  if (!change.absent?.includes("perl")) out.push(`selstat ${change.selstat ?? "ok"}`);
   out.push(`scope ${change.scope ?? facts.scope ?? "1"}`);
+  const osid = change.osid ?? facts.osid;
+  if (osid !== undefined) out.push(`osid ${osid}`);
   return `${out.join("\n")}\n`;
+}
+
+// ---- A WSL registration without a process (gaps.md W1 and W2) ----
+
+export interface SeamRepo {
+  // The UNC path of the worktree root, and its Linux path.
+  path: string;
+  linux: string;
+  gitDirectory: string;
+}
+
+// The seam probe, the discovery outputs, and the identity replies of a repository at `linux` (default: the owned folder).
+// The trust listing reads `config` as its `config list -z` output. Only the `fileFacts` probe and unmatched calls start processes.
+export function seamRepository(host: WslHost, runner: BunRunner, options: { linux?: string; probe?: ProbeChange; config?: string } = {}): SeamRepo {
+  const linux = options.linux ?? host.folder;
+  const fileSystem = host.probe.gitfs ?? "";
+  runner.inject.wslProbe = { stdout: seamProbe(host, { version: "git version 2.55.0", ...options.probe }) };
+  runner.inject.wslStat.set(uncPath(host, linux), { inode: SEAM_INODE, fileSystem });
+  runner.inject.wslStat.set(uncPath(host, `${linux}/.git`), { inode: SEAM_GIT_INODE, fileSystem });
+  const outputs: [string, string][] = [
+    ["rev-parse --is-bare-repository --is-inside-git-dir", "false\nfalse\n"],
+    ["rev-parse --show-toplevel", `${linux}\n${linux}/.git\n${linux}/.git\n${linux}/.git/index\nsha1\nfiles\n`],
+    ["symbolic-ref", "refs/heads/main\n"],
+    ["show-ref --head --verify HEAD", `${"1".repeat(40)} HEAD\n`],
+    ["config list", options.config ?? ""],
+    ["rev-parse --git-path hooks", ".git/hooks\n"],
+  ];
+  runner.inject.stdout = ({ arguments: args }) => {
+    const text = args.join(" ");
+    const found = outputs.find(([marker]) => text.includes(marker));
+    return found ? new TextEncoder().encode(found[1]) : undefined;
+  };
+  return { path: uncPath(host, linux), linux, gitDirectory: uncPath(host, `${linux}/.git`) };
 }
 
 // ---- A service session over the T206 double, as the shell drives it ----

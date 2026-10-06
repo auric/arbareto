@@ -7,18 +7,22 @@ import { codeFitsState, type ErrorCode } from "../contracts/errors";
 import { GIT_PROCESS_DEADLINE_MS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier, type OperationName } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent } from "../contracts/strict-json";
-import { RunnerRefusal, type GitRunner } from "./git-runner";
+import { isWindows } from "../contracts/native-path";
+import { wslIdentityPath } from "../contracts/wsl-route";
+import { RunnerRefusal, type GitRunner, type WslRunner } from "./git-runner";
 import { getEnvironment } from "./environment";
-import { failure, probeGit, revalidateSavedGit, type GitInstallation, type GitProbeResult } from "./git-installation";
+import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createHistoryReader, type HistoryOutcome } from "./history";
 import { createSessionLog } from "./log";
 import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
-import { createRegistrations, type RegistrationOutcome } from "./registration";
+import { createRegistrations, type RegistrationOutcome, type Workspace } from "./registration";
+import type { ReadInstallation } from "./snapshot";
 import { createWorkspaceReader, type ReadOutcome } from "./status";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
+import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "./wsl";
 
 export type { Handshake } from "../contracts/channel";
 
@@ -32,7 +36,7 @@ type Handler<K extends ServiceOperation> = (request: Extract<ServiceRequest, { o
 
 export interface SessionOptions {
   writer: FrameWriter;
-  runner: GitRunner & { receive(frame: Frame): boolean };
+  runner: GitRunner & WslRunner & { receive(frame: Frame): boolean };
   // Called after a failed handshake reply. The service then exits.
   fail(): void;
   // Contract §5 "Other Git process deadline" bounds the startup revalidation. Tests set a shorter value.
@@ -121,7 +125,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     runner,
     unfinishedMutation: () => false,
     onRegister: (w) => {
-      if (watchHints) watchers.set(w.repositoryId, watchWorkspace([w.worktreeRoot, w.gitDirectory, w.commonDirectory], (lost) => reader.hint(w.repositoryId, lost)));
+      // Contract §11 "Change polling": a WSL workspace gets no watcher.
+      if (watchHints && w.wsl === undefined) watchers.set(w.repositoryId, watchWorkspace([w.worktreeRoot, w.gitDirectory, w.commonDirectory], (lost) => reader.hint(w.repositoryId, lost)));
     },
     onRelease: (workspace) => {
       watchers.get(workspace.repositoryId)?.();
@@ -176,17 +181,65 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     probeGit(runner, target, { operationId, signal, confirm: true }).then(finish, () => finish({ ok: false, gitCode: "GIT_FAILED" }));
   };
 
+  // Contract §11 "Git per distro": the approved WSL Git of each distro GUID in this session.
+  const wslGits = new Map<string, WslGit>();
+  const gitCode = (): ErrorCode => (git && !git.ok ? git.gitCode : "GIT_UNAVAILABLE");
+
+  // Contract §11 "Route". The service holds only the bootstrap ID, so the shell names the context path. A WSL path needs no Windows Git.
+  async function registerRouted(target: { operationId: string; bootstrapId: string; signal: AbortSignal }, windows: () => Promise<RegistrationOutcome>): Promise<RegistrationOutcome> {
+    const { operationId, bootstrapId, signal } = target;
+    try {
+      const route = routeRegistration(await runner.wslDistros({ operationId, bootstrapId }));
+      if ("ok" in route) return route;
+      if (route.kind === "windows") return await windows();
+      const probed = await probeWslGit(runner, route, { ...target, starting: () => registry.progress(operationId, "wsl-starting") });
+      if (!probed.ok) return "canceled" in probed ? { ok: false, code: "CANCELED" } : probed;
+      const approved = await approveWslGit(runner, target, probed.git, wslGits.get(route.guid), route.saved);
+      if (!approved.ok) return "canceled" in approved ? { ok: false, code: "CANCELED" } : approved;
+      if (!approved.reused) {
+        // A new Git of the distro releases every workspace of the previous one, as `chooseGit` does (contract §6 "Registration reuse and release").
+        const previous = wslGits.get(route.guid);
+        const released = previous === undefined ? "released" : await registrations.releaseInstallation(previous.gitInstallationId, () => !signal.aborted);
+        if (released !== "released") {
+          runner.release({ gitInstallationId: approved.git.gitInstallationId });
+          return { ok: false, code: released === "busy" ? "BUSY" : "CANCELED" };
+        }
+        wslGits.set(route.guid, approved.git);
+      }
+      if (approved.changed) return { ok: false, code: "GIT_CHANGED" };
+      return await registrations.registerWsl(target, approved.git);
+    } catch (error) {
+      if (error instanceof RunnerRefusal) return { ok: false, code: error.code };
+      if (signal.aborted) return { ok: false, code: "CANCELED" };
+      throw error;
+    }
+  }
+
   const register = (request: Extract<ServiceRequest, { operation: "chooseRepository" | "restoreWorkspace" }>) => {
-    if (!git?.ok) return reject(request.requestId, git ? git.gitCode : "GIT_UNAVAILABLE");
+    // Contract §11 "Route": only a Windows service routes WSL paths.
+    if (!isWindows && !git?.ok) return reject(request.requestId, gitCode());
     const { operationId, signal } = registry.start(request.operation, request.requestId);
     registry.apply(operationId, { type: "valid-read" });
     const finish = (outcome: RegistrationOutcome) => {
       if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
+      // Cancel in the WSL Git confirmation: the registration ends `canceled` (contract §11 "Git per distro").
+      if (!outcome.ok && outcome.code === "CANCELED") {
+        registry.apply(operationId, { type: "cancel" });
+        return registry.apply(operationId, { type: "processes-stopped" });
+      }
       if (outcome.ok) return registry.apply(operationId, { type: "read-complete", result: "succeeded" }, outcome.result);
       registry.apply(operationId, { type: "read-complete", result: "failed", code: outcome.code }, outcome.result);
     };
-    const target = { operationId, bootstrapId: request.payload.bootstrapId, installation: git.installation, signal };
-    registrations.register(target).then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
+    const target = { operationId, bootstrapId: request.payload.bootstrapId, signal };
+    const windows = (): Promise<RegistrationOutcome> => (git?.ok ? registrations.register({ ...target, installation: git.installation }) : Promise.resolve({ ok: false, code: gitCode() }));
+    (isWindows ? registerRouted(target, windows) : windows()).then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
+  };
+
+  // The Git of a read: the WSL Git of a WSL workspace, otherwise the selected Windows Git.
+  // T212 decision W8: a WSL trust record names the UNC form of the WSL Git path.
+  const installationOf = (w: Workspace): ReadInstallation | null => {
+    if (w.wsl) return { gitInstallationId: w.wsl.gitInstallationId, selectedPath: wslIdentityPath(w.wsl.distro, w.wsl.path), executablePath: w.wsl.path, wsl: { identity: w.wsl.identity, version: w.wsl.version } };
+    return git?.ok ? git.installation : null;
   };
 
   // `approveTrust` and `revokeTrust` take no read slot. Contract §6: a release cancels neither, and `approveTrust` waits for the native confirmation.
@@ -194,10 +247,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const trustOperation = <R>(
     request: Extract<ServiceRequest, { operation: "readTrust" | "approveTrust" | "revokeTrust" }>,
     accept: () => ErrorCode | null,
-    run: (target: { operationId: string; signal: AbortSignal; installation: GitInstallation }) => Promise<TrustOutcome<R>>,
+    run: (target: { operationId: string; signal: AbortSignal; installation: ReadInstallation }) => Promise<TrustOutcome<R>>,
   ) => {
-    if (!git?.ok) return reject(request.requestId, git ? git.gitCode : "GIT_UNAVAILABLE");
-    const { installation } = git;
+    const installation = installationOf(workspaceOf(request.repositoryId));
+    if (installation === null) return reject(request.requestId, gitCode());
     const { operationId, signal } = registry.start(request.operation, request.requestId);
     const refused = accept();
     if (refused !== null) return void registry.apply(operationId, { type: "invalid-approval", code: refused });
@@ -254,9 +307,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
 
   // Contract §3 `readWorkspace`.
   const readWorkspace: Handler<"readWorkspace"> = (request) => {
-    if (!git?.ok) return reject(request.requestId, git ? git.gitCode : "GIT_UNAVAILABLE");
-    const { installation } = git;
     const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
     scheduleRead(
       request,
       (t) =>
@@ -275,9 +328,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
 
   // Contract §3 `readHistory`. Contract §2 and §9: a `repositoryGeneration` other than the current workspace generation gives REPOSITORY_CHANGED at acceptance, and no Git process starts.
   const readHistory: Handler<"readHistory"> = (request) => {
-    if (!git?.ok) return reject(request.requestId, git ? git.gitCode : "GIT_UNAVAILABLE");
-    const { installation } = git;
     const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
     if (request.repositoryGeneration !== workspace.generation) {
       const { operationId } = registry.start("readHistory", request.requestId);
       return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
@@ -315,9 +368,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readHistory,
     readComparison: undefined,
     readTrust: (request) => {
-      if (!git?.ok) return reject(request.requestId, git ? git.gitCode : "GIT_UNAVAILABLE");
-      const { installation } = git;
       const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
       scheduleRead(
         request,
         (t) => trust.readTrust({ ...t, workspace, installation }, workspace.generation),

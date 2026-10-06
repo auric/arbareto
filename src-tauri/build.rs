@@ -32,13 +32,14 @@ const COMMANDS: &[&str] = &[
 
 /// The exported JSON Schema files of the values that the shell reads (contract §1 "Schemas").
 /// `bun run export:schemas` writes them. Each file becomes one module of `src/schema.rs`.
-const SCHEMAS: [&str; 6] = [
+const SCHEMAS: [&str; 7] = [
     "native-first-envelope.schema.json",
     "mutation-request.schema.json",
     "trust-request.schema.json",
     "trust-record.schema.json",
     "handshake.schema.json",
     "progress.schema.json",
+    "wsl-request.schema.json",
 ];
 
 fn main() {

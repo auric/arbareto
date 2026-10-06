@@ -26,7 +26,7 @@ use windows::Win32::System::SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO;
 use windows::Win32::System::SystemServices::JOB_OBJECT_MSG_NEW_PROCESS;
 use windows::core::{HRESULT, PCWSTR};
 
-use crate::bootstrap::Identity;
+use crate::bootstrap::PhysicalIdentity;
 use crate::spawn::SpawnError;
 use crate::wsl;
 
@@ -177,7 +177,7 @@ impl Drop for Port {
 struct Entry {
     job: Job,
     key: usize,
-    tag: Option<Identity>,
+    tag: Option<PhysicalIdentity>,
     lingering: bool,
     #[cfg(test)]
     new_processes: Vec<u32>,
@@ -223,7 +223,7 @@ impl State {
         });
     }
 
-    fn lingering_with<'a>(&'a self, tag: &'a Identity) -> impl Iterator<Item = &'a Entry> {
+    fn lingering_with<'a>(&'a self, tag: &'a PhysicalIdentity) -> impl Iterator<Item = &'a Entry> {
         self.jobs
             .values()
             .filter(move |entry| entry.lingering && entry.tag.as_ref() == Some(tag))
@@ -359,7 +359,7 @@ impl Supervisor {
     }
 
     /// Sets the common-directory identity tag of a mutation Job.
-    pub fn tag(&self, operation_id: &str, tag: Identity) {
+    pub fn tag(&self, operation_id: &str, tag: PhysicalIdentity) {
         if let Some(entry) = self.shared.state().jobs.get_mut(operation_id) {
             entry.tag = Some(tag);
         }
@@ -379,7 +379,6 @@ impl Supervisor {
     }
 
     /// Starts the anchor of a WSL mutation in its running Job before the first execution process. A later call keeps that anchor.
-    #[cfg_attr(not(test), expect(dead_code, reason = "T212 wires the WSL run frame"))]
     pub fn start_anchor(
         &self,
         operation_id: &str,
@@ -484,13 +483,13 @@ impl Supervisor {
     }
 
     /// The sum of the active process counts of the lingering Jobs with this tag.
-    pub fn lingering_count(&self, tag: &Identity) -> u32 {
+    pub fn lingering_count(&self, tag: &PhysicalIdentity) -> u32 {
         let state = self.shared.state();
         state.lingering_with(tag).map(Entry::count).sum()
     }
 
     /// Closes the lingering Jobs with this tag. Returns their active process count before the close.
-    pub fn revoke(&self, tag: &Identity) -> u32 {
+    pub fn revoke(&self, tag: &PhysicalIdentity) -> u32 {
         let mut state = self.shared.state();
         let count = state.lingering_with(tag).map(Entry::count).sum();
         state.remove_where(|entry| entry.lingering && entry.tag.as_ref() == Some(tag));
@@ -552,6 +551,7 @@ impl Drop for Supervisor {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::bootstrap::Identity;
 
     use std::ffi::OsString;
     use std::io::{Read, Write};
@@ -1103,11 +1103,11 @@ pub(crate) mod tests {
 
     // ---- T023 Job tests ----
 
-    fn tag(n: u8) -> Identity {
-        Identity {
+    fn tag(n: u8) -> PhysicalIdentity {
+        PhysicalIdentity::Windows(Identity {
             volume_serial: 0x4474_2150_7421_4650,
             file_id: [n; 16],
-        }
+        })
     }
 
     /// Starts a child in the Job of `operation_id`. The child starts `count` sleeping grandchildren, then exits or stays.

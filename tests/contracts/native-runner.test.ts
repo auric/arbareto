@@ -842,3 +842,70 @@ describe("native runner mutation and trust frames", () => {
     }
   });
 });
+
+describe("native runner WSL frames (T212, contract §6 and §11)", () => {
+  const WSL_PATH = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\u\\repo";
+  const GUID = "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}";
+
+  test("wslDistros sends only the context IDs and returns each reply form without type and callId", async () => {
+    const channel = createChannelDouble();
+    const ids = { operationId: id(), bootstrapId: id() };
+    // A WSL path is a native path only on Windows (contract §11 "Route").
+    const wsl = [
+      { path: WSL_PATH, code: "WSL_UNAVAILABLE", reason: "wsl-missing" },
+      { path: WSL_PATH, wslExecutable: "C:\\Windows\\System32\\wsl.exe", listed: ["Ubuntu-24.04"], running: [], keys: [{ guid: GUID, name: "Ubuntu-24.04", version: 2 }], saved: [] },
+    ];
+    const forms = [{ path: REPO }, ...(isWindows ? wsl : [])];
+    for (const form of forms) {
+      const pending = channel.runner.wslDistros(ids);
+      const body = channel.last("wslDistros");
+      expect(Object.keys(body).sort()).toEqual(["bootstrapId", "callId", "operationId", "type"]);
+      channel.reply("process", { type: "wslDistros", callId: body.callId, ...form });
+      expect(await pending).toEqual(form as never);
+    }
+    // A reply that breaks its shape fails the call (contract §6 "Errors").
+    const pending = channel.runner.wslDistros(ids);
+    expect(channel.reply("process", { type: "wslDistros", callId: channel.last("wslDistros").callId, path: REPO, listed: [] })).toBe(false);
+    await expect(pending).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+    await expect(channel.runner.wslDistros({ ...ids, path: REPO } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+  });
+
+  test("wslProbe streams output and exits as run, and Cancel sends cancel with its callId", async () => {
+    const channel = createChannelDouble();
+    const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+    const probe = { operationId: id(), bootstrapId: id(), distro: "Ubuntu-24.04", limits: { deadlineMs: 60_000 } };
+    const pending = channel.runner.wslProbe({ ...probe, stdout, stderr: createCollector({ maxBytes: 64 }), signal: new AbortController().signal });
+    const body = channel.last("wslProbe");
+    expect(body).toEqual({ type: "wslProbe", callId: body.callId, ...probe });
+    channel.reply("process", { type: "output", callId: body.callId, stream: "stdout", data: new TextEncoder().encode("osid ubuntu\n").toBase64() });
+    channel.reply("process", exit(body.callId));
+    expect(await pending).toEqual({ exitCode: 0, activeDescendants: 0 });
+    expect(new TextDecoder().decode(stdout.take())).toBe("osid ubuntu\n");
+
+    const controller = new AbortController();
+    const canceled = channel.runner.wslProbe({ ...probe, stdout, stderr: createCollector({ maxBytes: 64 }), signal: controller.signal });
+    const second = channel.last("wslProbe");
+    controller.abort();
+    expect(channel.last("cancel")).toEqual({ type: "cancel", callId: second.callId });
+    channel.reply("process", exit(second.callId, { exitCode: null }));
+    expect(await canceled).toEqual({ exitCode: null, activeDescendants: 0 });
+
+    for (const limits of [{ deadlineMs: 60_001 }, { deadlineMs: 0 }]) {
+      await expect(channel.runner.wslProbe({ ...probe, limits, stdout, stderr: stdout, signal: new AbortController().signal })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    }
+  });
+
+  test("a WSL register gets approved or declined, and never another Git", async () => {
+    const channel = createChannelDouble();
+    const request = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), confirm: true as const };
+    for (const result of ["approved", "declined"] as const) {
+      const pending = channel.runner.register(request);
+      channel.reply("process", { type: "register", callId: channel.last("register").callId, result });
+      expect(await pending).toEqual({ result });
+    }
+    const pending = channel.runner.register(request);
+    channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: id(), executablePath: GIT_PATH });
+    await expect(pending).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+    await expect(channel.runner.register({ ...request, confirm: false } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+  });
+});

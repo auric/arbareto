@@ -3,9 +3,12 @@
 
 import type { ErrorCode } from "../contracts/errors";
 import { COMMIT_OUTPUT_TAIL_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
+import { isWindows } from "../contracts/native-path";
 import { buildSubmoduleOutputTail } from "../contracts/submodules";
+import { hasWslPrefix, wslIdentityPath } from "../contracts/wsl-route";
 import { discoveryLayoutArgs, discoveryProfiles, isObjectId, isRefName, refExistsArgs, type ObjectFormat } from "./commands";
 import { createCollector, isChannelPath, type Collector, type GitRunner } from "./git-runner";
+import { PATH_RESULTS } from "./wsl";
 
 // Data-model §2 and contract §6 "Registration bootstrap": the remedy texts of discovery refusals.
 export const DISCOVERY_REMEDIES = {
@@ -30,6 +33,9 @@ export interface DiscoveryRefusal {
   path?: string;
   remedy?: { text: string };
   outputTail?: string;
+  // Contract §11: the reason and the text of a WSL path refusal.
+  reason?: "wsl-path" | "mixed-location";
+  text?: string;
 }
 
 // Data-model §2 `head`: a symbolic target with its object ID, a detached object ID, or a validated unborn branch.
@@ -57,6 +63,8 @@ export interface DiscoveryTarget {
   // Data-model §1 `selectedPath`.
   gitSelectedPath: string;
   signal?: AbortSignal;
+  // Contract §11: the distro of a WSL Git. Git then reports Linux paths.
+  wsl?: { distro: string };
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -161,8 +169,19 @@ export async function discoverRepository(runner: GitRunner, target: DiscoveryTar
   if (layout.exitCode !== 0) return fail(unavailable(target.directory));
   const values = outputLines(layout.stdout);
   if (values === null || values.length !== 6) return fail(unavailable(target.directory));
-  const [worktreeRoot, gitDirectory, commonDirectory, indexPath, objectFormat, refFormat] = values as [string, string, string, string, string, string];
+  const [objectFormat, refFormat] = values.slice(4) as [string, string];
+  let resolved = values.slice(0, 4);
+  if (target.wsl) {
+    // Contract §11 "Paths and file access": Linux Git reports Linux paths. Each one becomes its UNC identity.
+    if (!resolved.every((path) => path.startsWith("/"))) return fail(unavailable(target.directory));
+    const converted = resolved.map((path) => wslIdentityPath(target.wsl!.distro, path));
+    if (converted.some((path) => path === null)) return fail({ code: "UNSUPPORTED_REPOSITORY", ...PATH_RESULTS["wsl-path"] });
+    resolved = converted as string[];
+  }
+  const [worktreeRoot, gitDirectory, commonDirectory, indexPath] = resolved as [string, string, string, string];
   if (![worktreeRoot, gitDirectory, commonDirectory, indexPath].every((path) => isChannelPath(path))) return fail(unavailable(target.directory));
+  // Contract §11: a Windows repository whose Git-resolved directories lie under a WSL prefix.
+  if (!target.wsl && isWindows && [worktreeRoot, gitDirectory, commonDirectory].some(hasWslPrefix)) return fail({ code: "UNSUPPORTED_REPOSITORY", ...PATH_RESULTS["mixed-location"] });
   if (!OBJECT_FORMATS.includes(objectFormat as ObjectFormat) || !(REF_FORMATS as readonly string[]).includes(refFormat)) return fail(unavailable(target.directory));
 
   const head = await readHead(runner, target, symbolicArgs, headArgs, objectFormat as ObjectFormat, signal);

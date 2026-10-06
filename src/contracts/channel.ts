@@ -23,6 +23,7 @@ import {
   TRUST_RECORD_BYTES,
   TRUST_RECORDS,
   WEBVIEW2_VERSION_BYTES,
+  WSL_DISTRO_START_MS,
 } from "./limits";
 import { NATIVE } from "./native-path";
 import { ChannelPath, Count, Fingerprint, Identifier, MutationKind, Text } from "./operations";
@@ -36,10 +37,34 @@ const withinBytes = (max: number) => (value: unknown) => new TextEncoder().encod
 // Contract §6 "Process fields": a Windows identity reply.
 export const FileIdentity = z.strictObject({ volumeSerial: hex(16), fileId: hex(32) }).meta({ title: "FileIdentity" });
 export type FileIdentity = z.infer<typeof FileIdentity>;
+// Contract §11 "Paths and file access": a WSL identity reply. It holds no device number. Any other text is a failed probe.
+// `distroGuid`: the `Lxss` subkey name with `A` to `F` folded to lowercase; registry key names ignore letter case.
+// `fileSystemId`: GNU `stat --file-system` `%i`, which prints `f_fsid` with `%jx`, so it has no leading zero.
+// `inode`: the `stat` `%i` decimal text of a 64-bit inode number.
+const INODE = /^[1-9][0-9]{0,19}$/;
+export const WslIdentity = z
+  .strictObject({
+    distroGuid: z.string().regex(/^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$/),
+    fileSystemId: z.string().regex(/^[1-9a-f][0-9a-f]{0,15}$/),
+    // zod runs a refinement also after a failed pattern check.
+    inode: z.string().regex(INODE).refine((value) => INODE.test(value) && BigInt(value) <= 0xffff_ffff_ffff_ffffn),
+  })
+  .meta({ title: "WslIdentity" });
+export type WslIdentity = z.infer<typeof WslIdentity>;
+export const PhysicalIdentity = z.union([FileIdentity, WslIdentity]);
+export type PhysicalIdentity = z.infer<typeof PhysicalIdentity>;
+// One record or marker holds one identity form, and a WSL record holds one distro GUID.
+// zod can run a refinement on a value whose fields failed, so the check reads each value defensively.
+const oneForm = (identities: readonly unknown[]) => {
+  const guids = identities.map((identity) => (typeof identity === "object" && identity !== null && "distroGuid" in identity ? identity.distroGuid : null));
+  return guids.every((guid) => guid === null) || guids.every((guid) => guid !== null && guid === guids[0]);
+};
 // `reason` `absent`: the open failed with `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`. Every other failure carries the code alone.
+// A WSL identity probe gives `absent` for `ENOENT` or `ENOTDIR`, and `no-fs-uuid` or `mixed-location` when a contract §11 type rule refuses the path.
 export const IdentityReply = z.union([
   FileIdentity,
-  z.strictObject({ code: z.literal("UNSUPPORTED_REPOSITORY"), reason: z.literal("absent").optional() }).meta({ title: "IdentityRefused" }),
+  WslIdentity,
+  z.strictObject({ code: z.literal("UNSUPPORTED_REPOSITORY"), reason: z.enum(["absent", "no-fs-uuid", "mixed-location"]).optional() }).meta({ title: "IdentityRefused" }),
 ]);
 export type IdentityReply = z.infer<typeof IdentityReply>;
 
@@ -67,7 +92,7 @@ export const Marker = z
     startedAt: UtcTime,
     worktreeRoot: ChannelPath,
     commonDirectory: ChannelPath,
-    commonIdentity: FileIdentity,
+    commonIdentity: PhysicalIdentity,
   })
   .refine(withinBytes(RECOVERY_MARKER_BYTES));
 
@@ -86,14 +111,15 @@ export const DamagedMarker = z.strictObject({
 export const TrustRecord = z
   .strictObject({
     commonDirectory: ChannelPath,
-    commonIdentity: FileIdentity,
+    commonIdentity: PhysicalIdentity,
     worktreeRoot: ChannelPath,
     gitDirectory: ChannelPath,
-    worktreeIdentity: z.array(FileIdentity).length(2),
+    worktreeIdentity: z.array(PhysicalIdentity).length(2),
     configurationFingerprint: Fingerprint,
     approvedAt: UtcTime,
     gitSelectedPath: ChannelPath,
   })
+  .refine((record) => Array.isArray(record.worktreeIdentity) && oneForm([record.commonIdentity, ...record.worktreeIdentity]))
   .refine(withinBytes(TRUST_RECORD_BYTES));
 export type TrustRecord = z.infer<typeof TrustRecord>;
 
@@ -207,6 +233,54 @@ export const ReleaseCall = z.union([
   z.strictObject({ gitInstallationId: Identifier }).meta({ title: "ReleaseGit" }),
 ]);
 
+// ---- WSL `process` frames (contract §6 "Channel frames", §11) ----
+
+// Contract §11 "Distro checks": a name that `wsl.exe --list --quiet` prints holds no control character.
+export const DistroName = z.string().min(1).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/);
+const Guid = WslIdentity.shape.distroGuid;
+// An absolute Linux path from the distro.
+const LinuxPath = z.string().regex(/^\/[^\u0000]*$/).refine((value) => value.isWellFormed());
+// Contract §11 "Git per distro": `<file-system ID>:<inode>:<size>:<modification time>` of the Git file.
+const GitFileIdentity = z.string().regex(/^[0-9a-f]+:[0-9]+:[0-9]+:[0-9]+$/);
+
+export const WslDistrosCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier });
+export const WslProbeLimits = z.strictObject({ deadlineMs: ms(WSL_DISTRO_START_MS) }).meta({ title: "WslProbeLimits" });
+export const WslProbeCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier, distro: DistroName, limits: WslProbeLimits });
+// Only Use this Git binds the ID, so `confirm` is always true. The shell takes every Git fact from its own probe parse.
+export const RegisterWslCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier, gitInstallationId: Identifier, confirm: z.literal(true) });
+export type WslDistrosCall = z.infer<typeof WslDistrosCall>;
+export type WslProbeCall = z.infer<typeof WslProbeCall>;
+export type RegisterWslCall = z.infer<typeof RegisterWslCall>;
+
+export const WslRegistryKey = z.strictObject({ guid: Guid, name: DistroName, version: Count });
+export const WslSavedGit = z.strictObject({ guid: Guid, distro: DistroName, git: LinuxPath, version: VersionText, gitIdentity: GitFileIdentity });
+const wslDistros = { type: z.literal("wslDistros"), ...call, path: ChannelPath };
+// The reply always holds the context path. Only a path with a WSL prefix adds the list results or the refusal.
+export const WslDistrosReply = z.union([
+  z.strictObject(wslDistros).meta({ title: "WslDistrosPath" }),
+  z
+    .strictObject({
+      ...wslDistros,
+      wslExecutable: ChannelPath,
+      listed: z.array(DistroName),
+      running: z.array(DistroName),
+      keys: z.array(WslRegistryKey),
+      saved: z.array(WslSavedGit),
+    })
+    .meta({ title: "WslDistrosFacts" }),
+  z.strictObject({ ...wslDistros, code: z.literal("WSL_UNAVAILABLE"), reason: z.literal("wsl-missing") }).meta({ title: "WslDistrosUnavailable" }),
+]);
+type WslDistrosFrame = z.infer<typeof WslDistrosReply>;
+export type WslDistrosResult = WslDistrosFrame extends infer F ? (F extends unknown ? Omit<F, "type" | "callId"> : never) : never;
+export type WslRegistryKey = z.infer<typeof WslRegistryKey>;
+export type WslSavedGit = z.infer<typeof WslSavedGit>;
+
+// The WSL request frames. The shell reads them through the types that `src-tauri/build.rs` generates from this union.
+export const WslDistrosFrame = z.strictObject({ type: z.literal("wslDistros"), ...call, ...WslDistrosCall.shape }).meta({ title: "WslDistros" });
+export const WslProbeFrame = z.strictObject({ type: z.literal("wslProbe"), ...call, ...WslProbeCall.shape }).meta({ title: "WslProbe" });
+export const RegisterWslFrame = z.strictObject({ type: z.literal("register"), ...call, ...RegisterWslCall.shape }).meta({ title: "RegisterWsl" });
+export const WslRequest = z.union([WslDistrosFrame, WslProbeFrame, RegisterWslFrame]);
+
 export const ProcessRequest = z.union([
   z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
   z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
@@ -220,7 +294,10 @@ export const ProcessRequest = z.union([
   z.strictObject({ type: z.literal("lingeringCount"), ...call, operationId: Identifier, commonDirectory: ChannelPath }).meta({ title: "LingeringCount" }),
   z.strictObject({ type: z.literal("register"), ...call, ...RegisterGitCall.shape }).meta({ title: "RegisterGit" }),
   z.strictObject({ type: z.literal("register"), ...call, ...RegisterRepositoryCall.shape }).meta({ title: "RegisterRepository" }),
+  RegisterWslFrame,
   z.strictObject({ type: z.literal("resolveGit"), ...call, ...ResolveGitCall.shape }).meta({ title: "ResolveGit" }),
+  WslDistrosFrame,
+  WslProbeFrame,
   z.strictObject({ type: z.literal("release"), repositoryId: Identifier }).meta({ title: "ReleaseRepositoryFrame" }),
   z.strictObject({ type: z.literal("release"), gitInstallationId: Identifier }).meta({ title: "ReleaseGitFrame" }),
   z.strictObject({ type: z.literal("closeJob"), operationId: Identifier }).meta({ title: "CloseJob" }),
@@ -311,6 +388,7 @@ export const ProcessReply = z.union([
   ...RegisterReply.options,
   ResolveGitReply,
   ...FileFactsReply.options,
+  ...WslDistrosReply.options,
 ]);
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----

@@ -69,6 +69,50 @@
       ],
       "additionalProperties": false,
       "title": "WorkspaceLimit"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "wsl-missing",
+            "distro-missing",
+            "not-wsl2",
+            "no-user-manager",
+            "no-setsid",
+            "no-coreutils",
+            "no-perl",
+            "start-failed",
+            "version",
+            "windows-git",
+            "no-fs-uuid",
+            "wsl-path",
+            "mixed-location"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "detectedVersion": {
+          "type": "string"
+        },
+        "minimumVersion": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        },
+        "command": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false,
+      "title": "WslRefused"
     }
   ],
   "title": "RegistrationResult"

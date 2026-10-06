@@ -18,15 +18,22 @@ use serde_json::{Map, Value, json};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::Pipes::PeekNamedPipe;
-use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+use windows::Win32::System::Threading::{
+    CreateEventW, GetExitCodeProcess, SetEvent, WaitForSingleObject,
+};
 
-use crate::bootstrap::{ContextKind, Contexts, Identity, identity_reply, read_identity};
+use crate::bootstrap::{
+    ContextIdentity, ContextKind, Contexts, Identity, PhysicalIdentity, identity_reply,
+    native_identity, read_identity,
+};
 use crate::dialogs::Registered;
 use crate::file_facts;
 use crate::git_env::child_environment;
 use crate::jobs::Supervisor;
-use crate::settings::is_hex;
+use crate::schema;
+use crate::settings::{SavedWslGit, is_hex};
 use crate::spawn::{Input, SpawnRequest, command_line, spawn};
+use crate::wsl;
 
 /// Contract §5 "Native stdout/stderr chunk": decoded bytes in one `output` or `input` frame.
 pub const CHUNK_BYTES: usize = 64 * 1024;
@@ -86,6 +93,19 @@ pub struct ConfirmedGit {
 /// Saves the Git that a startup context registered without Use this Git (contract §6 "Startup contexts").
 pub type StartupGit = Box<dyn Fn(ConfirmedGit) + Send + Sync>;
 
+/// Reads the approved WSL Git of each distro GUID from the native settings (contract §11 "Git per distro").
+pub type WslSaved = Box<dyn Fn() -> Vec<SavedWslGit> + Send + Sync>;
+
+/// Shows the WSL Git confirmation with the distro, the Git path, and the version (contract §11 "Git per distro").
+/// True only for Use this Git.
+pub type WslConfirmation = Box<dyn Fn(&str, &str, &str) -> bool + Send + Sync>;
+
+/// Saves the WSL Git that Use this Git approved, for its distro GUID.
+pub type WslStore = Box<dyn Fn(SavedWslGit) + Send + Sync>;
+
+/// Makes the host of the WSL processes of one operation. Without it, they run in the operation Job. Tests inject them.
+pub type WslHosts = Box<dyn Fn(&str) -> Box<dyn wsl::Host + Send> + Send + Sync>;
+
 pub struct Config {
     /// The application-owned launch directory of a `gitProbe` run (contract §6 "Channel frames").
     pub launch_directory: PathBuf,
@@ -98,15 +118,22 @@ pub struct Config {
     pub walk_deadline: Duration,
 }
 
-struct Git {
-    program: PathBuf,
-    identity: Identity,
+/// The Git that `register` bound to a `gitInstallationId`.
+enum Git {
+    Windows {
+        program: PathBuf,
+        identity: Identity,
+    },
+    /// gaps.md W1: the shell compares a WSL Git identity only at `wslProbe`, so no `FileIdInfo` read runs for it.
+    Wsl(wsl::Installation),
 }
 
 struct Repository {
     worktree_root: PathBuf,
     git_directory: PathBuf,
     common_directory: PathBuf,
+    /// A WSL identity read of a stored path runs with this Git (gaps.md W2).
+    git_installation_id: String,
 }
 
 /// Streamed input of one call (contract §6 "Streamed input").
@@ -134,6 +161,26 @@ enum WalkEvent {
 struct Walk {
     operation_id: String,
     events: mpsc::Sender<WalkEvent>,
+}
+
+/// The stop of one walk (contract §6 "Walks"). A Windows walk reads `flag`. A WSL walk waits on the manual-reset `event` with its `wsl.exe`.
+struct WalkStop {
+    flag: AtomicBool,
+    event: Owned,
+}
+
+// SAFETY: an Event is a kernel handle that any thread can set and wait on. `WalkStop` only reads it.
+unsafe impl Sync for WalkStop {}
+
+impl WalkStop {
+    fn new() -> Option<WalkStop> {
+        // SAFETY: a manual-reset event without a name and without security attributes.
+        let event = unsafe { CreateEventW(None, true, false, None) }.ok()?;
+        Some(WalkStop {
+            flag: AtomicBool::new(false),
+            event: Owned(event),
+        })
+    }
 }
 
 /// Ends a walk thread, also at a panic. The count drops first. Then the watchdog gets `Done`, or `Stop` without a reply.
@@ -168,6 +215,12 @@ struct State {
     walks: HashMap<String, Walk>,
     /// The mutations whose `started` reply carried a marker ID, until `ended`.
     started: HashSet<String>,
+    /// The facts that `wslProbe` bound to each WSL `repositoryDiscovery` context, once (gaps.md W1).
+    wsl_bound: HashMap<String, wsl::Bound>,
+    /// The contexts with a `wslProbe` in flight. The reservation makes the bind happen once.
+    wsl_probing: HashSet<String>,
+    /// The last unit number of each operation with a WSL process (contract §11 "Process launch").
+    wsl_units: HashMap<String, u32>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -184,6 +237,8 @@ struct Target {
     /// `None` for a probe, whose context identity is the executable identity.
     git_identity: Option<Identity>,
     git_directory: Option<PathBuf>,
+    /// A WSL Git, and the Linux form of `current_dir` (contract §11 "Paths and file access").
+    wsl: Option<(wsl::Installation, String)>,
 }
 
 enum RunInput {
@@ -230,6 +285,12 @@ pub struct ProcessRequests {
     /// Without it, a `register` with `confirm: true` gets `declined`.
     git_confirmation: OnceLock<GitConfirmation>,
     startup_git: OnceLock<StartupGit>,
+    /// Without it, a `wslDistros` reply holds no saved Git.
+    wsl_saved: OnceLock<WslSaved>,
+    /// Without it, a WSL `register` gets `declined`.
+    wsl_confirmation: OnceLock<WslConfirmation>,
+    wsl_store: OnceLock<WslStore>,
+    wsl_hosts: OnceLock<WslHosts>,
 }
 
 impl ProcessRequests {
@@ -251,6 +312,10 @@ impl ProcessRequests {
             walk_threads: AtomicUsize::new(0),
             git_confirmation: OnceLock::new(),
             startup_git: OnceLock::new(),
+            wsl_saved: OnceLock::new(),
+            wsl_confirmation: OnceLock::new(),
+            wsl_store: OnceLock::new(),
+            wsl_hosts: OnceLock::new(),
         })
     }
 
@@ -260,6 +325,80 @@ impl ProcessRequests {
 
     pub fn set_startup_git(&self, save: StartupGit) {
         let _ = self.startup_git.set(save);
+    }
+
+    pub fn set_wsl_saved(&self, saved: WslSaved) {
+        let _ = self.wsl_saved.set(saved);
+    }
+
+    pub fn set_wsl_confirmation(&self, confirmation: WslConfirmation) {
+        let _ = self.wsl_confirmation.set(confirmation);
+    }
+
+    pub fn set_wsl_store(&self, store: WslStore) {
+        let _ = self.wsl_store.set(store);
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only tests inject the WSL host")
+    )]
+    pub fn set_wsl_hosts(&self, hosts: WslHosts) {
+        let _ = self.wsl_hosts.set(hosts);
+    }
+
+    /// The host of the WSL processes of an operation. The caller opened its Job.
+    fn wsl_host(&self, operation_id: &str) -> Box<dyn wsl::Host + Send> {
+        match self.wsl_hosts.get() {
+            Some(hosts) => hosts(operation_id),
+            None => Box::new(wsl::OperationHost {
+                jobs: Arc::clone(&self.jobs),
+                operation_id: operation_id.to_string(),
+                current_dir: self.config.launch_directory.clone(),
+            }),
+        }
+    }
+
+    /// The identity of a frame path that the shell reads for its own frames (gaps.md W2).
+    /// A WSL path reads through the identity probe of the registered repository whose stored path equals it.
+    pub fn read_physical_identity(&self, path: &Path) -> Option<PhysicalIdentity> {
+        if !file_facts::is_wsl_path(path) {
+            return native_identity(path);
+        }
+        let installation = {
+            let state = self.state();
+            let repository = state.repositories.values().find(|r| {
+                [&r.worktree_root, &r.git_directory, &r.common_directory]
+                    .iter()
+                    .any(|stored| stored.as_path() == path)
+            })?;
+            match state.gits.get(&repository.git_installation_id)? {
+                Git::Wsl(installation) => installation.clone(),
+                Git::Windows { .. } => return None,
+            }
+        };
+        let linux = wsl::linux_path(path, &installation.distro)?;
+        // An internal operation owns the Job of the probe.
+        let operation = crate::settings::random_id().ok()?;
+        self.jobs.open(&operation).ok()?;
+        let found = wsl::identities(
+            &*self.wsl_host(&operation),
+            &installation,
+            &operation,
+            1,
+            &[linux],
+            &self.config.base_environment,
+            None,
+        );
+        self.jobs.close(&operation);
+        found.into_iter().next()?.ok().map(PhysicalIdentity::Wsl)
+    }
+
+    /// The next unit number of a WSL process of the operation (contract §11 "Process launch").
+    fn next_unit(state: &mut State, operation_id: &str) -> u32 {
+        let n = state.wsl_units.entry(operation_id.to_string()).or_insert(0);
+        *n += 1;
+        *n
     }
 
     /// The Git that Use this Git approved for `git_id`. Each approval is taken once.
@@ -296,7 +435,7 @@ impl ProcessRequests {
 
     /// Records a `started` reply with a marker ID, and tags the Job of that mutation with the common-directory identity.
     /// `started` comes before the first process, so the Job opens here (contract §6 "Recovery markers").
-    pub fn tag(&self, operation_id: &str, common_identity: Identity) {
+    pub fn tag(&self, operation_id: &str, common_identity: PhysicalIdentity) {
         self.state().started.insert(operation_id.to_string());
         if self.jobs.open(operation_id).is_ok() {
             self.jobs.tag(operation_id, common_identity);
@@ -370,6 +509,8 @@ impl ProcessRequests {
             Some("resolveGit") => self.resolve_git(request, call()?),
             Some("release") => self.release(request),
             Some("closeJob") => self.close_job(request),
+            Some("wslDistros") => self.wsl_distros(request, call()?),
+            Some("wslProbe") => self.wsl_probe(request, call()?),
             _ => Err(INVALID),
         }
     }
@@ -458,32 +599,74 @@ impl ProcessRequests {
         if let Some(bootstrap_id) = &target.bootstrap_id {
             self.contexts.permits(bootstrap_id, &arguments, now)?;
         }
-        let mut full = self.config.argument_prefix.clone();
-        full.extend(arguments);
-        command_line(&target.program, &full).map_err(|_| INVALID)?;
+        // Contract §11 "Process launch": a WSL Git runs through the wrapper, and `-C` takes the Linux directory.
+        let (wsl_command, full, environment) = match &target.wsl {
+            Some((installation, directory)) => {
+                let command = self.wsl_run_command(
+                    &mut state,
+                    operation_id,
+                    installation,
+                    directory,
+                    policy,
+                    index_file.as_deref(),
+                    &arguments,
+                    &input,
+                )?;
+                (Some(command), Vec::new(), Vec::new())
+            }
+            None => {
+                let mut full = self.config.argument_prefix.clone();
+                full.extend(arguments);
+                let environment = child_environment(
+                    policy,
+                    &self.config.base_environment,
+                    index_file.as_deref(),
+                )?;
+                (None, full, environment)
+            }
+        };
+        match &wsl_command {
+            Some(command) => command_line(&command.program, &command.arguments),
+            None => command_line(&target.program, &full),
+        }
+        .map_err(|_| INVALID)?;
         self.revalidate(&target, now)?;
-        let environment =
-            child_environment(policy, &self.config.base_environment, index_file.as_deref())?;
 
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
-        let request = SpawnRequest {
-            program: &target.program,
-            arguments: &full,
-            environment: &environment,
-            current_dir: &target.current_dir,
-            wsl: false,
-            input: match &input {
-                RunInput::Closed => Input::Closed,
-                RunInput::Bytes(bytes) => Input::Bytes(bytes),
-                RunInput::Streamed(_) => Input::Stream,
-            },
+        let spawned = match (&target.wsl, &wsl_command) {
+            (Some((installation, _)), Some(command)) => {
+                let host = self.wsl_host(operation_id);
+                // Contract §11 "Process ownership": a WSL mutation starts its anchor before its first Git process.
+                if policy == "mutation" {
+                    let anchor = wsl::anchor_command(
+                        installation,
+                        operation_id,
+                        &self.config.base_environment,
+                    )?;
+                    host.anchor(&anchor).map_err(|_| OWNERSHIP)?;
+                }
+                host.start(command).map_err(|_| OWNERSHIP)?
+            }
+            _ => {
+                let request = SpawnRequest {
+                    program: &target.program,
+                    arguments: &full,
+                    environment: &environment,
+                    current_dir: &target.current_dir,
+                    wsl: false,
+                    input: match &input {
+                        RunInput::Closed => Input::Closed,
+                        RunInput::Bytes(bytes) => Input::Bytes(bytes),
+                        RunInput::Streamed(_) => Input::Stream,
+                    },
+                };
+                self.jobs
+                    .with_job(operation_id, |job| spawn(&request, job))
+                    .map_err(|_| OWNERSHIP)?
+                    .map_err(|_| OWNERSHIP)?
+            }
         };
-        let spawned = self
-            .jobs
-            .with_job(operation_id, |job| spawn(&request, job))
-            .map_err(|_| OWNERSHIP)?
-            .map_err(|_| OWNERSHIP)?;
 
         let generation = self.current();
         let exited = Arc::new(Mutex::new(false));
@@ -534,10 +717,12 @@ impl ProcessRequests {
         operation_id: &str,
     ) -> Result<Target, Code> {
         let now = Instant::now();
-        let git = |state: &State| -> Result<(PathBuf, Identity), Code> {
+        let git = |state: &State| -> Result<Result<(PathBuf, Identity), wsl::Installation>, Code> {
             let id = request["gitInstallationId"].as_str().ok_or(INVALID)?;
-            let git = state.gits.get(id).ok_or(UNKNOWN)?;
-            Ok((git.program.clone(), git.identity))
+            Ok(match state.gits.get(id).ok_or(UNKNOWN)? {
+                Git::Windows { program, identity } => Ok((program.clone(), *identity)),
+                Git::Wsl(installation) => Err(installation.clone()),
+            })
         };
         match kind {
             Kind::Bootstrap(context_kind) => {
@@ -547,14 +732,34 @@ impl ProcessRequests {
                     return Err(UNKNOWN);
                 }
                 own(state, &self.contexts, bootstrap_id, operation_id, now)?;
-                let (program, git_identity, current_dir) = match context_kind {
-                    ContextKind::GitProbe => {
-                        (context.path, None, self.config.launch_directory.clone())
-                    }
-                    ContextKind::RepositoryDiscovery => {
-                        let (program, identity) = git(state)?;
-                        (program, Some(identity), context.path)
-                    }
+                let (program, git_identity, current_dir, wsl) = match context_kind {
+                    ContextKind::GitProbe => (
+                        context.path,
+                        None,
+                        self.config.launch_directory.clone(),
+                        None,
+                    ),
+                    // gaps.md W1: a WSL context runs only the WSL Git of its bound GUID, and a Windows context only a Windows Git.
+                    ContextKind::RepositoryDiscovery => match (git(state)?, context.identity) {
+                        (Ok((program, identity)), ContextIdentity::Windows(_)) => {
+                            (program, Some(identity), context.path, None)
+                        }
+                        (Err(installation), ContextIdentity::Wsl) => {
+                            let bound = state.wsl_bound.get(bootstrap_id).ok_or(INVALID)?;
+                            if bound.installation.guid != installation.guid {
+                                return Err(INVALID);
+                            }
+                            let linux = wsl::linux_path(&context.path, &installation.distro)
+                                .ok_or(INVALID)?;
+                            (
+                                wsl::wsl_program(),
+                                None,
+                                context.path,
+                                Some((installation, linux)),
+                            )
+                        }
+                        _ => return Err(INVALID),
+                    },
                 };
                 Ok(Target {
                     program,
@@ -562,26 +767,43 @@ impl ProcessRequests {
                     bootstrap_id: Some(bootstrap_id.to_string()),
                     git_identity,
                     git_directory: None,
+                    wsl,
                 })
             }
             Kind::Registered => {
-                let (program, identity) = git(state)?;
+                let found = git(state)?;
                 let id = request["repositoryId"].as_str().ok_or(INVALID)?;
                 let repository = state.repositories.get(id).ok_or(UNKNOWN)?;
+                let (program, git_identity, wsl) = match found {
+                    // Contract §11: a WSL repository never runs Git for Windows.
+                    Ok(_) if file_facts::is_wsl_path(&repository.worktree_root) => {
+                        return Err(INVALID);
+                    }
+                    Ok((program, identity)) => (program, Some(identity), None),
+                    Err(installation) => {
+                        let linux =
+                            wsl::linux_path(&repository.worktree_root, &installation.distro)
+                                .ok_or(INVALID)?;
+                        (wsl::wsl_program(), None, Some((installation, linux)))
+                    }
+                };
                 Ok(Target {
                     program,
                     current_dir: repository.worktree_root.clone(),
                     bootstrap_id: None,
-                    git_identity: Some(identity),
+                    git_identity,
                     git_directory: Some(repository.git_directory.clone()),
+                    wsl,
                 })
             }
         }
     }
 
     /// Reads the selected identities again before execution (contract §6 "Registration bootstrap").
+    /// gaps.md W1: a WSL context gets no identity read before a run, because each read starts `wsl.exe`.
+    /// `register` reads it again through the §11 identity probe.
     fn revalidate(&self, target: &Target, now: Instant) -> Result<(), Code> {
-        if let Some(bootstrap_id) = &target.bootstrap_id {
+        if let (Some(bootstrap_id), None) = (&target.bootstrap_id, &target.wsl) {
             self.contexts.revalidate(bootstrap_id, now)?;
         }
         match target.git_identity {
@@ -693,7 +915,19 @@ impl ProcessRequests {
             .collect::<Result<_, _>>()?;
         let mut state = self.state();
         check_active(&state, operation_id)?;
-        self.target(&mut state, request, kind, operation_id)?;
+        let target = self.target(&mut state, request, kind, operation_id)?;
+        if let Some((installation, _)) = target.wsl {
+            let n = Self::next_unit(&mut state, operation_id);
+            return self.wsl_identity(
+                state,
+                &installation,
+                operation_id,
+                n,
+                &paths,
+                call_id,
+                read_at,
+            );
+        }
         let call = call_id.to_string();
         self.spawn_walk(
             state,
@@ -702,6 +936,7 @@ impl ProcessRequests {
             operation_id,
             read_at,
             move |stop| {
+                let stop = &stop.flag;
                 let identities: Vec<Value> = paths
                     .iter()
                     .take_while(|_| !stop.load(Ordering::SeqCst))
@@ -712,12 +947,65 @@ impl ProcessRequests {
         )
     }
 
+    /// gaps.md W4 and W9: one identity probe for the request, as a walk. A path outside the distro gets the refusal alone.
+    #[allow(clippy::too_many_arguments)]
+    fn wsl_identity(
+        &self,
+        state: MutexGuard<'_, State>,
+        installation: &wsl::Installation,
+        operation_id: &str,
+        n: u32,
+        paths: &[PathBuf],
+        call_id: &str,
+        read_at: Instant,
+    ) -> Result<(), Code> {
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let linux: Vec<String> = paths
+            .iter()
+            .map(|path| wsl::linux_path(path, &installation.distro).unwrap_or_default())
+            .collect();
+        let (installation, operation, call) = (
+            installation.clone(),
+            operation_id.to_string(),
+            call_id.to_string(),
+        );
+        let deadline = self.walk_bound();
+        self.spawn_walk(
+            state,
+            "identity",
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let host = me.wsl_host(&operation);
+                let identities: Vec<Value> = wsl::identities(
+                    &*host,
+                    &installation,
+                    &operation,
+                    n,
+                    &linux,
+                    &me.config.base_environment,
+                    Some((stop.event.0, deadline)),
+                )
+                .into_iter()
+                .map(|found| match found {
+                    Ok(identity) => identity.reply(),
+                    Err(wsl::Refusal::Invalid) => wsl::Refusal::Failed.reply(),
+                    Err(refusal) => refusal.reply(),
+                })
+                .collect();
+                json!({ "type": "identity", "callId": call, "identities": identities })
+            },
+        )
+    }
+
     fn file_facts(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
         let read_at = Instant::now();
         let parsed = file_facts::parse(request)?;
         let mut state = self.state();
         check_active(&state, parsed.operation_id)?;
-        self.target(&mut state, request, Kind::Registered, parsed.operation_id)?;
+        let target = self.target(&mut state, request, Kind::Registered, parsed.operation_id)?;
         let id = request["repositoryId"].as_str().ok_or(INVALID)?;
         let repository = state.repositories.get(id).ok_or(UNKNOWN)?;
         let roots = [
@@ -725,7 +1013,11 @@ impl ProcessRequests {
             repository.git_directory.clone(),
             repository.common_directory.clone(),
         ];
-        // Contract §11 "Trust and environment": refuse a WSL repository until T212 adds the WSL form.
+        if let Some((installation, _)) = target.wsl {
+            let n = Self::next_unit(&mut state, parsed.operation_id);
+            return self.wsl_file_facts(state, &parsed, &installation, &roots, n, call_id, read_at);
+        }
+        // A Windows Git never reads a WSL repository (contract §11 "Route").
         if roots.iter().any(|root| file_facts::is_wsl_path(root)) {
             return Err(INVALID);
         }
@@ -737,11 +1029,21 @@ impl ProcessRequests {
             parsed.operation_id,
             read_at,
             move |stop| {
-                let facts =
-                    file_facts::walk([&roots[0], &roots[1], &roots[2]], digest, &files, stop);
+                let facts = file_facts::walk(
+                    [&roots[0], &roots[1], &roots[2]],
+                    digest,
+                    &files,
+                    &stop.flag,
+                );
                 json!({ "type": "fileFacts", "callId": call, "facts": facts })
             },
         )
+    }
+
+    /// The bound of the host wait of a WSL walk. The watchdog sets the stop Event at the walk deadline, and this bound lies one probe deadline later.
+    /// So only a lost stop reaches it.
+    fn walk_bound(&self) -> Duration {
+        self.config.walk_deadline + Duration::from_millis(BOOTSTRAP_DEADLINE_MS)
     }
 
     /// Runs `work` on its own thread with a watchdog thread (contract §6 "Walks").
@@ -753,12 +1055,13 @@ impl ProcessRequests {
         call_id: &str,
         operation_id: &str,
         read_at: Instant,
-        work: impl FnOnce(&AtomicBool) -> Value + Send + 'static,
+        work: impl FnOnce(&WalkStop) -> Value + Send + 'static,
     ) -> Result<(), Code> {
         if state.calls.contains_key(call_id) || state.walks.contains_key(call_id) {
             return Err(INVALID);
         }
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let stop = Arc::new(WalkStop::new().ok_or(OWNERSHIP)?);
         let (events, received) = mpsc::channel();
         state.walks.insert(
             call_id.to_string(),
@@ -770,7 +1073,6 @@ impl ProcessRequests {
         let generation = self.current();
         drop(state);
 
-        let stop = Arc::new(AtomicBool::new(false));
         self.walk_threads.fetch_add(1, Ordering::SeqCst);
         let worker = {
             let (me, stop) = (Arc::clone(&me), Arc::clone(&stop));
@@ -838,7 +1140,9 @@ impl ProcessRequests {
         let common = path(&request["commonDirectory"])?;
         check_active(&self.state(), operation_id)?;
         // An unreadable identity gives 0.
-        let count = read_identity(&common).map_or(0, |tag| self.jobs.lingering_count(&tag));
+        let count = self
+            .read_physical_identity(&common)
+            .map_or(0, |tag| self.jobs.lingering_count(&tag));
         self.send(
             self.current(),
             json!({ "type": "lingeringCount", "callId": call_id, "count": count }),
@@ -872,6 +1176,10 @@ impl ProcessRequests {
         let git_form = match (has(&GIT), has(&REPOSITORY)) {
             (3, 0) => true,
             (0, 4) => false,
+            // The WSL form holds only `confirm` (contract §6 "Channel frames", §11).
+            (1, 0) if request.contains_key("confirm") => {
+                return self.register_wsl(request, call_id);
+            }
             _ => return Err(INVALID),
         };
         let now = Instant::now();
@@ -900,6 +1208,9 @@ impl ProcessRequests {
                 return Err(INVALID);
             }
             own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+            let ContextIdentity::Windows(identity) = context.identity else {
+                return Err(INVALID);
+            };
             self.contexts.revalidate(bootstrap_id, now)?;
             self.contexts.destroy(bootstrap_id);
             if confirm {
@@ -911,7 +1222,7 @@ impl ProcessRequests {
                         version: version.to_string(),
                         digest: digest.to_string(),
                     },
-                    context.identity,
+                    identity,
                     git_id,
                     call_id,
                 );
@@ -920,9 +1231,9 @@ impl ProcessRequests {
             state.issued.insert(git_id.to_string());
             state.gits.insert(
                 git_id.to_string(),
-                Git {
+                Git::Windows {
                     program: context.path.clone(),
-                    identity: context.identity,
+                    identity,
                 },
             );
             drop(state);
@@ -953,20 +1264,35 @@ impl ProcessRequests {
                 return Err(UNKNOWN);
             }
             own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
-            if !state.gits.contains_key(git_id) {
-                return Err(UNKNOWN);
+            let repository = Repository {
+                worktree_root,
+                git_directory,
+                common_directory,
+                git_installation_id: git_id.to_string(),
+            };
+            match (state.gits.get(git_id).ok_or(UNKNOWN)?, context.identity) {
+                (Git::Windows { .. }, ContextIdentity::Windows(_)) => {}
+                (Git::Wsl(installation), ContextIdentity::Wsl) => {
+                    let installation = installation.clone();
+                    drop(state);
+                    return self.register_wsl_repository(
+                        operation_id,
+                        bootstrap_id,
+                        repository_id,
+                        &context.path,
+                        &installation,
+                        repository,
+                        call_id,
+                    );
+                }
+                _ => return Err(INVALID),
             }
             self.contexts.revalidate(bootstrap_id, now)?;
             self.contexts.destroy(bootstrap_id);
             state.issued.insert(repository_id.to_string());
-            state.repositories.insert(
-                repository_id.to_string(),
-                Repository {
-                    worktree_root,
-                    git_directory,
-                    common_directory,
-                },
-            );
+            state
+                .repositories
+                .insert(repository_id.to_string(), repository);
             "approved"
         };
         drop(state);
@@ -975,6 +1301,382 @@ impl ProcessRequests {
             json!({ "type": "register", "callId": call_id, "result": result }),
         );
         Ok(())
+    }
+
+    /// Contract §6 `wslDistros` and §11 "Route": the context path, and for a WSL prefix the distro facts.
+    /// The list calls run on their own thread in the operation Job, so the frame reader keeps running.
+    fn wsl_distros(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let schema::wsl_request::WslRequest::WslDistros {
+            operation_id,
+            bootstrap_id,
+            ..
+        } = schema::wsl_request(&Value::Object(request.clone()))?
+        else {
+            return Err(INVALID);
+        };
+        let (operation_id, bootstrap_id): (&str, &str) = (&operation_id, &bootstrap_id);
+        let now = Instant::now();
+        let path = {
+            let mut state = self.state();
+            check_active(&state, operation_id)?;
+            let context = self.contexts.get(bootstrap_id, now)?;
+            if context.kind != ContextKind::RepositoryDiscovery {
+                return Err(UNKNOWN);
+            }
+            own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+            context.path
+        };
+        let generation = self.current();
+        let mut reply = json!({ "type": "wslDistros", "callId": call_id, "path": path.to_str().ok_or(INVALID)? });
+        if !file_facts::is_wsl_path(&path) {
+            self.send(generation, reply);
+            return Ok(());
+        }
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let operation_id = operation_id.to_string();
+        std::thread::spawn(move || {
+            let host = me.wsl_host(&operation_id);
+            let facts = wsl::distros(&*host, &me.config.base_environment);
+            let saved = me.wsl_saved.get().map(|saved| saved()).unwrap_or_default();
+            wsl::distros_reply(&mut reply, facts, &saved);
+            me.send(generation, reply);
+        });
+        Ok(())
+    }
+
+    /// Contract §11 "Process launch": the wrapper command of one Git process of a WSL Git.
+    /// Only a mutation passes the candidate index, as the Linux path of the checked file below the Git directory.
+    #[allow(clippy::too_many_arguments)]
+    fn wsl_run_command(
+        &self,
+        state: &mut State,
+        operation_id: &str,
+        installation: &wsl::Installation,
+        directory: &str,
+        policy: &str,
+        index_file: Option<&Path>,
+        arguments: &[String],
+        input: &RunInput,
+    ) -> Result<wsl::Command, Code> {
+        let mode = match policy {
+            "probe" => wsl::Mode::Probe,
+            "read" => wsl::Mode::Read,
+            "mutation" => wsl::Mode::Mutation,
+            _ => return Err(INVALID),
+        };
+        let index = index_file
+            .map(|file| wsl::linux_path(file, &installation.distro).ok_or(INVALID))
+            .transpose()?;
+        let unit = wsl::unit_name(operation_id, Self::next_unit(state, operation_id))?;
+        let stdin = match input {
+            RunInput::Closed => wsl::Stdin::Closed,
+            RunInput::Bytes(bytes) => wsl::Stdin::Bytes(bytes.clone()),
+            RunInput::Streamed(_) => wsl::Stdin::Open,
+        };
+        wsl::git_command(
+            installation,
+            mode,
+            &unit,
+            index.as_deref(),
+            directory,
+            arguments,
+            &self.config.base_environment,
+            stdin,
+        )
+    }
+
+    /// Contract §6 `wslProbe` (§11 "Git per distro", gaps.md W1): the bootstrap probe of a WSL context, with its Linux path.
+    /// It answers as `run`: `output` frames, then `exit`. At exit status 0, the shell binds the facts that pass every §11 rule, once.
+    fn wsl_probe(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let schema::wsl_request::WslRequest::WslProbe {
+            operation_id,
+            bootstrap_id,
+            distro,
+            limits,
+            ..
+        } = schema::wsl_request(&Value::Object(request.clone()))?
+        else {
+            return Err(INVALID);
+        };
+        let (operation_id, bootstrap_id, distro): (&str, &str, &str) =
+            (&operation_id, &bootstrap_id, &distro);
+        let deadline = Duration::from_millis(limits.deadline_ms.get());
+        let now = Instant::now();
+        let mut state = self.state();
+        if state.calls.contains_key(call_id) {
+            return Err(INVALID);
+        }
+        check_active(&state, operation_id)?;
+        let context = self.contexts.get(bootstrap_id, now)?;
+        if context.kind != ContextKind::RepositoryDiscovery {
+            return Err(UNKNOWN);
+        }
+        own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+        // gaps.md W1: a context binds once, because a rebind would defeat the revalidation at `register`.
+        if context.identity != ContextIdentity::Wsl
+            || state.wsl_bound.contains_key(bootstrap_id)
+            || state.wsl_probing.contains(bootstrap_id)
+        {
+            return Err(INVALID);
+        }
+        let linux = wsl::linux_path(&context.path, distro).ok_or(INVALID)?;
+        let host = self.wsl_host(operation_id);
+        let guid = wsl::lookup(&host.keys(), distro)
+            .map_err(|_| INVALID)?
+            .guid
+            .clone();
+        let command = wsl::probe_command(distro, &linux, &self.config.base_environment);
+        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        state.calls.insert(
+            call_id.to_string(),
+            Call {
+                operation_id: operation_id.to_string(),
+                streamed: None,
+                closed: false,
+            },
+        );
+        state.wsl_probing.insert(bootstrap_id.to_string());
+        drop(state);
+        let generation = self.current();
+        let (call_id, bootstrap_id, distro, operation_id) = (
+            call_id.to_string(),
+            bootstrap_id.to_string(),
+            distro.to_string(),
+            operation_id.to_string(),
+        );
+        std::thread::spawn(move || {
+            let ended = host.run_until(&command, wsl::RETAINED_BYTES, deadline);
+            let mut state = me.state();
+            // A Job close after the start ended the probe, so its exit carries `exitCode` null and binds nothing.
+            let closed = state.calls.remove(&call_id).is_some_and(|call| call.closed);
+            let output = ended.output.filter(|_| !closed);
+            let exit_code = output.as_ref().and_then(|out| out.exit_code);
+            state.wsl_probing.remove(&bootstrap_id);
+            if let (Some(0), Some(out)) = (exit_code, &output)
+                && let Some(bound) = wsl::bind_probe(&distro, &guid, &out.stdout)
+            {
+                state.wsl_bound.entry(bootstrap_id).or_insert(bound);
+            }
+            drop(state);
+            for chunk in output.iter().flat_map(|out| out.stdout.chunks(CHUNK_BYTES)) {
+                me.send(
+                    generation,
+                    json!({ "type": "output", "callId": call_id, "stream": "stdout", "data": encode_base64(chunk) }),
+                );
+            }
+            let active = me.jobs.active_processes(&operation_id).unwrap_or(0);
+            let mut exit = json!({ "type": "exit", "callId": call_id, "exitCode": exit_code, "activeDescendants": active });
+            if ended.deadline {
+                exit["deadline"] = json!("deadline");
+            }
+            me.send(generation, exit);
+        });
+        Ok(())
+    }
+
+    /// Contract §6 `register` WSL form: the shell issues the ID only from the facts that `wslProbe` bound, after Use this Git.
+    /// It then saves those facts for the distro GUID. The service never sends a Linux program path.
+    fn register_wsl(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let schema::wsl_request::WslRequest::Register {
+            operation_id,
+            bootstrap_id,
+            git_installation_id,
+            ..
+        } = schema::wsl_request(&Value::Object(request.clone()))?
+        else {
+            return Err(INVALID);
+        };
+        let (operation_id, bootstrap_id, git_id): (&str, &str, &str) =
+            (&operation_id, &bootstrap_id, &git_installation_id);
+        let now = Instant::now();
+        let mut state = self.state();
+        if state.issued.contains(git_id) {
+            return Err(INVALID);
+        }
+        check_active(&state, operation_id)?;
+        let context = self.contexts.get(bootstrap_id, now)?;
+        if context.kind != ContextKind::RepositoryDiscovery {
+            return Err(UNKNOWN);
+        }
+        own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+        let bound = state.wsl_bound.get(bootstrap_id).cloned().ok_or(INVALID)?;
+        drop(state);
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let generation = self.current();
+        let (git_id, call_id) = (git_id.to_string(), call_id.to_string());
+        // The confirmation runs on its own thread, so the frame reader keeps running.
+        std::thread::spawn(move || {
+            let installation = &bound.installation;
+            let approved = me.wsl_confirmation.get().is_some_and(|confirm| {
+                confirm(&installation.distro, &installation.git, &bound.version)
+            });
+            let mut result = "declined";
+            if approved {
+                let mut state = me.state();
+                if generation == me.current() && !state.issued.contains(&git_id) {
+                    state.issued.insert(git_id.clone());
+                    state.gits.insert(git_id, Git::Wsl(installation.clone()));
+                    result = "approved";
+                }
+            }
+            if let (Some(store), "approved") = (me.wsl_store.get(), result) {
+                let file = &bound.git_identity;
+                store(SavedWslGit {
+                    guid: installation.guid.clone(),
+                    distro: installation.distro.clone(),
+                    git: installation.git.clone(),
+                    version: bound.version.clone(),
+                    identity: format!(
+                        "{}:{}:{}:{}",
+                        file.file_system_id, file.inode, file.size, file.modified
+                    ),
+                });
+            }
+            me.send(
+                generation,
+                json!({ "type": "register", "callId": call_id, "result": result }),
+            );
+        });
+        Ok(())
+    }
+
+    /// gaps.md W1: before the repository ID binds, the shell reads the context identity again with the §11 identity probe.
+    /// A changed or failed read destroys the context. The three paths lie in the bound distro, and the Git has the bound GUID.
+    #[allow(clippy::too_many_arguments)]
+    fn register_wsl_repository(
+        &self,
+        operation_id: &str,
+        bootstrap_id: &str,
+        repository_id: &str,
+        context_path: &Path,
+        installation: &wsl::Installation,
+        repository: Repository,
+        call_id: &str,
+    ) -> Result<(), Code> {
+        let (bound, n) = {
+            let mut state = self.state();
+            let bound = state.wsl_bound.get(bootstrap_id).cloned().ok_or(INVALID)?;
+            let distro = &bound.installation.distro;
+            let inside = [
+                &repository.worktree_root,
+                &repository.git_directory,
+                &repository.common_directory,
+            ]
+            .iter()
+            .all(|path| wsl::linux_path(path, distro).is_some());
+            if bound.installation.guid != installation.guid || !inside {
+                return Err(INVALID);
+            }
+            (bound, Self::next_unit(&mut state, operation_id))
+        };
+        let linux = wsl::linux_path(context_path, &bound.installation.distro).ok_or(INVALID)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let generation = self.current();
+        let installation = installation.clone();
+        let (operation_id, bootstrap_id, repository_id, call_id) = (
+            operation_id.to_string(),
+            bootstrap_id.to_string(),
+            repository_id.to_string(),
+            call_id.to_string(),
+        );
+        std::thread::spawn(move || {
+            let host = me.wsl_host(&operation_id);
+            let found = wsl::identities(
+                &*host,
+                &installation,
+                &operation_id,
+                n,
+                &[linux],
+                &me.config.base_environment,
+                None,
+            );
+            let same = found
+                .first()
+                .is_some_and(|found| found.as_ref() == Ok(&bound.identity));
+            let mut state = me.state();
+            let live = me.contexts.get(&bootstrap_id, Instant::now()).is_ok();
+            me.contexts.destroy(&bootstrap_id);
+            state.wsl_bound.remove(&bootstrap_id);
+            let reply = if !same || !live || state.issued.contains(&repository_id) {
+                json!({ "type": "refused", "callId": call_id, "code": UNKNOWN })
+            } else {
+                state.issued.insert(repository_id.clone());
+                state.repositories.insert(repository_id, repository);
+                json!({ "type": "register", "callId": call_id, "result": "approved" })
+            };
+            drop(state);
+            me.send(generation, reply);
+        });
+        Ok(())
+    }
+
+    /// gaps.md W3: the Perl probe of a WSL repository, on its own thread, in the Job of the request operation.
+    #[allow(clippy::too_many_arguments)]
+    fn wsl_file_facts(
+        &self,
+        state: MutexGuard<'_, State>,
+        parsed: &file_facts::Request,
+        installation: &wsl::Installation,
+        roots: &[PathBuf; 3],
+        n: u32,
+        call_id: &str,
+        read_at: Instant,
+    ) -> Result<(), Code> {
+        let linux: Vec<String> = roots
+            .iter()
+            .map(|root| wsl::linux_path(root, &installation.distro))
+            .collect::<Option<_>>()
+            .ok_or(INVALID)?;
+        let roots: [String; 3] = linux.try_into().map_err(|_| INVALID)?;
+        let unit = wsl::unit_name(parsed.operation_id, n)?;
+        let entries: Vec<wsl::FactEntry> = parsed
+            .files
+            .iter()
+            .map(|(root, path)| wsl::FactEntry {
+                root: *root,
+                path: path.iter().map(|component| component.to_string()).collect(),
+            })
+            .collect();
+        let command = wsl::file_facts_command(
+            installation,
+            &unit,
+            parsed.digest,
+            &roots,
+            &entries,
+            &self.config.base_environment,
+        );
+        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        self.jobs.open(parsed.operation_id).map_err(|_| OWNERSHIP)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (operation, call, digest) = (
+            parsed.operation_id.to_string(),
+            call_id.to_string(),
+            parsed.digest,
+        );
+        let deadline = self.walk_bound();
+        self.spawn_walk(
+            state,
+            "fileFacts",
+            call_id,
+            parsed.operation_id,
+            read_at,
+            move |stop| {
+                let host = me.wsl_host(&operation);
+                // One byte above the cap shows output past it.
+                let ended = host.run_walk(
+                    &command,
+                    wsl::FACTS_OUTPUT_BYTES + 1,
+                    deadline,
+                    stop.event.0,
+                );
+                let facts = wsl::file_facts_reply(ended.output, &entries, digest);
+                json!({ "type": "fileFacts", "callId": call, "facts": facts })
+            },
+        )
     }
 
     /// Replaces a `gitProbe` context with one for `<exec-path>\git.exe` (contract §6 "Channel frames" `resolveGit`).
@@ -1048,7 +1750,9 @@ impl ProcessRequests {
                     state.issued.insert(git_id.clone());
                     let program = proposal.executable_path.clone();
                     state.confirmed.insert(git_id.clone(), proposal);
-                    state.gits.insert(git_id, Git { program, identity });
+                    state
+                        .gits
+                        .insert(git_id, Git::Windows { program, identity });
                 }
             }
             me.send(generation, registered.reply(&call_id));
@@ -1208,9 +1912,12 @@ impl Drop for Owned {
     }
 }
 
-/// Sets the stop flag of a walk, then cancels the synchronous I/O of its thread (contract §6 "Walks").
-fn stop_walk(stop: &AtomicBool, worker: &JoinHandle<()>) {
-    stop.store(true, Ordering::SeqCst);
+/// Sets the stop flag and the stop Event of a walk, then cancels the synchronous I/O of its thread (contract §6 "Walks").
+/// The Event ends the `wsl.exe` of a WSL walk, so the stop never closes the operation Job.
+fn stop_walk(stop: &WalkStop, worker: &JoinHandle<()>) {
+    stop.flag.store(true, Ordering::SeqCst);
+    // SAFETY: `stop` keeps the Event open for the call.
+    let _ = unsafe { SetEvent(stop.event.0) };
     // SAFETY: `worker` keeps the thread handle open for the call. A thread outside I/O gives `ERROR_NOT_FOUND`.
     let _ = unsafe { CancelSynchronousIo(HANDLE(worker.as_raw_handle())) };
 }
@@ -1260,6 +1967,7 @@ fn mark_closed(state: &mut State, operation_id: &str) {
 }
 
 fn deactivate(state: &mut State, operation_id: &str) {
+    state.wsl_units.remove(operation_id);
     if !state.inactive.iter().any(|id| id == operation_id) {
         state.inactive.push_back(operation_id.to_string());
     }
@@ -1285,6 +1993,9 @@ fn own(
     now: Instant,
 ) -> Result<(), Code> {
     state.owners.retain(|id, _| contexts.get(id, now).is_ok());
+    state
+        .wsl_bound
+        .retain(|id, _| contexts.get(id, now).is_ok());
     match state.owners.entry(bootstrap_id.to_string()) {
         Entry::Occupied(owner) if owner.get() != operation_id => Err(UNKNOWN),
         Entry::Occupied(_) => Ok(()),
@@ -2080,7 +2791,9 @@ pub(crate) mod tests {
             let common = workspace.worktree.join(".git");
             self.requests.tag(
                 operation,
-                read_identity(&common).expect("common-directory identity"),
+                crate::bootstrap::PhysicalIdentity::Windows(
+                    read_identity(&common).expect("common-directory identity"),
+                ),
             );
         }
     }
@@ -3637,9 +4350,10 @@ pub(crate) mod tests {
             &workspace,
             &["grandchild", "2", "60000", "exit"],
         );
-        harness
-            .requests
-            .tag(&operation, read_identity(&common).expect("identity"));
+        harness.requests.tag(
+            &operation,
+            crate::bootstrap::PhysicalIdentity::Windows(read_identity(&common).expect("identity")),
+        );
         harness.exit(&call, WAIT).expect("exit");
         assert_eq!(harness.requests.ended(&operation, false), Ok(()));
         let count = uuid();
@@ -3982,7 +4696,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_wsl_repository_gets_refused_invalid_request_until_t212() {
+    fn a_windows_git_never_reads_the_file_facts_of_a_wsl_repository() {
         let harness = Harness::child();
         for root in [
             r"\\wsl$\Ubuntu\home\u\repo",
@@ -4002,6 +4716,798 @@ pub(crate) mod tests {
                 "{root}"
             );
         }
+    }
+
+    /// Contract §11: a WSL repository never runs Git for Windows. No distro has this name, so no process reaches WSL.
+    #[test]
+    fn a_windows_git_never_runs_in_a_registered_wsl_repository() {
+        let harness = Harness::child();
+        let root = r"\\wsl.localhost\Arbareto-No-Distro\home\u\repo";
+        let git_directory = format!(r"{root}\.git");
+        let workspace = register_roots(&harness, [root, &git_directory, &git_directory]);
+        let (call, operation) = (uuid(), uuid());
+        harness.send(run_body(
+            &call,
+            &operation,
+            &workspace,
+            &["status"],
+            "read",
+            json!({ "deadlineMs": 30_000 }),
+        ));
+        assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+        assert!(
+            harness.jobs.job_handle(&operation).is_none(),
+            "no Job, so no process"
+        );
+    }
+
+    // ---- WSL frames (gaps.md W1 to W4) ----
+
+    const WSL_GUID: &str = "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}";
+    const WSL_PATH: &str = r"\\wsl.localhost\Ubuntu-24.04\home\u\repo";
+
+    /// The reference distro probe output with Git 2.55.0 and the context path lines.
+    fn wsl_probe_output(change: &[(&str, &str)]) -> String {
+        let mut lines: Vec<(String, String)> = [
+            ("path git", "/usr/bin/git"),
+            ("magic git", "-"),
+            ("path systemd-run", "/usr/bin/systemd-run"),
+            ("magic systemd-run", "-"),
+            ("path systemctl", "/usr/bin/systemctl"),
+            ("magic systemctl", "-"),
+            ("path setsid", "/usr/bin/setsid"),
+            ("magic setsid", "-"),
+            ("path stat", "/usr/bin/stat"),
+            ("magic stat", "-"),
+            ("path env", "/usr/bin/env"),
+            ("magic env", "-"),
+            ("path perl", "/usr/bin/perl"),
+            ("magic perl", "-"),
+            ("pathenv", "/usr/bin"),
+            ("version", "git version 2.55.0"),
+            ("gitfs", "ef53:fedc9aa3bd65bc57"),
+            ("gitfile", "43750:4066232:1751487822"),
+            ("selfs", "ef53:fedc9aa3bd65bc57"),
+            ("selino", "4242"),
+            ("selstat", "ok"),
+            ("scope", "0"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        for (key, value) in change {
+            if let Some(line) = lines.iter_mut().find(|(k, _)| k == key) {
+                line.1 = value.to_string();
+            }
+        }
+        lines.iter().map(|(k, v)| format!("{k} {v}\n")).collect()
+    }
+
+    /// Answers each WSL process of every operation with the next scripted output, and records the commands.
+    #[derive(Clone, Default)]
+    struct ScriptHost {
+        outputs: Arc<Mutex<VecDeque<Option<wsl::Output>>>>,
+        commands: Arc<Mutex<Vec<wsl::Command>>>,
+        /// While true, each process waits before it records its command.
+        held: Arc<(Mutex<bool>, Condvar)>,
+        /// While set, each walk process is a sleeping test child in the operation Job, and the product wait ends it.
+        slow: Arc<Mutex<Option<Arc<Supervisor>>>>,
+        /// The operation of this host. `set_wsl_hosts` gives one host to each operation.
+        operation: String,
+    }
+
+    impl ScriptHost {
+        fn hold(&self, held: bool) {
+            *self.held.0.lock().expect("held") = held;
+            self.held.1.notify_all();
+        }
+
+        fn push(&self, exit_code: u32, stdout: &[u8]) {
+            self.outputs
+                .lock()
+                .expect("outputs")
+                .push_back(Some(wsl::Output {
+                    exit_code: Some(exit_code),
+                    stdout: stdout.to_vec(),
+                }));
+        }
+
+        fn commands(&self) -> Vec<wsl::Command> {
+            self.commands.lock().expect("commands").clone()
+        }
+    }
+
+    impl wsl::Host for ScriptHost {
+        fn run(&self, command: &wsl::Command) -> Option<wsl::Output> {
+            let (held, changed) = &*self.held;
+            let _ = changed
+                .wait_timeout_while(held.lock().expect("held"), WAIT, |held| *held)
+                .expect("held");
+            self.commands
+                .lock()
+                .expect("commands")
+                .push(command.clone());
+            self.outputs
+                .lock()
+                .expect("outputs")
+                .pop_front()
+                .expect("scripted output")
+        }
+
+        fn keys(&self) -> Vec<wsl::Key> {
+            vec![wsl::Key {
+                guid: WSL_GUID.to_string(),
+                name: "Ubuntu-24.04".to_string(),
+                version: 2,
+            }]
+        }
+
+        /// Records the Git command and starts nothing, so the `run` ends refused.
+        fn start(
+            &self,
+            command: &wsl::Command,
+        ) -> Result<crate::spawn::Spawned, crate::spawn::SpawnError> {
+            self.commands
+                .lock()
+                .expect("commands")
+                .push(command.clone());
+            Err(crate::spawn::SpawnError::OwnershipFailed)
+        }
+
+        fn anchor(&self, command: &wsl::Command) -> Result<(), crate::spawn::SpawnError> {
+            self.commands
+                .lock()
+                .expect("commands")
+                .push(command.clone());
+            Ok(())
+        }
+
+        fn run_walk(
+            &self,
+            command: &wsl::Command,
+            cap: usize,
+            deadline: Duration,
+            stop: HANDLE,
+        ) -> wsl::Ended {
+            let slow = self.slow.lock().expect("slow").clone();
+            let Some(jobs) = slow else {
+                return wsl::Ended {
+                    output: self.run(command),
+                    deadline: false,
+                };
+            };
+            self.commands
+                .lock()
+                .expect("commands")
+                .push(command.clone());
+            let arguments = crate::jobs::tests::child_arguments(&["sleep", "60000"]);
+            let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+            let directory = std::env::temp_dir();
+            let request = SpawnRequest {
+                program: &test_exe(),
+                arguments: &arguments,
+                environment: &environment,
+                current_dir: &directory,
+                wsl: false,
+                input: Input::Closed,
+            };
+            let spawned = jobs
+                .with_job(&self.operation, |job| spawn(&request, job))
+                .expect("operation Job")
+                .expect("sleeping child");
+            wsl::collect(spawned, cap, deadline, Some(stop))
+        }
+    }
+
+    struct WslHarness {
+        harness: Harness,
+        host: ScriptHost,
+        saved: Arc<Mutex<Vec<SavedWslGit>>>,
+        confirmations: Arc<Mutex<Vec<String>>>,
+    }
+
+    fn wsl_harness(approve: bool) -> WslHarness {
+        wsl_harness_with(approve, Harness::child())
+    }
+
+    fn wsl_harness_with(approve: bool, harness: Harness) -> WslHarness {
+        let host = ScriptHost::default();
+        let shared = host.clone();
+        harness.requests.set_wsl_hosts(Box::new(move |operation| {
+            let mut host = shared.clone();
+            host.operation = operation.to_string();
+            Box::new(host)
+        }));
+        let saved = Arc::new(Mutex::new(Vec::new()));
+        let store = Arc::clone(&saved);
+        harness
+            .requests
+            .set_wsl_store(Box::new(move |git| store.lock().expect("saved").push(git)));
+        let confirmations = Arc::new(Mutex::new(Vec::new()));
+        let shown = Arc::clone(&confirmations);
+        harness
+            .requests
+            .set_wsl_confirmation(Box::new(move |distro, git, version| {
+                shown
+                    .lock()
+                    .expect("shown")
+                    .push(format!("{distro} {git} {version}"));
+                approve
+            }));
+        WslHarness {
+            harness,
+            host,
+            saved,
+            confirmations,
+        }
+    }
+
+    impl WslHarness {
+        fn context(&self) -> String {
+            self.harness
+                .contexts
+                .create(
+                    ContextKind::RepositoryDiscovery,
+                    Path::new(WSL_PATH),
+                    Instant::now(),
+                )
+                .expect("pending WSL context")
+        }
+
+        fn probe(&self, operation: &str, bootstrap_id: &str) -> Value {
+            let call = uuid();
+            self.harness.send(json!({ "type": "wslProbe", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "distro": "Ubuntu-24.04", "limits": { "deadlineMs": 60000 } }));
+            self.harness
+                .wait_reply(WAIT, |v| {
+                    v["callId"] == call.as_str() && (v["type"] == "exit" || v["type"] == "refused")
+                })
+                .expect("exit")
+                .1
+        }
+
+        fn register_git(&self, operation: &str, bootstrap_id: &str, git: &str) -> Value {
+            let call = uuid();
+            self.harness.send(json!({ "type": "register", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "confirm": true }));
+            self.harness.reply(&call)
+        }
+
+        fn register_repository(
+            &self,
+            operation: &str,
+            bootstrap_id: &str,
+            git: &str,
+            root: &str,
+        ) -> Value {
+            let call = uuid();
+            let git_directory = format!(r"{root}\.git");
+            self.harness.send(json!({ "type": "register", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": uuid(), "worktreeRoot": root, "gitDirectory": git_directory, "commonDirectory": git_directory }));
+            self.harness.reply(&call)
+        }
+    }
+
+    #[test]
+    fn a_wsl_probe_binds_the_context_once_and_streams_its_output_as_run() {
+        let wsl = wsl_harness(true);
+        let (operation, bootstrap_id) = (uuid(), wsl.context());
+        let output = wsl_probe_output(&[]);
+        wsl.host.push(0, output.as_bytes());
+        let exit = wsl.probe(&operation, &bootstrap_id);
+        assert_eq!(exit["exitCode"], 0);
+        let call = exit["callId"].as_str().expect("call").to_string();
+        assert_eq!(wsl.harness.output(&call, "stdout"), output.as_bytes());
+        // gaps.md W1: the probe gets the Linux path of the context as its one argument.
+        let probe = &wsl.host.commands()[0];
+        assert_eq!(
+            probe.arguments,
+            wsl::probe_command("Ubuntu-24.04", "/home/u/repo", &[]).arguments
+        );
+        assert_eq!(
+            wsl.harness
+                .contexts
+                .get(&bootstrap_id, Instant::now())
+                .expect("context")
+                .identity,
+            ContextIdentity::Wsl
+        );
+        // A second probe of a bound context is refused, and nothing runs.
+        assert_eq!(
+            wsl.probe(&operation, &bootstrap_id)["code"],
+            "INVALID_REQUEST"
+        );
+        assert_eq!(wsl.host.commands().len(), 1);
+    }
+
+    /// gaps.md W1: the bind is reserved when the probe arrives, so a second probe in flight cannot bind the context again.
+    #[test]
+    fn a_second_wsl_probe_while_the_first_runs_is_refused_and_starts_nothing() {
+        let wsl = wsl_harness(true);
+        let (operation, bootstrap_id) = (uuid(), wsl.context());
+        wsl.host.push(0, wsl_probe_output(&[]).as_bytes());
+        wsl.host
+            .push(0, wsl_probe_output(&[("selino", "9999")]).as_bytes());
+        wsl.host.hold(true);
+        let first = uuid();
+        wsl.harness.send(json!({ "type": "wslProbe", "callId": first, "operationId": operation, "bootstrapId": bootstrap_id, "distro": "Ubuntu-24.04", "limits": { "deadlineMs": 60000 } }));
+        let second = uuid();
+        wsl.harness.send(json!({ "type": "wslProbe", "callId": second, "operationId": operation, "bootstrapId": bootstrap_id, "distro": "Ubuntu-24.04", "limits": { "deadlineMs": 60000 } }));
+        let early = wsl
+            .harness
+            .wait_reply(Duration::from_secs(2), |v| v["callId"] == second.as_str())
+            .map(|(_, v)| v);
+        wsl.host.hold(false);
+        assert_eq!(early, Some(refused(&second, "INVALID_REQUEST")));
+        let exit = wsl
+            .harness
+            .wait_reply(WAIT, |v| {
+                v["callId"] == first.as_str() && v["type"] == "exit"
+            })
+            .expect("exit")
+            .1;
+        assert_eq!(exit["exitCode"], 0);
+        assert_eq!(wsl.host.commands().len(), 1);
+        let state = wsl.harness.requests.state();
+        let bound = state.wsl_bound.get(&bootstrap_id).expect("bound");
+        assert_eq!(bound.identity.inode, "4242");
+    }
+
+    /// Per-context and per-operation WSL state leaves with its context and with its operation.
+    #[test]
+    fn the_bound_facts_leave_with_their_context_and_the_unit_counter_with_its_operation() {
+        let wsl = wsl_harness(true);
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        let call = uuid();
+        wsl.harness.send(json!({
+            "type": "identity", "callId": call, "operationId": operation, "contextKind": "repositoryDiscovery",
+            "bootstrapId": bootstrap_id, "gitInstallationId": git, "paths": [WSL_PATH],
+        }));
+        wsl.harness.reply(&call);
+        assert!(
+            wsl.harness
+                .requests
+                .state()
+                .wsl_units
+                .contains_key(&operation)
+        );
+        wsl.harness.contexts.destroy(&bootstrap_id);
+        // Any later context request prunes the facts of a destroyed context.
+        let (other_operation, other) = (uuid(), wsl.context());
+        assert_eq!(
+            wsl.register_git(&other_operation, &other, &uuid())["code"],
+            "INVALID_REQUEST"
+        );
+        wsl.harness
+            .send(json!({ "type": "closeJob", "operationId": operation }));
+        let state = wsl.harness.requests.state();
+        assert!(!state.wsl_bound.contains_key(&bootstrap_id), "bound facts");
+        assert!(!state.wsl_units.contains_key(&operation), "unit counter");
+    }
+
+    // ---- WSL walks (T212 decision W9, contract §6 "Walks") ----
+
+    /// A registered WSL repository. Each later walk process is a sleeping test child in its operation Job.
+    fn slow_wsl_repository(wsl: &WslHarness) -> (String, String) {
+        let (operation, bootstrap_id, git) = bound_wsl(wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        let (call, repository) = (uuid(), uuid());
+        let git_directory = format!(r"{WSL_PATH}\.git");
+        wsl.harness.send(json!({ "type": "register", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory }));
+        assert_eq!(wsl.harness.reply(&call)["result"], "approved");
+        *wsl.host.slow.lock().expect("slow") = Some(Arc::clone(&wsl.harness.jobs));
+        (git, repository)
+    }
+
+    fn wsl_facts_body(call: &str, operation: &str, git: &str, repository: &str) -> Value {
+        json!({
+            "type": "fileFacts", "callId": call, "operationId": operation, "contextKind": "registeredOperation",
+            "gitInstallationId": git, "repositoryId": repository, "digest": false,
+            "files": [{ "root": "gitDirectory", "path": ["hooks", "pre-commit"] }],
+        })
+    }
+
+    /// True when the sleeping walk child of `operation` started in its Job.
+    fn walk_child_started(wsl: &WslHarness, operation: &str) -> bool {
+        eventually(WAIT, || {
+            wsl.harness.jobs.active_processes(operation) == Some(1)
+        })
+    }
+
+    #[test]
+    fn a_wsl_walk_past_its_deadline_replies_deadline_and_its_wsl_exe_ends() {
+        let harness = Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            std::env::vars_os().collect(),
+            Duration::from_secs(2),
+        );
+        let wsl = wsl_harness_with(true, harness);
+        let (git, repository) = slow_wsl_repository(&wsl);
+        let (call, operation) = (uuid(), uuid());
+        wsl.harness
+            .send(wsl_facts_body(&call, &operation, &git, &repository));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "fileFacts", "callId": call, "deadline": "deadline" })
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || wsl.harness.jobs.active_processes(&operation)
+                == Some(0)),
+            "the walk Event ends the wsl.exe process"
+        );
+        assert!(eventually(CLOSE_WAIT, || wsl
+            .harness
+            .requests
+            .active_walks()
+            == 0));
+        assert!(
+            wsl.harness.jobs.job_handle(&operation).is_some(),
+            "the stop never closes the operation Job"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(wsl.harness.replies_for(&call).len(), 1, "one reply");
+    }
+
+    #[test]
+    fn a_canceled_wsl_walk_sends_no_reply_and_its_wsl_exe_ends() {
+        let wsl = wsl_harness(true);
+        let (git, _) = slow_wsl_repository(&wsl);
+        let (operation, bootstrap_id) = (uuid(), wsl.context());
+        wsl.host.push(0, wsl_probe_output(&[]).as_bytes());
+        // An identity request in a bound WSL context of another operation.
+        *wsl.host.slow.lock().expect("slow") = None;
+        wsl.probe(&operation, &bootstrap_id);
+        *wsl.host.slow.lock().expect("slow") = Some(Arc::clone(&wsl.harness.jobs));
+        let call = uuid();
+        wsl.harness.send(json!({
+            "type": "identity", "callId": call, "operationId": operation, "contextKind": "repositoryDiscovery",
+            "bootstrapId": bootstrap_id, "gitInstallationId": git, "paths": [WSL_PATH],
+        }));
+        assert!(walk_child_started(&wsl, &operation), "the walk child runs");
+        wsl.harness
+            .send(json!({ "type": "cancel", "callId": call }));
+        assert!(
+            eventually(CLOSE_WAIT, || wsl.harness.jobs.active_processes(&operation)
+                == Some(0)),
+            "the walk Event ends the wsl.exe process"
+        );
+        assert!(eventually(CLOSE_WAIT, || wsl
+            .harness
+            .requests
+            .active_walks()
+            == 0));
+        assert!(
+            wsl.harness.jobs.job_handle(&operation).is_some(),
+            "cancel never closes the operation Job"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(wsl.harness.replies_for(&call).is_empty(), "no reply");
+    }
+
+    #[test]
+    fn close_job_stops_a_wsl_walk_without_a_reply() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = slow_wsl_repository(&wsl);
+        let (call, operation) = (uuid(), uuid());
+        wsl.harness
+            .send(wsl_facts_body(&call, &operation, &git, &repository));
+        assert!(walk_child_started(&wsl, &operation), "the walk child runs");
+        wsl.harness
+            .send(json!({ "type": "closeJob", "operationId": operation }));
+        assert!(
+            eventually(CLOSE_WAIT, || wsl.harness.requests.active_walks() == 0),
+            "closeJob stops the walk"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(wsl.harness.replies_for(&call).is_empty(), "no reply");
+    }
+
+    #[test]
+    fn a_probe_that_fails_a_section_11_rule_binds_nothing_and_the_wsl_register_is_refused() {
+        let wsl = wsl_harness(true);
+        let (operation, bootstrap_id) = (uuid(), wsl.context());
+        wsl.host
+            .push(0, wsl_probe_output(&[("selstat", "absent")]).as_bytes());
+        assert_eq!(wsl.probe(&operation, &bootstrap_id)["exitCode"], 0);
+        assert_eq!(
+            wsl.register_git(&operation, &bootstrap_id, &uuid())["code"],
+            "INVALID_REQUEST"
+        );
+        assert!(wsl.confirmations.lock().expect("shown").is_empty());
+    }
+
+    #[test]
+    fn use_this_git_issues_the_wsl_git_from_the_bound_facts_and_saves_it() {
+        for approve in [true, false] {
+            let wsl = wsl_harness(approve);
+            let (operation, bootstrap_id) = (uuid(), wsl.context());
+            wsl.host.push(0, wsl_probe_output(&[]).as_bytes());
+            wsl.probe(&operation, &bootstrap_id);
+            let git = uuid();
+            let reply = wsl.register_git(&operation, &bootstrap_id, &git);
+            assert_eq!(
+                reply["result"],
+                if approve { "approved" } else { "declined" }
+            );
+            assert_eq!(
+                *wsl.confirmations.lock().expect("shown"),
+                vec!["Ubuntu-24.04 /usr/bin/git 2.55.0".to_string()]
+            );
+            let saved = wsl.saved.lock().expect("saved").clone();
+            if approve {
+                assert_eq!(
+                    saved,
+                    vec![SavedWslGit {
+                        guid: WSL_GUID.to_string(),
+                        distro: "Ubuntu-24.04".to_string(),
+                        git: "/usr/bin/git".to_string(),
+                        version: "2.55.0".to_string(),
+                        identity: "fedc9aa3bd65bc57:43750:4066232:1751487822".to_string(),
+                    }]
+                );
+            } else {
+                assert!(saved.is_empty(), "Cancel saves nothing");
+            }
+        }
+    }
+
+    /// A WSL context with the bound facts and an approved WSL Git.
+    fn bound_wsl(wsl: &WslHarness) -> (String, String, String) {
+        let (operation, bootstrap_id) = (uuid(), wsl.context());
+        wsl.host.push(0, wsl_probe_output(&[]).as_bytes());
+        wsl.probe(&operation, &bootstrap_id);
+        let git = uuid();
+        assert_eq!(
+            wsl.register_git(&operation, &bootstrap_id, &git)["result"],
+            "approved"
+        );
+        (operation, bootstrap_id, git)
+    }
+
+    #[test]
+    fn the_repository_register_reads_the_context_identity_again_and_a_change_destroys_the_context()
+    {
+        let wsl = wsl_harness(true);
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        assert_eq!(
+            wsl.register_repository(&operation, &bootstrap_id, &git, WSL_PATH)["result"],
+            "approved"
+        );
+        let check = wsl.host.commands().last().expect("identity probe").clone();
+        assert!(check.arguments.contains(&"/home/u/repo".to_string()));
+
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        wsl.host.push(0, b"id 9999 ef53:fedc9aa3bd65bc57\n");
+        let reply = wsl.register_repository(&operation, &bootstrap_id, &git, WSL_PATH);
+        assert_eq!(reply["code"], "UNKNOWN_TARGET");
+        assert!(
+            wsl.harness
+                .contexts
+                .get(&bootstrap_id, Instant::now())
+                .is_err(),
+            "the context is destroyed"
+        );
+
+        // A path outside the bound distro is refused before any process.
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        let before = wsl.host.commands().len();
+        let outside = r"\\wsl.localhost\Debian\home\u\repo";
+        assert_eq!(
+            wsl.register_repository(&operation, &bootstrap_id, &git, outside)["code"],
+            "INVALID_REQUEST"
+        );
+        assert_eq!(wsl.host.commands().len(), before);
+    }
+
+    #[test]
+    fn a_wsl_identity_request_runs_one_identity_probe_and_answers_absent() {
+        let wsl = wsl_harness(true);
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        wsl.host.push(
+            0,
+            b"id 4242 ef53:fedc9aa3bd65bc57\nabsent\nid 7 1021997:1\n",
+        );
+        let call = uuid();
+        wsl.harness.send(json!({
+            "type": "identity", "callId": call, "operationId": operation, "contextKind": "repositoryDiscovery",
+            "bootstrapId": bootstrap_id, "gitInstallationId": git,
+            "paths": [WSL_PATH, format!(r"{WSL_PATH}\gone"), r"\\wsl.localhost\Ubuntu-24.04\mnt\c\r", r"C:\repo"],
+        }));
+        assert_eq!(
+            wsl.harness.reply(&call)["identities"],
+            json!([
+                { "distroGuid": WSL_GUID, "fileSystemId": "fedc9aa3bd65bc57", "inode": "4242" },
+                { "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" },
+                { "code": "UNSUPPORTED_REPOSITORY", "reason": "mixed-location" },
+                { "code": "UNSUPPORTED_REPOSITORY" },
+            ])
+        );
+        // The Windows path never reaches the probe.
+        let probe = wsl.host.commands().last().expect("identity probe").clone();
+        assert!(!probe.arguments.iter().any(|a| a.contains("C:")));
+    }
+
+    #[test]
+    fn a_windows_git_cannot_run_in_a_wsl_context_and_a_wsl_git_runs_through_the_wrapper() {
+        let wsl = wsl_harness(true);
+        let windows_git = wsl.harness.register_git(&test_exe());
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        let run = |git: &str, call: &str| {
+            json!({
+                "type": "run", "callId": call, "operationId": operation, "contextKind": "repositoryDiscovery",
+                "bootstrapId": bootstrap_id, "gitInstallationId": git,
+                "arguments": ["--no-lazy-fetch", "rev-parse", "--is-bare-repository"], "environmentPolicy": "probe",
+                "limits": { "deadlineMs": 30000 },
+            })
+        };
+        let call = uuid();
+        wsl.harness.send(run(&windows_git, &call));
+        assert_eq!(wsl.harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+        let installation = wsl
+            .harness
+            .requests
+            .state()
+            .wsl_bound
+            .get(&bootstrap_id)
+            .expect("bound")
+            .installation
+            .clone();
+        let base = wsl.harness.requests.config.base_environment.clone();
+        let git_command = |mode, operation: &str, n, arguments: &[&str]| {
+            let arguments: Vec<String> = arguments.iter().map(|a| a.to_string()).collect();
+            let unit = wsl::unit_name(operation, n).expect("unit");
+            let command = wsl::git_command(
+                &installation,
+                mode,
+                &unit,
+                None,
+                "/home/u/repo",
+                &arguments,
+                &base,
+                wsl::Stdin::Closed,
+            );
+            command.expect("command").arguments
+        };
+        // The WSL Git of the context: the host gets the wrapper command in `probe` mode, and `-C` takes the Linux directory.
+        let call = uuid();
+        wsl.harness.send(run(&git, &call));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            refused(&call, "PROCESS_OWNERSHIP_FAILED"),
+            "the script host starts nothing"
+        );
+        let arguments = ["--no-lazy-fetch", "rev-parse", "--is-bare-repository"];
+        assert_eq!(
+            wsl.host.commands().last().expect("Git").arguments,
+            git_command(wsl::Mode::Probe, &operation, 1, &arguments)
+        );
+
+        // A mutation of a registered WSL repository starts its anchor before its first Git process.
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        let repository = uuid();
+        let (register, git_directory) = (uuid(), format!(r"{WSL_PATH}\.git"));
+        wsl.harness.send(json!({ "type": "register", "callId": register, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory }));
+        assert_eq!(wsl.harness.reply(&register)["result"], "approved");
+        let mutation = uuid();
+        let common = wsl::WslIdentity {
+            guid: WSL_GUID.to_string(),
+            file_system_id: "fedc9aa3bd65bc57".to_string(),
+            inode: "4243".to_string(),
+        };
+        wsl.harness
+            .requests
+            .tag(&mutation, crate::bootstrap::PhysicalIdentity::Wsl(common));
+        let before = wsl.host.commands().len();
+        let arguments = ["--no-lazy-fetch", "commit", "--quiet"];
+        let call = uuid();
+        wsl.harness.send(json!({
+            "type": "run", "callId": call, "operationId": mutation, "contextKind": "registeredOperation",
+            "gitInstallationId": git, "repositoryId": repository, "arguments": arguments,
+            "environmentPolicy": "mutation", "limits": { "deadlineMs": 30000 },
+        }));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            refused(&call, "PROCESS_OWNERSHIP_FAILED")
+        );
+        let anchor = wsl::anchor_command(&installation, &mutation, &base).expect("anchor");
+        let launched: Vec<Vec<String>> = wsl.host.commands()[before..]
+            .iter()
+            .map(|command| command.arguments.clone())
+            .collect();
+        assert_eq!(
+            launched,
+            vec![
+                anchor.arguments,
+                git_command(wsl::Mode::Mutation, &mutation, 1, &arguments)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wsl_file_facts_request_runs_the_perl_probe_and_maps_its_records() {
+        let wsl = wsl_harness(true);
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        let repository_call = uuid();
+        let repository = uuid();
+        let git_directory = format!(r"{WSL_PATH}\.git");
+        wsl.harness.send(json!({ "type": "register", "callId": repository_call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory }));
+        assert_eq!(wsl.harness.reply(&repository_call)["result"], "approved");
+        wsl.host
+            .push(0, b"absent\0file\x006\x001\x001\x001\x00none\0");
+        let call = uuid();
+        wsl.harness.send(json!({
+            "type": "fileFacts", "callId": call, "operationId": uuid(), "contextKind": "registeredOperation",
+            "gitInstallationId": git, "repositoryId": repository, "digest": false,
+            "files": [{ "root": "gitDirectory", "path": ["hooks", "pre-commit"] }, { "root": "worktreeRoot", "path": ["run.sh"] }],
+        }));
+        assert_eq!(
+            wsl.harness.reply(&call)["facts"],
+            json!([
+                { "kind": "absent" },
+                { "kind": "file", "size": 6, "lastWrite": "1000000000", "executable": true, "ownerExecute": true },
+            ])
+        );
+        let probe = wsl.host.commands().last().expect("Perl probe").clone();
+        assert!(probe.arguments.contains(&"/usr/bin/perl".to_string()));
+        assert!(probe.arguments.ends_with(&[
+            "0".to_string(),
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string()
+        ]));
+        let wsl::Stdin::Bytes(input) = &probe.stdin else {
+            panic!("stdin bytes");
+        };
+        assert_eq!(
+            input.as_slice(),
+            b"1\x002\x00hooks\x00pre-commit\x000\x001\x00run.sh\x00"
+        );
+    }
+
+    #[test]
+    fn wsl_distros_replies_only_the_path_of_a_windows_context_and_starts_no_process() {
+        let harness = Harness::child();
+        let directory = harness.fixture.path("repo");
+        std::fs::create_dir(&directory).expect("repo");
+        let now = Instant::now();
+        let bootstrap_id = harness
+            .contexts
+            .create(ContextKind::RepositoryDiscovery, &directory, now)
+            .expect("discovery context");
+        let (operation, call) = (uuid(), uuid());
+        let frame = |call: &str, operation: &str, bootstrap_id: &str| json!({ "type": "wslDistros", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id });
+        harness.send(frame(&call, &operation, &bootstrap_id));
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "wslDistros", "callId": call, "path": directory.to_str().expect("UTF-8") })
+        );
+        assert!(
+            harness.jobs.job_handle(&operation).is_none(),
+            "no Job, so no list call"
+        );
+        // Contract §6 "Context rules": the first operation owns the context.
+        let other = uuid();
+        harness.send(frame(&other, &uuid(), &bootstrap_id));
+        assert_eq!(harness.reply(&other), refused(&other, "UNKNOWN_TARGET"));
+        // A `gitProbe` context names no repository folder.
+        let probe = harness
+            .contexts
+            .create(
+                ContextKind::GitProbe,
+                &std::env::current_exe().expect("test binary"),
+                now,
+            )
+            .expect("gitProbe context");
+        let wrong = uuid();
+        harness.send(frame(&wrong, &uuid(), &probe));
+        assert_eq!(harness.reply(&wrong), refused(&wrong, "UNKNOWN_TARGET"));
+        // The generated type refuses a field outside the frame.
+        let extra = uuid();
+        let mut body = frame(&extra, &operation, &bootstrap_id);
+        body["path"] = json!(r"C:\repo");
+        harness.send(body);
+        assert_eq!(harness.reply(&extra), refused(&extra, "INVALID_REQUEST"));
     }
 
     // ---- Walks (contract §6 "Walks") ----

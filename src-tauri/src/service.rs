@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::bootstrap::Contexts;
-use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered};
+use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered, WslProposal};
 use crate::env_sanitize::sanitize;
 use crate::framing::{FrameError, read_frame, write_frame};
 use crate::ipc::{
@@ -130,6 +130,37 @@ impl Service {
                     me.confirm_git(selected, path, version)
                 })
             }));
+        let me = Arc::downgrade(&service);
+        service
+            .requests
+            .set_wsl_confirmation(Box::new(move |distro, git, version| {
+                me.upgrade().is_some_and(|me| {
+                    dialogs::confirm_wsl_git(
+                        &*me.dialogs,
+                        &WslProposal {
+                            distro,
+                            git,
+                            version,
+                        },
+                    )
+                })
+            }));
+        let me = Arc::downgrade(&service);
+        service.requests.set_wsl_store(Box::new(move |git| {
+            if let Some(stores) = me.upgrade().as_ref().and_then(|me| me.stores.get()) {
+                let mut saved = lock(&stores.settings);
+                settings::remember_wsl_git(&mut saved, git);
+                let _ = settings::save(&stores.settings_path, &saved);
+            }
+        }));
+        let me = Arc::downgrade(&service);
+        service.requests.set_wsl_saved(Box::new(move || {
+            me.upgrade()
+                .as_ref()
+                .and_then(|me| me.stores.get())
+                .map(|stores| lock(&stores.settings).wsl_gits.clone())
+                .unwrap_or_default()
+        }));
         let me = Arc::downgrade(&service);
         service.requests.set_startup_git(Box::new(move |git| {
             if let Some(stores) = me.upgrade().as_ref().and_then(|me| me.stores.get()) {
@@ -289,11 +320,11 @@ impl Service {
             TrustRequest::Revoke {
                 common_directory, ..
             } => {
-                let ended = stores
-                    .trust
-                    .revoke(Path::new(common_directory.as_str()), |tag| {
-                        self.jobs.revoke(tag)
-                    });
+                let ended = stores.trust.revoke_with(
+                    Path::new(common_directory.as_str()),
+                    &|path| self.requests.read_physical_identity(path),
+                    |tag| self.jobs.revoke(tag),
+                );
                 self.send(
                     "trust",
                     json!({ "type": "revoke", "callId": call_id, "endedProcesses": ended }),
@@ -323,9 +354,11 @@ impl Service {
                 return;
             };
             let current = || me.exits.load(Ordering::SeqCst) == exits;
-            let confirmed = stores.trust.confirm(&request, |request| {
-                dialogs::confirm_trust(&*me.dialogs, request) && current()
-            });
+            let confirmed = stores.trust.confirm_with(
+                &request,
+                &|path| me.requests.read_physical_identity(path),
+                |request| dialogs::confirm_trust(&*me.dialogs, request) && current(),
+            );
             if current() {
                 me.send("trust", confirmed.reply(&call_id));
             }
@@ -653,10 +686,10 @@ fn started(
     started: &Started,
     call_id: &str,
 ) -> Value {
-    let reply = markers.started(started);
+    let reply = markers.started_with(started, &|path| requests.read_physical_identity(path));
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
     if let StartedReply::Marker { identity, .. } = &reply {
-        requests.tag(started.operation_id, *identity);
+        requests.tag(started.operation_id, identity.clone());
     }
     reply.reply(call_id)
 }

@@ -88,15 +88,15 @@ async function watching(directories: string[], body: (hints: number[]) => Promis
 }
 
 // The seam: each `fs.watch` call gives a watcher that only the test drives, in call order.
-async function withFakeWatch(body: (fakes: EventEmitter[]) => Promise<void>): Promise<void> {
-  const fakes: EventEmitter[] = [];
+async function withFakeWatch(body: (fakes: (EventEmitter & { close: () => void })[], spy: ReturnType<typeof spyOn<typeof fs, "watch">>) => Promise<void>): Promise<void> {
+  const fakes: (EventEmitter & { close: () => void })[] = [];
   const spy = spyOn(fs, "watch").mockImplementation((() => {
     const fake = Object.assign(new EventEmitter(), { close: () => {} });
     fakes.push(fake);
     return fake;
   }) as never);
   try {
-    await body(fakes);
+    await body(fakes, spy);
   } finally {
     spy.mockRestore();
   }
@@ -232,19 +232,76 @@ describe("watcher hints (L, real files)", () => {
 
   caseTest(
     "T088",
-    "a change event without a file name gives a hint (Bun 1.4.2 reports an event overflow this way)",
+    "a change event without a file name gives a hint and re-arms the watch (T088 decision E8)",
+    [],
+    () =>
+      withFakeWatch(async (fakes, spy) => {
+        const directory = fakeWatchDirectory("t088-overflow");
+        const hints: boolean[] = [];
+        const stop = watchWorkspace([directory], (lost) => hints.push(lost));
+        try {
+          expect(fakes.length).toBe(1);
+          const closed = spyOn(fakes[0]!, "close");
+          fakes[0]!.emit("change", "rename", null);
+          expect({ closes: closed.mock.calls.length, watched: spy.mock.calls.map((call) => call[0]) }).toEqual({ closes: 1, watched: [directory, directory] });
+          await Bun.sleep(HINT_BUDGET_MS);
+          expect(hints).toEqual([false]);
+          fakes[1]!.emit("change", "change", "watched.txt");
+          await Bun.sleep(HINT_BUDGET_MS);
+          expect(hints).toEqual([false, false]);
+        } finally {
+          stop();
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T088",
+    "a re-arm that fails after a change event without a file name gives a lost hint (T088 decision E8)",
+    [],
+    () =>
+      withFakeWatch(async (fakes, spy) => {
+        const hints: boolean[] = [];
+        const stop = watchWorkspace([fakeWatchDirectory("t088-rearm-failed")], (lost) => hints.push(lost));
+        try {
+          spy.mockImplementationOnce(() => {
+            throw new Error("t088 re-arm failed");
+          });
+          fakes[0]!.emit("change", "rename", null);
+          await Bun.sleep(HINT_BUDGET_MS);
+          expect({ watches: spy.mock.calls.length, hints }).toEqual({ watches: 2, hints: [true] });
+        } finally {
+          stop();
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T088",
+    "an event during a pending identity check schedules one more check, so a later loss gives a lost hint (T088 decision E9)",
     [],
     () =>
       withFakeWatch(async (fakes) => {
+        const directory = fakeWatchDirectory("t088-recheck");
+        const pending: ((error: NodeJS.ErrnoException | null, stats?: fs.BigIntStats) => void)[] = [];
+        const stat = spyOn(fs, "stat").mockImplementation(((_path: string, _options: unknown, done: (typeof pending)[number]) => {
+          pending.push(done);
+        }) as never);
         const hints: boolean[] = [];
-        const stop = watchWorkspace([fakeWatchDirectory("t088-overflow")], (lost) => hints.push(lost));
+        const stop = watchWorkspace([directory], (lost) => hints.push(lost));
         try {
-          expect(fakes.length).toBe(1);
-          fakes[0]!.emit("change", "rename", null);
-          await Bun.sleep(HINT_BUDGET_MS);
-          expect(hints).toEqual([false]);
+          fakes[0]!.emit("change", "change", "watched.txt");
+          await waitFor("the first identity check", () => pending.length === 1);
+          fakes[0]!.emit("change", "change", "watched.txt");
+          pending[0]!(null, statSync(directory, { bigint: true }));
+          await waitFor("the second identity check", () => pending.length === 2);
+          pending[1]!(Object.assign(new Error("t088 removed"), { code: "ENOENT" }));
+          expect(hints).toContain(true);
         } finally {
           stop();
+          stat.mockRestore();
         }
       }),
     TIMEOUT_MS,

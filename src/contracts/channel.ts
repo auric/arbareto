@@ -324,14 +324,21 @@ export const IdentityListReply = z.union([
   z.strictObject({ type: z.literal("identity"), ...call, identities: z.array(IdentityReply) }).meta({ title: "IdentityList" }),
   z.strictObject({ type: z.literal("identity"), ...walkDeadline }).meta({ title: "IdentityDeadline" }),
 ]);
-export const LingeringCountReply = z.strictObject({ type: z.literal("lingeringCount"), ...call, count: Count }).meta({ title: "LingeringCountReply" });
+export const LingeringCountReply = z.union([
+  z.strictObject({ type: z.literal("lingeringCount"), ...call, count: Count }).meta({ title: "LingeringCountReply" }),
+  z.strictObject({ type: z.literal("lingeringCount"), ...walkDeadline }).meta({ title: "LingeringCountDeadline" }),
+]);
 export const RegisterReply = z.union([
   z.strictObject({ type: z.literal("register"), ...call, result: z.enum(["approved", "declined"]) }).meta({ title: "RegisterResult" }),
   z
     .strictObject({ type: z.literal("register"), ...call, result: z.literal("another"), bootstrapId: Identifier, executablePath: ChannelPath })
     .meta({ title: "RegisterAnother" }),
+  z.strictObject({ type: z.literal("register"), ...walkDeadline }).meta({ title: "RegisterDeadline" }),
 ]);
-export const ResolveGitReply = z.strictObject({ type: z.literal("resolveGit"), ...call, bootstrapId: Identifier }).meta({ title: "ResolveGitReply" });
+export const ResolveGitReply = z.union([
+  z.strictObject({ type: z.literal("resolveGit"), ...call, bootstrapId: Identifier }).meta({ title: "ResolveGitReply" }),
+  z.strictObject({ type: z.literal("resolveGit"), ...walkDeadline }).meta({ title: "ResolveGitDeadline" }),
+]);
 
 // Contract §6 "File facts": `lastWrite` is a signed 64-bit integer in decimal.
 const STAMP = /^(?:0|-?[1-9][0-9]{0,18})$/;
@@ -384,9 +391,9 @@ export const ProcessReply = z.union([
   ExitReply,
   Refused,
   ...IdentityListReply.options,
-  LingeringCountReply,
+  ...LingeringCountReply.options,
   ...RegisterReply.options,
-  ResolveGitReply,
+  ...ResolveGitReply.options,
   ...FileFactsReply.options,
   ...WslDistrosReply.options,
 ]);
@@ -416,6 +423,7 @@ export const StartedReply = z.union([
   z.strictObject({ ...started, busy: z.literal(true) }).meta({ title: "StartedBusy" }),
   // `folder` is the `recovery` folder path.
   z.strictObject({ ...started, failure: z.enum(MARKER_FAILURES), folder: ChannelPath }).meta({ title: "StartedFailure" }),
+  z.strictObject({ type: z.literal("started"), ...walkDeadline }).meta({ title: "StartedDeadline" }),
 ]);
 export const MutationReply = z.union([...StartedReply.options, Refused]);
 
@@ -468,5 +476,8 @@ export const ConfirmReply = z.union([
   z.strictObject({ ...reply("confirm"), result: z.literal("approved"), stored: z.literal(true), record: TrustRecord }).meta({ title: "ConfirmStored" }),
 ]);
 export const ConfirmRunReply = z.strictObject({ ...reply("confirmRun"), result: z.enum(["approved", "declined"]) }).meta({ title: "ConfirmRunReply" });
-export const RevokeReply = z.strictObject({ ...reply("revoke"), endedProcesses: Count }).meta({ title: "RevokeReply" });
-export const TrustReply = z.union([...ConfirmReply.options, ConfirmRunReply, RevokeReply, Refused]);
+export const RevokeReply = z.union([
+  z.strictObject({ ...reply("revoke"), endedProcesses: Count }).meta({ title: "RevokeReply" }),
+  z.strictObject({ type: z.literal("revoke"), ...walkDeadline }).meta({ title: "RevokeDeadline" }),
+]);
+export const TrustReply = z.union([...ConfirmReply.options, ConfirmRunReply, ...RevokeReply.options, Refused]);

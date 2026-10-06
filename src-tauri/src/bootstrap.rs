@@ -90,6 +90,8 @@ pub enum ContextIdentity {
 
 /// Opens `path` with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`.
 pub(crate) fn open(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(test)]
+    tests::held_open(path)?;
     std::fs::OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES.0)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
@@ -273,16 +275,19 @@ impl Contexts {
         self.insert(ContextKind::GitProbe, selected, selected, true, now)
     }
 
-    /// Creates the `gitProbe` context of a `resolveGit` move. It keeps the selected path and the startup state of `from`.
+    /// Creates the `gitProbe` context of a `resolveGit` move with the identity that the walk read.
+    /// It keeps the selected path and the startup state of `from`.
     pub fn create_moved(
         &self,
         from: &Context,
         resolved: &Path,
+        identity: Identity,
         now: Instant,
-    ) -> Result<String, &'static str> {
-        self.insert(
+    ) -> String {
+        self.bind(
             ContextKind::GitProbe,
             resolved,
+            ContextIdentity::Windows(identity),
             &from.selected,
             from.startup,
             now,
@@ -306,6 +311,18 @@ impl Contexts {
                 ContextKind::RepositoryDiscovery => code,
             })?)
         };
+        Ok(self.bind(kind, path, identity, selected, startup, now))
+    }
+
+    fn bind(
+        &self,
+        kind: ContextKind,
+        path: &Path,
+        identity: ContextIdentity,
+        selected: &Path,
+        startup: bool,
+        now: Instant,
+    ) -> String {
         let mut state = self.state();
         state.contexts.retain(|_, context| now < context.expires_at);
         let id = state.next_id();
@@ -319,7 +336,7 @@ impl Contexts {
             startup,
         };
         state.contexts.insert(id.clone(), context);
-        Ok(id)
+        id
     }
 
     /// A live context. An unknown, destroyed, or expired ID gives `UNKNOWN_TARGET`.
@@ -402,18 +419,146 @@ impl Contexts {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
+    use std::fs::File;
+    use std::io::Read;
     use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
 
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
     };
+    use windows::Win32::System::Pipes::CreatePipe;
 
-    use crate::jobs::tests::Fixture;
+    use crate::jobs::tests::{Fixture, eventually};
+
+    // ---- Open hold (T314) ----
+
+    /// The write ends of the waits on one held path. `None` after the release.
+    type Writers = Arc<Mutex<Option<Vec<File>>>>;
+
+    static HELD: Mutex<Vec<(PathBuf, Writers, Arc<AtomicUsize>)>> = Mutex::new(Vec::new());
+
+    /// Test seam: each identity open of `path` first waits in a synchronous read of its own anonymous pipe.
+    /// Attribute-only opens break no batch oplock (MS-FSA 2.1.4.12), so no file system state can hold them.
+    /// `CancelSynchronousIo` ends the read with `ERROR_OPERATION_ABORTED`, and the open then fails with it.
+    /// The drop closes every write end, so each waiting open goes on.
+    pub(crate) struct Hold {
+        path: PathBuf,
+        writers: Writers,
+        waiting: Arc<AtomicUsize>,
+    }
+
+    impl Hold {
+        pub(crate) fn new(path: &Path) -> Hold {
+            let hold = Hold {
+                path: path.to_path_buf(),
+                writers: Arc::new(Mutex::new(Some(Vec::new()))),
+                waiting: Arc::new(AtomicUsize::new(0)),
+            };
+            HELD.lock().expect("held").push((
+                hold.path.clone(),
+                Arc::clone(&hold.writers),
+                Arc::clone(&hold.waiting),
+            ));
+            hold
+        }
+
+        /// True when `count` opens wait in this hold within `timeout`.
+        pub(crate) fn waiting(&self, count: usize, timeout: Duration) -> bool {
+            eventually(timeout, || self.waiting.load(Ordering::SeqCst) == count)
+        }
+    }
+
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            HELD.lock()
+                .expect("held")
+                .retain(|(_, writers, _)| !Arc::ptr_eq(writers, &self.writers));
+            self.writers.lock().expect("writers").take();
+        }
+    }
+
+    /// Waits while a `Hold` holds `path`. Only `open` calls it.
+    pub(crate) fn held_open(path: &Path) -> std::io::Result<()> {
+        let found = HELD
+            .lock()
+            .expect("held")
+            .iter()
+            .find(|(held, ..)| held == path)
+            .map(|(_, writers, waiting)| (Arc::clone(writers), Arc::clone(waiting)));
+        let Some((writers, waiting)) = found else {
+            return Ok(());
+        };
+        let (mut read, mut write) = (HANDLE::default(), HANDLE::default());
+        // SAFETY: two out handles without security attributes. The two `File` values below own them.
+        unsafe { CreatePipe(&mut read, &mut write, None, 0) }?;
+        // SAFETY: each handle is open, and only this `File` closes it.
+        let (mut reader, writer) = unsafe {
+            (
+                File::from_raw_handle(read.0),
+                File::from_raw_handle(write.0),
+            )
+        };
+        match writers.lock().expect("writers").as_mut() {
+            Some(open) => open.push(writer),
+            None => return Ok(()),
+        }
+        drop(writers);
+        waiting.fetch_add(1, Ordering::SeqCst);
+        let read = reader.read(&mut [0u8; 1]);
+        waiting.fetch_sub(1, Ordering::SeqCst);
+        read.map(drop)
+    }
+
+    #[test]
+    fn a_held_open_waits_until_the_release_and_a_cancel_fails_it() {
+        let fixture = Fixture::new();
+        let path = file(&fixture, "held");
+        let hold = Hold::new(&path);
+        let (done, ended) = std::sync::mpsc::channel();
+        let worker = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let _ = done.send(read_identity(&path).map_err(str::to_string));
+            })
+        };
+        assert!(hold.waiting(1, Duration::from_secs(10)), "the open waits");
+        assert!(
+            eventually(Duration::from_secs(10), || {
+                // SAFETY: `worker` keeps the thread handle open for the call.
+                unsafe {
+                    let _ = windows::Win32::System::IO::CancelSynchronousIo(HANDLE(
+                        worker.as_raw_handle(),
+                    ));
+                }
+                ended.try_recv().is_ok_and(|read| read.is_err())
+            }),
+            "CancelSynchronousIo fails the held open"
+        );
+        let (done, ended) = std::sync::mpsc::channel();
+        {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let _ = done.send(read_identity(&path).is_ok());
+            });
+        }
+        assert!(
+            hold.waiting(1, Duration::from_secs(10)),
+            "a second open waits"
+        );
+        drop(hold);
+        assert_eq!(
+            ended.recv_timeout(Duration::from_secs(10)),
+            Ok(true),
+            "the release lets the open go on"
+        );
+    }
 
     const SESSION: &str = "11111111-1111-4111-8111-111111111111";
     const NEXT_SESSION: &str = "22222222-2222-4222-8222-222222222222";

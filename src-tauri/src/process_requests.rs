@@ -51,7 +51,7 @@ pub const PATH_UNITS: usize = 32_767;
 pub const BOOTSTRAP_DEADLINE_MS: u64 = 30_000;
 pub const REGISTERED_DEADLINE_MS: u64 = 120_000;
 pub const STALL_MS: u64 = 15_000;
-/// Contract §5 "Walk deadline": each `identity` and `fileFacts` request.
+/// Contract §5 "Walk deadline": each walk (contract §6 "Walks").
 pub const WALK_DEADLINE_MS: u64 = 30_000;
 /// Contract §6 "Context rules": `register` field `version` is printable ASCII.
 pub const VERSION_BYTES: usize = 64;
@@ -151,16 +151,60 @@ struct Call {
     closed: bool,
 }
 
+/// The end of the work of a walk. Only the watchdog runs it, and only when the work ends before a deadline or a stop.
+/// It makes the changes of the walk and returns the reply. `None`: no reply, or another thread replies later.
+type Finish = Box<dyn FnOnce() -> Option<Value> + Send>;
+
 /// The first event decides the reply of a walk (contract §6 "Walks").
 enum WalkEvent {
-    Done(Value),
+    Done(Finish),
     Stop,
+}
+
+/// How a walk replies (contract §6 "Walks").
+#[derive(Clone, Copy)]
+enum Reply {
+    /// `identity` or `fileFacts`. `cancel` and `closeJob` stop it, and no reply follows.
+    Walk(&'static str),
+    /// The start of a `run`. `cancel` and `closeJob` stop it, and every end replies `exit`.
+    Start,
+    /// A request of frame kind `.0` and type `.1`. Only its reply or its deadline reply ends it (T314 D3).
+    Frame(&'static str, &'static str),
+}
+
+impl Reply {
+    fn frame(self) -> &'static str {
+        match self {
+            Reply::Frame(frame, _) => frame,
+            Reply::Walk(_) | Reply::Start => "process",
+        }
+    }
+
+    fn deadline(self, call_id: &str) -> Value {
+        match self {
+            Reply::Start => {
+                json!({ "type": "exit", "callId": call_id, "exitCode": null, "activeDescendants": 0, "deadline": "deadline" })
+            }
+            Reply::Walk(kind) | Reply::Frame(_, kind) => {
+                json!({ "type": kind, "callId": call_id, "deadline": "deadline" })
+            }
+        }
+    }
+
+    /// The reply after a stop. Only a `run` start gets one.
+    fn stopped(self, call_id: &str) -> Option<Value> {
+        matches!(self, Reply::Start).then(|| {
+            json!({ "type": "exit", "callId": call_id, "exitCode": null, "activeDescendants": 0 })
+        })
+    }
 }
 
 /// A walk until its watchdog takes the first event.
 struct Walk {
     operation_id: String,
     events: mpsc::Sender<WalkEvent>,
+    /// `cancel` and `closeJob` stop it.
+    stoppable: bool,
 }
 
 /// The stop of one walk (contract §6 "Walks"). A Windows walk reads `flag`. A WSL walk waits on the manual-reset `event` with its `wsl.exe`.
@@ -187,7 +231,7 @@ impl WalkStop {
 struct WalkEnd {
     me: Arc<ProcessRequests>,
     events: mpsc::Sender<WalkEvent>,
-    reply: Option<Value>,
+    reply: Option<Finish>,
 }
 
 impl Drop for WalkEnd {
@@ -282,6 +326,8 @@ pub struct ProcessRequests {
     peak: AtomicUsize,
     /// The walks whose work did not return yet.
     walk_threads: AtomicUsize,
+    /// The stop of each WSL identity probe outside a walk. A service exit sets it and makes a new one.
+    session_stop: Mutex<Option<Arc<WalkStop>>>,
     /// Without it, a `register` with `confirm: true` gets `declined`.
     git_confirmation: OnceLock<GitConfirmation>,
     startup_git: OnceLock<StartupGit>,
@@ -310,6 +356,7 @@ impl ProcessRequests {
             generation: AtomicU64::new(0),
             peak: AtomicUsize::new(0),
             walk_threads: AtomicUsize::new(0),
+            session_stop: Mutex::new(WalkStop::new().map(Arc::new)),
             git_confirmation: OnceLock::new(),
             startup_git: OnceLock::new(),
             wsl_saved: OnceLock::new(),
@@ -361,22 +408,30 @@ impl ProcessRequests {
 
     /// The identity of a frame path that the shell reads for its own frames (gaps.md W2).
     /// A WSL path reads through the identity probe of the registered repository whose stored path equals it.
+    /// A service exit ends that probe.
     pub fn read_physical_identity(&self, path: &Path) -> Option<PhysicalIdentity> {
+        let session = lock(&self.session_stop).clone();
+        self.read_identity_in(
+            path,
+            session.as_deref(),
+            Duration::from_millis(BOOTSTRAP_DEADLINE_MS),
+        )
+    }
+
+    /// As `read_physical_identity`. A set `stop` ends the read, and `bound` limits the wait of a WSL probe.
+    fn read_identity_in(
+        &self,
+        path: &Path,
+        stop: Option<&WalkStop>,
+        bound: Duration,
+    ) -> Option<PhysicalIdentity> {
+        if stop.is_some_and(|stop| stop.flag.load(Ordering::SeqCst)) {
+            return None;
+        }
         if !file_facts::is_wsl_path(path) {
             return native_identity(path);
         }
-        let installation = {
-            let state = self.state();
-            let repository = state.repositories.values().find(|r| {
-                [&r.worktree_root, &r.git_directory, &r.common_directory]
-                    .iter()
-                    .any(|stored| stored.as_path() == path)
-            })?;
-            match state.gits.get(&repository.git_installation_id)? {
-                Git::Wsl(installation) => installation.clone(),
-                Git::Windows { .. } => return None,
-            }
-        };
+        let installation = self.wsl_installation(path)?;
         let linux = wsl::linux_path(path, &installation.distro)?;
         // An internal operation owns the Job of the probe.
         let operation = crate::settings::random_id().ok()?;
@@ -388,10 +443,69 @@ impl ProcessRequests {
             1,
             &[linux],
             &self.config.base_environment,
-            None,
+            stop.map(|stop| (stop.event.0, bound)),
         );
         self.jobs.close(&operation);
         found.into_iter().next()?.ok().map(PhysicalIdentity::Wsl)
+    }
+
+    /// The WSL Git of the registered repository whose stored path equals `path`.
+    fn wsl_installation(&self, path: &Path) -> Option<wsl::Installation> {
+        let state = self.state();
+        let repository = state.repositories.values().find(|r| {
+            [&r.worktree_root, &r.git_directory, &r.common_directory]
+                .iter()
+                .any(|stored| stored.as_path() == path)
+        })?;
+        match state.gits.get(&repository.git_installation_id)? {
+            Git::Wsl(installation) => Some(installation.clone()),
+            Git::Windows { .. } => None,
+        }
+    }
+
+    /// False when a WSL identity probe of `path` cannot change the reply of `lingeringCount` or `revoke` (T314 D4).
+    /// A Job tag or a record matches a probed identity only with the GUID of the distro, so then no `wsl.exe` starts.
+    pub fn identity_read_needed(
+        &self,
+        path: &Path,
+        records_hold: impl FnOnce(&str) -> bool,
+    ) -> bool {
+        if !file_facts::is_wsl_path(path) {
+            return true;
+        }
+        let Some(installation) = self.wsl_installation(path) else {
+            return true;
+        };
+        self.jobs.lingering_holds(&installation.guid) || records_hold(&installation.guid)
+    }
+
+    /// Runs the identity read of a `mutation` or `trust` frame as a walk (contract §6 "Walks").
+    /// `finish` gets the identity and returns the reply. Only the watchdog runs it, and only before the deadline.
+    pub fn frame_walk(
+        &self,
+        frame: &'static str,
+        kind: &'static str,
+        call_id: &str,
+        operation_id: &str,
+        path: PathBuf,
+        finish: impl FnOnce(&ProcessRequests, Option<PhysicalIdentity>) -> Value + Send + 'static,
+    ) -> Result<(), Code> {
+        let read_at = Instant::now();
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let bound = self.walk_bound();
+        let mut state = self.state();
+        self.spawn_walk(
+            &mut state,
+            Reply::Frame(frame, kind),
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let identity = me.read_identity_in(&path, Some(stop), bound);
+                Box::new(move || Some(finish(&me, identity)))
+            },
+            || {},
+        )
     }
 
     /// The next unit number of a WSL process of the operation (contract §11 "Process launch").
@@ -463,6 +577,14 @@ impl ProcessRequests {
         for walk in state.walks.values() {
             let _ = walk.events.send(WalkEvent::Stop);
         }
+        let mut session = lock(&self.session_stop);
+        if let Some(stop) = session.take() {
+            stop.flag.store(true, Ordering::SeqCst);
+            // SAFETY: `stop` keeps the Event open for the call.
+            let _ = unsafe { SetEvent(stop.event.0) };
+        }
+        *session = WalkStop::new().map(Arc::new);
+        drop(session);
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.jobs.service_exited();
         *state = State::default();
@@ -491,8 +613,13 @@ impl ProcessRequests {
     }
 
     fn send(&self, generation: u64, reply: Value) {
+        self.send_frame(generation, "process", reply);
+    }
+
+    /// Sends `{"kind":"<frame>","<frame>":<reply>}` (contract §6 "Channel frames").
+    fn send_frame(&self, generation: u64, frame: &str, reply: Value) {
         if generation == self.current() {
-            (self.sink)(json!({ "kind": "process", "process": reply }).to_string());
+            (self.sink)(json!({ "kind": frame, frame: reply }).to_string());
         }
     }
 
@@ -516,6 +643,7 @@ impl ProcessRequests {
     }
 
     fn run(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
         keys(
             request,
             &[
@@ -630,56 +758,129 @@ impl ProcessRequests {
             None => command_line(&target.program, &full),
         }
         .map_err(|_| INVALID)?;
-        self.revalidate(&target, now)?;
 
+        // The start is a walk: the identity reads, the Job open, and the image open of the process start can wait (contract §6 "Walks").
+        // An `input` chunk that comes before the start waits in the queue of the call.
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
-        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
-        let spawned = match (&target.wsl, &wsl_command) {
-            (Some((installation, _)), Some(command)) => {
-                let host = self.wsl_host(operation_id);
-                // Contract §11 "Process ownership": a WSL mutation starts its anchor before its first Git process.
-                if policy == "mutation" {
-                    let anchor = wsl::anchor_command(
-                        installation,
-                        operation_id,
-                        &self.config.base_environment,
-                    )?;
-                    host.anchor(&anchor).map_err(|_| OWNERSHIP)?;
-                }
-                host.start(command).map_err(|_| OWNERSHIP)?
-            }
-            _ => {
-                let request = SpawnRequest {
-                    program: &target.program,
-                    arguments: &full,
-                    environment: &environment,
-                    current_dir: &target.current_dir,
-                    wsl: false,
-                    input: match &input {
-                        RunInput::Closed => Input::Closed,
-                        RunInput::Bytes(bytes) => Input::Bytes(bytes),
-                        RunInput::Streamed(_) => Input::Stream,
-                    },
-                };
-                self.jobs
-                    .with_job(operation_id, |job| spawn(&request, job))
-                    .map_err(|_| OWNERSHIP)?
-                    .map_err(|_| OWNERSHIP)?
-            }
-        };
-
-        let generation = self.current();
-        let exited = Arc::new(Mutex::new(false));
-        let streamed = match (input, spawned.stdin) {
-            (RunInput::Streamed(declared), Some(stdin)) => Some(Arc::clone(&me).write_input(
-                call_id,
-                generation,
-                declared,
-                stdin,
-                Arc::clone(&exited),
-            )),
+        let (chunks, queued) = mpsc::channel::<Vec<u8>>();
+        let unacknowledged = Arc::new(AtomicUsize::new(0));
+        let declared = match &input {
+            RunInput::Streamed(declared) => Some(*declared),
             _ => None,
         };
+        let streamed = declared.map(|declared| Streamed {
+            chunks,
+            declared,
+            sent: 0,
+            unacknowledged: Arc::clone(&unacknowledged),
+        });
+        let generation = self.current();
+        let (call, operation) = (call_id.to_string(), operation_id.to_string());
+        let mutation = policy == "mutation";
+        let closer = Arc::clone(&me);
+        let close_operation = operation.clone();
+        self.spawn_walk(
+            &mut state,
+            Reply::Start,
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let refused = |code: Code| -> Finish {
+                    let (me, call) = (Arc::clone(&me), call.clone());
+                    Box::new(move || {
+                        me.state().calls.remove(&call);
+                        Some(json!({ "type": "refused", "callId": call, "code": code }))
+                    })
+                };
+                if let Err(code) = me.revalidate(&target, now) {
+                    return refused(code);
+                }
+                // A stop closes the Job and marks the call closed under the state lock, so no closed Job opens again.
+                let opened = {
+                    let state = me.state();
+                    state.calls.get(&call).is_some_and(|call| !call.closed)
+                        && !stop.flag.load(Ordering::SeqCst)
+                        && me.jobs.open(&operation).is_ok()
+                };
+                if !opened {
+                    return refused(OWNERSHIP);
+                }
+                let spawned = match (&target.wsl, &wsl_command) {
+                    (Some((installation, _)), Some(command)) => {
+                        let host = me.wsl_host(&operation);
+                        // Contract §11 "Process ownership": a WSL mutation starts its anchor before its first Git process.
+                        if mutation {
+                            let anchored = wsl::anchor_command(
+                                installation,
+                                &operation,
+                                &me.config.base_environment,
+                            )
+                            .and_then(|anchor| host.anchor(&anchor).map_err(|_| OWNERSHIP));
+                            if let Err(code) = anchored {
+                                return refused(code);
+                            }
+                        }
+                        host.start(command)
+                    }
+                    _ => {
+                        let request = SpawnRequest {
+                            program: &target.program,
+                            arguments: &full,
+                            environment: &environment,
+                            current_dir: &target.current_dir,
+                            wsl: false,
+                            input: match &input {
+                                RunInput::Closed => Input::Closed,
+                                RunInput::Bytes(bytes) => Input::Bytes(bytes),
+                                RunInput::Streamed(_) => Input::Stream,
+                            },
+                        };
+                        me.jobs
+                            .with_job(&operation, |job| spawn(&request, job))
+                            .unwrap_or(Err(crate::spawn::SpawnError::OwnershipFailed))
+                    }
+                };
+                let Ok(spawned) = spawned else {
+                    return refused(OWNERSHIP);
+                };
+                let process = Owned(spawned.process);
+                let (stdin, stdout, stderr) = (spawned.stdin, spawned.stdout, spawned.stderr);
+                Box::new(move || {
+                    let exited = Arc::new(Mutex::new(false));
+                    if let (Some(declared), Some(stdin)) = (declared, stdin) {
+                        Arc::clone(&me).write_input(
+                            &call,
+                            generation,
+                            declared,
+                            stdin,
+                            Arc::clone(&exited),
+                            queued,
+                            unacknowledged,
+                        );
+                    }
+                    let run = Arc::new(Run {
+                        call_id: call,
+                        operation_id: operation,
+                        generation,
+                        pipes: [stdout, stderr],
+                        state: Mutex::new(Drain::default()),
+                        changed: Condvar::new(),
+                        exited,
+                    });
+                    for stream in 0..2 {
+                        let (me, run) = (Arc::clone(&me), Arc::clone(&run));
+                        std::thread::spawn(move || me.read_stream(&run, stream));
+                    }
+                    std::thread::spawn(move || me.watch(&run, process, limit));
+                    None
+                })
+            },
+            move || {
+                let mut state = closer.state();
+                close_job_of(&closer.jobs, &mut state, &close_operation);
+            },
+        )?;
         state.calls.insert(
             call_id.to_string(),
             Call {
@@ -688,23 +889,6 @@ impl ProcessRequests {
                 closed: false,
             },
         );
-        drop(state);
-
-        let run = Arc::new(Run {
-            call_id: call_id.to_string(),
-            operation_id: operation_id.to_string(),
-            generation,
-            pipes: [spawned.stdout, spawned.stderr],
-            state: Mutex::new(Drain::default()),
-            changed: Condvar::new(),
-            exited,
-        });
-        for stream in 0..2 {
-            let (me, run) = (Arc::clone(&me), Arc::clone(&run));
-            std::thread::spawn(move || me.read_stream(&run, stream));
-        }
-        let process = Owned(spawned.process);
-        std::thread::spawn(move || me.watch(&run, process, limit));
         Ok(())
     }
 
@@ -812,6 +996,8 @@ impl ProcessRequests {
         }
     }
 
+    /// Writes the chunks of `received` to the child stdin. `pending` counts the chunks without an `inputWritten` reply.
+    #[allow(clippy::too_many_arguments)]
     fn write_input(
         self: Arc<Self>,
         call_id: &str,
@@ -819,10 +1005,9 @@ impl ProcessRequests {
         declared: u64,
         mut stdin: File,
         exited: Arc<Mutex<bool>>,
-    ) -> Streamed {
-        let (chunks, received) = mpsc::channel::<Vec<u8>>();
-        let unacknowledged = Arc::new(AtomicUsize::new(0));
-        let pending = Arc::clone(&unacknowledged);
+        received: mpsc::Receiver<Vec<u8>>,
+        pending: Arc<AtomicUsize>,
+    ) {
         let call_id = call_id.to_string();
         std::thread::spawn(move || {
             let mut written = 0u64;
@@ -847,12 +1032,6 @@ impl ProcessRequests {
                 }
             }
         });
-        Streamed {
-            chunks,
-            declared,
-            sent: 0,
-            unacknowledged,
-        }
     }
 
     fn input(&self, request: &Fields) -> Result<(), Code> {
@@ -878,9 +1057,12 @@ impl ProcessRequests {
             let _ = streamed.chunks.send(data);
             return Ok(());
         }
-        // A chunk past `inputBytes` closes the operation Job. The `exit` then follows.
+        // A chunk past `inputBytes` closes the operation Job. The `exit` then follows, also for a start that did not end.
         let operation_id = call.operation_id.clone();
         close_job_of(&self.jobs, &mut state, &operation_id);
+        if let Some(walk) = state.walks.get(call_id) {
+            let _ = walk.events.send(WalkEvent::Stop);
+        }
         Ok(())
     }
 
@@ -888,10 +1070,11 @@ impl ProcessRequests {
         keys(request, &["type", "callId"], &[])?;
         let call_id = request["callId"].as_str().ok_or(INVALID)?;
         let mut state = self.state();
-        // A cancel for an ended call is dropped.
+        // A cancel for an ended call is dropped. So is a cancel for a walk that only its reply ends (T314 D3).
         if let Some(operation_id) = state.calls.get(call_id).map(|c| c.operation_id.clone()) {
             close_job_of(&self.jobs, &mut state, &operation_id);
-        } else if let Some(walk) = state.walks.get(call_id) {
+        }
+        if let Some(walk) = state.walks.get(call_id).filter(|walk| walk.stoppable) {
             let _ = walk.events.send(WalkEvent::Stop);
         }
         Ok(())
@@ -919,7 +1102,7 @@ impl ProcessRequests {
         if let Some((installation, _)) = target.wsl {
             let n = Self::next_unit(&mut state, operation_id);
             return self.wsl_identity(
-                state,
+                &mut state,
                 &installation,
                 operation_id,
                 n,
@@ -930,8 +1113,8 @@ impl ProcessRequests {
         }
         let call = call_id.to_string();
         self.spawn_walk(
-            state,
-            "identity",
+            &mut state,
+            Reply::Walk("identity"),
             call_id,
             operation_id,
             read_at,
@@ -942,8 +1125,9 @@ impl ProcessRequests {
                     .take_while(|_| !stop.load(Ordering::SeqCst))
                     .map_while(|path| identity_reply(path, stop))
                     .collect();
-                json!({ "type": "identity", "callId": call, "identities": identities })
+                reply_with(json!({ "type": "identity", "callId": call, "identities": identities }))
             },
+            || {},
         )
     }
 
@@ -951,7 +1135,7 @@ impl ProcessRequests {
     #[allow(clippy::too_many_arguments)]
     fn wsl_identity(
         &self,
-        state: MutexGuard<'_, State>,
+        state: &mut State,
         installation: &wsl::Installation,
         operation_id: &str,
         n: u32,
@@ -973,7 +1157,7 @@ impl ProcessRequests {
         let deadline = self.walk_bound();
         self.spawn_walk(
             state,
-            "identity",
+            Reply::Walk("identity"),
             call_id,
             operation_id,
             read_at,
@@ -995,8 +1179,9 @@ impl ProcessRequests {
                     Err(refusal) => refusal.reply(),
                 })
                 .collect();
-                json!({ "type": "identity", "callId": call, "identities": identities })
+                reply_with(json!({ "type": "identity", "callId": call, "identities": identities }))
             },
+            || {},
         )
     }
 
@@ -1015,7 +1200,15 @@ impl ProcessRequests {
         ];
         if let Some((installation, _)) = target.wsl {
             let n = Self::next_unit(&mut state, parsed.operation_id);
-            return self.wsl_file_facts(state, &parsed, &installation, &roots, n, call_id, read_at);
+            return self.wsl_file_facts(
+                &mut state,
+                &parsed,
+                &installation,
+                &roots,
+                n,
+                call_id,
+                read_at,
+            );
         }
         // A Windows Git never reads a WSL repository (contract §11 "Route").
         if roots.iter().any(|root| file_facts::is_wsl_path(root)) {
@@ -1023,8 +1216,8 @@ impl ProcessRequests {
         }
         let (digest, files, call) = (parsed.digest, parsed.files, call_id.to_string());
         self.spawn_walk(
-            state,
-            "fileFacts",
+            &mut state,
+            Reply::Walk("fileFacts"),
             call_id,
             parsed.operation_id,
             read_at,
@@ -1035,8 +1228,9 @@ impl ProcessRequests {
                     &files,
                     &stop.flag,
                 );
-                json!({ "type": "fileFacts", "callId": call, "facts": facts })
+                reply_with(json!({ "type": "fileFacts", "callId": call, "facts": facts }))
             },
+            || {},
         )
     }
 
@@ -1047,15 +1241,18 @@ impl ProcessRequests {
     }
 
     /// Runs `work` on its own thread with a watchdog thread (contract §6 "Walks").
-    /// Only the watchdog sends a reply, so a walk gets one reply or none.
+    /// Only the watchdog replies and runs the finish of `work`, so a walk gets one reply or none, and no change follows a stop.
+    /// At the deadline, the watchdog runs `at_deadline` before the deadline reply. The caller holds `state` until it returns.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_walk(
         &self,
-        mut state: MutexGuard<'_, State>,
-        kind: &'static str,
+        state: &mut State,
+        reply: Reply,
         call_id: &str,
         operation_id: &str,
         read_at: Instant,
-        work: impl FnOnce(&WalkStop) -> Value + Send + 'static,
+        work: impl FnOnce(&WalkStop) -> Finish + Send + 'static,
+        at_deadline: impl FnOnce() + Send + 'static,
     ) -> Result<(), Code> {
         if state.calls.contains_key(call_id) || state.walks.contains_key(call_id) {
             return Err(INVALID);
@@ -1068,10 +1265,10 @@ impl ProcessRequests {
             Walk {
                 operation_id: operation_id.to_string(),
                 events: events.clone(),
+                stoppable: !matches!(reply, Reply::Frame(..)),
             },
         );
         let generation = self.current();
-        drop(state);
 
         self.walk_threads.fetch_add(1, Ordering::SeqCst);
         let worker = {
@@ -1089,7 +1286,7 @@ impl ProcessRequests {
             Ok(worker) => Arc::new(worker),
             Err(_) => {
                 self.walk_threads.fetch_sub(1, Ordering::SeqCst);
-                self.state().walks.remove(call_id);
+                state.walks.remove(call_id);
                 return Err(OWNERSHIP);
             }
         };
@@ -1099,7 +1296,7 @@ impl ProcessRequests {
             std::thread::Builder::new().spawn(move || {
                 let event =
                     received.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-                // `cancel` and `closeJob` send `Stop` under the state lock while `walks` holds the walk.
+                // `cancel`, `closeJob`, and a service exit send `Stop` under the state lock while `walks` holds the walk.
                 // So after the removal, the queue holds each such `Stop`.
                 let stopped = {
                     let mut state = me.state();
@@ -1107,23 +1304,35 @@ impl ProcessRequests {
                     received
                         .try_iter()
                         .any(|event| matches!(event, WalkEvent::Stop))
-                };
-                let reply = match event {
-                    _ if stopped => None,
-                    Ok(WalkEvent::Done(reply)) => return me.send(generation, reply),
-                    Err(RecvTimeoutError::Timeout) => {
-                        Some(json!({ "type": kind, "callId": call, "deadline": "deadline" }))
+                } || generation != me.current();
+                let sent = match event {
+                    _ if stopped => reply.stopped(&call),
+                    Ok(WalkEvent::Done(finish)) => {
+                        if let Some(sent) = finish() {
+                            me.send_frame(generation, reply.frame(), sent);
+                        }
+                        return;
                     }
-                    Ok(WalkEvent::Stop) | Err(RecvTimeoutError::Disconnected) => None,
+                    Err(RecvTimeoutError::Timeout) => {
+                        at_deadline();
+                        Some(reply.deadline(&call))
+                    }
+                    Ok(WalkEvent::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                        reply.stopped(&call)
+                    }
                 };
-                stop_walk(&stop, &worker);
-                if let Some(reply) = reply {
-                    me.send(generation, reply);
+                if matches!(reply, Reply::Start) {
+                    me.state().calls.remove(&call);
                 }
+                stop_walk(&stop, &worker);
+                if let Some(sent) = sent {
+                    me.send_frame(generation, reply.frame(), sent);
+                }
+                cancel_io(&worker);
             })
         };
         if watchdog.is_err() {
-            self.state().walks.remove(call_id);
+            state.walks.remove(call_id);
             stop_walk(&stop, &worker);
             return Err(OWNERSHIP);
         }
@@ -1131,6 +1340,7 @@ impl ProcessRequests {
     }
 
     fn lingering_count(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
         keys(
             request,
             &["type", "callId", "operationId", "commonDirectory"],
@@ -1139,18 +1349,33 @@ impl ProcessRequests {
         let operation_id = identifier(&request["operationId"])?;
         let common = path(&request["commonDirectory"])?;
         check_active(&self.state(), operation_id)?;
-        // An unreadable identity gives 0.
-        let count = self
-            .read_physical_identity(&common)
-            .map_or(0, |tag| self.jobs.lingering_count(&tag));
-        self.send(
-            self.current(),
-            json!({ "type": "lingeringCount", "callId": call_id, "count": count }),
-        );
-        Ok(())
+        let reply = |call: &str, count: u32| json!({ "type": "lingeringCount", "callId": call, "count": count });
+        if !self.identity_read_needed(&common, |_| false) {
+            self.send(self.current(), reply(call_id, 0));
+            return Ok(());
+        }
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (bound, call) = (self.walk_bound(), call_id.to_string());
+        self.spawn_walk(
+            &mut self.state(),
+            Reply::Frame("process", "lingeringCount"),
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let identity = me.read_identity_in(&common, Some(stop), bound);
+                // An unreadable identity gives 0.
+                Box::new(move || {
+                    let count = identity.map_or(0, |tag| me.jobs.lingering_count(&tag));
+                    Some(reply(&call, count))
+                })
+            },
+            || {},
+        )
     }
 
     fn register(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
         const GIT: [&str; 3] = ["version", "digest", "confirm"];
         const REPOSITORY: [&str; 4] = [
             "repositoryId",
@@ -1183,8 +1408,20 @@ impl ProcessRequests {
             _ => return Err(INVALID),
         };
         let now = Instant::now();
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let generation = self.current();
+        let (bootstrap, git, call) = (
+            bootstrap_id.to_string(),
+            git_id.to_string(),
+            call_id.to_string(),
+        );
+        let closer = Arc::clone(&self.contexts);
+        let destroy = {
+            let bootstrap = bootstrap.clone();
+            move || closer.destroy(&bootstrap)
+        };
         let mut state = self.state();
-        let result = if git_form {
+        if git_form {
             let version = request["version"].as_str().ok_or(INVALID)?;
             if version.len() > VERSION_BYTES || !version.bytes().all(|b| (0x20..0x7f).contains(&b))
             {
@@ -1211,45 +1448,57 @@ impl ProcessRequests {
             let ContextIdentity::Windows(identity) = context.identity else {
                 return Err(INVALID);
             };
-            self.contexts.revalidate(bootstrap_id, now)?;
-            self.contexts.destroy(bootstrap_id);
-            if confirm {
-                drop(state);
-                self.confirm_git(
-                    ConfirmedGit {
-                        selected_path: context.selected,
-                        executable_path: context.path,
-                        version: version.to_string(),
-                        digest: digest.to_string(),
-                    },
-                    identity,
-                    git_id,
-                    call_id,
-                );
-                return Ok(());
-            }
-            state.issued.insert(git_id.to_string());
-            state.gits.insert(
-                git_id.to_string(),
-                Git::Windows {
-                    program: context.path.clone(),
-                    identity,
+            let proposal = ConfirmedGit {
+                selected_path: context.selected,
+                executable_path: context.path,
+                version: version.to_string(),
+                digest: digest.to_string(),
+            };
+            // The identity read of the Git file is a walk (contract §6 "Walks").
+            self.spawn_walk(
+                &mut state,
+                Reply::Frame("process", "register"),
+                call_id,
+                operation_id,
+                read_at,
+                move |_| {
+                    let revalidated = me.contexts.revalidate(&bootstrap, now);
+                    Box::new(move || {
+                        if let Err(code) = revalidated {
+                            return Some(
+                                json!({ "type": "refused", "callId": call, "code": code }),
+                            );
+                        }
+                        me.contexts.destroy(&bootstrap);
+                        if confirm {
+                            me.confirm_git(proposal, identity, &git, &call);
+                            return None;
+                        }
+                        let mut state = me.state();
+                        if generation != me.current() {
+                            return None;
+                        }
+                        if !state.issued.insert(git.clone()) {
+                            return Some(
+                                json!({ "type": "refused", "callId": call, "code": INVALID }),
+                            );
+                        }
+                        state.gits.insert(
+                            git,
+                            Git::Windows {
+                                program: proposal.executable_path.clone(),
+                                identity,
+                            },
+                        );
+                        drop(state);
+                        if let Some(save) = me.startup_git.get() {
+                            save(proposal);
+                        }
+                        Some(json!({ "type": "register", "callId": call, "result": "approved" }))
+                    })
                 },
-            );
-            drop(state);
-            if let Some(save) = self.startup_git.get() {
-                save(ConfirmedGit {
-                    selected_path: context.selected,
-                    executable_path: context.path,
-                    version: version.to_string(),
-                    digest: digest.to_string(),
-                });
-            }
-            self.send(
-                self.current(),
-                json!({ "type": "register", "callId": call_id, "result": "approved" }),
-            );
-            return Ok(());
+                destroy,
+            )
         } else {
             let repository_id = identifier(&request["repositoryId"])?;
             let worktree_root = path(&request["worktreeRoot"])?;
@@ -1283,24 +1532,44 @@ impl ProcessRequests {
                         &installation,
                         repository,
                         call_id,
+                        read_at,
                     );
                 }
                 _ => return Err(INVALID),
             }
-            self.contexts.revalidate(bootstrap_id, now)?;
-            self.contexts.destroy(bootstrap_id);
-            state.issued.insert(repository_id.to_string());
-            state
-                .repositories
-                .insert(repository_id.to_string(), repository);
-            "approved"
-        };
-        drop(state);
-        self.send(
-            self.current(),
-            json!({ "type": "register", "callId": call_id, "result": result }),
-        );
-        Ok(())
+            let repository_id = repository_id.to_string();
+            // The identity read of the context path is a walk (contract §6 "Walks").
+            self.spawn_walk(
+                &mut state,
+                Reply::Frame("process", "register"),
+                call_id,
+                operation_id,
+                read_at,
+                move |_| {
+                    let revalidated = me.contexts.revalidate(&bootstrap, now);
+                    Box::new(move || {
+                        if let Err(code) = revalidated {
+                            return Some(
+                                json!({ "type": "refused", "callId": call, "code": code }),
+                            );
+                        }
+                        me.contexts.destroy(&bootstrap);
+                        let mut state = me.state();
+                        if generation != me.current() {
+                            return None;
+                        }
+                        if !state.issued.insert(repository_id.clone()) {
+                            return Some(
+                                json!({ "type": "refused", "callId": call, "code": INVALID }),
+                            );
+                        }
+                        state.repositories.insert(repository_id, repository);
+                        Some(json!({ "type": "register", "callId": call, "result": "approved" }))
+                    })
+                },
+                destroy,
+            )
+        }
     }
 
     /// Contract §6 `wslDistros` and §11 "Route": the context path, and for a WSL prefix the distro facts.
@@ -1555,70 +1824,83 @@ impl ProcessRequests {
         installation: &wsl::Installation,
         repository: Repository,
         call_id: &str,
+        read_at: Instant,
     ) -> Result<(), Code> {
-        let (bound, n) = {
-            let mut state = self.state();
-            let bound = state.wsl_bound.get(bootstrap_id).cloned().ok_or(INVALID)?;
-            let distro = &bound.installation.distro;
-            let inside = [
-                &repository.worktree_root,
-                &repository.git_directory,
-                &repository.common_directory,
-            ]
-            .iter()
-            .all(|path| wsl::linux_path(path, distro).is_some());
-            if bound.installation.guid != installation.guid || !inside {
-                return Err(INVALID);
-            }
-            (bound, Self::next_unit(&mut state, operation_id))
-        };
+        let mut state = self.state();
+        let bound = state.wsl_bound.get(bootstrap_id).cloned().ok_or(INVALID)?;
+        let distro = &bound.installation.distro;
+        let inside = [
+            &repository.worktree_root,
+            &repository.git_directory,
+            &repository.common_directory,
+        ]
+        .iter()
+        .all(|path| wsl::linux_path(path, distro).is_some());
+        if bound.installation.guid != installation.guid || !inside {
+            return Err(INVALID);
+        }
         let linux = wsl::linux_path(context_path, &bound.installation.distro).ok_or(INVALID)?;
+        let n = Self::next_unit(&mut state, operation_id);
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
-        let generation = self.current();
+        let closer = Arc::clone(&me);
+        let (generation, deadline) = (self.current(), self.walk_bound());
         let installation = installation.clone();
-        let (operation_id, bootstrap_id, repository_id, call_id) = (
+        let (operation, bootstrap, repository_id, call) = (
             operation_id.to_string(),
             bootstrap_id.to_string(),
             repository_id.to_string(),
             call_id.to_string(),
         );
-        std::thread::spawn(move || {
-            let host = me.wsl_host(&operation_id);
-            let found = wsl::identities(
-                &*host,
-                &installation,
-                &operation_id,
-                n,
-                &[linux],
-                &me.config.base_environment,
-                None,
-            );
-            let same = found
-                .first()
-                .is_some_and(|found| found.as_ref() == Ok(&bound.identity));
-            let mut state = me.state();
-            let live = me.contexts.get(&bootstrap_id, Instant::now()).is_ok();
-            me.contexts.destroy(&bootstrap_id);
-            state.wsl_bound.remove(&bootstrap_id);
-            let reply = if !same || !live || state.issued.contains(&repository_id) {
-                json!({ "type": "refused", "callId": call_id, "code": UNKNOWN })
-            } else {
-                state.issued.insert(repository_id.clone());
-                state.repositories.insert(repository_id, repository);
-                json!({ "type": "register", "callId": call_id, "result": "approved" })
-            };
-            drop(state);
-            me.send(generation, reply);
-        });
-        Ok(())
+        let destroyed = bootstrap.clone();
+        // The reread is a walk (contract §6 "Walks"). Only a current generation binds (T314).
+        self.spawn_walk(
+            &mut state,
+            Reply::Frame("process", "register"),
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let host = me.wsl_host(&operation);
+                let found = wsl::identities(
+                    &*host,
+                    &installation,
+                    &operation,
+                    n,
+                    &[linux],
+                    &me.config.base_environment,
+                    Some((stop.event.0, deadline)),
+                );
+                let same = found
+                    .first()
+                    .is_some_and(|found| found.as_ref() == Ok(&bound.identity));
+                Box::new(move || {
+                    let mut state = me.state();
+                    if generation != me.current() {
+                        return None;
+                    }
+                    let live = me.contexts.get(&bootstrap, Instant::now()).is_ok();
+                    me.contexts.destroy(&bootstrap);
+                    state.wsl_bound.remove(&bootstrap);
+                    if !same || !live || !state.issued.insert(repository_id.clone()) {
+                        return Some(json!({ "type": "refused", "callId": call, "code": UNKNOWN }));
+                    }
+                    state.repositories.insert(repository_id, repository);
+                    Some(json!({ "type": "register", "callId": call, "result": "approved" }))
+                })
+            },
+            move || {
+                closer.contexts.destroy(&destroyed);
+                closer.state().wsl_bound.remove(&destroyed);
+            },
+        )
     }
 
     /// gaps.md W3: the Perl probe of a WSL repository, on its own thread, in the Job of the request operation.
     #[allow(clippy::too_many_arguments)]
     fn wsl_file_facts(
         &self,
-        state: MutexGuard<'_, State>,
+        state: &mut State,
         parsed: &file_facts::Request,
         installation: &wsl::Installation,
         roots: &[PathBuf; 3],
@@ -1660,7 +1942,7 @@ impl ProcessRequests {
         let deadline = self.walk_bound();
         self.spawn_walk(
             state,
-            "fileFacts",
+            Reply::Walk("fileFacts"),
             call_id,
             parsed.operation_id,
             read_at,
@@ -1674,13 +1956,15 @@ impl ProcessRequests {
                     stop.event.0,
                 );
                 let facts = wsl::file_facts_reply(ended.output, &entries, digest);
-                json!({ "type": "fileFacts", "callId": call, "facts": facts })
+                reply_with(json!({ "type": "fileFacts", "callId": call, "facts": facts }))
             },
+            || {},
         )
     }
 
     /// Replaces a `gitProbe` context with one for `<exec-path>\git.exe` (contract §6 "Channel frames" `resolveGit`).
     fn resolve_git(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
         keys(
             request,
             &[
@@ -1698,7 +1982,7 @@ impl ProcessRequests {
         let named = resolved
             .file_name()
             .is_some_and(|name| name.eq_ignore_ascii_case("git.exe"));
-        if !named || !std::fs::metadata(&resolved).is_ok_and(|file| file.is_file()) {
+        if !named {
             return Err(INVALID);
         }
         let now = Instant::now();
@@ -1709,18 +1993,41 @@ impl ProcessRequests {
             return Err(UNKNOWN);
         }
         own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
-        let moved = self
-            .contexts
-            .create_moved(&context, &resolved, now)
-            .map_err(|_| INVALID)?;
-        self.contexts.destroy(bootstrap_id);
-        own(&mut state, &self.contexts, &moved, operation_id, now)?;
-        drop(state);
-        self.send(
-            self.current(),
-            json!({ "type": "resolveGit", "callId": call_id, "bootstrapId": moved }),
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (bootstrap, operation, call) = (
+            bootstrap_id.to_string(),
+            operation_id.to_string(),
+            call_id.to_string(),
         );
-        Ok(())
+        // The file check and the identity read open the file, so they are a walk (contract §6 "Walks").
+        // A deadline keeps the first context and binds no new context.
+        self.spawn_walk(
+            &mut state,
+            Reply::Frame("process", "resolveGit"),
+            call_id,
+            operation_id,
+            read_at,
+            move |_| {
+                let identity = std::fs::metadata(&resolved)
+                    .is_ok_and(|file| file.is_file())
+                    .then(|| read_identity(&resolved).ok())
+                    .flatten();
+                Box::new(move || {
+                    let refused = json!({ "type": "refused", "callId": call, "code": INVALID });
+                    let Some(identity) = identity else {
+                        return Some(refused);
+                    };
+                    let moved = me.contexts.create_moved(&context, &resolved, identity, now);
+                    me.contexts.destroy(&bootstrap);
+                    let mut state = me.state();
+                    if let Err(code) = own(&mut state, &me.contexts, &moved, &operation, now) {
+                        return Some(json!({ "type": "refused", "callId": call, "code": code }));
+                    }
+                    Some(json!({ "type": "resolveGit", "callId": call, "bootstrapId": moved }))
+                })
+            },
+            || {},
+        )
     }
 
     /// Shows the Git selection confirmation on its own thread, so the frame reader keeps running.
@@ -1784,7 +2091,7 @@ impl ProcessRequests {
         let mut state = self.state();
         close_job_of(&self.jobs, &mut state, operation_id);
         for walk in state.walks.values() {
-            if walk.operation_id == operation_id {
+            if walk.operation_id == operation_id && walk.stoppable {
                 let _ = walk.events.send(WalkEvent::Stop);
             }
         }
@@ -1912,6 +2219,11 @@ impl Drop for Owned {
     }
 }
 
+/// The finish of a walk that only replies.
+fn reply_with(reply: Value) -> Finish {
+    Box::new(move || Some(reply))
+}
+
 /// Sets the stop flag and the stop Event of a walk, then cancels the synchronous I/O of its thread (contract §6 "Walks").
 /// The Event ends the `wsl.exe` of a WSL walk, so the stop never closes the operation Job.
 fn stop_walk(stop: &WalkStop, worker: &JoinHandle<()>) {
@@ -1920,6 +2232,18 @@ fn stop_walk(stop: &WalkStop, worker: &JoinHandle<()>) {
     let _ = unsafe { SetEvent(stop.event.0) };
     // SAFETY: `worker` keeps the thread handle open for the call. A thread outside I/O gives `ERROR_NOT_FOUND`.
     let _ = unsafe { CancelSynchronousIo(HANDLE(worker.as_raw_handle())) };
+}
+
+/// Repeats `CancelSynchronousIo` on a stopped walk thread until it ends, for at most `CLOSE_WAIT`.
+/// A process start makes several opens, and each one can wait on an oplock break (research U3).
+/// A cancel that comes before a driver queues its I/O can also leave the I/O waiting.
+fn cancel_io(worker: &JoinHandle<()>) {
+    let until = Instant::now() + CLOSE_WAIT;
+    while !worker.is_finished() && Instant::now() < until {
+        // SAFETY: `worker` keeps the thread handle open for the call. A thread outside I/O gives `ERROR_NOT_FOUND`.
+        let _ = unsafe { CancelSynchronousIo(HANDLE(worker.as_raw_handle())) };
+        std::thread::sleep(POLL);
+    }
 }
 
 /// True when the handle signals within `timeout`.
@@ -2464,6 +2788,7 @@ pub(crate) mod tests {
     use windows::Win32::System::Ioctl::FSCTL_REQUEST_BATCH_OPLOCK;
     use windows::Win32::System::Threading::CreateEventW;
 
+    use crate::bootstrap::tests::Hold;
     use crate::bootstrap::{ContextKind, read_identity};
     use crate::jobs::tests::{
         CHILD_PREFIX, CLOSE_BOUND, Fixture, Proc, WAIT, eventually, test_exe, wait_file,
@@ -4790,6 +5115,8 @@ pub(crate) mod tests {
         commands: Arc<Mutex<Vec<wsl::Command>>>,
         /// While true, each process waits before it records its command.
         held: Arc<(Mutex<bool>, Condvar)>,
+        /// The processes that wait in `held`.
+        waiting: Arc<AtomicUsize>,
         /// While set, each walk process is a sleeping test child in the operation Job, and the product wait ends it.
         slow: Arc<Mutex<Option<Arc<Supervisor>>>>,
         /// The operation of this host. `set_wsl_hosts` gives one host to each operation.
@@ -4820,9 +5147,11 @@ pub(crate) mod tests {
     impl wsl::Host for ScriptHost {
         fn run(&self, command: &wsl::Command) -> Option<wsl::Output> {
             let (held, changed) = &*self.held;
+            self.waiting.fetch_add(1, Ordering::SeqCst);
             let _ = changed
                 .wait_timeout_while(held.lock().expect("held"), WAIT, |held| *held)
                 .expect("held");
+            self.waiting.fetch_sub(1, Ordering::SeqCst);
             self.commands
                 .lock()
                 .expect("commands")
@@ -5199,6 +5528,208 @@ pub(crate) mod tests {
         );
         std::thread::sleep(Duration::from_millis(500));
         assert!(wsl.harness.replies_for(&call).is_empty(), "no reply");
+    }
+
+    // ---- T314: WSL frame walks ----
+
+    fn repository_register(operation: &str, bootstrap_id: &str, git: &str, call: &str) -> Value {
+        let git_directory = format!(r"{WSL_PATH}\.git");
+        json!({ "type": "register", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": uuid(), "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory })
+    }
+
+    #[test]
+    fn a_wsl_register_reread_past_its_deadline_replies_deadline_and_destroys_the_context() {
+        let wsl = wsl_harness_with(true, short_harness());
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        *wsl.host.slow.lock().expect("slow") = Some(Arc::clone(&wsl.harness.jobs));
+        let call = uuid();
+        wsl.harness
+            .send(repository_register(&operation, &bootstrap_id, &git, &call));
+        assert_eq!(wsl.harness.reply(&call), deadline_reply("register", &call));
+        assert!(
+            wsl.harness
+                .contexts
+                .get(&bootstrap_id, Instant::now())
+                .is_err(),
+            "the deadline destroys the context"
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || wsl.harness.jobs.active_processes(&operation)
+                == Some(0)),
+            "the walk Event ends the wsl.exe process"
+        );
+        assert!(eventually(CLOSE_WAIT, || wsl
+            .harness
+            .requests
+            .active_walks()
+            == 0));
+        let state = wsl.harness.requests.state();
+        assert!(!state.wsl_bound.contains_key(&bootstrap_id), "bound facts");
+        assert!(state.repositories.is_empty(), "no bind");
+    }
+
+    #[test]
+    fn a_wsl_register_reread_that_ends_after_a_service_exit_binds_nothing() {
+        let wsl = wsl_harness(true);
+        let (operation, bootstrap_id, git) = bound_wsl(&wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.hold(true);
+        let call = uuid();
+        wsl.harness
+            .send(repository_register(&operation, &bootstrap_id, &git, &call));
+        assert!(
+            eventually(WAIT, || wsl.host.waiting.load(Ordering::SeqCst) == 1),
+            "the reread waits"
+        );
+        let commands = wsl.host.commands().len();
+        wsl.harness.requests.service_exited();
+        wsl.host.hold(false);
+        assert!(
+            eventually(WAIT, || wsl.host.commands().len() > commands),
+            "the reread ends"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        let state = wsl.harness.requests.state();
+        assert!(
+            state.repositories.is_empty() && state.issued.is_empty(),
+            "a reread of an older session binds nothing"
+        );
+    }
+
+    /// A lingering Job whose tag is the WSL identity of the registered repository, with one sleeping grandchild.
+    fn lingering_wsl_tag(wsl: &WslHarness) {
+        let workspace = wsl.harness.child_workspace("windows");
+        let operation = uuid();
+        let call = wsl.harness.run(
+            &operation,
+            &workspace,
+            &["grandchild", "1", "60000", "exit"],
+        );
+        wsl.harness.requests.tag(
+            &operation,
+            PhysicalIdentity::Wsl(wsl::WslIdentity {
+                guid: WSL_GUID.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "4242".to_string(),
+            }),
+        );
+        wsl.harness.exit(&call, WAIT).expect("exit");
+        assert_eq!(wsl.harness.requests.ended(&operation, false), Ok(()));
+        assert!(wsl.harness.jobs.is_lingering(&operation), "lingering");
+    }
+
+    fn wsl_lingering_count(wsl: &WslHarness, call: &str) {
+        let common = format!(r"{WSL_PATH}\.git");
+        assert!(
+            wsl.harness.send_within(
+                json!({ "type": "lingeringCount", "callId": call, "operationId": uuid(), "commonDirectory": common }),
+                CLOSE_WAIT
+            ),
+            "the frame reader never waits on the probe"
+        );
+    }
+
+    #[test]
+    fn a_wsl_lingering_count_starts_no_probe_when_no_lingering_job_holds_the_distro() {
+        let wsl = wsl_harness(true);
+        slow_wsl_repository(&wsl);
+        *wsl.host.slow.lock().expect("slow") = None;
+        let before = wsl.host.commands().len();
+        let call = uuid();
+        wsl_lingering_count(&wsl, &call);
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "lingeringCount", "callId": call, "count": 0 })
+        );
+        assert_eq!(
+            wsl.host.commands().len(),
+            before,
+            "no wsl.exe starts (T314 D4)"
+        );
+
+        lingering_wsl_tag(&wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        let call = uuid();
+        wsl_lingering_count(&wsl, &call);
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "lingeringCount", "callId": call, "count": 1 })
+        );
+        assert_eq!(wsl.host.commands().len(), before + 1, "one identity probe");
+    }
+
+    #[test]
+    fn a_wsl_lingering_count_probe_past_its_deadline_replies_deadline_and_its_wsl_exe_ends() {
+        let wsl = wsl_harness_with(true, short_harness());
+        slow_wsl_repository(&wsl);
+        lingering_wsl_tag(&wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        let call = uuid();
+        wsl_lingering_count(&wsl, &call);
+        assert_eq!(
+            wsl.harness.reply(&call),
+            deadline_reply("lingeringCount", &call)
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || wsl.harness.requests.active_walks() == 0),
+            "the walk Event ends the wsl.exe process"
+        );
+    }
+
+    #[test]
+    fn a_wsl_revoke_needs_the_probe_only_when_a_lingering_tag_or_a_record_holds_the_distro() {
+        let wsl = wsl_harness(true);
+        slow_wsl_repository(&wsl);
+        let requests = &wsl.harness.requests;
+        let common = PathBuf::from(format!(r"{WSL_PATH}\.git"));
+        assert!(
+            !requests.identity_read_needed(&common, |_| false),
+            "no tag and no record of the distro"
+        );
+        assert!(
+            requests.identity_read_needed(&common, |guid| guid == WSL_GUID),
+            "a record of the distro"
+        );
+        assert!(
+            requests.identity_read_needed(&wsl.harness.fixture.path("windows"), |_| false),
+            "a Windows path"
+        );
+        lingering_wsl_tag(&wsl);
+        assert!(
+            requests.identity_read_needed(&common, |_| false),
+            "a lingering tag of the distro"
+        );
+    }
+
+    #[test]
+    fn a_shell_identity_read_of_a_wsl_path_stops_at_a_service_exit() {
+        let wsl = wsl_harness(true);
+        slow_wsl_repository(&wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.hold(true);
+        let before = wsl.host.commands().len();
+        let (done, read) = mpsc::channel();
+        {
+            let requests = Arc::clone(&wsl.harness.requests);
+            std::thread::spawn(move || {
+                let common = PathBuf::from(format!(r"{WSL_PATH}\.git"));
+                let _ = done.send(requests.read_physical_identity(&common).is_some());
+            });
+        }
+        assert!(
+            eventually(WAIT, || wsl.host.waiting.load(Ordering::SeqCst) == 1
+                || wsl.host.commands().len() > before),
+            "the probe runs"
+        );
+        wsl.harness.requests.service_exited();
+        let ended = read.recv_timeout(CLOSE_WAIT);
+        wsl.host.hold(false);
+        assert_eq!(
+            ended,
+            Ok(false),
+            "a service exit ends the probe of a trust confirmation"
+        );
     }
 
     #[test]
@@ -5578,6 +6109,17 @@ pub(crate) mod tests {
         }
     }
 
+    /// A batch oplock on a copied program. A scan of the new file can hold an open for a while, and the request then fails.
+    /// So the request repeats until `WAIT` passes.
+    fn program_oplock(program: &Path) -> Option<Oplock> {
+        let mut oplock = None;
+        eventually(WAIT, || {
+            oplock = Oplock::request(program);
+            oplock.is_some()
+        });
+        oplock
+    }
+
     /// A repository whose hooks folder holds each of `names` with the content "abc".
     fn hooks_workspace(harness: &Harness, names: &[&str]) -> Workspace {
         let workspace = harness.child_workspace("repo");
@@ -5762,12 +6304,17 @@ pub(crate) mod tests {
             Duration::from_millis(300),
         );
         let call = uuid();
-        let state = harness.requests.state();
         harness
             .requests
-            .spawn_walk(state, "fileFacts", &call, &uuid(), Instant::now(), |_| {
-                panic!("a test panic in a walk")
-            })
+            .spawn_walk(
+                &mut harness.requests.state(),
+                Reply::Walk("fileFacts"),
+                &call,
+                &uuid(),
+                Instant::now(),
+                |_| panic!("a test panic in a walk"),
+                || {},
+            )
             .expect("spawn the walk");
         assert!(
             eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
@@ -5780,6 +6327,503 @@ pub(crate) mod tests {
             "a panic gives no reply and no deadline label"
         );
         assert!(harness.requests.state().walks.is_empty(), "walks");
+    }
+
+    /// Calls `CancelSynchronousIo` on `worker` until it finds a pending synchronous I/O. False after `WAIT`.
+    fn cancel_pending_io(worker: &JoinHandle<()>) -> bool {
+        // SAFETY: `worker` keeps the thread handle open for each call.
+        eventually(WAIT, || unsafe {
+            CancelSynchronousIo(HANDLE(worker.as_raw_handle())).is_ok()
+        })
+    }
+
+    /// Repeats `CancelSynchronousIo` every 100 ms until `ended` gets a value. Returns it and the count of the extra calls.
+    fn cancel_until<T>(worker: &JoinHandle<()>, ended: &mpsc::Receiver<T>) -> (Option<T>, usize) {
+        for extra in 0..30 {
+            if let Ok(value) = ended.recv_timeout(Duration::from_millis(100)) {
+                return (Some(value), extra);
+            }
+            // SAFETY: `worker` keeps the thread handle open for the call.
+            let _ = unsafe { CancelSynchronousIo(HANDLE(worker.as_raw_handle())) };
+        }
+        (None, 30)
+    }
+
+    #[test]
+    fn cancel_synchronous_io_ends_a_synchronous_pipe_read() {
+        use std::os::windows::io::FromRawHandle;
+        let (mut read, mut write) = (HANDLE::default(), HANDLE::default());
+        // SAFETY: two out handles without security attributes. The two `File` values below own them.
+        unsafe { windows::Win32::System::Pipes::CreatePipe(&mut read, &mut write, None, 0) }
+            .expect("anonymous pipe");
+        // SAFETY: each handle is open, and only this `File` closes it.
+        let (mut reader, writer) = unsafe {
+            (
+                File::from_raw_handle(read.0),
+                File::from_raw_handle(write.0),
+            )
+        };
+        let (done, ended) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = done.send(reader.read(&mut [0u8; 1]).map_err(|e| e.raw_os_error()));
+        });
+        assert!(
+            cancel_pending_io(&worker),
+            "the read waits as synchronous I/O"
+        );
+        let (read, extra) = cancel_until(&worker, &ended);
+        // A first cancel can come before the pipe driver queues the read. A later call then ends it.
+        println!("OBSERVATION T314: pipe read {read:?} after {extra} extra cancels");
+        assert_eq!(
+            read.expect("the read returns"),
+            Err(Some(995)),
+            "the read ends with ERROR_OPERATION_ABORTED"
+        );
+        drop(writer);
+    }
+
+    #[test]
+    fn cancel_synchronous_io_ends_a_process_start_that_waits_on_a_batch_oplock_break() {
+        let fixture = Fixture::new();
+        let program = fixture.path("held.exe");
+        std::fs::copy(test_exe(), &program).expect("copy the test program");
+        let Some(oplock) = program_oplock(&program) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let job = crate::jobs::Job::create().expect("job");
+        let (done, ended) = mpsc::channel();
+        let worker = {
+            let (program, directory) = (program.clone(), fixture.0.clone());
+            std::thread::spawn(move || {
+                let arguments = crate::jobs::tests::child_arguments(&["sleep", "0"]);
+                let started = spawn(
+                    &SpawnRequest {
+                        program: &program,
+                        arguments: &arguments,
+                        environment: &std::env::vars_os().collect::<Vec<_>>(),
+                        current_dir: &directory,
+                        wsl: false,
+                        input: Input::Closed,
+                    },
+                    job.handle(),
+                );
+                let _ = done.send(started.map(|spawned| drop(Owned(spawned.process))));
+            })
+        };
+        assert!(
+            oplock.broken(WAIT),
+            "the image open of the start breaks the batch oplock"
+        );
+        assert!(
+            ended.recv_timeout(Duration::from_millis(500)).is_err(),
+            "the start waits on the break"
+        );
+        assert!(
+            cancel_pending_io(&worker),
+            "the start waits as synchronous I/O"
+        );
+        let (started, extra) = cancel_until(&worker, &ended);
+        // CreateProcessW makes more than one open of the image, and each one waits on the break.
+        println!("OBSERVATION T314 U3: start {started:?} after {extra} extra cancels");
+        assert_eq!(
+            started.expect("the start returns"),
+            Err(crate::spawn::SpawnError::OwnershipFailed),
+            "CancelSynchronousIo ends each image open, and no process starts (research U3)"
+        );
+        drop(oplock);
+    }
+
+    // ---- T314: the other frames as walks (contract §6 "Walks") ----
+
+    /// A harness whose walks have a 2 s deadline. The test binary acts as Git.
+    fn short_harness() -> Harness {
+        Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            std::env::vars_os().collect(),
+            Duration::from_secs(2),
+        )
+    }
+
+    /// A workspace whose Git is an own copy of the test binary, so a hold or an oplock on it stays in this test.
+    fn copied_workspace(harness: &Harness, name: &str) -> (Workspace, PathBuf) {
+        let program = git_copy(harness, &format!("{name}-git"));
+        let worktree = harness.fixture.path(name);
+        std::fs::create_dir_all(worktree.join(".git")).expect("worktree");
+        let git = harness.register_git(&program);
+        let repository = harness.register_repository(&git, &worktree);
+        (
+            Workspace {
+                git,
+                repository,
+                worktree,
+            },
+            program,
+        )
+    }
+
+    /// Sends `body` and checks that the frame reader returns at once. A second request then gets its reply.
+    fn reader_stays_free(harness: &Harness, body: Value, free: &Workspace) {
+        assert!(
+            harness.send_within(body, CLOSE_WAIT),
+            "the frame reader never waits on the open"
+        );
+        let other = uuid();
+        harness.send(json!({
+            "type": "identity", "callId": other, "operationId": uuid(), "contextKind": "registeredOperation",
+            "gitInstallationId": free.git, "repositoryId": free.repository, "paths": [free.worktree],
+        }));
+        assert!(
+            harness
+                .wait_reply(CLOSE_WAIT, |v| v["callId"] == other.as_str())
+                .is_some(),
+            "a second request gets its reply meanwhile"
+        );
+    }
+
+    fn deadline_reply(kind: &str, call: &str) -> Value {
+        json!({ "type": kind, "callId": call, "deadline": "deadline" })
+    }
+
+    fn start_deadline(call: &str) -> Value {
+        json!({ "type": "exit", "callId": call, "exitCode": null, "activeDescendants": 0, "deadline": "deadline" })
+    }
+
+    #[test]
+    fn a_run_start_that_waits_on_an_image_open_leaves_the_reader_free_and_replies_deadline() {
+        let harness = short_harness();
+        let (workspace, program) = copied_workspace(&harness, "repo");
+        let (free, _) = copied_workspace(&harness, "free");
+        let Some(oplock) = program_oplock(&program) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let (call, operation) = (uuid(), uuid());
+        let body = run_body(
+            &call,
+            &operation,
+            &workspace,
+            &["sleep", "0"],
+            "read",
+            json!({ "deadlineMs": 30_000 }),
+        );
+        reader_stays_free(&harness, body, &free);
+        assert!(oplock.broken(WAIT), "the image open waits on the break");
+        assert_eq!(harness.reply(&call), start_deadline(&call));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the stop ends the start (research U3)"
+        );
+        assert!(
+            harness.jobs.job_handle(&operation).is_none(),
+            "the start deadline closes the operation Job"
+        );
+        drop(oplock);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+    }
+
+    #[test]
+    fn cancel_and_close_job_stop_a_run_start_with_an_exit_reply_and_never_wait_on_the_open() {
+        let harness = Harness::child();
+        let (workspace, program) = copied_workspace(&harness, "repo");
+        let Some(oplock) = program_oplock(&program) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let stopped = |call: &str| json!({ "type": "exit", "callId": call, "exitCode": null, "activeDescendants": 0 });
+        let (canceled, closed, operation) = (uuid(), uuid(), uuid());
+        assert!(
+            harness.send_within(
+                run_body(
+                    &canceled,
+                    &uuid(),
+                    &workspace,
+                    &["sleep", "0"],
+                    "read",
+                    json!({ "deadlineMs": 30_000 }),
+                ),
+                CLOSE_WAIT
+            ),
+            "the frame reader never waits on the open"
+        );
+        assert!(oplock.broken(WAIT), "the image open waits on the break");
+        assert!(
+            harness.send_within(json!({ "type": "cancel", "callId": canceled }), CLOSE_WAIT),
+            "cancel never waits on the open (T314 D7)"
+        );
+        assert_eq!(harness.reply(&canceled), stopped(&canceled));
+        harness.send(run_body(
+            &closed,
+            &operation,
+            &workspace,
+            &["sleep", "0"],
+            "read",
+            json!({ "deadlineMs": 30_000 }),
+        ));
+        assert!(
+            harness.send_within(
+                json!({ "type": "closeJob", "operationId": operation }),
+                CLOSE_WAIT
+            ),
+            "closeJob never waits on the open (T314 D7)"
+        );
+        assert_eq!(harness.reply(&closed), stopped(&closed));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "the stop ends both starts"
+        );
+        drop(oplock);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(harness.replies_for(&canceled).len(), 1, "one reply");
+        assert_eq!(harness.replies_for(&closed).len(), 1, "one reply");
+    }
+
+    #[test]
+    fn a_run_revalidation_that_waits_leaves_the_reader_free_and_replies_deadline() {
+        let harness = short_harness();
+        let (workspace, program) = copied_workspace(&harness, "repo");
+        let (free, _) = copied_workspace(&harness, "free");
+        let hold = Hold::new(&program);
+        let call = uuid();
+        let body = run_body(
+            &call,
+            &uuid(),
+            &workspace,
+            &["sleep", "0"],
+            "read",
+            json!({ "deadlineMs": 30_000 }),
+        );
+        reader_stays_free(&harness, body, &free);
+        assert!(hold.waiting(1, WAIT), "the Git identity read waits");
+        assert_eq!(harness.reply(&call), start_deadline(&call));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "CancelSynchronousIo ends the held open"
+        );
+        drop(hold);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+    }
+
+    #[test]
+    fn input_that_comes_before_the_process_start_waits_for_the_start() {
+        let harness = Harness::child();
+        let (workspace, program) = copied_workspace(&harness, "repo");
+        let hold = Hold::new(&program);
+        let call = uuid();
+        let mut body = run_body(
+            &call,
+            &uuid(),
+            &workspace,
+            &["slow-stdin", "0"],
+            "read",
+            json!({ "deadlineMs": 30_000 }),
+        );
+        body["inputBytes"] = json!(2 * CHUNK_BYTES);
+        assert!(
+            harness.send_within(body, CLOSE_WAIT),
+            "the frame reader never waits on the open"
+        );
+        assert!(hold.waiting(1, WAIT), "the start waits");
+        let chunk = encode(&vec![b'i'; CHUNK_BYTES]);
+        for _ in 0..2 {
+            harness.send(json!({ "type": "input", "callId": call, "data": chunk }));
+        }
+        drop(hold);
+        assert_eq!(
+            harness.output_line(&call, "stdout", "STDIN"),
+            (2 * CHUNK_BYTES).to_string(),
+            "the queued chunks reach the child"
+        );
+        assert_eq!(harness.exit(&call, WAIT).expect("exit").1["exitCode"], 0);
+        let written = harness
+            .replies_for(&call)
+            .iter()
+            .filter(|(_, v)| v["type"] == "inputWritten")
+            .count();
+        assert_eq!(written, 2, "one inputWritten per chunk");
+    }
+
+    #[test]
+    fn a_lingering_count_whose_open_waits_leaves_the_reader_free_and_replies_deadline() {
+        let harness = short_harness();
+        let (workspace, _) = copied_workspace(&harness, "repo");
+        let (free, _) = copied_workspace(&harness, "free");
+        let common = workspace.worktree.join(".git");
+        let hold = Hold::new(&common);
+        let call = uuid();
+        let body = json!({ "type": "lingeringCount", "callId": call, "operationId": uuid(), "commonDirectory": common });
+        reader_stays_free(&harness, body, &free);
+        assert!(hold.waiting(1, WAIT), "the identity read waits");
+        assert_eq!(
+            harness.reply(&call),
+            deadline_reply("lingeringCount", &call)
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "CancelSynchronousIo ends the held open"
+        );
+        drop(hold);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+    }
+
+    #[test]
+    fn a_lingering_count_ignores_cancel_and_close_job() {
+        let harness = Harness::child();
+        let (workspace, _) = copied_workspace(&harness, "repo");
+        let common = workspace.worktree.join(".git");
+        let hold = Hold::new(&common);
+        let (call, operation) = (uuid(), uuid());
+        assert!(
+            harness.send_within(
+                json!({ "type": "lingeringCount", "callId": call, "operationId": operation, "commonDirectory": common }),
+                CLOSE_WAIT
+            ),
+            "the frame reader never waits on the open"
+        );
+        assert!(hold.waiting(1, WAIT), "the identity read waits");
+        harness.send(json!({ "type": "cancel", "callId": call }));
+        harness.send(json!({ "type": "closeJob", "operationId": operation }));
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(harness.requests.active_walks(), 1, "the walk still runs");
+        drop(hold);
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "lingeringCount", "callId": call, "count": 0 }),
+            "only its reply ends it (T314 D3)"
+        );
+    }
+
+    #[test]
+    fn a_register_whose_revalidation_waits_replies_deadline_and_destroys_the_context() {
+        let harness = short_harness();
+        let (free, program) = copied_workspace(&harness, "free");
+        let worktree = harness.fixture.path("repo");
+        std::fs::create_dir_all(worktree.join(".git")).expect("worktree");
+        let now = Instant::now();
+        let discovery = harness
+            .contexts
+            .create(ContextKind::RepositoryDiscovery, &worktree, now)
+            .expect("discovery context");
+        let hold = Hold::new(&worktree);
+        let call = uuid();
+        let git_directory = worktree.join(".git");
+        let body = json!({
+            "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": discovery, "gitInstallationId": free.git,
+            "repositoryId": uuid(), "worktreeRoot": worktree, "gitDirectory": git_directory, "commonDirectory": git_directory,
+        });
+        reader_stays_free(&harness, body, &free);
+        assert!(hold.waiting(1, WAIT), "the context identity read waits");
+        assert_eq!(harness.reply(&call), deadline_reply("register", &call));
+        assert!(
+            harness.contexts.get(&discovery, now).is_err(),
+            "the deadline destroys the context"
+        );
+        drop(hold);
+
+        // The Git form of a startup context.
+        let startup = harness
+            .contexts
+            .create_startup(&program, Instant::now())
+            .expect("startup context");
+        let hold = Hold::new(&program);
+        let call = uuid();
+        let body = json!({ "type": "register", "callId": call, "operationId": uuid(), "bootstrapId": startup, "gitInstallationId": uuid(), "version": "2.55.0.windows.3", "digest": DIGEST, "confirm": false });
+        reader_stays_free(&harness, body, &free);
+        assert!(hold.waiting(1, WAIT), "the Git identity read waits");
+        assert_eq!(harness.reply(&call), deadline_reply("register", &call));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "CancelSynchronousIo ends the held open"
+        );
+        assert!(
+            harness.contexts.get(&startup, Instant::now()).is_err(),
+            "the deadline destroys the context"
+        );
+    }
+
+    #[test]
+    fn a_resolve_git_whose_open_waits_replies_deadline_and_keeps_the_first_context() {
+        let harness = short_harness();
+        let (free, _) = copied_workspace(&harness, "free");
+        let wrapper = git_copy(&harness, "cmd");
+        let resolved = git_copy(&harness, "git-core");
+        let now = Instant::now();
+        let candidate = harness
+            .contexts
+            .create(ContextKind::GitProbe, &wrapper, now)
+            .expect("context");
+        let hold = Hold::new(&resolved);
+        let call = uuid();
+        let body = json!({ "type": "resolveGit", "callId": call, "operationId": uuid(), "bootstrapId": candidate, "executablePath": resolved });
+        reader_stays_free(&harness, body, &free);
+        assert!(hold.waiting(1, WAIT), "the resolved identity read waits");
+        assert_eq!(harness.reply(&call), deadline_reply("resolveGit", &call));
+        assert!(
+            harness.contexts.get(&candidate, now).is_ok(),
+            "the first context stays"
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+            "CancelSynchronousIo ends the held open"
+        );
+        drop(hold);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+    }
+
+    #[test]
+    fn a_wsl_anchor_start_never_holds_the_supervisor_lock() {
+        let harness = Harness::child();
+        let program = git_copy(&harness, "anchor");
+        let Some(oplock) = program_oplock(&program) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let operation = uuid();
+        harness.jobs.open(&operation).expect("open");
+        let command = wsl::Command {
+            program: program.clone(),
+            arguments: crate::jobs::tests::child_arguments(&["sleep", "60000"]),
+            environment: std::env::vars_os().collect(),
+            stdin: wsl::Stdin::Open,
+        };
+        let (done, started) = mpsc::channel();
+        {
+            let (jobs, operation, directory) = (
+                Arc::clone(&harness.jobs),
+                operation.clone(),
+                harness.fixture.0.clone(),
+            );
+            std::thread::spawn(move || {
+                let _ = done.send(jobs.start_anchor(&operation, &command, &directory));
+            });
+        }
+        assert!(
+            oplock.broken(WAIT),
+            "the anchor image open waits on the break"
+        );
+        let (closed, close_done) = mpsc::channel();
+        {
+            let (jobs, operation) = (Arc::clone(&harness.jobs), operation.clone());
+            std::thread::spawn(move || {
+                jobs.close(&operation);
+                let _ = closed.send(());
+            });
+        }
+        assert!(
+            close_done.recv_timeout(CLOSE_WAIT).is_ok(),
+            "close does not wait for the anchor start (T314 D7)"
+        );
+        drop(oplock);
+        assert_eq!(
+            started.recv_timeout(WAIT).expect("the start returns"),
+            Err(crate::spawn::SpawnError::OwnershipFailed),
+            "an anchor that finds its Job closed ends"
+        );
     }
 
     // ---- Terminal input and console variants (contract §6 "Console and input", plan.md F11, research.md R14 S17) ----

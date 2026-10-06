@@ -279,7 +279,7 @@ export async function approveWslGit(
   probed: Omit<WslGit, "gitInstallationId">,
   session: WslGit | undefined,
   saved: { identity: string } | undefined,
-): Promise<{ ok: true; git: WslGit; reused: boolean; changed: boolean } | { ok: false; code: "GIT_CHANGED" } | { ok: false; canceled: true }> {
+): Promise<{ ok: true; git: WslGit; reused: boolean; changed: boolean } | { ok: false; code: "GIT_CHANGED" | "DEADLINE" } | { ok: false; canceled: true }> {
   if (session !== undefined && !gitChanged(session, probed) && session.path === probed.path) {
     // Linux Git reads `PATH` when it runs, so every workspace of this Git takes the `PATH` of the latest probe.
     session.pathEnv = probed.pathEnv;
@@ -288,6 +288,8 @@ export async function approveWslGit(
   const changed = gitChanged(session ?? saved, probed);
   const gitInstallationId = crypto.randomUUID();
   const reply = await runner.register({ operationId: target.operationId, bootstrapId: target.bootstrapId, gitInstallationId, confirm: true });
+  // Contract §5 "Deadline outcomes": a walk deadline of a registration gives DEADLINE (T314).
+  if ("stop" in reply) return { ok: false, code: "DEADLINE" };
   if (reply.result !== "approved") return changed ? { ok: false, code: "GIT_CHANGED" } : { ok: false, canceled: true };
   return { ok: true, git: { ...probed, gitInstallationId }, reused: false, changed };
 }

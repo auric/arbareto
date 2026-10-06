@@ -169,7 +169,9 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
       // After `ended`, the anchor answers once per second until the children end.
       const counts: number[] = [];
       for (let i = 0; i < 3; i++) {
-        counts.push(await runner.lingeringCount(crypto.randomUUID(), uncPath(host, `${f25.linger.dir}/.git`)));
+        const count = await runner.lingeringCount(crypto.randomUUID(), uncPath(host, `${f25.linger.dir}/.git`));
+        if (typeof count !== "number") throw new Error("the lingering count passed its deadline");
+        counts.push(count);
         await Bun.sleep(1_000);
       }
       console.log(`OBSERVATION T209: lingering count ${response.result?.lingeringDescendants}, counts after ended ${counts.join(" ")}, operation ${operationId}`);

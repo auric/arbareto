@@ -46,6 +46,7 @@ import {
   type RegisterReply,
   type StartedReply,
   type TrustReply,
+  type WalkDeadline,
   type WalkStop,
 } from "./git-runner";
 import type { Frame, FrameKind, FrameWriter } from "./transport";
@@ -54,7 +55,7 @@ import type { Frame, FrameKind, FrameWriter } from "./transport";
 
 type Body = Record<string, unknown>;
 
-const DEADLINE: WalkStop = { stop: "deadline" };
+const DEADLINE: WalkDeadline = { stop: "deadline" };
 const CANCELED: WalkStop = { stop: "canceled" };
 
 const isObject = (v: unknown): v is Body => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -298,16 +299,21 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
 
     async lingeringCount(operationId, commonDirectory) {
       if (!isIdentifier(operationId) || !isChannelPath(commonDirectory)) invalid("lingering count");
-      return ask<number>("process", { type: "lingeringCount", operationId, commonDirectory }, (r) => LingeringCountReply.safeParse(r).data?.count);
+      return ask<number | WalkDeadline>("process", { type: "lingeringCount", operationId, commonDirectory }, (r) => {
+        const reply = LingeringCountReply.safeParse(r);
+        if (!reply.success) return undefined;
+        return "deadline" in reply.data ? DEADLINE : reply.data.count;
+      });
     },
 
     async register(request) {
       const permits = checkRegister(request);
-      return ask<RegisterReply>("process", { type: "register", ...request }, (r) => {
+      return ask<RegisterReply | WalkDeadline>("process", { type: "register", ...request }, (r) => {
         const reply = RegisterReplySchema.safeParse(r);
         if (!reply.success) return undefined;
-        // Contract §6 "Process replies": only a registration with `confirm: true` gets another result. Only the Git form gets `another`.
         const data = reply.data;
+        if ("deadline" in data) return DEADLINE;
+        // Contract §6 "Process replies": only a registration with `confirm: true` gets another result. Only the Git form gets `another`.
         if (data.result === "approved") return { result: "approved" };
         if (permits === "approved") return undefined;
         if ("bootstrapId" in data) return permits === "confirm" ? { result: "another", bootstrapId: data.bootstrapId, executablePath: data.executablePath } : undefined;
@@ -317,9 +323,10 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
 
     async resolveGit(request) {
       checkResolveGit(request);
-      return ask<{ bootstrapId: string }>("process", { type: "resolveGit", ...request }, (r) => {
+      return ask<{ bootstrapId: string } | WalkDeadline>("process", { type: "resolveGit", ...request }, (r) => {
         const reply = ResolveGitReply.safeParse(r);
-        return reply.success ? { bootstrapId: reply.data.bootstrapId } : undefined;
+        if (!reply.success) return undefined;
+        return "deadline" in reply.data ? DEADLINE : { bootstrapId: reply.data.bootstrapId };
       });
     },
 
@@ -336,9 +343,10 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
 
     async started(frame) {
       checkStarted(frame);
-      return ask<StartedReply>("mutation", { type: "started", ...frame }, (r) => {
+      return ask<StartedReply | WalkDeadline>("mutation", { type: "started", ...frame }, (r) => {
         const reply = StartedReplySchema.safeParse(r);
         if (!reply.success) return undefined;
+        if ("deadline" in reply.data) return DEADLINE;
         const { type: _type, callId: _callId, ...parsed } = reply.data;
         return parsed;
       });
@@ -357,10 +365,11 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
 
     async trust(request) {
       checkTrust(request);
-      return ask<TrustReply>("trust", { ...request }, (r): TrustReply | undefined => {
+      return ask<TrustReply | WalkDeadline>("trust", { ...request }, (r): TrustReply | WalkDeadline | undefined => {
         if (request.type === "revoke") {
           const reply = RevokeReply.safeParse(r);
-          return reply.success ? { endedProcesses: reply.data.endedProcesses } : undefined;
+          if (!reply.success) return undefined;
+          return "deadline" in reply.data ? DEADLINE : { endedProcesses: reply.data.endedProcesses };
         }
         if (request.type === "confirmRun") {
           const reply = ConfirmRunReply.safeParse(r);

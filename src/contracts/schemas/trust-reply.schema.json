@@ -289,6 +289,31 @@
       "properties": {
         "type": {
           "type": "string",
+          "const": "revoke"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "deadline": {
+          "type": "string",
+          "const": "deadline"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "deadline"
+      ],
+      "additionalProperties": false,
+      "title": "RevokeDeadline"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
           "const": "refused"
         },
         "callId": {

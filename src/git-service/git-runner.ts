@@ -118,22 +118,26 @@ export type FileFactsRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { ty
 // Contract §6 "Walks": an `identity` or `fileFacts` call without its value.
 // `deadline`: the walk passed its §5 deadline. `canceled`: the signal aborted the call, and the service sent `cancel`.
 export type WalkStop = { stop: "canceled" | "deadline" };
+// Contract §6 "Walks" (T314): a `lingeringCount`, `register`, `resolveGit`, `started`, or `revoke` call past its deadline.
+// The service sends no `cancel` for these calls, so only the deadline stops them.
+export type WalkDeadline = { stop: "deadline" };
 
 export interface GitRunner {
   run(call: GitCall): Promise<GitExit>;
   identities(operationId: string, context: ProcessContext, paths: readonly string[], signal: AbortSignal): Promise<IdentityReply[] | WalkStop>;
   // Replies with one fact per entry, in request order.
   fileFacts(request: FileFactsRequest, signal: AbortSignal): Promise<FileFact[] | WalkStop>;
-  lingeringCount(operationId: string, commonDirectory: string): Promise<number>;
-  register(request: RegisterRequest): Promise<RegisterReply>;
+  lingeringCount(operationId: string, commonDirectory: string): Promise<number | WalkDeadline>;
+  register(request: RegisterRequest): Promise<RegisterReply | WalkDeadline>;
   // Replies with the `bootstrapId` of the new `gitProbe` context for `executablePath`.
-  resolveGit(request: ResolveGitRequest): Promise<{ bootstrapId: string }>;
+  resolveGit(request: ResolveGitRequest): Promise<{ bootstrapId: string } | WalkDeadline>;
   release(target: { repositoryId: string } | { gitInstallationId: string }): void;
   closeJob(operationId: string): void;
-  started(frame: MutationStarted): Promise<StartedReply>;
+  started(frame: MutationStarted): Promise<StartedReply | WalkDeadline>;
   ended(operationId: string, endProcesses: boolean): void;
   resolved(markerId: string): void;
-  trust(request: TrustRequest): Promise<TrustReply>;
+  // Only `revoke` can end with the deadline.
+  trust(request: TrustRequest): Promise<TrustReply | WalkDeadline>;
 }
 
 // Contract §6 "Channel frames" `wslProbe`: the frame fields and the output collectors of the streamed probe.

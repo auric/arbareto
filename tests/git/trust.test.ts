@@ -2367,6 +2367,24 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
     TIMEOUT_MS,
   );
 
+  // Contract §5 "Deadline outcomes" (T314): a `revoke` deadline ends revokeTrust failed with DEADLINE.
+  caseTest(
+    "T314",
+    "a revoke deadline reply ends revokeTrust failed with DEADLINE",
+    W,
+    () =>
+      withService({ name: "t314-revoke-deadline" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t314-revoke-deadline"));
+        const installation = await admitted(service);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const workspace = registrations.get(await registerIn(registrations, service, repo, installation))!;
+        const runner: GitRunner = { ...service.runner, trust: async (request) => (request.type === "revoke" ? { stop: "deadline" } : service.runner.trust(request)) };
+        const trust = createTrust({ runner, environment: serviceEnv() });
+        expect(await trust.revokeTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace })).toEqual({ result: "failed", code: "DEADLINE" });
+      }),
+    TIMEOUT_MS,
+  );
+
   // Every identity chunk of one decision settles before the listing ends, so no walk call stays pending past `closeJob`.
   caseTest(
     "T312",

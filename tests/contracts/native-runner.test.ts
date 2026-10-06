@@ -737,6 +737,61 @@ describe("native runner walks", () => {
   });
 });
 
+// Contract §6 "Walks" (T314): the other walks end with their value or the `deadline` reply. The service has no abort for them.
+describe("native runner frame walks", () => {
+  const started = { operationId: id(), repositoryId: id(), kind: "commit", worktreeRoot: REPO, commonDirectory: GIT_DIR } as const;
+  const git = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), version: "2.55.0.windows.1", digest: "c".repeat(64), confirm: true };
+  const resolve = { operationId: id(), bootstrapId: id(), executablePath: isWindows ? "C:\\Git\\mingw64\\libexec\\git-core\\git.exe" : "/usr/libexec/git-core/git" };
+  // Starts one walk of each frame and returns its frame kind, its request type, and the pending result.
+  const asks = (channel: ReturnType<typeof createChannelDouble>) =>
+    [
+      ["process", "lingeringCount", channel.runner.lingeringCount(id(), GIT_DIR)],
+      ["process", "register", channel.runner.register(git)],
+      ["process", "resolveGit", channel.runner.resolveGit(resolve)],
+      ["mutation", "started", channel.runner.started(started)],
+      ["trust", "revoke", channel.runner.trust({ type: "revoke", commonDirectory: GIT_DIR })],
+    ] as const;
+  const values: Record<string, Body> = {
+    lingeringCount: { count: 0 },
+    register: { result: "approved" },
+    resolveGit: { bootstrapId: id() },
+    started: { busy: true },
+    revoke: { endedProcesses: 0 },
+  };
+
+  test("a deadline reply gives the deadline stop", async () => {
+    const channel = createChannelDouble();
+    for (const [kind, type, result] of asks(channel)) {
+      expect(channel.reply(kind, { type, callId: channel.last(type).callId, deadline: "deadline" })).toBe(true);
+      expect(await result).toEqual({ stop: "deadline" });
+    }
+  });
+
+  test.each([
+    ["a value and deadline", (type: string) => ({ ...values[type], deadline: "deadline" })],
+    ["the deadline inactivity", () => ({ deadline: "inactivity" })],
+  ])("a reply with %s fails the call with PROCESS_OWNERSHIP_FAILED", async (_label, fields) => {
+    const channel = createChannelDouble();
+    for (const [kind, type, result] of asks(channel)) {
+      expect(channel.reply(kind, { type, callId: channel.last(type).callId, ...fields(type) })).toBe(false);
+      await expect(result).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+    }
+  });
+
+  test("a confirm or confirmRun reply with deadline fails the call, because neither is a walk", async () => {
+    const channel = createChannelDouble();
+    const requests: TrustRequest[] = [
+      { type: "confirm", worktreeRoot: REPO, gitDirectory: GIT_DIR, commonDirectory: GIT_DIR, gitSelectedPath: GIT_PATH, fingerprint: "a".repeat(64), persist: true },
+      { type: "confirmRun", worktreeRoot: REPO, submodulePaths: [isWindows ? "C:\\repo\\sub" : "/repo/sub"], programCount: 1, uncheckedCount: 0 },
+    ];
+    for (const request of requests) {
+      const result = channel.runner.trust(request);
+      expect(channel.reply("trust", { type: request.type, callId: channel.last(request.type).callId, deadline: "deadline" })).toBe(false);
+      await expect(result).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+    }
+  });
+});
+
 describe("native runner mutation and trust frames", () => {
   const started = { operationId: id(), repositoryId: id(), kind: "commit", worktreeRoot: REPO, commonDirectory: GIT_DIR } as const;
 

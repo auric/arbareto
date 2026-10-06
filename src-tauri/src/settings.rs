@@ -1352,6 +1352,14 @@ impl Trust {
         identity.map_or(0, |identity| close(&identity))
     }
 
+    /// True when a record has a WSL common-directory identity with this distro GUID (T314 D4).
+    pub fn holds_guid(&self, guid: &str) -> bool {
+        lock(&self.state)
+            .records
+            .iter()
+            .any(|record| record.value["commonIdentity"]["distroGuid"] == guid)
+    }
+
     /// Every record in the handshake form. Each call rereads the folder, so records of other instances also appear.
     pub fn records(&self) -> Vec<Value> {
         let mut state = lock(&self.state);
@@ -2675,6 +2683,35 @@ mod tests {
             ))
         );
         assert_eq!(roots(&trust), [text(&other.root)]);
+    }
+
+    #[test]
+    fn holds_guid_finds_only_a_record_with_a_wsl_identity_of_that_distro() {
+        const DISTRO: &str = "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}";
+        let fixture = Fixture::new();
+        let trust = Trust::open(&fixture.path("trust"));
+        approved(
+            &trust,
+            &confirm(&main_worktree(&fixture, "repo"), FINGERPRINT, true),
+        )
+        .expect("stored");
+        assert!(!trust.holds_guid(DISTRO), "a Windows record");
+        let wsl = main_worktree(&fixture, "wsl");
+        let root = wsl.root.clone();
+        let read = move |path: &Path| {
+            Some(PhysicalIdentity::Wsl(crate::wsl::WslIdentity {
+                guid: DISTRO.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: if path == root { "10" } else { "11" }.to_string(),
+            }))
+        };
+        let confirmed = trust.confirm_with(&confirm(&wsl, FINGERPRINT, true), &read, |_| true);
+        assert!(matches!(confirmed, Confirmed::Approved { record: Some(_) }));
+        assert!(trust.holds_guid(DISTRO), "a WSL record of the distro");
+        assert!(
+            !trust.holds_guid("{00000000-0000-0000-0000-000000000000}"),
+            "another distro"
+        );
     }
 
     #[test]

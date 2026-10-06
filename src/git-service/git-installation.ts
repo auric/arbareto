@@ -193,6 +193,8 @@ async function probeCandidate(
     if (git !== target.executablePath) {
       if (moved) return failure("GIT_UNSUPPORTED");
       const resolved = await runner.resolveGit({ operationId, bootstrapId: target.bootstrapId, executablePath: git });
+      // Contract §5 "Deadline outcomes": a walk deadline gives DEADLINE (T314).
+      if ("stop" in resolved) return failure("DEADLINE");
       return await probeCandidate(runner, { bootstrapId: resolved.bootstrapId, executablePath: git }, operationId, options, selected, true);
     }
     const versionOutput = await runProbe(runner, operationId, context, ["version", "--build-options"], signal);
@@ -204,6 +206,7 @@ async function probeCandidate(
     if (!Array.isArray(configFiles)) return configFiles;
     const gitInstallationId = crypto.randomUUID();
     const reply = await runner.register({ operationId, bootstrapId: target.bootstrapId, gitInstallationId, version, digest, confirm: options.confirm ?? true });
+    if ("stop" in reply) return failure("DEADLINE");
     if (reply.result === "another") return { another: { bootstrapId: reply.bootstrapId, executablePath: reply.executablePath } };
     if (reply.result !== "approved") return { ok: false, canceled: true };
     return {

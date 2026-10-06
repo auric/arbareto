@@ -5,11 +5,12 @@ import type { ProcessContext } from "../contracts/channel";
 import type { RegistrationResult } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { REGISTERED_WORKSPACES } from "../contracts/limits";
-import { DISCOVERY_REMEDIES, discoverRepository, type DiscoveredRepository, type DiscoveryRefusal } from "./discovery";
+import { routeWslPath } from "../contracts/wsl-route";
+import { DISCOVERY_REMEDIES, discoverRepository, isMergedRefusal, type DiscoveredRepository, type DiscoveryRefusal } from "./discovery";
 import type { GitInstallation } from "./git-installation";
-import { RunnerRefusal, type GitRunner } from "./git-runner";
+import { RunnerRefusal, type GitRunner, type WslRunner } from "./git-runner";
 import { IDENTITY_REMEDY, requestIdentities, requestWslIdentities, sameIdentity, type PhysicalIdentity } from "./identity";
-import type { WslGit } from "./wsl";
+import { checkWslProbe, gitChanged, routeRegistration, runWslProbe, type WslGit, type WslProbeTarget } from "./wsl";
 
 // Data-model §2: one registered workspace of this service session.
 export interface Workspace extends DiscoveredRepository {
@@ -70,6 +71,51 @@ export function worktreeKey(identity: PhysicalIdentity): string {
 }
 
 const registered = (w: Workspace): RegistrationOutcome => ({ ok: true, result: { repositoryId: w.repositoryId, generation: w.generation, worktreeKey: w.worktreeKey } });
+
+// Contract §6 "Dismissal": an allowed dismissal goes on to the native confirmation.
+export type DismissalOutcome = { ok: true } | { ok: false; code: ErrorCode; result?: { remedy: { text: string } } };
+const dismissalRefused: DismissalOutcome = { ok: false, code: "STATE_UNKNOWN", result: { remedy: { text: DISCOVERY_REMEDIES.dismissalRefused } } };
+
+// Contract §6 "Dismissal", WSL marker rule and decision W13. Allowed when `wslDistros` does not list the distro of the path,
+// when the §11 probe reports the path `absent`, when discovery call 1 gives the merged refusal, or when the common-directory identity differs from the marker.
+// A dismissal shows no Git confirmation, so discovery runs only with the approved session Git of the distro, unchanged since its probe.
+export async function dismissWslMarker(
+  runner: GitRunner & WslRunner,
+  target: WslProbeTarget,
+  marker: { commonIdentity: PhysicalIdentity },
+  session: WslGit | undefined,
+): Promise<DismissalOutcome> {
+  const { operationId, bootstrapId, signal } = target;
+  const stopped = (code: ErrorCode): DismissalOutcome => (code === "DEADLINE" || code === "CANCELED" ? { ok: false, code } : dismissalRefused);
+  try {
+    const reply = await runner.wslDistros({ operationId, bootstrapId });
+    if ("listed" in reply) {
+      // Contract §11 "Route": a match that ignores letter case also names a listed distro.
+      const path = routeWslPath(reply.path, { listed: reply.listed, registry: reply.keys });
+      const segment = path.kind === "refused" && path.reason === "distro-missing" ? path.distro.toLowerCase() : null;
+      if (segment !== null && !reply.listed.some((name) => name.toLowerCase() === segment)) return { ok: true };
+    }
+    const route = routeRegistration(reply);
+    if ("ok" in route || route.kind === "windows") return dismissalRefused;
+    const probe = await runWslProbe(runner, route, target);
+    if (!probe.ok) return "canceled" in probe ? { ok: false, code: "CANCELED" } : stopped(probe.code);
+    // Contract §11 "Git per distro": the program checks come first, so `absent` counts only when the path rule refuses.
+    const checked = checkWslProbe(route.distro, probe.facts, route.wslExecutable);
+    if (!checked.ok) return checked.code === "UNSUPPORTED_REPOSITORY" && probe.facts.facts.selstat === "absent" ? { ok: true } : dismissalRefused;
+    if (session === undefined || session.guid !== route.guid || session.path !== checked.git.path || gitChanged(session, checked.git)) return dismissalRefused;
+    const { gitInstallationId } = session;
+    const discovered = await discoverRepository(runner, { operationId, bootstrapId, gitInstallationId, gitSelectedPath: session.path, signal, wsl: { distro: route.distro } });
+    if (!discovered.ok) return isMergedRefusal(discovered.refusal) ? { ok: true } : stopped(discovered.refusal.code);
+    const context: ProcessContext = { contextKind: "repositoryDiscovery", bootstrapId, gitInstallationId };
+    const found = await requestWslIdentities(runner, operationId, context, [discovered.repository.commonDirectory], session, signal);
+    if (!found.ok) return "stop" in found ? stopped(found.stop === "deadline" ? "DEADLINE" : "CANCELED") : dismissalRefused;
+    return sameIdentity(found.identities[0]!, marker.commonIdentity) ? dismissalRefused : { ok: true };
+  } catch (error) {
+    if (error instanceof RunnerRefusal) return { ok: false, code: error.code };
+    if (signal.aborted) return { ok: false, code: "CANCELED" };
+    throw error;
+  }
+}
 
 export function createRegistrations({ runner, unfinishedMutation, onRelease, onRegister }: RegistrationOptions) {
   const workspaces = new Map<string, Workspace>();

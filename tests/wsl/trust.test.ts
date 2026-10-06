@@ -76,13 +76,15 @@ describe("WSL trust approval of the selected Git (T212 decision W8)", () => {
   );
 
   wslTest(
-    "a Git path that Windows cannot show refuses approveTrust before the native confirmation",
+    "a Git path that Windows cannot show refuses readTrust with the approveTrust refusal, so no approval is offered",
     NEEDS,
     async (host) => {
       const { runner, s } = setup(host);
       const git = "/opt/a:b/git";
       const repo = seamRepository(host, runner, { config: filterConfig(host), probe: { git } });
-      const refused = await approve(s, await register(s, repo));
+      const w = await register(s, repo);
+      // T318: `readTrust` issues no fingerprint, so `approveTrust` cannot follow. tests/git/trust.test.ts checks that both give one refusal.
+      const refused = await s.response(s.request("readTrust", {}, { repositoryId: w.repositoryId }));
       expect(refused).toMatchObject({
         state: "failed",
         code: "UNSUPPORTED_REPOSITORY",

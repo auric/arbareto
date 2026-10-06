@@ -15,6 +15,8 @@ export const DISCOVERY_REMEDIES = {
   bare: "Open a worktree of it, or clone it",
   administrationFolder: "Open the working folder that contains it",
   unavailable: "Run `git status` in this folder",
+  // Contract §6 "Dismissal": the remedy of a refused marker dismissal.
+  dismissalRefused: "Open this repository and use Refresh.",
 } as const;
 
 // git-show-ref(1) `--exists`: the status for a missing reference.
@@ -191,6 +193,9 @@ export async function discoverRepository(runner: GitRunner, target: DiscoveryTar
     repository: { worktreeRoot, gitDirectory, commonDirectory, indexPath, objectFormat: objectFormat as ObjectFormat, refFormat: refFormat as RefFormat, head },
   };
 }
+
+// Contract §6: only the merged refusal of discovery call 1 carries `outputTail`, so its presence marks a nonzero exit of that call.
+export const isMergedRefusal = (value: DiscoveryRefusal): boolean => value.code === "REPOSITORY_UNAVAILABLE" && value.outputTail !== undefined;
 
 const isBoolean = (value: string | undefined): value is "true" | "false" => value === "true" || value === "false";
 

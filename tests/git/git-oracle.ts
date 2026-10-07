@@ -15,7 +15,7 @@ const CE_INTENT_TO_ADD = 1 << 29;
 const CE_SKIP_WORKTREE = 1 << 30;
 
 // Git in-progress state files (Git `wt-status.c` `wt_status_get_state`), plus the canonical index lock.
-const OPERATION_MARKERS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply", "sequencer", "index.lock"];
+const OPERATION_MARKERS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply", "rebase-apply/applying", "sequencer", "index.lock"];
 
 export interface IndexEntry {
   path: string;

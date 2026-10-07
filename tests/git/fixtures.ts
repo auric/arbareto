@@ -584,7 +584,7 @@ export function buildF10(git: string, name: string, variant: F10Variant): Built 
       const patch = run(r, ["format-patch", "-1", "--stdout", "side"]);
       run(r, ["am", "-q"], { input: Buffer.from(patch), allowExit: [128] });
       normalizeIndex(r);
-      facts.repos.repo = repoFacts(r, { refs, markers: ["rebase-apply/applying"] });
+      facts.repos.repo = repoFacts(r, { refs, markers: ["rebase-apply", "rebase-apply/applying"] });
       break;
     }
     case "revert": {

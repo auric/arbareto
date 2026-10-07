@@ -11,7 +11,7 @@ import { createWorkspaceReader, hasPromisor } from "../../src/git-service/status
 import { createTrust, type ConfigEntry } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
-import { cachedF16Status } from "../windows/f16-status-cache";
+import { cachedF16Status } from "../windows/fixture-cache";
 import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, F16_STATUS_RECORDS, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import type { CallMatch } from "./bun-runner";

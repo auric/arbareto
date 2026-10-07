@@ -18,10 +18,11 @@ import { statusArgs, type ObjectFormat } from "../../src/git-service/commands";
 import { createStatusParser, type StatusParseResult } from "../../src/git-service/status-parser";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
-import { cachedF16Status } from "../windows/f16-status-cache";
+import { cachedF16Status } from "../windows/fixture-cache";
 import { buildF01, buildF02, buildF03, buildF06, buildF10, F16_STATUS_RECORDS, type Built } from "./fixtures";
 import { describeGit } from "./git-binary";
 import { indexEntries } from "./git-oracle";
+import { parseChunks } from "./status-parse-chunks";
 
 printOrigin("../../src/contracts/errors.ts", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -244,11 +245,6 @@ function parse(listing: Uint8Array, cuts: Iterable<number> = [], objectFormat: O
   return parser.end();
 }
 
-function parseChunks(listing: Uint8Array, size: number, objectFormat: ObjectFormat = "sha1"): StatusParseResult {
-  const parser = createStatusParser(objectFormat);
-  for (let at = 0; at < listing.length; at += size) parser.push(listing.subarray(at, Math.min(at + size, listing.length)));
-  return parser.end();
-}
 
 const json = (result: StatusParseResult) => Bun.hash(JSON.stringify(summary(result))).toString(16);
 // A compact record key for large listings.
@@ -801,29 +797,7 @@ describeGit("status parser (T285)", (git) => {
       TIMEOUT_MS,
     );
 
-    test(
-      `one untracked path of 0xff bytes that fills ${LIMITS.STATUS_LISTING_BYTES} bytes parses complete in bounded time`,
-      () => {
-        const head = headersOf("F02");
-        const listing = Buffer.alloc(LIMITS.STATUS_LISTING_BYTES, 0xff);
-        head.copy(listing);
-        listing.write("? ", head.length, "latin1");
-        listing[listing.length - 1] = 0;
-        const pathBytes = listing.length - head.length - 3;
-        const start = performance.now();
-        const result = parseChunks(listing, LIMITS.NATIVE_CHUNK_BYTES);
-        const ms = performance.now() - start;
-        console.log(`FACTS ${TASK} 0xff path of ${pathBytes} bytes: ${Math.round(ms)} ms`);
-        expect(result.state).toBe("complete");
-        if (result.state !== "complete") return;
-        expect(result.records.length).toBe(1);
-        const path = result.records[0]!.path;
-        expect({ bytes: path.bytes.length, every: path.bytes.every((b) => b === 0xff), display: path.display === "\\xff".repeat(pathBytes) }).toEqual({ bytes: pathBytes, every: true, display: true });
-        // ponytail: coarse guard, not a benchmark. The per-byte string build took 3.3 s to 15.8 s, the fix about 0.35 s. Use a timing harness for tighter limits.
-        expect(ms).toBeLessThan(2000);
-      },
-      TIMEOUT_MS,
-    );
+    // The 0xff path case asserts a parse time, so it runs in the serial step from `tests/git/status-parser-time.test.ts` (T324).
 
     test(
       `the first reached bound wins: ${BYTES_BOUND} before ${RECORDS_BOUND}`,

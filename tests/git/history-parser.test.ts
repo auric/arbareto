@@ -15,7 +15,8 @@ import type { Completeness } from "../../src/git-service/snapshot";
 import { parseCommitObjects, parseTraversal } from "../../src/git-service/history-parser";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
-import { buildF01, buildF16History, buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
+import { cachedF16History } from "../windows/fixture-cache";
+import { buildF01, buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
 import { GIT } from "./git-binary";
 import { caseTest } from "./service-harness";
 
@@ -207,7 +208,7 @@ describe("rev-list --parents rows (contract §3 \"HistoryPage result\")", () => 
         : `F16 ${variant}: the traversal gives limited with reason ${reason}, and the rows are the oracle rows before the first row that passes the bound`,
       [],
       () => {
-        const built = buildF16History(gitPath(), `t286-rows-f16-${variant}`, variant);
+        const built = cachedF16History(gitPath(), `t286-rows-f16-${variant}`, variant).built;
         const repo = repoOf(built);
         const format = formatOf(repo);
         const tip = headOf(repo);
@@ -296,7 +297,7 @@ describe("rev-list --parents rows (contract §3 \"HistoryPage result\")", () => 
     `F16 parents-65: one non-hex parent in the row with ${HISTORY_PARENTS_PER_COMMIT + 1} parents gives limited with reason HISTORY_PARENTS_PER_COMMIT, not a malformed result`,
     [],
     () => {
-      const repo = repoOf(buildF16History(gitPath(), "t286-rows-parents-non-hex", "parents-65"));
+      const repo = repoOf(cachedF16History(gitPath(), "t286-rows-parents-non-hex", "parents-65").built);
       const format = formatOf(repo);
       const tip = headOf(repo);
       const all = lines(latin1(revList(repo, tip, format)));
@@ -411,7 +412,7 @@ describe("cat-file --batch-command -Z framing by object type and byte length (re
     traversal: null,
   };
   for (const [variant, bound] of Object.entries(OBJECT_BOUNDS) as [F16HistoryVariant, HistoryBound | null][]) {
-    objectCase(`F16 ${variant}`, () => buildF16History(gitPath(), `t286-objects-f16-${variant}`, variant), bound);
+    objectCase(`F16 ${variant}`, () => cachedF16History(gitPath(), `t286-objects-f16-${variant}`, variant).built, bound);
   }
 
   caseTest(
@@ -556,7 +557,8 @@ describe(`the ${HISTORY_COMMIT_OBJECT_BYTES}-byte object bound applies before th
       name,
       [],
       () => {
-        const built = buildF16History(gitPath(), `t286-bound-${name.replace(/[^a-z0-9]+/gi, "-").slice(0, 48)}`, variant);
+        // Two names share the first 48 characters, so the hash keeps each folder distinct.
+        const built = cachedF16History(gitPath(), `t286-bound-${name.replace(/[^a-z0-9]+/gi, "-").slice(0, 48)}-${Bun.hash(name).toString(36)}`, variant).built;
         const repo = repoOf(built);
         const format = formatOf(repo);
         const commits = built.facts.notes.commits as Record<string, string>;

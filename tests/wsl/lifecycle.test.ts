@@ -21,10 +21,11 @@ useFixtureRoot();
 useWslFolder();
 
 let runners: BunRunner[] = [];
+// Each dispose ends the WSL scopes of the runner through `wsl.exe`, so the hook takes the case bound.
 afterEach(async () => {
   for (const runner of runners) await runner.dispose();
   runners = [];
-});
+}, CASE_TIMEOUT_MS);
 
 function setup(host: WslHost): { runner: BunRunner; s: WslSession } {
   const runner = createBunRunner({ git: GIT ?? "git", directory: fixtureDir(`runner-${crypto.randomUUID()}`), environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });

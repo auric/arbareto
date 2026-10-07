@@ -45,8 +45,12 @@ if (problems.length > 0) {
 }
 
 const selected = mode === "full" ? discovered : discovered.filter(inFast);
+// Each worker runs Git children, and one child keeps one physical core busy. The T324 host has 8 physical cores (`Win32_Processor.NumberOfCores`).
+// With 16 workers, WSL reads passed the 30 s Git process deadline (research.md "Test run time"). `ARBARETO_TEST_WORKERS` sets another count.
+const workers = Number(process.env.ARBARETO_TEST_WORKERS ?? "8");
+if (!Number.isInteger(workers) || workers < 1) throw new Error(`ARBARETO_TEST_WORKERS must be a positive integer: ${process.env.ARBARETO_TEST_WORKERS}`);
 const steps = [
-  { name: "parallel", files: selected.filter((f) => groups.parallel.includes(f)), flags: ["--parallel"] },
+  { name: "parallel", files: selected.filter((f) => groups.parallel.includes(f)), flags: [`--parallel=${workers}`] },
   { name: "serial", files: selected.filter((f) => serial.includes(f)), flags: [] },
 ];
 console.log(`RUN ${mode}: ${selected.length} of ${discovered.length} discovered files`);

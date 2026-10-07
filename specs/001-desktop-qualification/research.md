@@ -930,16 +930,29 @@ The 25 slowest cases:
 - `tests/git/read-lifecycle.test.ts`: `DEADLINE_MS` and `RECONCILIATION_TARGET_MS` bounds.
 - `tests/git/bun-runner.test.ts`: call `durationMs` bounds and `LINGER_MS - 1000` bounds.
 - `tests/git/file-facts.test.ts`: elapsed time below `FIFO_BOUND_MS`.
-- `tests/git/status-parser.test.ts`: one parse below 2000 ms.
+- `tests/git/status-parser-time.test.ts`: one parse below 2000 ms. The other `status-parser.test.ts` cases run in the parallel step.
 - `tests/wsl/lifecycle.test.ts`: one close below 10,000 ms.
-- `tests/git/fixtures.test.ts`: it measures and prints each build time.
 - A wait loop that throws after a deadline is a bound, not a measurement. Such files stay in the parallel step.
+- The `tests/git/fixtures.test.ts` build-time print had no reader in research.md, plan.md, or tasks.md. Round 2 removed it and split the file by fixture family into `tests/git/fixtures-*.test.ts`.
 
 **Two-step run, 2026-10-07.** `bun run test:all` at `d3022b0` plus the T324 changes, with warm caches: 50 files, 2408 tests, 2356 pass, 21 skip, 31 todo, 0 fail. Each file has the baseline test count. The parallel step took 356 s for 41 files, and the serial step took 2385 s for 9 files. Wall time: 2741 s, against 3648 s for the baseline. The lowest free memory was 6.7 GiB. `tests/git/fixtures.test.ts` (1402 s) and `tests/git/poll-cost.test.ts` (596 s) set the serial time.
 
-- The F16 status fixture comes from the performance cache in `tests/windows/f16-status-cache.ts`. A warm copy takes about 0.14 s, against about 29 s for a build. The `fixtures.test.ts` check still builds one fresh copy and compares it with the cached copy, raw index bytes included.
+- The F16 status fixture comes from the performance cache, now in `tests/windows/fixture-cache.ts`. A warm copy takes about 0.14 s, against about 29 s for a build. The F16 fixture check still builds one fresh copy and compares it with the cached copy, raw index bytes included.
 - The T194 staging inputs and the T220 blob stay uncached. Generation takes 256 ms for 512 MiB and 137 ms for 300 MB. A copy takes 223 ms and 86 ms, and a SHA-256 reuse check takes 421 ms and 230 ms. F30 remotes also record absolute URLs, so a copied repository refers to the original folder.
 - A change of `tests/windows/perf-fixtures.ts` changes the M and L builder digest. The next run then rebuilds M and L, which adds about 22 minutes.
+
+**Two-step run, round 2, 2026-10-07.** `bun run test:all` at `d3b9aad` plus the round 2 changes, with warm caches and 8 workers: 61 files, 2407 tests, 2355 pass, 21 skip, 31 todo, 0 fail. The parallel step took 632 s for 53 files, and the serial step took 887 s for 8 files. Wall time: 1520 s, against 3648 s for the baseline. The lowest free memory was 6.6 GiB. `tests/git/poll-cost.test.ts` (587 s) sets most of the serial time.
+
+- Round 2 ran the `core.filemode` check as an `afterAll` hook of each fixture file. A hook counts as no test, so that run held 2407 tests.
+
+**Two-step run, round 3, 2026-10-08.** The same command and tree, with the `core.filemode` check as the last named case of each fixture file: 61 files, 2418 tests, 2366 pass, 21 skip, 31 todo, 0 fail. The parallel step took 628 s for 53 files, and the serial step took 887 s for 8 files. Wall time: 1516 s, against 3648 s for the baseline. The lowest free memory was 5.1 GiB. `tests/wsl/registration.test.ts` on `Ubuntu-24.04`: 32 pass, 4 skip, 0 fail.
+
+- Each of the 2408 baseline cases maps by name to one case of the two steps. 12 names hold random IDs, so they match after the hex and non-ASCII characters are masked. The 11 fixture files add 10 `core.filemode` cases, because the one baseline case maps to one of them. So the total is 2408 + 10 = 2418.
+- The fixture files hold 145 tests: 134 builder cases and 11 `core.filemode` cases. `status-parser.test.ts` (122) and `status-parser-time.test.ts` (1) hold the 123 baseline tests.
+- Fixture file times in the 8-worker parallel step: f28b 285 s, worktree 268 s, f30 251 s, f29a 251 s, f16 247 s, repos 211 s, f28a 204 s, f29b 203 s, f27a 200 s, state 152 s, f27b 146 s.
+- With 16 workers, the parallel step took 645 s, and two `tests/wsl/reads.test.ts` cases failed. A WSL `readHistory` passed the 30 s `GIT_PROCESS_DEADLINE_MS`, and a runner dispose passed the 5 s default hook bound. The host has 8 physical cores, so `tests/run.ts` starts 8 workers. `ARBARETO_TEST_WORKERS` sets another count.
+- The F16 history fixture also comes from the cache. A fresh build takes 653 to 757 ms. A cached copy takes 28 to 122 ms for the digest check and 40 to 73 ms for the copy.
+- `bun run test:fast` runs 24 files and 1763 tests in the parallel step in 191 s. `tests/git/history-parser.test.ts` alone takes 191 s.
 
 ## R7. Tauri and compiled Bun
 
@@ -1562,7 +1575,7 @@ Skips. Each capability skip is `unverified`:
 
 - The run also counted 25 `todo` tests. They are not capability skips.
 - The F10 observations print with the tag `T081`, not `F10`. They come from the F10 flags test at `tests/git/snapshot.test.ts:325`, where `TASK` is `T081`. The three `OBSERVATION T081` lines in the block below hold them. The F05 and F07 records are also in that block.
-- F15 prints no `OBSERVATION` line. Its batch 2 results are passing tests. A plain folder gives the merged `REPOSITORY_UNAVAILABLE` refusal (T310), through discovery and through `chooseRepository` (`tests/git/discovery.test.ts:198`, `:472`). A removed path gives the `UNKNOWN_TARGET` refusal of the context check, not the merged refusal (`discovery.test.ts:491`). Git's ownership refusal under `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` and all eight hostile names give the merged refusal, and no marker file appears (`discovery.test.ts:162`, `:178`). So the service no longer classifies the dubious-ownership stderr (R5 "Heuristics review (2026-10-05)", T310). The F15 fixture check passes (`tests/git/fixtures.test.ts:156`). The subcases `other-account-owner` and `disposable-volume` stay `unverified` (table above).
+- F15 prints no `OBSERVATION` line. Its batch 2 results are passing tests. A plain folder gives the merged `REPOSITORY_UNAVAILABLE` refusal (T310), through discovery and through `chooseRepository` (`tests/git/discovery.test.ts:198`, `:472`). A removed path gives the `UNKNOWN_TARGET` refusal of the context check, not the merged refusal (`discovery.test.ts:491`). Git's ownership refusal under `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` and all eight hostile names give the merged refusal, and no marker file appears (`discovery.test.ts:162`, `:178`). So the service no longer classifies the dubious-ownership stderr (R5 "Heuristics review (2026-10-05)", T310). The F15 fixture check passes (`tests/git/fixtures-repos.test.ts:40`). The subcases `other-account-owner` and `disposable-volume` stay `unverified` (table above).
 
 Control mutation, 2026-10-06, worktree `D:\dev\rozvio-l1` at main `9a76a90`:
 

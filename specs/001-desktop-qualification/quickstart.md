@@ -53,13 +53,15 @@ Run them in this order, as T149 does:
 bun install --frozen-lockfile
 bun run build:notices
 bunx --bun tsc --noEmit
-bun test tests/contracts tests/git
+bun run test:all
 bun run build
 cargo test --locked --manifest-path src-tauri/Cargo.toml -- --show-output
 cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked
 ```
 
 `build:notices` runs before `tsc`, because the About window imports the generated `notices.json`. `bun run build` runs before `cargo test`, because Tauri reads `frontendDist` and `externalBin` at compile time (T065). Before T130 exists, skip `build:notices`. T065 runs `bun run build` before the tests, because `tests/windows` needs the sidecar.
+
+`bun run test:all` also runs `tests/wsl`. Without `ARBARETO_WSL_DISTRO`, those tests use the default WSL distro. Each case skips and names the missing capability when WSL, a WSL2 distro, or a needed distro capability is absent.
 
 `bun run build` runs `build:notices`, then `bunx --bun vite build`, then these two service steps:
 

@@ -37,13 +37,7 @@
               "maximum": 536870912
             },
             "environmentPolicy": {
-              "type": "string",
-              "enum": [
-                "probe",
-                "read",
-                "mutation",
-                "network"
-              ]
+              "$ref": "#/definitions/EnvironmentPolicy"
             },
             "transactionId": {
               "type": "string",
@@ -161,13 +155,7 @@
               "maximum": 536870912
             },
             "environmentPolicy": {
-              "type": "string",
-              "enum": [
-                "probe",
-                "read",
-                "mutation",
-                "network"
-              ]
+              "$ref": "#/definitions/EnvironmentPolicy"
             },
             "transactionId": {
               "type": "string",
@@ -291,13 +279,7 @@
               "maximum": 536870912
             },
             "environmentPolicy": {
-              "type": "string",
-              "enum": [
-                "probe",
-                "read",
-                "mutation",
-                "network"
-              ]
+              "$ref": "#/definitions/EnvironmentPolicy"
             },
             "transactionId": {
               "type": "string",
@@ -865,6 +847,15 @@
     }
   ],
   "definitions": {
+    "EnvironmentPolicy": {
+      "type": "string",
+      "enum": [
+        "probe",
+        "read",
+        "mutation",
+        "network"
+      ]
+    },
     "Input": {
       "type": "object",
       "properties": {

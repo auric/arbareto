@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use windows::Win32::Foundation::{ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW,
@@ -55,7 +55,7 @@ pub const PERL: &str = "/usr/bin/perl";
 pub const RETAINED_BYTES: usize = 64 * 1024;
 /// Contract §11 "Distro checks": the list calls use the §5 probe deadline. The identity probes and the anchor answer use it too.
 const PROBE_DEADLINE: Duration = Duration::from_millis(BOOTSTRAP_DEADLINE_MS);
-const INVALID: Code = "INVALID_REQUEST";
+const INVALID: Code = Code::InvalidRequest;
 /// The registration key of the WSL distros (contract §11 "Distro checks").
 const LXSS: &str = r"Software\Microsoft\Windows\CurrentVersion\Lxss";
 
@@ -495,12 +495,10 @@ pub struct WslIdentity {
 }
 
 impl WslIdentity {
+    /// The identity reply `{"distroGuid","fileSystemId","inode"}` (gaps.md W2).
+    #[cfg(test)]
     pub fn reply(&self) -> Value {
-        json!({
-            "distroGuid": self.guid,
-            "fileSystemId": self.file_system_id,
-            "inode": self.inode,
-        })
+        crate::bootstrap::PhysicalIdentity::Wsl(self.clone()).reply()
     }
 
     /// The identity text `<distroGuid>:<fileSystemId>:<inode>`.
@@ -694,8 +692,11 @@ pub struct GitIdentity {
 }
 
 /// A Git file without a stable file-system ID gives `GIT_UNSUPPORTED` with reason `no-fs-uuid`.
-pub fn git_identity(file_system: &str, file: &str) -> Result<GitIdentity, (Code, &'static str)> {
-    const REFUSED: (Code, &str) = ("GIT_UNSUPPORTED", "no-fs-uuid");
+pub fn git_identity(
+    file_system: &str,
+    file: &str,
+) -> Result<GitIdentity, (&'static str, &'static str)> {
+    const REFUSED: (&str, &str) = ("GIT_UNSUPPORTED", "no-fs-uuid");
     let (kind, id) = file_system
         .split_once(':')
         .filter(|(kind, id)| is_hex(kind) && is_hex(id))
@@ -2044,7 +2045,7 @@ mod tests {
                     Stdin::Closed
                 )
                 .err(),
-                Some("INVALID_REQUEST")
+                Some(INVALID)
             );
         }
     }
@@ -2133,7 +2134,7 @@ mod tests {
                     Stdin::Closed
                 )
                 .err(),
-                Some("INVALID_REQUEST")
+                Some(INVALID)
             );
         }
     }
@@ -2208,16 +2209,9 @@ mod tests {
             "--all",
             "",
         ] {
-            assert_eq!(
-                unit_name(operation, 1),
-                Err("INVALID_REQUEST"),
-                "{operation:?}"
-            );
+            assert_eq!(unit_name(operation, 1), Err(INVALID), "{operation:?}");
             assert!(
-                matches!(
-                    anchor_command(&inst, operation, &base()),
-                    Err("INVALID_REQUEST")
-                ),
+                matches!(anchor_command(&inst, operation, &base()), Err(INVALID)),
                 "{operation:?}"
             );
             let host = FakeHost::new(Vec::new(), Vec::new());
@@ -2780,7 +2774,7 @@ mod tests {
                     Stdin::Closed
                 )
                 .err(),
-                Some("INVALID_REQUEST"),
+                Some(INVALID),
                 "{directory:?}"
             );
             let host = FakeHost::new(Vec::new(), Vec::new());

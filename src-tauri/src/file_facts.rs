@@ -43,7 +43,7 @@ use crate::schema::process_request::{FileFacts, FileFactsFilesItem, FileFactsFil
 use crate::schema::reply::{digest as digest_text, error_fact, last_write, link_fact};
 use crate::settings::{hex, sha256};
 
-const INVALID: Code = "INVALID_REQUEST";
+const INVALID: Code = Code::InvalidRequest;
 /// Contract §5 "File facts".
 const ENTRIES: usize = 64;
 const COMPONENT_UNITS: usize = 255;

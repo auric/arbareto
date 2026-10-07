@@ -187,7 +187,8 @@ export const decodedBytes = (data: string) => Math.floor((data.length * 3) / 4) 
 const InlineInput = Base64.refine((data) => decodedBytes(data) >= 1 && decodedBytes(data) <= INLINE_PROCESS_INPUT_BYTES);
 
 const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network"] as const;
-export const EnvironmentPolicy = z.enum(ENVIRONMENT_POLICIES);
+// The `id` gives the shell one generated `EnvironmentPolicy` type for the three `run` context kinds.
+export const EnvironmentPolicy = z.enum(ENVIRONMENT_POLICIES).meta({ id: "EnvironmentPolicy" });
 
 const call = { callId: Identifier };
 const run = {
@@ -284,56 +285,45 @@ export const WslRequest = z.union([WslDistrosFrame, WslProbeFrame, RegisterWslFr
 // typify tags a union by `type` only when each branch has its own `type` value (research.md "T323 typify gate").
 // So each root is a `z.xor` with one titled group union for each `type` value that has more than one shape.
 // The shell reads the `type` value first and then parses its group type.
-const group = <T extends z.ZodType>(title: string, schema: T) => schema.meta({ title });
 // typify names an object branch of a union only when the branch is in `definitions`. An `id` puts it there.
 const named = <T extends z.ZodType>(title: string, schema: T) => schema.meta({ id: title, title });
 
 export const ProcessRequest = z.xor([
-  group(
-    "RunGroup",
-    z.union([
-      z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
-      z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
-      z.strictObject({ ...run, ...REGISTERED }).meta({ title: "RunRegistered" }),
-    ]),
-  ),
+  z.union([
+    z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
+    z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
+    z.strictObject({ ...run, ...REGISTERED }).meta({ title: "RunRegistered" }),
+  ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),
-  group(
-    "IdentityGroup",
-    z.union([
-      z.strictObject({ ...identity, ...GIT_PROBE }).meta({ title: "IdentityGitProbe" }),
-      z.strictObject({ ...identity, ...DISCOVERY }).meta({ title: "IdentityDiscovery" }),
-      z.strictObject({ ...identity, ...REGISTERED }).meta({ title: "IdentityRegistered" }),
-    ]),
-  ),
+  z.union([
+    z.strictObject({ ...identity, ...GIT_PROBE }).meta({ title: "IdentityGitProbe" }),
+    z.strictObject({ ...identity, ...DISCOVERY }).meta({ title: "IdentityDiscovery" }),
+    z.strictObject({ ...identity, ...REGISTERED }).meta({ title: "IdentityRegistered" }),
+  ]).meta({ title: "IdentityGroup" }),
   named("FileFacts", z.strictObject({ ...fileFacts, ...REGISTERED })),
   named("LingeringCount", z.strictObject({ type: z.literal("lingeringCount"), ...call, operationId: Identifier, commonDirectory: ChannelPath })),
-  group(
-    "RegisterGroup",
-    z.union([
-      z.strictObject({ type: z.literal("register"), ...call, ...RegisterGitCall.shape }).meta({ title: "RegisterGit" }),
-      z.strictObject({ type: z.literal("register"), ...call, ...RegisterRepositoryCall.shape }).meta({ title: "RegisterRepository" }),
-      RegisterWslFrame,
-    ]),
-  ),
+  z.union([
+    z.strictObject({ type: z.literal("register"), ...call, ...RegisterGitCall.shape }).meta({ title: "RegisterGit" }),
+    z.strictObject({ type: z.literal("register"), ...call, ...RegisterRepositoryCall.shape }).meta({ title: "RegisterRepository" }),
+    RegisterWslFrame,
+  ]).meta({ title: "RegisterGroup" }),
   named("ResolveGit", z.strictObject({ type: z.literal("resolveGit"), ...call, ...ResolveGitCall.shape })),
   WslDistrosFrame,
   WslProbeFrame,
-  group(
-    "ReleaseGroup",
-    z.union([
-      z.strictObject({ type: z.literal("release"), repositoryId: Identifier }).meta({ title: "ReleaseRepositoryFrame" }),
-      z.strictObject({ type: z.literal("release"), gitInstallationId: Identifier }).meta({ title: "ReleaseGitFrame" }),
-    ]),
-  ),
+  z.union([
+    z.strictObject({ type: z.literal("release"), repositoryId: Identifier }).meta({ title: "ReleaseRepositoryFrame" }),
+    z.strictObject({ type: z.literal("release"), gitInstallationId: Identifier }).meta({ title: "ReleaseGitFrame" }),
+  ]).meta({ title: "ReleaseGroup" }),
   named("CloseJob", z.strictObject({ type: z.literal("closeJob"), operationId: Identifier })),
 ]);
 
 // Contract §6 "Process replies": the `refused` codes. The service refuses its own invalid request with INVALID_REQUEST.
 export const REFUSED_CODES = ["INVALID_REQUEST", "UNKNOWN_TARGET", "GIT_CHANGED", "PROCESS_OWNERSHIP_FAILED"] as const;
 export const Refused = z.strictObject({ type: z.literal("refused"), ...call, code: z.enum(REFUSED_CODES) }).meta({ title: "Refused" });
-export const OutputReply = z.strictObject({ type: z.literal("output"), ...call, stream: z.enum(["stdout", "stderr"]), data: Base64 }).meta({ title: "Output" });
+export const OutputReply = z.strictObject({ type: z.literal("output"), ...call, stream: z.enum(["stdout", "stderr"]), data: Base64 })
+  // The `id` gives the shell a named `Output` struct. The shell checks its hand-built `output` reply against it in a test.
+  .meta({ id: "Output", title: "Output" });
 export const ActivityReply = z.strictObject({ type: z.literal("activity"), ...call, state: z.enum(["stalled", "active"]) }).meta({ title: "Activity" });
 export const InputWrittenReply = z.strictObject({ type: z.literal("inputWritten"), ...call }).meta({ title: "InputWritten" });
 export const ExitReply = z
@@ -417,12 +407,12 @@ export const ProcessReply = z.xor([
   InputWrittenReply,
   ExitReply,
   Refused,
-  group("IdentityGroup", IdentityListReply),
-  group("LingeringCountGroup", LingeringCountReply),
-  group("RegisterGroup", RegisterReply),
-  group("ResolveGitGroup", ResolveGitReply),
-  group("FileFactsGroup", FileFactsReply),
-  group("WslDistrosGroup", WslDistrosReply),
+  IdentityListReply.meta({ title: "IdentityGroup" }),
+  LingeringCountReply.meta({ title: "LingeringCountGroup" }),
+  RegisterReply.meta({ title: "RegisterGroup" }),
+  ResolveGitReply.meta({ title: "ResolveGitGroup" }),
+  FileFactsReply.meta({ title: "FileFactsGroup" }),
+  WslDistrosReply.meta({ title: "WslDistrosGroup" }),
 ]);
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
@@ -452,7 +442,7 @@ export const StartedReply = z.union([
   z.strictObject({ ...started, failure: z.enum(MARKER_FAILURES), folder: ChannelPath }).meta({ title: "StartedFailure" }),
   z.strictObject({ type: z.literal("started"), ...walkDeadline }).meta({ title: "StartedDeadline" }),
 ]);
-export const MutationReply = z.xor([group("StartedGroup", StartedReply), Refused]);
+export const MutationReply = z.xor([StartedReply.meta({ title: "StartedGroup" }), Refused]);
 
 // ---- `trust` frames (contract §7 "Trust approval store") ----
 
@@ -507,4 +497,4 @@ export const RevokeReply = z.union([
   z.strictObject({ ...reply("revoke"), endedProcesses: Count }).meta({ title: "RevokeReply" }),
   z.strictObject({ type: z.literal("revoke"), ...walkDeadline }).meta({ title: "RevokeDeadline" }),
 ]);
-export const TrustReply = z.xor([group("ConfirmGroup", ConfirmReply), ConfirmRunReply, group("RevokeGroup", RevokeReply), Refused]);
+export const TrustReply = z.xor([ConfirmReply.meta({ title: "ConfirmGroup" }), ConfirmRunReply, RevokeReply.meta({ title: "RevokeGroup" }), Refused]);

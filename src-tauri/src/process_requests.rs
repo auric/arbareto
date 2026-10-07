@@ -31,7 +31,7 @@ use crate::file_facts;
 use crate::git_env::child_environment;
 use crate::jobs::Supervisor;
 use crate::schema::process_reply::{ExitDeadline, OutputStream, RegisterResultResult};
-use crate::schema::process_request as frame;
+use crate::schema::process_request::{self as frame, EnvironmentPolicy};
 use crate::schema::{self, reply, typed};
 use crate::settings::SavedWslGit;
 use crate::spawn::{Input, SpawnRequest, command_line, spawn};
@@ -69,11 +69,12 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 // ponytail: a silent child costs one pipe peek per stream every 10 ms. Blocking reads with CancelSynchronousIo remove it if T167 measures the wakeups.
 const POLL: Duration = Duration::from_millis(10);
 
-const INVALID: &str = "INVALID_REQUEST";
-const UNKNOWN: &str = "UNKNOWN_TARGET";
-const OWNERSHIP: &str = "PROCESS_OWNERSHIP_FAILED";
+const INVALID: Code = Code::InvalidRequest;
+const UNKNOWN: Code = Code::UnknownTarget;
+const OWNERSHIP: Code = Code::ProcessOwnershipFailed;
 
-pub(crate) type Code = &'static str;
+/// A `refused` code of a `process` frame (contract §6 "Process replies").
+pub(crate) type Code = schema::process_reply::RefusedCode;
 
 /// Writes one frame body to the service. A queued chunk leaves its queue when this call returns.
 pub type ReplySink = Arc<dyn Fn(String) + Send + Sync>;
@@ -631,16 +632,18 @@ impl ProcessRequests {
     fn dispatch(&self, request: &Value, call_id: Option<&str>) -> Result<(), Code> {
         let call = || call_id.ok_or(INVALID);
         match request.get("type").and_then(Value::as_str) {
-            Some("run") => self.run(&typed(request)?, call()?),
-            Some("input") => self.input(&typed(request)?),
-            Some("cancel") => self.cancel(&typed(request)?),
-            Some("identity") => self.identity(&typed(request)?, call()?),
-            Some("fileFacts") => self.file_facts(&typed(request)?, call()?),
-            Some("lingeringCount") => self.lingering_count(&typed(request)?, call()?),
-            Some("register") => self.register(&typed(request)?, call()?),
-            Some("resolveGit") => self.resolve_git(&typed(request)?, call()?),
-            Some("release") => self.release(&typed(request)?),
-            Some("closeJob") => self.close_job(&typed(request)?),
+            Some("run") => self.run(&typed(request).ok_or(INVALID)?, call()?),
+            Some("input") => self.input(request),
+            Some("cancel") => self.cancel(&typed(request).ok_or(INVALID)?),
+            Some("identity") => self.identity(&typed(request).ok_or(INVALID)?, call()?),
+            Some("fileFacts") => self.file_facts(&typed(request).ok_or(INVALID)?, call()?),
+            Some("lingeringCount") => {
+                self.lingering_count(&typed(request).ok_or(INVALID)?, call()?)
+            }
+            Some("register") => self.register(&typed(request).ok_or(INVALID)?, call()?),
+            Some("resolveGit") => self.resolve_git(&typed(request).ok_or(INVALID)?, call()?),
+            Some("release") => self.release(&typed(request).ok_or(INVALID)?),
+            Some("closeJob") => self.close_job(&typed(request).ok_or(INVALID)?),
             Some("wslDistros") => self.wsl_distros(request, call()?),
             Some("wslProbe") => self.wsl_probe(request, call()?),
             _ => Err(INVALID),
@@ -697,7 +700,7 @@ impl ProcessRequests {
                     } => (
                         operation_id.as_str(),
                         arguments.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-                        environment_policy.to_string(),
+                        *environment_policy,
                         match limits {
                             frame::$limits::DeadlineLimits { deadline_ms, stall_ms } => {
                                 Some((deadline_ms.get(), *stall_ms))
@@ -717,11 +720,14 @@ impl ProcessRequests {
             RepositoryDiscovery(RunDiscoveryLimits),
             RegisteredOperation(RunRegisteredLimits)
         );
-        let policy = policy.as_str();
+        let mutation = matches!(policy, EnvironmentPolicy::Mutation);
         // `network` waits for its inactivity and ceiling limits (T228).
         let policy_fits = match kind {
-            Kind::Bootstrap(_) => policy == "probe",
-            Kind::Registered => matches!(policy, "read" | "mutation"),
+            Kind::Bootstrap(_) => matches!(policy, EnvironmentPolicy::Probe),
+            Kind::Registered => matches!(
+                policy,
+                EnvironmentPolicy::Read | EnvironmentPolicy::Mutation
+            ),
         };
         if !policy_fits {
             return Err(INVALID);
@@ -740,7 +746,7 @@ impl ProcessRequests {
         };
         let index_file = match (transaction, index_file) {
             (false, None) => None,
-            (true, Some(file)) if policy == "mutation" => Some(native_path(file)?),
+            (true, Some(file)) if mutation => Some(native_path(file)?),
             _ => return Err(INVALID),
         };
 
@@ -750,7 +756,7 @@ impl ProcessRequests {
         }
         check_active(&state, operation_id)?;
         // The marker and the mutex exist before the first side effect (contract §6 "Recovery markers").
-        if policy == "mutation" && !state.started.contains(operation_id) {
+        if mutation && !state.started.contains(operation_id) {
             return Err(INVALID);
         }
         let target = self.target(&mut state, ids, kind, operation_id)?;
@@ -785,11 +791,13 @@ impl ProcessRequests {
             None => {
                 let mut full = self.config.argument_prefix.clone();
                 full.extend(arguments);
+                // `git_env` fails only with `INVALID_REQUEST`. It keys its policies by the contract name.
                 let environment = child_environment(
-                    policy,
+                    &policy.to_string(),
                     &self.config.base_environment,
                     index_file.as_deref(),
-                )?;
+                )
+                .map_err(|_| INVALID)?;
                 (None, full, environment)
             }
         };
@@ -816,7 +824,6 @@ impl ProcessRequests {
         });
         let generation = self.current();
         let (call, operation) = (call_id.to_string(), operation_id.to_string());
-        let mutation = policy == "mutation";
         let closer = Arc::clone(&me);
         let close_operation = operation.clone();
         self.spawn_walk(
@@ -1032,7 +1039,9 @@ impl ProcessRequests {
             self.contexts.revalidate(bootstrap_id, now)?;
         }
         match target.git_identity {
-            Some(identity) if read_identity(&target.program) != Ok(identity) => Err("GIT_CHANGED"),
+            Some(identity) if read_identity(&target.program) != Ok(identity) => {
+                Err(Code::GitChanged)
+            }
             _ => Ok(()),
         }
     }
@@ -1072,9 +1081,20 @@ impl ProcessRequests {
         });
     }
 
-    fn input(&self, request: &frame::Input) -> Result<(), Code> {
-        let data = chunk(&request.data, CHUNK_BYTES)?;
-        let call_id = request.call_id.as_str();
+    /// Read without `frame::Input`: its base64 pattern check costs about 1 ms for each 64 KiB chunk on the frame reader.
+    /// `dispatch` read `type`. So the three keys, the identifier rule, and the strict decode of `chunk` refuse each value outside `Input`.
+    fn input(&self, request: &Value) -> Result<(), Code> {
+        let fields = request
+            .as_object()
+            .filter(|fields| fields.len() == 3)
+            .ok_or(INVALID)?;
+        let data = fields.get("data").and_then(Value::as_str).ok_or(INVALID)?;
+        let data = chunk(data, CHUNK_BYTES)?;
+        let call_id = fields
+            .get("callId")
+            .and_then(Value::as_str)
+            .filter(|id| is_identifier(id))
+            .ok_or(INVALID)?;
         let mut state = self.state();
         // After `exit`, the shell drops each `input` of that call.
         let Some(call) = state.calls.get_mut(call_id) else {
@@ -1728,16 +1748,16 @@ impl ProcessRequests {
         operation_id: &str,
         installation: &wsl::Installation,
         directory: &str,
-        policy: &str,
+        policy: EnvironmentPolicy,
         index_file: Option<&Path>,
         arguments: &[String],
         input: &RunInput,
     ) -> Result<wsl::Command, Code> {
         let mode = match policy {
-            "probe" => wsl::Mode::Probe,
-            "read" => wsl::Mode::Read,
-            "mutation" => wsl::Mode::Mutation,
-            _ => return Err(INVALID),
+            EnvironmentPolicy::Probe => wsl::Mode::Probe,
+            EnvironmentPolicy::Read => wsl::Mode::Read,
+            EnvironmentPolicy::Mutation => wsl::Mode::Mutation,
+            EnvironmentPolicy::Network => return Err(INVALID),
         };
         let index = index_file
             .map(|file| wsl::linux_path(file, &installation.distro).ok_or(INVALID))
@@ -3290,6 +3310,36 @@ pub(crate) mod tests {
 
     // ---- Field validation (contract §6 "Process fields" and "Channel frames") ----
 
+    /// `input` frames skip `frame::Input` (T323). The hand read accepts the frame that the generated type accepts.
+    /// It refuses a value that the generated type refuses. An unknown call drops an accepted chunk without a reply.
+    #[test]
+    fn the_hand_read_of_an_input_frame_agrees_with_its_generated_type() {
+        let harness = Harness::child();
+        let call = uuid();
+        let frame = |data: Value| json!({ "type": "input", "callId": call, "data": data });
+        let accepted = frame(json!(encode(&vec![b'i'; CHUNK_BYTES])));
+        assert!(typed::<frame::Input>(&accepted).is_some());
+        assert_eq!(harness.requests.dispatch(&accepted, Some(&call)), Ok(()));
+        let mut extra = frame(json!(encode(b"x")));
+        extra["extra"] = json!(1);
+        let mut bad_call = frame(json!(encode(b"x")));
+        bad_call["callId"] = json!("call-1");
+        for refused in [
+            frame(json!("***")),
+            frame(json!("abc")),
+            frame(json!(5)),
+            extra,
+            bad_call,
+        ] {
+            assert!(typed::<frame::Input>(&refused).is_none(), "{refused}");
+            assert_eq!(
+                harness.requests.dispatch(&refused, Some(&call)),
+                Err(INVALID),
+                "{refused}"
+            );
+        }
+    }
+
     #[test]
     fn run_requests_that_break_a_field_rule_get_refused_invalid_request() {
         let harness = Harness::child();
@@ -3935,7 +3985,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             harness.contexts.get(&candidate, now).err(),
-            Some("UNKNOWN_TARGET"),
+            Some(UNKNOWN),
             "the candidate context is gone"
         );
         let probe = |call: &str, operation: &str, bootstrap: &str| {
@@ -4633,10 +4683,7 @@ pub(crate) mod tests {
                 .expect("pid"),
         );
         harness.exit(&call, WAIT).expect("exit");
-        assert_eq!(
-            harness.requests.ended(&operation, false),
-            Err("INVALID_REQUEST")
-        );
+        assert_eq!(harness.requests.ended(&operation, false), Err(INVALID));
         assert!(
             !harness.jobs.is_lingering(&operation),
             "a read Job never lingers"

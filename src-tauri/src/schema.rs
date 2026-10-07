@@ -13,7 +13,7 @@ use crate::process_requests::{Code, path};
 use crate::settings::{TRUST_RECORD_BYTES, utc_time};
 use crate::wsl::WslIdentity;
 
-const INVALID: Code = "INVALID_REQUEST";
+const INVALID: Code = Code::InvalidRequest;
 /// Contract §5 "Submodule review": at most 256 submodules.
 const SUBMODULE_PATHS: usize = 256;
 /// Contract §6 "Channel frames" `limits.deadlineMs`: a WSL distro start probe has at most 60 seconds.
@@ -45,15 +45,11 @@ generated!(
 );
 
 /// serde also reads a struct from a JSON array, but the schema permits only an object there.
-/// So the typed value must encode to the JSON shape of its input.
-pub(crate) fn typed<T: DeserializeOwned + Serialize>(value: &Value) -> Result<T, Code> {
-    let typed = T::deserialize(value).map_err(|_| INVALID)?;
-    let encoded = serde_json::to_value(&typed).map_err(|_| INVALID)?;
-    if same_shape(value, &encoded) {
-        Ok(typed)
-    } else {
-        Err(INVALID)
-    }
+/// So the typed value must encode to the JSON shape of its input. `None`: the value is outside the schema.
+pub(crate) fn typed<T: DeserializeOwned + Serialize>(value: &Value) -> Option<T> {
+    let typed = T::deserialize(value).ok()?;
+    let encoded = serde_json::to_value(&typed).ok()?;
+    same_shape(value, &encoded).then_some(typed)
 }
 
 /// Equal keys, lengths, and scalars. A number matches any number, because typify reads `version` as `f64`.
@@ -81,25 +77,32 @@ fn paths(value: &Value, keys: &[&str]) -> Result<(), Code> {
 
 /// A native-first renderer envelope (contract §1 step 6). The generated `version` is `f64`, so `1.0` would pass it.
 /// The code order follows `src/contracts/envelope.ts` `validateRequest`.
-pub fn native_first(value: &Value) -> Result<native_first_envelope::NativeFirstEnvelope, Code> {
+pub fn native_first(
+    value: &Value,
+) -> Result<native_first_envelope::NativeFirstEnvelope, &'static str> {
     match value.get("version") {
-        None => Err(INVALID),
+        None => Err("INVALID_REQUEST"),
         Some(version) if version.as_u64() != Some(1) => Err("PROTOCOL_VERSION"),
-        Some(_) => typed(value),
+        Some(_) => typed(value).ok_or("INVALID_REQUEST"),
     }
 }
 
 /// A `mutation` frame body (contract §6 "Mutation frames").
-pub fn mutation_request(value: &Value) -> Result<mutation_request::MutationRequest, Code> {
-    let request = typed(value)?;
+pub fn mutation_request(
+    value: &Value,
+) -> Result<mutation_request::MutationRequest, mutation_reply::RefusedCode> {
+    let request = typed(value).ok_or(INVALID)?;
     paths(value, &["worktreeRoot", "commonDirectory"])?;
     Ok(request)
 }
 
 /// A `trust` frame body (contract §6 "Trust frames").
-pub fn trust_request(value: &Value) -> Result<trust_request::TrustRequest, Code> {
+pub fn trust_request(
+    value: &Value,
+) -> Result<trust_request::TrustRequest, trust_reply::RefusedCode> {
     use trust_request::TrustRequest;
-    let request = typed(value)?;
+    let invalid = trust_reply::RefusedCode::InvalidRequest;
+    let request = typed(value).ok_or(INVALID)?;
     paths(
         value,
         &[
@@ -111,22 +114,22 @@ pub fn trust_request(value: &Value) -> Result<trust_request::TrustRequest, Code>
     )?;
     match &request {
         // `bound` comes only with `persist: false`.
-        TrustRequest::Confirm { persist, bound, .. } if *persist == bound.is_some() => Err(INVALID),
+        TrustRequest::Confirm { persist, bound, .. } if *persist == bound.is_some() => Err(invalid),
         TrustRequest::ConfirmRun {
             program_count,
             unchecked_count,
             submodule_paths,
             ..
         } => {
-            let unchecked = u64::try_from(*unchecked_count).map_err(|_| INVALID)?;
+            let unchecked = u64::try_from(*unchecked_count).map_err(|_| invalid)?;
             if unchecked > program_count.get()
                 || !(1..=SUBMODULE_PATHS).contains(&submodule_paths.len())
             {
-                return Err(INVALID);
+                return Err(invalid);
             }
             value["submodulePaths"]
                 .as_array()
-                .ok_or(INVALID)?
+                .ok_or(invalid)?
                 .iter()
                 .try_for_each(|text| path(text).map(drop))?;
             Ok(request)
@@ -138,7 +141,7 @@ pub fn trust_request(value: &Value) -> Result<trust_request::TrustRequest, Code>
 /// A WSL `process` request (contract §6 "Channel frames", §11). typify drops the `deadlineMs` range and the `confirm: true` constant.
 pub fn wsl_request(value: &Value) -> Result<wsl_request::WslRequest, Code> {
     use wsl_request::WslRequest;
-    let request: WslRequest = typed(value)?;
+    let request: WslRequest = typed(value).ok_or(INVALID)?;
     let fits = match &request {
         WslRequest::WslDistros { .. } => true,
         WslRequest::WslProbe { limits, .. } => limits.deadline_ms.get() <= WSL_START_DEADLINE_MS,
@@ -165,7 +168,7 @@ fn one_identity_form(record: &Value) -> bool {
 
 /// A stored trust record in the handshake form (contract §7 "Trust approval store"), within 4 KiB of JSON (contract §5).
 pub fn trust_record(value: &Value) -> bool {
-    typed::<trust_record::TrustRecord>(value).is_ok()
+    typed::<trust_record::TrustRecord>(value).is_some()
         && one_identity_form(value)
         && paths(
             value,
@@ -187,13 +190,38 @@ pub fn handshake(value: &Value) -> Result<handshake::Handshake, Code> {
     if value.get("version").and_then(Value::as_u64) != Some(1) {
         return Err(INVALID);
     }
-    typed(value)
+    typed(value).ok_or(INVALID)
 }
 
 /// A progress event with exactly the contract §2 fields and nonnegative counters.
 pub fn progress(value: &Value) -> bool {
     typed::<progress::Progress>(value)
-        .is_ok_and(|event| event.counters.values().all(|count| *count >= 0))
+        .is_some_and(|event| event.counters.values().all(|count| *count >= 0))
+}
+
+/// The `process`, `mutation`, and `trust` refused codes are one contract §6 list. typify gives each schema its own enum.
+impl From<process_reply::RefusedCode> for mutation_reply::RefusedCode {
+    fn from(code: process_reply::RefusedCode) -> Self {
+        use process_reply::RefusedCode as P;
+        match code {
+            P::InvalidRequest => Self::InvalidRequest,
+            P::UnknownTarget => Self::UnknownTarget,
+            P::GitChanged => Self::GitChanged,
+            P::ProcessOwnershipFailed => Self::ProcessOwnershipFailed,
+        }
+    }
+}
+
+impl From<process_reply::RefusedCode> for trust_reply::RefusedCode {
+    fn from(code: process_reply::RefusedCode) -> Self {
+        use process_reply::RefusedCode as P;
+        match code {
+            P::InvalidRequest => Self::InvalidRequest,
+            P::UnknownTarget => Self::UnknownTarget,
+            P::GitChanged => Self::GitChanged,
+            P::ProcessOwnershipFailed => Self::ProcessOwnershipFailed,
+        }
+    }
 }
 
 /// The replies of contract §6 "Process replies", "Recovery markers", and §7 "Trust approval store".
@@ -203,17 +231,16 @@ pub mod reply {
     use std::str::FromStr;
 
     use serde::Serialize;
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
     use super::{mutation_reply as m, process_reply as p, trust_reply as t, typed};
     use crate::bootstrap::PhysicalIdentity;
-    use crate::process_requests::Code;
 
     const DEADLINE: &str = "deadline";
     const APPROVED: &str = "approved";
     const DECLINED: &str = "declined";
 
-    /// A field value that the shell built inside its schema rule, such as a call ID that passed `is_identifier`.
+    /// An ID, a path, or a hex text that the shell built inside its schema rule, such as a call ID that passed `is_identifier`.
     /// A failure is a defect of the shell, never of a request.
     fn field<T: FromStr<Err: Debug>>(text: &str) -> T {
         text.parse()
@@ -229,21 +256,15 @@ pub mod reply {
         serde_json::to_value(reply).expect("a generated reply type encodes to JSON")
     }
 
-    fn process(reply: p::ProcessReply) -> Value {
-        encode(reply)
-    }
-
+    /// Built without the generated `p::Output` type: its base64 pattern check costs about 1 ms for each 64 KiB chunk.
+    /// `encode_base64` writes canonical padded base64, and `call_id` passed `is_identifier`.
+    /// A test checks this form against `p::Output`.
     pub fn output(call_id: &str, stream: p::OutputStream, base64: &str) -> Value {
-        process(p::ProcessReply::Output {
-            call_id: field(call_id),
-            data: field(base64),
-            stream,
-            type_: "output".into(),
-        })
+        json!({ "type": "output", "callId": call_id, "stream": stream, "data": base64 })
     }
 
     pub fn input_written(call_id: &str) -> Value {
-        process(p::ProcessReply::InputWritten {
+        encode(p::ProcessReply::InputWritten {
             call_id: field(call_id),
             type_: "inputWritten".into(),
         })
@@ -256,7 +277,7 @@ pub mod reply {
         active_descendants: u32,
         deadline: Option<p::ExitDeadline>,
     ) -> Value {
-        process(p::ProcessReply::Exit {
+        encode(p::ProcessReply::Exit {
             active_descendants: active_descendants.into(),
             call_id: field(call_id),
             deadline,
@@ -265,17 +286,17 @@ pub mod reply {
         })
     }
 
-    /// The `refused` reply of a `process` frame. The shell refuses only with a contract §6 refused code.
-    pub fn refused(call_id: &str, code: Code) -> Value {
-        process(p::ProcessReply::Refused {
+    /// The `refused` reply of a `process` frame.
+    pub fn refused(call_id: &str, code: p::RefusedCode) -> Value {
+        encode(p::ProcessReply::Refused {
             call_id: field(call_id),
-            code: field(code),
+            code,
             type_: "refused".into(),
         })
     }
 
     pub fn identity(call_id: &str, identities: Vec<p::IdentityListIdentitiesItem>) -> Value {
-        process(p::ProcessReply::IdentityGroup(p::IdentityGroup::List {
+        encode(p::ProcessReply::IdentityGroup(p::IdentityGroup::List {
             call_id: field(call_id),
             identities,
             type_: "identity".into(),
@@ -283,7 +304,7 @@ pub mod reply {
     }
 
     pub fn identity_deadline(call_id: &str) -> Value {
-        process(p::ProcessReply::IdentityGroup(p::IdentityGroup::Deadline {
+        encode(p::ProcessReply::IdentityGroup(p::IdentityGroup::Deadline {
             call_id: field(call_id),
             deadline: DEADLINE.into(),
             type_: "identity".into(),
@@ -319,7 +340,7 @@ pub mod reply {
     }
 
     pub fn lingering_count(call_id: &str, count: u32) -> Value {
-        process(p::ProcessReply::LingeringCountGroup(
+        encode(p::ProcessReply::LingeringCountGroup(
             p::LingeringCountGroup::Reply {
                 call_id: field(call_id),
                 count: count.into(),
@@ -329,7 +350,7 @@ pub mod reply {
     }
 
     pub fn lingering_count_deadline(call_id: &str) -> Value {
-        process(p::ProcessReply::LingeringCountGroup(
+        encode(p::ProcessReply::LingeringCountGroup(
             p::LingeringCountGroup::Deadline {
                 call_id: field(call_id),
                 deadline: DEADLINE.into(),
@@ -339,7 +360,7 @@ pub mod reply {
     }
 
     pub fn register(call_id: &str, result: p::RegisterResultResult) -> Value {
-        process(p::ProcessReply::RegisterGroup(p::RegisterGroup::Result {
+        encode(p::ProcessReply::RegisterGroup(p::RegisterGroup::Result {
             call_id: field(call_id),
             result,
             type_: "register".into(),
@@ -348,7 +369,7 @@ pub mod reply {
 
     /// A new `gitProbe` context for the picked file.
     pub fn register_another(call_id: &str, bootstrap_id: &str, executable_path: &str) -> Value {
-        process(p::ProcessReply::RegisterGroup(p::RegisterGroup::Another {
+        encode(p::ProcessReply::RegisterGroup(p::RegisterGroup::Another {
             bootstrap_id: field(bootstrap_id),
             call_id: field(call_id),
             executable_path: field(executable_path),
@@ -358,7 +379,7 @@ pub mod reply {
     }
 
     pub fn register_deadline(call_id: &str) -> Value {
-        process(p::ProcessReply::RegisterGroup(p::RegisterGroup::Deadline {
+        encode(p::ProcessReply::RegisterGroup(p::RegisterGroup::Deadline {
             call_id: field(call_id),
             deadline: DEADLINE.into(),
             type_: "register".into(),
@@ -366,7 +387,7 @@ pub mod reply {
     }
 
     pub fn resolve_git(call_id: &str, bootstrap_id: &str) -> Value {
-        process(p::ProcessReply::ResolveGitGroup(
+        encode(p::ProcessReply::ResolveGitGroup(
             p::ResolveGitGroup::Reply {
                 bootstrap_id: field(bootstrap_id),
                 call_id: field(call_id),
@@ -376,7 +397,7 @@ pub mod reply {
     }
 
     pub fn resolve_git_deadline(call_id: &str) -> Value {
-        process(p::ProcessReply::ResolveGitGroup(
+        encode(p::ProcessReply::ResolveGitGroup(
             p::ResolveGitGroup::Deadline {
                 call_id: field(call_id),
                 deadline: DEADLINE.into(),
@@ -386,7 +407,7 @@ pub mod reply {
     }
 
     pub fn file_facts(call_id: &str, facts: Vec<p::FileFactsReplyFactsItem>) -> Value {
-        process(p::ProcessReply::FileFactsGroup(p::FileFactsGroup::Reply {
+        encode(p::ProcessReply::FileFactsGroup(p::FileFactsGroup::Reply {
             call_id: field(call_id),
             facts,
             type_: "fileFacts".into(),
@@ -394,7 +415,7 @@ pub mod reply {
     }
 
     pub fn file_facts_deadline(call_id: &str) -> Value {
-        process(p::ProcessReply::FileFactsGroup(
+        encode(p::ProcessReply::FileFactsGroup(
             p::FileFactsGroup::Deadline {
                 call_id: field(call_id),
                 deadline: DEADLINE.into(),
@@ -445,7 +466,7 @@ pub mod reply {
 
     /// The reply holds the context path alone for a path without a WSL prefix.
     pub fn wsl_distros_path(call_id: &str, path: &str) -> Value {
-        process(p::ProcessReply::WslDistrosGroup(p::WslDistrosGroup::Path {
+        encode(p::ProcessReply::WslDistrosGroup(p::WslDistrosGroup::Path {
             call_id: field(call_id),
             path: field(path),
             type_: "wslDistros".into(),
@@ -462,7 +483,7 @@ pub mod reply {
         keys: Vec<p::WslDistrosFactsKeysItem>,
         saved: Vec<p::WslDistrosFactsSavedItem>,
     ) -> Value {
-        process(p::ProcessReply::WslDistrosGroup(
+        encode(p::ProcessReply::WslDistrosGroup(
             p::WslDistrosGroup::Facts {
                 call_id: field(call_id),
                 keys,
@@ -502,7 +523,7 @@ pub mod reply {
 
     /// Contract §11 "Distro checks": a missing `wsl.exe` or a failed list call.
     pub fn wsl_distros_unavailable(call_id: &str, path: &str) -> Value {
-        process(p::ProcessReply::WslDistrosGroup(
+        encode(p::ProcessReply::WslDistrosGroup(
             p::WslDistrosGroup::Unavailable {
                 call_id: field(call_id),
                 code: "WSL_UNAVAILABLE".into(),
@@ -513,12 +534,8 @@ pub mod reply {
         ))
     }
 
-    fn mutation(reply: m::MutationReply) -> Value {
-        encode(reply)
-    }
-
     pub fn started_marker(call_id: &str, marker_id: &str) -> Value {
-        mutation(m::MutationReply::StartedGroup(m::StartedGroup::Marker {
+        encode(m::MutationReply::StartedGroup(m::StartedGroup::Marker {
             call_id: field(call_id),
             marker_id: field(marker_id),
             type_: "started".into(),
@@ -526,45 +543,45 @@ pub mod reply {
     }
 
     pub fn started_busy(call_id: &str) -> Value {
-        mutation(m::MutationReply::StartedGroup(m::StartedGroup::Busy {
+        encode(m::MutationReply::StartedGroup(m::StartedGroup::Busy {
             busy: true,
             call_id: field(call_id),
             type_: "started".into(),
         }))
     }
 
-    /// `failure` is `disk-full`, `access-denied`, or `other`. `folder` is the `recovery` folder.
-    pub fn started_failure(call_id: &str, failure: &str, folder: &str) -> Value {
-        mutation(m::MutationReply::StartedGroup(m::StartedGroup::Failure {
+    /// `folder` is the `recovery` folder.
+    pub fn started_failure(
+        call_id: &str,
+        failure: m::StartedFailureFailure,
+        folder: &str,
+    ) -> Value {
+        encode(m::MutationReply::StartedGroup(m::StartedGroup::Failure {
             call_id: field(call_id),
-            failure: field(failure),
+            failure,
             folder: field(folder),
             type_: "started".into(),
         }))
     }
 
     pub fn started_deadline(call_id: &str) -> Value {
-        mutation(m::MutationReply::StartedGroup(m::StartedGroup::Deadline {
+        encode(m::MutationReply::StartedGroup(m::StartedGroup::Deadline {
             call_id: field(call_id),
             deadline: DEADLINE.into(),
             type_: "started".into(),
         }))
     }
 
-    pub fn mutation_refused(call_id: &str, code: Code) -> Value {
-        mutation(m::MutationReply::Refused {
+    pub fn mutation_refused(call_id: &str, code: m::RefusedCode) -> Value {
+        encode(m::MutationReply::Refused {
             call_id: field(call_id),
-            code: field(code),
+            code,
             type_: "refused".into(),
         })
     }
 
-    fn trust(reply: t::TrustReply) -> Value {
-        encode(reply)
-    }
-
     pub fn confirm_declined(call_id: &str) -> Value {
-        trust(t::TrustReply::ConfirmGroup(t::ConfirmGroup::Declined {
+        encode(t::TrustReply::ConfirmGroup(t::ConfirmGroup::Declined {
             call_id: field(call_id),
             result: DECLINED.into(),
             type_: "confirm".into(),
@@ -573,7 +590,7 @@ pub mod reply {
 
     /// `stored: false`: the approval holds for the session only.
     pub fn confirm_session(call_id: &str) -> Value {
-        trust(t::TrustReply::ConfirmGroup(t::ConfirmGroup::Session {
+        encode(t::TrustReply::ConfirmGroup(t::ConfirmGroup::Session {
             call_id: field(call_id),
             result: APPROVED.into(),
             stored: false,
@@ -583,7 +600,7 @@ pub mod reply {
 
     /// `record` passed `schema::trust_record` before the store wrote it.
     pub fn confirm_stored(call_id: &str, record: &Value) -> Value {
-        trust(t::TrustReply::ConfirmGroup(t::ConfirmGroup::Stored {
+        encode(t::TrustReply::ConfirmGroup(t::ConfirmGroup::Stored {
             call_id: field(call_id),
             record: typed(record).expect("a stored trust record passed its schema check"),
             result: APPROVED.into(),
@@ -593,7 +610,7 @@ pub mod reply {
     }
 
     pub fn confirm_run(call_id: &str, result: t::ConfirmRunReplyResult) -> Value {
-        trust(t::TrustReply::ConfirmRunReply {
+        encode(t::TrustReply::ConfirmRunReply {
             call_id: field(call_id),
             result,
             type_: "confirmRun".into(),
@@ -601,7 +618,7 @@ pub mod reply {
     }
 
     pub fn revoke(call_id: &str, ended_processes: u32) -> Value {
-        trust(t::TrustReply::RevokeGroup(t::RevokeGroup::Reply {
+        encode(t::TrustReply::RevokeGroup(t::RevokeGroup::Reply {
             call_id: field(call_id),
             ended_processes: ended_processes.into(),
             type_: "revoke".into(),
@@ -609,17 +626,17 @@ pub mod reply {
     }
 
     pub fn revoke_deadline(call_id: &str) -> Value {
-        trust(t::TrustReply::RevokeGroup(t::RevokeGroup::Deadline {
+        encode(t::TrustReply::RevokeGroup(t::RevokeGroup::Deadline {
             call_id: field(call_id),
             deadline: DEADLINE.into(),
             type_: "revoke".into(),
         }))
     }
 
-    pub fn trust_refused(call_id: &str, code: Code) -> Value {
-        trust(t::TrustReply::Refused {
+    pub fn trust_refused(call_id: &str, code: t::RefusedCode) -> Value {
+        encode(t::TrustReply::Refused {
             call_id: field(call_id),
-            code: field(code),
+            code,
             type_: "refused".into(),
         })
     }
@@ -678,27 +695,47 @@ mod tests {
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
     fn check(schema: &str, text: &str) -> Option<String> {
-        let ok = |checked: Result<(), Code>| {
-            checked.map_or_else(str::to_string, |()| "valid".to_string())
+        let ok = |checked: Result<(), String>| {
+            checked.map_or_else(|code| code, |()| "valid".to_string())
         };
-        let strict = |text: &str| decode_strict(text).ok_or(INVALID);
-        let valid = |valid: bool| if valid { Ok(()) } else { Err(INVALID) };
-        Some(ok(match schema {
-            "native-first-envelope" => {
-                strict(text).and_then(|value| native_first(&value).map(drop))
+        let text_of = |code: &dyn std::fmt::Display| code.to_string();
+        let strict = |text: &str| decode_strict(text).ok_or(INVALID.to_string());
+        let valid = |valid: bool| {
+            if valid {
+                Ok(())
+            } else {
+                Err(INVALID.to_string())
             }
-            "mutation-request" => strict(text).and_then(|value| mutation_request(&value).map(drop)),
-            "trust-request" => strict(text).and_then(|value| trust_request(&value).map(drop)),
+        };
+        Some(ok(match schema {
+            "native-first-envelope" => strict(text).and_then(|value| {
+                native_first(&value)
+                    .map(drop)
+                    .map_err(|code| text_of(&code))
+            }),
+            "mutation-request" => strict(text).and_then(|value| {
+                mutation_request(&value)
+                    .map(drop)
+                    .map_err(|code| text_of(&code))
+            }),
+            "trust-request" => strict(text).and_then(|value| {
+                trust_request(&value)
+                    .map(drop)
+                    .map_err(|code| text_of(&code))
+            }),
             "trust-record" => strict(text).and_then(|value| valid(trust_record(&value))),
-            "handshake" => strict(text).and_then(|value| handshake(&value).map(drop)),
+            "handshake" => strict(text)
+                .and_then(|value| handshake(&value).map(drop).map_err(|code| text_of(&code))),
             "progress" => strict(text).and_then(|value| valid(progress(&value))),
-            "wsl-request" => strict(text).and_then(|value| wsl_request(&value).map(drop)),
+            "wsl-request" => strict(text)
+                .and_then(|value| wsl_request(&value).map(drop).map_err(|code| text_of(&code))),
             // `ProcessRequests::dispatch` reads the `type` value, then its generated type (contract §6 "Channel frames").
             // Only `fileFacts` vectors exist.
             "process-request" => match strict(text) {
-                Ok(value) if value["type"] == "fileFacts" => {
-                    typed(&value).and_then(|request| crate::file_facts::parse(&request).map(drop))
-                }
+                Ok(value) if value["type"] == "fileFacts" => typed(&value)
+                    .ok_or(INVALID)
+                    .and_then(|request| crate::file_facts::parse(&request).map(drop))
+                    .map_err(|code| text_of(&code)),
                 _ => return None,
             },
             other if NOT_READ.contains(&other) => return None,
@@ -832,7 +869,7 @@ mod tests {
                 json!({ "type": "exit", "callId": call, "exitCode": null, "activeDescendants": 2, "deadline": "deadline" }),
             ),
             (
-                reply::refused(call, "GIT_CHANGED"),
+                reply::refused(call, Code::GitChanged),
                 json!({ "type": "refused", "callId": call, "code": "GIT_CHANGED" }),
             ),
             (
@@ -940,7 +977,11 @@ mod tests {
                 json!({ "type": "started", "callId": call, "busy": true }),
             ),
             (
-                reply::started_failure(call, "disk-full", "C:\\data\\recovery"),
+                reply::started_failure(
+                    call,
+                    mutation_reply::StartedFailureFailure::DiskFull,
+                    "C:\\data\\recovery",
+                ),
                 json!({ "type": "started", "callId": call, "failure": "disk-full", "folder": "C:\\data\\recovery" }),
             ),
             (
@@ -948,7 +989,7 @@ mod tests {
                 vector("started-reply-deadline.json"),
             ),
             (
-                reply::mutation_refused(call, "INVALID_REQUEST"),
+                reply::mutation_refused(call, mutation_reply::RefusedCode::InvalidRequest),
                 json!({ "type": "refused", "callId": call, "code": "INVALID_REQUEST" }),
             ),
             (
@@ -976,10 +1017,15 @@ mod tests {
                 vector("revoke-reply-deadline.json"),
             ),
             (
-                reply::trust_refused(call, "PROCESS_OWNERSHIP_FAILED"),
+                reply::trust_refused(call, trust_reply::RefusedCode::ProcessOwnershipFailed),
                 json!({ "type": "refused", "callId": call, "code": "PROCESS_OWNERSHIP_FAILED" }),
             ),
         ];
+        // `reply::output` builds its form by hand, so the generated `Output` type checks it here.
+        for data in ["YWJj", "YQ==", "YWI="] {
+            let built = reply::output(call, OutputStream::Stdout, data);
+            assert!(typed::<process_reply::Output>(&built).is_some(), "{built}");
+        }
         assert_eq!(deadline("identity"), vector("identity-reply-deadline.json"));
         for (built, expected) in cases {
             assert!(
@@ -992,7 +1038,7 @@ mod tests {
     #[test]
     fn a_reply_group_reads_through_its_generated_type() {
         let deadline = json!({ "type": "identity", "callId": "0f0f0f0f-0000-4000-8000-000000000001", "deadline": "deadline" });
-        assert!(typed::<process_reply::IdentityGroup>(&deadline).is_ok());
+        assert!(typed::<process_reply::IdentityGroup>(&deadline).is_some());
     }
 
     #[test]
@@ -1018,7 +1064,7 @@ mod tests {
             ] {
                 assert_eq!(
                     native_first(&envelope(operation, payload.clone())).map(drop),
-                    Err(INVALID),
+                    Err("INVALID_REQUEST"),
                     "{operation} {payload}"
                 );
             }
@@ -1038,7 +1084,7 @@ mod tests {
         ] {
             assert_eq!(
                 native_first(&envelope("dismissRecoveryMarker", payload.clone())).map(drop),
-                Err(INVALID),
+                Err("INVALID_REQUEST"),
                 "{payload}"
             );
         }

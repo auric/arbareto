@@ -21,9 +21,10 @@ use crate::ipc::{
 };
 use crate::jobs::{Job, Supervisor};
 use crate::process_requests::{
-    CHUNK_BYTES, Code, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
+    CHUNK_BYTES, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
     decode_strict, is_identifier, wait,
 };
+use crate::schema::mutation_reply::RefusedCode as MutationCode;
 use crate::schema::trust_reply::ConfirmRunReplyResult;
 use crate::schema::{self, mutation_request::MutationRequest, reply, trust_request::TrustRequest};
 use crate::settings::{
@@ -39,8 +40,8 @@ const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
 /// The progress event of the main window. Contract §2 names no channel for progress events.
 const PROGRESS_EVENT: &str = "operation-progress";
 
-const INVALID: Code = "INVALID_REQUEST";
-const UNAVAILABLE: Code = "SERVICE_UNAVAILABLE";
+const INVALID: &str = "INVALID_REQUEST";
+const UNAVAILABLE: &str = "SERVICE_UNAVAILABLE";
 
 /// The native facts of the startup handshake (contract §6 "Startup handshake").
 pub struct Facts {
@@ -495,7 +496,7 @@ fn prepare(
     contexts: &Contexts,
     operation: &str,
     payload: &Value,
-) -> Result<Option<Prepared>, Code> {
+) -> Result<Option<Prepared>, &'static str> {
     let now = Instant::now();
     let chosen = match operation {
         "chooseGit" => {
@@ -653,7 +654,7 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
             common_directory,
             ..
         } => {
-            let call_id = call_id.ok_or(INVALID)?;
+            let call_id = call_id.ok_or(MutationCode::InvalidRequest)?;
             let common = PathBuf::from(common_directory.as_str());
             // A service exit after the frame read changes the epoch, and the late finish then takes no mutex.
             let epoch = markers.epoch();
@@ -723,7 +724,9 @@ fn revoke(
             reply::revoke(&call, ended)
         },
     );
-    walked.err().map(|code| reply::trust_refused(call_id, code))
+    walked
+        .err()
+        .map(|code| reply::trust_refused(call_id, code.into()))
 }
 
 /// Replies only after the marker file is flushed, or with the failure class (contract §6 "Recovery markers").
@@ -910,7 +913,7 @@ mod tests {
             native: &Fake,
             operation: &str,
             payload: Value,
-        ) -> Result<Option<Prepared>, Code> {
+        ) -> Result<Option<Prepared>, &'static str> {
             prepare(&self.stores, native, &self.contexts, operation, &payload)
         }
 
@@ -1254,7 +1257,7 @@ mod tests {
         assert_eq!(shell.marker_files(), 0, "no marker");
         assert_eq!(
             shell.requests.ended(FIRST, false),
-            Err("INVALID_REQUEST"),
+            Err(crate::process_requests::Code::InvalidRequest),
             "no started mutation"
         );
     }

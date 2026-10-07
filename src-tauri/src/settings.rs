@@ -29,6 +29,7 @@ use windows::core::HSTRING;
 
 use crate::bootstrap::{Identity, PhysicalIdentity};
 use crate::process_requests::{VERSION_BYTES, is_identifier, path};
+use crate::schema::mutation_reply::StartedFailureFailure;
 use crate::schema::{self, reply};
 use crate::wsl::WslIdentity;
 
@@ -428,11 +429,11 @@ fn json_files(folder: &Path) -> Vec<(String, PathBuf)> {
 }
 
 /// The failure class of contract §6 "Channel frames".
-fn failure_class(error: &io::Error) -> &'static str {
+fn failure_class(error: &io::Error) -> StartedFailureFailure {
     match error.kind() {
-        io::ErrorKind::StorageFull => "disk-full",
-        io::ErrorKind::PermissionDenied => "access-denied",
-        _ => "other",
+        io::ErrorKind::StorageFull => StartedFailureFailure::DiskFull,
+        io::ErrorKind::PermissionDenied => StartedFailureFailure::AccessDenied,
+        _ => StartedFailureFailure::Other,
     }
 }
 
@@ -698,9 +699,9 @@ pub enum StartedReply {
         identity: PhysicalIdentity,
     },
     Busy,
-    /// `failure` is `disk-full`, `access-denied`, or `other`. `folder` is the `recovery` folder.
+    /// `folder` is the `recovery` folder.
     Failure {
-        failure: &'static str,
+        failure: StartedFailureFailure,
         folder: PathBuf,
     },
 }
@@ -711,7 +712,7 @@ impl StartedReply {
             StartedReply::Marker { marker_id, .. } => reply::started_marker(call_id, marker_id),
             StartedReply::Busy => reply::started_busy(call_id),
             StartedReply::Failure { failure, folder } => {
-                reply::started_failure(call_id, failure, &folder.to_string_lossy())
+                reply::started_failure(call_id, *failure, &folder.to_string_lossy())
             }
         }
     }
@@ -906,20 +907,20 @@ impl Markers {
             folder: self.folder.clone(),
         };
         let Some(identity) = read(request.common_directory) else {
-            return failure("other");
+            return failure(StartedFailureFailure::Other);
         };
         let taken = {
             let current = lock(&self.epoch);
             // A service exit came after the frame read. Its release of every mutex ran, so a take now would stay held.
             if *current != epoch {
-                return failure("other");
+                return failure(StartedFailureFailure::Other);
             }
             self.take(request.operation_id, mutex_name(&identity))
         };
         match taken {
             Taken::Yes => {}
             Taken::Busy => return StartedReply::Busy,
-            Taken::Failed => return failure("other"),
+            Taken::Failed => return failure(StartedFailureFailure::Other),
         }
         match self.write(request, identity.clone()) {
             Ok(marker_id) => StartedReply::Marker {
@@ -2362,10 +2363,10 @@ mod tests {
         let markers = Markers::open(&recovery);
         let name = name_of(&repository);
         let cases = [
-            (ERROR_DISK_FULL, "disk-full"),
-            (ERROR_HANDLE_DISK_FULL, "disk-full"),
-            (ERROR_ACCESS_DENIED, "access-denied"),
-            (ERROR_INVALID_PARAMETER, "other"),
+            (ERROR_DISK_FULL, StartedFailureFailure::DiskFull),
+            (ERROR_HANDLE_DISK_FULL, StartedFailureFailure::DiskFull),
+            (ERROR_ACCESS_DENIED, StartedFailureFailure::AccessDenied),
+            (ERROR_INVALID_PARAMETER, StartedFailureFailure::Other),
         ];
         for stage in [Stage::Write, Stage::Flush] {
             for (os_error, failure) in cases {
@@ -2404,7 +2405,7 @@ mod tests {
         assert_eq!(
             markers.started_with(&started(&absent, "op-1"), markers.epoch(), &native_identity),
             StartedReply::Failure {
-                failure: "other",
+                failure: StartedFailureFailure::Other,
                 folder: recovery.clone()
             }
         );
@@ -2422,7 +2423,7 @@ mod tests {
         assert_eq!(
             markers.started_with(&started(&repository, "op-1"), epoch, &native_identity),
             StartedReply::Failure {
-                failure: "other",
+                failure: StartedFailureFailure::Other,
                 folder: recovery.clone()
             },
             "a service exit came after the frame read (T314 review fix 3)"
@@ -2503,7 +2504,7 @@ mod tests {
         );
         assert_eq!(
             StartedReply::Failure {
-                failure: "disk-full",
+                failure: StartedFailureFailure::DiskFull,
                 folder: PathBuf::from("C:\\data\\recovery")
             }
             .reply(call),

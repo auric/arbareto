@@ -30,8 +30,10 @@ use crate::dialogs::Registered;
 use crate::file_facts;
 use crate::git_env::child_environment;
 use crate::jobs::Supervisor;
-use crate::schema;
-use crate::settings::{SavedWslGit, is_hex};
+use crate::schema::process_reply::{ExitDeadline, OutputStream, RegisterResultResult};
+use crate::schema::process_request::{self as frame, EnvironmentPolicy};
+use crate::schema::{self, reply, typed};
+use crate::settings::SavedWslGit;
 use crate::spawn::{Input, SpawnRequest, command_line, spawn};
 use crate::wsl;
 
@@ -67,12 +69,12 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 // ponytail: a silent child costs one pipe peek per stream every 10 ms. Blocking reads with CancelSynchronousIo remove it if T167 measures the wakeups.
 const POLL: Duration = Duration::from_millis(10);
 
-const INVALID: &str = "INVALID_REQUEST";
-const UNKNOWN: &str = "UNKNOWN_TARGET";
-const OWNERSHIP: &str = "PROCESS_OWNERSHIP_FAILED";
+const INVALID: Code = Code::InvalidRequest;
+const UNKNOWN: Code = Code::UnknownTarget;
+const OWNERSHIP: Code = Code::ProcessOwnershipFailed;
 
-pub(crate) type Code = &'static str;
-pub(crate) type Fields = Map<String, Value>;
+/// A `refused` code of a `process` frame (contract §6 "Process replies").
+pub(crate) type Code = schema::process_reply::RefusedCode;
 
 /// Writes one frame body to the service. A queued chunk leaves its queue when this call returns.
 pub type ReplySink = Arc<dyn Fn(String) + Send + Sync>;
@@ -161,15 +163,18 @@ enum WalkEvent {
     Stop,
 }
 
+/// The deadline reply of one request type, such as `reply::identity_deadline`.
+pub type DeadlineReply = fn(&str) -> Value;
+
 /// How a walk replies (contract §6 "Walks").
 #[derive(Clone, Copy)]
 enum Reply {
     /// `identity` or `fileFacts`. `cancel` and `closeJob` stop it, and no reply follows.
-    Walk(&'static str),
+    Walk(DeadlineReply),
     /// The start of a `run`. `cancel` and `closeJob` stop it, and every end replies `exit`.
     Start,
-    /// A request of frame kind `.0` and type `.1`. Only its reply or its deadline reply ends it (T314 D3).
-    Frame(&'static str, &'static str),
+    /// A request of frame kind `.0`. Only its reply or its deadline reply ends it (T314 D3).
+    Frame(&'static str, DeadlineReply),
 }
 
 impl Reply {
@@ -182,20 +187,14 @@ impl Reply {
 
     fn deadline(self, call_id: &str) -> Value {
         match self {
-            Reply::Start => {
-                json!({ "type": "exit", "callId": call_id, "exitCode": null, "activeDescendants": 0, "deadline": "deadline" })
-            }
-            Reply::Walk(kind) | Reply::Frame(_, kind) => {
-                json!({ "type": kind, "callId": call_id, "deadline": "deadline" })
-            }
+            Reply::Start => reply::exit(call_id, None, 0, Some(ExitDeadline::Deadline)),
+            Reply::Walk(deadline) | Reply::Frame(_, deadline) => deadline(call_id),
         }
     }
 
     /// The reply after a stop. Only a `run` start gets one.
     fn stopped(self, call_id: &str) -> Option<Value> {
-        matches!(self, Reply::Start).then(|| {
-            json!({ "type": "exit", "callId": call_id, "exitCode": null, "activeDescendants": 0 })
-        })
+        matches!(self, Reply::Start).then(|| reply::exit(call_id, None, 0, None))
     }
 }
 
@@ -319,7 +318,7 @@ struct Drain {
     done: [bool; 2],
 }
 
-const STREAMS: [&str; 2] = ["stdout", "stderr"];
+const STREAMS: [OutputStream; 2] = [OutputStream::Stdout, OutputStream::Stderr];
 
 /// The shell side of the private `process` channel (contract §6 "Channel frames").
 pub struct ProcessRequests {
@@ -492,7 +491,7 @@ impl ProcessRequests {
     pub fn frame_walk(
         &self,
         frame: &'static str,
-        kind: &'static str,
+        deadline: DeadlineReply,
         call_id: &str,
         operation_id: &str,
         path: PathBuf,
@@ -504,7 +503,7 @@ impl ProcessRequests {
         let mut state = self.state();
         self.spawn_walk(
             &mut state,
-            Reply::Frame(frame, kind),
+            Reply::Frame(frame, deadline),
             call_id,
             operation_id,
             read_at,
@@ -533,7 +532,7 @@ impl ProcessRequests {
         let Some(frame) = decode_strict(body) else {
             return;
         };
-        let Some(request) = frame.get("process").and_then(Value::as_object) else {
+        let Some(request) = frame.get("process").filter(|request| request.is_object()) else {
             return;
         };
         let call_id = request
@@ -548,10 +547,7 @@ impl ProcessRequests {
             Err(INVALID)
         };
         if let (Err(code), Some(call_id)) = (result, call_id) {
-            self.send(
-                self.current(),
-                json!({ "type": "refused", "callId": call_id, "code": code }),
-            );
+            self.send(self.current(), reply::refused(call_id, code));
         }
     }
 
@@ -631,62 +627,107 @@ impl ProcessRequests {
         }
     }
 
-    fn dispatch(&self, request: &Fields, call_id: Option<&str>) -> Result<(), Code> {
+    /// Reads the exact `type` value once, then parses the generated type of that value (research.md "T323 typify gate").
+    /// `typed` refuses every value outside the schema. Each handler keeps the checks that typify drops.
+    fn dispatch(&self, request: &Value, call_id: Option<&str>) -> Result<(), Code> {
         let call = || call_id.ok_or(INVALID);
         match request.get("type").and_then(Value::as_str) {
-            Some("run") => self.run(request, call()?),
+            Some("run") => self.run(&typed(request).ok_or(INVALID)?, call()?),
             Some("input") => self.input(request),
-            Some("cancel") => self.cancel(request),
-            Some("identity") => self.identity(request, call()?),
-            Some("fileFacts") => self.file_facts(request, call()?),
-            Some("lingeringCount") => self.lingering_count(request, call()?),
-            Some("register") => self.register(request, call()?),
-            Some("resolveGit") => self.resolve_git(request, call()?),
-            Some("release") => self.release(request),
-            Some("closeJob") => self.close_job(request),
+            Some("cancel") => self.cancel(&typed(request).ok_or(INVALID)?),
+            Some("identity") => self.identity(&typed(request).ok_or(INVALID)?, call()?),
+            Some("fileFacts") => self.file_facts(&typed(request).ok_or(INVALID)?, call()?),
+            Some("lingeringCount") => {
+                self.lingering_count(&typed(request).ok_or(INVALID)?, call()?)
+            }
+            Some("register") => self.register(&typed(request).ok_or(INVALID)?, call()?),
+            Some("resolveGit") => self.resolve_git(&typed(request).ok_or(INVALID)?, call()?),
+            Some("release") => self.release(&typed(request).ok_or(INVALID)?),
+            Some("closeJob") => self.close_job(&typed(request).ok_or(INVALID)?),
             Some("wslDistros") => self.wsl_distros(request, call()?),
             Some("wslProbe") => self.wsl_probe(request, call()?),
             _ => Err(INVALID),
         }
     }
 
-    fn run(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+    fn run(&self, request: &frame::RunGroup, call_id: &str) -> Result<(), Code> {
+        use frame::RunGroup;
         let read_at = Instant::now();
-        keys(
-            request,
-            &[
-                "type",
-                "callId",
-                "operationId",
-                "contextKind",
-                "arguments",
-                "environmentPolicy",
-                "limits",
-            ],
-            &[
-                "bootstrapId",
-                "gitInstallationId",
-                "repositoryId",
-                "input",
-                "inputBytes",
-                "transactionId",
-                "indexFile",
-            ],
-        )?;
-        let operation_id = identifier(&request["operationId"])?;
-        let kind = context_kind(request)?;
-        let arguments: Vec<String> = request["arguments"]
-            .as_array()
-            .ok_or(INVALID)?
-            .iter()
-            .map(|a| a.as_str().filter(|a| !a.contains('\0')).map(str::to_string))
-            .collect::<Option<_>>()
-            .ok_or(INVALID)?;
-        let policy = request["environmentPolicy"].as_str().ok_or(INVALID)?;
+        let (kind, ids) = match request {
+            RunGroup::GitProbe { bootstrap_id, .. } => (
+                Kind::Bootstrap(ContextKind::GitProbe),
+                [Some(bootstrap_id.as_str()), None, None],
+            ),
+            RunGroup::RepositoryDiscovery {
+                bootstrap_id,
+                git_installation_id,
+                ..
+            } => (
+                Kind::Bootstrap(ContextKind::RepositoryDiscovery),
+                [
+                    Some(bootstrap_id.as_str()),
+                    Some(git_installation_id.as_str()),
+                    None,
+                ],
+            ),
+            RunGroup::RegisteredOperation {
+                git_installation_id,
+                repository_id,
+                ..
+            } => (
+                Kind::Registered,
+                [
+                    None,
+                    Some(git_installation_id.as_str()),
+                    Some(repository_id.as_str()),
+                ],
+            ),
+        };
+        // The three context kinds hold the same `run` fields, each in its own generated type.
+        macro_rules! run_fields {
+            ($($variant:ident($limits:ident)),*) => {
+                match request {$(
+                    RunGroup::$variant {
+                        operation_id,
+                        arguments,
+                        environment_policy,
+                        limits,
+                        input,
+                        input_bytes,
+                        transaction_id,
+                        index_file,
+                        ..
+                    } => (
+                        operation_id.as_str(),
+                        arguments.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                        *environment_policy,
+                        match limits {
+                            frame::$limits::DeadlineLimits { deadline_ms, stall_ms } => {
+                                Some((deadline_ms.get(), *stall_ms))
+                            }
+                            frame::$limits::NetworkLimits { .. } => None,
+                        },
+                        input.as_ref().map(|data| data.as_str()),
+                        input_bytes.map(|total| total.get()),
+                        transaction_id.is_some(),
+                        index_file.as_ref().map(|file| file.as_str()),
+                    ),
+                )*}
+            };
+        }
+        let (operation_id, arguments, policy, limits, input, input_bytes, transaction, index_file) = run_fields!(
+            GitProbe(RunGitProbeLimits),
+            RepositoryDiscovery(RunDiscoveryLimits),
+            RegisteredOperation(RunRegisteredLimits)
+        );
+        let mutation = matches!(policy, EnvironmentPolicy::Mutation);
         // `network` waits for its inactivity and ceiling limits (T228).
         let policy_fits = match kind {
-            Kind::Bootstrap(_) => policy == "probe",
-            Kind::Registered => matches!(policy, "read" | "mutation"),
+            Kind::Bootstrap(_) => matches!(policy, EnvironmentPolicy::Probe),
+            Kind::Registered => matches!(
+                policy,
+                EnvironmentPolicy::Read | EnvironmentPolicy::Mutation
+            ),
         };
         if !policy_fits {
             return Err(INVALID);
@@ -696,19 +737,16 @@ impl ProcessRequests {
         {
             return Err(INVALID);
         }
-        let limit = deadline(&request["limits"], kind)?;
-        let input = match (request.get("input"), request.get("inputBytes")) {
+        let limit = deadline(limits.ok_or(INVALID)?, kind)?;
+        let input = match (input, input_bytes) {
             (None, None) => RunInput::Closed,
             (Some(data), None) => RunInput::Bytes(chunk(data, INLINE_INPUT_BYTES)?),
-            (None, Some(total)) => RunInput::Streamed(count(total, 1, STREAMED_INPUT_BYTES)?),
+            (None, Some(total)) if total <= STREAMED_INPUT_BYTES => RunInput::Streamed(total),
             _ => return Err(INVALID),
         };
-        let index_file = match (request.get("transactionId"), request.get("indexFile")) {
-            (None, None) => None,
-            (Some(transaction), Some(file)) if policy == "mutation" => {
-                identifier(transaction)?;
-                Some(path(file)?)
-            }
+        let index_file = match (transaction, index_file) {
+            (false, None) => None,
+            (true, Some(file)) if mutation => Some(native_path(file)?),
             _ => return Err(INVALID),
         };
 
@@ -718,10 +756,10 @@ impl ProcessRequests {
         }
         check_active(&state, operation_id)?;
         // The marker and the mutex exist before the first side effect (contract §6 "Recovery markers").
-        if policy == "mutation" && !state.started.contains(operation_id) {
+        if mutation && !state.started.contains(operation_id) {
             return Err(INVALID);
         }
-        let target = self.target(&mut state, request, kind, operation_id)?;
+        let target = self.target(&mut state, ids, kind, operation_id)?;
         if let Some(file) = &index_file {
             let named = file
                 .file_name()
@@ -753,11 +791,13 @@ impl ProcessRequests {
             None => {
                 let mut full = self.config.argument_prefix.clone();
                 full.extend(arguments);
+                // `git_env` fails only with `INVALID_REQUEST`. It keys its policies by the contract name.
                 let environment = child_environment(
-                    policy,
+                    &policy.to_string(),
                     &self.config.base_environment,
                     index_file.as_deref(),
-                )?;
+                )
+                .map_err(|_| INVALID)?;
                 (None, full, environment)
             }
         };
@@ -784,7 +824,6 @@ impl ProcessRequests {
         });
         let generation = self.current();
         let (call, operation) = (call_id.to_string(), operation_id.to_string());
-        let mutation = policy == "mutation";
         let closer = Arc::clone(&me);
         let close_operation = operation.clone();
         self.spawn_walk(
@@ -798,7 +837,7 @@ impl ProcessRequests {
                     let (me, call) = (Arc::clone(&me), call.clone());
                     Box::new(move || {
                         me.state().calls.remove(&call);
-                        Some(refusal(&call, code))
+                        Some(reply::refused(&call, code))
                     })
                 };
                 if let Err(code) = me.revalidate(&target, now) {
@@ -901,16 +940,17 @@ impl ProcessRequests {
     }
 
     /// Resolves the context IDs of a `run` or `identity` request (contract §6 "Context rules").
+    /// `ids` holds `bootstrapId`, `gitInstallationId`, and `repositoryId`, each when its context kind carries it.
     fn target(
         &self,
         state: &mut State,
-        request: &Fields,
+        [bootstrap_id, git_id, repository_id]: [Option<&str>; 3],
         kind: Kind,
         operation_id: &str,
     ) -> Result<Target, Code> {
         let now = Instant::now();
         let git = |state: &State| -> Result<Result<(PathBuf, Identity), wsl::Installation>, Code> {
-            let id = request["gitInstallationId"].as_str().ok_or(INVALID)?;
+            let id = git_id.ok_or(INVALID)?;
             Ok(match state.gits.get(id).ok_or(UNKNOWN)? {
                 Git::Windows { program, identity } => Ok((program.clone(), *identity)),
                 Git::Wsl(installation) => Err(installation.clone()),
@@ -918,7 +958,7 @@ impl ProcessRequests {
         };
         match kind {
             Kind::Bootstrap(context_kind) => {
-                let bootstrap_id = request["bootstrapId"].as_str().ok_or(INVALID)?;
+                let bootstrap_id = bootstrap_id.ok_or(INVALID)?;
                 let context = self.contexts.get(bootstrap_id, now)?;
                 if context.kind != context_kind {
                     return Err(UNKNOWN);
@@ -964,7 +1004,7 @@ impl ProcessRequests {
             }
             Kind::Registered => {
                 let found = git(state)?;
-                let id = request["repositoryId"].as_str().ok_or(INVALID)?;
+                let id = repository_id.ok_or(INVALID)?;
                 let repository = state.repositories.get(id).ok_or(UNKNOWN)?;
                 let (program, git_identity, wsl) = match found {
                     // Contract §11: a WSL repository never runs Git for Windows.
@@ -999,7 +1039,9 @@ impl ProcessRequests {
             self.contexts.revalidate(bootstrap_id, now)?;
         }
         match target.git_identity {
-            Some(identity) if read_identity(&target.program) != Ok(identity) => Err("GIT_CHANGED"),
+            Some(identity) if read_identity(&target.program) != Ok(identity) => {
+                Err(Code::GitChanged)
+            }
             _ => Ok(()),
         }
     }
@@ -1029,10 +1071,7 @@ impl ProcessRequests {
                 // `exit` is the last reply of a `run` (contract §6 "Process replies").
                 let exited = lock(&exited);
                 if !*exited {
-                    self.send(
-                        generation,
-                        json!({ "type": "inputWritten", "callId": call_id }),
-                    );
+                    self.send(generation, reply::input_written(&call_id));
                 }
                 drop(exited);
                 if written == declared {
@@ -1042,10 +1081,20 @@ impl ProcessRequests {
         });
     }
 
-    fn input(&self, request: &Fields) -> Result<(), Code> {
-        keys(request, &["type", "callId", "data"], &[])?;
-        let data = chunk(&request["data"], CHUNK_BYTES)?;
-        let call_id = request["callId"].as_str().ok_or(INVALID)?;
+    /// Read without `frame::Input`: its base64 pattern check costs about 1 ms for each 64 KiB chunk on the frame reader.
+    /// `dispatch` read `type`. So the three keys, the identifier rule, and the strict decode of `chunk` refuse each value outside `Input`.
+    fn input(&self, request: &Value) -> Result<(), Code> {
+        let fields = request
+            .as_object()
+            .filter(|fields| fields.len() == 3)
+            .ok_or(INVALID)?;
+        let data = fields.get("data").and_then(Value::as_str).ok_or(INVALID)?;
+        let data = chunk(data, CHUNK_BYTES)?;
+        let call_id = fields
+            .get("callId")
+            .and_then(Value::as_str)
+            .filter(|id| is_identifier(id))
+            .ok_or(INVALID)?;
         let mut state = self.state();
         // After `exit`, the shell drops each `input` of that call.
         let Some(call) = state.calls.get_mut(call_id) else {
@@ -1074,9 +1123,8 @@ impl ProcessRequests {
         Ok(())
     }
 
-    fn cancel(&self, request: &Fields) -> Result<(), Code> {
-        keys(request, &["type", "callId"], &[])?;
-        let call_id = request["callId"].as_str().ok_or(INVALID)?;
+    fn cancel(&self, request: &frame::Cancel) -> Result<(), Code> {
+        let call_id = request.call_id.as_str();
         let mut state = self.state();
         // A cancel for an ended call is dropped. So is a cancel for a walk that only its reply ends (T314 D3).
         if let Some(operation_id) = state.calls.get(call_id).map(|c| c.operation_id.clone()) {
@@ -1088,25 +1136,65 @@ impl ProcessRequests {
         Ok(())
     }
 
-    fn identity(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+    fn identity(&self, request: &frame::IdentityGroup, call_id: &str) -> Result<(), Code> {
+        use frame::IdentityGroup;
         let read_at = Instant::now();
-        keys(
-            request,
-            &["type", "callId", "operationId", "contextKind", "paths"],
-            &["bootstrapId", "gitInstallationId", "repositoryId"],
-        )?;
-        let operation_id = identifier(&request["operationId"])?;
-        let kind = context_kind(request)?;
-        let paths: Vec<PathBuf> = request["paths"]
-            .as_array()
-            .filter(|paths| (1..=IDENTITY_PATHS).contains(&paths.len()))
-            .ok_or(INVALID)?
-            .iter()
-            .map(path)
+        let (kind, ids, operation_id, paths) = match request {
+            IdentityGroup::GitProbe {
+                bootstrap_id,
+                operation_id,
+                paths,
+                ..
+            } => (
+                Kind::Bootstrap(ContextKind::GitProbe),
+                [Some(bootstrap_id.as_str()), None, None],
+                operation_id.as_str(),
+                paths.iter().map(|path| path.as_str()).collect::<Vec<_>>(),
+            ),
+            IdentityGroup::RepositoryDiscovery {
+                bootstrap_id,
+                git_installation_id,
+                operation_id,
+                paths,
+                ..
+            } => (
+                Kind::Bootstrap(ContextKind::RepositoryDiscovery),
+                [
+                    Some(bootstrap_id.as_str()),
+                    Some(git_installation_id.as_str()),
+                    None,
+                ],
+                operation_id.as_str(),
+                paths.iter().map(|path| path.as_str()).collect(),
+            ),
+            IdentityGroup::RegisteredOperation {
+                git_installation_id,
+                repository_id,
+                operation_id,
+                paths,
+                ..
+            } => (
+                Kind::Registered,
+                [
+                    None,
+                    Some(git_installation_id.as_str()),
+                    Some(repository_id.as_str()),
+                ],
+                operation_id.as_str(),
+                paths.iter().map(|path| path.as_str()).collect(),
+            ),
+        };
+        // typify drops the array bounds.
+        if !(1..=IDENTITY_PATHS).contains(&paths.len()) {
+            return Err(INVALID);
+        }
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .map(native_path)
             .collect::<Result<_, _>>()?;
         let mut state = self.state();
         check_active(&state, operation_id)?;
-        let target = self.target(&mut state, request, kind, operation_id)?;
+        let target = self.target(&mut state, ids, kind, operation_id)?;
         if let Some((installation, _)) = target.wsl {
             let n = Self::next_unit(&mut state, operation_id);
             return self.wsl_identity(
@@ -1122,18 +1210,18 @@ impl ProcessRequests {
         let call = call_id.to_string();
         self.spawn_walk(
             &mut state,
-            Reply::Walk("identity"),
+            Reply::Walk(reply::identity_deadline),
             call_id,
             operation_id,
             read_at,
             move |stop| {
                 let stop = &stop.flag;
-                let identities: Vec<Value> = paths
+                let identities = paths
                     .iter()
                     .take_while(|_| !stop.load(Ordering::SeqCst))
                     .map_while(|path| identity_reply(path, stop))
                     .collect();
-                reply_with(json!({ "type": "identity", "callId": call, "identities": identities }))
+                reply_with(reply::identity(&call, identities))
             },
             || {},
         )
@@ -1165,13 +1253,13 @@ impl ProcessRequests {
         let deadline = self.walk_bound();
         self.spawn_walk(
             state,
-            Reply::Walk("identity"),
+            Reply::Walk(reply::identity_deadline),
             call_id,
             operation_id,
             read_at,
             move |stop| {
                 let host = me.wsl_host(&operation);
-                let identities: Vec<Value> = wsl::identities(
+                let identities = wsl::identities(
                     &*host,
                     &installation,
                     &operation,
@@ -1182,24 +1270,24 @@ impl ProcessRequests {
                 )
                 .into_iter()
                 .map(|found| match found {
-                    Ok(identity) => identity.reply(),
-                    Err(wsl::Refusal::Invalid) => wsl::Refusal::Failed.reply(),
-                    Err(refusal) => refusal.reply(),
+                    Ok(identity) => reply::identity_of(&PhysicalIdentity::Wsl(identity)),
+                    Err(refusal) => reply::identity_refused(refusal.reason()),
                 })
                 .collect();
-                reply_with(json!({ "type": "identity", "callId": call, "identities": identities }))
+                reply_with(reply::identity(&call, identities))
             },
             || {},
         )
     }
 
-    fn file_facts(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+    fn file_facts(&self, request: &frame::FileFacts, call_id: &str) -> Result<(), Code> {
         let read_at = Instant::now();
         let parsed = file_facts::parse(request)?;
         let mut state = self.state();
         check_active(&state, parsed.operation_id)?;
-        let target = self.target(&mut state, request, Kind::Registered, parsed.operation_id)?;
-        let id = request["repositoryId"].as_str().ok_or(INVALID)?;
+        let id = request.repository_id.as_str();
+        let ids = [None, Some(request.git_installation_id.as_str()), Some(id)];
+        let target = self.target(&mut state, ids, Kind::Registered, parsed.operation_id)?;
         let repository = state.repositories.get(id).ok_or(UNKNOWN)?;
         let roots = [
             repository.worktree_root.clone(),
@@ -1225,7 +1313,7 @@ impl ProcessRequests {
         let (digest, files, call) = (parsed.digest, parsed.files, call_id.to_string());
         self.spawn_walk(
             &mut state,
-            Reply::Walk("fileFacts"),
+            Reply::Walk(reply::file_facts_deadline),
             call_id,
             parsed.operation_id,
             read_at,
@@ -1236,7 +1324,7 @@ impl ProcessRequests {
                     &files,
                     &stop.flag,
                 );
-                reply_with(json!({ "type": "fileFacts", "callId": call, "facts": facts }))
+                reply_with(reply::file_facts(&call, facts))
             },
             || {},
         )
@@ -1347,26 +1435,20 @@ impl ProcessRequests {
         Ok(())
     }
 
-    fn lingering_count(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+    fn lingering_count(&self, request: &frame::LingeringCount, call_id: &str) -> Result<(), Code> {
         let read_at = Instant::now();
-        keys(
-            request,
-            &["type", "callId", "operationId", "commonDirectory"],
-            &[],
-        )?;
-        let operation_id = identifier(&request["operationId"])?;
-        let common = path(&request["commonDirectory"])?;
+        let operation_id = request.operation_id.as_str();
+        let common = native_path(&request.common_directory)?;
         check_active(&self.state(), operation_id)?;
-        let reply = |call: &str, count: u32| json!({ "type": "lingeringCount", "callId": call, "count": count });
         if !self.identity_read_needed(&common, |_| false) {
-            self.send(self.current(), reply(call_id, 0));
+            self.send(self.current(), reply::lingering_count(call_id, 0));
             return Ok(());
         }
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let (bound, call) = (self.walk_bound(), call_id.to_string());
         self.spawn_walk(
             &mut self.state(),
-            Reply::Frame("process", "lingeringCount"),
+            Reply::Frame("process", reply::lingering_count_deadline),
             call_id,
             operation_id,
             read_at,
@@ -1375,46 +1457,57 @@ impl ProcessRequests {
                 // An unreadable identity gives 0.
                 Box::new(move || {
                     let count = identity.map_or(0, |tag| me.jobs.lingering_count(&tag));
-                    Some(reply(&call, count))
+                    Some(reply::lingering_count(&call, count))
                 })
             },
             || {},
         )
     }
 
-    fn register(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+    fn register(&self, request: &frame::RegisterGroup, call_id: &str) -> Result<(), Code> {
+        use frame::RegisterGroup;
         let read_at = Instant::now();
-        const GIT: [&str; 3] = ["version", "digest", "confirm"];
-        const REPOSITORY: [&str; 4] = [
-            "repositoryId",
-            "worktreeRoot",
-            "gitDirectory",
-            "commonDirectory",
-        ];
-        keys(
-            request,
-            &[
-                "type",
-                "callId",
-                "operationId",
-                "bootstrapId",
-                "gitInstallationId",
-            ],
-            &[GIT.as_slice(), REPOSITORY.as_slice()].concat(),
-        )?;
-        let operation_id = identifier(&request["operationId"])?;
-        let bootstrap_id = identifier(&request["bootstrapId"])?;
-        let git_id = identifier(&request["gitInstallationId"])?;
-        let has = |names: &[&str]| names.iter().filter(|&&n| request.contains_key(n)).count();
-        let git_form = match (has(&GIT), has(&REPOSITORY)) {
-            (3, 0) => true,
-            (0, 4) => false,
-            // The WSL form holds only `confirm` (contract §6 "Channel frames", §11).
-            (1, 0) if request.contains_key("confirm") => {
-                return self.register_wsl(request, call_id);
-            }
-            _ => return Err(INVALID),
+        // Each form holds these IDs in its own generated type.
+        let (operation_id, bootstrap_id, git_id) = match request {
+            RegisterGroup::Git {
+                operation_id,
+                bootstrap_id,
+                git_installation_id,
+                ..
+            } => (
+                operation_id.as_str(),
+                bootstrap_id.as_str(),
+                git_installation_id.as_str(),
+            ),
+            RegisterGroup::Repository {
+                operation_id,
+                bootstrap_id,
+                git_installation_id,
+                ..
+            } => (
+                operation_id.as_str(),
+                bootstrap_id.as_str(),
+                git_installation_id.as_str(),
+            ),
+            RegisterGroup::Wsl {
+                operation_id,
+                bootstrap_id,
+                git_installation_id,
+                ..
+            } => (
+                operation_id.as_str(),
+                bootstrap_id.as_str(),
+                git_installation_id.as_str(),
+            ),
         };
+        // The WSL form holds only `confirm` (contract §6 "Channel frames", §11). typify drops its `confirm: true` const.
+        if let RegisterGroup::Wsl { confirm, .. } = request {
+            return if *confirm {
+                self.register_wsl(operation_id, bootstrap_id, git_id, call_id)
+            } else {
+                Err(INVALID)
+            };
+        }
         let now = Instant::now();
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let generation = self.current();
@@ -1433,133 +1526,148 @@ impl ProcessRequests {
             move || contexts.revalidate(&bootstrap, now)
         };
         let mut state = self.state();
-        if git_form {
-            let version = request["version"].as_str().ok_or(INVALID)?;
-            if version.len() > VERSION_BYTES || !version.bytes().all(|b| (0x20..0x7f).contains(&b))
-            {
-                return Err(INVALID);
-            }
-            let digest = request["digest"]
-                .as_str()
-                .filter(|digest| is_hex(digest, 64))
-                .ok_or(INVALID)?;
-            let confirm = request["confirm"].as_bool().ok_or(INVALID)?;
-            if state.issued.contains(git_id) {
-                return Err(INVALID);
-            }
-            check_active(&state, operation_id)?;
-            let context = self.contexts.get(bootstrap_id, now)?;
-            if context.kind != ContextKind::GitProbe {
-                return Err(UNKNOWN);
-            }
-            // Only a startup context skips Use this Git (contract §6 "Startup contexts", FR-003).
-            if !confirm && !context.startup {
-                return Err(INVALID);
-            }
-            own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
-            let ContextIdentity::Windows(identity) = context.identity else {
-                return Err(INVALID);
-            };
-            let proposal = ConfirmedGit {
-                selected_path: context.selected,
-                executable_path: context.path,
-                version: version.to_string(),
-                digest: digest.to_string(),
-            };
-            // The identity read of the Git file is a walk (contract §6 "Walks").
-            self.spawn_walk(
-                &mut state,
-                Reply::Frame("process", "register"),
-                call_id,
-                operation_id,
-                read_at,
-                move |_| {
-                    let revalidated = revalidate();
-                    Box::new(move || {
-                        let saved = (!confirm).then(|| proposal.clone());
-                        let reply = me.bind(revalidated, &bootstrap, now, generation, &call, |state| {
-                            if confirm {
-                                me.confirm_git(proposal, identity, &git, &call, generation);
-                                return None;
+        match request {
+            RegisterGroup::Git {
+                version,
+                digest,
+                confirm,
+                ..
+            } => {
+                let confirm = *confirm;
+                // Contract §6 "Context rules": a byte bound, which JSON Schema cannot hold.
+                if version.len() > VERSION_BYTES
+                    || !version.bytes().all(|b| (0x20..0x7f).contains(&b))
+                {
+                    return Err(INVALID);
+                }
+                if state.issued.contains(git_id) {
+                    return Err(INVALID);
+                }
+                check_active(&state, operation_id)?;
+                let context = self.contexts.get(bootstrap_id, now)?;
+                if context.kind != ContextKind::GitProbe {
+                    return Err(UNKNOWN);
+                }
+                // Only a startup context skips Use this Git (contract §6 "Startup contexts", FR-003).
+                if !confirm && !context.startup {
+                    return Err(INVALID);
+                }
+                own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+                let ContextIdentity::Windows(identity) = context.identity else {
+                    return Err(INVALID);
+                };
+                let proposal = ConfirmedGit {
+                    selected_path: context.selected,
+                    executable_path: context.path,
+                    version: version.to_string(),
+                    digest: digest.to_string(),
+                };
+                // The identity read of the Git file is a walk (contract §6 "Walks").
+                self.spawn_walk(
+                    &mut state,
+                    Reply::Frame("process", reply::register_deadline),
+                    call_id,
+                    operation_id,
+                    read_at,
+                    move |_| {
+                        let revalidated = revalidate();
+                        Box::new(move || {
+                            let saved = (!confirm).then(|| proposal.clone());
+                            let mut approved = false;
+                            let reply =
+                                me.bind(revalidated, &bootstrap, now, generation, &call, |state| {
+                                    if confirm {
+                                        me.confirm_git(proposal, identity, &git, &call, generation);
+                                        return None;
+                                    }
+                                    if !state.issued.insert(git.clone()) {
+                                        return Some(reply::refused(&call, INVALID));
+                                    }
+                                    let program = proposal.executable_path;
+                                    state.gits.insert(git, Git::Windows { program, identity });
+                                    approved = true;
+                                    Some(reply::register(&call, RegisterResultResult::Approved))
+                                });
+                            if let (true, Some(saved), Some(save)) =
+                                (approved, saved, me.startup_git.get())
+                            {
+                                save(saved);
                             }
-                            if !state.issued.insert(git.clone()) {
-                                return Some(refusal(&call, INVALID));
-                            }
-                            let program = proposal.executable_path;
-                            state.gits.insert(git, Git::Windows { program, identity });
-                            Some(json!({ "type": "register", "callId": call, "result": "approved" }))
-                        });
-                        let approved = reply.as_ref().is_some_and(|r| r["result"] == "approved");
-                        if let (true, Some(saved), Some(save)) = (approved, saved, me.startup_git.get()) {
-                            save(saved);
-                        }
-                        reply
-                    })
-                },
-                destroy,
-            )
-        } else {
-            let repository_id = identifier(&request["repositoryId"])?;
-            let worktree_root = path(&request["worktreeRoot"])?;
-            let git_directory = path(&request["gitDirectory"])?;
-            let common_directory = path(&request["commonDirectory"])?;
-            if state.issued.contains(repository_id) {
-                return Err(INVALID);
+                            reply
+                        })
+                    },
+                    destroy,
+                )
             }
-            check_active(&state, operation_id)?;
-            let context = self.contexts.get(bootstrap_id, now)?;
-            if context.kind != ContextKind::RepositoryDiscovery {
-                return Err(UNKNOWN);
-            }
-            own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
-            let repository = Repository {
+            RegisterGroup::Repository {
+                repository_id,
                 worktree_root,
                 git_directory,
                 common_directory,
-                git_installation_id: git_id.to_string(),
-            };
-            match (state.gits.get(git_id).ok_or(UNKNOWN)?, context.identity) {
-                (Git::Windows { .. }, ContextIdentity::Windows(_)) => {}
-                (Git::Wsl(installation), ContextIdentity::Wsl) => {
-                    let installation = installation.clone();
-                    drop(state);
-                    return self.register_wsl_repository(
-                        operation_id,
-                        bootstrap_id,
-                        repository_id,
-                        &context.path,
-                        &installation,
-                        repository,
-                        call_id,
-                        read_at,
-                    );
+                ..
+            } => {
+                let repository_id = repository_id.as_str();
+                let worktree_root = native_path(worktree_root)?;
+                let git_directory = native_path(git_directory)?;
+                let common_directory = native_path(common_directory)?;
+                if state.issued.contains(repository_id) {
+                    return Err(INVALID);
                 }
-                _ => return Err(INVALID),
-            }
-            let repository_id = repository_id.to_string();
-            // The identity read of the context path is a walk (contract §6 "Walks").
-            self.spawn_walk(
-                &mut state,
-                Reply::Frame("process", "register"),
-                call_id,
-                operation_id,
-                read_at,
-                move |_| {
-                    let revalidated = revalidate();
-                    Box::new(move || {
-                        me.bind(revalidated, &bootstrap, now, generation, &call, |state| {
-                            if !state.issued.insert(repository_id.clone()) {
-                                return Some(refusal(&call, INVALID));
-                            }
-                            state.repositories.insert(repository_id, repository);
-                            Some(
-                                json!({ "type": "register", "callId": call, "result": "approved" }),
-                            )
+                check_active(&state, operation_id)?;
+                let context = self.contexts.get(bootstrap_id, now)?;
+                if context.kind != ContextKind::RepositoryDiscovery {
+                    return Err(UNKNOWN);
+                }
+                own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+                let repository = Repository {
+                    worktree_root,
+                    git_directory,
+                    common_directory,
+                    git_installation_id: git_id.to_string(),
+                };
+                match (state.gits.get(git_id).ok_or(UNKNOWN)?, context.identity) {
+                    (Git::Windows { .. }, ContextIdentity::Windows(_)) => {}
+                    (Git::Wsl(installation), ContextIdentity::Wsl) => {
+                        let installation = installation.clone();
+                        drop(state);
+                        return self.register_wsl_repository(
+                            operation_id,
+                            bootstrap_id,
+                            repository_id,
+                            &context.path,
+                            &installation,
+                            repository,
+                            call_id,
+                            read_at,
+                        );
+                    }
+                    _ => return Err(INVALID),
+                }
+                let repository_id = repository_id.to_string();
+                // The identity read of the context path is a walk (contract §6 "Walks").
+                self.spawn_walk(
+                    &mut state,
+                    Reply::Frame("process", reply::register_deadline),
+                    call_id,
+                    operation_id,
+                    read_at,
+                    move |_| {
+                        let revalidated = revalidate();
+                        Box::new(move || {
+                            me.bind(revalidated, &bootstrap, now, generation, &call, |state| {
+                                if !state.issued.insert(repository_id.clone()) {
+                                    return Some(reply::refused(&call, INVALID));
+                                }
+                                state.repositories.insert(repository_id, repository);
+                                Some(reply::register(&call, RegisterResultResult::Approved))
+                            })
                         })
-                    })
-                },
-                destroy,
-            )
+                    },
+                    destroy,
+                )
+            }
+            // The WSL form returned above.
+            RegisterGroup::Wsl { .. } => Err(INVALID),
         }
     }
 
@@ -1575,26 +1683,26 @@ impl ProcessRequests {
         bind: impl FnOnce(&mut State) -> Option<Value>,
     ) -> Option<Value> {
         if let Err(code) = revalidated {
-            return Some(refusal(call_id, code));
+            return Some(reply::refused(call_id, code));
         }
         let mut state = self.state();
         if generation != self.current() {
             return None;
         }
         if self.contexts.take(bootstrap_id, now).is_err() {
-            return Some(refusal(call_id, UNKNOWN));
+            return Some(reply::refused(call_id, UNKNOWN));
         }
         bind(&mut state)
     }
 
     /// Contract §6 `wslDistros` and §11 "Route": the context path, and for a WSL prefix the distro facts.
     /// The list calls run on their own thread in the operation Job, so the frame reader keeps running.
-    fn wsl_distros(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+    fn wsl_distros(&self, request: &Value, call_id: &str) -> Result<(), Code> {
         let schema::wsl_request::WslRequest::WslDistros {
             operation_id,
             bootstrap_id,
             ..
-        } = schema::wsl_request(&Value::Object(request.clone()))?
+        } = schema::wsl_request(request)?
         else {
             return Err(INVALID);
         };
@@ -1611,20 +1719,22 @@ impl ProcessRequests {
             context.path
         };
         let generation = self.current();
-        let mut reply = json!({ "type": "wslDistros", "callId": call_id, "path": path.to_str().ok_or(INVALID)? });
+        let text = path.to_str().ok_or(INVALID)?.to_string();
         if !file_facts::is_wsl_path(&path) {
-            self.send(generation, reply);
+            self.send(generation, reply::wsl_distros_path(call_id, &text));
             return Ok(());
         }
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
-        let operation_id = operation_id.to_string();
+        let (operation_id, call_id) = (operation_id.to_string(), call_id.to_string());
         std::thread::spawn(move || {
             let host = me.wsl_host(&operation_id);
             let facts = wsl::distros(&*host, &me.config.base_environment);
             let saved = me.wsl_saved.get().map(|saved| saved()).unwrap_or_default();
-            wsl::distros_reply(&mut reply, facts, &saved);
-            me.send(generation, reply);
+            me.send(
+                generation,
+                wsl::distros_reply(&call_id, &text, facts, &saved),
+            );
         });
         Ok(())
     }
@@ -1638,16 +1748,16 @@ impl ProcessRequests {
         operation_id: &str,
         installation: &wsl::Installation,
         directory: &str,
-        policy: &str,
+        policy: EnvironmentPolicy,
         index_file: Option<&Path>,
         arguments: &[String],
         input: &RunInput,
     ) -> Result<wsl::Command, Code> {
         let mode = match policy {
-            "probe" => wsl::Mode::Probe,
-            "read" => wsl::Mode::Read,
-            "mutation" => wsl::Mode::Mutation,
-            _ => return Err(INVALID),
+            EnvironmentPolicy::Probe => wsl::Mode::Probe,
+            EnvironmentPolicy::Read => wsl::Mode::Read,
+            EnvironmentPolicy::Mutation => wsl::Mode::Mutation,
+            EnvironmentPolicy::Network => return Err(INVALID),
         };
         let index = index_file
             .map(|file| wsl::linux_path(file, &installation.distro).ok_or(INVALID))
@@ -1672,14 +1782,14 @@ impl ProcessRequests {
 
     /// Contract §6 `wslProbe` (§11 "Git per distro", gaps.md W1): the bootstrap probe of a WSL context, with its Linux path.
     /// It answers as `run`: `output` frames, then `exit`. At exit status 0, the shell binds the facts that pass every §11 rule, once.
-    fn wsl_probe(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+    fn wsl_probe(&self, request: &Value, call_id: &str) -> Result<(), Code> {
         let schema::wsl_request::WslRequest::WslProbe {
             operation_id,
             bootstrap_id,
             distro,
             limits,
             ..
-        } = schema::wsl_request(&Value::Object(request.clone()))?
+        } = schema::wsl_request(request)?
         else {
             return Err(INVALID);
         };
@@ -1746,35 +1856,31 @@ impl ProcessRequests {
             }
             drop(state);
             for chunk in output.iter().flat_map(|out| out.stdout.chunks(CHUNK_BYTES)) {
+                let data = encode_base64(chunk);
                 me.send(
                     generation,
-                    json!({ "type": "output", "callId": call_id, "stream": "stdout", "data": encode_base64(chunk) }),
+                    reply::output(&call_id, OutputStream::Stdout, &data),
                 );
             }
             let active = me.jobs.active_processes(&operation_id).unwrap_or(0);
-            let mut exit = json!({ "type": "exit", "callId": call_id, "exitCode": exit_code, "activeDescendants": active });
-            if ended.deadline {
-                exit["deadline"] = json!("deadline");
-            }
-            me.send(generation, exit);
+            let deadline = ended.deadline.then_some(ExitDeadline::Deadline);
+            me.send(
+                generation,
+                reply::exit(&call_id, exit_code, active, deadline),
+            );
         });
         Ok(())
     }
 
     /// Contract §6 `register` WSL form: the shell issues the ID only from the facts that `wslProbe` bound, after Use this Git.
     /// It then saves those facts for the distro GUID. The service never sends a Linux program path.
-    fn register_wsl(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
-        let schema::wsl_request::WslRequest::Register {
-            operation_id,
-            bootstrap_id,
-            git_installation_id,
-            ..
-        } = schema::wsl_request(&Value::Object(request.clone()))?
-        else {
-            return Err(INVALID);
-        };
-        let (operation_id, bootstrap_id, git_id): (&str, &str, &str) =
-            (&operation_id, &bootstrap_id, &git_installation_id);
+    fn register_wsl(
+        &self,
+        operation_id: &str,
+        bootstrap_id: &str,
+        git_id: &str,
+        call_id: &str,
+    ) -> Result<(), Code> {
         let now = Instant::now();
         let mut state = self.state();
         if state.issued.contains(git_id) {
@@ -1797,16 +1903,16 @@ impl ProcessRequests {
             let approved = me.wsl_confirmation.get().is_some_and(|confirm| {
                 confirm(&installation.distro, &installation.git, &bound.version)
             });
-            let mut result = "declined";
+            let mut result = RegisterResultResult::Declined;
             if approved {
                 let mut state = me.state();
                 if generation == me.current() && !state.issued.contains(&git_id) {
                     state.issued.insert(git_id.clone());
                     state.gits.insert(git_id, Git::Wsl(installation.clone()));
-                    result = "approved";
+                    result = RegisterResultResult::Approved;
                 }
             }
-            if let (Some(store), "approved") = (me.wsl_store.get(), result) {
+            if let (Some(store), RegisterResultResult::Approved) = (me.wsl_store.get(), result) {
                 let file = &bound.git_identity;
                 store(SavedWslGit {
                     guid: installation.guid.clone(),
@@ -1819,10 +1925,7 @@ impl ProcessRequests {
                     ),
                 });
             }
-            me.send(
-                generation,
-                json!({ "type": "register", "callId": call_id, "result": result }),
-            );
+            me.send(generation, reply::register(&call_id, result));
         });
         Ok(())
     }
@@ -1871,7 +1974,7 @@ impl ProcessRequests {
         // The reread is a walk (contract §6 "Walks"). Only a current generation binds (T314).
         self.spawn_walk(
             &mut state,
-            Reply::Frame("process", "register"),
+            Reply::Frame("process", reply::register_deadline),
             call_id,
             operation_id,
             read_at,
@@ -1925,12 +2028,12 @@ impl ProcessRequests {
         let live = self.contexts.take(bootstrap_id, Instant::now()).is_ok();
         state.wsl_bound.remove(bootstrap_id);
         if !same || !live || !state.issued.insert(repository_id.to_string()) {
-            return Some(refusal(call_id, UNKNOWN));
+            return Some(reply::refused(call_id, UNKNOWN));
         }
         state
             .repositories
             .insert(repository_id.to_string(), repository);
-        Some(json!({ "type": "register", "callId": call_id, "result": "approved" }))
+        Some(reply::register(call_id, RegisterResultResult::Approved))
     }
 
     /// gaps.md W3: the Perl probe of a WSL repository, on its own thread, in the Job of the request operation.
@@ -1979,7 +2082,7 @@ impl ProcessRequests {
         let deadline = self.walk_bound();
         self.spawn_walk(
             state,
-            Reply::Walk("fileFacts"),
+            Reply::Walk(reply::file_facts_deadline),
             call_id,
             parsed.operation_id,
             read_at,
@@ -1993,29 +2096,18 @@ impl ProcessRequests {
                     stop.event.0,
                 );
                 let facts = wsl::file_facts_reply(ended.output, &entries, digest);
-                reply_with(json!({ "type": "fileFacts", "callId": call, "facts": facts }))
+                reply_with(reply::file_facts(&call, facts))
             },
             || {},
         )
     }
 
     /// Replaces a `gitProbe` context with one for `<exec-path>\git.exe` (contract §6 "Channel frames" `resolveGit`).
-    fn resolve_git(&self, request: &Fields, call_id: &str) -> Result<(), Code> {
+    fn resolve_git(&self, request: &frame::ResolveGit, call_id: &str) -> Result<(), Code> {
         let read_at = Instant::now();
-        keys(
-            request,
-            &[
-                "type",
-                "callId",
-                "operationId",
-                "bootstrapId",
-                "executablePath",
-            ],
-            &[],
-        )?;
-        let operation_id = identifier(&request["operationId"])?;
-        let bootstrap_id = identifier(&request["bootstrapId"])?;
-        let resolved = path(&request["executablePath"])?;
+        let operation_id = request.operation_id.as_str();
+        let bootstrap_id = request.bootstrap_id.as_str();
+        let resolved = native_path(&request.executable_path)?;
         let named = resolved
             .file_name()
             .is_some_and(|name| name.eq_ignore_ascii_case("git.exe"));
@@ -2041,7 +2133,7 @@ impl ProcessRequests {
         // A deadline keeps the first context and binds no new context.
         self.spawn_walk(
             &mut state,
-            Reply::Frame("process", "resolveGit"),
+            Reply::Frame("process", reply::resolve_git_deadline),
             call_id,
             operation_id,
             read_at,
@@ -2074,14 +2166,14 @@ impl ProcessRequests {
         call_id: &str,
     ) -> Option<Value> {
         let Some(identity) = identity else {
-            return Some(refusal(call_id, INVALID));
+            return Some(reply::refused(call_id, INVALID));
         };
         let mut state = self.state();
         if generation != self.current() {
             return None;
         }
         let Ok(first) = self.contexts.take(moved.bootstrap_id, moved.now) else {
-            return Some(refusal(call_id, UNKNOWN));
+            return Some(reply::refused(call_id, UNKNOWN));
         };
         let id = self
             .contexts
@@ -2093,9 +2185,9 @@ impl ProcessRequests {
             moved.operation_id,
             moved.now,
         ) {
-            return Some(refusal(call_id, code));
+            return Some(reply::refused(call_id, code));
         }
-        Some(json!({ "type": "resolveGit", "callId": call_id, "bootstrapId": id }))
+        Some(reply::resolve_git(call_id, &id))
     }
 
     /// Shows the Git selection confirmation on its own thread, so the frame reader keeps running.
@@ -2144,28 +2236,24 @@ impl ProcessRequests {
         });
     }
 
-    fn release(&self, request: &Fields) -> Result<(), Code> {
+    fn release(&self, request: &frame::ReleaseGroup) -> Result<(), Code> {
         let mut state = self.state();
-        match (
-            request.get("repositoryId"),
-            request.get("gitInstallationId"),
-        ) {
-            (Some(id), None) => {
-                keys(request, &["type", "repositoryId"], &[])?;
-                state.repositories.remove(identifier(id)?);
+        match request {
+            frame::ReleaseGroup::RepositoryFrame { repository_id, .. } => {
+                state.repositories.remove(repository_id.as_str());
             }
-            (None, Some(id)) => {
-                keys(request, &["type", "gitInstallationId"], &[])?;
-                state.gits.remove(identifier(id)?);
+            frame::ReleaseGroup::GitFrame {
+                git_installation_id,
+                ..
+            } => {
+                state.gits.remove(git_installation_id.as_str());
             }
-            _ => return Err(INVALID),
         }
         Ok(())
     }
 
-    fn close_job(&self, request: &Fields) -> Result<(), Code> {
-        keys(request, &["type", "operationId"], &[])?;
-        let operation_id = identifier(&request["operationId"])?;
+    fn close_job(&self, request: &frame::CloseJob) -> Result<(), Code> {
+        let operation_id = request.operation_id.as_str();
         let mut state = self.state();
         close_job_of(&self.jobs, &mut state, operation_id);
         for walk in state.walks.values() {
@@ -2212,12 +2300,10 @@ impl ProcessRequests {
             // A stream holds one chunk at a time, and its pipe waits while the frame write runs.
             queued += 1;
             self.peak.fetch_max(queued, Ordering::SeqCst);
+            let data = encode_base64(&buffer[..read]);
             self.send(
                 run.generation,
-                json!({
-                    "type": "output", "callId": run.call_id, "stream": STREAMS[stream],
-                    "data": encode_base64(&buffer[..read]),
-                }),
+                reply::output(&run.call_id, STREAMS[stream], &data),
             );
             queued -= 1;
             drain = lock(&run.state);
@@ -2246,11 +2332,7 @@ impl ProcessRequests {
         let mut code = 0u32;
         // SAFETY: `process` owns the open process handle, and `code` is a live local.
         let read = unsafe { GetExitCodeProcess(process.0, &mut code) }.is_ok();
-        let exit_code = if closed || !read {
-            Value::Null
-        } else {
-            json!(code)
-        };
+        let exit_code = (!closed && read).then_some(code);
         drop(process);
 
         let mut drain = lock(&run.state);
@@ -2272,13 +2354,11 @@ impl ProcessRequests {
         // Removing the call drops its input channel, so later `input` and `cancel` frames are dropped.
         self.state().calls.remove(&run.call_id);
         *lock(&run.exited) = true;
-        let mut exit = json!({
-            "type": "exit", "callId": run.call_id, "exitCode": exit_code, "activeDescendants": active,
-        });
-        if expired {
-            exit["deadline"] = json!("deadline");
-        }
-        self.send(run.generation, exit);
+        let deadline = expired.then_some(ExitDeadline::Deadline);
+        self.send(
+            run.generation,
+            reply::exit(&run.call_id, exit_code, active, deadline),
+        );
     }
 }
 
@@ -2300,10 +2380,6 @@ impl Drop for Owned {
 /// The finish of a walk that only replies.
 fn reply_with(reply: Value) -> Finish {
     Box::new(move || Some(reply))
-}
-
-fn refusal(call_id: &str, code: Code) -> Value {
-    json!({ "type": "refused", "callId": call_id, "code": code })
 }
 
 /// Sets the stop flag and the stop Event of a walk (contract §6 "Walks"). `cancel_io` then ends its synchronous I/O.
@@ -2412,81 +2488,35 @@ fn own(
     }
 }
 
-/// Each key is required or optional, and no other key exists.
-pub(crate) fn keys(request: &Fields, required: &[&str], optional: &[&str]) -> Result<(), Code> {
-    let known = request
-        .keys()
-        .all(|k| required.contains(&k.as_str()) || optional.contains(&k.as_str()));
-    if known && required.iter().all(|k| request.contains_key(*k)) {
-        Ok(())
-    } else {
-        Err(INVALID)
-    }
-}
-
-/// The context IDs that each `contextKind` carries (contract §6 "Channel frames" `run` fields).
-fn context_kind(request: &Fields) -> Result<Kind, Code> {
-    let (kind, present) = match request["contextKind"].as_str() {
-        Some("gitProbe") => (Kind::Bootstrap(ContextKind::GitProbe), [true, false, false]),
-        Some("repositoryDiscovery") => (
-            Kind::Bootstrap(ContextKind::RepositoryDiscovery),
-            [true, true, false],
-        ),
-        Some("registeredOperation") => (Kind::Registered, [false, true, true]),
-        _ => return Err(INVALID),
-    };
-    for (name, present) in ["bootstrapId", "gitInstallationId", "repositoryId"]
-        .into_iter()
-        .zip(present)
-    {
-        match request.get(name) {
-            Some(id) if present => {
-                identifier(id)?;
-            }
-            None if !present => {}
-            _ => return Err(INVALID),
-        }
-    }
-    Ok(kind)
-}
-
-/// `{deadlineMs, stallMs?}` within the contract caps. `stallMs` exists only in `registeredOperation`.
-fn deadline(limits: &Value, kind: Kind) -> Result<Duration, Code> {
-    let limits = limits.as_object().ok_or(INVALID)?;
-    keys(limits, &["deadlineMs"], &["stallMs"])?;
+/// `deadlineMs` within the contract cap. `stallMs` exists only in `registeredOperation`.
+/// typify drops the integer range and the `stallMs` const, so this check keeps them.
+fn deadline((ms, stall): (u64, Option<f64>), kind: Kind) -> Result<Duration, Code> {
     let cap = match kind {
         Kind::Registered => REGISTERED_DEADLINE_MS,
         Kind::Bootstrap(_) => BOOTSTRAP_DEADLINE_MS,
     };
-    let ms = count(&limits["deadlineMs"], 1, cap)?;
     // T228 sends the activity events of `stallMs`.
-    if let Some(stall) = limits.get("stallMs")
-        && (kind != Kind::Registered || stall.as_u64() != Some(STALL_MS))
-    {
+    let stall_fits = stall.is_none_or(|stall| kind == Kind::Registered && stall == STALL_MS as f64);
+    if ms > cap || !stall_fits {
         return Err(INVALID);
     }
     Ok(Duration::from_millis(ms))
 }
 
-fn count(value: &Value, min: u64, max: u64) -> Result<u64, Code> {
-    value
-        .as_u64()
-        .filter(|n| (min..=max).contains(n))
-        .ok_or(INVALID)
-}
-
 /// A base64 chunk with 1 to `max` decoded bytes.
-fn chunk(value: &Value, max: usize) -> Result<Vec<u8>, Code> {
-    value
-        .as_str()
-        .and_then(decode_base64)
+fn chunk(text: &str, max: usize) -> Result<Vec<u8>, Code> {
+    decode_base64(text)
         .filter(|bytes| (1..=max).contains(&bytes.len()))
         .ok_or(INVALID)
 }
 
 /// An absolute path with 1 to 32,767 UTF-16 units, no NUL, and no device prefix. A lone surrogate never decodes to a string.
 pub(crate) fn path(value: &Value) -> Result<PathBuf, Code> {
-    let text = value.as_str().ok_or(INVALID)?;
+    native_path(value.as_str().ok_or(INVALID)?)
+}
+
+/// As `path`, for the text of a typed field. typify counts characters, not UTF-16 units, and has no native path rule.
+pub(crate) fn native_path(text: &str) -> Result<PathBuf, Code> {
     let units = text.encode_utf16().count();
     let path = PathBuf::from(text);
     if units == 0
@@ -2510,10 +2540,6 @@ pub(crate) fn is_device_path(text: &str) -> bool {
         }
         _ => false,
     }
-}
-
-pub(crate) fn identifier(value: &Value) -> Result<&str, Code> {
-    value.as_str().filter(|id| is_identifier(id)).ok_or(INVALID)
 }
 
 /// A UUID-shaped lowercase ASCII identifier, as `src/contracts/operations.ts` `isIdentifier` checks it.
@@ -3284,6 +3310,36 @@ pub(crate) mod tests {
 
     // ---- Field validation (contract §6 "Process fields" and "Channel frames") ----
 
+    /// `input` frames skip `frame::Input` (T323). The hand read accepts the frame that the generated type accepts.
+    /// It refuses a value that the generated type refuses. An unknown call drops an accepted chunk without a reply.
+    #[test]
+    fn the_hand_read_of_an_input_frame_agrees_with_its_generated_type() {
+        let harness = Harness::child();
+        let call = uuid();
+        let frame = |data: Value| json!({ "type": "input", "callId": call, "data": data });
+        let accepted = frame(json!(encode(&vec![b'i'; CHUNK_BYTES])));
+        assert!(typed::<frame::Input>(&accepted).is_some());
+        assert_eq!(harness.requests.dispatch(&accepted, Some(&call)), Ok(()));
+        let mut extra = frame(json!(encode(b"x")));
+        extra["extra"] = json!(1);
+        let mut bad_call = frame(json!(encode(b"x")));
+        bad_call["callId"] = json!("call-1");
+        for refused in [
+            frame(json!("***")),
+            frame(json!("abc")),
+            frame(json!(5)),
+            extra,
+            bad_call,
+        ] {
+            assert!(typed::<frame::Input>(&refused).is_none(), "{refused}");
+            assert_eq!(
+                harness.requests.dispatch(&refused, Some(&call)),
+                Err(INVALID),
+                "{refused}"
+            );
+        }
+    }
+
     #[test]
     fn run_requests_that_break_a_field_rule_get_refused_invalid_request() {
         let harness = Harness::child();
@@ -3929,7 +3985,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             harness.contexts.get(&candidate, now).err(),
-            Some("UNKNOWN_TARGET"),
+            Some(UNKNOWN),
             "the candidate context is gone"
         );
         let probe = |call: &str, operation: &str, bootstrap: &str| {
@@ -4627,10 +4683,7 @@ pub(crate) mod tests {
                 .expect("pid"),
         );
         harness.exit(&call, WAIT).expect("exit");
-        assert_eq!(
-            harness.requests.ended(&operation, false),
-            Err("INVALID_REQUEST")
-        );
+        assert_eq!(harness.requests.ended(&operation, false), Err(INVALID));
         assert!(
             !harness.jobs.is_lingering(&operation),
             "a read Job never lingers"
@@ -6393,7 +6446,7 @@ pub(crate) mod tests {
             .requests
             .spawn_walk(
                 &mut harness.requests.state(),
-                Reply::Walk("fileFacts"),
+                Reply::Walk(reply::file_facts_deadline),
                 &call,
                 &uuid(),
                 Instant::now(),

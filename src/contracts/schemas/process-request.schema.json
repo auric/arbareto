@@ -1,898 +1,715 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "anyOf": [
+  "oneOf": [
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "run"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "arguments": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^[^\\u0000]*$"
-          }
-        },
-        "input": {
-          "type": "string",
-          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
-        },
-        "inputBytes": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 536870912
-        },
-        "environmentPolicy": {
-          "type": "string",
-          "enum": [
-            "probe",
-            "read",
-            "mutation",
-            "network"
-          ]
-        },
-        "transactionId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "indexFile": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
-        },
-        "limits": {
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "deadlineMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 120000
-                },
-                "stallMs": {
-                  "type": "number",
-                  "const": 15000
-                }
-              },
-              "required": [
-                "deadlineMs"
-              ],
-              "additionalProperties": false,
-              "title": "DeadlineLimits"
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "run"
             },
-            {
-              "type": "object",
-              "properties": {
-                "inactivityMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 300000
-                },
-                "ceilingMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 14400000
-                },
-                "stallMs": {
-                  "type": "number",
-                  "const": 15000
-                }
-              },
-              "required": [
-                "inactivityMs",
-                "ceilingMs",
-                "stallMs"
-              ],
-              "additionalProperties": false,
-              "title": "NetworkLimits"
-            }
-          ]
-        },
-        "contextKind": {
-          "type": "string",
-          "const": "gitProbe"
-        },
-        "bootstrapId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "arguments",
-        "environmentPolicy",
-        "limits",
-        "contextKind",
-        "bootstrapId"
-      ],
-      "additionalProperties": false,
-      "title": "RunGitProbe"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "run"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "arguments": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^[^\\u0000]*$"
-          }
-        },
-        "input": {
-          "type": "string",
-          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
-        },
-        "inputBytes": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 536870912
-        },
-        "environmentPolicy": {
-          "type": "string",
-          "enum": [
-            "probe",
-            "read",
-            "mutation",
-            "network"
-          ]
-        },
-        "transactionId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "indexFile": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
-        },
-        "limits": {
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "deadlineMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 120000
-                },
-                "stallMs": {
-                  "type": "number",
-                  "const": 15000
-                }
-              },
-              "required": [
-                "deadlineMs"
-              ],
-              "additionalProperties": false,
-              "title": "DeadlineLimits"
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
             },
-            {
-              "type": "object",
-              "properties": {
-                "inactivityMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 300000
-                },
-                "ceilingMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 14400000
-                },
-                "stallMs": {
-                  "type": "number",
-                  "const": 15000
-                }
-              },
-              "required": [
-                "inactivityMs",
-                "ceilingMs",
-                "stallMs"
-              ],
-              "additionalProperties": false,
-              "title": "NetworkLimits"
-            }
-          ]
-        },
-        "contextKind": {
-          "type": "string",
-          "const": "repositoryDiscovery"
-        },
-        "bootstrapId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "gitInstallationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "arguments",
-        "environmentPolicy",
-        "limits",
-        "contextKind",
-        "bootstrapId",
-        "gitInstallationId"
-      ],
-      "additionalProperties": false,
-      "title": "RunDiscovery"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "run"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "arguments": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^[^\\u0000]*$"
-          }
-        },
-        "input": {
-          "type": "string",
-          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
-        },
-        "inputBytes": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 536870912
-        },
-        "environmentPolicy": {
-          "type": "string",
-          "enum": [
-            "probe",
-            "read",
-            "mutation",
-            "network"
-          ]
-        },
-        "transactionId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "indexFile": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
-        },
-        "limits": {
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "deadlineMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 120000
-                },
-                "stallMs": {
-                  "type": "number",
-                  "const": 15000
-                }
-              },
-              "required": [
-                "deadlineMs"
-              ],
-              "additionalProperties": false,
-              "title": "DeadlineLimits"
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
             },
-            {
-              "type": "object",
-              "properties": {
-                "inactivityMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 300000
-                },
-                "ceilingMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 14400000
-                },
-                "stallMs": {
-                  "type": "number",
-                  "const": 15000
-                }
-              },
-              "required": [
-                "inactivityMs",
-                "ceilingMs",
-                "stallMs"
-              ],
-              "additionalProperties": false,
-              "title": "NetworkLimits"
-            }
-          ]
-        },
-        "contextKind": {
-          "type": "string",
-          "const": "registeredOperation"
-        },
-        "gitInstallationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "repositoryId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "arguments",
-        "environmentPolicy",
-        "limits",
-        "contextKind",
-        "gitInstallationId",
-        "repositoryId"
-      ],
-      "additionalProperties": false,
-      "title": "RunRegistered"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "input"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "data": {
-          "type": "string",
-          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "data"
-      ],
-      "additionalProperties": false,
-      "title": "Input"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "cancel"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "callId"
-      ],
-      "additionalProperties": false,
-      "title": "Cancel"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "identity"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "paths": {
-          "minItems": 1,
-          "maxItems": 8,
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 32767,
-            "pattern": "^[^\\u0000]*$"
-          }
-        },
-        "contextKind": {
-          "type": "string",
-          "const": "gitProbe"
-        },
-        "bootstrapId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "paths",
-        "contextKind",
-        "bootstrapId"
-      ],
-      "additionalProperties": false,
-      "title": "IdentityGitProbe"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "identity"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "paths": {
-          "minItems": 1,
-          "maxItems": 8,
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 32767,
-            "pattern": "^[^\\u0000]*$"
-          }
-        },
-        "contextKind": {
-          "type": "string",
-          "const": "repositoryDiscovery"
-        },
-        "bootstrapId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "gitInstallationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "paths",
-        "contextKind",
-        "bootstrapId",
-        "gitInstallationId"
-      ],
-      "additionalProperties": false,
-      "title": "IdentityDiscovery"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "identity"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "paths": {
-          "minItems": 1,
-          "maxItems": 8,
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 32767,
-            "pattern": "^[^\\u0000]*$"
-          }
-        },
-        "contextKind": {
-          "type": "string",
-          "const": "registeredOperation"
-        },
-        "gitInstallationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "repositoryId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "paths",
-        "contextKind",
-        "gitInstallationId",
-        "repositoryId"
-      ],
-      "additionalProperties": false,
-      "title": "IdentityRegistered"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "fileFacts"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "digest": {
-          "type": "boolean"
-        },
-        "files": {
-          "minItems": 1,
-          "maxItems": 64,
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "root": {
+            "arguments": {
+              "type": "array",
+              "items": {
                 "type": "string",
-                "enum": [
-                  "worktreeRoot",
-                  "gitDirectory",
-                  "commonDirectory"
-                ]
-              },
-              "path": {
-                "minItems": 1,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 255
-                }
+                "pattern": "^[^\\u0000]*$"
               }
             },
-            "required": [
-              "root",
-              "path"
-            ],
-            "additionalProperties": false
-          }
+            "input": {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            "inputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 536870912
+            },
+            "environmentPolicy": {
+              "$ref": "#/definitions/EnvironmentPolicy"
+            },
+            "transactionId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "indexFile": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "limits": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "deadlineMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 120000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "deadlineMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "DeadlineLimits"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "inactivityMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 300000
+                    },
+                    "ceilingMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 14400000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "inactivityMs",
+                    "ceilingMs",
+                    "stallMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "NetworkLimits"
+                }
+              ]
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "gitProbe"
+            },
+            "bootstrapId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "arguments",
+            "environmentPolicy",
+            "limits",
+            "contextKind",
+            "bootstrapId"
+          ],
+          "additionalProperties": false,
+          "title": "RunGitProbe"
         },
-        "contextKind": {
-          "type": "string",
-          "const": "registeredOperation"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "run"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "arguments": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "input": {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            "inputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 536870912
+            },
+            "environmentPolicy": {
+              "$ref": "#/definitions/EnvironmentPolicy"
+            },
+            "transactionId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "indexFile": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "limits": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "deadlineMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 120000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "deadlineMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "DeadlineLimits"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "inactivityMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 300000
+                    },
+                    "ceilingMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 14400000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "inactivityMs",
+                    "ceilingMs",
+                    "stallMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "NetworkLimits"
+                }
+              ]
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "repositoryDiscovery"
+            },
+            "bootstrapId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "arguments",
+            "environmentPolicy",
+            "limits",
+            "contextKind",
+            "bootstrapId",
+            "gitInstallationId"
+          ],
+          "additionalProperties": false,
+          "title": "RunDiscovery"
         },
-        "gitInstallationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "repositoryId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "run"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "arguments": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "input": {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            "inputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 536870912
+            },
+            "environmentPolicy": {
+              "$ref": "#/definitions/EnvironmentPolicy"
+            },
+            "transactionId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "indexFile": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "limits": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "deadlineMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 120000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "deadlineMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "DeadlineLimits"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "inactivityMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 300000
+                    },
+                    "ceilingMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 14400000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "inactivityMs",
+                    "ceilingMs",
+                    "stallMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "NetworkLimits"
+                }
+              ]
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "arguments",
+            "environmentPolicy",
+            "limits",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId"
+          ],
+          "additionalProperties": false,
+          "title": "RunRegistered"
         }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "digest",
-        "files",
-        "contextKind",
-        "gitInstallationId",
-        "repositoryId"
       ],
-      "additionalProperties": false,
-      "title": "FileFacts"
+      "title": "RunGroup"
     },
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "lingeringCount"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "commonDirectory": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "commonDirectory"
-      ],
-      "additionalProperties": false,
-      "title": "LingeringCount"
+      "$ref": "#/definitions/Input"
     },
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "register"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "bootstrapId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "gitInstallationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "version": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[\\x20-\\x7e]*$"
-        },
-        "digest": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "confirm": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "bootstrapId",
-        "gitInstallationId",
-        "version",
-        "digest",
-        "confirm"
-      ],
-      "additionalProperties": false,
-      "title": "RegisterGit"
+      "$ref": "#/definitions/Cancel"
     },
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "register"
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "identity"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "paths": {
+              "minItems": 1,
+              "maxItems": 8,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "gitProbe"
+            },
+            "bootstrapId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "paths",
+            "contextKind",
+            "bootstrapId"
+          ],
+          "additionalProperties": false,
+          "title": "IdentityGitProbe"
         },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "identity"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "paths": {
+              "minItems": 1,
+              "maxItems": 8,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "repositoryDiscovery"
+            },
+            "bootstrapId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "paths",
+            "contextKind",
+            "bootstrapId",
+            "gitInstallationId"
+          ],
+          "additionalProperties": false,
+          "title": "IdentityDiscovery"
         },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "bootstrapId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "gitInstallationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "repositoryId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "worktreeRoot": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
-        },
-        "gitDirectory": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
-        },
-        "commonDirectory": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "identity"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "paths": {
+              "minItems": 1,
+              "maxItems": 8,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "paths",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId"
+          ],
+          "additionalProperties": false,
+          "title": "IdentityRegistered"
         }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "bootstrapId",
-        "gitInstallationId",
-        "repositoryId",
-        "worktreeRoot",
-        "gitDirectory",
-        "commonDirectory"
       ],
-      "additionalProperties": false,
-      "title": "RegisterRepository"
+      "title": "IdentityGroup"
     },
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "register"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "bootstrapId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "gitInstallationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "confirm": {
-          "type": "boolean",
-          "const": true
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "bootstrapId",
-        "gitInstallationId",
-        "confirm"
-      ],
-      "additionalProperties": false,
-      "title": "RegisterWsl"
+      "$ref": "#/definitions/FileFacts"
     },
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "resolveGit"
+      "$ref": "#/definitions/LingeringCount"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "register"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "bootstrapId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "version": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[\\x20-\\x7e]*$"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "confirm": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "bootstrapId",
+            "gitInstallationId",
+            "version",
+            "digest",
+            "confirm"
+          ],
+          "additionalProperties": false,
+          "title": "RegisterGit"
         },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "register"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "bootstrapId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "worktreeRoot": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "gitDirectory": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "commonDirectory": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "bootstrapId",
+            "gitInstallationId",
+            "repositoryId",
+            "worktreeRoot",
+            "gitDirectory",
+            "commonDirectory"
+          ],
+          "additionalProperties": false,
+          "title": "RegisterRepository"
         },
-        "operationId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "bootstrapId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "executablePath": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "register"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "bootstrapId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "confirm": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "bootstrapId",
+            "gitInstallationId",
+            "confirm"
+          ],
+          "additionalProperties": false,
+          "title": "RegisterWsl"
         }
-      },
-      "required": [
-        "type",
-        "callId",
-        "operationId",
-        "bootstrapId",
-        "executablePath"
       ],
-      "additionalProperties": false,
-      "title": "ResolveGit"
+      "title": "RegisterGroup"
+    },
+    {
+      "$ref": "#/definitions/ResolveGit"
     },
     {
       "type": "object",
@@ -981,11 +798,169 @@
       "title": "WslProbe"
     },
     {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "release"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "repositoryId"
+          ],
+          "additionalProperties": false,
+          "title": "ReleaseRepositoryFrame"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "release"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "gitInstallationId"
+          ],
+          "additionalProperties": false,
+          "title": "ReleaseGitFrame"
+        }
+      ],
+      "title": "ReleaseGroup"
+    },
+    {
+      "$ref": "#/definitions/CloseJob"
+    }
+  ],
+  "definitions": {
+    "EnvironmentPolicy": {
+      "type": "string",
+      "enum": [
+        "probe",
+        "read",
+        "mutation",
+        "network"
+      ]
+    },
+    "Input": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "release"
+          "const": "input"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "data": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "data"
+      ],
+      "additionalProperties": false,
+      "title": "Input"
+    },
+    "Cancel": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "cancel"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "type",
+        "callId"
+      ],
+      "additionalProperties": false,
+      "title": "Cancel"
+    },
+    "FileFacts": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "fileFacts"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "digest": {
+          "type": "boolean"
+        },
+        "files": {
+          "minItems": 1,
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "root": {
+                "type": "string",
+                "enum": [
+                  "worktreeRoot",
+                  "gitDirectory",
+                  "commonDirectory"
+                ]
+              },
+              "path": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                }
+              }
+            },
+            "required": [
+              "root",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "contextKind": {
+          "type": "string",
+          "const": "registeredOperation"
+        },
+        "gitInstallationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
         },
         "repositoryId": {
           "type": "string",
@@ -995,32 +970,88 @@
       },
       "required": [
         "type",
+        "callId",
+        "operationId",
+        "digest",
+        "files",
+        "contextKind",
+        "gitInstallationId",
         "repositoryId"
       ],
       "additionalProperties": false,
-      "title": "ReleaseRepositoryFrame"
+      "title": "FileFacts"
     },
-    {
+    "LingeringCount": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "release"
+          "const": "lingeringCount"
         },
-        "gitInstallationId": {
+        "callId": {
           "type": "string",
           "maxLength": 64,
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "commonDirectory": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "required": [
         "type",
-        "gitInstallationId"
+        "callId",
+        "operationId",
+        "commonDirectory"
       ],
       "additionalProperties": false,
-      "title": "ReleaseGitFrame"
+      "title": "LingeringCount"
     },
-    {
+    "ResolveGit": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "resolveGit"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "bootstrapId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "executablePath": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "operationId",
+        "bootstrapId",
+        "executablePath"
+      ],
+      "additionalProperties": false,
+      "title": "ResolveGit"
+    },
+    "CloseJob": {
       "type": "object",
       "properties": {
         "type": {
@@ -1040,6 +1071,6 @@
       "additionalProperties": false,
       "title": "CloseJob"
     }
-  ],
+  },
   "title": "ProcessRequest"
 }

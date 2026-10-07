@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE};
 
 use crate::file_facts::is_wsl_path;
+use crate::process_requests::Code;
+use crate::schema::process_reply::{IdentityListIdentitiesItem, IdentityRefusedReason};
+use crate::schema::reply;
 use crate::wsl::WslIdentity;
 use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
@@ -42,12 +45,15 @@ impl Identity {
     }
 
     /// The identity reply `{"volumeSerial":"<16 hex>","fileId":"<32 hex>"}` (contract §6 "Process fields").
+    #[cfg(test)]
     pub fn reply(&self) -> serde_json::Value {
+        PhysicalIdentity::Windows(*self).reply()
+    }
+
+    /// `volumeSerial` and `fileId` in lowercase hex, in array order.
+    pub fn hex(&self) -> (String, String) {
         let file_id: String = self.file_id.iter().map(|b| format!("{b:02x}")).collect();
-        serde_json::json!({
-            "volumeSerial": format!("{:016x}", self.volume_serial),
-            "fileId": file_id,
-        })
+        (format!("{:016x}", self.volume_serial), file_id)
     }
 }
 
@@ -59,11 +65,9 @@ pub enum PhysicalIdentity {
 }
 
 impl PhysicalIdentity {
+    /// The identity form of contract §6 "Process fields", as `reply::identity_of` builds it.
     pub fn reply(&self) -> serde_json::Value {
-        match self {
-            PhysicalIdentity::Windows(identity) => identity.reply(),
-            PhysicalIdentity::Wsl(identity) => identity.reply(),
-        }
+        serde_json::to_value(reply::identity_of(self)).expect("an identity encodes to JSON")
     }
 
     /// The identity text: `volumeSerial` then `fileId` without a separator, or `<distroGuid>:<fileSystemId>:<inode>`.
@@ -123,17 +127,18 @@ pub fn native_identity(path: &Path) -> Option<PhysicalIdentity> {
 
 /// One entry of an identity reply (contract §6 "Process fields"). Only a not-found open adds `reason` `absent`.
 /// `None` when `stop` is set after the open (contract §6 "Walks").
-pub fn identity_reply(path: &Path, stop: &AtomicBool) -> Option<serde_json::Value> {
+/// `file_identity` fails only with `UNSUPPORTED_REPOSITORY`.
+pub fn identity_reply(path: &Path, stop: &AtomicBool) -> Option<IdentityListIdentitiesItem> {
     Some(match open(path) {
         Ok(_) if stop.load(Ordering::SeqCst) => return None,
         Ok(file) => file_identity(&file).map_or_else(
-            |code| serde_json::json!({ "code": code }),
-            |identity| identity.reply(),
+            |_| reply::identity_refused(None),
+            |identity| reply::identity_of(&PhysicalIdentity::Windows(identity)),
         ),
         Err(error) if not_found(&error) => {
-            serde_json::json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" })
+            reply::identity_refused(Some(IdentityRefusedReason::Absent))
         }
-        Err(_) => serde_json::json!({ "code": "UNSUPPORTED_REPOSITORY" }),
+        Err(_) => reply::identity_refused(None),
     })
 }
 
@@ -234,11 +239,11 @@ impl State {
         )
     }
 
-    fn live(&self, bootstrap_id: &str, now: Instant) -> Result<&Context, &'static str> {
+    fn live(&self, bootstrap_id: &str, now: Instant) -> Result<&Context, Code> {
         self.contexts
             .get(bootstrap_id)
             .filter(|context| now < context.expires_at)
-            .ok_or("UNKNOWN_TARGET")
+            .ok_or(Code::UnknownTarget)
     }
 }
 
@@ -340,12 +345,12 @@ impl Contexts {
     }
 
     /// A live context. An unknown, destroyed, or expired ID gives `UNKNOWN_TARGET`.
-    pub fn get(&self, bootstrap_id: &str, now: Instant) -> Result<Context, &'static str> {
+    pub fn get(&self, bootstrap_id: &str, now: Instant) -> Result<Context, Code> {
         self.state().live(bootstrap_id, now).cloned()
     }
 
     /// Removes a live context and returns it, so one context serves one bind. Then `get` gives `UNKNOWN_TARGET`.
-    pub fn take(&self, bootstrap_id: &str, now: Instant) -> Result<Context, &'static str> {
+    pub fn take(&self, bootstrap_id: &str, now: Instant) -> Result<Context, Code> {
         let mut state = self.state();
         let context = state.live(bootstrap_id, now)?.clone();
         state.contexts.remove(bootstrap_id);
@@ -358,7 +363,7 @@ impl Contexts {
         bootstrap_id: &str,
         arguments: &[String],
         now: Instant,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Code> {
         let permitted = match self.get(bootstrap_id, now)?.kind {
             ContextKind::GitProbe => {
                 arguments == ["--exec-path"]
@@ -393,13 +398,13 @@ impl Contexts {
         if permitted {
             Ok(())
         } else {
-            Err("INVALID_REQUEST")
+            Err(Code::InvalidRequest)
         }
     }
 
     /// Reads the identity of the selected path again. A changed identity destroys the context.
     /// The code is `GIT_CHANGED` for `gitProbe` and `UNKNOWN_TARGET` for `repositoryDiscovery`.
-    pub fn revalidate(&self, bootstrap_id: &str, now: Instant) -> Result<(), &'static str> {
+    pub fn revalidate(&self, bootstrap_id: &str, now: Instant) -> Result<(), Code> {
         let context = self.get(bootstrap_id, now)?;
         // A WSL context revalidates only through the §11 identity probe of `process_requests.rs`.
         if matches!(context.identity, ContextIdentity::Windows(identity) if read_identity(&context.path) == Ok(identity))
@@ -408,8 +413,8 @@ impl Contexts {
         }
         self.destroy(bootstrap_id);
         Err(match context.kind {
-            ContextKind::GitProbe => "GIT_CHANGED",
-            ContextKind::RepositoryDiscovery => "UNKNOWN_TARGET",
+            ContextKind::GitProbe => Code::GitChanged,
+            ContextKind::RepositoryDiscovery => Code::UnknownTarget,
         })
     }
 
@@ -652,12 +657,11 @@ pub(crate) mod tests {
         std::fs::write(&path, "abc").expect("fixture file");
         let expected = read_identity(&path).expect("identity").reply();
         assert_eq!(
-            identity_reply(&path, &AtomicBool::new(false)),
+            identity_reply(&path, &AtomicBool::new(false)).map(|entry| serde_json::json!(entry)),
             Some(expected)
         );
-        assert_eq!(
-            identity_reply(&path, &AtomicBool::new(true)),
-            None,
+        assert!(
+            identity_reply(&path, &AtomicBool::new(true)).is_none(),
             "the walk queries no identity after a stop (contract §6 \"Walks\")"
         );
     }
@@ -710,11 +714,11 @@ pub(crate) mod tests {
         );
         assert_eq!(
             contexts.get(&id, now + CONTEXT_LIFETIME).err(),
-            Some("UNKNOWN_TARGET"),
+            Some(Code::UnknownTarget),
             "expired at 60 s"
         );
         let unknown = "33333333-3333-4333-8333-333333333333";
-        assert_eq!(contexts.get(unknown, now).err(), Some("UNKNOWN_TARGET"));
+        assert_eq!(contexts.get(unknown, now).err(), Some(Code::UnknownTarget));
     }
 
     #[test]
@@ -733,7 +737,7 @@ pub(crate) mod tests {
             let context = contexts.get(&id, now).expect("get");
             assert_eq!(context.identity, ContextIdentity::Wsl, "{path}");
             // gaps.md W1: only the §11 identity probe can revalidate it.
-            assert_eq!(contexts.revalidate(&id, now), Err("UNKNOWN_TARGET"));
+            assert_eq!(contexts.revalidate(&id, now), Err(Code::UnknownTarget));
             assert!(contexts.get(&id, now).is_err(), "destroyed");
         }
         // A Git probe context of a WSL path stays a `FileIdInfo` read.
@@ -760,7 +764,7 @@ pub(crate) mod tests {
         contexts.destroy(&ended);
         assert_eq!(
             contexts.get(&ended, now).err(),
-            Some("UNKNOWN_TARGET"),
+            Some(Code::UnknownTarget),
             "destroyed by cancel, failure, or completion"
         );
         let before = contexts
@@ -769,7 +773,7 @@ pub(crate) mod tests {
         contexts.restart(NEXT_SESSION);
         assert_eq!(
             contexts.get(&before, now).err(),
-            Some("UNKNOWN_TARGET"),
+            Some(Code::UnknownTarget),
             "destroyed by a service restart"
         );
         let after = contexts
@@ -811,7 +815,7 @@ pub(crate) mod tests {
         std::fs::create_dir(&directory).expect("replace");
         assert_eq!(
             contexts.revalidate(&probe, now),
-            Err("GIT_CHANGED"),
+            Err(Code::GitChanged),
             "a changed executable identity"
         );
         assert!(
@@ -820,12 +824,12 @@ pub(crate) mod tests {
         );
         assert_eq!(
             contexts.get(&probe, now).err(),
-            Some("UNKNOWN_TARGET"),
+            Some(Code::UnknownTarget),
             "the old selection is gone"
         );
         assert_eq!(
             contexts.get(&discovery, now).err(),
-            Some("UNKNOWN_TARGET"),
+            Some(Code::UnknownTarget),
             "the old selection is gone"
         );
     }
@@ -860,7 +864,7 @@ pub(crate) mod tests {
         ] {
             assert_eq!(
                 contexts.permits(&id, &strings(refused), now),
-                Err("INVALID_REQUEST"),
+                Err(Code::InvalidRequest),
                 "{refused:?}"
             );
         }
@@ -902,7 +906,7 @@ pub(crate) mod tests {
         ] {
             assert_eq!(
                 contexts.permits(&id, &strings(refused), now),
-                Err("INVALID_REQUEST"),
+                Err(Code::InvalidRequest),
                 "{refused:?}"
             );
         }
@@ -1003,7 +1007,7 @@ pub(crate) mod tests {
         ] {
             assert_eq!(
                 contexts.permits(&id, &strings(refused), now),
-                Err("INVALID_REQUEST"),
+                Err(Code::InvalidRequest),
                 "{refused:?}"
             );
         }
@@ -1058,7 +1062,7 @@ pub(crate) mod tests {
         ] {
             assert_eq!(
                 contexts.permits(&id, &strings(refused), now),
-                Err("INVALID_REQUEST"),
+                Err(Code::InvalidRequest),
                 "{refused:?}"
             );
         }
@@ -1091,7 +1095,7 @@ pub(crate) mod tests {
         ] {
             assert_eq!(
                 contexts.permits(&id, &strings(refused), now),
-                Err("INVALID_REQUEST"),
+                Err(Code::InvalidRequest),
                 "{refused:?}"
             );
         }
@@ -1147,7 +1151,7 @@ pub(crate) mod tests {
             for id in [&probe, &discovery] {
                 assert_eq!(
                     contexts.permits(id, &strings(mutation), now),
-                    Err("INVALID_REQUEST"),
+                    Err(Code::InvalidRequest),
                     "{mutation:?}"
                 );
             }

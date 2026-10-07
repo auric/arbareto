@@ -1491,6 +1491,29 @@ OBSERVATION T207: F24 distro Git in Ubuntu-24.04: git version 2.43.0
 OBSERVATION T207: Git probe exit 0, git /usr/bin/git, git version 2.43.0, gitfs ef53:fedc9aa3bd65bc57, scope 0
 ```
 
+**T323 typify gate, 2026-10-07.** The gate checked typify `0.8.0` against the four channel schemas that the shell does not type yet.
+
+- Fact: typify makes an internally tagged enum only when each branch is a flat object with its own `type` const. The code is `typify-impl-0.8.0/src/enums.rs:293` `maybe_internally_tagged_enum`, `util.rs:662` `get_object`, and `convert.rs:1555-1610`.
+- `process-request`, `process-reply`, `mutation-reply`, and `trust-reply` reuse `type` values across branches. typify then gives `#[serde(untagged)]` enums, and each const becomes a plain `String` field `type_`. serde then picks a branch by shape.
+- Tried layouts and results:
+  - A nested `oneOf` with one inner `oneOf` for each `type` value: untagged at both levels.
+  - A merged branch that holds the `type` const and a `oneOf` of the shapes: untagged, and the const is still a `String`.
+  - A `z.union` root of titled group unions: one struct with flattened optional fields.
+  - A `z.xor` root of titled group unions: an untagged root with named group enums. In `process-request`, the `run` and `identity` groups become `#[serde(tag = "contextKind")]`.
+- Inside each `type` group, the shapes have disjoint field sets, so an untagged group enum is exact.
+- Two shape collisions cross groups. The five `process-reply` deadline shapes `{callId, deadline}` differ only by `type`. `ConfirmDeclined` and `ConfirmRunReply` `{callId, result}` also differ only by `type`.
+- typify writes a branch with one shape inline in the untagged root, so that branch gets no type of its own. A zod `id` puts the branch in `definitions`, and typify then names its struct. The shell reads six `process-request` branches through these named structs.
+- The `z.xor` form keeps the accepted message set and the TypeScript types. The four roots gave the same `safeParse` result in 22,332 cases: each of the 188 vector texts and its mutated copies, against each root. A type-equality check of `z.infer` and `z.input` compiled, and its control line failed.
+- Decision: the shell reads the exact `type` value first, then parses the generated group type. It never reads a frame into the untagged root enum. tasks.md T323 holds the design.
+- No typify release after `0.8.0` was checked.
+
+**T212 WSL read run, 2026-10-07.** Two WSL runs checked the T212 read tests.
+
+- On `Ubuntu-26.04` with Git `2.55.0`, `bun test tests/wsl` on the tree of main `bb46f2c` gave 56 pass, 3 skip, 6 todo, and 0 fail. The skips are two `distro-git-below-2.55` cases and one `two-test-distros` case.
+- On `Ubuntu-24.04` with Git `2.43.0`, `tests/wsl/registration.test.ts` gave 32 pass, 4 skip, and 0 fail. Both F24 cases passed.
+- Control mutation: `src/git-service/discovery.ts:179` returned the Linux path unchanged. All 6 live `reads.test.ts` cases then failed.
+- Two T208 comparison cases are now todo cases for T115.
+
 ### Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here (plan.md, Constitution Check). A record names the batch, the reviewer, the reviewed scope, and the findings. It also names the causes, corrections, and unverified claims. T116 records the batch 3 review here. One review runs per batch; no automatic review loop runs.

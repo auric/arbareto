@@ -23,6 +23,8 @@ use windows::core::{HRESULT, HSTRING, PCWSTR, w};
 use crate::bootstrap::{ContextKind, Contexts, is_absent};
 use crate::ipc::MAIN_WINDOW;
 use crate::process_requests::PATH_UNITS;
+use crate::schema::process_reply::RegisterResultResult;
+use crate::schema::reply;
 use crate::settings::{Confirm, Damaged, Marker, SavedGit, Settings};
 
 /// Escape, Alt+F4, and the close button return `IDCANCEL`, so the Cancel button carries that ID.
@@ -193,24 +195,15 @@ pub enum Registered {
 }
 
 impl Registered {
+    /// `executable_path` is a file whose identity the context read, so it is a native path.
     pub fn reply(&self, call_id: &str) -> Value {
         match self {
-            Registered::Approved => {
-                json!({ "type": "register", "callId": call_id, "result": "approved" })
-            }
-            Registered::Declined => {
-                json!({ "type": "register", "callId": call_id, "result": "declined" })
-            }
+            Registered::Approved => reply::register(call_id, RegisterResultResult::Approved),
+            Registered::Declined => reply::register(call_id, RegisterResultResult::Declined),
             Registered::Another {
                 bootstrap_id,
                 executable_path,
-            } => json!({
-                "type": "register",
-                "callId": call_id,
-                "result": "another",
-                "bootstrapId": bootstrap_id,
-                "executablePath": executable_path.to_string_lossy(),
-            }),
+            } => reply::register_another(call_id, bootstrap_id, &executable_path.to_string_lossy()),
         }
     }
 }

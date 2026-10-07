@@ -35,7 +35,7 @@ const TEXT = {
   "no-user-manager": () =>
     "Arbareto needs the systemd user manager in this distro to end the processes that Git starts. Set systemd=true under [boot] in /etc/wsl.conf, then restart the distro.",
   "no-setsid": (name: string) => `Arbareto needs the setsid program in ${name}. Install the util-linux package in the distro, then open the folder again.`,
-  "no-coreutils": (name: string) => `Arbareto needs the stat and env programs in /usr/bin of ${name}. Install the coreutils package in the distro, then open the folder again.`,
+  "no-coreutils": (name: string) => `Arbareto needs the stat, env, and sha256sum programs in /usr/bin of ${name}. Install the coreutils package in the distro, then open the folder again.`,
   "start-failed": (name: string) => `WSL could not start distro ${name}. Start it in a terminal, then open the folder again.`,
   "windows-git": (name: string) => `The git command in ${name} is Git for Windows. Install Linux Git 2.55.0 or later in the distro.`,
   "git-no-fs-uuid": (name: string) => `Arbareto cannot read a file-system UUID for Git in ${name}. Install Git on the distro's own disk.`,
@@ -74,7 +74,7 @@ const unavailable = (reason: keyof typeof TEXT & ("wsl-missing" | "distro-missin
 
 // ---- The probe output (src/contracts/wsl-process.json `probe`) ----
 
-const PROBED = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl"] as const;
+const PROBED = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"] as const;
 type Probed = (typeof PROBED)[number];
 const FACTS = ["pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat"] as const;
 type Fact = (typeof FACTS)[number];
@@ -160,7 +160,7 @@ function checkPath(distro: string, facts: WslProbeFacts["facts"]): WslRefusal | 
 // Contract §11 "Git per distro". The order: the path programs, the context path, no Git, a Windows Git, the other helper programs, the version, then the Git file identity.
 export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutable: string): { ok: true; git: Omit<WslGit, "gitInstallationId" | "guid"> } | WslRefusal {
   const { programs, facts } = probe;
-  if (!native(programs.stat) || !native(programs.env)) return unavailable("no-coreutils", distro);
+  if (!native(programs.stat) || !native(programs.env) || !native(programs.sha256sum)) return unavailable("no-coreutils", distro);
   if (!native(programs.perl)) return unavailable("no-perl", distro);
   const path = checkPath(distro, facts);
   if (path !== null) return path;

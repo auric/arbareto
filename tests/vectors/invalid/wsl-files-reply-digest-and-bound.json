@@ -1,0 +1,5 @@
+{
+  "schema": "process-reply",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"type\":\"wslFiles\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"results\":[{\"kind\":\"file\",\"size\":3,\"changed\":false,\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bound\":\"COMPARED_RAW_VERSION_BYTES\"}]}"
+}

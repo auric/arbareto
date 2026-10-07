@@ -28,6 +28,9 @@ import {
   type TrustRecord,
   type TrustRequest,
   type WslDistrosResult,
+  type WslFileResult,
+  type WslFilesCall,
+  type WslIndexResult,
   type WslIdentity,
 } from "../contracts/channel";
 import {
@@ -112,8 +115,11 @@ export type TrustReply =
 
 export type RegisterReply = { result: "approved" | "declined" } | { result: "another"; bootstrapId: string; executablePath: string };
 
-// Contract §6 "File facts": the `FileFacts` frame without `type` and `callId`.
-export type FileFactsRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "fileFacts" }>, "type" | "callId">;
+// Contract §6 "File facts": the `FileFacts` frame without `type` and `callId`. `index` goes through `indexedFileFacts`.
+export type FileFactsRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "fileFacts" }>, "type" | "callId" | "index">;
+// Contract §6 "Index digest in a read": a WSL `fileFacts` request with `index`.
+export type IndexedFileFactsRequest = FileFactsRequest & { index: { sharedIndex?: string } };
+export type { WslFileResult, WslFilesCall, WslIndexResult };
 
 // Contract §6 "Walks": an `identity` or `fileFacts` call without its value.
 // `deadline`: the walk passed its §5 deadline. `canceled`: the signal aborted the call, and the service sent `cancel`.
@@ -153,6 +159,10 @@ export interface WslRunner {
   wslDistros(call: WslDistrosCall): Promise<WslDistrosResult>;
   // Streams and exits as `run`.
   wslProbe(call: WslProbeRun): Promise<GitExit>;
+  // Contract §6 "WSL file work": one result per `digest` entry, or one result for another mode.
+  wslFiles(request: WslFilesCall, signal: AbortSignal): Promise<WslFileResult[] | WalkStop>;
+  // Contract §6 "Index digest in a read": the facts and the `indexDigest` result of one `fileFacts` request.
+  indexedFileFacts(request: IndexedFileFactsRequest, signal: AbortSignal): Promise<{ facts: FileFact[]; index: WslIndexResult } | WalkStop>;
 }
 
 export { REFUSED_CODES } from "../contracts/channel";
@@ -227,9 +237,46 @@ export function checkIdentityPaths(paths: readonly string[]): void {
 }
 
 // The `type` literal selects the `FileFacts` frame schema. A request that holds `type` or `callId` breaks the field set.
-export function checkFileFacts(request: FileFactsRequest): void {
-  const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
+export function checkFileFacts(request: FileFactsRequest | IndexedFileFactsRequest, indexed = false): void {
+  const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request) && "index" in request === indexed;
   if (!valid || !fits(ProcessRequest, { type: "fileFacts", callId: crypto.randomUUID(), ...request })) refuse("fileFacts");
+}
+
+export function checkWslFiles(request: WslFilesCall): void {
+  const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
+  if (!valid || !fits(ProcessRequest, { type: "wslFiles", callId: crypto.randomUUID(), ...request })) refuse("wslFiles");
+}
+
+// The result kinds of each `wslFiles` mode (contract §6 "WSL file work").
+const ENTRY_KINDS = ["file", "directory", "link", "absent", "other", "error"];
+const MODE_KINDS: Record<WslFilesCall["mode"], readonly string[]> = {
+  digest: ENTRY_KINDS,
+  indexDigest: ["index", "error"],
+  hashObject: [...ENTRY_KINDS, "object"],
+  catFile: ["blob", "error"],
+  lock: ["lock", "locked", "error"],
+  candidate: ["candidate", "absent", "error"],
+  publish: ["published", "mismatch", "notOwned", "error"],
+};
+
+// The rules between a request and its results that the reply schema cannot state.
+export function wslResultsFit(request: WslFilesCall, results: readonly WslFileResult[]): boolean {
+  const entries = "files" in request ? request.files : [];
+  if (results.length !== (request.mode === "digest" ? entries.length : 1)) return false;
+  return results.every((result, i) => {
+    if (!MODE_KINDS[request.mode].includes(result.kind)) return false;
+    const components = entries[i]?.path.length ?? 0;
+    if (result.kind === "error") return result.component <= components;
+    if (result.kind === "link") return result.component >= 1 && result.component <= components && (result.targetBytes !== undefined) === (result.component === components);
+    if (result.kind === "file") return result.bound === undefined ? request.mode === "digest" : result.bound === request.bound;
+    if (result.kind === "index") return indexFits(result, request.mode === "indexDigest" ? request.sharedIndex : undefined);
+    return true;
+  });
+}
+
+// A shared part comes exactly when the request names a shared index.
+export function indexFits(result: WslIndexResult, sharedIndex: string | undefined): boolean {
+  return result.kind === "error" ? result.component === 0 : (result.sharedIndex !== undefined) === (sharedIndex !== undefined);
 }
 
 // The replies that each register form permits. Only a Git registration with `confirm: true` can reply `another`.

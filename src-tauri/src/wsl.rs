@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 //! The shell side of contract §11 "WSL repositories": distro checks, `wsl.exe` process requests,
-//! the mutation anchor, the bootstrap probe, the identity probe, and the `fileFacts` probe.
+//! the mutation anchor, the bootstrap probe, the identity probe, the `fileFacts` probe, and the `wslFiles` text.
 //!
 //! The §6 WSL frames (`WslRequest` in `src/contracts/channel.ts`; the double in `tests/git/bun-runner.ts` answers the same shapes):
 //! - `wslDistros` with a `repositoryDiscovery` context: the context path, and for a WSL prefix the `distros` facts,
@@ -12,13 +12,14 @@
 //! - `register` WSL form: only the context ID, the issued `gitInstallationId`, and `confirm: true`.
 //!   The shell issues the ID only from the bound facts. The service never names a Linux program.
 //! - `register` repository form in a WSL context: the shell reads the context identity again with `identities` first.
-//! - `run`, `identity`, and `fileFacts` against a WSL Git: `git_command`, `identities`, and `file_facts_command`.
+//! - `run`, `identity`, `fileFacts`, and `wslFiles` against a WSL Git: `git_command`, `identities`, `file_facts_command`, and `wsl_files_command`.
 //!   A mutation starts its anchor before its first Git process.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::num::NonZeroU64;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
@@ -41,7 +42,8 @@ use crate::jobs::Supervisor;
 use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, is_identifier};
 use crate::schema::process_reply::{
     FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
-    FileFactsReplyFactsItem as Fact, IdentityRefusedReason,
+    FileFactsReplyFactsItem as Fact, IdentityRefusedReason, WslExit,
+    WslFilesResultsResultsItem as FileResult, WslIndexPart, WslIndexResult,
 };
 use crate::schema::reply;
 use crate::settings::SavedWslGit;
@@ -68,6 +70,8 @@ pub struct Texts {
     pub identity: String,
     /// gaps.md W3: the Perl `fileFacts` probe.
     pub file_facts: String,
+    /// Contract §6 "WSL file work": the Perl `wslFiles` text.
+    pub wsl_files: String,
 }
 
 pub fn texts() -> &'static Texts {
@@ -91,6 +95,7 @@ pub fn texts() -> &'static Texts {
             probe: text("probe"),
             identity: text("identity"),
             file_facts: text("fileFacts"),
+            wsl_files: text("wslFiles"),
         }
     })
 }
@@ -329,6 +334,8 @@ pub struct Installation {
     pub systemd_run: String,
     pub systemctl: String,
     pub setsid: String,
+    /// The approved `/usr/bin/sha256sum` target (contract §11 "Git per distro").
+    pub sha256sum: String,
 }
 
 /// The wrapper `<mode>` (contract §11 "Process launch").
@@ -731,7 +738,7 @@ pub struct Bound {
 }
 
 /// The programs that the probe of `src/contracts/wsl-process.json` resolves.
-const PROBED: [&str; 7] = [
+const PROBED: [&str; 8] = [
     "git",
     "systemd-run",
     "systemctl",
@@ -739,6 +746,7 @@ const PROBED: [&str; 7] = [
     "stat",
     "env",
     "perl",
+    "sha256sum",
 ];
 /// The other line kinds of that probe.
 const PROBE_FACTS: [&str; 9] = [
@@ -816,8 +824,22 @@ pub fn bind_probe(distro: &str, guid: &str, output: &[u8]) -> Option<Bound> {
         let native = path.starts_with('/') && !path.starts_with("/mnt/");
         (native && facts.get(&format!("magic {name}")) == Some(&"-")).then(|| path.to_string())
     };
-    let [git, systemd_run, systemctl, setsid, stat, env, perl] = PROBED.map(program);
-    if stat.is_none() || env.is_none() || perl.is_none() || facts.get("scope") != Some(&"0") {
+    let [
+        git,
+        systemd_run,
+        systemctl,
+        setsid,
+        stat,
+        env,
+        perl,
+        sha256sum,
+    ] = PROBED.map(program);
+    if stat.is_none()
+        || env.is_none()
+        || perl.is_none()
+        || sha256sum.is_none()
+        || facts.get("scope") != Some(&"0")
+    {
         return None;
     }
     let version = admitted_version(facts.get("version")?)?.to_string();
@@ -835,6 +857,7 @@ pub fn bind_probe(distro: &str, guid: &str, output: &[u8]) -> Option<Bound> {
             systemd_run: systemd_run?,
             systemctl: systemctl?,
             setsid: setsid?,
+            sha256sum: sha256sum?,
         },
         version,
         git_identity,
@@ -861,6 +884,7 @@ pub struct FactEntry {
 }
 
 /// The Perl probe through the wrapper in `probe` mode. The arguments are `digest` and the three Linux roots.
+/// With `index`, they also hold the approved `sha256sum` and the shared index hash (contract §6 "Index digest in a read").
 /// Stdin holds each entry as its root index, its component count, and its components, each ended by NUL.
 pub fn file_facts_command(
     installation: &Installation,
@@ -868,6 +892,7 @@ pub fn file_facts_command(
     digest: bool,
     roots: &[String; 3],
     entries: &[FactEntry],
+    index: Option<Option<&str>>,
     base: &[(OsString, OsString)],
 ) -> Command {
     let mut input = Vec::new();
@@ -885,6 +910,10 @@ pub fn file_facts_command(
         if digest { "1" } else { "0" },
     ]);
     arguments.extend(roots.iter().cloned());
+    if let Some(shared) = index {
+        arguments.push(installation.sha256sum.clone());
+        arguments.extend(shared.map(str::to_string));
+    }
     wrapped(
         installation,
         Mode::Probe,
@@ -1005,9 +1034,15 @@ fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usiz
     })
 }
 
-/// Maps the probe output to one fact per entry. A failed check, an exit status other than 0, or output past the cap
-/// gives each entry `error` with component 0 and code `other-error` (gaps.md W3). The shell never parses stderr.
-pub fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: bool) -> Vec<Fact> {
+/// Maps the probe output to one fact per entry, and with `index` (`Some(shared)`) to the index result after them.
+/// A failed check, an exit status other than 0, or output past the cap gives each entry and the index `error` with component 0
+/// and code `other-error` (gaps.md W3). The shell never parses stderr.
+pub fn file_facts_reply(
+    output: Option<Output>,
+    entries: &[FactEntry],
+    digest: bool,
+    index: Option<bool>,
+) -> (Vec<Fact>, Option<WslIndexResult>) {
     let parsed = output
         .filter(|out| out.exit_code == Some(0) && out.stdout.len() <= FACTS_OUTPUT_BYTES)
         .and_then(|out| {
@@ -1016,16 +1051,284 @@ pub fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: b
                 at: 0,
             };
             let mut total = 0;
-            let facts: Option<Vec<Fact>> = entries
+            let facts: Vec<Fact> = entries
                 .iter()
                 .map(|entry| fact(&mut records, entry.path.len(), digest, &mut total))
-                .collect();
-            facts.filter(|_| records.at == out.stdout.len())
+                .collect::<Option<_>>()?;
+            let found = match index {
+                Some(shared) => {
+                    let kind = records.token()?;
+                    Some(index_record(&mut records, kind, shared)?)
+                }
+                None => None,
+            };
+            (records.at == out.stdout.len()).then_some((facts, found))
         });
     parsed.unwrap_or_else(|| {
-        entries
+        let facts = entries
             .iter()
             .map(|_| reply::error_fact(0, FileFactErrorCode::OtherError))
+            .collect();
+        (facts, index.map(|_| reply::index_failed(0, "other-error")))
+    })
+}
+
+// ---- WSL `wslFiles` (contract §6 "WSL file work") ----
+
+/// Contract §5: the byte value of each bound name of a `wslFiles` request.
+pub fn bound_bytes(name: &str) -> Option<u64> {
+    match name {
+        "COMPARED_RAW_VERSION_BYTES" => Some(1_048_576),
+        "WHOLE_FILE_STAGE_INPUT_BYTES" => Some(536_870_912),
+        "MUTATION_RAW_INDEX_BYTES" => Some(67_108_864),
+        _ => None,
+    }
+}
+
+/// The stdout cap of one `wslFiles` request: 64 link texts and their record tokens.
+pub const WSL_FILES_OUTPUT_BYTES: usize = 64 * (LINK_TARGET_BYTES + 256);
+
+/// One checked `wslFiles` request. `entries` hold the walked entries, and `fields` the mode fields after them, in stdin order.
+pub struct FilesRequest {
+    pub mode: &'static str,
+    pub bound: &'static str,
+    pub entries: Vec<FactEntry>,
+    pub fields: Vec<String>,
+    /// `indexDigest` with `sharedIndex`: the result holds a shared part.
+    pub shared: bool,
+}
+
+/// The Perl text through the wrapper in `probe` mode. The arguments are the mode, the three Linux roots, the approved Git, and the approved `sha256sum`.
+/// Stdin holds the bound in bytes, the entries, and the mode fields, each ended by NUL.
+pub fn wsl_files_command(
+    installation: &Installation,
+    unit: &str,
+    roots: &[String; 3],
+    request: &FilesRequest,
+    base: &[(OsString, OsString)],
+) -> Command {
+    let bound = bound_bytes(request.bound).unwrap_or_default().to_string();
+    let mut tokens = vec![bound];
+    for entry in &request.entries {
+        tokens.push(entry.root.to_string());
+        tokens.push(entry.path.len().to_string());
+        tokens.extend(entry.path.iter().cloned());
+    }
+    tokens.extend(request.fields.iter().cloned());
+    let mut input = Vec::new();
+    for token in &tokens {
+        input.extend_from_slice(token.as_bytes());
+        input.push(0);
+    }
+    let mut arguments = strings(&["-e", &texts().wsl_files, "--", request.mode]);
+    arguments.extend(roots.iter().cloned());
+    arguments.push(installation.git.clone());
+    arguments.push(installation.sha256sum.clone());
+    wrapped(
+        installation,
+        Mode::Probe,
+        unit,
+        None,
+        PERL,
+        &arguments,
+        base,
+        Stdin::Bytes(input),
+    )
+}
+
+fn hex64(records: &mut Records) -> Option<String> {
+    let text = records.token()?;
+    (text.len() == 64 && is_hex(text)).then(|| text.to_string())
+}
+
+fn safe_size(records: &mut Records) -> Option<i64> {
+    records
+        .number::<i64>()
+        .filter(|&n| (0..(1 << 53)).contains(&n))
+}
+
+fn code_token(records: &mut Records) -> Option<&'static str> {
+    let code = records.token()?;
+    FACT_ERRORS.iter().copied().find(|&known| known == code)
+}
+
+fn error_result(records: &mut Records, components: usize) -> Option<FileResult> {
+    let component: usize = records.number().filter(|&c| c <= components)?;
+    let code = code_token(records)?;
+    Some(reply::wsl_error(component, code))
+}
+
+/// `exit <n>` or `signal <n>`: `$?` after `close` (perlvar).
+fn exit_form(records: &mut Records) -> Option<WslExit> {
+    let form = records.token()?;
+    let n: u64 = records.number()?;
+    match form {
+        "exit" => Some(WslExit::ExitCode(u8::try_from(n).ok()?)),
+        "signal" if (1..=127).contains(&n) => Some(WslExit::Signal(NonZeroU64::new(n)?)),
+        _ => None,
+    }
+}
+
+fn index_part(records: &mut Records) -> Option<WslIndexPart> {
+    Some(match records.token()? {
+        "absent" => WslIndexPart::Absent,
+        "bound" => WslIndexPart::Bound,
+        "digest" => {
+            let size = safe_size(records)?;
+            reply::index_digest(size, &hex64(records)?)
+        }
+        "error" => reply::index_error(code_token(records)?),
+        _ => return None,
+    })
+}
+
+/// The `index` record of `indexDigest` and of a `fileFacts` request with `index`. `kind` is its first token.
+fn index_record(records: &mut Records, kind: &str, shared: bool) -> Option<WslIndexResult> {
+    match kind {
+        "error" => {
+            let component: usize = records.number().filter(|&c| c == 0)?;
+            Some(reply::index_failed(component, code_token(records)?))
+        }
+        "index" => {
+            let index = index_part(records)?;
+            let shared = if shared {
+                Some(index_part(records)?)
+            } else {
+                None
+            };
+            Some(WslIndexResult::Index {
+                index,
+                shared_index: shared,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// One result of a walked entry: a fact kind, or a file with its digest or the bound name.
+fn entry_result(
+    records: &mut Records,
+    kind: &str,
+    components: usize,
+    bound: &str,
+) -> Option<FileResult> {
+    Some(match kind {
+        "absent" => FileResult::Absent,
+        "other" => FileResult::Other,
+        "directory" => FileResult::Directory,
+        "error" => return error_result(records, components),
+        "link" => {
+            let component: usize = records.number()?;
+            let length: usize = records.number()?;
+            if !(1..=components).contains(&component) || !(1..=LINK_TARGET_BYTES).contains(&length)
+            {
+                return None;
+            }
+            let target = records.raw(length)?;
+            reply::wsl_link(component, (component == components).then_some(target))
+        }
+        "file" => {
+            let size = safe_size(records)?;
+            let changed = records.flag()?;
+            match records.token()? {
+                "bound" => reply::wsl_file(size, changed, Err(bound)),
+                "sha256" => reply::wsl_file(size, changed, Ok(&hex64(records)?)),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// One record of a mode (contract §6 "WSL file work"). `None`: the record breaks its form.
+fn files_result(records: &mut Records, request: &FilesRequest, at: usize) -> Option<FileResult> {
+    let kind = records.token()?;
+    let components = request.entries.get(at).map_or(0, |entry| entry.path.len());
+    match (request.mode, kind) {
+        ("digest", _) => entry_result(records, kind, components, request.bound),
+        ("hashObject", "object") => {
+            let size = safe_size(records)?;
+            let sha256 = hex64(records)?;
+            let oid = records.token()?;
+            let oid = match oid {
+                "none" => None,
+                _ if (oid.len() == 40 || oid.len() == 64) && is_hex(oid) => Some(oid),
+                _ => return None,
+            };
+            let (git, hash) = (exit_form(records)?, exit_form(records)?);
+            Some(reply::wsl_object(size, &sha256, oid, git, hash))
+        }
+        // A file result of `hashObject` holds only the bound.
+        ("hashObject", _) => entry_result(records, kind, components, request.bound)
+            .filter(|result| !matches!(result, FileResult::File { bound: None, .. })),
+        ("catFile", "blob") => {
+            let size = safe_size(records)?;
+            let sha256 = hex64(records)?;
+            let over = records.flag()?;
+            let (git, hash) = (exit_form(records)?, exit_form(records)?);
+            Some(reply::wsl_blob(size, &sha256, over, git, hash))
+        }
+        ("indexDigest", _) => match index_record(records, kind, request.shared)? {
+            WslIndexResult::Index {
+                index,
+                shared_index,
+            } => Some(FileResult::Index {
+                index,
+                shared_index,
+            }),
+            WslIndexResult::Error { code, component } => Some(reply::wsl_error(
+                usize::try_from(component).ok()?,
+                &code.to_string(),
+            )),
+        },
+        ("lock", "lock") => {
+            let device: u64 = records.number()?;
+            let inode: u64 = records.number()?;
+            Some(reply::wsl_lock(device, inode))
+        }
+        ("lock", "locked") => Some(FileResult::Locked),
+        ("candidate", "candidate") => {
+            let mut copy = || -> Option<(i64, String, i64)> {
+                Some((safe_size(records)?, hex64(records)?, records.number()?))
+            };
+            let (index, candidate) = (copy()?, copy()?);
+            Some(reply::wsl_candidate(index, candidate))
+        }
+        ("candidate", "absent") => Some(FileResult::Absent),
+        ("publish", "published") => {
+            let size = safe_size(records)?;
+            Some(reply::wsl_published(size, &hex64(records)?))
+        }
+        ("publish", "mismatch") => Some(FileResult::Mismatch),
+        ("publish", "notOwned") => Some(FileResult::NotOwned),
+        (_, "error") => error_result(records, 0),
+        _ => None,
+    }
+}
+
+/// One result per `digest` entry, or one result for another mode. A failed check, an exit status other than 0, or output past the cap
+/// gives each result `error` with component 0 and code `other-error` (contract §6 "WSL file work"). The shell never parses stderr.
+pub fn wsl_files_reply(output: Option<Output>, request: &FilesRequest) -> Vec<FileResult> {
+    let count = if request.mode == "digest" {
+        request.entries.len()
+    } else {
+        1
+    };
+    let parsed = output
+        .filter(|out| out.exit_code == Some(0) && out.stdout.len() <= WSL_FILES_OUTPUT_BYTES)
+        .and_then(|out| {
+            let mut records = Records {
+                bytes: &out.stdout,
+                at: 0,
+            };
+            let results: Option<Vec<FileResult>> = (0..count)
+                .map(|at| files_result(&mut records, request, at))
+                .collect();
+            results.filter(|_| records.at == out.stdout.len())
+        });
+    parsed.unwrap_or_else(|| {
+        (0..count)
+            .map(|_| reply::wsl_error(0, "other-error"))
             .collect()
     })
 }
@@ -1592,7 +1895,8 @@ mod tests {
 
     /// The facts of `super::file_facts_reply` in their wire form.
     fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: bool) -> Vec<Value> {
-        let facts = super::file_facts_reply(output, entries, digest);
+        let (facts, index) = super::file_facts_reply(output, entries, digest, None);
+        assert!(index.is_none());
         facts.iter().map(|fact| json!(fact)).collect()
     }
 
@@ -1609,6 +1913,7 @@ mod tests {
             systemd_run: "/usr/bin/systemd-run".to_string(),
             systemctl: "/usr/bin/systemctl".to_string(),
             setsid: "/usr/bin/setsid".to_string(),
+            sha256sum: "/usr/bin/sha256sum".to_string(),
         }
     }
 
@@ -2836,6 +3141,7 @@ mod tests {
             true,
             &roots,
             &entries(&[(1, &["hooks", "pre-commit"]), (0, &["a b"])]),
+            None,
             &base(),
         );
         let mut arguments = strings(&["-e", &json_text("fileFacts"), "--", "1"]);
@@ -3161,6 +3467,9 @@ mod tests {
                 .expect("systemctl")
                 .to_string(),
             setsid: setsid.to_string(),
+            sha256sum: probe_fact(&text, "path sha256sum ")
+                .expect("sha256sum")
+                .to_string(),
         })
     }
 
@@ -3229,6 +3538,8 @@ mod tests {
             ("magic env", "-"),
             ("path perl", "/usr/bin/perl"),
             ("magic perl", "-"),
+            ("path sha256sum", "/usr/bin/sha256sum"),
+            ("magic sha256sum", "-"),
             ("pathenv", "/usr/local/bin:/usr/bin:/mnt/c/Windows/system32"),
             ("osid", "ubuntu"),
             ("version", "git version 2.55.0"),
@@ -3270,6 +3581,7 @@ mod tests {
                 systemd_run: "/usr/bin/systemd-run".to_string(),
                 systemctl: "/usr/bin/systemctl".to_string(),
                 setsid: "/usr/bin/setsid".to_string(),
+                sha256sum: "/usr/bin/sha256sum".to_string(),
             }
         );
         assert_eq!(bound.version, "2.55.0");
@@ -3332,6 +3644,11 @@ mod tests {
             // gaps.md W3: `/usr/bin/perl`.
             &[("path perl", None)],
             &[("magic perl", Some("MZ"))],
+            // T325: `/usr/bin/sha256sum` (contract §11 "Git per distro").
+            &[("path sha256sum", None)],
+            &[("magic sha256sum", Some("MZ"))],
+            &[("path sha256sum", Some("/mnt/c/Tools/sha256sum.exe"))],
+            &[("absent", Some("sha256sum"))],
             // A program is either absent or found, never both.
             &[("absent", Some("perl"))],
             &[("absent", Some("git"))],

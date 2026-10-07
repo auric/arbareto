@@ -39,9 +39,13 @@ use crate::schema::process_reply::{
     FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
     FileFactsReplyFactsItem as Fact,
 };
-use crate::schema::process_request::{FileFacts, FileFactsFilesItem, FileFactsFilesItemRoot};
+use crate::schema::process_request::{
+    FileFacts, FileFactsFilesItem, FileFactsFilesItemRoot, WslFilesDigestBound,
+    WslFilesDigestFilesItemRoot, WslFilesGroup,
+};
 use crate::schema::reply::{digest as digest_text, error_fact, last_write, link_fact};
 use crate::settings::{hex, sha256};
+use crate::wsl::{FactEntry, FilesRequest};
 
 const INVALID: Code = Code::InvalidRequest;
 /// Contract §5 "File facts".
@@ -57,13 +61,16 @@ pub(crate) struct Request<'a> {
     pub(crate) digest: bool,
     /// The index of the `walk` root and the name components of each entry.
     pub(crate) files: Vec<(usize, Vec<String>)>,
+    /// WSL only: `Some` with the shared index hash of `index` (contract §6 "Index digest in a read").
+    pub(crate) index: Option<Option<&'a str>>,
 }
 
 /// The fields of a `fileFacts` frame. It reads no file.
 pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
-    // typify drops the `contextKind` const and the array bounds.
+    // typify drops the `contextKind` const, the array bounds, and the `index` rule.
     if request.context_kind != "registeredOperation"
         || !(1..=ENTRIES).contains(&request.files.len())
+        || (request.index.is_some() && request.digest)
     {
         return Err(INVALID);
     }
@@ -71,6 +78,261 @@ pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
         operation_id: &request.operation_id,
         digest: request.digest,
         files: request.files.iter().map(entry).collect::<Result<_, _>>()?,
+        index: request
+            .index
+            .as_ref()
+            .map(|index| index.shared_index.as_deref().map(String::as_str)),
+    })
+}
+
+/// Contract §6 "WSL file work": the bound names of the modes.
+const COMPARED: &str = "COMPARED_RAW_VERSION_BYTES";
+const WHOLE: &str = "WHOLE_FILE_STAGE_INPUT_BYTES";
+const INDEX: &str = "MUTATION_RAW_INDEX_BYTES";
+/// Contract §6 "Channel frames" `indexFile`: the candidate name prefix.
+const CANDIDATE_PREFIX: &str = "arbareto-candidate-";
+
+/// The name components of one entry by the component rule.
+fn names<T: std::ops::Deref<Target = String>>(path: &[T]) -> Result<Vec<String>, Code> {
+    if path.is_empty() || !path.iter().all(|name| is_component(name)) {
+        return Err(INVALID);
+    }
+    Ok(path.iter().map(|name| name.to_string()).collect())
+}
+
+/// One `worktreeRoot` entry of `hashObject` or `catFile`.
+fn worktree_entry<T: std::ops::Deref<Target = String>>(
+    root: &str,
+    path: &[T],
+) -> Result<FactEntry, Code> {
+    if root != "worktreeRoot" {
+        return Err(INVALID);
+    }
+    Ok(FactEntry {
+        root: 0,
+        path: names(path)?,
+    })
+}
+
+/// A candidate name: one component with the candidate prefix, in the Git directory.
+fn candidate(name: &str) -> Result<String, Code> {
+    if !is_component(name) || !name.starts_with(CANDIDATE_PREFIX) {
+        return Err(INVALID);
+    }
+    Ok(name.to_string())
+}
+
+/// The operation, Git, and repository IDs of a registered request.
+fn ids<'a>(
+    context: &str,
+    operation: &'a str,
+    git: &'a str,
+    repository: &'a str,
+) -> Result<[&'a str; 3], Code> {
+    (context == "registeredOperation")
+        .then_some([operation, git, repository])
+        .ok_or(INVALID)
+}
+
+/// The fields of a `wslFiles` frame: the operation, Git, and repository IDs, and the checked request. It reads no file.
+/// typify drops the `contextKind`, `bound`, and `root` constants, the array bounds, the 64-bit bound of the lock texts, and the candidate rule.
+pub(crate) fn wsl_files_request(
+    request: &WslFilesGroup,
+) -> Result<([&str; 3], FilesRequest), Code> {
+    use WslFilesGroup as G;
+    let only =
+        |bound: &str, wanted: &'static str| (bound == wanted).then_some(wanted).ok_or(INVALID);
+    let files = |mode, bound, entries, fields| FilesRequest {
+        mode,
+        bound,
+        entries,
+        fields,
+        shared: false,
+    };
+    Ok(match request {
+        G::Digest {
+            bound,
+            files: entries,
+            context_kind,
+            operation_id,
+            git_installation_id,
+            repository_id,
+            ..
+        } => {
+            let whole = matches!(bound, WslFilesDigestBound::WholeFileStageInputBytes);
+            let most = if whole { 1 } else { ENTRIES };
+            if !(1..=most).contains(&entries.len()) {
+                return Err(INVALID);
+            }
+            let entries = entries
+                .iter()
+                .map(|entry| {
+                    let root = match entry.root {
+                        WslFilesDigestFilesItemRoot::WorktreeRoot => 0,
+                        WslFilesDigestFilesItemRoot::GitDirectory => 1,
+                        WslFilesDigestFilesItemRoot::CommonDirectory => 2,
+                    };
+                    Ok(FactEntry {
+                        root,
+                        path: names(&entry.path)?,
+                    })
+                })
+                .collect::<Result<_, Code>>()?;
+            let ids = ids(
+                context_kind,
+                operation_id,
+                git_installation_id,
+                repository_id,
+            )?;
+            (
+                ids,
+                files(
+                    "digest",
+                    if whole { WHOLE } else { COMPARED },
+                    entries,
+                    vec![],
+                ),
+            )
+        }
+        G::IndexDigest {
+            bound,
+            shared_index,
+            context_kind,
+            operation_id,
+            git_installation_id,
+            repository_id,
+            ..
+        } => {
+            let ids = ids(
+                context_kind,
+                operation_id,
+                git_installation_id,
+                repository_id,
+            )?;
+            let fields: Vec<String> = shared_index.iter().map(|hash| hash.to_string()).collect();
+            let mut request = files("indexDigest", only(bound, INDEX)?, vec![], fields);
+            request.shared = shared_index.is_some();
+            (ids, request)
+        }
+        G::HashObject {
+            bound,
+            files: [entry],
+            context_kind,
+            operation_id,
+            git_installation_id,
+            repository_id,
+            ..
+        } => {
+            let ids = ids(
+                context_kind,
+                operation_id,
+                git_installation_id,
+                repository_id,
+            )?;
+            let entry = worktree_entry(&entry.root, &entry.path)?;
+            (
+                ids,
+                files("hashObject", only(bound, WHOLE)?, vec![entry], vec![]),
+            )
+        }
+        G::CatFile {
+            bound,
+            files: [entry],
+            oid,
+            size,
+            context_kind,
+            operation_id,
+            git_installation_id,
+            repository_id,
+            ..
+        } => {
+            let ids = ids(
+                context_kind,
+                operation_id,
+                git_installation_id,
+                repository_id,
+            )?;
+            let limit = crate::wsl::bound_bytes(WHOLE).and_then(|n| i64::try_from(n).ok());
+            if !(0..=limit.ok_or(INVALID)?).contains(size) {
+                return Err(INVALID);
+            }
+            let entry = worktree_entry(&entry.root, &entry.path)?;
+            let fields = vec![oid.to_string(), size.to_string()];
+            (
+                ids,
+                files("catFile", only(bound, WHOLE)?, vec![entry], fields),
+            )
+        }
+        G::Lock {
+            bound,
+            context_kind,
+            operation_id,
+            git_installation_id,
+            repository_id,
+            ..
+        } => {
+            let ids = ids(
+                context_kind,
+                operation_id,
+                git_installation_id,
+                repository_id,
+            )?;
+            (ids, files("lock", only(bound, INDEX)?, vec![], vec![]))
+        }
+        G::Candidate {
+            bound,
+            candidate: name,
+            context_kind,
+            operation_id,
+            git_installation_id,
+            repository_id,
+            ..
+        } => {
+            let ids = ids(
+                context_kind,
+                operation_id,
+                git_installation_id,
+                repository_id,
+            )?;
+            (
+                ids,
+                files(
+                    "candidate",
+                    only(bound, INDEX)?,
+                    vec![],
+                    vec![candidate(name)?],
+                ),
+            )
+        }
+        G::Publish {
+            bound,
+            candidate: name,
+            lock,
+            expected,
+            context_kind,
+            operation_id,
+            git_installation_id,
+            repository_id,
+            ..
+        } => {
+            let ids = ids(
+                context_kind,
+                operation_id,
+                git_installation_id,
+                repository_id,
+            )?;
+            // The pattern keeps the decimal form. The value must fit in 64 bits.
+            if lock.device.parse::<u64>().is_err() || lock.inode.parse::<u64>().is_err() {
+                return Err(INVALID);
+            }
+            let fields = vec![
+                candidate(name)?,
+                lock.device.to_string(),
+                lock.inode.to_string(),
+                expected.to_string(),
+            ];
+            (ids, files("publish", only(bound, INDEX)?, vec![], fields))
+        }
     })
 }
 
@@ -91,7 +353,7 @@ fn entry(entry: &FileFactsFilesItem) -> Result<(usize, Vec<String>), Code> {
 }
 
 /// The Windows rule of `isComponent` in `src/contracts/native-path.ts`, within 1 to 255 UTF-16 units.
-fn is_component(name: &str) -> bool {
+pub(crate) fn is_component(name: &str) -> bool {
     // A reserved device name decides by the part before the first period, with ASCII letters folded.
     let stem = name.split('.').next().unwrap_or(name).to_ascii_lowercase();
     let numbered = |rest: &str| {

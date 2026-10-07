@@ -1,0 +1,5 @@
+{
+  "schema": "process-reply",
+  "expected": "valid",
+  "text": "{\"type\":\"wslFiles\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"results\":[{\"kind\":\"file\",\"size\":3,\"changed\":false,\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},{\"kind\":\"file\",\"size\":1048577,\"changed\":true,\"bound\":\"COMPARED_RAW_VERSION_BYTES\"},{\"kind\":\"link\",\"component\":1,\"targetBytes\":\"/w==\",\"sha256\":\"a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89\"},{\"kind\":\"link\",\"component\":1},{\"kind\":\"directory\"},{\"kind\":\"absent\"},{\"kind\":\"other\"},{\"kind\":\"error\",\"component\":2,\"code\":\"access-denied\"}]}"
+}

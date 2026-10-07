@@ -637,6 +637,7 @@ impl ProcessRequests {
             Some("cancel") => self.cancel(&typed(request).ok_or(INVALID)?),
             Some("identity") => self.identity(&typed(request).ok_or(INVALID)?, call()?),
             Some("fileFacts") => self.file_facts(&typed(request).ok_or(INVALID)?, call()?),
+            Some("wslFiles") => self.wsl_files(&typed(request).ok_or(INVALID)?, call()?),
             Some("lingeringCount") => {
                 self.lingering_count(&typed(request).ok_or(INVALID)?, call()?)
             }
@@ -1306,8 +1307,8 @@ impl ProcessRequests {
                 read_at,
             );
         }
-        // A Windows Git never reads a WSL repository (contract §11 "Route").
-        if roots.iter().any(|root| file_facts::is_wsl_path(root)) {
+        // A Windows Git never reads a WSL repository (contract §11 "Route"). The Windows shell refuses `index`.
+        if roots.iter().any(|root| file_facts::is_wsl_path(root)) || parsed.index.is_some() {
             return Err(INVALID);
         }
         let (digest, files, call) = (parsed.digest, parsed.files, call_id.to_string());
@@ -1324,7 +1325,7 @@ impl ProcessRequests {
                     &files,
                     &stop.flag,
                 );
-                reply_with(reply::file_facts(&call, facts))
+                reply_with(reply::file_facts(&call, facts, None))
             },
             || {},
         )
@@ -2069,6 +2070,7 @@ impl ProcessRequests {
             parsed.digest,
             &roots,
             &entries,
+            parsed.index,
             &self.config.base_environment,
         );
         command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
@@ -2079,6 +2081,7 @@ impl ProcessRequests {
             call_id.to_string(),
             parsed.digest,
         );
+        let index = parsed.index.map(|shared| shared.is_some());
         let deadline = self.walk_bound();
         self.spawn_walk(
             state,
@@ -2095,8 +2098,73 @@ impl ProcessRequests {
                     deadline,
                     stop.event.0,
                 );
-                let facts = wsl::file_facts_reply(ended.output, &entries, digest);
-                reply_with(reply::file_facts(&call, facts))
+                let (facts, index) = wsl::file_facts_reply(ended.output, &entries, digest, index);
+                reply_with(reply::file_facts(&call, facts, index))
+            },
+            || {},
+        )
+    }
+
+    /// Contract §6 "WSL file work": the fields, the target, then the Perl text of the request on its walk thread.
+    fn wsl_files(&self, request: &frame::WslFilesGroup, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
+        let (ids, files) = file_facts::wsl_files_request(request)?;
+        let [operation_id, git, repository] = ids;
+        let mut state = self.state();
+        check_active(&state, operation_id)?;
+        let target = self.target(
+            &mut state,
+            [None, Some(git), Some(repository)],
+            Kind::Registered,
+            operation_id,
+        )?;
+        let repository = state.repositories.get(repository).ok_or(UNKNOWN)?;
+        // Only a WSL repository takes `wslFiles`.
+        let Some((installation, _)) = target.wsl else {
+            return Err(INVALID);
+        };
+        let roots: [String; 3] = [
+            &repository.worktree_root,
+            &repository.git_directory,
+            &repository.common_directory,
+        ]
+        .map(|root| wsl::linux_path(root, &installation.distro).unwrap_or_default());
+        if roots.iter().any(String::is_empty) {
+            return Err(INVALID);
+        }
+        let n = Self::next_unit(&mut state, operation_id);
+        let unit = wsl::unit_name(operation_id, n)?;
+        let command = wsl::wsl_files_command(
+            &installation,
+            &unit,
+            &roots,
+            &files,
+            &self.config.base_environment,
+        );
+        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (operation, call) = (operation_id.to_string(), call_id.to_string());
+        let deadline = self.walk_bound();
+        self.spawn_walk(
+            &mut state,
+            Reply::Walk(reply::wsl_files_deadline),
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let host = me.wsl_host(&operation);
+                // One byte above the cap shows output past it.
+                let ended = host.run_walk(
+                    &command,
+                    wsl::WSL_FILES_OUTPUT_BYTES + 1,
+                    deadline,
+                    stop.event.0,
+                );
+                reply_with(reply::wsl_files(
+                    &call,
+                    wsl::wsl_files_reply(ended.output, &files),
+                ))
             },
             || {},
         )
@@ -2555,7 +2623,7 @@ pub(crate) fn is_identifier(id: &str) -> bool {
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Standard base64 with padding (contract §6 "Channel frames").
-fn encode_base64(bytes: &[u8]) -> String {
+pub(crate) fn encode_base64(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for group in bytes.chunks(3) {
         let n = group
@@ -5223,6 +5291,8 @@ pub(crate) mod tests {
             ("magic env", "-"),
             ("path perl", "/usr/bin/perl"),
             ("magic perl", "-"),
+            ("path sha256sum", "/usr/bin/sha256sum"),
+            ("magic sha256sum", "-"),
             ("pathenv", "/usr/bin"),
             ("version", "git version 2.55.0"),
             ("gitfs", "ef53:fedc9aa3bd65bc57"),
@@ -5663,6 +5733,363 @@ pub(crate) mod tests {
         );
         std::thread::sleep(Duration::from_millis(500));
         assert!(wsl.harness.replies_for(&call).is_empty(), "no reply");
+    }
+
+    // ---- T325: WSL file work (contract §6 "WSL file work", "Index digest in a read") ----
+
+    const HEX_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    /// The SHA-256 of the one byte 0xff.
+    const HEX_FF: &str = "a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89";
+
+    /// A registered WSL repository whose walks take the scripted outputs.
+    fn wsl_repository(wsl: &WslHarness) -> (String, String) {
+        let (operation, bootstrap_id, git) = bound_wsl(wsl);
+        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        let (call, repository) = (uuid(), uuid());
+        let git_directory = format!(r"{WSL_PATH}\.git");
+        wsl.harness.send(json!({ "type": "register", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory }));
+        assert_eq!(wsl.harness.reply(&call)["result"], "approved");
+        (git, repository)
+    }
+
+    fn wsl_files_body(call: &str, git: &str, repository: &str, fields: Value) -> Value {
+        let mut body = json!({
+            "type": "wslFiles", "callId": call, "operationId": uuid(), "contextKind": "registeredOperation",
+            "gitInstallationId": git, "repositoryId": repository,
+        });
+        let Value::Object(fields) = fields else {
+            panic!("fields")
+        };
+        body.as_object_mut().expect("body").extend(fields);
+        body
+    }
+
+    fn lock_fields() -> Value {
+        json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES" })
+    }
+
+    fn stdin_of(command: &wsl::Command) -> Vec<u8> {
+        match &command.stdin {
+            wsl::Stdin::Bytes(bytes) => bytes.clone(),
+            other => panic!("stdin bytes, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_wsl_files_request_runs_the_perl_text_with_the_bound_and_maps_its_records() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let mut records =
+            format!("file\x003\x000\x00sha256\x00{HEX_A}\x00link\x001\x001\x00").into_bytes();
+        records.push(0xff);
+        records.extend_from_slice(b"file\x001048577\x001\x00bound\x00");
+        wsl.host.push(0, &records);
+        let call = uuid();
+        wsl.harness.send(wsl_files_body(
+            &call,
+            &git,
+            &repository,
+            json!({ "mode": "digest", "bound": "COMPARED_RAW_VERSION_BYTES", "files": [
+                { "root": "worktreeRoot", "path": ["a.txt"] },
+                { "root": "worktreeRoot", "path": ["l"] },
+                { "root": "gitDirectory", "path": ["hooks", "big"] },
+            ] }),
+        ));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "wslFiles", "callId": call, "results": [
+                { "kind": "file", "size": 3, "changed": false, "sha256": HEX_A },
+                { "kind": "link", "component": 1, "targetBytes": "/w==", "sha256": HEX_FF },
+                { "kind": "file", "size": 1_048_577, "changed": true, "bound": "COMPARED_RAW_VERSION_BYTES" },
+            ] })
+        );
+        let probe = wsl.host.commands().last().expect("Perl text").clone();
+        let texts = wsl::texts();
+        assert!(probe.arguments.contains(&texts.wsl_files));
+        assert!(probe.arguments.ends_with(&[
+            "--".to_string(),
+            "digest".to_string(),
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/usr/bin/git".to_string(),
+            "/usr/bin/sha256sum".to_string(),
+        ]));
+        assert_eq!(
+            stdin_of(&probe),
+            b"1048576\x000\x001\x00a.txt\x000\x001\x00l\x001\x002\x00hooks\x00big\x00"
+        );
+
+        // A mode with fields sends them after the bound. A failed probe gives the one result `error` 0 `other-error`.
+        wsl.host.push(1, b"");
+        let call = uuid();
+        wsl.harness.send(wsl_files_body(&call, &git, &repository, json!({
+            "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7",
+            "lock": { "device": "2112", "inode": "57001" }, "expected": HEX_A,
+        })));
+        assert_eq!(
+            wsl.harness.reply(&call)["results"],
+            json!([{ "kind": "error", "component": 0, "code": "other-error" }])
+        );
+        let probe = wsl.host.commands().last().expect("Perl text").clone();
+        assert_eq!(
+            stdin_of(&probe),
+            format!("67108864\x00arbareto-candidate-7\x002112\x0057001\x00{HEX_A}\x00")
+                .into_bytes()
+        );
+    }
+
+    #[test]
+    fn each_wsl_files_mode_maps_its_records_and_a_broken_record_gives_other_error() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let entry = json!([{ "root": "worktreeRoot", "path": ["src", "a.txt"] }]);
+        let oid = "b".repeat(40);
+        let cases = [
+            (
+                json!({ "mode": "indexDigest", "bound": "MUTATION_RAW_INDEX_BYTES", "sharedIndex": oid }),
+                format!("index\x00digest\x00104\x00{HEX_A}\x00bound\x00"),
+                json!({ "kind": "index", "index": { "kind": "digest", "size": 104, "sha256": HEX_A }, "sharedIndex": { "kind": "bound" } }),
+            ),
+            (
+                json!({ "mode": "hashObject", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": entry }),
+                format!("object\x0012\x00{HEX_A}\x00{oid}\x00exit\x000\x00exit\x000\x00"),
+                json!({ "kind": "object", "size": 12, "sha256": HEX_A, "oid": oid, "gitExit": { "exitCode": 0 }, "hashExit": { "exitCode": 0 } }),
+            ),
+            (
+                json!({ "mode": "hashObject", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": entry }),
+                format!("object\x0012\x00{HEX_A}\x00none\x00exit\x00128\x00exit\x000\x00"),
+                json!({ "kind": "object", "size": 12, "sha256": HEX_A, "gitExit": { "exitCode": 128 }, "hashExit": { "exitCode": 0 } }),
+            ),
+            (
+                json!({ "mode": "catFile", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": entry, "oid": oid, "size": 0 }),
+                format!("blob\x001\x00{HEX_A}\x001\x00signal\x0013\x00exit\x000\x00"),
+                json!({ "kind": "blob", "size": 1, "sha256": HEX_A, "over": true, "gitExit": { "signal": 13 }, "hashExit": { "exitCode": 0 } }),
+            ),
+            (
+                lock_fields(),
+                "lock\x002112\x0057001\x00".to_string(),
+                json!({ "kind": "lock", "device": "2112", "inode": "57001" }),
+            ),
+            (
+                lock_fields(),
+                "locked\x00".to_string(),
+                json!({ "kind": "locked" }),
+            ),
+            (
+                json!({ "mode": "candidate", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7" }),
+                format!(
+                    "candidate\x00104\x00{HEX_A}\x001791410531\x00104\x00{HEX_A}\x001791410530\x00"
+                ),
+                json!({ "kind": "candidate", "index": { "size": 104, "sha256": HEX_A, "mtime": "1791410531" }, "candidate": { "size": 104, "sha256": HEX_A, "mtime": "1791410530" } }),
+            ),
+            (
+                json!({ "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7", "lock": { "device": "1", "inode": "2" }, "expected": HEX_A }),
+                "notOwned\x00".to_string(),
+                json!({ "kind": "notOwned" }),
+            ),
+            // Broken records: a kind of another mode, an exit form without its number, a lock with a leading zero, and trailing bytes.
+            (
+                lock_fields(),
+                "mismatch\x00".to_string(),
+                json!({ "kind": "error", "component": 0, "code": "other-error" }),
+            ),
+            (
+                json!({ "mode": "catFile", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": entry, "oid": oid, "size": 0 }),
+                format!("blob\x001\x00{HEX_A}\x001\x00signal\x00exit\x000\x00"),
+                json!({ "kind": "error", "component": 0, "code": "other-error" }),
+            ),
+            (
+                lock_fields(),
+                "lock\x0002\x003\x00".to_string(),
+                json!({ "kind": "error", "component": 0, "code": "other-error" }),
+            ),
+            (
+                lock_fields(),
+                "locked\x00locked\x00".to_string(),
+                json!({ "kind": "error", "component": 0, "code": "other-error" }),
+            ),
+        ];
+        for (fields, records, result) in cases {
+            wsl.host.push(0, records.as_bytes());
+            let call = uuid();
+            wsl.harness
+                .send(wsl_files_body(&call, &git, &repository, fields.clone()));
+            assert_eq!(
+                wsl.harness.reply(&call)["results"],
+                json!([result]),
+                "{fields} {records:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wsl_file_facts_request_with_index_passes_sha256sum_and_the_shared_hash_and_replies_the_index()
+     {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let oid = "c".repeat(64);
+        wsl.host.push(
+            0,
+            format!("absent\0index\0digest\x00104\x00{HEX_A}\0absent\0").as_bytes(),
+        );
+        let call = uuid();
+        let mut body = wsl_facts_body(&call, &uuid(), &git, &repository);
+        body["index"] = json!({ "sharedIndex": oid });
+        wsl.harness.send(body);
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "fileFacts", "callId": call, "facts": [{ "kind": "absent" }],
+                "index": { "kind": "index", "index": { "kind": "digest", "size": 104, "sha256": HEX_A }, "sharedIndex": { "kind": "absent" } } })
+        );
+        let probe = wsl.host.commands().last().expect("Perl probe").clone();
+        assert!(probe.arguments.ends_with(&[
+            "0".to_string(),
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/usr/bin/sha256sum".to_string(),
+            oid,
+        ]));
+
+        // Without a shared hash, the probe gets sha256sum alone. A failed probe gives the index `error` 0 `other-error` too.
+        wsl.host.push(2, b"");
+        let call = uuid();
+        let mut body = wsl_facts_body(&call, &uuid(), &git, &repository);
+        body["index"] = json!({});
+        wsl.harness.send(body);
+        let error = json!({ "kind": "error", "component": 0, "code": "other-error" });
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "fileFacts", "callId": call, "facts": [error], "index": error })
+        );
+        let probe = wsl.host.commands().last().expect("Perl probe").clone();
+        assert_eq!(
+            probe.arguments.last(),
+            Some(&"/usr/bin/sha256sum".to_string())
+        );
+    }
+
+    #[test]
+    fn wsl_files_and_index_that_break_a_rule_are_refused_before_any_process() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let entry = json!({ "root": "worktreeRoot", "path": ["a"] });
+        let before = wsl.host.commands().len();
+        let refusals = [
+            json!({ "mode": "digest", "bound": "COMPARED_RAW_VERSION_BYTES", "files": vec![entry.clone(); 65] }),
+            json!({ "mode": "digest", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": [entry, entry] }),
+            json!({ "mode": "digest", "bound": "MUTATION_RAW_INDEX_BYTES", "files": [entry] }),
+            json!({ "mode": "digest", "bound": "COMPARED_RAW_VERSION_BYTES", "files": [{ "root": "worktreeRoot", "path": ["a:b"] }] }),
+            json!({ "mode": "lock", "bound": "COMPARED_RAW_VERSION_BYTES" }),
+            json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1" }),
+            json!({ "mode": "lock" }),
+            json!({ "mode": "hashObject", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": [{ "root": "gitDirectory", "path": ["index"] }] }),
+            json!({ "mode": "catFile", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": [entry], "oid": "b".repeat(40), "size": 536_870_913 }),
+            json!({ "mode": "candidate", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "candidate-1" }),
+            json!({ "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1", "lock": { "device": "01", "inode": "2" }, "expected": HEX_A }),
+            json!({ "mode": "indexDigest", "bound": "MUTATION_RAW_INDEX_BYTES", "sharedIndex": "B".repeat(40) }),
+        ];
+        for fields in refusals {
+            let call = uuid();
+            wsl.harness
+                .send(wsl_files_body(&call, &git, &repository, fields.clone()));
+            assert_eq!(
+                wsl.harness.reply(&call),
+                refused(&call, "INVALID_REQUEST"),
+                "{fields}"
+            );
+        }
+        // Another context kind.
+        let call = uuid();
+        let mut body = wsl_files_body(&call, &git, &repository, lock_fields());
+        body["contextKind"] = json!("repositoryDiscovery");
+        body["bootstrapId"] = json!(uuid());
+        wsl.harness.send(body);
+        assert_eq!(wsl.harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+        // `index` with `digest: true`.
+        let call = uuid();
+        let mut body = wsl_facts_body(&call, &uuid(), &git, &repository);
+        body["digest"] = json!(true);
+        body["index"] = json!({});
+        wsl.harness.send(body);
+        assert_eq!(wsl.harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+        assert_eq!(wsl.host.commands().len(), before, "no process");
+
+        // A released repository gets UNKNOWN_TARGET.
+        wsl.harness
+            .send(json!({ "type": "release", "repositoryId": repository }));
+        let call = uuid();
+        wsl.harness
+            .send(wsl_files_body(&call, &git, &repository, lock_fields()));
+        assert_eq!(wsl.harness.reply(&call), refused(&call, "UNKNOWN_TARGET"));
+    }
+
+    #[test]
+    fn the_windows_shell_refuses_wsl_files_and_index_for_a_windows_repository() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let call = uuid();
+        harness.send(wsl_files_body(
+            &call,
+            &workspace.git,
+            &workspace.repository,
+            lock_fields(),
+        ));
+        assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+        let call = uuid();
+        let mut body = file_facts_body(
+            &call,
+            &workspace,
+            json!([{ "root": "gitDirectory", "path": ["hooks"] }]),
+        );
+        body["digest"] = json!(false);
+        body["index"] = json!({});
+        harness.send(body);
+        assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+    }
+
+    #[test]
+    fn a_wsl_files_walk_ends_by_deadline_cancel_or_close_job_and_only_the_deadline_replies() {
+        let wsl = wsl_harness_with(true, short_harness());
+        let (git, repository) = slow_wsl_repository(&wsl);
+        let (call, operation) = (uuid(), uuid());
+        let mut body = wsl_files_body(&call, &git, &repository, lock_fields());
+        body["operationId"] = json!(operation);
+        wsl.harness.send(body);
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "wslFiles", "callId": call, "deadline": "deadline" })
+        );
+        assert!(eventually(CLOSE_WAIT, || wsl
+            .harness
+            .jobs
+            .active_processes(&operation)
+            == Some(0)));
+        // The default walk deadline leaves time for the stop.
+        let wsl = wsl_harness(true);
+        let (git, repository) = slow_wsl_repository(&wsl);
+        for stop in ["cancel", "closeJob"] {
+            let (call, operation) = (uuid(), uuid());
+            let mut body = wsl_files_body(&call, &git, &repository, lock_fields());
+            body["operationId"] = json!(operation);
+            wsl.harness.send(body);
+            assert!(walk_child_started(&wsl, &operation), "{stop}");
+            wsl.harness.send(if stop == "cancel" {
+                json!({ "type": "cancel", "callId": call })
+            } else {
+                json!({ "type": "closeJob", "operationId": operation })
+            });
+            assert!(
+                eventually(CLOSE_WAIT, || wsl.harness.requests.active_walks() == 0),
+                "{stop}"
+            );
+            std::thread::sleep(Duration::from_millis(500));
+            assert!(
+                wsl.harness.replies_for(&call).is_empty(),
+                "{stop}: no reply"
+            );
+        }
     }
 
     // ---- T314: WSL frame walks ----

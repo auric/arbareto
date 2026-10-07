@@ -281,7 +281,7 @@ function lockOwnerDead(lock: string): boolean {
 }
 
 // Builders in other worktrees share the cache root, so `mkdir` of the lock folder is the exclusive claim.
-function acquireLock(lock: string): void {
+export function acquireLock(lock: string): void {
   const deadline = Date.now() + 2 * LOCK_STALE_MS;
   for (;;) {
     try {

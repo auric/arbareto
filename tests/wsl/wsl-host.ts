@@ -397,9 +397,15 @@ export function uncPath(host: Pick<WslHost, "distro">, linuxPath: string, prefix
 
 // ---- Scopes and processes ----
 
-export function listScopes(host: WslHost, pattern = "arbareto-*"): string[] {
-  const out = inDistro(host.distro, [host.probe.paths.systemctl ?? "/usr/bin/systemctl", "--user", "list-units", "--all", "--no-legend", "--plain", pattern]);
-  return out.split("\n").filter((l) => l.trim() !== "").map((l) => l.trim().split(/\s+/)[0]!);
+// The operation IDs of the scopes that the T316 double of this process started. `tests/git/bun-runner.ts` names each unit `arbareto-<operation ID>-<n>.scope`.
+// Other test processes share the distro user manager, so only these units belong to this process.
+export const OWN_SCOPE_OPERATIONS = new Set<string>();
+const OWN_UNIT = /^arbareto-(.+)-\d+\.scope$/;
+
+export function listScopes(host: WslHost): string[] {
+  const out = inDistro(host.distro, [host.probe.paths.systemctl ?? "/usr/bin/systemctl", "--user", "list-units", "--all", "--no-legend", "--plain", "arbareto-*"]);
+  const units = out.split("\n").filter((l) => l.trim() !== "").map((l) => l.trim().split(/\s+/)[0]!);
+  return units.filter((u) => OWN_SCOPE_OPERATIONS.has(u.match(OWN_UNIT)?.[1] ?? ""));
 }
 
 export function pgrep(host: WslHost, pattern: string): string[] {

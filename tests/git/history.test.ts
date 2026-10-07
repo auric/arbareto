@@ -13,7 +13,8 @@ import { createWorkspaceReader } from "../../src/git-service/status";
 import { createTrust } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXED_IDENTITY, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
-import { buildF01, buildF16History, buildF17, buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
+import { cachedF16History } from "../windows/fixture-cache";
+import { buildF01, buildF17, buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
 import { GIT } from "./git-binary";
 import { refState } from "./git-oracle";
 import { caseTest, once, openService, type HistoryResult, type Service, type ServiceResponse } from "./service-harness";
@@ -244,7 +245,7 @@ describe("F16 history bounds (contract §5)", () => {
       ["shell-double"],
       () =>
         withService(`t070-f16-${variant}`, async (service) => {
-          const built = buildF16History(gitPath(), `t070-f16-${variant}`, variant);
+          const built = cachedF16History(gitPath(), `t070-f16-${variant}`, variant).built;
           const repo = repoOf(built);
           const tip = (built.facts.notes.commits as Record<string, string>).tip!;
           const expected = oracleRows(repo, tip);
@@ -276,7 +277,7 @@ describe("F16 history bounds (contract §5)", () => {
     ["shell-double"],
     () =>
       withService("t070-f16-page-bytes", async (service) => {
-        const built = buildF16History(gitPath(), "t070-f16-page-bytes", "page-bytes");
+        const built = cachedF16History(gitPath(), "t070-f16-page-bytes", "page-bytes").built;
         const repo = repoOf(built);
         const tip = (built.facts.notes.commits as Record<string, string>).tip!;
         const expected = oracleRows(repo, tip);
@@ -301,7 +302,7 @@ describe("F16 history bounds (contract §5)", () => {
     ["shell-double"],
     () =>
       withService("t070-f16-first-bound", async (service) => {
-        const built = buildF16History(gitPath(), "t070-f16-first-bound", "page-bytes");
+        const built = cachedF16History(gitPath(), "t070-f16-first-bound", "page-bytes").built;
         const repo = repoOf(built);
         const tip = (built.facts.notes.commits as Record<string, string>).tip!;
         const expected = oracleRows(repo, tip);

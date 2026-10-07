@@ -11,7 +11,8 @@ import { createWorkspaceReader, hasPromisor } from "../../src/git-service/status
 import { createTrust, type ConfigEntry } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
-import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, buildF16Status, F16_STATUS_RECORDS, put, type Built } from "./fixtures";
+import { cachedF16Status } from "../windows/fixture-cache";
+import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, F16_STATUS_RECORDS, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import type { CallMatch } from "./bun-runner";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
@@ -432,7 +433,7 @@ describe("F16 status bounds (contract §5)", () => {
     ["shell-double"],
     () =>
       withService("t069-f16-over", async (service) => {
-        const built = buildF16Status(gitPath(), "t069-f16-over", "over-limit");
+        const built = cachedF16Status(gitPath(), "t069-f16-over", "over-limit").built;
         expect(built.facts.notes.records).toBe(LIMITS.STATUS_LISTING_RECORDS + 1);
         const { repositoryId } = await service.register(f(built));
         const response = await service.readWorkspace(repositoryId);
@@ -452,7 +453,7 @@ describe("F16 status bounds (contract §5)", () => {
     ["shell-double"],
     () =>
       withService("t069-f16-at", async (service) => {
-        const built = buildF16Status(gitPath(), "t069-f16-at", "at-limit");
+        const built = cachedF16Status(gitPath(), "t069-f16-at", "at-limit").built;
         expect(F16_STATUS_RECORDS).toBe(LIMITS.STATUS_LISTING_RECORDS);
         const { repositoryId } = await service.register(f(built));
         const first = await service.readWorkspace(repositoryId);

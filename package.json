@@ -16,6 +16,8 @@
     "test:contracts": "bun test tests/contracts",
     "test:git": "bun test tests/git",
     "test:windows": "bun test tests/windows",
+    "test:all": "bun tests/run.ts full",
+    "test:fast": "bun tests/run.ts fast",
     "dev": "bun run build && cargo tauri dev --no-dev-server"
   },
   "dependencies": {

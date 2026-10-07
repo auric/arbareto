@@ -3,8 +3,8 @@
 
 // Test oracle. It shares no code with `src/git-service/`.
 
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { fixtureEnv } from "./fixture-root";
 
 // In-memory `ce_flags` bits from Git `read-cache-ll.h`. `ls-files --debug` prints that field in hexadecimal (builtin/ls-files.c `print_debug`). The debug format is not a stable interface, so T042 prints the Git version under test.
@@ -33,8 +33,9 @@ export interface RefState {
   headOid: string | null;
 }
 
-function git(gitPath: string, repo: string, args: string[], allowExit: number[] = [0]): Uint8Array {
-  const proc = Bun.spawnSync([gitPath, "--no-optional-locks", ...args], { cwd: repo, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+// `config` holds `-c` arguments, such as the `disarm` list of a fixture.
+function git(gitPath: string, repo: string, args: string[], allowExit: number[] = [0], config: string[] = [], env: Record<string, string> = {}): Uint8Array {
+  const proc = Bun.spawnSync([gitPath, "--no-optional-locks", ...config, ...args], { cwd: repo, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (!allowExit.includes(proc.exitCode)) throw new Error(`oracle git ${args.join(" ")} exited ${proc.exitCode}: ${proc.stderr.toString()}`);
   return proc.stdout;
 }
@@ -48,8 +49,8 @@ export function sha256(bytes: Uint8Array): string {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 
-export function indexEntries(gitPath: string, repo: string): IndexEntry[] {
-  const out = Buffer.from(git(gitPath, repo, ["ls-files", "-z", "--stage", "--debug"]));
+export function indexEntries(gitPath: string, repo: string, config: string[] = []): IndexEntry[] {
+  const out = Buffer.from(git(gitPath, repo, ["ls-files", "-z", "--stage", "--debug"], [0], config));
   const entries: IndexEntry[] = [];
   let at = 0;
   while (at < out.length) {
@@ -123,6 +124,38 @@ export function refState(gitExe: string, repo: string): RefState {
   const target = Buffer.from(git(gitExe, repo, ["symbolic-ref", "-q", "HEAD"], [0, 1])).toString("utf8").trim();
   const oid = Buffer.from(git(gitExe, repo, ["rev-parse", "--verify", "-q", "HEAD"], [0, 1])).toString("utf8").trim();
   return { refs, headTarget: target || null, headOid: oid || null };
+}
+
+export interface SubmoduleUpdateResult {
+  exitCode: number;
+  // Keys are display paths relative to the superproject, nested ones included.
+  heads: Record<string, string>;
+  // Absolute Git folders, relative to the copy, with `/`.
+  gitDirs: Record<string, string>;
+  // `submodule.*` keys of the superproject configuration, each with its values in file order.
+  keys: Record<string, string[]>;
+}
+
+// Git's own `submodule update --init --recursive` in a copy of `superDir`. `env` names the owned global file of the fixture.
+export function submoduleUpdateOracle(gitExe: string, superDir: string, copyDir: string, env: Record<string, string>): SubmoduleUpdateResult {
+  cpSync(superDir, copyDir, { recursive: true });
+  const update = Bun.spawnSync([gitExe, "submodule", "update", "--init", "--recursive"], { cwd: copyDir, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const heads: Record<string, string> = {};
+  const gitDirs: Record<string, string> = {};
+  const script = 'printf "%s\\0%s\\0%s\\0" "$displaypath" "$(git rev-parse HEAD)" "$(git rev-parse --absolute-git-dir)"';
+  const fields = Buffer.from(git(gitExe, copyDir, ["submodule", "foreach", "--quiet", "--recursive", script], [0, 1, 128], [], env)).toString("utf8").split("\0");
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    heads[fields[i]!] = fields[i + 1]!;
+    gitDirs[fields[i]!] = relative(copyDir, fields[i + 2]!).replaceAll("\\", "/");
+  }
+  const keys: Record<string, string[]> = {};
+  // `config -z`: each entry is "<key>\n<value>\0".
+  for (const entry of Buffer.from(git(gitExe, copyDir, ["config", "--local", "-z", "--get-regexp", "^submodule\\."], [0, 1], [], env)).toString("utf8").split("\0")) {
+    if (entry === "") continue;
+    const nl = entry.indexOf("\n");
+    (keys[entry.slice(0, nl)] ??= []).push(entry.slice(nl + 1));
+  }
+  return { exitCode: update.exitCode, heads, gitDirs, keys };
 }
 
 // The names of the present markers, in `OPERATION_MARKERS` order.

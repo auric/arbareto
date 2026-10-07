@@ -429,6 +429,12 @@ Keep ordinary fixtures' exact index and unchanged-byte assertions. Controlled ra
 
 No mutation, hook, cancellation, or Windows test has run. Those checks remain required before qualification.
 
+**T091 trace2 probe, 2026-10-07.** The probe used Git 2.56.0.windows.1 in a throwaway repository with an owned `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM=1`. A failing `pre-commit` hook and a failing `gpg.program` signer each ran with `GIT_TRACE2_EVENT` set to an owned file. This probe is not qualification evidence.
+
+- `child_start` carries `child_id`, `child_class`, and `argv`. The class is `hook` with `hook_name` for a hook, and `?` for the `gpg.program` signer.
+- `child_exit` carries the same `child_id`, `pid`, and `code`. A failing hook gave 3, and a failing signer gave 5.
+- `GIT_TRACE2_EVENT` replaces a global `trace2.eventTarget`. Git never reads a local `trace2.eventTarget`.
+
 Sources: [index lock release](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/commit.c#L482-L494), [post-hook index read](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/commit.c#L1101-L1135), [HEAD capture](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/commit.c#L1815-L1844), [reference update](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/sequencer.c#L1259-L1295), [transaction hook phases](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/refs.c#L2698-L2739), [configured hook ordering](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/hook.c#L546-L550).
 
 ## R5. Trust, cancellation, and external writers

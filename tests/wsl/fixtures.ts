@@ -88,7 +88,7 @@ export interface F21 {
 
 // F21: a path with spaces, `$`, and `é`; a linked worktree, the F02 changes, a binary file, and a `pre-commit` hook.
 export function buildF21(host: WslHost): F21 {
-  const base = `${host.folder}/f21 a$b é`;
+  const base = `${host.folder}/f21-${crypto.randomUUID().slice(0, 8)} a$b é`;
   const repo = init(host, `${base}/repo`);
   put(repo, "multi.txt", lines(40, []));
   put(repo, "other-a.txt", "a\n");
@@ -155,7 +155,8 @@ export function buildF25(host: WslHost): F25 {
   put(filter, "a.txt", "a\n");
   distroGit(filter, ["-c", "filter.canary.clean=cat", "add", "--", ".gitattributes", "a.txt"]);
   commit(filter, "base");
-  put(filter, "a.txt", "a changed\n");
+  // Keep the size. Git hashes the file through the clean filter only when the size matches (read-cache.c `ie_modified`).
+  put(filter, "a.txt", "b\n");
   const linger = init(host, `${base}/linger`);
   put(
     linger,

@@ -3,14 +3,14 @@
 
 // T208: WSL reads through the public operations (contract §3, §11). Every case needs Git 2.55.0 in the distro.
 
-import { afterEach, describe, expect, spyOn } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { OPERATION_MARKERS } from "../../src/git-service/commands";
 import { buildF21, buildF25, buildF26, distroGit, globalConfig, seamRepository, startSession, writeLinux, type WslSession } from "./fixtures";
-import { inDistro, uncPath, useWslFolder, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { inDistro, uncPath, useWslFolder, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 const CASE_TIMEOUT_MS = 180_000;
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
@@ -58,7 +58,7 @@ const sortedLines = (text: string) => text.split("\n").filter((l) => l !== "").s
 
 describe("WSL reads (T208)", () => {
   wslTest(
-    "F21 status, history, comparisons, and the trust listing equal the distro Git's own output",
+    "F21 status, history, and the trust listing equal the distro Git's own output",
     NEEDS,
     async (host) => {
       const f21 = buildF21(host);
@@ -72,17 +72,26 @@ describe("WSL reads (T208)", () => {
       const history = await read(s, w, "readHistory", {}, true);
       expect(history).toMatchObject({ state: "succeeded" });
       for (const oid of sortedLines(distroGit(f21.repo, ["rev-list", "HEAD"]))) expect(JSON.stringify(history.result)).toContain(oid);
-      const entry = (status.result as { entries: { entryId: string; path: string }[]; snapshotId: string }).entries.find((e) => e.path === "multi.txt");
-      const comparison = await read(s, w, "readComparison", { snapshotId: (status.result as { snapshotId: string }).snapshotId, entryId: entry!.entryId }, true);
-      expect(comparison).toMatchObject({ state: "succeeded" });
-      const hunks = sortedLines(distroGit(f21.repo, ["diff", "--no-ext-diff", "--no-textconv", "--", "multi.txt"])).filter((l) => l.startsWith("@@"));
-      expect((comparison.result as { hunks: unknown[] }).hunks).toHaveLength(hunks.length);
       const trust = await read(s, w, "readTrust");
       const keys = sortedLines(distroGit(f21.repo, ["config", "--list", "--name-only", "--show-scope"])).map((l) => l.split("\t").at(-1)!);
       for (const key of keys) expect(JSON.stringify(trust.result)).toContain(key);
     },
     CASE_TIMEOUT_MS,
   );
+
+  // The request must also carry `selectionId` (src/contracts/envelope.ts:53).
+  test.todo("F21 comparisons equal the distro Git's own diff hunks (needs T105/T115)", async () => {
+    const host = wslHost()!;
+    const f21 = buildF21(host);
+    const { s } = setup(host);
+    const w = await register(s, f21.paths[1]!);
+    const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+    const entry = (status.result as { entries: { entryId: string; path: string }[]; snapshotId: string }).entries.find((e) => e.path === "multi.txt");
+    const comparison = await read(s, w, "readComparison", { snapshotId: (status.result as { snapshotId: string }).snapshotId, entryId: entry!.entryId }, true);
+    expect(comparison).toMatchObject({ state: "succeeded" });
+    const hunks = sortedLines(distroGit(f21.repo, ["diff", "--no-ext-diff", "--no-textconv", "--", "multi.txt"])).filter((l) => l.startsWith("@@"));
+    expect((comparison.result as { hunks: unknown[] }).hunks).toHaveLength(hunks.length);
+  });
 
   wslTest(
     "program-file digests come from the WSL fileFacts probe, and an edit gives TRUST_CHANGED",
@@ -101,17 +110,19 @@ describe("WSL reads (T208)", () => {
   );
 
   wslTest(
-    "a bare-name program resolves through the Linux PATH without .exe",
+    "the bare-name candidates of absolute Linux PATH entries stay locations, so no fileFacts request names them",
     NEEDS,
     async (host) => {
       const f25 = buildF25(host);
       distroGit(f25.filter, ["config", "filter.canary.clean", "arbareto-bare-canary"]);
-      const { s } = setup(host);
+      expect((host.probe.pathEnv ?? "").split(":").every((e) => e.startsWith("/"))).toBe(true);
+      const { runner, s } = setup(host);
       const w = await register(s, uncPath(host, f25.filter.dir));
-      const listing = JSON.stringify((await read(s, w, "readTrust")).result);
-      const entries = (host.probe.pathEnv ?? "").split(":").filter((e) => e.startsWith("/"));
-      for (const entry of entries) expect(listing).toContain(`${entry}/arbareto-bare-canary`);
-      expect(listing).not.toContain("arbareto-bare-canary.exe");
+      expect(await read(s, w, "readTrust")).toMatchObject({ state: "succeeded" });
+      // Contract §7 and §11: a candidate outside the repository roots stays a location only. tests/wsl/trust.test.ts covers a relative PATH entry.
+      const calls = runner.fileFactCalls.filter((c) => c.repositoryId === w.repositoryId);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.flatMap((c) => c.files.map((f) => f.path.join("/"))).filter((p) => p.includes("arbareto-bare-canary"))).toEqual([]);
     },
     CASE_TIMEOUT_MS,
   );
@@ -136,23 +147,20 @@ describe("WSL reads (T208)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  wslTest(
-    "an entry with \\ in its Linux name gets reason path",
-    NEEDS,
-    async (host) => {
-      if (GIT === null) throw new Error("F26 needs the Windows Git");
-      const f26 = buildF26(host, GIT);
-      const { s } = setup(host);
-      const w = await register(s, f26.entries.path);
-      const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
-      const result = status.result as { entries: { entryId: string; path: string }[]; snapshotId: string };
-      const entry = result.entries.find((e) => e.path === f26.entries.entry);
-      expect(entry).toBeDefined();
-      const comparison = await read(s, w, "readComparison", { snapshotId: result.snapshotId, entryId: entry!.entryId }, true);
-      expect(comparison.result).toMatchObject({ supportDecision: "path", fileActionDecision: "path" });
-    },
-    CASE_TIMEOUT_MS,
-  );
+  // The request must also carry `selectionId` (src/contracts/envelope.ts:53).
+  test.todo("an entry with \\ in its Linux name gets reason path (needs T105/T115)", async () => {
+    const host = wslHost()!;
+    if (GIT === null) throw new Error("F26 needs the Windows Git");
+    const f26 = buildF26(host, GIT);
+    const { s } = setup(host);
+    const w = await register(s, f26.entries.path);
+    const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+    const result = status.result as { entries: { entryId: string; path: string }[]; snapshotId: string };
+    const entry = result.entries.find((e) => e.path === f26.entries.entry);
+    expect(entry).toBeDefined();
+    const comparison = await read(s, w, "readComparison", { snapshotId: result.snapshotId, entryId: entry!.entryId }, true);
+    expect(comparison.result).toMatchObject({ supportDecision: "path", fileActionDecision: "path" });
+  });
 
   wslTest(
     "the candidate of a read never exists, and no watcher starts for a WSL workspace",

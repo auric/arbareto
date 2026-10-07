@@ -835,6 +835,112 @@ Use the same capture method for baseline and candidate. An elevated trace collec
 
 Sources: [WebView2 process grouping](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/process-model), [Windows memory accounting](https://learn.microsoft.com/en-us/windows/win32/psapi/process-memory-usage-information), [CPU accounting](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes), [WPR](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-recorder).
 
+### Test run time, 2026-10-07 (T324)
+
+**Baseline.** One serial run of `bun test tests/contracts tests/git tests/wsl --reporter=junit` at main `d3022b0`, with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. The host had 16 logical processors, 32 GB of memory, Bun 1.4.2, and Git `2.56.0.windows.1`. This was the first full run with the T091, T194, and T220 fixture builders. Result: 50 files, 2408 tests, 2356 pass, 21 skip, 31 todo, 0 fail, 3648 s. `tests/wsl/registration.test.ts` on `Ubuntu-24.04`: 32 pass, 4 skip, 0 fail, 28 s.
+
+| File | Tests | Seconds |
+| --- | --- | --- |
+| `tests/git/fixtures.test.ts` | 135 | 1464.6 |
+| `tests/git/poll-cost.test.ts` | 12 | 603.1 |
+| `tests/git/trust.test.ts` | 116 | 248.7 |
+| `tests/git/history-parser.test.ts` | 80 | 202.5 |
+| `tests/git/discovery.test.ts` | 39 | 193.1 |
+| `tests/git/status-parser.test.ts` | 123 | 156.6 |
+| `tests/git/status.test.ts` | 37 | 126.4 |
+| `tests/git/external-changes.test.ts` | 46 | 121.0 |
+| `tests/git/read-lifecycle.test.ts` | 17 | 88.6 |
+| `tests/wsl/reads.test.ts` | 8 | 76.9 |
+| `tests/git/history.test.ts` | 33 | 66.8 |
+| `tests/git/read-inputs.test.ts` | 18 | 63.8 |
+| `tests/wsl/registration.test.ts` | 36 | 46.2 |
+| `tests/git/git-installation.test.ts` | 20 | 36.3 |
+| `tests/git/snapshot.test.ts` | 16 | 22.9 |
+| `tests/git/eligibility.test.ts` | 12 | 22.4 |
+| `tests/wsl/lifecycle.test.ts` | 6 | 19.4 |
+| `tests/contracts/remedy-command.test.ts` | 190 | 15.5 |
+| `tests/git/diagnostics.test.ts` | 5 | 13.2 |
+| `tests/wsl/file-facts.test.ts` | 5 | 13.1 |
+| `tests/contracts/service-boundary.test.ts` | 74 | 9.7 |
+| `tests/git/identity.test.ts` | 8 | 8.3 |
+| `tests/wsl/trust.test.ts` | 9 | 7.8 |
+| `tests/git/bun-runner.test.ts` | 17 | 5.9 |
+| `tests/contracts/git-commands.test.ts` | 74 | 3.0 |
+| `tests/git/git-oracle.test.ts` | 1 | 2.4 |
+| `tests/contracts/vectors.test.ts` | 190 | 1.9 |
+| `tests/git/service-harness.test.ts` | 4 | 1.7 |
+| `tests/git/file-facts.test.ts` | 19 | 1.3 |
+| `tests/git/portable-imports.test.ts` | 19 | 1.2 |
+| `tests/git/fixture-root.test.ts` | 5 | 0.8 |
+| `tests/contracts/bridge.test.ts` | 15 | 0.7 |
+| `tests/contracts/session-startup.test.ts` | 11 | 0.6 |
+| `tests/contracts/native-path.test.ts` | 98 | 0.5 |
+| `tests/contracts/boot-view.test.tsx` | 14 | 0.4 |
+| `tests/contracts/native-runner.test.ts` | 58 | 0.3 |
+| `tests/contracts/log.test.ts` | 26 | 0.2 |
+| `tests/wsl/identity-order.test.ts` | 1 | 0.2 |
+| `tests/contracts/schemas.test.ts` | 12 | 0.1 |
+| `tests/contracts/admission.test.ts` | 27 | 0.1 |
+| `tests/contracts/fold-ascii.test.ts` | 3 | 0.1 |
+| `tests/contracts/envelope.test.ts` | 471 | 0.1 |
+| `tests/contracts/file-action.test.ts` | 37 | 0.1 |
+| `tests/contracts/operation-registry.test.ts` | 14 | 0.0 |
+| `tests/contracts/environment.test.ts` | 13 | 0.0 |
+| `tests/contracts/submodules.test.ts` | 54 | 0.0 |
+| `tests/contracts/identity.test.ts` | 9 | 0.0 |
+| `tests/contracts/operation-states.test.ts` | 82 | 0.0 |
+| `tests/contracts/wsl-route.test.ts` | 28 | 0.0 |
+| `tests/contracts/strict-json.test.ts` | 61 | 0.0 |
+
+The 25 slowest cases:
+
+| Case | File | Seconds |
+| --- | --- | --- |
+| OBSERVATION L without commit-graph: Git process count, process times, and response bytes of 20 reads of each kind | `tests/git/poll-cost.test.ts` | 193.4 |
+| L: with no hint and an unchanged stat tuple, a check "changes" read starts no Git process and returns the same snapshotId and generation | `tests/git/poll-cost.test.ts` | 93.4 |
+| OBSERVATION L with commit-graph: Git process count, process times, and response bytes of 20 reads of each kind | `tests/git/poll-cost.test.ts` | 84.6 |
+| F16 status over-limit | `tests/git/fixtures.test.ts` | 67.9 |
+| F16 status at-limit | `tests/git/fixtures.test.ts` | 66.9 |
+| OBSERVATION M without commit-graph: Git process count, process times, and response bytes of 20 reads of each kind | `tests/git/poll-cost.test.ts` | 61.1 |
+| F16 over-limit: 100000 records plus one from real Git give limited with reason STATUS_LISTING_RECORDS | `tests/git/status-parser.test.ts` | 44.6 |
+| F16 at-limit: the whole output parses complete and equals the git-status(1) record rules | `tests/git/status-parser.test.ts` | 44.3 |
+| F30 silent-fetch | `tests/git/fixtures.test.ts` | 43.0 |
+| OBSERVATION M with commit-graph: Git process count, process times, and response bytes of 20 reads of each kind | `tests/git/poll-cost.test.ts` | 41.4 |
+| F30 clone | `tests/git/fixtures.test.ts` | 41.4 |
+| F16: exactly 100000 records give a complete result in pages within the Status page bound; each readEntries page ends succeeded while a readHistory and a readWorkspace of the workspace wait at the stdout barrier | `tests/git/status.test.ts` | 35.6 |
+| F29 kept-folder | `tests/git/fixtures.test.ts` | 33.2 |
+| OBSERVATION L: medians of wall and CPU time for 20 check "full" reads and 20 no-change check "changes" reads | `tests/git/poll-cost.test.ts` | 32.2 |
+| F16: more than 100000 records give completeness limited with reason STATUS_LISTING_RECORDS, never an empty success, in pages within the Status page bound | `tests/git/status.test.ts` | 30.9 |
+| F15 | `tests/git/fixtures.test.ts` | 29.5 |
+| F29 row-programs | `tests/git/fixtures.test.ts` | 29.3 |
+| F29 relative-hooks | `tests/git/fixtures.test.ts` | 29.3 |
+| F29 kept-nested | `tests/git/fixtures.test.ts` | 27.8 |
+| F27 headless-kept | `tests/git/fixtures.test.ts` | 26.8 |
+| F29 gitdir-nested | `tests/git/fixtures.test.ts` | 26.4 |
+| F29 gitdir-extension | `tests/git/fixtures.test.ts` | 26.2 |
+| F29 base | `tests/git/fixtures.test.ts` | 26.2 |
+| F29 gitdir-outside | `tests/git/fixtures.test.ts` | 26.0 |
+| F29 nested-programs | `tests/git/fixtures.test.ts` | 26.0 |
+
+**Groups.** `tests/groups.json` holds both lists, and `tests/run.ts` reads it. A file that measures wall or CPU time, or asserts a wall-clock budget, runs in the serial step. The code decides membership, not a run time:
+
+- `tests/git/poll-cost.test.ts`: the T192 observations measure wall and CPU time (`process.cpuUsage`, `performance.now`).
+- `tests/git/external-changes.test.ts`: watcher hints within `HINT_BUDGET_MS`.
+- `tests/git/read-inputs.test.ts`: no watcher hint within `HINT_BUDGET_MS`.
+- `tests/git/read-lifecycle.test.ts`: `DEADLINE_MS` and `RECONCILIATION_TARGET_MS` bounds.
+- `tests/git/bun-runner.test.ts`: call `durationMs` bounds and `LINGER_MS - 1000` bounds.
+- `tests/git/file-facts.test.ts`: elapsed time below `FIFO_BOUND_MS`.
+- `tests/git/status-parser.test.ts`: one parse below 2000 ms.
+- `tests/wsl/lifecycle.test.ts`: one close below 10,000 ms.
+- `tests/git/fixtures.test.ts`: it measures and prints each build time.
+- A wait loop that throws after a deadline is a bound, not a measurement. Such files stay in the parallel step.
+
+**Two-step run, 2026-10-07.** `bun run test:all` at `d3022b0` plus the T324 changes, with warm caches: 50 files, 2408 tests, 2356 pass, 21 skip, 31 todo, 0 fail. Each file has the baseline test count. The parallel step took 356 s for 41 files, and the serial step took 2385 s for 9 files. Wall time: 2741 s, against 3648 s for the baseline. The lowest free memory was 6.7 GiB. `tests/git/fixtures.test.ts` (1402 s) and `tests/git/poll-cost.test.ts` (596 s) set the serial time.
+
+- The F16 status fixture comes from the performance cache in `tests/windows/f16-status-cache.ts`. A warm copy takes about 0.14 s, against about 29 s for a build. The `fixtures.test.ts` check still builds one fresh copy and compares it with the cached copy, raw index bytes included.
+- The T194 staging inputs and the T220 blob stay uncached. Generation takes 256 ms for 512 MiB and 137 ms for 300 MB. A copy takes 223 ms and 86 ms, and a SHA-256 reuse check takes 421 ms and 230 ms. F30 remotes also record absolute URLs, so a copied repository refers to the original folder.
+- A change of `tests/windows/perf-fixtures.ts` changes the M and L builder digest. The next run then rebuilds M and L, which adds about 22 minutes.
+
 ## R7. Tauri and compiled Bun
 
 **Decision**: Retain Tauri 2 and one compiled Bun service. Add only a small Rust IPC and Windows process supervisor.

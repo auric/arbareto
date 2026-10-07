@@ -10,6 +10,9 @@ import { indexEntries, operationMarkers, rawIndexDigest, refState, sha256, worki
 
 // This file imports no `src/` module, so it prints no ORIGIN line.
 
+// The case runs about 25 Git processes in sequence and asserts no time.
+const TIMEOUT_MS = 120_000;
+
 describeGit("git oracle", (git) => {
   useFixtureRoot();
 
@@ -70,5 +73,5 @@ describeGit("git oracle", (git) => {
     expect(detached.headTarget).toBeNull();
     expect(detached.headOid).toBe(detached.refs["refs/heads/side"]!);
     expect(Object.keys(detached.refs).sort()).toEqual(["refs/heads/main", "refs/heads/side"]);
-  });
+  }, TIMEOUT_MS);
 });

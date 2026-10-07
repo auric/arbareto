@@ -10,6 +10,7 @@ import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, 
 import { gitOpenssl, loopbackCertificate, startHttp401 } from "./http-401";
 import { hookListArgs, indexEntries, operationMarkers, rawIndexDigest, refState, sha256, submoduleUpdateOracle, workingFileDigests } from "./git-oracle";
 import * as F from "./fixtures";
+import { cachedF16Status } from "../windows/f16-status-cache";
 
 // This file imports no `src/` module, so it prints no ORIGIN line for `src/`. `fixture-root.ts` prints the ORIGIN of its contract file.
 
@@ -60,7 +61,8 @@ function canaryRuns(built: F.Built): Record<string, boolean> {
 }
 
 // Builds twice, then compares the facts, the oracle snapshots, and Git with the facts.
-function check(git: string, label: string, build: (name: string) => F.Built, extra?: (git: string, built: F.Built) => void): void {
+// `rebuild` gives the second build. A cached second build must equal the fresh first build.
+function check(git: string, label: string, build: (name: string) => F.Built, extra?: (git: string, built: F.Built) => void, rebuild = build): void {
   const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const started = performance.now();
   let a: F.Built;
@@ -74,7 +76,7 @@ function check(git: string, label: string, build: (name: string) => F.Built, ext
     return;
   }
   const first = performance.now();
-  const b = build(`${slug}-2`);
+  const b = rebuild(`${slug}-2`);
   console.log(`BUILD ${label} ${(first - started).toFixed(0)} ms, rebuild ${(performance.now() - first).toFixed(0)} ms`);
   for (const built of [a, b]) {
     const runs = canaryRuns(built);
@@ -390,7 +392,7 @@ describeGit("fixture builders", (git) => {
     test(`F16 status ${variant}`, () =>
       check(git, `F16 status ${variant}`, (n) => F.buildF16Status(git, n, variant), (_g, b) => {
         expect(b.facts.repos.repo!.unstaged.length).toBe(F.F16_STATUS_RECORDS + (variant === "over-limit" ? 1 : 0));
-      }), TIMEOUT);
+      }, (n) => cachedF16Status(git, n, variant).built), TIMEOUT);
   }
 
   for (const variant of ["parents-64", "parents-65", "parent-refs", "object-at-limit", "object-over-limit", "traversal"] as const) {

@@ -18,7 +18,8 @@ import { statusArgs, type ObjectFormat } from "../../src/git-service/commands";
 import { createStatusParser, type StatusParseResult } from "../../src/git-service/status-parser";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
-import { buildF01, buildF02, buildF03, buildF06, buildF10, buildF16Status, F16_STATUS_RECORDS, type Built } from "./fixtures";
+import { cachedF16Status } from "../windows/f16-status-cache";
+import { buildF01, buildF02, buildF03, buildF06, buildF10, F16_STATUS_RECORDS, type Built } from "./fixtures";
 import { describeGit } from "./git-binary";
 import { indexEntries } from "./git-oracle";
 
@@ -325,7 +326,7 @@ const CASES: Case[] = [
   { label: "F06", build: (g) => buildF06(g, "t285-f06"), hasPath: true, timeout: TIMEOUT_MS },
   ...F10_CONFLICTS.map((v) => ({ label: `F10 ${v}`, build: (g: string) => buildF10(g, `t285-f10-${v}`, v), hasPath: true, timeout: TIMEOUT_MS })),
   { label: "F10 flags", build: (g) => buildF10(g, "t285-f10-flags", "flags"), hasPath: true, timeout: TIMEOUT_MS },
-  { label: "F16 at-limit", build: (g) => buildF16Status(g, "t285-f16-at", "at-limit"), hasPath: true, timeout: F16_TIMEOUT_MS },
+  { label: "F16 at-limit", build: (g) => cachedF16Status(g, "t285-f16-at", "at-limit").built, hasPath: true, timeout: F16_TIMEOUT_MS },
 ];
 
 interface Output {
@@ -755,7 +756,7 @@ describeGit("status parser (T285)", (git) => {
     test(
       `F16 over-limit: ${LIMITS.STATUS_LISTING_RECORDS} records plus one from real Git give limited with reason ${RECORDS_BOUND}`,
       () => {
-        const built = buildF16Status(git, "t285-f16-over", "over-limit");
+        const built = cachedF16Status(git, "t285-f16-over", "over-limit").built;
         expect(built.facts.notes.records).toBe(LIMITS.STATUS_LISTING_RECORDS + 1);
         const listing = run(join(built.root, "repo"), statusArgs());
         const whole = oracle(listing).records;

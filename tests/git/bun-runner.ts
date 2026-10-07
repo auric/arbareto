@@ -45,7 +45,7 @@ import {
 } from "../../src/git-service/git-runner";
 import { printOrigin } from "../origin";
 import { isWindowsProgram } from "../../src/contracts/wsl-route";
-import { FACTS_TEXT, factsInput, IDENTITY_TEXT, listDistros, parseFactRecords, registryKeys, WSL_EXE, wslExec, type FactEntry, type FactRecord } from "../wsl/wsl-host";
+import { FACTS_TEXT, factsInput, IDENTITY_TEXT, listDistros, OWN_SCOPE_OPERATIONS, parseFactRecords, registryKeys, WSL_EXE, wslExec, type FactEntry, type FactRecord } from "../wsl/wsl-host";
 import type { InboundPipe } from "./win32";
 
 // The host module of the double. The generic harness loads it only through this path (tests/git/portable-imports.test.ts).
@@ -476,6 +476,7 @@ export function createBunRunner(options: BunRunnerOptions) {
   function wslWrapped(inst: WslInstallation, operationId: string, mode: WslMode, index: string, program: string, args: readonly string[]): string[] {
     const n = (wslUnits.get(operationId)?.n ?? 0) + 1;
     wslUnits.set(operationId, { inst, n });
+    OWN_SCOPE_OPERATIONS.add(operationId);
     const unit = `arbareto-${operationId}-${n}.scope`;
     return [...wslHead(inst.distro), WSL_TEXTS.wrapper, "sh", unit, mode, index, inst.systemdRun, inst.systemctl, inst.setsid, program, ...args];
   }

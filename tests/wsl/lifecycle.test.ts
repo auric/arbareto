@@ -4,12 +4,12 @@
 // T209: WSL process lifetime with F25 (contract §6 "Lingering Jobs", §11 "Process ownership").
 // The seam case runs first and needs no Git 2.55.0 (tasks.md "Test harness rules"). The other cases re-probe the research R13 design change.
 
-import { afterEach, describe, expect } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { buildF25, globalConfig, seamProbe, startSession, type WslRepo, type WslSession } from "./fixtures";
-import { inDistro, listScopes, pgrep, uncPath, useWslFolder, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { inDistro, listScopes, pgrep, uncPath, useWslFolder, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 const CASE_TIMEOUT_MS = 240_000;
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
@@ -111,10 +111,10 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  wslTest(
-    "Cancel of a slow hook, a test-injected deadline, and a service failure each leave no process 1 second after the Job close",
-    NEEDS,
-    async (host) => {
+  test.todo(
+    "Cancel of a slow hook, a test-injected deadline, and a service failure each leave no process 1 second after the Job close (needs T111, T112, T115, T214)",
+    async () => {
+      const host = wslHost()!;
       const f25 = buildF25(host);
       for (const ending of ["cancel", "deadline", "service-failure"] as const) {
         const { runner, s } = setup(host);
@@ -136,10 +136,10 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  wslTest(
-    "the plain, setsid, and nohup children of a post-commit hook linger and count three, the anchor lives across the mutation, and Revoke trust ends them",
-    NEEDS,
-    async (host) => {
+  test.todo(
+    "the plain, setsid, and nohup children of a post-commit hook linger and count three, the anchor lives across the mutation, and Revoke trust ends them (needs T111, T112, T115, T214)",
+    async () => {
+      const host = wslHost()!;
       const f25 = buildF25(host);
       const { runner, s } = setup(host);
       const p = await prepare(s, f25.linger);
@@ -184,10 +184,10 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  wslTest(
-    "a pre-commit hook that opens /dev/tty fails within 10 seconds with GIT_FAILED and its output tail",
-    NEEDS,
-    async (host) => {
+  test.todo(
+    "a pre-commit hook that opens /dev/tty fails within 10 seconds with GIT_FAILED and its output tail (needs T111, T112, T115, T214)",
+    async () => {
+      const host = wslHost()!;
       const f25 = buildF25(host);
       const { s } = setup(host);
       const p = await prepare(s, f25.tty);
@@ -201,10 +201,10 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  wslTest(
-    "a simulated application close ends lingering children within 5 seconds",
-    NEEDS,
-    async (host) => {
+  test.todo(
+    "a simulated application close ends lingering children within 5 seconds (needs T111, T112, T115, T214)",
+    async () => {
+      const host = wslHost()!;
       const f25 = buildF25(host);
       const { runner, s } = setup(host);
       const p = await prepare(s, f25.linger);

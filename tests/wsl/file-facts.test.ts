@@ -249,11 +249,14 @@ const SEAM =
 
 const stat = (host: WslHost, format: string, path: string) => inDistro(host.distro, ["/usr/bin/stat", `--format=${format}`, "--", path]).trim();
 const exists = (host: WslHost, path: string) => wslExec(["--distribution", host.distro, "--cd", "/", "--exec", "/usr/bin/test", "-e", path]).exitCode === 0;
-const lockOf = (host: WslHost) => {
-  const [result] = wslFiles(host, callOf({ mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES" }));
+// The service passes 32 random bytes as 64 hex digits (contract §4 "WSL index publication").
+const newToken = () => crypto.getRandomValues(new Uint8Array(32)).toHex();
+const lockOf = (host: WslHost, token = newToken()) => {
+  const [result] = wslFiles(host, callOf({ mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token }));
   if (result?.kind !== "lock") throw new Error(`lock: ${JSON.stringify(result)}`);
-  return { device: result.device, inode: result.inode };
+  return { device: result.device, inode: result.inode, token };
 };
+const content = (host: WslHost, path: string) => inDistro(host.distro, ["/usr/bin/cat", "--", path]);
 
 describe("the WSL wslFiles Perl text (T325)", () => {
   wslTest(
@@ -371,9 +374,11 @@ describe("the WSL wslFiles Perl text (T325)", () => {
       const lockPath = `${t.roots[1]}/index.lock`;
       try {
         const lock = lockOf(host);
-        expect(stat(host, "%d %i %s", lockPath)).toBe(`${lock.device} ${lock.inode} 0`);
-        expect(wslFiles(host, callOf({ mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES" }))).toEqual([{ kind: "locked" }]);
-        expect(stat(host, "%d %i %s", lockPath)).toBe(`${lock.device} ${lock.inode} 0`);
+        expect(stat(host, "%d %i %s", lockPath)).toBe(`${lock.device} ${lock.inode} 64`);
+        expect(content(host, lockPath)).toBe(lock.token);
+        expect(wslFiles(host, callOf({ mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: newToken() }))).toEqual([{ kind: "locked" }]);
+        expect(stat(host, "%d %i %s", lockPath)).toBe(`${lock.device} ${lock.inode} 64`);
+        expect(content(host, lockPath)).toBe(lock.token);
       } finally {
         inDistro(host.distro, ["/usr/bin/rm", "-f", "--", lockPath]);
       }
@@ -398,7 +403,7 @@ describe("the WSL wslFiles Perl text (T325)", () => {
   );
 
   wslTest(
-    "publish gives mismatch and notOwned with no rename, and otherwise renames the lock over index",
+    "publish gives mismatch and notOwned with no rename, and otherwise renames the owned lock over index",
     GIT_NEEDS,
     (host) => {
       const t = files(host);
@@ -407,28 +412,37 @@ describe("the WSL wslFiles Perl text (T325)", () => {
       const name = `arbareto-candidate-${crypto.randomUUID()}`;
       wslFiles(host, callOf({ mode: "candidate", bound: "MUTATION_RAW_INDEX_BYTES", candidate: name }));
       const expected = sha256(host, `${t.roots[1]}/${name}`);
-      const publish = (lock: { device: string; inode: string }, digest = expected) =>
-        wslFiles(host, callOf({ mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: name, lock, expected: digest }));
+      const publish = ({ device, inode, token }: ReturnType<typeof lockOf>, digest = expected) =>
+        wslFiles(host, callOf({ mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: name, lock: { device, inode }, token, expected: digest }));
       const before = stat(host, "%i", index);
       try {
-        // A wrong expected digest: the lock gets the copy, and nothing is renamed.
+        // A wrong expected digest: nothing is renamed, and the lock holds the token again.
         let lock = lockOf(host);
         expect(publish(lock, "0".repeat(64))).toEqual([{ kind: "mismatch" }]);
         expect(stat(host, "%i", index)).toBe(before);
         expect(stat(host, "%i", lockPath)).toBe(lock.inode);
-        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
+        expect(content(host, lockPath)).toBe(lock.token);
         // A replaced lock. The first lock keeps its inode under another name, so the new lock gets another inode.
-        lock = lockOf(host);
         inDistro(host.distro, ["/usr/bin/mv", "--", lockPath, `${lockPath}.first`]);
         const replaced = lockOf(host);
         expect(replaced.inode).not.toBe(lock.inode);
         expect(publish(lock)).toEqual([{ kind: "notOwned" }]);
-        expect(stat(host, "%i %s", lockPath)).toBe(`${replaced.inode} 0`);
+        expect(stat(host, "%i %s", lockPath)).toBe(`${replaced.inode} 64`);
         expect(stat(host, "%i", index)).toBe(before);
-        // A lock of size 1.
-        inDistro(host.distro, ["/usr/bin/truncate", "-s", "1", "--", lockPath]);
+        // A deleted lock that another writer creates again. ext4 gives the free inode again, so dev and inode match.
+        // The new lock holds 64 bytes of Git index data, not the token.
+        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
+        inDistro(host.distro, ["/usr/bin/perl", "-e", 'use Fcntl; sysopen(my $f, $ARGV[0], O_WRONLY|O_CREAT|O_EXCL, 0666) or die; print $f "DIRC", "\\0" x 60', "--", lockPath]);
+        expect(stat(host, "%d %i %s", lockPath)).toBe(`${replaced.device} ${replaced.inode} 64`);
         expect(publish(replaced)).toEqual([{ kind: "notOwned" }]);
-        expect(stat(host, "%i %s", lockPath)).toBe(`${replaced.inode} 1`);
+        expect(stat(host, "%i %s", lockPath)).toBe(`${replaced.inode} 64`);
+        expect(content(host, lockPath).startsWith("DIRC")).toBe(true);
+        expect(stat(host, "%i", index)).toBe(before);
+        // The same after `touch`: a size-0 lock with the reused inode.
+        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
+        inDistro(host.distro, ["/usr/bin/touch", "--", lockPath]);
+        expect(publish(replaced)).toEqual([{ kind: "notOwned" }]);
+        expect(stat(host, "%s", lockPath)).toBe("0");
         expect(stat(host, "%i", index)).toBe(before);
         inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
         // The owned lock with the verified digest replaces index.
@@ -438,6 +452,8 @@ describe("the WSL wslFiles Perl text (T325)", () => {
         expect(sha256(host, index)).toBe(expected);
         expect(stat(host, "%Y", index)).toBe(stat(host, "%Y", `${t.roots[1]}/${name}`));
         expect(exists(host, lockPath)).toBe(false);
+        // No lock gives notOwned.
+        expect(publish(lock)).toEqual([{ kind: "notOwned" }]);
       } finally {
         inDistro(host.distro, ["/usr/bin/rm", "-f", "--", lockPath, `${lockPath}.first`]);
       }

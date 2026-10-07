@@ -106,7 +106,8 @@ describe("Perl requirement (gaps.md W3 and W4)", () => {
   });
 
   test("wsl-process.json holds the fileFacts and identity texts, and the probe takes the context path and resolves /usr/bin/perl", () => {
-    expect(wslProcess.fileFacts.join("\n")).toContain("use Fcntl qw(:mode O_RDONLY O_NONBLOCK O_NOCTTY O_NOFOLLOW O_DIRECTORY);");
+    expect(wslProcess.perlHead.join("\n")).toContain("use Fcntl qw(:mode O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_NONBLOCK O_NOCTTY O_NOFOLLOW O_DIRECTORY);");
+    expect(wslProcess.fileFacts.join("\n")).toContain("sub fact {");
     expect(wslProcess.identity.join("\n")).toContain("printf 'id %s %s\\n'");
     const probe = wslProcess.probe.join("\n");
     expect(probe).toContain("sel=$1");

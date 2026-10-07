@@ -237,8 +237,7 @@ function mapFacts(records: FactRecord[] | null, entries: readonly FactEntry[], d
 
 // Null: a record breaks a check.
 function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest: boolean): FileFact[] | null {
-  const failed = null;
-  if (records.length !== entries.length) return failed;
+  if (records.length !== entries.length) return null;
   let total = 0n;
   const facts: FileFact[] = [];
   for (const [i, record] of records.entries()) {
@@ -246,10 +245,10 @@ function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest
     if (record.kind === "absent" || record.kind === "other") facts.push({ kind: record.kind });
     else if (record.kind === "directory") facts.push({ kind: "directory", executable: record.executable });
     else if (record.kind === "error") {
-      if (record.component > length || !["access-denied", "io-error", "other-error"].includes(record.code)) return failed;
+      if (record.component > length || !["access-denied", "io-error", "other-error"].includes(record.code)) return null;
       facts.push({ kind: "error", component: record.component, code: record.code as "access-denied" });
     } else if (record.kind === "link") {
-      if (record.component < 1 || record.component > length || record.target.length < 1 || record.target.length > LINK_BYTES) return failed;
+      if (record.component < 1 || record.component > length || record.target.length < 1 || record.target.length > LINK_BYTES) return null;
       let target: string | null = null;
       try {
         target = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(record.target);
@@ -257,16 +256,16 @@ function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest
       facts.push(target === null ? { kind: "link", component: record.component, tag: "other" } : { kind: "link", component: record.component, tag: "symlink", target, relative: !target.startsWith("/") });
     } else {
       const lastWrite = record.mtime * 1_000_000_000n;
-      if (record.size > BigInt(Number.MAX_SAFE_INTEGER) || BigInt.asIntN(64, lastWrite) !== lastWrite) return failed;
+      if (record.size > BigInt(Number.MAX_SAFE_INTEGER) || BigInt.asIntN(64, lastWrite) !== lastWrite) return null;
       const base = { kind: "file" as const, size: Number(record.size), lastWrite: String(lastWrite), ownerExecute: record.ownerExecute, executable: record.executable };
       if (record.content === "none") {
-        if (digest) return failed;
+        if (digest) return null;
         facts.push(base);
-      } else if (!digest) return failed;
+      } else if (!digest) return null;
       else if (typeof record.content === "string") facts.push({ ...base, bound: record.content });
       else {
         total += BigInt(record.content.length);
-        if (BigInt(record.content.length) > FILE_BOUND || total > TOTAL_BOUND) return failed;
+        if (BigInt(record.content.length) > FILE_BOUND || total > TOTAL_BOUND) return null;
         facts.push({ ...base, digest: new Bun.CryptoHasher("sha256").update(record.content).digest("hex") });
       }
     }

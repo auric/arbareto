@@ -1,5 +1,5 @@
 {
   "schema": "process-request",
   "expected": "INVALID_REQUEST",
-  "text": "{\"type\":\"wslFiles\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000002\",\"contextKind\":\"registeredOperation\",\"gitInstallationId\":\"0f0f0f0f-0000-4000-8000-000000000003\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"mode\":\"publish\",\"bound\":\"MUTATION_RAW_INDEX_BYTES\",\"candidate\":\"arbareto-candidate-0001\",\"lock\":{\"device\":\"2112\",\"inode\":\"57001\"}}"
+  "text": "{\"type\":\"wslFiles\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000002\",\"contextKind\":\"registeredOperation\",\"gitInstallationId\":\"0f0f0f0f-0000-4000-8000-000000000003\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"mode\":\"publish\",\"bound\":\"MUTATION_RAW_INDEX_BYTES\",\"candidate\":\"arbareto-candidate-0001\",\"lock\":{\"device\":\"2112\",\"inode\":\"57001\"},\"token\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}"
 }

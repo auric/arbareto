@@ -8,6 +8,8 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use serde_json::Value;
+
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
     FILE_BASIC_INFORMATION, FILE_INFORMATION_CLASS, FILE_OPEN_REPARSE_POINT,
@@ -45,7 +47,7 @@ use crate::schema::process_request::{
 };
 use crate::schema::reply::{digest as digest_text, error_fact, last_write, link_fact};
 use crate::settings::{hex, sha256};
-use crate::wsl::{FactEntry, FilesRequest};
+use crate::wsl::{FactEntry, FileBound, FilesRequest};
 
 const INVALID: Code = Code::InvalidRequest;
 /// Contract §5 "File facts".
@@ -85,10 +87,8 @@ pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
     })
 }
 
-/// Contract §6 "WSL file work": the bound names of the modes.
-const COMPARED: &str = "COMPARED_RAW_VERSION_BYTES";
-const WHOLE: &str = "WHOLE_FILE_STAGE_INPUT_BYTES";
-const INDEX: &str = "MUTATION_RAW_INDEX_BYTES";
+/// Contract §5 "Whole-file stage input": the largest `catFile` size.
+const WHOLE_BYTES: i64 = 536_870_912;
 /// Contract §6 "Channel frames" `indexFile`: the candidate name prefix.
 const CANDIDATE_PREFIX: &str = "arbareto-candidate-";
 
@@ -122,26 +122,25 @@ fn candidate(name: &str) -> Result<String, Code> {
     Ok(name.to_string())
 }
 
-/// The operation, Git, and repository IDs of a registered request.
-fn ids<'a>(
-    context: &str,
-    operation: &'a str,
-    git: &'a str,
-    repository: &'a str,
-) -> Result<[&'a str; 3], Code> {
-    (context == "registeredOperation")
-        .then_some([operation, git, repository])
-        .ok_or(INVALID)
-}
-
 /// The fields of a `wslFiles` frame: the operation, Git, and repository IDs, and the checked request. It reads no file.
+/// `value` is the frame that `typed` read into `request`, so the ID fields hold valid text.
 /// typify drops the `contextKind`, `bound`, and `root` constants, the array bounds, the 64-bit bound of the lock texts, and the candidate rule.
-pub(crate) fn wsl_files_request(
+pub(crate) fn wsl_files_request<'a>(
+    value: &'a Value,
     request: &WslFilesGroup,
-) -> Result<([&str; 3], FilesRequest), Code> {
+) -> Result<([&'a str; 3], FilesRequest), Code> {
     use WslFilesGroup as G;
+    let text = |key: &str| value.get(key).and_then(Value::as_str).ok_or(INVALID);
+    if text("contextKind")? != "registeredOperation" {
+        return Err(INVALID);
+    }
+    let ids = [
+        text("operationId")?,
+        text("gitInstallationId")?,
+        text("repositoryId")?,
+    ];
     let only =
-        |bound: &str, wanted: &'static str| (bound == wanted).then_some(wanted).ok_or(INVALID);
+        |bound: &str, wanted: FileBound| (bound == wanted.name()).then_some(wanted).ok_or(INVALID);
     let files = |mode, bound, entries, fields| FilesRequest {
         mode,
         bound,
@@ -149,14 +148,10 @@ pub(crate) fn wsl_files_request(
         fields,
         shared: false,
     };
-    Ok(match request {
+    let request = match request {
         G::Digest {
             bound,
             files: entries,
-            context_kind,
-            operation_id,
-            git_installation_id,
-            repository_id,
             ..
         } => {
             let whole = matches!(bound, WslFilesDigestBound::WholeFileStageInputBytes);
@@ -178,61 +173,39 @@ pub(crate) fn wsl_files_request(
                     })
                 })
                 .collect::<Result<_, Code>>()?;
-            let ids = ids(
-                context_kind,
-                operation_id,
-                git_installation_id,
-                repository_id,
-            )?;
-            (
-                ids,
-                files(
-                    "digest",
-                    if whole { WHOLE } else { COMPARED },
-                    entries,
-                    vec![],
-                ),
-            )
+            let bound = if whole {
+                FileBound::Whole
+            } else {
+                FileBound::Compared
+            };
+            files("digest", bound, entries, vec![])
         }
         G::IndexDigest {
             bound,
             shared_index,
-            context_kind,
-            operation_id,
-            git_installation_id,
-            repository_id,
             ..
         } => {
-            let ids = ids(
-                context_kind,
-                operation_id,
-                git_installation_id,
-                repository_id,
-            )?;
             let fields: Vec<String> = shared_index.iter().map(|hash| hash.to_string()).collect();
-            let mut request = files("indexDigest", only(bound, INDEX)?, vec![], fields);
+            let mut request = files(
+                "indexDigest",
+                only(bound, FileBound::Index)?,
+                vec![],
+                fields,
+            );
             request.shared = shared_index.is_some();
-            (ids, request)
+            request
         }
         G::HashObject {
             bound,
             files: [entry],
-            context_kind,
-            operation_id,
-            git_installation_id,
-            repository_id,
             ..
         } => {
-            let ids = ids(
-                context_kind,
-                operation_id,
-                git_installation_id,
-                repository_id,
-            )?;
             let entry = worktree_entry(&entry.root, &entry.path)?;
-            (
-                ids,
-                files("hashObject", only(bound, WHOLE)?, vec![entry], vec![]),
+            files(
+                "hashObject",
+                only(bound, FileBound::Whole)?,
+                vec![entry],
+                vec![],
             )
         }
         G::CatFile {
@@ -240,87 +213,44 @@ pub(crate) fn wsl_files_request(
             files: [entry],
             oid,
             size,
-            context_kind,
-            operation_id,
-            git_installation_id,
-            repository_id,
             ..
         } => {
-            let ids = ids(
-                context_kind,
-                operation_id,
-                git_installation_id,
-                repository_id,
-            )?;
-            let limit = crate::wsl::bound_bytes(WHOLE).and_then(|n| i64::try_from(n).ok());
-            if !(0..=limit.ok_or(INVALID)?).contains(size) {
+            if !(0..=WHOLE_BYTES).contains(size) {
                 return Err(INVALID);
             }
             let entry = worktree_entry(&entry.root, &entry.path)?;
             let fields = vec![oid.to_string(), size.to_string()];
-            (
-                ids,
-                files("catFile", only(bound, WHOLE)?, vec![entry], fields),
+            files(
+                "catFile",
+                only(bound, FileBound::Whole)?,
+                vec![entry],
+                fields,
             )
         }
-        G::Lock {
-            bound,
-            context_kind,
-            operation_id,
-            git_installation_id,
-            repository_id,
-            ..
-        } => {
-            let ids = ids(
-                context_kind,
-                operation_id,
-                git_installation_id,
-                repository_id,
-            )?;
-            (ids, files("lock", only(bound, INDEX)?, vec![], vec![]))
-        }
+        G::Lock { bound, token, .. } => files(
+            "lock",
+            only(bound, FileBound::Index)?,
+            vec![],
+            vec![token.to_string()],
+        ),
         G::Candidate {
             bound,
             candidate: name,
-            context_kind,
-            operation_id,
-            git_installation_id,
-            repository_id,
             ..
-        } => {
-            let ids = ids(
-                context_kind,
-                operation_id,
-                git_installation_id,
-                repository_id,
-            )?;
-            (
-                ids,
-                files(
-                    "candidate",
-                    only(bound, INDEX)?,
-                    vec![],
-                    vec![candidate(name)?],
-                ),
-            )
-        }
+        } => files(
+            "candidate",
+            only(bound, FileBound::Index)?,
+            vec![],
+            vec![candidate(name)?],
+        ),
         G::Publish {
             bound,
             candidate: name,
             lock,
+            token,
             expected,
-            context_kind,
-            operation_id,
-            git_installation_id,
-            repository_id,
             ..
         } => {
-            let ids = ids(
-                context_kind,
-                operation_id,
-                git_installation_id,
-                repository_id,
-            )?;
             // The pattern keeps the decimal form. The value must fit in 64 bits.
             if lock.device.parse::<u64>().is_err() || lock.inode.parse::<u64>().is_err() {
                 return Err(INVALID);
@@ -329,11 +259,13 @@ pub(crate) fn wsl_files_request(
                 candidate(name)?,
                 lock.device.to_string(),
                 lock.inode.to_string(),
+                token.to_string(),
                 expected.to_string(),
             ];
-            (ids, files("publish", only(bound, INDEX)?, vec![], fields))
+            files("publish", only(bound, FileBound::Index)?, vec![], fields)
         }
-    })
+    };
+    Ok((ids, request))
 }
 
 /// The index of the `walk` root and the name components of one entry.

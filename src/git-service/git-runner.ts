@@ -255,7 +255,7 @@ const MODE_KINDS: Record<WslFilesCall["mode"], readonly string[]> = {
   hashObject: [...ENTRY_KINDS, "object"],
   catFile: ["blob", "error"],
   lock: ["lock", "locked", "error"],
-  candidate: ["candidate", "absent", "error"],
+  candidate: ["candidate", "absent", "bound", "error"],
   publish: ["published", "mismatch", "notOwned", "error"],
 };
 

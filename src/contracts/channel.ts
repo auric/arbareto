@@ -230,6 +230,8 @@ const Decimal = z
   .refine((value) => U64.test(value) && BigInt(value) <= 0xffff_ffff_ffff_ffffn);
 // Contract §6 "Channel frames" `indexFile`: a candidate index name, one component in the Git directory.
 const CandidateName = Component.refine((name) => name.startsWith("arbareto-candidate-"));
+// Contract §4 "WSL index publication": the lock content, 32 random bytes of the service as 64 lowercase hex digits.
+const LockToken = Fingerprint;
 // `sharedIndex`: the hash of the `link` extension that the service parsed last.
 export const WslIndexRequest = z.strictObject({ sharedIndex: ObjectId.optional() });
 // The byte value of each bound name (contract §5).
@@ -256,10 +258,18 @@ export const WslFilesGroup = z
     z
       .strictObject({ ...wslFiles, mode: z.literal("catFile"), ...WHOLE_BOUND, files: z.array(WorktreeEntry).length(1), oid: ObjectId, size: z.int().min(0).max(WHOLE_FILE_STAGE_INPUT_BYTES) })
       .meta({ title: "WslFilesCatFile" }),
-    z.strictObject({ ...wslFiles, mode: z.literal("lock"), ...INDEX_BOUND }).meta({ title: "WslFilesLock" }),
+    z.strictObject({ ...wslFiles, mode: z.literal("lock"), ...INDEX_BOUND, token: LockToken }).meta({ title: "WslFilesLock" }),
     z.strictObject({ ...wslFiles, mode: z.literal("candidate"), ...INDEX_BOUND, candidate: CandidateName }).meta({ title: "WslFilesCandidate" }),
     z
-      .strictObject({ ...wslFiles, mode: z.literal("publish"), ...INDEX_BOUND, candidate: CandidateName, lock: z.strictObject({ device: Decimal, inode: Decimal }), expected: Fingerprint })
+      .strictObject({
+        ...wslFiles,
+        mode: z.literal("publish"),
+        ...INDEX_BOUND,
+        candidate: CandidateName,
+        lock: z.strictObject({ device: Decimal, inode: Decimal }),
+        token: LockToken,
+        expected: Fingerprint,
+      })
       .meta({ title: "WslFilesPublish" }),
   ])
   .meta({ title: "WslFilesGroup" });
@@ -502,6 +512,8 @@ export const WslFileResult = z.union([
   z.strictObject({ kind: z.literal("lock"), device: Decimal, inode: Decimal }).meta({ title: "WslFileLock" }),
   z.strictObject({ kind: z.literal("locked") }).meta({ title: "WslFileLocked" }),
   z.strictObject({ kind: z.literal("candidate"), index: WslCopy, candidate: WslCopy }).meta({ title: "WslFileCandidate" }),
+  // `candidate` above `MUTATION_RAW_INDEX_BYTES`.
+  z.strictObject({ kind: z.literal("bound") }).meta({ title: "WslFileBound" }),
   z.strictObject({ kind: z.literal("published"), size: Count, sha256: Fingerprint }).meta({ title: "WslFilePublished" }),
   z.strictObject({ kind: z.literal("mismatch") }).meta({ title: "WslFileMismatch" }),
   z.strictObject({ kind: z.literal("notOwned") }).meta({ title: "WslFileNotOwned" }),

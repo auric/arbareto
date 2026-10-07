@@ -19,6 +19,8 @@ const id = () => crypto.randomUUID();
 const SIGNAL = new AbortController().signal;
 const HEX = "a".repeat(64);
 const OID = "b".repeat(40);
+// The lock token: 32 random bytes as 64 hex digits (contract §4 "WSL index publication").
+const TOKEN = "c".repeat(64);
 const context = () => ({ operationId: id(), contextKind: "registeredOperation", gitInstallationId: id(), repositoryId: id() });
 const frame = (fields: Body) => ({ type: "wslFiles", callId: id(), ...context(), ...fields });
 const entry = (name = "a.txt") => ({ root: "worktreeRoot", path: ["src", name] });
@@ -32,9 +34,9 @@ const MODES: [string, Body][] = [
   ["indexDigest with a shared index", { mode: "indexDigest", bound: "MUTATION_RAW_INDEX_BYTES", sharedIndex: OID }],
   ["hashObject", { mode: "hashObject", bound: "WHOLE_FILE_STAGE_INPUT_BYTES", files: [entry()] }],
   ["catFile", { mode: "catFile", bound: "WHOLE_FILE_STAGE_INPUT_BYTES", files: [entry()], oid: OID, size: 536_870_912 }],
-  ["lock", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES" }],
+  ["lock", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }],
   ["candidate", { mode: "candidate", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1" }],
-  ["publish", { mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", lock: { device: "2112", inode: "57001" }, expected: HEX }],
+  ["publish", { mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", lock: { device: "2112", inode: "57001" }, token: TOKEN, expected: HEX }],
 ];
 
 const valid = (value: unknown) => ProcessRequest.safeParse(value).success;
@@ -78,12 +80,17 @@ describe("the wslFiles request (contract §6 WSL file work)", () => {
   test("a candidate name starts with arbareto-candidate- and is one component", () => {
     for (const candidate of ["index.lock", "candidate-1", "arbareto-candidate-1/x", ""]) {
       expect(valid(frame({ mode: "candidate", bound: "MUTATION_RAW_INDEX_BYTES", candidate }))).toBe(false);
-      expect(valid(frame({ mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate, lock: { device: "1", inode: "2" }, expected: HEX }))).toBe(false);
+      expect(valid(frame({ mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate, lock: { device: "1", inode: "2" }, token: TOKEN, expected: HEX }))).toBe(false);
     }
   });
 
   test("the publish lock holds decimal device and inode texts, and the shared index hash is 40 or 64 hex digits", () => {
-    const publish = (lock: Body) => frame({ mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", lock, expected: HEX });
+    const publish = (lock: Body, token = TOKEN) => frame({ mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", lock, token, expected: HEX });
+    // The token is 64 lowercase hex digits.
+    for (const token of ["C".repeat(64), "c".repeat(63), "c".repeat(65)]) {
+      expect(valid(publish({ device: "1", inode: "2" }, token))).toBe(false);
+      expect(valid(frame({ mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token }))).toBe(false);
+    }
     expect(valid(publish({ device: "0", inode: "18446744073709551615" }))).toBe(true);
     for (const lock of [{ device: "01", inode: "2" }, { device: "1", inode: "18446744073709551616" }, { device: "1" }, { device: "1", inode: "2", size: "0" }]) expect(valid(publish(lock))).toBe(false);
     for (const sharedIndex of ["c".repeat(64), "c".repeat(40)]) expect(valid(frame({ mode: "indexDigest", bound: "MUTATION_RAW_INDEX_BYTES", sharedIndex }))).toBe(true);
@@ -124,6 +131,7 @@ describe("the wslFiles reply", () => {
     ["a blob over its size with a signal exit", { kind: "blob", size: 1, sha256: HEX, over: true, gitExit: { signal: 13 }, hashExit: exit }],
     ["a lock", { kind: "lock", device: "2112", inode: "57001" }],
     ["locked", { kind: "locked" }],
+    ["a candidate above its bound", { kind: "bound" }],
     ["a candidate", { kind: "candidate", index: { size: 104, sha256: HEX, mtime: "1791410531" }, candidate: { size: 104, sha256: HEX, mtime: "1791410531" } }],
     ["published", { kind: "published", size: 104, sha256: HEX }],
     ["mismatch", { kind: "mismatch" }],
@@ -175,7 +183,8 @@ describe("native runner wslFiles", () => {
 
   test.each([
     ["a count that differs from the entry count", { mode: "digest", bound: "COMPARED_RAW_VERSION_BYTES", files: [entry()] }, [{ kind: "absent" }, { kind: "absent" }]],
-    ["a kind of another mode", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES" }, [{ kind: "published", size: 1, sha256: HEX }]],
+    ["a kind of another mode", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }, [{ kind: "published", size: 1, sha256: HEX }]],
+    ["bound for a lock", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }, [{ kind: "bound" }]],
     ["a component past the entry path", { mode: "digest", bound: "COMPARED_RAW_VERSION_BYTES", files: [entry()] }, [{ kind: "error", component: 3, code: "io-error" }]],
     ["targetBytes on a middle link", { mode: "digest", bound: "COMPARED_RAW_VERSION_BYTES", files: [entry()] }, [{ kind: "link", component: 1, targetBytes: "/w==", sha256: HEX }]],
     ["another bound name", { mode: "digest", bound: "COMPARED_RAW_VERSION_BYTES", files: [entry()] }, [{ kind: "file", size: 1, changed: false, bound: "WHOLE_FILE_STAGE_INPUT_BYTES" }]],
@@ -189,7 +198,7 @@ describe("native runner wslFiles", () => {
 
   test("a deadline reply gives the deadline stop, and an abort sends cancel and ends the call", async () => {
     const c = channel();
-    const lock = call({ mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES" });
+    const lock = call({ mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN });
     const timed = c.runner.wslFiles(lock, SIGNAL);
     expect(c.reply({ type: "wslFiles", callId: c.last("wslFiles").callId, deadline: "deadline" })).toBe(true);
     expect(await timed).toEqual({ stop: "deadline" });
@@ -203,7 +212,7 @@ describe("native runner wslFiles", () => {
 
   test("an invalid request sends nothing", async () => {
     const c = channel();
-    await expect(c.runner.wslFiles(call({ mode: "lock", bound: "COMPARED_RAW_VERSION_BYTES" }), SIGNAL)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(c.runner.wslFiles(call({ mode: "lock", bound: "COMPARED_RAW_VERSION_BYTES", token: TOKEN }), SIGNAL)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     expect(c.sent).toEqual([]);
   });
 

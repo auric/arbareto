@@ -89,13 +89,15 @@ pub fn texts() -> &'static Texts {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        // The Perl texts start with the shared `perlHead` lines. `tests/wsl/wsl-host.ts` `perlText` joins them the same way.
+        let perl = |name: &str| format!("{}\n{}", text("perlHead"), text(name));
         Texts {
             wrapper: text("wrapper"),
             anchor: text("anchor"),
             probe: text("probe"),
             identity: text("identity"),
-            file_facts: text("fileFacts"),
-            wsl_files: text("wslFiles"),
+            file_facts: perl("fileFacts"),
+            wsl_files: perl("wslFiles"),
         }
     })
 }
@@ -1075,13 +1077,30 @@ pub fn file_facts_reply(
 
 // ---- WSL `wslFiles` (contract §6 "WSL file work") ----
 
-/// Contract §5: the byte value of each bound name of a `wslFiles` request.
-pub fn bound_bytes(name: &str) -> Option<u64> {
-    match name {
-        "COMPARED_RAW_VERSION_BYTES" => Some(1_048_576),
-        "WHOLE_FILE_STAGE_INPUT_BYTES" => Some(536_870_912),
-        "MUTATION_RAW_INDEX_BYTES" => Some(67_108_864),
-        _ => None,
+/// The §5 bound of a `wslFiles` request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileBound {
+    Compared,
+    Whole,
+    Index,
+}
+
+impl FileBound {
+    pub fn name(self) -> &'static str {
+        match self {
+            FileBound::Compared => "COMPARED_RAW_VERSION_BYTES",
+            FileBound::Whole => "WHOLE_FILE_STAGE_INPUT_BYTES",
+            FileBound::Index => "MUTATION_RAW_INDEX_BYTES",
+        }
+    }
+
+    /// Contract §5: the byte value of the bound.
+    fn bytes(self) -> u64 {
+        match self {
+            FileBound::Compared => 1_048_576,
+            FileBound::Whole => 536_870_912,
+            FileBound::Index => 67_108_864,
+        }
     }
 }
 
@@ -1091,7 +1110,7 @@ pub const WSL_FILES_OUTPUT_BYTES: usize = 64 * (LINK_TARGET_BYTES + 256);
 /// One checked `wslFiles` request. `entries` hold the walked entries, and `fields` the mode fields after them, in stdin order.
 pub struct FilesRequest {
     pub mode: &'static str,
-    pub bound: &'static str,
+    pub bound: FileBound,
     pub entries: Vec<FactEntry>,
     pub fields: Vec<String>,
     /// `indexDigest` with `sharedIndex`: the result holds a shared part.
@@ -1107,8 +1126,7 @@ pub fn wsl_files_command(
     request: &FilesRequest,
     base: &[(OsString, OsString)],
 ) -> Command {
-    let bound = bound_bytes(request.bound).unwrap_or_default().to_string();
-    let mut tokens = vec![bound];
+    let mut tokens = vec![request.bound.bytes().to_string()];
     for entry in &request.entries {
         tokens.push(entry.root.to_string());
         tokens.push(entry.path.len().to_string());
@@ -1245,7 +1263,7 @@ fn files_result(records: &mut Records, request: &FilesRequest, at: usize) -> Opt
     let kind = records.token()?;
     let components = request.entries.get(at).map_or(0, |entry| entry.path.len());
     match (request.mode, kind) {
-        ("digest", _) => entry_result(records, kind, components, request.bound),
+        ("digest", _) => entry_result(records, kind, components, request.bound.name()),
         ("hashObject", "object") => {
             let size = safe_size(records)?;
             let sha256 = hex64(records)?;
@@ -1259,7 +1277,7 @@ fn files_result(records: &mut Records, request: &FilesRequest, at: usize) -> Opt
             Some(reply::wsl_object(size, &sha256, oid, git, hash))
         }
         // A file result of `hashObject` holds only the bound.
-        ("hashObject", _) => entry_result(records, kind, components, request.bound)
+        ("hashObject", _) => entry_result(records, kind, components, request.bound.name())
             .filter(|result| !matches!(result, FileResult::File { bound: None, .. })),
         ("catFile", "blob") => {
             let size = safe_size(records)?;
@@ -1295,6 +1313,7 @@ fn files_result(records: &mut Records, request: &FilesRequest, at: usize) -> Opt
             Some(reply::wsl_candidate(index, candidate))
         }
         ("candidate", "absent") => Some(FileResult::Absent),
+        ("candidate", "bound") => Some(FileResult::Bound),
         ("publish", "published") => {
             let size = safe_size(records)?;
             Some(reply::wsl_published(size, &hex64(records)?))
@@ -3144,7 +3163,8 @@ mod tests {
             None,
             &base(),
         );
-        let mut arguments = strings(&["-e", &json_text("fileFacts"), "--", "1"]);
+        let perl = format!("{}\n{}", json_text("perlHead"), json_text("fileFacts"));
+        let mut arguments = strings(&["-e", &perl, "--", "1"]);
         arguments.extend(roots.iter().cloned());
         let expected = wrapped(
             &inst,

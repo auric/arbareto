@@ -2323,10 +2323,19 @@ Design choices of this record:
 - `git cat-file … | sha256sum` in dash: dash has no `pipefail`, so Git's exit status is lost.
 - `git hash-object <file>`: it hashes the converted blob and follows a final link. The approval binds the raw SHA-256 (contract §4 "Binding").
 - `Digest::SHA` in Perl: it can be missing from `perl-base` (unverified, see "WSL file facts and identity").
+- Lock ownership by device, inode, and size 0 (T325 first round): ext4 gives a freed inode to the next new file at once. A deleted and recreated `index.lock` got the same inode in 3 of 3 runs on Ubuntu-26.04 (review, 43395 → 43395). Git's own new lock is also empty, so `publish` could fill and rename a lock that Git owns.
+- `FS_IOC_GETVERSION` as a generation check: it is file-system-specific.
+
+**Verified (T325, 2026-10-08)**:
+
+- The `sha256sum` line matches `^[0-9a-f]{64} [ *]-\n$` with GNU coreutils 9.4 (`/usr/bin/sha256sum`, Ubuntu-24.04) and uutils coreutils 0.10.0 (`/usr/lib/cargo/bin/coreutils/sha256sum`, Ubuntu-26.04). Both print the space mode character for `-`.
+- `IO::Handle` loads from `perl-base` in Ubuntu-26.04. `publish` uses its `sync` for `fsync`.
+- The T325 WSL test recreated a deleted lock with `O_CREAT|O_EXCL` and got the same device and inode again.
+
+**Decision (T325 review, 2026-10-08)**: lock ownership by a token. The service sends 32 random bytes as 64 hex digits with `lock`, and Perl writes them into the new lock. `publish` requires the same device, inode, and content. Git's lock is empty or starts with `DIRC`, so it never equals the token. `publish` holds the lock descriptor through the rename, so the inode cannot be reused before the last `lstat` (contract §4 "WSL index publication").
 
 **Unverified**:
 
-- The `sha256sum` output line and version in the reference distros. The parse follows GNU coreutils `sha256sum --help`.
 - Perl pipe-opens of 512 MiB within the 30-second walk deadline.
 - `Digest::SHA` and `Time::HiRes` in `perl-base`.
 - The byte-throughput savings. No probe measured them.

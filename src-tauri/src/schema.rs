@@ -880,7 +880,9 @@ mod tests {
                     .map_err(|code| text_of(&code)),
                 Ok(value) if value["type"] == "wslFiles" => typed(&value)
                     .ok_or(INVALID)
-                    .and_then(|request| crate::file_facts::wsl_files_request(&request).map(drop))
+                    .and_then(|request| {
+                        crate::file_facts::wsl_files_request(&value, &request).map(drop)
+                    })
                     .map_err(|code| text_of(&code)),
                 _ => return None,
             },
@@ -925,7 +927,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 89 } else { 84 },
+            if cfg!(windows) { 90 } else { 85 },
             "shell-read vectors"
         );
     }
@@ -1131,6 +1133,7 @@ mod tests {
                             (104, "a".repeat(64), 1_791_410_531),
                             (104, "a".repeat(64), 1_791_410_531),
                         ),
+                        WslFile::Bound,
                         reply::wsl_published(104, &"a".repeat(64)),
                         WslFile::Mismatch,
                         WslFile::NotOwned,

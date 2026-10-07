@@ -1182,6 +1182,20 @@
                     "properties": {
                       "kind": {
                         "type": "string",
+                        "const": "bound"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileBound"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
                         "const": "published"
                       },
                       "size": {

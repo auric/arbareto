@@ -637,7 +637,7 @@ impl ProcessRequests {
             Some("cancel") => self.cancel(&typed(request).ok_or(INVALID)?),
             Some("identity") => self.identity(&typed(request).ok_or(INVALID)?, call()?),
             Some("fileFacts") => self.file_facts(&typed(request).ok_or(INVALID)?, call()?),
-            Some("wslFiles") => self.wsl_files(&typed(request).ok_or(INVALID)?, call()?),
+            Some("wslFiles") => self.wsl_files(request, &typed(request).ok_or(INVALID)?, call()?),
             Some("lingeringCount") => {
                 self.lingering_count(&typed(request).ok_or(INVALID)?, call()?)
             }
@@ -2106,9 +2106,14 @@ impl ProcessRequests {
     }
 
     /// Contract §6 "WSL file work": the fields, the target, then the Perl text of the request on its walk thread.
-    fn wsl_files(&self, request: &frame::WslFilesGroup, call_id: &str) -> Result<(), Code> {
+    fn wsl_files(
+        &self,
+        value: &Value,
+        request: &frame::WslFilesGroup,
+        call_id: &str,
+    ) -> Result<(), Code> {
         let read_at = Instant::now();
-        let (ids, files) = file_facts::wsl_files_request(request)?;
+        let (ids, files) = file_facts::wsl_files_request(value, request)?;
         let [operation_id, git, repository] = ids;
         let mut state = self.state();
         check_active(&state, operation_id)?;
@@ -5764,8 +5769,11 @@ pub(crate) mod tests {
         body
     }
 
+    /// The lock token of contract §4 "WSL index publication": 64 lowercase hex digits.
+    const TOKEN: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
     fn lock_fields() -> Value {
-        json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES" })
+        json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN })
     }
 
     fn stdin_of(command: &wsl::Command) -> Vec<u8> {
@@ -5825,7 +5833,7 @@ pub(crate) mod tests {
         let call = uuid();
         wsl.harness.send(wsl_files_body(&call, &git, &repository, json!({
             "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7",
-            "lock": { "device": "2112", "inode": "57001" }, "expected": HEX_A,
+            "lock": { "device": "2112", "inode": "57001" }, "token": TOKEN, "expected": HEX_A,
         })));
         assert_eq!(
             wsl.harness.reply(&call)["results"],
@@ -5834,7 +5842,7 @@ pub(crate) mod tests {
         let probe = wsl.host.commands().last().expect("Perl text").clone();
         assert_eq!(
             stdin_of(&probe),
-            format!("67108864\x00arbareto-candidate-7\x002112\x0057001\x00{HEX_A}\x00")
+            format!("67108864\x00arbareto-candidate-7\x002112\x0057001\x00{TOKEN}\x00{HEX_A}\x00")
                 .into_bytes()
         );
     }
@@ -5884,9 +5892,19 @@ pub(crate) mod tests {
                 json!({ "kind": "candidate", "index": { "size": 104, "sha256": HEX_A, "mtime": "1791410531" }, "candidate": { "size": 104, "sha256": HEX_A, "mtime": "1791410530" } }),
             ),
             (
-                json!({ "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7", "lock": { "device": "1", "inode": "2" }, "expected": HEX_A }),
+                json!({ "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7", "lock": { "device": "1", "inode": "2" }, "token": TOKEN, "expected": HEX_A }),
                 "notOwned\x00".to_string(),
                 json!({ "kind": "notOwned" }),
+            ),
+            (
+                json!({ "mode": "candidate", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7" }),
+                "bound\x00".to_string(),
+                json!({ "kind": "bound" }),
+            ),
+            (
+                lock_fields(),
+                "bound\x00".to_string(),
+                json!({ "kind": "error", "component": 0, "code": "other-error" }),
             ),
             // Broken records: a kind of another mode, an exit form without its number, a lock with a leading zero, and trailing bytes.
             (
@@ -5984,10 +6002,13 @@ pub(crate) mod tests {
             json!({ "mode": "lock", "bound": "COMPARED_RAW_VERSION_BYTES" }),
             json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1" }),
             json!({ "mode": "lock" }),
+            json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES" }),
+            json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES", "token": "C".repeat(64) }),
             json!({ "mode": "hashObject", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": [{ "root": "gitDirectory", "path": ["index"] }] }),
             json!({ "mode": "catFile", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": [entry], "oid": "b".repeat(40), "size": 536_870_913 }),
             json!({ "mode": "candidate", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "candidate-1" }),
-            json!({ "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1", "lock": { "device": "01", "inode": "2" }, "expected": HEX_A }),
+            json!({ "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1", "lock": { "device": "01", "inode": "2" }, "token": TOKEN, "expected": HEX_A }),
+            json!({ "mode": "publish", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1", "lock": { "device": "1", "inode": "2" }, "token": "c".repeat(63), "expected": HEX_A }),
             json!({ "mode": "indexDigest", "bound": "MUTATION_RAW_INDEX_BYTES", "sharedIndex": "B".repeat(40) }),
         ];
         for fields in refusals {

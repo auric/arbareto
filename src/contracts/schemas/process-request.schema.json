@@ -1158,6 +1158,10 @@
             "bound": {
               "type": "string",
               "const": "MUTATION_RAW_INDEX_BYTES"
+            },
+            "token": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             }
           },
           "required": [
@@ -1168,7 +1172,8 @@
             "gitInstallationId",
             "repositoryId",
             "mode",
-            "bound"
+            "bound",
+            "token"
           ],
           "additionalProperties": false,
           "title": "WslFilesLock"
@@ -1294,6 +1299,10 @@
               ],
               "additionalProperties": false
             },
+            "token": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
             "expected": {
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
@@ -1310,6 +1319,7 @@
             "bound",
             "candidate",
             "lock",
+            "token",
             "expected"
           ],
           "additionalProperties": false,

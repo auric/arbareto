@@ -9,8 +9,7 @@ import { afterAll, beforeAll, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import wslProcess from "../../src/contracts/wsl-process.json";
-import type { WslFileResult, WslFilesCall, WslIndexPart, WslIndexResult } from "../../src/contracts/channel";
-import { COMPARED_RAW_VERSION_BYTES, MUTATION_RAW_INDEX_BYTES, WHOLE_FILE_STAGE_INPUT_BYTES } from "../../src/contracts/limits";
+import { WSL_FILE_BOUNDS, type WslFileResult, type WslFilesCall, type WslIndexPart, type WslIndexResult } from "../../src/contracts/channel";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
@@ -101,7 +100,9 @@ export function parseProbe(text: string): ProbeFacts {
 
 // ---- The `fileFacts` Perl probe (gaps.md W3) ----
 
-export const FACTS_TEXT: string = wslProcess.fileFacts.join("\n");
+// The Perl texts start with the shared `perlHead` lines, as `texts` in `src-tauri/src/wsl.rs` joins them.
+export const perlText = (name: "fileFacts" | "wslFiles"): string => [...wslProcess.perlHead, ...wslProcess[name]].join("\n");
+export const FACTS_TEXT: string = perlText("fileFacts");
 export const IDENTITY_TEXT: string = wslProcess.identity.join("\n");
 
 // One request entry: the root index (0 worktree root, 1 Git directory, 2 common directory) and the components.
@@ -209,10 +210,11 @@ export function parseIndexedFacts(bytes: Uint8Array, count: number, shared: bool
 
 // ---- The `wslFiles` Perl text (contract §6 "WSL file work"). `src-tauri/src/wsl.rs` parses the same records. ----
 
-export const WSL_FILES_TEXT: string = wslProcess.wslFiles.join("\n");
-export const WSL_BOUND_BYTES = { COMPARED_RAW_VERSION_BYTES, WHOLE_FILE_STAGE_INPUT_BYTES, MUTATION_RAW_INDEX_BYTES } as const;
+export const WSL_FILES_TEXT: string = perlText("wslFiles");
 const ROOTS = ["worktreeRoot", "gitDirectory", "commonDirectory"] as const;
 const LINK_BYTES = 4_095;
+// Mirrors `WSL_FILES_OUTPUT_BYTES` of `src-tauri/src/wsl.rs`: 64 link texts and their record tokens.
+const WSL_FILES_OUTPUT_BYTES = 64 * (LINK_BYTES + 256);
 const POSIX_CODES = ["access-denied", "io-error", "other-error"] as const;
 type PosixCode = (typeof POSIX_CODES)[number];
 const HEX = /^[0-9a-f]{64}$/;
@@ -222,13 +224,14 @@ const U64 = /^(?:0|[1-9][0-9]{0,19})$/;
 // Stdin of the text: the bound in bytes, then the entries and the mode fields, each ended by NUL.
 export function wslFilesInput(request: WslFilesCall): Uint8Array {
   const entry = (e: { root: (typeof ROOTS)[number]; path: readonly string[] }) => [String(ROOTS.indexOf(e.root)), String(e.path.length), ...e.path];
-  const tokens = [String(WSL_BOUND_BYTES[request.bound])];
+  const tokens = [String(WSL_FILE_BOUNDS[request.bound])];
   if (request.mode === "digest") tokens.push(...request.files.flatMap(entry));
   if (request.mode === "indexDigest" && request.sharedIndex !== undefined) tokens.push(request.sharedIndex);
   if (request.mode === "hashObject") tokens.push(...entry(request.files[0]!));
   if (request.mode === "catFile") tokens.push(...entry(request.files[0]!), request.oid, String(request.size));
+  if (request.mode === "lock") tokens.push(request.token);
   if (request.mode === "candidate") tokens.push(request.candidate);
-  if (request.mode === "publish") tokens.push(request.candidate, request.lock.device, request.lock.inode, request.expected);
+  if (request.mode === "publish") tokens.push(request.candidate, request.lock.device, request.lock.inode, request.token, request.expected);
   return new TextEncoder().encode(tokens.map((t) => `${t}\0`).join(""));
 }
 
@@ -330,7 +333,7 @@ function modeRecord(r: Records, request: WslFilesCall, i: number): WslFileResult
       return kind === "lock" && device !== null && inode !== null ? { kind, device, inode } : null;
     }
     case "candidate": {
-      if (kind === "absent") return { kind };
+      if (kind === "absent" || kind === "bound") return { kind };
       if (kind === "error") return errorRecord(r, 0);
       const copy = () => {
         const [n, sha256, mtime] = [count(r.number()), matching(r.token(), HEX), r.number()];
@@ -354,7 +357,7 @@ export function wslFilesResults(exitCode: number | null, bytes: Uint8Array, requ
   const results: WslFileResult[] = [];
   const entries = request.mode === "digest" ? request.files.length : 1;
   const failed = Array.from({ length: entries }, (): WslFileResult => ({ kind: "error", component: 0, code: "other-error" }));
-  if (exitCode !== 0) return failed;
+  if (exitCode !== 0 || bytes.length > WSL_FILES_OUTPUT_BYTES) return failed;
   const r = new Records(bytes);
   for (let i = 0; i < entries; i++) {
     const result = modeRecord(r, request, i);

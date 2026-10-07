@@ -599,7 +599,7 @@ describe.skipIf(process.platform !== "win32")("Git installation probe (T053) (ne
   );
 
   test(
-    "a chooseGit success with a new gitInstallationId releases the previous one once, and a failed or canceled one releases nothing",
+    "a chooseGit success with a new gitInstallationId releases the previous one once, and a chooseGit that ends before the shell binds a new ID releases nothing",
     async () => {
       const frames: { response?: Record<string, unknown> }[] = [];
       const session = createSession({

@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE};
 
 use crate::file_facts::is_wsl_path;
+use crate::schema::process_reply::{IdentityListIdentitiesItem, IdentityRefusedReason};
+use crate::schema::reply;
 use crate::wsl::WslIdentity;
 use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
@@ -43,11 +45,17 @@ impl Identity {
 
     /// The identity reply `{"volumeSerial":"<16 hex>","fileId":"<32 hex>"}` (contract §6 "Process fields").
     pub fn reply(&self) -> serde_json::Value {
-        let file_id: String = self.file_id.iter().map(|b| format!("{b:02x}")).collect();
+        let (volume_serial, file_id) = self.hex();
         serde_json::json!({
-            "volumeSerial": format!("{:016x}", self.volume_serial),
+            "volumeSerial": volume_serial,
             "fileId": file_id,
         })
+    }
+
+    /// `volumeSerial` and `fileId` in lowercase hex, in array order.
+    pub fn hex(&self) -> (String, String) {
+        let file_id: String = self.file_id.iter().map(|b| format!("{b:02x}")).collect();
+        (format!("{:016x}", self.volume_serial), file_id)
     }
 }
 
@@ -123,17 +131,18 @@ pub fn native_identity(path: &Path) -> Option<PhysicalIdentity> {
 
 /// One entry of an identity reply (contract §6 "Process fields"). Only a not-found open adds `reason` `absent`.
 /// `None` when `stop` is set after the open (contract §6 "Walks").
-pub fn identity_reply(path: &Path, stop: &AtomicBool) -> Option<serde_json::Value> {
+/// `file_identity` fails only with `UNSUPPORTED_REPOSITORY`.
+pub fn identity_reply(path: &Path, stop: &AtomicBool) -> Option<IdentityListIdentitiesItem> {
     Some(match open(path) {
         Ok(_) if stop.load(Ordering::SeqCst) => return None,
         Ok(file) => file_identity(&file).map_or_else(
-            |code| serde_json::json!({ "code": code }),
-            |identity| identity.reply(),
+            |_| reply::identity_refused(None),
+            |identity| reply::identity_of(&PhysicalIdentity::Windows(identity)),
         ),
         Err(error) if not_found(&error) => {
-            serde_json::json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" })
+            reply::identity_refused(Some(IdentityRefusedReason::Absent))
         }
-        Err(_) => serde_json::json!({ "code": "UNSUPPORTED_REPOSITORY" }),
+        Err(_) => reply::identity_refused(None),
     })
 }
 
@@ -652,12 +661,11 @@ pub(crate) mod tests {
         std::fs::write(&path, "abc").expect("fixture file");
         let expected = read_identity(&path).expect("identity").reply();
         assert_eq!(
-            identity_reply(&path, &AtomicBool::new(false)),
+            identity_reply(&path, &AtomicBool::new(false)).map(|entry| serde_json::json!(entry)),
             Some(expected)
         );
-        assert_eq!(
-            identity_reply(&path, &AtomicBool::new(true)),
-            None,
+        assert!(
+            identity_reply(&path, &AtomicBool::new(true)).is_none(),
             "the walk queries no identity after a stop (contract §6 \"Walks\")"
         );
     }

@@ -1,116 +1,121 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "anyOf": [
+  "oneOf": [
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "started"
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "started"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "markerId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "markerId"
+          ],
+          "additionalProperties": false,
+          "title": "StartedMarker"
         },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "started"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "busy": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "busy"
+          ],
+          "additionalProperties": false,
+          "title": "StartedBusy"
         },
-        "markerId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "started"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "failure": {
+              "type": "string",
+              "enum": [
+                "disk-full",
+                "access-denied",
+                "other"
+              ]
+            },
+            "folder": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "failure",
+            "folder"
+          ],
+          "additionalProperties": false,
+          "title": "StartedFailure"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "started"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "deadline": {
+              "type": "string",
+              "const": "deadline"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "deadline"
+          ],
+          "additionalProperties": false,
+          "title": "StartedDeadline"
         }
-      },
-      "required": [
-        "type",
-        "callId",
-        "markerId"
       ],
-      "additionalProperties": false,
-      "title": "StartedMarker"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "started"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "busy": {
-          "type": "boolean",
-          "const": true
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "busy"
-      ],
-      "additionalProperties": false,
-      "title": "StartedBusy"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "started"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "failure": {
-          "type": "string",
-          "enum": [
-            "disk-full",
-            "access-denied",
-            "other"
-          ]
-        },
-        "folder": {
-          "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "failure",
-        "folder"
-      ],
-      "additionalProperties": false,
-      "title": "StartedFailure"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "started"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "deadline": {
-          "type": "string",
-          "const": "deadline"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "deadline"
-      ],
-      "additionalProperties": false,
-      "title": "StartedDeadline"
+      "title": "StartedGroup"
     },
     {
       "type": "object",

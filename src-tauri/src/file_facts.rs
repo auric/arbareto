@@ -8,7 +8,6 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde_json::{Value, json};
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
     FILE_BASIC_INFORMATION, FILE_INFORMATION_CLASS, FILE_OPEN_REPARSE_POINT,
@@ -35,12 +34,16 @@ use windows::Win32::System::SystemServices::{IO_REPARSE_TAG_MOUNT_POINT, IO_REPA
 use windows::core::PWSTR;
 
 use crate::bootstrap::open as open_for_identity;
-use crate::process_requests::{Code, Fields, identifier, keys};
+use crate::process_requests::Code;
+use crate::schema::process_reply::{
+    FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
+    FileFactsReplyFactsItem as Fact,
+};
+use crate::schema::process_request::{FileFacts, FileFactsFilesItem, FileFactsFilesItemRoot};
+use crate::schema::reply::{digest as digest_text, error_fact, last_write, link_fact};
 use crate::settings::{hex, sha256};
 
 const INVALID: Code = "INVALID_REQUEST";
-/// The `root` names, in the order of the `walk` roots.
-const ROOTS: [&str; 3] = ["worktreeRoot", "gitDirectory", "commonDirectory"];
 /// Contract §5 "File facts".
 const ENTRIES: usize = 64;
 const COMPONENT_UNITS: usize = 255;
@@ -52,66 +55,39 @@ const NAME_SURROGATE: u32 = 0x2000_0000;
 pub(crate) struct Request<'a> {
     pub(crate) operation_id: &'a str,
     pub(crate) digest: bool,
-    /// The index in `ROOTS` and the name components of each entry.
+    /// The index of the `walk` root and the name components of each entry.
     pub(crate) files: Vec<(usize, Vec<String>)>,
 }
 
 /// The fields of a `fileFacts` frame. It reads no file.
-pub(crate) fn parse(request: &Fields) -> Result<Request<'_>, Code> {
-    keys(
-        request,
-        &[
-            "type",
-            "callId",
-            "operationId",
-            "contextKind",
-            "gitInstallationId",
-            "repositoryId",
-            "digest",
-            "files",
-        ],
-        &[],
-    )?;
-    if request["type"] != "fileFacts" || request["contextKind"] != "registeredOperation" {
+pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
+    // typify drops the `contextKind` const and the array bounds.
+    if request.context_kind != "registeredOperation"
+        || !(1..=ENTRIES).contains(&request.files.len())
+    {
         return Err(INVALID);
     }
-    for id in ["callId", "gitInstallationId", "repositoryId"] {
-        identifier(&request[id])?;
-    }
-    let files = request["files"]
-        .as_array()
-        .filter(|files| (1..=ENTRIES).contains(&files.len()))
-        .ok_or(INVALID)?
-        .iter()
-        .map(entry)
-        .collect::<Result<_, _>>()?;
     Ok(Request {
-        operation_id: identifier(&request["operationId"])?,
-        digest: request["digest"].as_bool().ok_or(INVALID)?,
-        files,
+        operation_id: &request.operation_id,
+        digest: request.digest,
+        files: request.files.iter().map(entry).collect::<Result<_, _>>()?,
     })
 }
 
-fn entry(value: &Value) -> Result<(usize, Vec<String>), Code> {
-    let entry = value.as_object().ok_or(INVALID)?;
-    keys(entry, &["root", "path"], &[])?;
-    let root = ROOTS
-        .iter()
-        .position(|root| entry["root"] == *root)
-        .ok_or(INVALID)?;
-    let path = entry["path"]
-        .as_array()
-        .filter(|path| !path.is_empty())
-        .ok_or(INVALID)?
-        .iter()
-        .map(|name| {
-            name.as_str()
-                .filter(|name| is_component(name))
-                .map(str::to_string)
-                .ok_or(INVALID)
-        })
-        .collect::<Result<_, _>>()?;
-    Ok((root, path))
+/// The index of the `walk` root and the name components of one entry.
+fn entry(entry: &FileFactsFilesItem) -> Result<(usize, Vec<String>), Code> {
+    let root = match entry.root {
+        FileFactsFilesItemRoot::WorktreeRoot => 0,
+        FileFactsFilesItemRoot::GitDirectory => 1,
+        FileFactsFilesItemRoot::CommonDirectory => 2,
+    };
+    if entry.path.is_empty() || !entry.path.iter().all(|name| is_component(name)) {
+        return Err(INVALID);
+    }
+    Ok((
+        root,
+        entry.path.iter().map(|name| name.to_string()).collect(),
+    ))
 }
 
 /// The Windows rule of `isComponent` in `src/contracts/native-path.ts`, within 1 to 255 UTF-16 units.
@@ -157,7 +133,7 @@ pub(crate) fn walk(
     digest: bool,
     files: &[(usize, Vec<String>)],
     stop: &AtomicBool,
-) -> Vec<Value> {
+) -> Vec<Fact> {
     // The digested bytes that the request can still take. `None` after the first file that passed the total.
     let mut budget = Some(TOTAL_BYTES);
     files
@@ -173,7 +149,7 @@ fn fact(
     digest: bool,
     budget: &mut Option<u64>,
     stop: &AtomicBool,
-) -> Value {
+) -> Fact {
     let (last, middle) = path.split_last().expect("parse gives 1 or more components");
     let mut parent = match open_root(root, stop) {
         Ok(handle) => handle,
@@ -324,22 +300,22 @@ fn query<T: Default>(
 }
 
 /// Only `STATUS_OBJECT_NAME_NOT_FOUND` and `STATUS_OBJECT_PATH_NOT_FOUND` mean absent.
-fn not_opened(status: NTSTATUS, component: usize) -> Value {
+fn not_opened(status: NTSTATUS, component: usize) -> Fact {
     match status {
-        STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND => json!({ "kind": "absent" }),
+        STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND => Fact::Absent,
         _ => error(component, status),
     }
 }
 
 /// Contract §6 "File facts": the `error` code of each status.
-fn error(component: usize, status: NTSTATUS) -> Value {
+fn error(component: usize, status: NTSTATUS) -> Fact {
     let code = match status {
-        STATUS_ACCESS_DENIED => "access-denied",
-        STATUS_SHARING_VIOLATION => "sharing-violation",
-        STATUS_IO_DEVICE_ERROR => "io-error",
-        _ => "other-error",
+        STATUS_ACCESS_DENIED => FileFactErrorCode::AccessDenied,
+        STATUS_SHARING_VIOLATION => FileFactErrorCode::SharingViolation,
+        STATUS_IO_DEVICE_ERROR => FileFactErrorCode::IoError,
+        _ => FileFactErrorCode::OtherError,
     };
-    json!({ "kind": "error", "component": component, "code": code })
+    error_fact(component, code)
 }
 
 /// The fact of a final component that the walk opened with attribute access only.
@@ -350,21 +326,28 @@ fn file_fact(
     digest: bool,
     budget: &mut Option<u64>,
     stop: &AtomicBool,
-) -> Value {
+) -> Fact {
     let standard = match query::<StandardInformation>(handle, FileStandardInformation, stop) {
         Ok(standard) => standard,
         Err(status) => return error(component, status),
     };
     if standard.directory != 0 {
-        return json!({ "kind": "directory" });
+        return Fact::Directory { executable: None };
     }
     let basic = match query::<FILE_BASIC_INFORMATION>(handle, FileBasicInformation, stop) {
         Ok(basic) => basic,
         Err(status) => return error(component, status),
     };
-    let mut fact = json!({ "kind": "file", "size": standard.end_of_file, "lastWrite": basic.LastWriteTime.to_string() });
+    let file = |digest, bound| Fact::File {
+        bound,
+        digest,
+        executable: None,
+        last_write: last_write(basic.LastWriteTime),
+        owner_execute: None,
+        size: standard.end_of_file,
+    };
     if !digest {
-        return fact;
+        return file(None, None);
     }
     // An empty name relative to the handle opens the same file again, as `ReOpenFile` does.
     let data = || {
@@ -372,24 +355,22 @@ fn file_fact(
             .and_then(|data| read(raw(&data), FILE_BYTES as usize + 1, stop))
     };
     let bound = match *budget {
-        _ if standard.end_of_file as u64 > FILE_BYTES => "file-bytes",
-        None => "total-bytes",
+        _ if standard.end_of_file as u64 > FILE_BYTES => FileFactFileBound::FileBytes,
+        None => FileFactFileBound::TotalBytes,
         Some(left) => match data() {
             Err(status) => return error(component, status),
-            Ok(bytes) if bytes.len() as u64 > FILE_BYTES => "file-bytes",
+            Ok(bytes) if bytes.len() as u64 > FILE_BYTES => FileFactFileBound::FileBytes,
             Ok(bytes) if bytes.len() as u64 > left => {
                 *budget = None;
-                "total-bytes"
+                FileFactFileBound::TotalBytes
             }
             Ok(bytes) => {
                 *budget = Some(left - bytes.len() as u64);
-                fact["digest"] = json!(hex(&sha256(&bytes)));
-                return fact;
+                return file(Some(digest_text(&hex(&sha256(&bytes)))), None);
             }
         },
     };
-    fact["bound"] = json!(bound);
-    fact
+    file(None, Some(bound))
 }
 
 /// Reads at most `limit` bytes from the current position of a synchronous handle.
@@ -433,7 +414,7 @@ fn reparse_point(
     component: usize,
     last: Option<bool>,
     stop: &AtomicBool,
-) -> Value {
+) -> Fact {
     let handle = match open(parent, name, false, true, stop) {
         Ok(handle) => handle,
         Err(status) => return not_opened(status, component),
@@ -447,11 +428,11 @@ fn reparse_point(
         return link(&handle, tag, component, stop);
     }
     match last {
-        None => json!({ "kind": "other" }),
+        None => Fact::Other,
         Some(digest) => {
             let fact = file_fact(&handle, component, false, &mut None, stop);
             // Logical bytes need an open that follows the reparse point, so a digest is not possible.
-            if digest && fact["kind"] == "file" {
+            if digest && matches!(fact, Fact::File { .. }) {
                 error(component, STATUS_REPARSE_POINT_ENCOUNTERED)
             } else {
                 fact
@@ -461,11 +442,11 @@ fn reparse_point(
 }
 
 /// A name-surrogate reparse point. Only a symlink or a junction with well-formed text carries `target` and `relative`.
-fn link(handle: &OwnedHandle, tag: u32, component: usize, stop: &AtomicBool) -> Value {
+fn link(handle: &OwnedHandle, tag: u32, component: usize, stop: &AtomicBool) -> Fact {
     let name = match tag {
-        IO_REPARSE_TAG_SYMLINK => "symlink",
-        IO_REPARSE_TAG_MOUNT_POINT => "junction",
-        _ => return json!({ "kind": "link", "component": component, "tag": "other" }),
+        IO_REPARSE_TAG_SYMLINK => FileFactLinkTag::Symlink,
+        IO_REPARSE_TAG_MOUNT_POINT => FileFactLinkTag::Junction,
+        _ => return link_fact(component, None),
     };
     if let Err(status) = check(stop) {
         return error(component, status);
@@ -491,12 +472,12 @@ fn link(handle: &OwnedHandle, tag: u32, component: usize, stop: &AtomicBool) -> 
         return error(component, status);
     }
     data.truncate(io.Information);
-    match target(&data, tag) {
-        Some((target, relative)) => {
-            json!({ "kind": "link", "component": component, "tag": name, "target": target, "relative": relative })
-        }
-        None => json!({ "kind": "link", "component": component, "tag": "other" }),
-    }
+    let target = target(&data, tag).and_then(|(target, relative)| {
+        FileFactLinkTarget::try_from(target)
+            .ok()
+            .map(|target| (name, target, relative))
+    });
+    link_fact(component, target)
 }
 
 /// `SubstituteName` and the relative flag from `REPARSE_DATA_BUFFER` (Microsoft Learn, MS-FSCC 2.1.2.4 and 2.1.2.5).
@@ -545,13 +526,24 @@ pub(crate) mod tests {
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
 
-    use serde_json::json;
+    use serde_json::{Value, json};
     use windows::Win32::Storage::FileSystem::{WOF_PROVIDER_FILE, WofIsExternalFile};
     use windows::core::{BOOL, HSTRING};
 
     use crate::jobs::tests::Fixture;
     use crate::process_requests::tests::junction;
     use crate::settings::{hex, sha256};
+
+    /// The facts of `super::walk` in their wire form.
+    fn walk(
+        roots: [&Path; 3],
+        digest: bool,
+        files: &[(usize, Vec<String>)],
+        stop: &AtomicBool,
+    ) -> Vec<Value> {
+        let facts = super::walk(roots, digest, files, stop);
+        facts.iter().map(|fact| json!(fact)).collect()
+    }
 
     /// FIPS 180-2 Appendix B.1: the SHA-256 of "abc".
     pub(crate) const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";

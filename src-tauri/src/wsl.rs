@@ -39,6 +39,11 @@ use windows::core::{HSTRING, PWSTR, w};
 
 use crate::jobs::Supervisor;
 use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, is_identifier};
+use crate::schema::process_reply::{
+    FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
+    FileFactsReplyFactsItem as Fact, IdentityRefusedReason,
+};
+use crate::schema::reply;
 use crate::settings::SavedWslGit;
 use crate::spawn::{Input, SpawnError, SpawnRequest, Spawned, spawn};
 
@@ -193,16 +198,6 @@ pub enum Reason {
     WslMissing,
     DistroMissing,
     NotWsl2,
-}
-
-impl Reason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Reason::WslMissing => "wsl-missing",
-            Reason::DistroMissing => "distro-missing",
-            Reason::NotWsl2 => "not-wsl2",
-        }
-    }
 }
 
 /// One `HKCU\...\Lxss\{GUID}` key with its `DistributionName` and `Version`.
@@ -545,17 +540,13 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    pub fn reply(self) -> Value {
+    /// The `reason` of the identity entry. A failed probe and a refused path carry none, as a failed `FileIdInfo` call.
+    pub fn reason(self) -> Option<IdentityRefusedReason> {
         match self {
-            Refusal::NoFsUuid => {
-                json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "no-fs-uuid" })
-            }
-            Refusal::MixedLocation => {
-                json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "mixed-location" })
-            }
-            Refusal::Absent => json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" }),
-            Refusal::Failed => json!({ "code": "UNSUPPORTED_REPOSITORY" }),
-            Refusal::Invalid => json!({ "code": INVALID }),
+            Refusal::NoFsUuid => Some(IdentityRefusedReason::NoFsUuid),
+            Refusal::MixedLocation => Some(IdentityRefusedReason::MixedLocation),
+            Refusal::Absent => Some(IdentityRefusedReason::Absent),
+            Refusal::Failed | Refusal::Invalid => None,
         }
     }
 }
@@ -947,15 +938,13 @@ impl<'a> Records<'a> {
 }
 
 /// One fact of contract §6 "File facts" from one record. `total` counts the digested bytes of the request.
-fn fact(
-    records: &mut Records,
-    components: usize,
-    digest: bool,
-    total: &mut usize,
-) -> Option<Value> {
+fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usize) -> Option<Fact> {
     Some(match records.token()? {
-        kind @ ("absent" | "other") => json!({ "kind": kind }),
-        "directory" => json!({ "kind": "directory", "executable": records.flag()? }),
+        "absent" => Fact::Absent,
+        "other" => Fact::Other,
+        "directory" => Fact::Directory {
+            executable: Some(records.flag()?),
+        },
         "link" => {
             let component: usize = records.number()?;
             let length: usize = records.number()?;
@@ -964,11 +953,16 @@ fn fact(
                 return None;
             }
             match std::str::from_utf8(records.raw(length)?) {
-                Ok(target) => json!({
-                    "kind": "link", "component": component, "tag": "symlink",
-                    "target": target, "relative": !target.starts_with('/'),
-                }),
-                Err(_) => json!({ "kind": "link", "component": component, "tag": "other" }),
+                // A target outside the `Text` rule is malformed output.
+                Ok(target) => {
+                    let relative = !target.starts_with('/');
+                    let target = FileFactLinkTarget::try_from(target).ok()?;
+                    reply::link_fact(
+                        component,
+                        Some((FileFactLinkTag::Symlink, target, relative)),
+                    )
+                }
+                Err(_) => reply::link_fact(component, None),
             }
         }
         "file" => {
@@ -977,30 +971,34 @@ fn fact(
             let modified: i64 = records.number()?;
             let last_write = modified.checked_mul(1_000_000_000)?;
             let (owner, executable) = (records.flag()?, records.flag()?);
-            let mut file = json!({
-                "kind": "file", "size": size, "lastWrite": last_write.to_string(),
-                "executable": executable, "ownerExecute": owner,
-            });
-            match (records.token()?, digest) {
-                ("none", false) => {}
-                (bound @ ("file-bytes" | "total-bytes"), true) => file["bound"] = json!(bound),
+            let (bound, digested) = match (records.token()?, digest) {
+                ("none", false) => (None, None),
+                ("file-bytes", true) => (Some(FileFactFileBound::FileBytes), None),
+                ("total-bytes", true) => (Some(FileFactFileBound::TotalBytes), None),
                 ("data", true) => {
                     let length: usize = records.number().filter(|&n| n <= FACT_FILE_BYTES)?;
                     *total = total
                         .checked_add(length)
                         .filter(|&n| n <= FACT_TOTAL_BYTES)?;
-                    file["digest"] = json!(crate::settings::hex(&crate::settings::sha256(
-                        records.raw(length)?
-                    )));
+                    let sha256 = crate::settings::sha256(records.raw(length)?);
+                    (None, Some(reply::digest(&crate::settings::hex(&sha256))))
                 }
                 _ => return None,
+            };
+            Fact::File {
+                bound,
+                digest: digested,
+                executable: Some(executable),
+                last_write: reply::last_write(last_write),
+                owner_execute: Some(owner),
+                size: i64::try_from(size).ok()?,
             }
-            file
         }
         "error" => {
             let component: usize = records.number().filter(|&c| c <= components)?;
             let code = records.token().filter(|code| FACT_ERRORS.contains(code))?;
-            json!({ "kind": "error", "component": component, "code": code })
+            let code = code.parse::<FileFactErrorCode>().ok()?;
+            reply::error_fact(component, code)
         }
         _ => return None,
     })
@@ -1008,7 +1006,7 @@ fn fact(
 
 /// Maps the probe output to one fact per entry. A failed check, an exit status other than 0, or output past the cap
 /// gives each entry `error` with component 0 and code `other-error` (gaps.md W3). The shell never parses stderr.
-pub fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: bool) -> Vec<Value> {
+pub fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: bool) -> Vec<Fact> {
     let parsed = output
         .filter(|out| out.exit_code == Some(0) && out.stdout.len() <= FACTS_OUTPUT_BYTES)
         .and_then(|out| {
@@ -1017,7 +1015,7 @@ pub fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: b
                 at: 0,
             };
             let mut total = 0;
-            let facts: Option<Vec<Value>> = entries
+            let facts: Option<Vec<Fact>> = entries
                 .iter()
                 .map(|entry| fact(&mut records, entry.path.len(), digest, &mut total))
                 .collect();
@@ -1026,7 +1024,7 @@ pub fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: b
     parsed.unwrap_or_else(|| {
         entries
             .iter()
-            .map(|_| json!({ "kind": "error", "component": 0, "code": "other-error" }))
+            .map(|_| reply::error_fact(0, FileFactErrorCode::OtherError))
             .collect()
     })
 }
@@ -1339,27 +1337,43 @@ impl Host for OperationHost {
 
 /// Contract §6 `wslDistros`: the list results, the keys of the listed names, `wsl.exe`, and the saved Git of each listed GUID.
 /// A missing `wsl.exe` or a failed list call gives `WSL_UNAVAILABLE` with reason `wsl-missing` (contract §11 "Distro checks").
-pub fn distros_reply(reply: &mut Value, facts: Result<Distros, Reason>, saved: &[SavedWslGit]) {
+/// `path` is the context path. Each name passed `parse_list`, and each saved Git passed the settings checks.
+pub fn distros_reply(
+    call_id: &str,
+    path: &str,
+    facts: Result<Distros, Reason>,
+    saved: &[SavedWslGit],
+) -> Value {
     let (Ok(facts), Some(program)) = (facts, wsl_program().to_str().map(str::to_string)) else {
-        reply["code"] = json!("WSL_UNAVAILABLE");
-        reply["reason"] = json!(Reason::WslMissing.as_str());
-        return;
+        return reply::wsl_distros_unavailable(call_id, path);
     };
-    let keys: Vec<Value> = facts
+    let keys = facts
         .keys
         .iter()
-        .map(|key| json!({ "guid": key.guid, "name": key.name, "version": key.version }))
+        .map(|key| reply::wsl_distros_key(&key.guid, &key.name, key.version))
         .collect();
-    let saved: Vec<Value> = saved
+    let saved = saved
         .iter()
         .filter(|git| facts.keys.iter().any(|key| key.guid == git.guid))
-        .map(|git| json!({ "guid": git.guid, "distro": git.distro, "git": git.git, "version": git.version, "gitIdentity": git.identity }))
+        .map(|git| {
+            reply::wsl_distros_saved(
+                &git.guid,
+                &git.distro,
+                &git.git,
+                &git.version,
+                &git.identity,
+            )
+        })
         .collect();
-    reply["wslExecutable"] = json!(program);
-    reply["listed"] = json!(facts.listed);
-    reply["running"] = json!(facts.running);
-    reply["keys"] = json!(keys);
-    reply["saved"] = json!(saved);
+    reply::wsl_distros_facts(
+        call_id,
+        path,
+        &program,
+        &facts.listed,
+        &facts.running,
+        keys,
+        saved,
+    )
 }
 
 /// A process that did not start or did not end, without output.
@@ -1575,6 +1589,12 @@ mod tests {
     use crate::jobs::{Job, Supervisor};
     use crate::spawn::{Input, creation_flags};
 
+    /// The facts of `super::file_facts_reply` in their wire form.
+    fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: bool) -> Vec<Value> {
+        let facts = super::file_facts_reply(output, entries, digest);
+        facts.iter().map(|fact| json!(fact)).collect()
+    }
+
     const OPERATION: &str = "0f0f0f0f-0000-4000-8000-0000000000aa";
     const GUID: &str = "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}";
     const OTHER_GUID: &str = "{8f51b15e-5f05-4b6d-8d78-5765530f558a}";
@@ -1757,9 +1777,6 @@ mod tests {
         assert_eq!(lookup(&keys, "Legacy"), Err(Reason::NotWsl2));
         assert_eq!(lookup(&keys, "ubuntu-24.04"), Err(Reason::DistroMissing));
         assert_eq!(lookup(&keys, "Fedora"), Err(Reason::DistroMissing));
-        assert_eq!(Reason::NotWsl2.as_str(), "not-wsl2");
-        assert_eq!(Reason::DistroMissing.as_str(), "distro-missing");
-        assert_eq!(Reason::WslMissing.as_str(), "wsl-missing");
     }
 
     #[test]
@@ -2700,20 +2717,21 @@ mod tests {
                 "{guid} {inode} {file_system}"
             );
         }
+        let entry = |refusal: Refusal| json!(reply::identity_refused(refusal.reason()));
         assert_eq!(
-            Refusal::NoFsUuid.reply(),
+            entry(Refusal::NoFsUuid),
             json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "no-fs-uuid" })
         );
         assert_eq!(
-            Refusal::MixedLocation.reply(),
+            entry(Refusal::MixedLocation),
             json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "mixed-location" })
         );
         assert_eq!(
-            Refusal::Absent.reply(),
+            entry(Refusal::Absent),
             json!({ "code": "UNSUPPORTED_REPOSITORY", "reason": "absent" })
         );
         assert_eq!(
-            Refusal::Failed.reply(),
+            entry(Refusal::Failed),
             json!({ "code": "UNSUPPORTED_REPOSITORY" })
         );
     }
@@ -2784,9 +2802,10 @@ mod tests {
                 "no probe for {directory:?}"
             );
         }
+        // An identity reply carries a refused path as a failed probe.
         assert_eq!(
-            Refusal::Invalid.reply(),
-            json!({ "code": "INVALID_REQUEST" })
+            json!(reply::identity_refused(Refusal::Invalid.reason())),
+            json!({ "code": "UNSUPPORTED_REPOSITORY" })
         );
     }
 
@@ -3176,9 +3195,10 @@ mod tests {
                 version: 2,
             }],
         };
-        let mut reply = path.clone();
-        distros_reply(
-            &mut reply,
+        let text = path["path"].as_str().expect("path");
+        let reply = distros_reply(
+            OPERATION,
+            text,
             Ok(facts),
             &[saved_git(GUID), saved_git(OTHER_GUID)],
         );
@@ -3189,9 +3209,8 @@ mod tests {
         expected["keys"] = json!([{ "guid": GUID, "name": "Ubuntu-24.04", "version": 2 }]);
         expected["saved"] = json!([{ "guid": GUID, "distro": "Ubuntu-24.04", "git": "/usr/bin/git", "version": "2.55.0", "gitIdentity": "fedc9aa3bd65bc57:43750:4066232:1751487822" }]);
         assert_eq!(reply, expected);
-        let mut refused = path.clone();
-        distros_reply(&mut refused, Err(Reason::WslMissing), &[saved_git(GUID)]);
-        let mut expected = path;
+        let refused = distros_reply(OPERATION, text, Err(Reason::WslMissing), &[saved_git(GUID)]);
+        let mut expected = path.clone();
         expected["code"] = json!("WSL_UNAVAILABLE");
         expected["reason"] = json!("wsl-missing");
         assert_eq!(refused, expected);

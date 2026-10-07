@@ -1,234 +1,239 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "anyOf": [
+  "oneOf": [
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "confirm"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "result": {
-          "type": "string",
-          "const": "declined"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "result"
-      ],
-      "additionalProperties": false,
-      "title": "ConfirmDeclined"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "confirm"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "result": {
-          "type": "string",
-          "const": "approved"
-        },
-        "stored": {
-          "type": "boolean",
-          "const": false
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "result",
-        "stored"
-      ],
-      "additionalProperties": false,
-      "title": "ConfirmSession"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "confirm"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "result": {
-          "type": "string",
-          "const": "approved"
-        },
-        "stored": {
-          "type": "boolean",
-          "const": true
-        },
-        "record": {
+      "anyOf": [
+        {
           "type": "object",
           "properties": {
-            "commonDirectory": {
+            "type": {
               "type": "string",
-              "maxLength": 32767,
-              "pattern": "^[^\\u0000]*$"
+              "const": "confirm"
             },
-            "commonIdentity": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "properties": {
-                    "volumeSerial": {
-                      "type": "string",
-                      "pattern": "^[0-9a-f]{16}$"
-                    },
-                    "fileId": {
-                      "type": "string",
-                      "pattern": "^[0-9a-f]{32}$"
-                    }
-                  },
-                  "required": [
-                    "volumeSerial",
-                    "fileId"
-                  ],
-                  "additionalProperties": false,
-                  "title": "FileIdentity"
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "distroGuid": {
-                      "type": "string",
-                      "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
-                    },
-                    "fileSystemId": {
-                      "type": "string",
-                      "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
-                    },
-                    "inode": {
-                      "type": "string",
-                      "pattern": "^[1-9][0-9]{0,19}$"
-                    }
-                  },
-                  "required": [
-                    "distroGuid",
-                    "fileSystemId",
-                    "inode"
-                  ],
-                  "additionalProperties": false,
-                  "title": "WslIdentity"
-                }
-              ]
-            },
-            "worktreeRoot": {
+            "callId": {
               "type": "string",
-              "maxLength": 32767,
-              "pattern": "^[^\\u0000]*$"
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
             },
-            "gitDirectory": {
+            "result": {
               "type": "string",
-              "maxLength": 32767,
-              "pattern": "^[^\\u0000]*$"
-            },
-            "worktreeIdentity": {
-              "minItems": 2,
-              "maxItems": 2,
-              "type": "array",
-              "items": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "volumeSerial": {
-                        "type": "string",
-                        "pattern": "^[0-9a-f]{16}$"
-                      },
-                      "fileId": {
-                        "type": "string",
-                        "pattern": "^[0-9a-f]{32}$"
-                      }
-                    },
-                    "required": [
-                      "volumeSerial",
-                      "fileId"
-                    ],
-                    "additionalProperties": false,
-                    "title": "FileIdentity"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "distroGuid": {
-                        "type": "string",
-                        "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
-                      },
-                      "fileSystemId": {
-                        "type": "string",
-                        "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
-                      },
-                      "inode": {
-                        "type": "string",
-                        "pattern": "^[1-9][0-9]{0,19}$"
-                      }
-                    },
-                    "required": [
-                      "distroGuid",
-                      "fileSystemId",
-                      "inode"
-                    ],
-                    "additionalProperties": false,
-                    "title": "WslIdentity"
-                  }
-                ]
-              }
-            },
-            "configurationFingerprint": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "approvedAt": {
-              "type": "string",
-              "pattern": "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(\\.\\d+)?Z$"
-            },
-            "gitSelectedPath": {
-              "type": "string",
-              "maxLength": 32767,
-              "pattern": "^[^\\u0000]*$"
+              "const": "declined"
             }
           },
           "required": [
-            "commonDirectory",
-            "commonIdentity",
-            "worktreeRoot",
-            "gitDirectory",
-            "worktreeIdentity",
-            "configurationFingerprint",
-            "approvedAt",
-            "gitSelectedPath"
+            "type",
+            "callId",
+            "result"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "title": "ConfirmDeclined"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "confirm"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "const": "approved"
+            },
+            "stored": {
+              "type": "boolean",
+              "const": false
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "stored"
+          ],
+          "additionalProperties": false,
+          "title": "ConfirmSession"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "confirm"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "const": "approved"
+            },
+            "stored": {
+              "type": "boolean",
+              "const": true
+            },
+            "record": {
+              "type": "object",
+              "properties": {
+                "commonDirectory": {
+                  "type": "string",
+                  "maxLength": 32767,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "commonIdentity": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "volumeSerial": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{16}$"
+                        },
+                        "fileId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{32}$"
+                        }
+                      },
+                      "required": [
+                        "volumeSerial",
+                        "fileId"
+                      ],
+                      "additionalProperties": false,
+                      "title": "FileIdentity"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "distroGuid": {
+                          "type": "string",
+                          "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+                        },
+                        "fileSystemId": {
+                          "type": "string",
+                          "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
+                        },
+                        "inode": {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]{0,19}$"
+                        }
+                      },
+                      "required": [
+                        "distroGuid",
+                        "fileSystemId",
+                        "inode"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WslIdentity"
+                    }
+                  ]
+                },
+                "worktreeRoot": {
+                  "type": "string",
+                  "maxLength": 32767,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "gitDirectory": {
+                  "type": "string",
+                  "maxLength": 32767,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "worktreeIdentity": {
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "volumeSerial": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{16}$"
+                          },
+                          "fileId": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{32}$"
+                          }
+                        },
+                        "required": [
+                          "volumeSerial",
+                          "fileId"
+                        ],
+                        "additionalProperties": false,
+                        "title": "FileIdentity"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "distroGuid": {
+                            "type": "string",
+                            "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+                          },
+                          "fileSystemId": {
+                            "type": "string",
+                            "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
+                          },
+                          "inode": {
+                            "type": "string",
+                            "pattern": "^[1-9][0-9]{0,19}$"
+                          }
+                        },
+                        "required": [
+                          "distroGuid",
+                          "fileSystemId",
+                          "inode"
+                        ],
+                        "additionalProperties": false,
+                        "title": "WslIdentity"
+                      }
+                    ]
+                  }
+                },
+                "configurationFingerprint": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "approvedAt": {
+                  "type": "string",
+                  "pattern": "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(\\.\\d+)?Z$"
+                },
+                "gitSelectedPath": {
+                  "type": "string",
+                  "maxLength": 32767,
+                  "pattern": "^[^\\u0000]*$"
+                }
+              },
+              "required": [
+                "commonDirectory",
+                "commonIdentity",
+                "worktreeRoot",
+                "gitDirectory",
+                "worktreeIdentity",
+                "configurationFingerprint",
+                "approvedAt",
+                "gitSelectedPath"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "stored",
+            "record"
+          ],
+          "additionalProperties": false,
+          "title": "ConfirmStored"
         }
-      },
-      "required": [
-        "type",
-        "callId",
-        "result",
-        "stored",
-        "record"
       ],
-      "additionalProperties": false,
-      "title": "ConfirmStored"
+      "title": "ConfirmGroup"
     },
     {
       "type": "object",
@@ -259,55 +264,60 @@
       "title": "ConfirmRunReply"
     },
     {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "revoke"
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "revoke"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "endedProcesses": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "endedProcesses"
+          ],
+          "additionalProperties": false,
+          "title": "RevokeReply"
         },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "endedProcesses": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "revoke"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "deadline": {
+              "type": "string",
+              "const": "deadline"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "deadline"
+          ],
+          "additionalProperties": false,
+          "title": "RevokeDeadline"
         }
-      },
-      "required": [
-        "type",
-        "callId",
-        "endedProcesses"
       ],
-      "additionalProperties": false,
-      "title": "RevokeReply"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "revoke"
-        },
-        "callId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "deadline": {
-          "type": "string",
-          "const": "deadline"
-        }
-      },
-      "required": [
-        "type",
-        "callId",
-        "deadline"
-      ],
-      "additionalProperties": false,
-      "title": "RevokeDeadline"
+      "title": "RevokeGroup"
     },
     {
       "type": "object",

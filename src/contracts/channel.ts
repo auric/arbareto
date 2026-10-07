@@ -281,26 +281,53 @@ export const WslProbeFrame = z.strictObject({ type: z.literal("wslProbe"), ...ca
 export const RegisterWslFrame = z.strictObject({ type: z.literal("register"), ...call, ...RegisterWslCall.shape }).meta({ title: "RegisterWsl" });
 export const WslRequest = z.union([WslDistrosFrame, WslProbeFrame, RegisterWslFrame]);
 
-export const ProcessRequest = z.union([
-  z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
-  z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
-  z.strictObject({ ...run, ...REGISTERED }).meta({ title: "RunRegistered" }),
-  z.strictObject({ type: z.literal("input"), ...call, data: InlineInput }).meta({ title: "Input" }),
-  z.strictObject({ type: z.literal("cancel"), ...call }).meta({ title: "Cancel" }),
-  z.strictObject({ ...identity, ...GIT_PROBE }).meta({ title: "IdentityGitProbe" }),
-  z.strictObject({ ...identity, ...DISCOVERY }).meta({ title: "IdentityDiscovery" }),
-  z.strictObject({ ...identity, ...REGISTERED }).meta({ title: "IdentityRegistered" }),
-  z.strictObject({ ...fileFacts, ...REGISTERED }).meta({ title: "FileFacts" }),
-  z.strictObject({ type: z.literal("lingeringCount"), ...call, operationId: Identifier, commonDirectory: ChannelPath }).meta({ title: "LingeringCount" }),
-  z.strictObject({ type: z.literal("register"), ...call, ...RegisterGitCall.shape }).meta({ title: "RegisterGit" }),
-  z.strictObject({ type: z.literal("register"), ...call, ...RegisterRepositoryCall.shape }).meta({ title: "RegisterRepository" }),
-  RegisterWslFrame,
-  z.strictObject({ type: z.literal("resolveGit"), ...call, ...ResolveGitCall.shape }).meta({ title: "ResolveGit" }),
+// typify tags a union by `type` only when each branch has its own `type` value (research.md "T323 typify gate").
+// So each root is a `z.xor` with one titled group union for each `type` value that has more than one shape.
+// The shell reads the `type` value first and then parses its group type.
+const group = <T extends z.ZodType>(title: string, schema: T) => schema.meta({ title });
+// typify names an object branch of a union only when the branch is in `definitions`. An `id` puts it there.
+const named = <T extends z.ZodType>(title: string, schema: T) => schema.meta({ id: title, title });
+
+export const ProcessRequest = z.xor([
+  group(
+    "RunGroup",
+    z.union([
+      z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
+      z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
+      z.strictObject({ ...run, ...REGISTERED }).meta({ title: "RunRegistered" }),
+    ]),
+  ),
+  named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
+  named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),
+  group(
+    "IdentityGroup",
+    z.union([
+      z.strictObject({ ...identity, ...GIT_PROBE }).meta({ title: "IdentityGitProbe" }),
+      z.strictObject({ ...identity, ...DISCOVERY }).meta({ title: "IdentityDiscovery" }),
+      z.strictObject({ ...identity, ...REGISTERED }).meta({ title: "IdentityRegistered" }),
+    ]),
+  ),
+  named("FileFacts", z.strictObject({ ...fileFacts, ...REGISTERED })),
+  named("LingeringCount", z.strictObject({ type: z.literal("lingeringCount"), ...call, operationId: Identifier, commonDirectory: ChannelPath })),
+  group(
+    "RegisterGroup",
+    z.union([
+      z.strictObject({ type: z.literal("register"), ...call, ...RegisterGitCall.shape }).meta({ title: "RegisterGit" }),
+      z.strictObject({ type: z.literal("register"), ...call, ...RegisterRepositoryCall.shape }).meta({ title: "RegisterRepository" }),
+      RegisterWslFrame,
+    ]),
+  ),
+  named("ResolveGit", z.strictObject({ type: z.literal("resolveGit"), ...call, ...ResolveGitCall.shape })),
   WslDistrosFrame,
   WslProbeFrame,
-  z.strictObject({ type: z.literal("release"), repositoryId: Identifier }).meta({ title: "ReleaseRepositoryFrame" }),
-  z.strictObject({ type: z.literal("release"), gitInstallationId: Identifier }).meta({ title: "ReleaseGitFrame" }),
-  z.strictObject({ type: z.literal("closeJob"), operationId: Identifier }).meta({ title: "CloseJob" }),
+  group(
+    "ReleaseGroup",
+    z.union([
+      z.strictObject({ type: z.literal("release"), repositoryId: Identifier }).meta({ title: "ReleaseRepositoryFrame" }),
+      z.strictObject({ type: z.literal("release"), gitInstallationId: Identifier }).meta({ title: "ReleaseGitFrame" }),
+    ]),
+  ),
+  named("CloseJob", z.strictObject({ type: z.literal("closeJob"), operationId: Identifier })),
 ]);
 
 // Contract §6 "Process replies": the `refused` codes. The service refuses its own invalid request with INVALID_REQUEST.
@@ -384,18 +411,18 @@ export const FileFactsReply = z.union([
   z.strictObject({ type: z.literal("fileFacts"), ...call, facts: z.array(FileFact).min(1).max(FILE_FACT_ENTRIES) }).meta({ title: "FileFactsReply" }),
   z.strictObject({ type: z.literal("fileFacts"), ...walkDeadline }).meta({ title: "FileFactsDeadline" }),
 ]);
-export const ProcessReply = z.union([
+export const ProcessReply = z.xor([
   OutputReply,
   ActivityReply,
   InputWrittenReply,
   ExitReply,
   Refused,
-  ...IdentityListReply.options,
-  ...LingeringCountReply.options,
-  ...RegisterReply.options,
-  ...ResolveGitReply.options,
-  ...FileFactsReply.options,
-  ...WslDistrosReply.options,
+  group("IdentityGroup", IdentityListReply),
+  group("LingeringCountGroup", LingeringCountReply),
+  group("RegisterGroup", RegisterReply),
+  group("ResolveGitGroup", ResolveGitReply),
+  group("FileFactsGroup", FileFactsReply),
+  group("WslDistrosGroup", WslDistrosReply),
 ]);
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
@@ -425,7 +452,7 @@ export const StartedReply = z.union([
   z.strictObject({ ...started, failure: z.enum(MARKER_FAILURES), folder: ChannelPath }).meta({ title: "StartedFailure" }),
   z.strictObject({ type: z.literal("started"), ...walkDeadline }).meta({ title: "StartedDeadline" }),
 ]);
-export const MutationReply = z.union([...StartedReply.options, Refused]);
+export const MutationReply = z.xor([group("StartedGroup", StartedReply), Refused]);
 
 // ---- `trust` frames (contract §7 "Trust approval store") ----
 
@@ -480,4 +507,4 @@ export const RevokeReply = z.union([
   z.strictObject({ ...reply("revoke"), endedProcesses: Count }).meta({ title: "RevokeReply" }),
   z.strictObject({ type: z.literal("revoke"), ...walkDeadline }).meta({ title: "RevokeDeadline" }),
 ]);
-export const TrustReply = z.union([...ConfirmReply.options, ConfirmRunReply, ...RevokeReply.options, Refused]);
+export const TrustReply = z.xor([group("ConfirmGroup", ConfirmReply), ConfirmRunReply, group("RevokeGroup", RevokeReply), Refused]);

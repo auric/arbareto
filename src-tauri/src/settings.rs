@@ -29,7 +29,7 @@ use windows::core::HSTRING;
 
 use crate::bootstrap::{Identity, PhysicalIdentity};
 use crate::process_requests::{VERSION_BYTES, is_identifier, path};
-use crate::schema;
+use crate::schema::{self, reply};
 use crate::wsl::WslIdentity;
 
 // ---- Settings file (data-model §1) ----
@@ -708,16 +708,11 @@ pub enum StartedReply {
 impl StartedReply {
     pub fn reply(&self, call_id: &str) -> Value {
         match self {
-            StartedReply::Marker { marker_id, .. } => {
-                json!({ "type": "started", "callId": call_id, "markerId": marker_id })
+            StartedReply::Marker { marker_id, .. } => reply::started_marker(call_id, marker_id),
+            StartedReply::Busy => reply::started_busy(call_id),
+            StartedReply::Failure { failure, folder } => {
+                reply::started_failure(call_id, failure, &folder.to_string_lossy())
             }
-            StartedReply::Busy => json!({ "type": "started", "callId": call_id, "busy": true }),
-            StartedReply::Failure { failure, folder } => json!({
-                "type": "started",
-                "callId": call_id,
-                "failure": failure,
-                "folder": folder.to_string_lossy(),
-            }),
         }
     }
 }
@@ -1169,22 +1164,9 @@ impl Confirmed {
         match self {
             Confirmed::Approved {
                 record: Some(record),
-            } => json!({
-                "type": "confirm",
-                "callId": call_id,
-                "result": "approved",
-                "stored": true,
-                "record": record,
-            }),
-            Confirmed::Approved { record: None } => json!({
-                "type": "confirm",
-                "callId": call_id,
-                "result": "approved",
-                "stored": false,
-            }),
-            Confirmed::Declined => {
-                json!({ "type": "confirm", "callId": call_id, "result": "declined" })
-            }
+            } => reply::confirm_stored(call_id, record),
+            Confirmed::Approved { record: None } => reply::confirm_session(call_id),
+            Confirmed::Declined => reply::confirm_declined(call_id),
         }
     }
 }
@@ -2503,16 +2485,17 @@ mod tests {
     #[test]
     fn the_started_replies_have_the_contract_shapes() {
         let call = "0f0f0f0f-0000-4000-8000-0000000000aa";
+        let marker = "0f0f0f0f-0000-4000-8000-0000000000ab";
         assert_eq!(
             StartedReply::Marker {
-                marker_id: "m-1".to_string(),
+                marker_id: marker.to_string(),
                 identity: crate::bootstrap::PhysicalIdentity::Windows(Identity {
                     volume_serial: 1,
                     file_id: [2; 16]
                 })
             }
             .reply(call),
-            json!({ "type": "started", "callId": call, "markerId": "m-1" })
+            json!({ "type": "started", "callId": call, "markerId": marker })
         );
         assert_eq!(
             StartedReply::Busy.reply(call),
@@ -2918,7 +2901,18 @@ mod tests {
     #[test]
     fn the_confirm_replies_have_the_contract_shapes() {
         let call = "0f0f0f0f-0000-4000-8000-0000000000bb";
-        let record = json!({ "worktreeRoot": "C:\\repo" });
+        let identity = json!({ "volumeSerial": "00000000000000ab", "fileId": "11".repeat(16) });
+        let record = json!({
+            "commonDirectory": "C:\\repo\\.git",
+            "commonIdentity": identity,
+            "worktreeRoot": "C:\\repo",
+            "gitDirectory": "C:\\repo\\.git",
+            "worktreeIdentity": [identity, identity],
+            "configurationFingerprint": FINGERPRINT,
+            "approvedAt": "2026-10-07T10:00:00Z",
+            "gitSelectedPath": "C:\\Git\\cmd\\git.exe",
+        });
+        assert!(schema::trust_record(&record), "{record}");
         assert_eq!(
             Confirmed::Approved {
                 record: Some(record.clone())

@@ -209,13 +209,15 @@ Before publication, recheck canonical index bytes, working content, checkout, at
 
 **WSL index publication.** A WSL repository creates the lock, copies the candidate, and publishes inside the distro, through the modes `lock`, `candidate`, and `publish` of §6 "WSL file work". No step writes the index, the lock, or the candidate through a `\\wsl.localhost` path.
 
-- `lock` creates `index.lock` with `O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0666 before the umask, as Git does (`lockfile.h` default 0666, `tempfile.c` `repo_create_tempfile_mode`). Git then applies the `core.sharedRepository` permissions (`adjust_shared_perm`). The mode does not do this, so a repository with `core.sharedRepository` stays unverified. `EEXIST` gives `LOCKED`, and the lock stays. The reply holds the device and inode of the lock from `fstat`.
+- `lock` creates `index.lock` with `O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0666 before the umask, as Git does (`lockfile.h` default 0666, `tempfile.c` `repo_create_tempfile_mode`). Git then applies the `core.sharedRepository` permissions (`adjust_shared_perm`). A WSL repository whose effective configuration has `core.sharedRepository` at any scope refuses `applyHunk` and `applyFile` with `UNSUPPORTED_HUNK_PROFILE` reason `shared-repository`. The service reads the key from the §7 configuration listing (`config list --show-scope --show-origin -z`), so the check starts no process. The key at any scope in that listing refuses. Its absence allows the mutation. The in-distro `lock` mode does not apply Git's `adjust_shared_perm`. The refusal text is: "This repository sets core.sharedRepository. Arbareto stages hunks and files in a WSL repository only without it. Stage this change in a terminal." `EEXIST` gives `LOCKED`, and the lock stays. The reply holds the device and inode of the lock from `fstat`.
 - `candidate` is step 4 of each protocol ("Candidate time" above). An absent index gives `absent`, and the service creates the candidate through `read-tree --empty`, as before.
 - `publish` is the last publication step. It checks that the lock still has the device and inode of the `lock` reply and size 0. It copies the candidate into the lock and digests the copied bytes. It sets the lock times to the whole seconds of the candidate `st_mtime` with core `utime`. A digest other than the verified candidate digest of step 6 gives `mismatch`, and no rename follows. Otherwise `rename(2)` replaces `index` with the lock. A rename on one file system is atomic (POSIX.1-2024 `rename`).
 - An earlier published time only makes more entries racy ("Candidate time" above). A copy with a new time would lose that protection.
 - Every other step stays: the revalidation under the lock, the candidate verification, the recheck before publication, and the stale-selection refusal. The canonical index recheck compares the `indexDigest` reply with the retained digest. It reads no index bytes.
 - A stop of a `publish` walk (cancel, `closeJob`, or deadline) leaves the publication state unknown. The mutation then enters `reconciling` (§8).
-- The service still removes an owned lock or candidate through its UNC path (§11 "Paths and file access"). does not write working-file content. The lock excludes cooperating index writers, not every independent file/ref/configuration change. Report observed late changes and preserve external bytes without undo or retry.
+- The service still removes an owned lock or candidate through its UNC path (§11 "Paths and file access").
+
+Supported processing does not write working-file content. The lock excludes cooperating index writers, not every independent file/ref/configuration change. Report observed late changes and preserve external bytes without undo or retry.
 
 Unexpected candidate effects prevent publication and require reconciliation. Remove only known owned temporary resources after their processes stop. Unknown ownership or publication state requires explicit recovery, not forced cleanup.
 
@@ -735,7 +737,7 @@ Request fields. Every field of the mode is required.
 | `publish` | `MUTATION_RAW_INDEX_BYTES`. | `candidate`, `lock`: the `device` and `inode` of the `lock` reply, and `expected`: the verified candidate SHA-256. |
 
 - Another `bound` for the mode gives `refused` with `INVALID_REQUEST`. So does a missing or extra field.
-- The index is `index` in the Git directory that `register` bound to `repositoryId`. The lock is `index.lock` beside it, and the candidate lies beside it too. No `GIT_INDEX_FILE` reaches Linux Git (§11 "Trust and environment"), so Git uses the same file.
+- The index is `index` in the Git directory that `register` bound to `repositoryId`. The lock is `index.lock` beside it, and the candidate lies beside it too. The Git children of `wslFiles` run in `probe` mode, which sets no `GIT_INDEX_FILE` (§11 "Process launch"), so they use this index.
 
 Mode rules:
 
@@ -1164,6 +1166,7 @@ Map these cases to codes:
 - A failed `stage` Git step without a missing object gives `GIT_FAILED`. The result carries the `outputTail` of that step ("Commit failure output" below) and the `add` remedy of the entry (§4). A terminal run of the remedy repeats Git's message. `core.safecrlf=true` can cause this failure, as it does for `git add`.
 - A `stage` whose staged blob has no proof gives `UNSUPPORTED_COMPARISON` with reason `blob-proof` and the `add` remedy. After a changed digest, it gives `STALE_SELECTION` (§4 "Blob proof").
 - A split index or `core.splitIndex=true` gives `UNSUPPORTED_HUNK_PROFILE` with reason `split-index` for `applyHunk` and `applyFile` (§4 "Split index").
+- A WSL repository with `core.sharedRepository` at any scope gives `UNSUPPORTED_HUNK_PROFILE` with reason `shared-repository` for `applyHunk` and `applyFile`. §4 "WSL index publication" gives the text.
 - `WSL_UNAVAILABLE` carries one reason: `wsl-missing`, `distro-missing`, `not-wsl2`, `no-user-manager`, `no-setsid`, `no-coreutils`, `no-perl`, or `start-failed` (§11). Its remedy texts are:
   - `wsl-missing`: "WSL is not available on this computer. Install WSL2, then open the folder again."
   - `distro-missing`: "No registered WSL distro has the name <name>. Open the folder through a listed distro."
@@ -1244,10 +1247,12 @@ Do not classify repository state by parsing localized human status output. Use b
 - Verify that the pre-commit remedy command creates no commit. Verify that `outputTail` stays within 16 KiB and 100 lines, holds no control sequence, and redacts URL user information.
 - Verify real parent DAGs, shallow/page boundaries, data limits, controlled graph selection, and row alignment.
 - Verify that `core.splitIndex=true` from local and global scope refuses `applyHunk` and `applyFile` with reason `split-index`. Verify that no `sharedindex.*` file appears. Verify the same for a `link` extension and for `GIT_TEST_SPLIT_INDEX=1` in the service environment.
+- Verify that `core.sharedRepository` from local and global scope refuses `applyHunk` and `applyFile` in a WSL repository with reason `shared-repository`. The index keeps its bytes, and no owned lock or candidate remains. The check takes the key from the §7 configuration listing and starts no extra Git process.
 - Verify each §4 "Blob proof" branch for `stage`: proof A and proof B. Also verify both failing with `blob-proof`, and a changed digest with `STALE_SELECTION`. Verify that a writer that changes and restores the working file during step 5 never publishes.
 - Verify that a candidate copy keeps a time at most the canonical index time. A same-size change in the second of the last index write must stage its new bytes. A later `status` must still show an unrelated such change.
 - Verify the §11 route rule, distro checks, Git floor, and start step with Cancel. Verify that no Windows variable reaches Linux Git.
-- Verify that no Linux process of an operation remains after cancellation, a deadline, or a service failure. Verify the same after Revoke trust and application close. Check with `pgrep` in the distro. A plain, a `nohup`, and a `setsid` hook child each linger until one of those events. The outcome counts them. A hook that opens `/dev/tty` fails at once. A distro without `setsid` gives `WSL_UNAVAILABLE` with reason `no-setsid`. A distro without `/usr/bin/stat` or `/usr/bin/env` gives reason `no-coreutils`.
+- Verify that no Linux process of an operation remains after cancellation, a deadline, or a service failure. Verify the same after Revoke trust and application close. Check with `pgrep` in the distro. A plain, a `nohup`, and a `setsid` hook child each linger until one of those events. The outcome counts them. A hook that opens `/dev/tty` fails at once. A distro without `setsid` gives `WSL_UNAVAILABLE` with reason `no-setsid`. A distro without `/usr/bin/stat`, `/usr/bin/env`, or `/usr/bin/sha256sum` gives reason `no-coreutils`.
+- Verify each `wslFiles` mode against distro `sha256sum` and Git. Verify the bound and field refusals, the refusal outside WSL, `LOCKED` with the lock kept, and `publish` `mismatch` and `notOwned` with no rename. Verify that `cancel`, `closeJob`, and the deadline give no result. Verify that the index-hash gate reads the index bytes only after a digest change.
 - Verify that a `started` frame gives `BUSY` while another instance holds the mutex of that common directory. A linked worktree gives the same result. Verify that `WAIT_ABANDONED` counts as taken.
 - Verify that `worktreeKey` stays equal across sessions and for both WSL prefixes, and differs for two linked worktrees.
 - Verify that a failed `applyFile` `stage` carries a bounded, sanitized, redacted `outputTail` and the `add` remedy.

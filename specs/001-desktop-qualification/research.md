@@ -2138,6 +2138,51 @@ The probes ran on 2026-09-30 on the host above. They used only session scratch f
 
 Evidence: the P10 scripts and logs (`latency.log`, `wrapper-linux.log`, `status-linux.log`, `job-nested3.log`, `job-suspended.log`, `tree-inner.log`, `tree-outer.log`) in the session scratchpad of 2026-10-06, and the T212 read-cost analysis (`perf.md`).
 
+### WSL in-distro file work, 2026-10-07
+
+The user asked for this design on 2026-10-07. The main session made the decision.
+
+**Crossings found** (read-only audit of main `3def0f3`):
+
+| Place | Crossing through `\\wsl.localhost` |
+| --- | --- |
+| `status.ts:606` `readRawIndex`, `read-steps.ts:24` `readBounded` | The raw index, up to 64 MiB plus 1 byte, in each `readWorkspace`, also in the 1-second WSL poll. `eligibility.ts:48-114` parses every byte. |
+| `snapshot.ts:170` | The shared index. |
+| `snapshot.ts:279-357` `readWorkingVersion` | Up to 1 MiB for each bound path. |
+| T105 (planned) | Whole working files, up to 512 MiB, for the `stage` SHA-256. |
+| T200 and T214 (planned) | The same reads at steps 3 and 7 and after publication. Proof B streams the bytes back through `wsl.exe` stdin. Proof A pipes the `cat-file --filters` output out. |
+| T109, T110, and T214 (planned) | The index copy, the candidate, the recheck, the lock write, and the rename. |
+| T111 and T112 (planned) | The compare of the retained raw index. |
+| T113 and T114 (planned) | Working bytes and digests. |
+
+**Decision**: bulk file work of a WSL repository stays inside the distro. Only facts, sizes, SHA-256 digests, object IDs, exit statuses, and link targets cross. The new request `wslFiles` (contract §6 "WSL file work") has the modes `digest`, `indexDigest`, `hashObject`, `catFile`, `lock`, `candidate`, and `publish`. A WSL read takes the index digest in the first phase-1 `fileFacts` request of its trust listing, so it adds no `wsl.exe` start (contract §11 "Change polling"). An unchanged digest reuses the parsed eligibility. Reasons:
+
+- Reads through 9P and Linux reads of `/mnt` (drvfs) are slow. No probe measured the byte throughput.
+- No probe verified an atomic replace through 9P. A Linux `rename(2)` on one file system is atomic (POSIX.1-2024 `rename`).
+- Process cost (P10): about 200 to 250 ms for each `wsl.exe` start and about 52 ms for each systemd scope. So new work joins a process that already runs, or runs once per comparison or staging step.
+- The WSL scripts reach the distro as argv. `include_str!` embeds `src/contracts/wsl-process.json` in `src-tauri/src/wsl.rs:72`. The `fileFacts` text runs as `/usr/bin/perl -e <text>` in the wrapper (`wsl.rs:873-891`), with NUL-ended stdin tokens. `wslFiles` uses the same form.
+
+Design choices of this record:
+
+- Index publication uses modes of the same request, not a second request type. The modes map to protocol steps 2, 4, and 8 (contract §4).
+- Perl core `utime` sets whole seconds (`doio.c` `apply`, `OP_UTIME`, sets `tv_usec` to 0), and Perl `stat` gives whole seconds. So the candidate and the published lock get the whole seconds of their source time. An earlier time only makes more entries racy (contract §4 "Candidate time"). `Time::HiRes` could set nanoseconds, but its presence in `perl-base` is unverified.
+- The unlink of an owned lock or candidate stays a UNC crossing. It moves no file data, and a new mode would add surface.
+- `indexDigest` digests `sharedindex.<hash>` only when the request names the hash from the last parse. A file-name search would be a heuristic.
+
+**Rejected**:
+
+- `sha256sum < "$p"` in `sh`: the redirect failure gives no `errno`.
+- `git cat-file … | sha256sum` in dash: dash has no `pipefail`, so Git's exit status is lost.
+- `git hash-object <file>`: it hashes the converted blob and follows a final link. The approval binds the raw SHA-256 (contract §4 "Binding").
+- `Digest::SHA` in Perl: it can be missing from `perl-base` (unverified, see "WSL file facts and identity").
+
+**Unverified**:
+
+- The `sha256sum` output line and version in the reference distros. The parse follows GNU coreutils `sha256sum --help`.
+- Perl pipe-opens of 512 MiB within the 30-second walk deadline.
+- `Digest::SHA` and `Time::HiRes` in `perl-base`.
+- The byte-throughput savings. No probe measured them.
+
 Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-commands), [WSLENV](https://learn.microsoft.com/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl-with-wslenv), [wsl.conf](https://learn.microsoft.com/windows/wsl/wsl-config#wslconf), [systemd in WSL](https://learn.microsoft.com/windows/wsl/systemd), [background tasks](https://devblogs.microsoft.com/commandline/background-task-support-in-wsl/), Git Extensions source clone (PathUtil.cs, GitExecutor.cs, GitStatusMonitor.cs), git-config(1) `maintenance.autoDetach`, pid_namespaces(7).
 
 ## R14. Submodule initialization and update

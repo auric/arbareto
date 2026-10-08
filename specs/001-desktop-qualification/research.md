@@ -1005,6 +1005,21 @@ The 25 slowest cases:
 - The F16 history fixture also comes from the cache. A fresh build takes 653 to 757 ms. A cached copy takes 28 to 122 ms for the digest check and 40 to 73 ms for the copy.
 - `bun run test:fast` runs 24 files and 1763 tests in the parallel step in 191 s. `tests/git/history-parser.test.ts` alone takes 191 s.
 
+**Worker memory, 2026-10-08.** The parallel step ran twice with 4 workers: at `a775140`, then with the oracle change below. A sampler read the private bytes of each Bun process about every 2 s. The host had 32 GB of memory and about 12.8 GB free before each run.
+
+| Worker file | Peak before | Peak after |
+| --- | --- | --- |
+| `tests/git/status-parser.test.ts` | 5331 MB | 5985 MB |
+| `tests/git/fixtures-f16.test.ts` | 2010 MB | 692 MB or less |
+| `tests/git/status.test.ts` | 1743 MB | 1604 MB |
+| Sum of all Bun processes | 6218 MB | 6865 MB |
+| Lowest free memory | 7731 MB | 6804 MB |
+
+- The F16 stage-input files are 512 MiB each. The fixture builders already write them in 8 MiB chunks. The oracle `workingFileDigests` read each file whole, four times per check. The oracle now hashes files in 1 MiB chunks.
+- The `status-parser.test.ts` worker grows for about 90 s, during the F16 at-limit, F16 over-limit, and 32 MiB listing cases. Its memory goes down when the file ends. This memory comes from the test cases, not from a fixture builder. One worker runs the file, so the worker count does not change this peak.
+- The run results: 2588 tests and 0 fail before, and 2591 tests and 0 fail after.
+- With 8 workers, the estimate is the two status files plus six workers at 700 MB: about 11.8 GB. This is not a measurement. The 8-worker runs above had at least 5.1 GiB free. `tests/run.ts` keeps 8 workers.
+
 ## R7. Tauri and compiled Bun
 
 **Decision**: Retain Tauri 2 and one compiled Bun service. Add only a small Rust IPC and Windows process supervisor.

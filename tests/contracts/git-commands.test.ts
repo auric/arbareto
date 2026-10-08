@@ -59,6 +59,7 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["attributeArgs", () => commands.attributeArgs()],
   ["lineEndingArgs", () => commands.lineEndingArgs()],
   ["emptyTreeArgs", () => commands.emptyTreeArgs()],
+  ["commitTreeArgs", () => commands.commitTreeArgs(SHA1, "sha1")],
 ];
 
 // The arrays of every exported builder without a parameter. `discoveryProfiles` gives several arrays.
@@ -317,8 +318,26 @@ test.todo("the applyHunk and applyFile steps start with `--no-lazy-fetch`, end w
     expect({ tail, found: arrays.some((args) => args[0] === "--no-lazy-fetch" && endsWith(args, tail)) }).toEqual({ tail, found: true });
   }
 });
-test.todo("the commit array is exactly `--no-lazy-fetch commit --quiet --file=-` (needs T104)", () => {
+test("the commit array is exactly `--no-lazy-fetch commit --quiet --file=-` (needs T104)", () => {
   expect(builderArrays()).toContainEqual(["--no-lazy-fetch", "commit", "--quiet", "--file=-"]);
+});
+// T104: the mutation steps take only `--no-lazy-fetch`. The `mutation` policy and a `transactionId` select the candidate index, so no array names it.
+test("the T104 mutation arrays are exact, and the ls-tree read takes one full commit OID", () => {
+  const N = "--no-lazy-fetch";
+  expect(commands.applyCachedArgs()).toEqual([N, "apply", "--cached"]);
+  expect(commands.applyCachedReverseArgs()).toEqual([N, "apply", "--cached", "--reverse"]);
+  expect(commands.readTreeEmptyArgs()).toEqual([N, "read-tree", "--empty"]);
+  expect(commands.entryHashArgs()).toEqual([N, "hash-object", "--no-filters", "--stdin"]);
+  expect(commands.authorIdentArgs()).toEqual([N, "var", "GIT_AUTHOR_IDENT"]);
+  expect(commands.committerIdentArgs()).toEqual([N, "var", "GIT_COMMITTER_IDENT"]);
+  expect(commands.commitArgs()).toEqual([N, "commit", "--quiet", "--file=-"]);
+  expect(commands.commitTreeArgs(SHA1, "sha1")).toEqual([...R, "ls-tree", "-r", "-z", SHA1]);
+  expect(commands.commitTreeArgs(SHA256, "sha256")).toEqual([...R, "ls-tree", "-r", "-z", SHA256]);
+  for (const oid of ["HEAD", "--full-tree", SHA256, ""]) expect(() => commands.commitTreeArgs(oid, "sha1")).toThrow(TypeError);
+  for (const args of builderArrays()) {
+    expect(args).not.toContain("--index");
+    expect(args.join("\0")).not.toContain("GIT_INDEX_FILE");
+  }
 });
 test.todo("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` with `config --file .gitmodules --null --list`, and never add `--recursive` (needs T227)", () => {
   const arrays = builderArrays();

@@ -241,6 +241,45 @@ export function emptyTreeArgs(): string[] {
   return read("hash-object", "-t", "tree", "--stdin");
 }
 
+// T104 mutation steps. Only the `mutation` policy and a `transactionId` set `GIT_INDEX_FILE` (contract §7), so no array names an index.
+// The candidate `ls-files` read uses `indexEntryArgs`. Research R3 steps 7 and 8: `apply` names no patch file, so it reads the retained patch from stdin.
+export function applyCachedArgs(): string[] {
+  return [NO_LAZY_FETCH, "apply", "--cached"];
+}
+
+export function applyCachedReverseArgs(): string[] {
+  return [NO_LAZY_FETCH, "apply", "--cached", "--reverse"];
+}
+
+// Contract §4: an absent candidate gets its first index from Git, never a zero-byte file.
+export function readTreeEmptyArgs(): string[] {
+  return [NO_LAZY_FETCH, "read-tree", "--empty"];
+}
+
+// Research R3 step 9: the computed entry bytes come on stdin. Without `-w`, Git writes no object.
+export function entryHashArgs(): string[] {
+  return [NO_LAZY_FETCH, "hash-object", "--no-filters", "--stdin"];
+}
+
+// T112: the identity check before the commit (git-var(1)).
+export function authorIdentArgs(): string[] {
+  return [NO_LAZY_FETCH, "var", "GIT_AUTHOR_IDENT"];
+}
+
+export function committerIdentArgs(): string[] {
+  return [NO_LAZY_FETCH, "var", "GIT_COMMITTER_IDENT"];
+}
+
+// Contract §4 "Commit validation and handoff": the bounded message comes on stdin.
+export function commitArgs(): string[] {
+  return [NO_LAZY_FETCH, "commit", "--quiet", "--file=-"];
+}
+
+// T113: the reconciliation read of the actual commit tree. It takes one full commit OID, never a revision expression.
+export function commitTreeArgs(oid: string, objectFormat: ObjectFormat): string[] {
+  return read("ls-tree", "-r", "-z", treeItem(oid, objectFormat));
+}
+
 // T082 and the T283 record in research R2: the second call of the two-call discovery form. It holds the `rev-parse` options of profiles 2 to 7 in T082 order.
 // Run it only after the first profile gives no refusal. `--path-format=absolute` stays in effect for the later path options, as in the separate profiles.
 export function discoveryLayoutArgs(): string[] {

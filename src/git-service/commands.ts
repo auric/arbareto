@@ -210,6 +210,22 @@ export function untrackedPatchArgs(path: string): string[] {
   return read("diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--", "/dev/null", pathItem(path));
 }
 
+// T103: the binary signal of each comparison scope. git-diff(1) `--numstat`: "For binary files, outputs two `-` instead of saying `0 0`."
+const NUMSTAT_OPTIONS = ["--numstat", "-z", "--no-textconv", "--no-ext-diff", "--no-relative", "--ignore-submodules=dirty"] as const;
+
+export function stagedNumstatArgs(tree: string, objectFormat: ObjectFormat, path: string): string[] {
+  return read("diff-index", "--cached", ...NUMSTAT_OPTIONS, treeItem(tree, objectFormat), "--", pathItem(path));
+}
+
+export function unstagedNumstatArgs(path: string): string[] {
+  return read("diff-files", ...NUMSTAT_OPTIONS, "--", pathItem(path));
+}
+
+// `--no-index` prints the record in its two-path form, with `/dev/null` as the preimage path.
+export function untrackedNumstatArgs(path: string): string[] {
+  return read("diff", "--no-index", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--no-color", "--", "/dev/null", pathItem(path));
+}
+
 // T103: the attributes of the support decision. Paths go only on stdin.
 export function attributeArgs(): string[] {
   return read("check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding");

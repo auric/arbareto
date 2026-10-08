@@ -185,7 +185,7 @@ Store Git paths as bytes internally. Display valid Unicode without changing iden
 
 Compare the working file's on-disk name with the index path bytes. Any difference, such as letter case, refuses hunk and file actions with reason `path`. An entry that the service cannot read, such as a path beyond the Windows limit, also gets reason `path`. In a WSL repository, so does a path with a character that Windows names cannot hold (contract §11). Run this comparison only for changed entries or at request time, never for every tracked entry on each refresh.
 
-Reason `line-endings` applies when `ls-files --eol` reports `mixed` for the index or working side. Reason `index-flag` applies to intent-to-add, assume-unchanged, and skip-worktree entries.
+Reason `line-endings` applies when `ls-files --eol` reports `mixed` for the index or working side. Reason `index-flag` applies to intent-to-add, assume-unchanged, and skip-worktree entries. An untracked entry also gets `line-endings` when an index entry `.gitattributes` exists in the folder of the path or an ancestor folder, with no regular working file at that path (research R3 "Untracked hunk content"). `core.safecrlf` gives no untracked refusal.
 
 Comparison scopes are `head-to-index`, `index-to-worktree`, and `empty-to-untracked`. An unborn HEAD supplies an empty committed baseline.
 

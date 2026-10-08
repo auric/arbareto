@@ -53,6 +53,9 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["stagedNameStatusArgs", () => commands.stagedNameStatusArgs(SHA1, "sha1")],
   ["unstagedPatchArgs", () => commands.unstagedPatchArgs("a.txt")],
   ["untrackedPatchArgs", () => commands.untrackedPatchArgs("a.txt")],
+  ["stagedNumstatArgs", () => commands.stagedNumstatArgs(SHA1, "sha1", "a.txt")],
+  ["unstagedNumstatArgs", () => commands.unstagedNumstatArgs("a.txt")],
+  ["untrackedNumstatArgs", () => commands.untrackedNumstatArgs("a.txt")],
   ["attributeArgs", () => commands.attributeArgs()],
   ["lineEndingArgs", () => commands.lineEndingArgs()],
   ["emptyTreeArgs", () => commands.emptyTreeArgs()],
@@ -279,13 +282,27 @@ test("diff reads carry `--ignore-submodules=dirty`, and the patch reads carry `-
   }
 });
 
+// T103: reason `binary` comes from `--numstat -z`. git-diff(1) `--numstat`: "For binary files, outputs two `-` instead of saying `0 0`."
+test("the numstat reads of the three comparison scopes are exact", () => {
+  const options = ["--numstat", "-z", "--no-textconv", "--no-ext-diff", "--no-relative", "--ignore-submodules=dirty"];
+  expect(commands.stagedNumstatArgs(SHA1, "sha1", "-rf")).toEqual([...R, "diff-index", "--cached", ...options, SHA1, "--", "-rf"]);
+  expect(commands.unstagedNumstatArgs("a b.txt")).toEqual([...R, "diff-files", ...options, "--", "a b.txt"]);
+  expect(commands.untrackedNumstatArgs("--output=x")).toEqual([...R, "diff", "--no-index", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--no-color", "--", "/dev/null", "--output=x"]);
+  for (const oid of ["HEAD", SHA256, ""]) expect(() => commands.stagedNumstatArgs(oid, "sha1", "a.txt")).toThrow(TypeError);
+  for (const path of ["", "a\0b"]) {
+    expect(() => commands.stagedNumstatArgs(SHA1, "sha1", path)).toThrow(TypeError);
+    expect(() => commands.unstagedNumstatArgs(path)).toThrow(TypeError);
+    expect(() => commands.untrackedNumstatArgs(path)).toThrow(TypeError);
+  }
+});
+
 // Contract §7 read list and T103: the attribute, line-ending, and empty-tree reads. Paths go only on stdin.
 test("the attribute, line-ending, and empty-tree reads are exact", () => {
   expect(commands.attributeArgs()).toEqual([...R, "check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding"]);
   expect(commands.lineEndingArgs()).toEqual([...R, "ls-files", "--eol", "-z"]);
   expect(commands.emptyTreeArgs()).toEqual([...R, "hash-object", "-t", "tree", "--stdin"]);
 });
-test.todo("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object -t tree --stdin` exists (needs T101, T104, T199)", () => {
+test.todo("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object -t tree --stdin` exists (needs T104, T199)", () => {
   const hashes = builderArrays().filter((args) => args.includes("hash-object"));
   expect(hashes.some((args) => args.includes("-t") && args.includes("tree") && args.includes("--stdin"))).toBe(true);
   for (const args of hashes) {

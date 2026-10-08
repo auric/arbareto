@@ -350,6 +350,46 @@ Sources: [piped input](https://github.com/git-for-windows/git/blob/52ca1113d6511
 
 Additional sources for probes 7 to 9: [racy Git](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/technical/racy-git.adoc), [split index settings](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/config/splitindex.adoc), [cat-file filters](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git-cat-file.adoc), [test variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/t/README). The installed Git `2.55.0.windows.3` documentation holds the same racy-git text (lines 80 to 91) and the `splitIndex.sharedIndexExpire` entry.
 
+### Untracked hunk content
+
+**Decision (2026-10-08, T092)**: The untracked read is `--no-lazy-fetch diff --no-index --no-ext-diff --no-textconv --no-color -- /dev/null <path>`. Its new side equals the `git add` blob in every probed case where `git add` writes a blob, except an attribute file that only the index holds. Two case groups have no admissible method. They get no hunk action and reason `line-endings` (R10 "T092 cases without a method").
+
+**Rationale**: Only this form and `hash-object` are reads. Both fail the same case. Only the `diff` form gives bytes without an object write.
+
+**Alternatives considered**: `hash-object --stdin --path=<p>` without `-w` gives an object ID only. Its bytes need `-w`, which writes an object. Intent-to-add on a private index, then `diff-files -p`, equaled every blob. It ran `post-index-change` and the `core.fsmonitor` command, and the `read` policy never sets `GIT_INDEX_FILE` (T026). So it is not a read.
+
+The probe ran on 2026-10-08 with Git `2.56.0.windows.1` at `C:\Git\cmd\git.exe`, not the reference `2.55.0.windows.3`. It was a Bun test in the session scratch folder, not in the repository. It used the fixture root, environment, and builders of `tests/git/fixtures.ts`. Each command started with `--no-lazy-fetch`. Git ran in the worktree root with a path relative to that root. The attribute lookup of `diff --no-index` uses that path, so the read must keep this form. These probes are not qualification evidence.
+
+- Cases: the six `buildF04` variants and the five `buildF04Stage` variants. Each attribute folder got untracked `u-lf.txt`, `u-crlf.txt`, `u-mixed.txt`, and `u-noeol.txt` with the F04 changed text. `u-noeol.txt` is an extra case: LF text without the last LF. In the two `ident` variants, line 5 holds an expanded `$Id: <40 hex> $` keyword. This gives 60 cases.
+- Oracle: `git add -- <path>` in a copy of the fixture, then `cat-file blob` of the staged entry. `git add` exited 128 in 3 cases and wrote a blob in 57. The raw bytes differed from the blob in 29 cases, so the probe exercised the conversion.
+- Comparison: the probe rebuilt the new side from the `+` lines of the patch and compared it with the blob byte by byte.
+
+| Method | Equal to the blob (57 cases) | Differs from the blob |
+| --- | --- | --- |
+| `diff --no-index --no-ext-diff --no-textconv --no-color -- /dev/null <p>` | 55 | Index-only `eol=crlf`: `u-crlf.txt` and `u-mixed.txt`, first difference at byte 6 |
+| The same with `nul` as the empty side | 55 | The same two cases and offsets |
+| `hash-object --stdin --path=<p>` without `-w` (object ID only) | 55 | The same two cases |
+| `hash-object -w --stdin --path=<p>` in a copy, then `cat-file blob` | 55 | The same two cases, at byte 6 |
+| `add --intent-to-add` on a private index, then `diff-files -p --no-ext-diff --no-textconv` | 57 | None |
+
+In the 3 cases where `git add` exited 128, `hash-object -w` also exited 128. Every other method gave bytes or an object ID.
+
+Canaries: a local clean filter on a tracked stat-dirty file and on a second untracked file, `diff.external`, `diff.<driver>.textconv` on the probed file, a command-valued `core.fsmonitor`, and a `post-index-change` hook.
+
+- The `diff` form and `hash-object` ran no canary for the probed file. Both ran the clean filter for the file with the `filter` attribute (R5 probe, contract §4).
+- The private-index `add --intent-to-add` ran the monitor and the hook. Its `diff-files` step ran the monitor, and the clean filter for the filtered file.
+- With `color.ui=always`, the `diff` form wrote color escapes without `--no-color` and none with it.
+
+Consequences:
+
+- Index-only attribute file: for check-in, Git reads the working `.gitattributes` and reads the index entry only when that file is absent (attr.c `read_attr`). `diff --no-index` and `hash-object` load no index. Signal: an index entry `.gitattributes` in the folder of the path or an ancestor folder, with no regular working file at that path. The untracked entry then gets reason `line-endings`. This also refuses LF files that the form gives correctly. The refusal is fail-closed and stays a recorded limit.
+- `core.safecrlf=true`: under `core.autocrlf=true`, `git add` exited 128 for `u-lf.txt`, `u-mixed.txt`, and `u-noeol.txt`. The read gave bytes, because Git applies safecrlf only when it writes an object (probe 3). `apply --cached` writes the patch post-image without conversion. So an untracked hunk could stage content that `git add` refuses. Signal: an effective `core.safecrlf` that Git reads as boolean true, from the configuration listing. Git compares `warn` without case first, and only then reads the value as a boolean (environment.c). So `yes`, `on`, `1`, and a key without a value also refuse, and `warn` does not. Every untracked entry then gets reason `line-endings`. This also refuses files that `git add` accepts, such as the CRLF file, and every file without line-ending conversion. Tracked hunks still follow `git add -p` (contract §4).
+- `nul` and `/dev/null` both give an absent side in Git for Windows (diff-no-index.c `get_mode`). The form uses `/dev/null`.
+- A `filter` attribute from `check-attr` still gives reason `filter` before the read runs (contract §4).
+- Patch header settings (source reading, no probe): `diff.noprefix`, `diff.mnemonicPrefix`, `diff.srcPrefix`, `diff.dstPrefix`, and `diff.relative` are UI keys (diff.c `git_diff_ui_config`). `diff-files` and `diff-index` read only the basic keys, so these keys cannot change their headers. Porcelain `diff --no-index` reads them. `repo_diff_setup` applies them before option parsing, so explicit `--src-prefix=a/ --dst-prefix=b/` override them. The untracked read and the tracked patch reads carry both flags, which closes the untested-config item. The tracked patch reads also carry `--no-relative`, which clears `relative_name` (diff.c `diff_opt_relative`). `diff --no-index` sets `relative_name` again after option parsing, so `--no-relative` has no effect there and the form omits it. Git runs in the worktree root, so that prefix is empty.
+
+Sources: [check-in attribute order](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/attr.c#L841-L871), [empty side](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff-no-index.c#L81-L95), [safecrlf value](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/environment.c#L401-L411), [conversion flags](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/object-file.c#L33-L41), [diff UI keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L360-L426), [diff setup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L5133-L5175), [relative option](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L5902-L5911), [diff-files basic keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/diff-files.c#L34), [diff-index basic keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/diff-index.c#L31), [no-index relative names](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff-no-index.c#L411-L425).
+
 ## R4. Selected commit design: standard Git handoff
 
 **Decision**: Use ordinary canonical `git commit --quiet --file=-` after immediate full preflight. The user explicitly selected Standard Git through `/speckit-clarify` on 2026-09-28.
@@ -1638,6 +1678,14 @@ OBSERVATION T207: Git probe exit 0, git /usr/bin/git, git version 2.43.0, gitfs 
 - On `Ubuntu-24.04` with Git `2.43.0`, `tests/wsl/registration.test.ts` gave 32 pass, 4 skip, and 0 fail. Both F24 cases passed.
 - Control mutation: `src/git-service/discovery.ts:179` returned the Linux path unchanged. All 6 live `reads.test.ts` cases then failed.
 - Two T208 comparison cases are now todo cases for T115.
+
+**T092 cases without a method, 2026-10-08.** No admissible untracked read equals the `git add` blob in these F04 cases (R3 "Untracked hunk content"). They get no hunk action and reason `line-endings`. SC-003 records each case, and the requirement does not change. The probe ran on main `763fcac` with Git `2.56.0.windows.1` at `C:\Git\cmd\git.exe`. No retest is planned.
+
+- `fail`: index-only `.gitattributes` with `*.txt eol=crlf` (`buildF04Stage` "index-attribute"), untracked `u-crlf.txt`. The read differs from the blob at byte 6.
+- `fail`: the same fixture, untracked `u-mixed.txt`. The read differs from the blob at byte 6.
+- `fail`: `core.autocrlf=true` and `core.safecrlf=true` (`buildF04` "safecrlf"), untracked `u-lf.txt`. `git add` exits 128, and the read gives bytes.
+- `fail`: the same fixture, untracked `u-mixed.txt`. `git add` exits 128, and the read gives bytes.
+- `fail`: the same fixture, untracked `u-noeol.txt`. `git add` exits 128, and the read gives bytes.
 
 ### Batch reviews
 

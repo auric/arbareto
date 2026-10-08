@@ -689,6 +689,13 @@ impl Supervisor {
             .unwrap_or_default()
     }
 
+    /// The Job I/O sum of an operation, as the port thread reads it.
+    #[cfg(test)]
+    pub fn io_sum(&self, operation_id: &str) -> Option<u64> {
+        let job = Arc::clone(&self.shared.state().jobs.get(operation_id)?.job);
+        job.io_sum()
+    }
+
     /// Closes the Job at once, with every descendant. Cancel, deadline, and `closeJob` use it.
     pub fn close(&self, operation_id: &str) {
         self.shared.state().remove(operation_id);

@@ -3731,6 +3731,21 @@ mod tests {
             &[("magic sha256sum", Some("MZ"))],
             &[("path sha256sum", Some("/mnt/c/Tools/sha256sum.exe"))],
             &[("absent", Some("sha256sum"))],
+            // T225: `/usr/bin/stat` and `/usr/bin/env`. The service maps each to `no-coreutils` (contract §11 "Git per distro").
+            &[("magic stat", Some("MZ"))],
+            &[("path stat", Some("/mnt/c/Tools/stat.exe"))],
+            &[
+                ("path stat", None),
+                ("magic stat", None),
+                ("absent", Some("stat")),
+            ],
+            &[("magic env", Some("MZ"))],
+            &[("path env", Some("/mnt/c/Tools/env.exe"))],
+            &[
+                ("path env", None),
+                ("magic env", None),
+                ("absent", Some("env")),
+            ],
             // A program is either absent or found, never both.
             &[("absent", Some("perl"))],
             &[("absent", Some("git"))],

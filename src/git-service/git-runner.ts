@@ -336,7 +336,7 @@ export function createCollector(options: { maxBytes: number; maxRecords?: number
       }
       if (end < chunk.length) limited = true;
       if (end > 0) {
-        chunks.push(chunk.slice(0, end));
+        chunks.push(new Uint8Array(chunk.subarray(0, end)));
         kept += end;
       }
     },

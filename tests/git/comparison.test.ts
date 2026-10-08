@@ -7,8 +7,10 @@ import { describe, expect } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { COMPARED_RAW_VERSION_BYTES, NATIVE_CHUNK_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
+import { createApprovals } from "../../src/git-service/approvals";
 import { createComparisonReader, type ComparisonTarget } from "../../src/git-service/comparison";
 import { probeGit } from "../../src/git-service/git-installation";
+import { hunkApprovals } from "../../src/git-service/hunk-publish";
 import { createRegistrations } from "../../src/git-service/registration";
 import { readWorkingVersion } from "../../src/git-service/snapshot";
 import { createWorkspaceReader } from "../../src/git-service/status";
@@ -349,7 +351,7 @@ describe("bounds (contract §5)", () => {
     expect(completeness).toMatchObject({ state: "limited", reason: "STATUS_LISTING_BYTES" });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `retained comparisons cap at 4, and eviction invalidates their approvals: a hunk of the evicted comparison is refused and starts no Git process`, SHELL, () =>
+  caseTest(TASK, `retained comparisons cap at 4: a hunk of the evicted comparison is rejected and starts no Git process`, SHELL, () =>
     withService({ name: "t093-retained" }, async (service) => {
       const repo = repoOf(buildF02(gitPath(), "t093-retained"));
       put(repo, "new.txt", "new\n");
@@ -669,7 +671,16 @@ describe("retained comparison binding (T110)", () => {
       const trust = createTrust({ runner: service.runner, environment: serviceEnv() });
       const reader = createWorkspaceReader({ runner: service.runner, trust });
       const dropped: string[] = [];
-      const comparisons = createComparisonReader({ runner: service.runner, trust, onDrop: (id) => dropped.push(id) });
+      // The session wiring (`session.ts`): eviction forgets the approvals of the comparison.
+      const approvals = createApprovals();
+      const comparisons = createComparisonReader({
+        runner: service.runner,
+        trust,
+        onDrop: (id) => {
+          dropped.push(id);
+          approvals.forget(id);
+        },
+      });
       const signal = new AbortController().signal;
       const read = await reader.readWorkspace({ operationId: crypto.randomUUID(), signal, installation, workspace, refresh: false });
       if (read.result !== "succeeded") throw new Error(`read failed: ${JSON.stringify(read)}`);
@@ -713,7 +724,14 @@ describe("retained comparison binding (T110)", () => {
       }
       expect(saved).toBe(true);
 
+      // The hunk approvals of a retained comparison stay acceptable until onDrop.
+      const issued = hunkApprovals(kept, target("unstaged").snapshot, workspace);
+      expect(issued.length).toBeGreaterThan(0);
+      for (const a of issued) approvals.issue(a);
+      expect(issued.map((a) => approvals.accept(a).ok)).toEqual(issued.map(() => true));
+
       comparisons.release(workspace.repositoryId);
       expect(dropped.toSorted()).toEqual([idOf(unstaged), idOf(staged)].toSorted());
+      expect(issued.map((a) => approvals.accept(a))).toEqual(issued.map(() => ({ ok: false, code: "UNKNOWN_TARGET" })));
     }), TIMEOUT_MS);
 });

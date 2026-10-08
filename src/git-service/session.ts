@@ -17,7 +17,7 @@ import { getEnvironment } from "./environment";
 import { createExclusion } from "./exclusion";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createHistoryReader, type HistoryOutcome } from "./history";
-import { createHunkPublisher, hunkApprovals, type HunkCheckpoint } from "./hunk-publish";
+import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from "./hunk-publish";
 import { createSessionLog } from "./log";
 import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
@@ -55,7 +55,7 @@ export interface SessionOptions {
   // Test seam only. Production never sets it.
   readRawIndex?: WorkspaceReaderOptions["readRawIndex"];
   // Test seam only. Production never sets it. The service awaits it after research R3 steps 5, 11, and 13 of a hunk publication.
-  hunkCheckpoint?: (checkpoint: HunkCheckpoint) => Promise<void> | void;
+  hunkCheckpoint?: HunkPublisherOptions["hunkCheckpoint"];
   // Test seam only. Production uses the monotonic `performance.now()` for the contract §5 approval lifetime.
   approvalClock?: () => number;
 }

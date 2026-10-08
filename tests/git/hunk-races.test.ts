@@ -3,13 +3,15 @@
 
 // T097: races at the research.md R3 protocol points 5, 11, and 13, through the in-process checkpoint observer of `src/git-service/hunk-publish.ts` (T110).
 
-import { describe, expect } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { describe, expect, spyOn } from "bun:test";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { useFixtureRoot } from "./fixture-root";
 import { buildChanged, put } from "./fixtures";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
-import { applyHunk, blobOf, candidateFiles, gitDirOf, gitPath, outcome, repoOf, scriptedPatch, selectHunks, SUCCEEDED, TIMEOUT_MS, underTest, withService } from "./hunk-harness";
+import { applyHunk, blobOf, candidateFiles, copyRepo, git, gitDirOf, gitPath, gitPathOf, outcome, repoOf, scriptedPatch, selectHunks, SUCCEEDED, TIMEOUT_MS, underTest, withService } from "./hunk-harness";
 import { caseTest, type Capability, type HunkCheckpoint, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T097";
@@ -62,6 +64,14 @@ async function race(name: string, at: Partial<Record<HunkCheckpoint["step"], (se
 
 const EXTERNAL = (repo: string) => `${readFileSync(join(repo, "multi.txt"), "utf8")}external line\n`;
 
+// A valid index with other bytes: the index of a copy with `staged.txt` unstaged. The copy drops the lock that the operation holds.
+function otherIndex(repo: string, name: string): Uint8Array {
+  const copy = copyRepo(repo, name);
+  rmSync(gitPathOf(copy, "index.lock"), { force: true });
+  git(copy, ["reset", "-q", "--", "staged.txt"]);
+  return readFileSync(gitPathOf(copy, "index"));
+}
+
 describe("protocol races (research.md R3 steps 5, 11, and 13)", () => {
   caseTest(TASK, `a working-file change before the final recheck refuses publication with STALE_SELECTION, and the external bytes stay`, SHELL, async () => {
     let written = "";
@@ -111,5 +121,54 @@ describe("protocol races (research.md R3 steps 5, 11, and 13)", () => {
     });
     expect(outcome(response)).toEqual(SUCCEEDED);
     expect(indexEntries(gitPath(), repo)).toEqual(indexEntries(gitPath(), oracle));
+  }, TIMEOUT_MS);
+
+  // Contract §9: a `publish` that returned success while the later canonical digest is not the verified candidate digest gives completed-with-effects.
+  for (const kind of ["old", "other"] as const) {
+    caseTest(TASK, `an index write after publication with ${kind === "old" ? "the old index bytes" : "other valid index bytes"} gives completed-with-effects with effects.index true`, SHELL, async () => {
+      const name = `t097-after-publication-${kind}`;
+      let bytes: Uint8Array | null = null;
+      const { repo, response } = await race(name, {
+        5: (_s, _o, repo) => {
+          bytes = kind === "old" ? readFileSync(gitPathOf(repo, "index")) : otherIndex(repo, `${name}-other`);
+        },
+        13: (_s, _o, repo) => writeFileSync(gitPathOf(repo, "index"), bytes!),
+      });
+      expect({ state: response.state, code: response.code, index: response.result?.effects?.index }).toEqual({ state: "completed-with-effects", code: "COMPLETED_WITH_EFFECTS", index: true });
+      expect(Buffer.compare(readFileSync(gitPathOf(repo, "index")), bytes!)).toBe(0);
+    }, TIMEOUT_MS);
+  }
+
+  // A throw from `publish()` after the rename leaves publication open. An index that matches neither retained digest gives unknown (contract §8).
+  caseTest(TASK, `a throw from publish after the rename, with other index bytes later, ends unknown, not failed`, SHELL, async () => {
+    const name = "t097-publish-throws";
+    const probe = await open(fileURLToPath(import.meta.url), "r");
+    const handles = Object.getPrototypeOf(probe) as { close(): Promise<void> };
+    await probe.close();
+    const close = handles.close;
+    let armed: { lock: string; index: string; bytes: Uint8Array } | null = null;
+    // Test seam: the `close` of the owned lock handle runs after the rename (`index-lock.ts` `publish`).
+    const spy = spyOn(handles, "close").mockImplementation(async function (this: unknown) {
+      await close.call(this);
+      const a = armed;
+      if (a === null || existsSync(a.lock)) return;
+      armed = null;
+      writeFileSync(a.index, a.bytes);
+      throw Object.assign(new Error("EIO"), { code: "EIO" });
+    });
+    let raced: Race;
+    let bytes: Uint8Array = new Uint8Array();
+    try {
+      raced = await race(name, {
+        11: (_s, _o, repo) => {
+          bytes = otherIndex(repo, `${name}-other`);
+          armed = { lock: gitPathOf(repo, "index.lock"), index: gitPathOf(repo, "index"), bytes };
+        },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect({ thrown: armed === null, ...outcome(raced.response) }).toEqual({ thrown: true, state: "unknown", code: "STATE_UNKNOWN" });
+    expect(Buffer.compare(readFileSync(gitPathOf(raced.repo, "index")), bytes)).toBe(0);
   }, TIMEOUT_MS);
 });

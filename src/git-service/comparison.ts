@@ -65,7 +65,8 @@ export interface RetainedComparison {
   working: { size: number; sha256: string } | null;
   // The `check-attr` values of the path that the support decision used.
   attributes: Readonly<Record<string, string>>;
-  // The compared working version, read before and after the diff. Null for `head-to-index`, a WSL workspace, or a failed read; then no hunk approval exists.
+  // The compared working version, read before and after the diff. Null for `head-to-index`, a WSL workspace, or a failed read.
+  // A `head-to-index` comparison binds no working version and gets hunk approvals. Another null gets none.
   workingVersion: WorkingVersion | null;
 }
 

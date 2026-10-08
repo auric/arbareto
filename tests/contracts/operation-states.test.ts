@@ -267,6 +267,12 @@ describe("cancel-requested", () => {
     expectStep({ operation: COMMIT, state: "cancel-requested" }, { type: "cancel-deadline" }, { state: "reconciling" });
   });
 
+  test("a deadline after a cancel records DEADLINE with reason deadline, and the later canceled outcome keeps it", () => {
+    const entered = { operation: HUNK, ...step({ operation: HUNK, state: "cancel-requested" }, { type: "cancel-deadline", lingeringDescendants: 0 }) } as Snapshot;
+    expect(entered).toMatchObject({ state: "reconciling", cause: "DEADLINE", reason: "deadline" });
+    expectStep(entered, { type: "no-effects", observed: "canceled" }, { state: "canceled", code: "CANCELED", cause: "DEADLINE", reason: "deadline" });
+  });
+
   test("a canceled read refreshes relevant state and ends canceled", () => {
     expectStep(
       { operation: READ, state: "cancel-requested" },

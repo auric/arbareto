@@ -5,6 +5,7 @@
 // Only `publish()` of the owned index lock writes the canonical index. A WSL comparison gets no hunk approval (T214 adds the WSL path).
 
 import { unlink } from "node:fs/promises";
+import { basename } from "node:path";
 import type { Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
@@ -17,7 +18,7 @@ import { createCollector, type Collector, type GitExit, type GitRunner } from ".
 import { captureHead } from "./history";
 import { prepareCandidate, type Candidate, type CandidateFailure } from "./hunk-candidate";
 import { createIndexLock, type IndexLock, type LockResult, type PublishResult } from "./index-lock";
-import type { DiagnosticCause } from "./log";
+import { STEP_CAUSES, type DiagnosticCause } from "./log";
 import type { OperationRegistry } from "./operations";
 import { contextOf, isMissing, objectCheckInput, objectCheckOutcome, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -28,6 +29,14 @@ import type { Trust, TrustListing } from "./trust";
 
 // Contract §4 "Split index".
 export const SPLIT_INDEX_TEXT = "Git's split index is on for this repository. Arbareto stages hunks and files only with a full index. Stage this change in a terminal.";
+// Contract §9: the remedy text of each `UNSUPPORTED_HUNK_PROFILE` reason.
+export const PROFILE_TEXTS: Record<HunkRefusalReason, string> = {
+  "sparse-index": "This repository uses a sparse index. Arbareto stages hunks and files only with a full index. Stage this change in a terminal.",
+  "split-index": SPLIT_INDEX_TEXT,
+  "index-change-hook": "This repository registers a post-index-change hook. Arbareto does not stage hunks and files while such a registration exists, also a disabled one. Stage this change in a terminal.",
+  "executable-monitor": "The core.fsmonitor setting starts a program for this repository. Arbareto does not stage hunks and files while that setting starts a program. Stage this change in a terminal.",
+  "unqualified-monitor": "This repository uses the built-in fsmonitor daemon of Git. Arbareto has not qualified that daemon for staging hunks and files. Stage this change in a terminal.",
+};
 // Contract §4 "Windows lock ownership".
 export const FILE_ID_TEXT = "This volume gives the index lock no unique file ID. Stage this change in a terminal.";
 // Contract §9: the remedy of a failed file step.
@@ -63,11 +72,10 @@ export interface Refusal {
 }
 
 const STALE: Refusal = { code: "STALE_SELECTION" };
-// Contract §9 "Total unexpected diagnostic output": the diagnostic names OUTPUT_LIMIT as the cause.
-const refusalOf = (f: Failure): Refusal => (f.reason === DIAGNOSTIC_LIMIT.reason ? { ...f, cause: "OUTPUT_LIMIT" } : f);
 const stepFailed = (cause?: DiagnosticCause): Refusal => ({ code: "GIT_FAILED", ...(cause === undefined ? {} : { cause }), remedy: { text: STEP_FAILED_TEXT } });
-// Contract §4 gives fixed texts only for `split-index`, `file-id`, and `shared-repository`. No text exists for the other reasons.
-const profileRefusal = (reason: HunkRefusalReason): Refusal => ({ code: "UNSUPPORTED_HUNK_PROFILE", reason, ...(reason === "split-index" ? { remedy: { text: SPLIT_INDEX_TEXT } } : {}) });
+// Contract §9 "Total unexpected diagnostic output": the diagnostic names OUTPUT_LIMIT as the cause. A failed observation gets the step remedy.
+const refusalOf = (f: Failure): Refusal => (f.reason === DIAGNOSTIC_LIMIT.reason ? { ...f, cause: "OUTPUT_LIMIT" } : f.code === "GIT_FAILED" ? stepFailed() : f);
+const profileRefusal = (reason: HunkRefusalReason): Refusal => ({ code: "UNSUPPORTED_HUNK_PROFILE", reason, remedy: { text: PROFILE_TEXTS[reason] } });
 
 const isStop = (f: unknown): f is Stop => typeof f === "object" && f !== null && "stop" in f;
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
@@ -273,9 +281,10 @@ export function checkpointRefusal(binding: CheckpointBinding, policy: PolicyObse
   if (!("value" in state.head)) return refusalOf(state.head as Failure);
   if (!Bun.deepEquals(state.head.value, binding.head, true)) return STALE;
   if (state.index.value.digest !== binding.index.rawIndexDigest) return STALE;
-  if (attributes === null) return STALE;
-  if (!("value" in attributes)) return refusalOf(attributes as Failure);
-  if (!Bun.deepEquals(attributes.value, binding.attributes, true)) return STALE;
+  // `observePolicy` reads the attributes whenever the gate passes.
+  const read = attributes!;
+  if (!("value" in read)) return refusalOf(read as Failure);
+  if (!Bun.deepEquals(read.value, binding.attributes, true)) return STALE;
   if (binding.working !== null) {
     const w = state.working;
     if (w === null || "changed" in w) return STALE;
@@ -329,9 +338,9 @@ export function hunkApprovals(c: RetainedComparison, s: ChangeSnapshot, w: Works
 
 // ---- Execution ----
 
-// Keeps the `activeDescendants` count of the last exit reply (contract §6 "Lingering Jobs").
-export function recording(runner: GitRunner): GitRunner & { readonly last: number } {
-  let last = 0;
+// Keeps the `activeDescendants` count of the last exit reply (contract §6 "Lingering Jobs"). Null: no exit reply since the start or the last `reset`.
+export function recording(runner: GitRunner): GitRunner & { readonly last: number | null; reset(): void } {
+  let last: number | null = null;
   return {
     ...runner,
     async run(call) {
@@ -341,6 +350,9 @@ export function recording(runner: GitRunner): GitRunner & { readonly last: numbe
     },
     get last() {
       return last;
+    },
+    reset() {
+      last = null;
     },
   };
 }
@@ -367,6 +379,28 @@ export async function removeOwned(paths: readonly string[], processesEnded: bool
     }
   }
   return foreign;
+}
+
+// Contract §8 "Observed locks": the Git-resolved form of the lock path. An owned file in the folder of the index gets the same folder text.
+export const besideIndex = (w: Pick<Workspace, "indexPath">, path: string) => `${w.indexPath.slice(0, w.indexPath.length - basename(w.indexPath).length)}${basename(path)}`;
+
+// Contract §7 "Missing objects": with a promisor remote, a missing index blob gives OBJECT_MISSING without publication. `oid`: the index object ID of the entry.
+export async function missingObject(ctx: ObserveContext, listing: PolicyFacts["listing"] | null, oid: string | undefined, check: "object-missing" | "git-failed"): Promise<Refusal | Stop> {
+  const { workspace: w, signal } = ctx;
+  const promisor = listing === null ? false : await settled(signal, hasPromisor(listing.entries, w, (paths) => ctx.runner.identities(ctx.operationId, contextOf(w), paths, signal)));
+  if (promisor === "canceled" || promisor === "deadline") return { stop: promisor };
+  if (isStop(promisor)) return promisor;
+  if (promisor !== true) return stepFailed();
+  const missing: Refusal = { code: "OBJECT_MISSING", remedy: { text: OBJECT_MISSING_REMEDY } };
+  if (check === "object-missing") return missing;
+  if (oid === undefined || /^0+$/.test(oid)) return stepFailed();
+  const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+  const step = await settled(signal, runRead(ctx.runner, ctx, objectCheckArgs(), out, objectCheckInput([oid])));
+  if (signal.aborted) return CANCELED;
+  if (isStop(step)) return step;
+  const answer = "code" in step ? "failed" : objectCheckOutcome(step, out, [oid]);
+  if (answer === "deadline") return DEADLINE;
+  return answer === "missing" ? missing : stepFailed();
 }
 
 // Contract §5 "Retained comparison data" and §8: the raw digests that reconciliation compares with the canonical index.
@@ -444,21 +478,34 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     }
     if (!entered.ok) return notEntered(operationId, entered);
     const marker = entered;
+    const rec = recording(o.runner);
+    const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
+    const run = {
+      lock: null as IndexLock | null,
+      candidate: null as Candidate | null,
+      // The Git-resolved form (`besideIndex`).
+      candidatePath: null as string | null,
+      // `publish()` started and did not return.
+      publishing: false,
+      // `publish()` returned `published`.
+      published: false,
+      // Data-model §7 `lingeringDescendants`: the count of the last execution process before reconciliation.
+      executionLast: 0,
+      listing: null as PolicyFacts["listing"] | null,
+    };
+    const foreign: string[] = [];
+    // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
+    const releaseOwned = async (processesEnded: boolean) => {
+      const { lock, candidatePath } = run;
+      run.lock = null;
+      run.candidatePath = null;
+      if (lock !== null && (await lock.release().catch(() => "remove-failed" as const)) === "remove-failed") foreign.push(lock.path);
+      if (candidatePath !== null) foreign.push(...(await removeOwned([candidatePath, `${candidatePath}.lock`], processesEnded)));
+    };
+    const extra = () => (foreign.length > 0 ? { foreign } : undefined);
     try {
       registry.apply(operationId, { type: "marker-recorded" });
       owners.set(operationId, request.repositoryId);
-      const rec = recording(o.runner);
-      const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-      const run = {
-        lock: null as IndexLock | null,
-        candidate: null as Candidate | null,
-        candidatePath: null as string | null,
-        // `publish()` returned `published`.
-        published: false,
-        // Data-model §7 `lingeringDescendants`: the count of the last execution process before reconciliation.
-        executionLast: 0,
-        listing: null as PolicyFacts["listing"] | null,
-      };
 
       const checkpoint = async (step: 5 | 11): Promise<Refusal | Stop | null> => {
         const policy = await observePolicy(ctx, path);
@@ -467,26 +514,6 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
         if (refused !== null) return refused;
         await o.hunkCheckpoint?.({ step, operationId });
         return signal.aborted ? CANCELED : null;
-      };
-
-      // Contract §7 "Missing objects": with a promisor remote, a missing index blob gives OBJECT_MISSING without publication.
-      const missingObject = async (check: "object-missing" | "git-failed"): Promise<Refusal | Stop> => {
-        const listing = run.listing;
-        const promisor = listing === null ? false : await settled(signal, hasPromisor(listing.entries, w, (paths) => o.runner.identities(operationId, contextOf(w), paths, signal)));
-        if (promisor === "canceled" || promisor === "deadline") return { stop: promisor };
-        if (isStop(promisor)) return promisor;
-        if (promisor !== true) return stepFailed();
-        const missing: Refusal = { code: "OBJECT_MISSING", remedy: { text: OBJECT_MISSING_REMEDY } };
-        if (check === "object-missing") return missing;
-        const oid = c.entry.oids?.[1];
-        if (oid === undefined || /^0+$/.test(oid)) return stepFailed();
-        const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-        const step = await settled(signal, runRead(rec, ctx, objectCheckArgs(), out, objectCheckInput([oid])));
-        if (signal.aborted) return CANCELED;
-        if (isStop(step)) return step;
-        const answer = "code" in step ? "failed" : objectCheckOutcome(step, out, [oid]);
-        if (answer === "deadline") return DEADLINE;
-        return answer === "missing" ? missing : stepFailed();
       };
 
       const steps = async (): Promise<Ending> => {
@@ -513,22 +540,24 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
         // Research R3 steps 6 to 10.
         registry.progress(operationId, "candidate-verification");
         const prepared = await prepareCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest, comparison: c, hunk });
-        run.executionLast = rec.last;
+        run.executionLast = rec.last ?? 0;
         if (!prepared.ok) {
-          run.candidatePath = prepared.path;
+          run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
           const refused = candidateRefusal(prepared.failure);
-          return "check" in refused ? await missingObject(refused.check) : refused;
+          return "check" in refused ? await missingObject(ctx, run.listing, c.entry.oids?.[1], refused.check) : refused;
         }
         const candidate = prepared.candidate;
         run.candidate = candidate;
-        run.candidatePath = candidate.path;
+        run.candidatePath = besideIndex(w, candidate.path);
         // Research R3 steps 11 and 12.
         const second = await checkpoint(11);
         if (second !== null) return second;
         // Research R3 step 13. Contract §5: the digests stay until reconciliation succeeds.
         retained.set(operationId, { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: candidate.digest });
         registry.progress(operationId, "publication");
+        run.publishing = true;
         const result = await run.lock.publish(candidate.bytes, candidate.mtimeNs);
+        run.publishing = false;
         if (!result.published) return publishRefusal(result, run.lock.path);
         run.published = true;
         await o.hunkCheckpoint?.({ step: 13, operationId });
@@ -539,60 +568,70 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
       try {
         ending = await steps();
       } catch {
-        ending = signal.aborted ? CANCELED : { code: "GIT_FAILED" };
+        ending = signal.aborted ? CANCELED : stepFailed();
       }
 
       const canceled = enterReconciling(registry, operationId, isStop(ending) && ending.stop === "deadline", run.executionLast);
       // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
+      // Only an exit reply of these reads is a fresh process-end fact for the owned candidate.
+      rec.reset();
       const observed = await observeState({ ...ctx, signal: new AbortController().signal }, path, bindsWorking);
 
-      // Owned files, after every process exit returned. `release` removes the lock only while the path names the owned file (contract §4).
       const refusal = "code" in ending ? ending : null;
-      const foreign = [...(refusal?.foreign ?? [])];
-      if (run.lock !== null && (await run.lock.release()) === "remove-failed") foreign.push(run.lock.path);
-      if (run.candidatePath !== null) foreign.push(...(await removeOwned([run.candidatePath, `${run.candidatePath}.lock`], rec.last === 0)));
-      const extra = foreign.length > 0 ? { foreign } : undefined;
+      foreign.push(...(refusal?.foreign ?? []));
+      await releaseOwned(rec.last === 0);
 
       const failedRead = [observed.head, observed.index, observed.operationState, observed.working].find((f) => f !== null && !("value" in f) && !("changed" in f)) as Failure | Stop | undefined;
       if (failedRead !== undefined) {
         // Contract §8: a failed observation gives `unknown`. The marker and the retained digests stay.
         const code = "code" in failedRead ? failedRead.code : "DEADLINE";
         const event = "code" in failedRead ? { type: "reconciliation-read-failed" as const, code } : { type: "reconciliation-read-deadline" as const };
-        registry.apply(operationId, event, extra, diagnosticCause(code, refusal, undefined));
+        registry.apply(operationId, event, extra(), diagnosticCause(code, refusal, undefined));
         return;
       }
       const head = (observed.head as { value: Head }).value;
       const digest = (observed.index as { value: IndexFacts }).value.digest;
       const operationState = (observed.operationState as { value: OperationState }).value;
-      // Contract §9: the canonical index digest decides publication. A returned publication with another digest is published with an index effect (G17).
+      const working = observed.working;
+      const effectsWith = (index: boolean) => ({
+        head: !Bun.deepEquals(head, binding.head, true),
+        index,
+        workingFiles: binding.working !== null && (working === null || "changed" in working || !sameVersion((working as { value: WorkingVersion }).value, binding.working)),
+        operationState: operationState !== binding.operationState,
+      });
+      // Contract §9: the canonical index digest decides publication. A returned publication with another digest is published with an index effect.
       const viaDigest = run.candidate !== null && digest === run.candidate.digest;
+      const changed = digest !== binding.index.rawIndexDigest;
       const cause = diagnosticCause(null, refusal, registry.get(operationId)!.cause);
       if (viaDigest || run.published) {
-        const working = observed.working;
-        const effects = {
-          head: !Bun.deepEquals(head, binding.head, true),
-          index: !viaDigest,
-          workingFiles: binding.working !== null && (working === null || "changed" in working || !sameVersion((working as { value: WorkingVersion }).value, binding.working)),
-          operationState: operationState !== binding.operationState,
-        };
-        if (Object.values(effects).some(Boolean)) registry.apply(operationId, { type: "differing-effects" }, { effects, ...extra }, cause);
-        else registry.apply(operationId, { type: "intended-effects-confirmed" }, extra, cause);
+        const effects = effectsWith(!viaDigest);
+        if (Object.values(effects).some(Boolean)) registry.apply(operationId, { type: "differing-effects" }, { effects, ...extra() }, cause);
+        else registry.apply(operationId, { type: "intended-effects-confirmed" }, extra(), cause);
+      } else if (run.publishing && changed) {
+        // `publish()` threw, and the index matches neither retained digest. No contract row decides publication, so the outcome is unknown.
+        registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
+        return;
+      } else if (changed && (STEP_CAUSES as readonly unknown[]).includes(refusal?.cause)) {
+        // Contract §8: an execution failure with observed changes is failed-with-effects. A checkpoint code never is.
+        registry.apply(operationId, { type: "failed-with-effects" }, { effects: effectsWith(true), ...extra() }, cause);
       } else if (canceled) {
-        registry.apply(operationId, { type: "no-effects", observed: "canceled" }, extra, cause);
+        registry.apply(operationId, { type: "no-effects", observed: "canceled" }, extra(), cause);
       } else {
-        const result = { ...(refusal?.reason === undefined ? {} : { reason: refusal.reason }), ...(refusal?.remedy === undefined ? {} : { remedy: refusal.remedy }), ...(refusal?.path === undefined ? {} : { path: refusal.path }), ...extra };
-        const reason = refusal?.code === "OUTPUT_LIMIT" ? refusal.reason : undefined;
-        registry.apply(operationId, { type: "no-effects", observed: "failed", ...(refusal === null ? {} : { code: refusal.code }), ...(reason === undefined ? {} : { reason }) }, Object.keys(result).length > 0 ? result : undefined, cause);
+        const { code, cause: _cause, foreign: _foreign, ...fields }: Partial<Refusal> = refusal ?? {};
+        const result = { ...fields, ...extra() };
+        const reason = code === "OUTPUT_LIMIT" ? fields.reason : undefined;
+        registry.apply(operationId, { type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) }, Object.keys(result).length > 0 ? result : undefined, cause);
       }
       // Contract §6: `resolved` follows a known outcome.
       o.runner.resolved(marker.markerId);
       retained.delete(operationId);
     } catch {
-      // A broken step leaves the outcome unknown. The marker stays (contract §8).
+      // A broken step leaves the outcome unknown. The marker stays (contract §8). Without a fresh process-end fact, the candidate stays foreign.
+      await releaseOwned(false);
       const state = registry.get(operationId)?.state;
       if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
       if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
-      if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, undefined, "GIT_FAILED");
+      if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
     } finally {
       // The registry sent `ended` with the terminal response, so this only frees the exclusion slot.
       marker.end(false);

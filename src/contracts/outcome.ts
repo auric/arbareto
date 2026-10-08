@@ -163,7 +163,8 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
       if (mutation && (event.type === "processes-stopped" || event.type === "cancel-deadline")) {
         const count = ended ? 0 : (event.lingeringDescendants ?? snapshot.lingeringDescendants);
         if (count !== undefined && !isCount(count)) throw new Error("lingeringDescendants must be a non-negative safe integer");
-        return next("reconciling", { lingeringDescendants: count });
+        // Contract §5 "Deadline outcomes": a later `canceled` keeps the deadline reason.
+        return next("reconciling", { lingeringDescendants: count, ...(event.type === "cancel-deadline" ? { cause: "DEADLINE", reason: "deadline" } : {}) });
       }
       if (!mutation && event.type === "processes-stopped") return next("canceled", { code: "CANCELED" }, ["refresh-state"]);
       if (!mutation && event.type === "read-deadline") return next("failed", { code: "DEADLINE" }, ["close-job", "refresh-state"]);

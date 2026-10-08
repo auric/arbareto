@@ -109,8 +109,11 @@ describe("checkpoints (contract §4, §9)", () => {
           };
           if (checkpoint === "first") doChange();
           else at5.run = doChange;
+          const calls = service.runner.calls.length;
           const response = await refused(service, repo, () => applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage"), baseline);
           expect({ change, checkpoint, code: code(response), observed: at5.run === null }).toEqual({ change, checkpoint, code: "STALE_SELECTION", observed: true });
+          // The first checkpoint refuses before research R3 step 6, so no `apply` runs.
+          if (checkpoint === "first") expect({ change, applies: service.runner.calls.slice(calls).filter((call) => call.arguments.includes("apply")).length }).toEqual({ change, applies: 0 });
         });
       }, TIMEOUT_MS);
     }
@@ -520,6 +523,126 @@ describe("request checks (contract §4, §9)", () => {
     }),
     TIMEOUT_MS,
   );
+
+  // The prototype of the FileHandle class, for a spy on one handle method.
+  async function fileHandles(repo: string): Promise<{ truncate(): Promise<void> }> {
+    const probe = await open(gitPathOf(repo, "HEAD"), "r");
+    const handles = Object.getPrototypeOf(probe);
+    await probe.close();
+    return handles;
+  }
+
+  // Contract §8: an execution failure with observed changes is failed-with-effects. A failed truncate is the §9 `write` step.
+  caseTest(TASK, `a failed lock write while another writer changes the index ends failed-with-effects with effects.index true; the session log cause is write`, SHELL, () =>
+    withService({ name: "t096-write-effects" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t096-write-effects", "F09"));
+      const copy = copyRepo(repo, "t096-write-effects-other");
+      git(copy, ["reset", "-q", "--", "staged.txt"]);
+      const other = readFileSync(gitPathOf(copy, "index"));
+      await underTest("hunk-publish");
+      const { repositoryId } = await service.register(repo);
+      const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+      const truncate = spyOn(await fileHandles(repo), "truncate").mockImplementation(() => {
+        writeFileSync(gitPathOf(repo, "index"), other);
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      });
+      let response: ServiceResponse<{ effects?: Record<string, boolean> }>;
+      try {
+        response = (await applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage")) as typeof response;
+      } finally {
+        truncate.mockRestore();
+      }
+      const entry = service.log().find((e) => (e as { operationId?: string }).operationId === response.operationId) as { cause?: string } | undefined;
+      expect({ ...outcome(response), index: response.result?.effects?.index, cause: entry?.cause }).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", index: true, cause: "write" });
+      expect({ index: Buffer.compare(readFileSync(gitPathOf(repo, "index")), other), lock: existsSync(gitPathOf(repo, "index.lock")), candidates: candidateFiles(repo) }).toEqual({ index: 0, lock: false, candidates: [] });
+    }),
+    TIMEOUT_MS,
+  );
+
+  // T110 decision G18: only an exit reply of a reconciliation read is a fresh process-end fact. Without one, the owned candidate stays foreign.
+  caseTest(TASK, `a failed lock write and a reconciliation without any exit reply end unknown; the result names the candidate and its lock in the Git-resolved form, and the candidate stays`, SHELL, () =>
+    withService({ name: "t096-no-exit" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t096-no-exit", "F09"));
+      await underTest("hunk-publish");
+      const { repositoryId } = await service.register(repo);
+      const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+      let failed = false;
+      // Test seam: after the failed write, each Git request fails before any process starts, so no exit reply comes.
+      const release = service.runner.holdStart(() => {
+        if (failed) throw new Error("test: no exit reply");
+        return false;
+      });
+      const truncate = spyOn(await fileHandles(repo), "truncate").mockImplementation(() => {
+        failed = true;
+        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      });
+      let response: ServiceResponse<{ foreign?: string[] }>;
+      try {
+        response = (await applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage")) as typeof response;
+      } finally {
+        truncate.mockRestore();
+        release();
+      }
+      const [candidate] = candidateFiles(repo);
+      const owned = join(gitDirOf(repo), candidate!);
+      const foreign = response.result?.foreign ?? [];
+      expect({ ...outcome(response), foreign: foreign.map((p) => resolve(p)), slashes: foreign.every((p) => !p.includes("\\")) }).toEqual({
+        state: "unknown",
+        code: "STATE_UNKNOWN",
+        foreign: [resolve(owned), resolve(`${owned}.lock`)],
+        slashes: true,
+      });
+      expect({ candidate: existsSync(owned), lock: existsSync(gitPathOf(repo, "index.lock")) }).toEqual({ candidate: true, lock: false });
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §5 "Deadline outcomes": a `canceled` outcome after a deadline keeps the deadline reason.
+  caseTest(TASK, `a cancel and then a step deadline end canceled with reason deadline; the session log cause is DEADLINE`, SHELL, () => {
+    let operationId = "";
+    let armed = false;
+    const hunkCheckpoint = ({ step, operationId: id }: HunkCheckpoint) => {
+      if (step !== 5) return;
+      operationId = id;
+      armed = true;
+    };
+    return withService({ name: "t096-cancel-deadline", hunkCheckpoint }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t096-cancel-deadline", "F09"));
+      await underTest("hunk-publish");
+      const { repositoryId } = await service.register(repo);
+      const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+      // The step 11 `check-attr` gets a 1 ms deadline. The next `symbolic-ref`, the step 11 HEAD capture, waits for the cancel.
+      let expired = false;
+      let reached = () => {};
+      const held = new Promise<void>((resolve) => (reached = resolve));
+      const release = service.runner.holdStart((call) => {
+        if (armed && call.arguments.includes("check-attr")) {
+          armed = false;
+          expired = true;
+          service.runner.inject.deadlineMs = 1;
+          return false;
+        }
+        service.runner.inject.deadlineMs = null;
+        if (!expired || !call.arguments.includes("symbolic-ref")) return false;
+        expired = false;
+        reached();
+        return true;
+      });
+      const requestId = crypto.randomUUID();
+      try {
+        service.send("applyHunk", { comparisonId: c.comparisonId, hunkId: c.hunkIds[0], snapshotId: c.read.snapshotId, direction: "stage" }, { repositoryId, repositoryGeneration: c.read.generation, requestId });
+        await held;
+        expect((await service.cancel(operationId)).state).toBe("succeeded");
+      } finally {
+        release();
+      }
+      const response = await service.response(requestId);
+      const view = (await service.getOperation(response.operationId!)).result as { reason?: string };
+      const entry = service.log().find((e) => (e as { operationId?: string }).operationId === response.operationId) as { cause?: string } | undefined;
+      expect({ ...outcome(response), reason: view.reason, cause: entry?.cause }).toEqual({ state: "canceled", code: "CANCELED", reason: "deadline", cause: "DEADLINE" });
+      expect({ lock: existsSync(gitPathOf(repo, "index.lock")), candidates: candidateFiles(repo) }).toEqual({ lock: false, candidates: [] });
+    });
+  }, TIMEOUT_MS);
 
   caseTest(TASK, `a hunk ID from another comparison and a never-issued hunk ID give UNKNOWN_TARGET, and a direction that does not match the comparison gives INVALID_REQUEST; each is rejected, and no Git process starts`, SHELL, () =>
     withService({ name: "t096-other-comparison" }, async (service) => {

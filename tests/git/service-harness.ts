@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Handshake, MutationStarted } from "../../src/contracts/channel";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
+import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import { FrameBoundError, type Frame } from "../../src/git-service/transport";
 import { printOrigin } from "../origin";
@@ -212,10 +213,7 @@ export interface SubmoduleCheckpoint {
   path: string;
 }
 
-export interface HunkCheckpoint {
-  step: 5 | 11 | 13;
-  operationId: string;
-}
+export type { HunkCheckpoint };
 
 export interface OpenOptions extends ServiceSeams {
   git: string;

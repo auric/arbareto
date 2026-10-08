@@ -10,7 +10,7 @@ import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { OPERATION_MARKERS } from "../../src/git-service/commands";
 import { buildF21, buildF25, buildF26, distroGit, globalConfig, seamRepository, startSession, writeLinux, type WslSession } from "./fixtures";
-import { inDistro, uncPath, useWslFolder, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { inDistro, uncPath, useWslFolder, WSL_EXE, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 const CASE_TIMEOUT_MS = 180_000;
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
@@ -49,6 +49,11 @@ async function read(s: WslSession, w: Workspace, operation: string, payload: obj
   return s.response(s.request(operation, payload, extra));
 }
 
+// Contract §3 `readComparison`: the envelope carries `repositoryId`, `repositoryGeneration`, and `selectionId`.
+async function compareEntry(s: WslSession, w: Workspace, snapshot: { snapshotId: string; generation: number }, entryId: string) {
+  return s.response(s.request("readComparison", { snapshotId: snapshot.snapshotId, entryId }, { repositoryId: w.repositoryId, repositoryGeneration: snapshot.generation, selectionId: crypto.randomUUID() }));
+}
+
 async function approve(s: WslSession, w: Workspace): Promise<void> {
   const trust = await read(s, w, "readTrust");
   const fingerprint = (trust.result as { fingerprint: string }).fingerprint;
@@ -80,19 +85,24 @@ describe("WSL reads (T208)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  // The request must also carry `selectionId` (src/contracts/envelope.ts:53).
-  test.todo("F21 comparisons equal the distro Git's own diff hunks (needs T105/T115)", async () => {
-    const host = wslHost()!;
-    const f21 = buildF21(host);
-    const { s } = setup(host);
-    const w = await register(s, f21.paths[1]!);
-    const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
-    const entry = (status.result as { entries: { entryId: string; path: string }[]; snapshotId: string }).entries.find((e) => e.path === "multi.txt");
-    const comparison = await read(s, w, "readComparison", { snapshotId: (status.result as { snapshotId: string }).snapshotId, entryId: entry!.entryId }, true);
-    expect(comparison).toMatchObject({ state: "succeeded" });
-    const hunks = sortedLines(distroGit(f21.repo, ["diff", "--no-ext-diff", "--no-textconv", "--", "multi.txt"])).filter((l) => l.startsWith("@@"));
-    expect((comparison.result as { hunks: unknown[] }).hunks).toHaveLength(hunks.length);
-  });
+  wslTest(
+    "F21 comparisons equal the distro Git's own diff hunks",
+    NEEDS,
+    async (host) => {
+      const f21 = buildF21(host);
+      const { s } = setup(host);
+      const w = await register(s, f21.paths[1]!);
+      const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+      const result = status.result as { entries: { entryId: string; path: string; category: string }[]; snapshotId: string; generation: number };
+      // `git diff` compares the index with the working tree, so the unstaged entry is the one to compare.
+      const entry = result.entries.find((e) => e.path === "multi.txt" && e.category === "unstaged");
+      const comparison = await compareEntry(s, w, result, entry!.entryId);
+      expect(comparison).toMatchObject({ state: "succeeded" });
+      const hunks = sortedLines(distroGit(f21.repo, ["diff", "--no-ext-diff", "--no-textconv", "--", "multi.txt"])).filter((l) => l.startsWith("@@"));
+      expect((comparison.result as { hunks: unknown[] }).hunks).toHaveLength(hunks.length);
+    },
+    CASE_TIMEOUT_MS,
+  );
 
   wslTest(
     "program-file digests come from the WSL fileFacts probe, and an edit gives TRUST_CHANGED",
@@ -148,20 +158,56 @@ describe("WSL reads (T208)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  // The request must also carry `selectionId` (src/contracts/envelope.ts:53).
-  test.todo("an entry with \\ in its Linux name gets reason path (needs T105/T115)", async () => {
-    const host = wslHost()!;
-    if (GIT === null) throw new Error("F26 needs the Windows Git");
-    const f26 = buildF26(host, GIT);
-    const { s } = setup(host);
-    const w = await register(s, f26.entries.path);
-    const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
-    const result = status.result as { entries: { entryId: string; path: string }[]; snapshotId: string };
-    const entry = result.entries.find((e) => e.path === f26.entries.entry);
-    expect(entry).toBeDefined();
-    const comparison = await read(s, w, "readComparison", { snapshotId: result.snapshotId, entryId: entry!.entryId }, true);
-    expect(comparison.result).toMatchObject({ supportDecision: "path", fileActionDecision: "path" });
-  });
+  wslTest(
+    "an entry with \\ in its Linux name gets reason path",
+    NEEDS,
+    async (host) => {
+      if (GIT === null) throw new Error("F26 needs the Windows Git");
+      const f26 = buildF26(host, GIT);
+      const { s } = setup(host);
+      const w = await register(s, f26.entries.path);
+      const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+      const result = status.result as { entries: { entryId: string; path: string }[]; snapshotId: string; generation: number };
+      const entry = result.entries.find((e) => e.path === f26.entries.entry);
+      expect(entry).toBeDefined();
+      const comparison = await compareEntry(s, w, result, entry!.entryId);
+      // T093 names the decisions `support` and `fileAction`.
+      expect(comparison.result).toMatchObject({ support: "path", fileAction: "path" });
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "a filtered unstaged entry carries the contract §11 add remedy, and each value doubles its quote characters",
+    NEEDS,
+    async (host) => {
+      // A `filter` attribute without a driver gives reason `filter`. The folder and the file name hold all five quote characters of contract §4.
+      const dir = `${host.folder}/t105-remedy-${crypto.randomUUID().slice(0, 8)} q'‘/repo`;
+      const name = "f'’‚‛.txt";
+      inDistro(host.distro, ["/usr/bin/mkdir", "-p", "--", dir]);
+      const r = { host, dir };
+      distroGit(r, ["init", "-q", "-b", "main"]);
+      writeLinux(host, `${dir}/.gitattributes`, "*.txt filter=t105\n");
+      writeLinux(host, `${dir}/${name}`, "one\n");
+      distroGit(r, ["--literal-pathspecs", "add", "--", ".gitattributes", name]);
+      distroGit(r, ["-c", "user.name=T105", "-c", "user.email=t105@example.invalid", "commit", "-q", "--no-verify", "-m", "base"]);
+      writeLinux(host, `${dir}/${name}`, "two\n");
+      const { s } = setup(host);
+      const w = await register(s, uncPath(host, dir));
+      const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+      const result = status.result as { entries: { entryId: string; path: string; category: string }[]; snapshotId: string; generation: number };
+      const entry = result.entries.find((e) => e.path === name && e.category === "unstaged");
+      expect(entry).toBeDefined();
+      const comparison = await compareEntry(s, w, result, entry!.entryId);
+      expect(comparison).toMatchObject({ state: "succeeded" });
+      // Contract §4 "Quoting rule": each of U+0027 and U+2018 to U+201B is doubled inside single quotes.
+      const q = (value: string) => `'${value.replace(/['‘’‚‛]/g, "$&$&")}'`;
+      const command = `& ${q(WSL_EXE)} --distribution ${q(host.distro)} --cd / --exec ${q(host.probe.paths.git!)} --literal-pathspecs -C ${q(dir)} add -- ${q(name)}`;
+      const text = "This command stages or unstages the whole file with your Git settings. Run it in a terminal.";
+      expect(comparison.result).toMatchObject({ fileAction: "filter", remedy: { text, command } });
+    },
+    CASE_TIMEOUT_MS,
+  );
 
   wslTest(
     "the candidate of a read never exists, and no watcher starts for a WSL workspace",

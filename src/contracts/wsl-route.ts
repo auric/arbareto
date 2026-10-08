@@ -88,6 +88,8 @@ export interface WslRemedyValues {
   worktreeRoot?: string;
   // The Git path bytes of the entry. The `hook` form takes none.
   path?: string | Uint8Array;
+  // Contract §4 "Limitation remedies": the source path of a rename record. Only the `add` form takes it.
+  sourcePath?: string | Uint8Array;
 }
 
 const HEAD = "& {wsl} --distribution {distro} --cd / --exec {git}";
@@ -108,12 +110,14 @@ export function buildWslRemedy(kind: WslRemedyKind, values: WslRemedyValues): Re
     ...(values.gitPath === undefined ? {} : { git: { kind: "gitPath", text: values.gitPath, form: "linux" } }),
     ...(values.worktreeRoot === undefined ? {} : { root: { kind: "worktreeRoot", text: values.worktreeRoot, form: "linux" } }),
     ...(kind === "hook" || kind === "git-ppa" ? {} : { path: { kind: "path", text: values.path ?? "", form: "linux" } }),
+    ...(kind === "add" && values.sourcePath !== undefined ? { source: { kind: "path", text: values.sourcePath, form: "linux" } } : {}),
   };
   for (const value of Object.values(linux)) {
     const text = typeof value.text === "string" ? value.text : new TextDecoder().decode(value.text);
     if (text.includes("\\")) return { command: null, refused: value.kind };
   }
-  return buildRemedyCommand(TEMPLATES[kind], { wsl: { kind: "wslExecutable", text: values.wslExecutable, form: "windows" }, ...linux });
+  const template = "source" in linux ? TEMPLATES.add.replace("add -- {path}", "add -- {source} {path}") : TEMPLATES[kind];
+  return buildRemedyCommand(template, { wsl: { kind: "wslExecutable", text: values.wslExecutable, form: "windows" }, ...linux });
 }
 
 export type WslGitCheck =

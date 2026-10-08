@@ -44,8 +44,28 @@ function varint(raw: Uint8Array, at: number, end: number, limit: number): { valu
   return { value, next: at };
 }
 
+// One logical index entry without its stat data.
+export interface RawIndexEntry {
+  path: Uint8Array;
+  // Six octal digits, as `ls-files --stage` prints them.
+  mode: string;
+  oid: string;
+  stage: number;
+  assumeUnchanged: boolean;
+  skipWorktree: boolean;
+  intentToAdd: boolean;
+}
+
+// gitformat-index: `ctime`, `mtime`, `dev`, and `ino` come before the 32-bit mode.
+const MODE_AT = 24;
+const CE_VALID = 0x8000;
+const CE_STAGEMASK = 0x3000;
+const CE_SKIP_WORKTREE = 0x4000;
+const CE_INTENT_TO_ADD = 0x2000;
+
 // Returns the link hash in hex, or null without a `link` extension. Every read stays below `raw.length`.
-function walk(raw: Uint8Array, hashBytes: number): string | null {
+// With `entries`, it also adds each entry to that list.
+function walk(raw: Uint8Array, hashBytes: number, entries?: RawIndexEntry[]): string | null {
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const end = raw.length - hashBytes;
   if (end < HEADER_BYTES || view.getUint32(0) !== DIRC) refuse("bad header");
@@ -54,16 +74,29 @@ function walk(raw: Uint8Array, hashBytes: number): string | null {
   const count = view.getUint32(8);
   let at = HEADER_BYTES;
   let previous = 0;
+  let previousName = new Uint8Array();
   // Each entry consumes at least one byte, so the loop ends within `raw.length` steps.
   for (let i = 0; i < count; i++) {
     const flagsAt = at + STAT_BYTES + hashBytes;
     if (flagsAt + 2 > end) refuse("truncated entry");
     const flags = view.getUint16(flagsAt);
     let nameAt = flagsAt + 2;
+    let extended = 0;
     if (flags & CE_EXTENDED) {
       if (nameAt + 2 > end || view.getUint16(nameAt) & ~CE_EXTENDED_FLAGS) refuse("bad extended flags");
+      extended = view.getUint16(nameAt);
       nameAt += 2;
     }
+    const add = (path: Uint8Array) =>
+      entries?.push({
+        path,
+        mode: view.getUint32(at + MODE_AT).toString(8).padStart(6, "0"),
+        oid: Buffer.from(raw.buffer, raw.byteOffset + at + STAT_BYTES, hashBytes).toString("hex"),
+        stage: (flags & CE_STAGEMASK) >> 12,
+        assumeUnchanged: (flags & CE_VALID) !== 0,
+        skipWorktree: (extended & CE_SKIP_WORKTREE) !== 0,
+        intentToAdd: (extended & CE_INTENT_TO_ADD) !== 0,
+      });
     let length = flags & CE_NAMEMASK;
     if (version === 4) {
       // gitformat-index: strip N bytes from the previous name, then append the NUL-terminated suffix. No padding follows.
@@ -73,6 +106,10 @@ function walk(raw: Uint8Array, hashBytes: number): string | null {
       if (nul < 0 || nul >= end) refuse("unterminated name");
       const full = previous - strip.value + (nul - strip.next);
       if (length !== CE_NAMEMASK && length !== full) refuse("bad name length");
+      if (entries !== undefined) {
+        previousName = Buffer.concat([previousName.subarray(0, previous - strip.value), raw.subarray(strip.next, nul)]);
+        add(previousName);
+      }
       previous = full;
       at = nul + 1;
       continue;
@@ -86,6 +123,7 @@ function walk(raw: Uint8Array, hashBytes: number): string | null {
     const next = at + ((nameAt - at + length + 8) & ~7);
     if (next > end) refuse("truncated entry");
     for (let k = nameAt + length; k < next; k++) if (raw[k] !== 0) refuse("bad padding");
+    add(raw.subarray(nameAt, nameAt + length));
     at = next;
   }
   let link: string | null = null;
@@ -132,6 +170,13 @@ export function splitIndexLink(rawIndex: Uint8Array, objectFormat?: ObjectFormat
   if (answers.length === 0) throw failure;
   if (answers.some((a) => a !== answers[0])) refuse("object format is ambiguous");
   return answers[0]!;
+}
+
+// The logical entries of a raw index in index order, and its `link` hash. Throws IndexFormatError for bytes that are no Git index.
+export function rawIndexEntries(rawIndex: Uint8Array, objectFormat: ObjectFormat): { link: string | null; entries: RawIndexEntry[] } {
+  const entries: RawIndexEntry[] = [];
+  const link = walk(rawIndex, HASH_BYTES[objectFormat], entries);
+  return { link, entries };
 }
 
 // ---- Hunk eligibility (contract §4 "Hunk eligibility and publication", data-model §2 `hunkEligibility`) ----

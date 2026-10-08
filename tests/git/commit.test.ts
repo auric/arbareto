@@ -50,12 +50,12 @@ import {
   underTest,
   until,
   valuesOf,
+  TIMEOUT_MS,
   withService,
 } from "./hunk-harness";
-import type { Capability, Service, ServiceResponse } from "./service-harness";
+import { caseTest, type Capability, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T098";
-const REVIEW = "(needs T111/T115)";
 const COMMIT = "(needs T112/T113/T115)";
 const SHELL: Capability[] = ["shell-double"];
 
@@ -196,7 +196,7 @@ describe("commit creation (contract §4 \"Commit validation and handoff\")", () 
 });
 
 describe("review (contract §4, research.md R4)", () => {
-  todoCase(TASK, `reviewCommit writes no index, runs no write-tree, and makes no trial commit; its first Git read is diff-index --cached -z --name-status with --no-lazy-fetch, --no-optional-locks, and --literal-pathspecs ${REVIEW}`, SHELL, () =>
+  caseTest(TASK, `reviewCommit writes no index, runs no write-tree, and makes no trial commit; its first Git read after the trust listing is diff-index --cached -z --name-status with --no-lazy-fetch, --no-optional-locks, and --literal-pathspecs`, SHELL, () =>
     withService({ name: "t098-review" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-review", "F09"));
       const before = repoState(repo);
@@ -208,7 +208,8 @@ describe("review (contract §4, research.md R4)", () => {
       const calls = service.runner.calls.slice(from);
       const writers = ["write-tree", "commit", "commit-tree", "update-index", "read-tree", "apply", "add", "reset", "update-ref", "mktree"];
       expect(calls.filter((c) => writers.includes(subcommand(c.arguments)!)).map((c) => c.arguments)).toEqual([]);
-      const first = calls[0]!.arguments;
+      // Contract §7 "Shared listing": the review runs its own trust listing (`config`, `rev-parse`) before any index read.
+      const first = calls.find((c) => !["config", "rev-parse"].includes(subcommand(c.arguments)!))!.arguments;
       expect(subcommand(first)).toBe("diff-index");
       const at = first.indexOf("diff-index");
       expect(["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs"].map((o) => first.indexOf(o) >= 0 && first.indexOf(o) < at)).toEqual([true, true, true]);
@@ -216,9 +217,10 @@ describe("review (contract §4, research.md R4)", () => {
       const after = repoState(repo);
       expect({ rawIndex: after.rawIndex, entries: after.entries, lock: existsSync(gitPathOf(repo, "index.lock")) }).toEqual({ rawIndex: before.rawIndex, entries: before.entries, lock: false });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `the review lists an externally staged unsupported file as metadata of the complete staged scope ${REVIEW}`, SHELL, () =>
+  caseTest(TASK, `the review lists an externally staged unsupported file as metadata of the complete staged scope`, SHELL, () =>
     withService({ name: "t098-unsupported" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-unsupported", "F09"));
       put(repo, "blob.bin", new Uint8Array([0, 1, 2, 0, 255, 254]));
@@ -228,6 +230,7 @@ describe("review (contract §4, research.md R4)", () => {
       const paths = valuesOf(r.response.result, "path");
       expect(["blob.bin", "staged.txt"].map((p) => paths.includes(p))).toEqual([true, true]);
     }),
+    TIMEOUT_MS,
   );
 });
 

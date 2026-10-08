@@ -122,7 +122,7 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
         const p = await prepare(s, f25.slow);
         if (ending === "deadline") runner.inject.deadlineMs = 3_000;
         const requestId = await commit(s, p);
-        expect(await until(() => pgrep(host, `${f25.pattern} slow`).length > 0, 60_000)).toBe(true);
+        expect(await until(() => pgrep(host, f25.pattern).length > 0, 60_000)).toBe(true);
         if (ending === "cancel") s.request("cancel", { operationId: operationOf(s, requestId) });
         if (ending === "service-failure") runner.failService();
         const response = await s.response(requestId);

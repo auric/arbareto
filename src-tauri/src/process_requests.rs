@@ -3050,7 +3050,7 @@ mod strict_tests {
 pub(crate) mod tests {
     use super::*;
 
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -8196,14 +8196,24 @@ pub(crate) mod tests {
             call
         }
 
-        fn no_commit_exists(&self) -> bool {
+        /// Runs the fixture Git in `directory` with the owned environment.
+        fn git(&self, directory: &Path, args: &[&str], timeout: Duration) -> (i32, String) {
             let mut command = Command::new(&self.git);
             command
-                .args(["rev-parse", "--verify", "-q", "HEAD"])
-                .current_dir(&self.repository)
+                .args(args)
+                .current_dir(directory)
                 .env_clear()
                 .envs(self.environment.iter().map(|(k, v)| (k, v)));
-            run_fixture(&mut command, WAIT).0 != 0
+            run_fixture(&mut command, timeout)
+        }
+
+        fn no_commit_exists(&self) -> bool {
+            self.git(
+                &self.repository,
+                &["rev-parse", "--verify", "-q", "HEAD"],
+                WAIT,
+            )
+            .0 != 0
         }
     }
 
@@ -8359,26 +8369,297 @@ pub(crate) mod tests {
             return;
         };
         assert_console_wait_ends_at_the_deadline("ssh-keygen", |root| {
-            let key = root.path("key");
-            let mut command = Command::new(&keygen);
-            command
-                .args([
-                    "-q",
-                    "-t",
-                    "ed25519",
-                    "-N",
-                    "arbareto-passphrase",
-                    "-C",
-                    "fixture",
-                    "-f",
-                ])
-                .arg(&key);
-            assert_eq!(
-                run_fixture(&mut command, WAIT).0,
-                0,
-                "generate a passphrase key under the owned root"
-            );
-            format!("'{}' -y -f '{}'", sh_path(&keygen), sh_path(&key))
+            format!(
+                "'{}' -y -f '{}'",
+                sh_path(&keygen),
+                sh_path(&passphrase_key(&keygen, root))
+            )
         });
+    }
+
+    /// Generates a passphrase key under the owned root, as plan.md F11 and F30 do.
+    fn passphrase_key(keygen: &Path, root: &Fixture) -> PathBuf {
+        let key = root.path("key");
+        let mut command = Command::new(keygen);
+        command
+            .args([
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "arbareto-passphrase",
+                "-C",
+                "fixture",
+                "-f",
+            ])
+            .arg(&key);
+        assert_eq!(
+            run_fixture(&mut command, WAIT).0,
+            0,
+            "generate a passphrase key under the owned root"
+        );
+        key
+    }
+
+    // ---- T225: real activity cases (contract §6 "Activity and stall notice", §12 "Deadlines and Cancel", research.md R14) ----
+
+    fn find_openssh() -> Option<PathBuf> {
+        let found = find_program("ssh-keygen.exe", r"System32\OpenSSH\ssh-keygen.exe");
+        if found.is_none() {
+            println!("SKIP: openssh");
+        }
+        found
+    }
+
+    /// An idle Git sends one `stalled` event 15 to 17 seconds after its last output. Cancel then closes the Job with every process.
+    /// The reference is the last output frame, or the send time when no output came.
+    fn assert_stall_then_close(
+        fixture: &GitFixture,
+        variant: &str,
+        operation: &str,
+        call: &str,
+        sent: Instant,
+    ) {
+        let harness = &fixture.harness;
+        let (stalled_at, stalled) = harness
+            .wait_reply(Duration::from_secs(25), |v| {
+                v["callId"] == call && (v["type"] == "activity" || v["type"] == "exit")
+            })
+            .unwrap_or_else(|| panic!("{variant}: no activity event within 25 s"));
+        assert_eq!(
+            stalled,
+            json!({ "type": "activity", "callId": call, "state": "stalled" }),
+            "{variant}"
+        );
+        let last = harness
+            .replies_for(call)
+            .iter()
+            .filter(|(at, v)| v["type"] == "output" && *at <= stalled_at)
+            .map(|(at, _)| *at)
+            .max()
+            .unwrap_or(sent);
+        let quiet = stalled_at - last;
+        println!(
+            "OBSERVATION T225: {variant} sent stalled {} ms after its last activity frame, {} ms after the send",
+            quiet.as_millis(),
+            (stalled_at - sent).as_millis()
+        );
+        assert!(
+            quiet >= Duration::from_secs(15) && quiet < Duration::from_secs(17),
+            "{variant}: {quiet:?}"
+        );
+        let processes: Vec<Proc> = harness
+            .jobs
+            .process_ids(operation)
+            .into_iter()
+            .filter_map(Proc::try_open)
+            .collect();
+        assert!(
+            !processes.is_empty(),
+            "{variant}: the Job holds the waiting processes"
+        );
+        harness.send(json!({ "type": "cancel", "callId": call }));
+        let exit = harness
+            .exit(call, CLOSE_BOUND)
+            .unwrap_or_else(|| panic!("{variant}: cancel ends the run"))
+            .1;
+        assert_eq!(
+            exit["exitCode"],
+            Value::Null,
+            "{variant}: the Job close ended Git"
+        );
+        for process in &processes {
+            assert!(
+                process.exits_within(CLOSE_BOUND),
+                "{variant}: process {} remains",
+                process.pid
+            );
+        }
+        let activity = harness
+            .replies_for(call)
+            .iter()
+            .filter(|(_, v)| v["type"] == "activity")
+            .count();
+        assert_eq!(activity, 1, "{variant}: stalled goes out once");
+    }
+
+    /// Plan.md F11: the `ssh-keygen` console variant of a commit hook.
+    #[test]
+    fn a_commit_hook_that_waits_on_ssh_keygen_sends_stalled_after_15_seconds() {
+        let (Some(keygen), Some(git)) = (find_openssh(), find_git()) else {
+            return;
+        };
+        let fixture = GitFixture::new(git, |root| {
+            format!(
+                "#!/bin/sh\necho \"HOOK ssh-keygen\" >&2\n'{}' -y -f '{}'\n",
+                sh_path(&keygen),
+                sh_path(&passphrase_key(&keygen, root))
+            )
+        });
+        let operation = uuid();
+        let sent = Instant::now();
+        let call = fixture.commit(&operation, 30_000);
+        assert_stall_then_close(&fixture, "F11 commit", &operation, &call, sent);
+        assert!(
+            String::from_utf8_lossy(&fixture.harness.output(&call, "stderr"))
+                .contains("HOOK ssh-keygen"),
+            "the stall reference is the hook line"
+        );
+        assert!(fixture.no_commit_exists());
+    }
+
+    /// Plan.md F30 "stall" (research.md R14 S24): `core.sshCommand` runs `ssh-keygen -y` on a passphrase key.
+    /// The trailing `#` comments out the arguments that Git appends.
+    #[test]
+    fn a_network_fetch_whose_ssh_command_waits_on_ssh_keygen_sends_stalled_after_15_seconds() {
+        let (Some(keygen), Some(git)) = (find_openssh(), find_git()) else {
+            return;
+        };
+        let fixture = GitFixture::new(git, |_| "#!/bin/sh\n".to_string());
+        let key = passphrase_key(&keygen, &fixture.harness.fixture);
+        let command = format!("'{}' -y -f '{}' #", sh_path(&keygen), sh_path(&key));
+        for args in [
+            ["config", "remote.origin.url", "ssh://localhost/x.git"],
+            ["config", "core.sshCommand", &command],
+        ] {
+            assert_eq!(
+                fixture.git(&fixture.repository, &args, WAIT).0,
+                0,
+                "{args:?}"
+            );
+        }
+        let operation = uuid();
+        fixture.harness.started(&operation, &fixture.workspace);
+        let call = uuid();
+        let sent = Instant::now();
+        fixture.harness.send(run_body(
+            &call,
+            &operation,
+            &fixture.workspace,
+            &["fetch", "origin"],
+            "network",
+            network_limits(INACTIVITY_MS, 60_000),
+        ));
+        assert_stall_then_close(&fixture, "F30 fetch", &operation, &call, sent);
+    }
+
+    const BIG_BYTES: usize = 300_000_000;
+    const SLOW_FETCH_INACTIVITY_MS: u64 = 2_000;
+
+    /// Writes pseudo-random bytes in 1 MiB chunks, so the data never sits in memory. zlib cannot compress them.
+    fn write_incompressible(path: &Path, bytes: usize) {
+        let mut file = std::fs::File::create(path).expect("big file");
+        let mut chunk = vec![0u8; 1 << 20];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut left = bytes;
+        while left > 0 {
+            for word in chunk.as_chunks_mut::<8>().0 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *word = state.to_le_bytes();
+            }
+            let n = left.min(chunk.len());
+            file.write_all(&chunk[..n]).expect("write the big file");
+            left -= n;
+        }
+    }
+
+    /// T225 `slow-fetch`: a silent fetch of a 300 MB blob over local transport changes its Job I/O sum, so a 2-second inactivity limit never fires.
+    #[test]
+    fn a_silent_300_mb_fetch_stays_active_under_a_2_second_inactivity_limit() {
+        let Some(git) = find_git() else { return };
+        let fixture = GitFixture::new(git, |_| "#!/bin/sh\n".to_string());
+        let remote = fixture.harness.fixture.path("remote");
+        std::fs::create_dir(&remote).expect("remote folder");
+        let long = Duration::from_secs(300);
+        assert_eq!(fixture.git(&remote, &["init", "--quiet"], WAIT).0, 0);
+        // As plan.md F30: the remote stores the blob without compression.
+        assert_eq!(
+            fixture
+                .git(&remote, &["config", "core.compression", "0"], WAIT)
+                .0,
+            0
+        );
+        write_incompressible(&remote.join("big.bin"), BIG_BYTES);
+        assert_eq!(
+            fixture.git(&remote, &["add", "big.bin"], long).0,
+            0,
+            "git add"
+        );
+        assert_eq!(
+            fixture
+                .git(&remote, &["commit", "--quiet", "-m", "big"], long)
+                .0,
+            0,
+            "git commit"
+        );
+        let url = remote.to_string_lossy().into_owned();
+        // The `network` policy sets `GIT_PROTOCOL_FROM_USER=0`, which blocks `file` without this key, as in plan.md F27 to F30.
+        for args in [
+            &["remote", "add", "origin", &url][..],
+            &["config", "protocol.file.allow", "always"],
+        ] {
+            assert_eq!(
+                fixture.git(&fixture.repository, args, WAIT).0,
+                0,
+                "{args:?}"
+            );
+        }
+        let operation = uuid();
+        fixture.harness.started(&operation, &fixture.workspace);
+        let call = uuid();
+        let sent = Instant::now();
+        fixture.harness.send(run_body(
+            &call,
+            &operation,
+            &fixture.workspace,
+            &["fetch", "-q", "origin"],
+            "network",
+            network_limits(SLOW_FETCH_INACTIVITY_MS, 600_000),
+        ));
+        let mut sums = Vec::new();
+        let (at, exit) = loop {
+            if let Some(found) = fixture.harness.exit(&call, Duration::from_secs(1)) {
+                break found;
+            }
+            sums.push(fixture.harness.jobs.io_sum(&operation));
+            assert!(
+                sent.elapsed() < Duration::from_secs(620),
+                "the fetch ends at its ceiling"
+            );
+        };
+        let elapsed = at - sent;
+        println!(
+            "OBSERVATION T225: slow-fetch exit {exit} after {} ms, Job I/O sum each second {sums:?}",
+            elapsed.as_millis()
+        );
+        assert!(
+            exit.get("deadline").is_none(),
+            "no false inactivity end: {exit}"
+        );
+        assert_eq!(
+            exit["exitCode"],
+            0,
+            "{}",
+            String::from_utf8_lossy(&fixture.harness.output(&call, "stderr"))
+        );
+        let replies = fixture.harness.replies_for(&call);
+        assert!(
+            !replies
+                .iter()
+                .any(|(_, v)| v["type"] == "output" || v["type"] == "activity"),
+            "a silent fetch sends no output byte and no activity event"
+        );
+        if elapsed < Duration::from_millis(SLOW_FETCH_INACTIVITY_MS) {
+            println!("SKIP: slow-fetch: the fetch ended within {SLOW_FETCH_INACTIVITY_MS} ms");
+            return;
+        }
+        let (code, size) = fixture.git(
+            &fixture.repository,
+            &["cat-file", "-s", "FETCH_HEAD:big.bin"],
+            WAIT,
+        );
+        assert_eq!((code, size.trim()), (0, BIG_BYTES.to_string().as_str()));
     }
 }

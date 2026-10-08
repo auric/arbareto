@@ -958,6 +958,12 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       return entry === undefined ? { ok: false, code: "UNKNOWN_TARGET" } : { ok: true, snapshot: found.snapshot, entry };
     },
 
+    // Contract §3 `reviewCommit`: the generation, then the snapshot. No Git process starts.
+    snapshot(repositoryId: string, generation: number, snapshotId: string): { ok: true; snapshot: ChangeSnapshot } | { ok: false; code: "REPOSITORY_CHANGED" | "UNKNOWN_TARGET" } {
+      snapshots.register(repositoryId);
+      return snapshots.lookup(repositoryId, generation, snapshotId);
+    },
+
     // Data-model §7: the re-read after a canceled or failed read. Contract §6 "Registration bootstrap": every nonzero exit of the first discovery call gives REPOSITORY_UNAVAILABLE.
     // Null: the call exited 0, or it ended without an exit status of Git.
     async recheck(t: ProcessTarget): Promise<Extract<ReadOutcome, { result: "failed" }> | null> {

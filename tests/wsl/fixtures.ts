@@ -147,14 +147,17 @@ export interface F25 {
 export function buildF25(host: WslHost): F25 {
   const base = `${host.folder}/f25`;
   const script = `${base}/linger.sh`;
-  writeLinux(host, script, "#!/bin/sh\nexec sleep 300\n", "755");
+  // `exec` replaces the script command line and drops its arguments, so only the `sleep` arguments carry the pattern, as in F31.
+  const pattern = `sleep 300 0.${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+  writeLinux(host, script, `#!/bin/sh\nexec ${pattern}\n`, "755");
   const filter = init(host, `${base}/filter`);
   put(filter, "clean.sh", `#!/bin/sh\nsetsid '${script}' filter >/dev/null 2>&1 &\nexec cat\n`, "755");
   put(filter, ".gitattributes", "*.txt filter=canary\n");
   distroGit(filter, ["config", "filter.canary.clean", `'${filter.dir}/clean.sh'`]);
   put(filter, "a.txt", "a\n");
   distroGit(filter, ["-c", "filter.canary.clean=cat", "add", "--", ".gitattributes", "a.txt"]);
-  commit(filter, "base");
+  // The commit refreshes the index and can run the clean filter. A canary child of the build would stay outside every Job.
+  distroGit(filter, ["-c", "filter.canary.clean=cat", "commit", "-q", "--no-verify", "-m", "base"]);
   // Keep the size. Git hashes the file through the clean filter only when the size matches (read-cache.c `ie_modified`).
   put(filter, "a.txt", "b\n");
   const linger = init(host, `${base}/linger`);
@@ -172,7 +175,7 @@ export function buildF25(host: WslHost): F25 {
     put(r, "a.txt", "a\n");
     distroGit(r, ["add", "--", "a.txt"]);
   }
-  return { linger, slow, tty, filter, pattern: script };
+  return { linger, slow, tty, filter, pattern };
 }
 
 export interface F26 {

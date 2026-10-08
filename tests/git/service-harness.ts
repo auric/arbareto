@@ -21,7 +21,7 @@ import { GIT } from "./git-binary";
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
-export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo";
+export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo" | "pwsh" | "windows-powershell" | "disposable-volume";
 
 const WINDOWS = process.platform === "win32";
 const LINUX = process.platform === "linux";
@@ -109,6 +109,11 @@ const PRESENT: Record<Capability, boolean> = {
   "read-denial": readDenial(),
   symlink: symlinkCreation(),
   fifo: fifoCreation(),
+  // T093 runs each remedy in PowerShell 7 and in Windows PowerShell 5.1. Only Windows ships 5.1 as `powershell`.
+  pwsh: Bun.which("pwsh") !== null,
+  "windows-powershell": WINDOWS && Bun.which("powershell") !== null,
+  // T096 F15: no probe creates and mounts a VHD without elevation (`buildF15` notes).
+  "disposable-volume": false,
 };
 
 export function missingCapability(...needs: Capability[]): Capability | null {
@@ -172,6 +177,13 @@ export interface ServiceSeams {
   watchHints?: boolean;
   // The owned service environment, with the child PATH.
   environment?: Record<string, string>;
+  // The in-process checkpoint observer of `src/git-service/hunk-publish.ts` (T110). The service awaits it after research R3 steps 5, 11, and 13 of a hunk publication.
+  hunkCheckpoint?: (checkpoint: HunkCheckpoint) => Promise<void> | void;
+}
+
+export interface HunkCheckpoint {
+  step: 5 | 11 | 13;
+  operationId: string;
 }
 
 export interface OpenOptions extends ServiceSeams {
@@ -423,6 +435,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     environment,
     ...(options.readDeadlineMs === undefined ? {} : { readDeadlineMs: options.readDeadlineMs }),
     ...(options.watchHints === undefined ? {} : { watchHints: options.watchHints }),
+    ...(options.hunkCheckpoint === undefined ? {} : { hunkCheckpoint: options.hunkCheckpoint }),
   };
   const sessionOptions: SessionOptions & ServiceSeams = {
     writer,

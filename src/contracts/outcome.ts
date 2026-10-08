@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { codeFitsState, TERMINAL_STATES, type TerminalState } from "./errors";
+import { codeFitsState, type ErrorCode, TERMINAL_STATES, type TerminalState } from "./errors";
 import * as limits from "./limits";
 import { MUTATIONS } from "./operations";
 
@@ -53,7 +53,7 @@ export type OperationEvent =
   | { type: "attribution-undetermined"; reason: string }
   | { type: "reconciliation-read-deadline" }
   // A reconciliation read failed with `code` before its deadline. `code` goes to the session log, not to the outcome (contract §8).
-  | { type: "reconciliation-read-failed"; code: string }
+  | { type: "reconciliation-read-failed"; code: ErrorCode }
   // Contract §5 "Deadline outcomes": the `started` reply carried `deadline`, so no marker exists.
   | { type: "started-deadline" }
   | { type: "interrupt-and-close" }

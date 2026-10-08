@@ -9,6 +9,7 @@ import { afterAll, beforeAll, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import wslProcess from "../../src/contracts/wsl-process.json";
+import { WSL_FILE_BOUNDS, type WslFileResult, type WslFilesCall, type WslIndexPart, type WslIndexResult } from "../../src/contracts/channel";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
@@ -99,7 +100,9 @@ export function parseProbe(text: string): ProbeFacts {
 
 // ---- The `fileFacts` Perl probe (gaps.md W3) ----
 
-export const FACTS_TEXT: string = wslProcess.fileFacts.join("\n");
+// The Perl texts start with the shared `perlHead` lines, as `texts` in `src-tauri/src/wsl.rs` joins them.
+export const perlText = (name: "fileFacts" | "wslFiles"): string => [...wslProcess.perlHead, ...wslProcess[name]].join("\n");
+export const FACTS_TEXT: string = perlText("fileFacts");
 export const IDENTITY_TEXT: string = wslProcess.identity.join("\n");
 
 // One request entry: the root index (0 worktree root, 1 Git directory, 2 common directory) and the components.
@@ -119,62 +122,253 @@ export type FactRecord =
   | { kind: "file"; size: bigint; mtime: bigint; ownerExecute: boolean; executable: boolean; content: "none" | "file-bytes" | "total-bytes" | Uint8Array }
   | { kind: "error"; component: number; code: string };
 
-// The record grammar: NUL-ended ASCII tokens, and `N` raw bytes after a length token. Null: the output breaks the grammar.
-export function parseFactRecords(bytes: Uint8Array): FactRecord[] | null {
-  let at = 0;
-  const token = (): string | null => {
-    const end = bytes.indexOf(0, at);
+// The record grammar: NUL-ended ASCII tokens, and `N` raw bytes after a length token. Each read gives null when the output breaks it.
+class Records {
+  at = 0;
+  constructor(readonly bytes: Uint8Array) {}
+  get done(): boolean {
+    return this.at === this.bytes.length;
+  }
+  token(): string | null {
+    const end = this.bytes.indexOf(0, this.at);
     if (end < 0) return null;
-    const text = new TextDecoder("latin1").decode(bytes.subarray(at, end));
-    at = end + 1;
+    const text = new TextDecoder("latin1").decode(this.bytes.subarray(this.at, end));
+    this.at = end + 1;
     return /^[\x21-\x7e]+$/.test(text) ? text : null;
-  };
-  const number = (): bigint | null => {
-    const text = token();
+  }
+  number(): bigint | null {
+    const text = this.token();
     return text !== null && /^(?:0|-?[1-9][0-9]*)$/.test(text) ? BigInt(text) : null;
-  };
-  const flag = (): boolean | null => {
-    const text = token();
+  }
+  flag(): boolean | null {
+    const text = this.token();
     return text === "1" ? true : text === "0" ? false : null;
-  };
-  const raw = (length: bigint | null): Uint8Array | null => {
-    if (length === null || length < 0n || at + Number(length) > bytes.length) return null;
-    const out = bytes.slice(at, at + Number(length));
-    at += Number(length);
+  }
+  raw(length: bigint | null): Uint8Array | null {
+    if (length === null || length < 0n || this.at + Number(length) > this.bytes.length) return null;
+    const out = this.bytes.slice(this.at, this.at + Number(length));
+    this.at += Number(length);
     return out;
-  };
-  const records: FactRecord[] = [];
-  while (at < bytes.length) {
-    const kind = token();
-    if (kind === "absent" || kind === "other") records.push({ kind });
-    else if (kind === "directory") {
-      const executable = flag();
-      if (executable === null) return null;
-      records.push({ kind, executable });
-    } else if (kind === "link") {
-      const component = number();
-      const target = raw(number());
-      if (component === null || target === null) return null;
-      records.push({ kind, component: Number(component), target });
-    } else if (kind === "file") {
-      const [size, mtime, ownerExecute, executable, form] = [number(), number(), flag(), flag(), token()];
-      if (size === null || mtime === null || ownerExecute === null || executable === null) return null;
-      let content: "none" | "file-bytes" | "total-bytes" | Uint8Array;
-      if (form === "none" || form === "file-bytes" || form === "total-bytes") content = form;
-      else if (form === "data") {
-        const data = raw(number());
-        if (data === null) return null;
-        content = data;
-      } else return null;
-      records.push({ kind, size, mtime, ownerExecute, executable, content });
-    } else if (kind === "error") {
-      const component = number();
-      const code = token();
-      if (component === null || code === null) return null;
-      records.push({ kind, component: Number(component), code });
+  }
+}
+
+function factRecord(r: Records): FactRecord | null {
+  const kind = r.token();
+  if (kind === "absent" || kind === "other") return { kind };
+  if (kind === "directory") {
+    const executable = r.flag();
+    return executable === null ? null : { kind, executable };
+  }
+  if (kind === "link") {
+    const component = r.number();
+    const target = r.raw(r.number());
+    return component === null || target === null ? null : { kind, component: Number(component), target };
+  }
+  if (kind === "file") {
+    const [size, mtime, ownerExecute, executable, form] = [r.number(), r.number(), r.flag(), r.flag(), r.token()];
+    if (size === null || mtime === null || ownerExecute === null || executable === null) return null;
+    let content: "none" | "file-bytes" | "total-bytes" | Uint8Array;
+    if (form === "none" || form === "file-bytes" || form === "total-bytes") content = form;
+    else if (form === "data") {
+      const data = r.raw(r.number());
+      if (data === null) return null;
+      content = data;
     } else return null;
+    return { kind, size, mtime, ownerExecute, executable, content };
+  }
+  if (kind === "error") {
+    const component = r.number();
+    const code = r.token();
+    return component === null || code === null ? null : { kind, component: Number(component), code };
+  }
+  return null;
+}
+
+export function parseFactRecords(bytes: Uint8Array): FactRecord[] | null {
+  const r = new Records(bytes);
+  const records: FactRecord[] = [];
+  while (!r.done) {
+    const record = factRecord(r);
+    if (record === null) return null;
+    records.push(record);
   }
   return records;
+}
+
+// A `fileFacts` output with `index` (contract §6 "Index digest in a read"): `count` fact records, then the index record.
+export function parseIndexedFacts(bytes: Uint8Array, count: number, shared: boolean): { records: FactRecord[]; index: WslIndexResult } | null {
+  const r = new Records(bytes);
+  const records: FactRecord[] = [];
+  for (let i = 0; i < count; i++) {
+    const record = factRecord(r);
+    if (record === null) return null;
+    records.push(record);
+  }
+  const index = indexRecord(r, r.token(), shared);
+  return index !== null && r.done ? { records, index } : null;
+}
+
+// ---- The `wslFiles` Perl text (contract §6 "WSL file work"). `src-tauri/src/wsl.rs` parses the same records. ----
+
+export const WSL_FILES_TEXT: string = perlText("wslFiles");
+const ROOTS = ["worktreeRoot", "gitDirectory", "commonDirectory"] as const;
+const LINK_BYTES = 4_095;
+// Mirrors `WSL_FILES_OUTPUT_BYTES` of `src-tauri/src/wsl.rs`: 64 link texts and their record tokens.
+const WSL_FILES_OUTPUT_BYTES = 64 * (LINK_BYTES + 256);
+const POSIX_CODES = ["access-denied", "io-error", "other-error"] as const;
+type PosixCode = (typeof POSIX_CODES)[number];
+const HEX = /^[0-9a-f]{64}$/;
+const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const U64 = /^(?:0|[1-9][0-9]{0,19})$/;
+
+// Stdin of the text: the bound in bytes, then the entries and the mode fields, each ended by NUL.
+export function wslFilesInput(request: WslFilesCall): Uint8Array {
+  const entry = (e: { root: (typeof ROOTS)[number]; path: readonly string[] }) => [String(ROOTS.indexOf(e.root)), String(e.path.length), ...e.path];
+  const tokens = [String(WSL_FILE_BOUNDS[request.bound])];
+  if (request.mode === "digest") tokens.push(...request.files.flatMap(entry));
+  if (request.mode === "indexDigest" && request.sharedIndex !== undefined) tokens.push(request.sharedIndex);
+  if (request.mode === "hashObject") tokens.push(...entry(request.files[0]!));
+  if (request.mode === "catFile") tokens.push(...entry(request.files[0]!), request.oid, String(request.size));
+  if (request.mode === "lock") tokens.push(request.token);
+  if (request.mode === "candidate") tokens.push(request.candidate);
+  if (request.mode === "publish") tokens.push(request.candidate, request.lock.device, request.lock.inode, request.token, request.expected);
+  if (request.mode === "remove") tokens.push(request.candidate ?? "index.lock", request.token ?? request.expected ?? "");
+  return new TextEncoder().encode(tokens.map((t) => `${t}\0`).join(""));
+}
+
+const count = (n: bigint | null) => (n !== null && n >= 0n && n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : null);
+const matching = (text: string | null, pattern: RegExp) => (text !== null && pattern.test(text) ? text : null);
+const u64 = (text: string | null) => (text !== null && U64.test(text) && BigInt(text) <= 0xffff_ffff_ffff_ffffn ? text : null);
+const code = (text: string | null): PosixCode | null => (POSIX_CODES.includes(text as PosixCode) ? (text as PosixCode) : null);
+const sha256Of = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+
+function errorRecord(r: Records, components: number): { kind: "error"; component: number; code: PosixCode } | null {
+  const component = count(r.number());
+  const found = code(r.token());
+  return component !== null && component <= components && found !== null ? { kind: "error", component, code: found } : null;
+}
+
+function exitForm(r: Records): { exitCode: number } | { signal: number } | null {
+  const form = r.token();
+  const n = count(r.number());
+  if (n === null) return null;
+  if (form === "exit" && n <= 255) return { exitCode: n };
+  return form === "signal" && n >= 1 && n <= 127 ? { signal: n } : null;
+}
+
+function indexPart(r: Records): WslIndexPart | null {
+  const kind = r.token();
+  if (kind === "absent" || kind === "bound") return { kind };
+  if (kind === "digest") {
+    const n = count(r.number());
+    const sha256 = matching(r.token(), HEX);
+    return n === null || sha256 === null ? null : { kind, size: n, sha256 };
+  }
+  const found = kind === "error" ? code(r.token()) : null;
+  return found === null ? null : { kind: "error", code: found };
+}
+
+function indexRecord(r: Records, kind: string | null, shared: boolean): WslIndexResult | null {
+  if (kind === "error") return errorRecord(r, 0);
+  if (kind !== "index") return null;
+  const index = indexPart(r);
+  if (index === null) return null;
+  if (!shared) return { kind, index };
+  const sharedIndex = indexPart(r);
+  return sharedIndex === null ? null : { kind, index, sharedIndex };
+}
+
+// One result of a walked entry: a fact kind, or a file with its digest or the bound name.
+function entryRecord(r: Records, kind: string | null, components: number, bound: string): WslFileResult | null {
+  if (kind === "absent" || kind === "other" || kind === "directory") return { kind };
+  if (kind === "error") return errorRecord(r, components);
+  if (kind === "link") {
+    const component = count(r.number());
+    const length = count(r.number());
+    if (component === null || component < 1 || component > components || length === null || length < 1 || length > LINK_BYTES) return null;
+    const target = r.raw(BigInt(length));
+    if (target === null) return null;
+    return component === components ? { kind, component, targetBytes: target.toBase64(), sha256: sha256Of(target) } : { kind, component };
+  }
+  if (kind !== "file") return null;
+  const n = count(r.number());
+  const changed = r.flag();
+  const form = r.token();
+  if (n === null || changed === null) return null;
+  if (form === "bound") return { kind, size: n, changed, bound: bound as WslFilesCall["bound"] & ("COMPARED_RAW_VERSION_BYTES" | "WHOLE_FILE_STAGE_INPUT_BYTES") };
+  const sha256 = form === "sha256" ? matching(r.token(), HEX) : null;
+  return sha256 === null ? null : { kind, size: n, changed, sha256 };
+}
+
+function modeRecord(r: Records, request: WslFilesCall, i: number): WslFileResult | null {
+  const kind = r.token();
+  switch (request.mode) {
+    case "digest":
+      return entryRecord(r, kind, request.files[i]!.path.length, request.bound);
+    case "hashObject": {
+      if (kind !== "object") {
+        const result = entryRecord(r, kind, request.files[0]!.path.length, request.bound);
+        return result?.kind === "file" && !("bound" in result) ? null : result;
+      }
+      const n = count(r.number());
+      const sha256 = matching(r.token(), HEX);
+      const oid = r.token();
+      const [gitExit, hashExit] = [exitForm(r), exitForm(r)];
+      if (n === null || sha256 === null || gitExit === null || hashExit === null || oid === null || (oid !== "none" && !OID.test(oid))) return null;
+      return { kind, size: n, sha256, ...(oid === "none" ? {} : { oid }), gitExit, hashExit };
+    }
+    case "catFile": {
+      if (kind === "error") return errorRecord(r, 0);
+      const n = count(r.number());
+      const sha256 = matching(r.token(), HEX);
+      const over = r.flag();
+      const [gitExit, hashExit] = [exitForm(r), exitForm(r)];
+      return kind === "blob" && n !== null && sha256 !== null && over !== null && gitExit !== null && hashExit !== null ? { kind, size: n, sha256, over, gitExit, hashExit } : null;
+    }
+    case "indexDigest":
+      return indexRecord(r, kind, request.sharedIndex !== undefined);
+    case "lock": {
+      if (kind === "locked") return { kind };
+      if (kind === "error") return errorRecord(r, 0);
+      const [device, inode] = [u64(r.token()), u64(r.token())];
+      return kind === "lock" && device !== null && inode !== null ? { kind, device, inode } : null;
+    }
+    case "candidate": {
+      if (kind === "absent" || kind === "bound") return { kind };
+      if (kind === "error") return errorRecord(r, 0);
+      const copy = () => {
+        const [n, sha256, mtime] = [count(r.number()), matching(r.token(), HEX), r.number()];
+        return n === null || sha256 === null || mtime === null || BigInt.asIntN(64, mtime) !== mtime ? null : { size: n, sha256, mtime: String(mtime) };
+      };
+      const [index, candidate] = [copy(), copy()];
+      return kind === "candidate" && index !== null && candidate !== null ? { kind, index, candidate } : null;
+    }
+    case "remove":
+      if (kind === "removed" || kind === "notOwned") return { kind };
+      return kind === "error" ? errorRecord(r, 0) : null;
+    case "publish": {
+      if (kind === "mismatch" || kind === "notOwned") return { kind };
+      if (kind === "error") return errorRecord(r, 0);
+      const [n, sha256] = [count(r.number()), matching(r.token(), HEX)];
+      return kind === "published" && n !== null && sha256 !== null ? { kind, size: n, sha256 } : null;
+    }
+  }
+}
+
+// Mirrors `src-tauri/src/wsl.rs` `wsl_files_reply`: one result per entry, or one result for a mode without entries.
+// An exit status other than 0, or output that breaks the record form, gives each result `error` 0 `other-error`.
+export function wslFilesResults(exitCode: number | null, bytes: Uint8Array, request: WslFilesCall): WslFileResult[] {
+  const results: WslFileResult[] = [];
+  const entries = request.mode === "digest" ? request.files.length : 1;
+  const failed = Array.from({ length: entries }, (): WslFileResult => ({ kind: "error", component: 0, code: "other-error" }));
+  if (exitCode !== 0 || bytes.length > WSL_FILES_OUTPUT_BYTES) return failed;
+  const r = new Records(bytes);
+  for (let i = 0; i < entries; i++) {
+    const result = modeRecord(r, request, i);
+    if (result === null) return failed;
+    results.push(result);
+  }
+  return r.done ? results : failed;
 }
 
 // Contract §11: Ubuntu means `ID=ubuntu`. os-release(5): the value can also stand in double or single quotes.

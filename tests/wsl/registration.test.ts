@@ -195,7 +195,7 @@ describe("WSL registration seams (T207)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  for (const program of ["stat", "env"]) {
+  for (const program of ["stat", "env", "sha256sum"]) {
     wslTest(
       `a probe without /usr/bin/${program} gives WSL_UNAVAILABLE reason no-coreutils with its remedy text`,
       [],
@@ -205,7 +205,7 @@ describe("WSL registration seams (T207)", () => {
         expect(response).toMatchObject({
           state: "failed",
           code: "WSL_UNAVAILABLE",
-          result: { reason: "no-coreutils", text: `Arbareto needs the stat and env programs in /usr/bin of ${host.distro}. Install the coreutils package in the distro, then open the folder again.` },
+          result: { reason: "no-coreutils", text: `Arbareto needs the stat, env, and sha256sum programs in /usr/bin of ${host.distro}. Install the coreutils package in the distro, then open the folder again.` },
         });
         expect(runner.wslConfirmations).toEqual([]);
         expectNoScope(host);

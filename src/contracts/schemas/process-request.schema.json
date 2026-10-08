@@ -804,6 +804,603 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "digest"
+            },
+            "bound": {
+              "type": "string",
+              "enum": [
+                "COMPARED_RAW_VERSION_BYTES",
+                "WHOLE_FILE_STAGE_INPUT_BYTES"
+              ]
+            },
+            "files": {
+              "minItems": 1,
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "root": {
+                    "type": "string",
+                    "enum": [
+                      "worktreeRoot",
+                      "gitDirectory",
+                      "commonDirectory"
+                    ]
+                  },
+                  "path": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255
+                    }
+                  }
+                },
+                "required": [
+                  "root",
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound",
+            "files"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesDigest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "indexDigest"
+            },
+            "bound": {
+              "type": "string",
+              "const": "MUTATION_RAW_INDEX_BYTES"
+            },
+            "sharedIndex": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesIndexDigest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "hashObject"
+            },
+            "bound": {
+              "type": "string",
+              "const": "WHOLE_FILE_STAGE_INPUT_BYTES"
+            },
+            "files": {
+              "minItems": 1,
+              "maxItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "root": {
+                    "type": "string",
+                    "const": "worktreeRoot"
+                  },
+                  "path": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255
+                    }
+                  }
+                },
+                "required": [
+                  "root",
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound",
+            "files"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesHashObject"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "catFile"
+            },
+            "bound": {
+              "type": "string",
+              "const": "WHOLE_FILE_STAGE_INPUT_BYTES"
+            },
+            "files": {
+              "minItems": 1,
+              "maxItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "root": {
+                    "type": "string",
+                    "const": "worktreeRoot"
+                  },
+                  "path": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255
+                    }
+                  }
+                },
+                "required": [
+                  "root",
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "oid": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 536870912
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound",
+            "files",
+            "oid",
+            "size"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesCatFile"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "lock"
+            },
+            "bound": {
+              "type": "string",
+              "const": "MUTATION_RAW_INDEX_BYTES"
+            },
+            "token": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound",
+            "token"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesLock"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "candidate"
+            },
+            "bound": {
+              "type": "string",
+              "const": "MUTATION_RAW_INDEX_BYTES"
+            },
+            "candidate": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound",
+            "candidate"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesCandidate"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "publish"
+            },
+            "bound": {
+              "type": "string",
+              "const": "MUTATION_RAW_INDEX_BYTES"
+            },
+            "candidate": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "lock": {
+              "type": "object",
+              "properties": {
+                "device": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]{0,19})$"
+                },
+                "inode": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]{0,19})$"
+                }
+              },
+              "required": [
+                "device",
+                "inode"
+              ],
+              "additionalProperties": false
+            },
+            "token": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "expected": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound",
+            "candidate",
+            "lock",
+            "token",
+            "expected"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesPublish"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "remove"
+            },
+            "bound": {
+              "type": "string",
+              "const": "MUTATION_RAW_INDEX_BYTES"
+            },
+            "token": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "candidate": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "expected": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesRemove"
+        }
+      ],
+      "title": "WslFilesGroup"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "release"
             },
             "repositoryId": {
@@ -966,6 +1563,16 @@
           "type": "string",
           "maxLength": 64,
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "index": {
+          "type": "object",
+          "properties": {
+            "sharedIndex": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [

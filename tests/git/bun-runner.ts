@@ -23,11 +23,13 @@ import {
   checkResolveGit,
   checkStarted,
   checkTrust,
+  checkWslFiles,
   commandLineUnits,
   type Collector,
   createDiagnosticCounter,
   type FileFact,
   type FileFactsRequest,
+  type IndexedFileFactsRequest,
   isChannelPath,
   RunnerRefusal,
   type GitCall,
@@ -41,11 +43,30 @@ import {
   type TrustRecord,
   type WalkStop,
   type WslDistrosCall,
+  type WslFileResult,
+  type WslFilesCall,
+  type WslIndexResult,
   type WslProbeRun,
 } from "../../src/git-service/git-runner";
 import { printOrigin } from "../origin";
 import { isWindowsProgram } from "../../src/contracts/wsl-route";
-import { FACTS_TEXT, factsInput, IDENTITY_TEXT, listDistros, OWN_SCOPE_OPERATIONS, parseFactRecords, registryKeys, WSL_EXE, wslExec, type FactEntry, type FactRecord } from "../wsl/wsl-host";
+import {
+  FACTS_TEXT,
+  factsInput,
+  IDENTITY_TEXT,
+  listDistros,
+  OWN_SCOPE_OPERATIONS,
+  parseFactRecords,
+  parseIndexedFacts,
+  registryKeys,
+  WSL_EXE,
+  WSL_FILES_TEXT,
+  wslExec,
+  wslFilesInput,
+  wslFilesResults,
+  type FactEntry,
+  type FactRecord,
+} from "../wsl/wsl-host";
 import type { InboundPipe } from "./win32";
 
 // The host module of the double. The generic harness loads it only through this path (tests/git/portable-imports.test.ts).
@@ -103,6 +124,8 @@ export interface WslInstallation {
   systemdRun: string;
   systemctl: string;
   setsid: string;
+  // Contract §11 "Git per distro": the approved `/usr/bin/sha256sum` target of the `wslFiles` digests.
+  sha256sum: string;
 }
 
 // The native settings record of one approved WSL Git (contract §11 "Git per distro").
@@ -131,13 +154,16 @@ function wslParts(path: string): { distro: string; linux: string } | null {
 
 // Mirrors `RETAINED_BYTES` of `src-tauri/src/wsl.rs`: the shell parses at most 64 KiB of probe output.
 const WSL_PROBE_RETAINED_BYTES = 64 * 1024;
-const WSL_PROBED = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl"];
+const WSL_PROBED = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"];
 const WSL_PROBE_FACTS = ["pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat"];
 const WSL_FLOOR = [2n, 55n, 0n];
 // gaps.md W3 and W4: the fixed programs of the identity and `fileFacts` probes.
 const WSL_STAT = "/usr/bin/stat";
 const WSL_PERL = "/usr/bin/perl";
 const MAX_INODE = 0xffff_ffff_ffff_ffffn;
+// The three Git-resolved roots of a registered repository, in the order of the Perl texts.
+const ROOT_ORDER = ["worktreeRoot", "gitDirectory", "commonDirectory"] as const;
+type Roots = Record<(typeof ROOT_ORDER)[number], string>;
 
 // Mirrors `src-tauri/src/wsl.rs` `bind_probe`: strict UTF-8 lines, each line kind at most once, and every §11 rule. Output that fails a rule binds nothing.
 function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
@@ -167,7 +193,7 @@ function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
     const path = facts.get(`path ${name}`);
     return path?.startsWith("/") && facts.get(`magic ${name}`) === "-" && !isWindowsProgram(path, false) ? path : undefined;
   };
-  const [git, systemdRun, systemctl, setsid, stat, env, perl] = WSL_PROBED.map(program);
+  const [git, systemdRun, systemctl, setsid, stat, env, perl, sha256sum] = WSL_PROBED.map(program);
   // Contract §11 "Git per distro": the floor, and no `.windows.` version.
   const version = /^git version ((\d+)\.(\d+)\.(\d+)\S*)$/.exec(facts.get("version") ?? "");
   const parts = version?.slice(2, 5).map(BigInt) ?? [];
@@ -176,12 +202,12 @@ function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
   const fileSystem = /^ef53:([0-9a-f]+)$/.exec(facts.get("gitfs") ?? "")?.[1];
   const gitfile = facts.get("gitfile") ?? "";
   const guid = registryKeys().find((k) => k.name === distro && k.version === 2)?.guid;
-  if (!git || !systemdRun || !systemctl || !setsid || !stat || !env || !perl || facts.get("scope") !== "0" || !floor || !guid) return null;
+  if (!git || !systemdRun || !systemctl || !setsid || !stat || !env || !perl || !sha256sum || facts.get("scope") !== "0" || !floor || !guid) return null;
   if (!fileSystem || /^0+$/.test(fileSystem) || !/^\d+:\d+:\d+$/.test(gitfile)) return null;
   // gaps.md W1: the context identity binds with the Git facts, or nothing binds.
   const identity = facts.get("selstat") === "ok" ? classifyIdentity(guid, facts.get("selino") ?? "", facts.get("selfs") ?? "") : null;
   if (identity === null || "code" in identity) return null;
-  return { distro, guid, git, systemdRun, systemctl, setsid, version: version[1]!, gitIdentity: `${fileSystem}:${gitfile}`, identity };
+  return { distro, guid, git, systemdRun, systemctl, setsid, sha256sum, version: version[1]!, gitIdentity: `${fileSystem}:${gitfile}`, identity };
 }
 
 // Mirrors `src-tauri/src/wsl.rs` `classify`: only type `ef53` with a nonzero ID, in the canonical form of gaps.md W2.
@@ -206,8 +232,12 @@ const FILE_BOUND = 1_048_576n;
 const TOTAL_BOUND = 8_388_608n;
 const LINK_BYTES = 4_095;
 function mapFacts(records: FactRecord[] | null, entries: readonly FactEntry[], digest: boolean): FileFact[] {
-  const failed: FileFact[] = entries.map(() => ({ kind: "error", component: 0, code: "other-error" }));
-  if (records === null || records.length !== entries.length) return failed;
+  return (records && checkFacts(records, entries, digest)) ?? entries.map(() => ({ kind: "error", component: 0, code: "other-error" }));
+}
+
+// Null: a record breaks a check.
+function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest: boolean): FileFact[] | null {
+  if (records.length !== entries.length) return null;
   let total = 0n;
   const facts: FileFact[] = [];
   for (const [i, record] of records.entries()) {
@@ -215,10 +245,10 @@ function mapFacts(records: FactRecord[] | null, entries: readonly FactEntry[], d
     if (record.kind === "absent" || record.kind === "other") facts.push({ kind: record.kind });
     else if (record.kind === "directory") facts.push({ kind: "directory", executable: record.executable });
     else if (record.kind === "error") {
-      if (record.component > length || !["access-denied", "io-error", "other-error"].includes(record.code)) return failed;
+      if (record.component > length || !["access-denied", "io-error", "other-error"].includes(record.code)) return null;
       facts.push({ kind: "error", component: record.component, code: record.code as "access-denied" });
     } else if (record.kind === "link") {
-      if (record.component < 1 || record.component > length || record.target.length < 1 || record.target.length > LINK_BYTES) return failed;
+      if (record.component < 1 || record.component > length || record.target.length < 1 || record.target.length > LINK_BYTES) return null;
       let target: string | null = null;
       try {
         target = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(record.target);
@@ -226,16 +256,16 @@ function mapFacts(records: FactRecord[] | null, entries: readonly FactEntry[], d
       facts.push(target === null ? { kind: "link", component: record.component, tag: "other" } : { kind: "link", component: record.component, tag: "symlink", target, relative: !target.startsWith("/") });
     } else {
       const lastWrite = record.mtime * 1_000_000_000n;
-      if (record.size > BigInt(Number.MAX_SAFE_INTEGER) || BigInt.asIntN(64, lastWrite) !== lastWrite) return failed;
+      if (record.size > BigInt(Number.MAX_SAFE_INTEGER) || BigInt.asIntN(64, lastWrite) !== lastWrite) return null;
       const base = { kind: "file" as const, size: Number(record.size), lastWrite: String(lastWrite), ownerExecute: record.ownerExecute, executable: record.executable };
       if (record.content === "none") {
-        if (digest) return failed;
+        if (digest) return null;
         facts.push(base);
-      } else if (!digest) return failed;
+      } else if (!digest) return null;
       else if (typeof record.content === "string") facts.push({ ...base, bound: record.content });
       else {
         total += BigInt(record.content.length);
-        if (BigInt(record.content.length) > FILE_BOUND || total > TOTAL_BOUND) return failed;
+        if (BigInt(record.content.length) > FILE_BOUND || total > TOTAL_BOUND) return null;
         facts.push({ ...base, digest: new Bun.CryptoHasher("sha256").update(record.content).digest("hex") });
       }
     }
@@ -554,15 +584,36 @@ export function createBunRunner(options: BunRunnerOptions) {
     });
   }
 
+  // The Linux forms of the three roots, or null for a root outside the distro of the installation.
+  function linuxRoots(inst: WslInstallation, roots: Roots): string[] | null {
+    const linux = ROOT_ORDER.map((name) => wslParts(roots[name]));
+    return linux.some((parts) => !parts || parts.distro.toLowerCase() !== inst.distro.toLowerCase()) ? null : linux.map((parts) => parts!.linux);
+  }
+
   // gaps.md W3: the fixed Perl probe through the wrapper in `probe` mode. The three roots go as Linux paths.
-  function wslFileFacts(operationId: string, inst: WslInstallation, roots: { worktreeRoot: string; gitDirectory: string; commonDirectory: string }, digest: boolean, files: FileFactsRequest["files"]): FileFact[] {
-    const order = ["worktreeRoot", "gitDirectory", "commonDirectory"] as const;
-    const entries: FactEntry[] = files.map(({ root, path }) => ({ root: order.indexOf(root) as 0 | 1 | 2, path: [...path] }));
-    const linux = order.map((name) => wslParts(roots[name]));
-    if (linux.some((parts) => !parts || parts.distro.toLowerCase() !== inst.distro.toLowerCase())) return mapFacts(null, entries, digest);
-    const args = ["-e", FACTS_TEXT, "--", digest ? "1" : "0", ...linux.map((parts) => parts!.linux)];
+  // With `index`, the probe also gets the sha256sum path and the shared hash, and gives the index result (contract §6 "Index digest in a read").
+  function wslFileFacts(operationId: string, inst: WslInstallation, roots: Roots, digest: boolean, files: FileFactsRequest["files"], index?: { sharedIndex?: string }): { facts: FileFact[]; index?: WslIndexResult } {
+    const entries: FactEntry[] = files.map(({ root, path }) => ({ root: ROOT_ORDER.indexOf(root) as 0 | 1 | 2, path: [...path] }));
+    const failed = { kind: "error", component: 0, code: "other-error" } as const;
+    const linux = linuxRoots(inst, roots);
+    if (linux === null) return { facts: mapFacts(null, entries, digest), ...(index ? { index: failed } : {}) };
+    const extra = index ? [inst.sha256sum, ...(index.sharedIndex === undefined ? [] : [index.sharedIndex])] : [];
+    const args = ["-e", FACTS_TEXT, "--", digest ? "1" : "0", ...linux, ...extra];
     const result = wslExec(wslWrapped(inst, operationId, "probe", "", WSL_PERL, args), { env: wslEnvironment(), input: factsInput(entries) });
-    return mapFacts(result.exitCode === 0 ? parseFactRecords(result.bytes) : null, entries, digest);
+    if (!index) return { facts: mapFacts(result.exitCode === 0 ? parseFactRecords(result.bytes) : null, entries, digest) };
+    const parsed = result.exitCode === 0 ? parseIndexedFacts(result.bytes, entries.length, index.sharedIndex !== undefined) : null;
+    // A failed fact check fails the index too, as in the shell.
+    const facts = parsed === null ? null : checkFacts(parsed.records, entries, digest);
+    return facts === null ? { facts: mapFacts(null, entries, digest), index: failed } : { facts, index: parsed!.index };
+  }
+
+  // Contract §6 "WSL file work": the fixed Perl text through the wrapper in `probe` mode, with the same records as the shell.
+  function wslFilesWalk(operationId: string, inst: WslInstallation, roots: Roots, request: WslFilesCall): WslFileResult[] {
+    const linux = linuxRoots(inst, roots);
+    if (linux === null) return wslFilesResults(null, new Uint8Array(), request);
+    const args = ["-e", WSL_FILES_TEXT, "--", request.mode, ...linux, inst.git, inst.sha256sum];
+    const result = wslExec(wslWrapped(inst, operationId, "probe", "", WSL_PERL, args), { env: wslEnvironment(), input: wslFilesInput(request) });
+    return wslFilesResults(result.exitCode, result.bytes, request);
   }
 
   // Test end: ends every scope of an operation that this double started.
@@ -865,7 +916,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       const wsl = wslGits.get(gitInstallationId);
       return walk(signal, () => {
         if (wsl) {
-          const facts = wslFileFacts(operationId, wsl, roots, request.digest, request.files);
+          const { facts } = wslFileFacts(operationId, wsl, roots, request.digest, request.files);
           fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead: facts.map(() => 0) });
           return facts;
         }
@@ -1027,6 +1078,31 @@ export function createBunRunner(options: BunRunnerOptions) {
   };
 
   // Contract §6 `wslDistros`: any live `repositoryDiscovery` context of the operation. Only a path with a WSL prefix runs the list calls.
+  // src-tauri/src/process_requests.rs `file_facts` with `index`: only a WSL repository takes it.
+  async function indexedFileFacts(request: IndexedFileFactsRequest, signal: AbortSignal): Promise<{ facts: FileFact[]; index: WslIndexResult } | WalkStop> {
+    checkFileFacts(request, true);
+    const { operationId, contextKind, gitInstallationId, repositoryId } = request;
+    resolveTarget(operationId, { contextKind, gitInstallationId, repositoryId });
+    const wsl = wslGits.get(gitInstallationId);
+    if (!wsl) throw new RunnerRefusal("INVALID_REQUEST", "index outside WSL");
+    const { gitInstallationId: _git, ...roots } = repositories.get(repositoryId)!;
+    return walk(signal, () => {
+      const { facts, index } = wslFileFacts(operationId, wsl, roots, request.digest, request.files, request.index);
+      return { facts, index: index! };
+    });
+  }
+
+  // src-tauri/src/process_requests.rs `wsl_files`: the fields, the target, then the WSL refusal.
+  async function wslFiles(request: WslFilesCall, signal: AbortSignal): Promise<WslFileResult[] | WalkStop> {
+    checkWslFiles(request);
+    const { operationId, contextKind, gitInstallationId, repositoryId } = request;
+    resolveTarget(operationId, { contextKind, gitInstallationId, repositoryId });
+    const wsl = wslGits.get(gitInstallationId);
+    if (!wsl) throw new RunnerRefusal("INVALID_REQUEST", "wslFiles outside WSL");
+    const { gitInstallationId: _git, ...roots } = repositories.get(repositoryId)!;
+    return walk(signal, () => wslFilesWalk(operationId, wsl, roots, request));
+  }
+
   async function wslDistros({ operationId, bootstrapId }: WslDistrosCall): Promise<WslDistrosResult> {
     const bound = contexts.get(bootstrapId);
     if (!isIdentifier(operationId) || !isIdentifier(bootstrapId)) throw new RunnerRefusal("INVALID_REQUEST", "wslDistros");
@@ -1105,6 +1181,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     ...runner,
     wslDistros,
     wslProbe,
+    wslFiles,
+    indexedFileFacts,
     inject,
     frames,
     markers,

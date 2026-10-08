@@ -634,6 +634,13 @@
                   }
                 ]
               }
+            },
+            "index": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/WslIndexResult"
+                }
+              ]
             }
           },
           "required": [
@@ -856,6 +863,440 @@
         }
       ],
       "title": "WslDistrosGroup"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "results": {
+              "minItems": 1,
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "file"
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "changed": {
+                        "type": "boolean"
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      },
+                      "bound": {
+                        "type": "string",
+                        "enum": [
+                          "COMPARED_RAW_VERSION_BYTES",
+                          "WHOLE_FILE_STAGE_INPUT_BYTES"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "size",
+                      "changed"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileFile"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "directory"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileDirectory"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "link"
+                      },
+                      "component": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "targetBytes": {
+                        "type": "string",
+                        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "component"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileLink"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "absent"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileAbsent"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "other"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileOther"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "error"
+                      },
+                      "component": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "code": {
+                        "type": "string",
+                        "enum": [
+                          "access-denied",
+                          "io-error",
+                          "other-error"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "component",
+                      "code"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileError"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "object"
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      },
+                      "oid": {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      },
+                      "gitExit": {
+                        "$ref": "#/definitions/WslExit"
+                      },
+                      "hashExit": {
+                        "$ref": "#/definitions/WslExit"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "size",
+                      "sha256",
+                      "gitExit",
+                      "hashExit"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileObject"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "blob"
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      },
+                      "over": {
+                        "type": "boolean"
+                      },
+                      "gitExit": {
+                        "$ref": "#/definitions/WslExit"
+                      },
+                      "hashExit": {
+                        "$ref": "#/definitions/WslExit"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "size",
+                      "sha256",
+                      "over",
+                      "gitExit",
+                      "hashExit"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileBlob"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "index"
+                      },
+                      "index": {
+                        "$ref": "#/definitions/WslIndexPart"
+                      },
+                      "sharedIndex": {
+                        "allOf": [
+                          {
+                            "$ref": "#/definitions/WslIndexPart"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "index"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslIndexDigest"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "lock"
+                      },
+                      "device": {
+                        "type": "string",
+                        "pattern": "^(?:0|[1-9][0-9]{0,19})$"
+                      },
+                      "inode": {
+                        "type": "string",
+                        "pattern": "^(?:0|[1-9][0-9]{0,19})$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "device",
+                      "inode"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileLock"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "locked"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileLocked"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "candidate"
+                      },
+                      "index": {
+                        "$ref": "#/definitions/WslCopy"
+                      },
+                      "candidate": {
+                        "$ref": "#/definitions/WslCopy"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "index",
+                      "candidate"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileCandidate"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "bound"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileBound"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "published"
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "size",
+                      "sha256"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFilePublished"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "mismatch"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileMismatch"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "notOwned"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileNotOwned"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "removed"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileRemoved"
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "results"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesResults"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "deadline": {
+              "type": "string",
+              "const": "deadline"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "deadline"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesDeadline"
+        }
+      ],
+      "title": "WslFilesReplyGroup"
     }
   ],
   "definitions": {
@@ -891,6 +1332,206 @@
       ],
       "additionalProperties": false,
       "title": "Output"
+    },
+    "WslIndexResult": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "index"
+            },
+            "index": {
+              "$ref": "#/definitions/WslIndexPart"
+            },
+            "sharedIndex": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/WslIndexPart"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "index"
+          ],
+          "additionalProperties": false,
+          "title": "WslIndexDigest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "error"
+            },
+            "component": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "access-denied",
+                "io-error",
+                "other-error"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "component",
+            "code"
+          ],
+          "additionalProperties": false,
+          "title": "WslFileError"
+        }
+      ],
+      "title": "WslIndexResult"
+    },
+    "WslIndexPart": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "digest"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "kind",
+            "size",
+            "sha256"
+          ],
+          "additionalProperties": false,
+          "title": "WslIndexDigestPart"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "absent"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "title": "WslIndexAbsent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "bound"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "title": "WslIndexBound"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "error"
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "access-denied",
+                "io-error",
+                "other-error"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "code"
+          ],
+          "additionalProperties": false,
+          "title": "WslIndexError"
+        }
+      ],
+      "title": "WslIndexPart"
+    },
+    "WslExit": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "exitCode": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "required": [
+            "exitCode"
+          ],
+          "additionalProperties": false,
+          "title": "WslExitCode"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "signal": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 127
+            }
+          },
+          "required": [
+            "signal"
+          ],
+          "additionalProperties": false,
+          "title": "WslExitSignal"
+        }
+      ],
+      "title": "WslExit"
+    },
+    "WslCopy": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mtime": {
+          "type": "string",
+          "pattern": "^(?:0|-?[1-9][0-9]{0,18})$"
+        }
+      },
+      "required": [
+        "size",
+        "sha256",
+        "mtime"
+      ],
+      "additionalProperties": false,
+      "title": "WslCopy"
     }
   },
   "title": "ProcessReply"

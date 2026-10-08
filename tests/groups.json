@@ -32,6 +32,7 @@
     "tests/contracts/strict-json.test.ts",
     "tests/contracts/submodules.test.ts",
     "tests/contracts/vectors.test.ts",
+    "tests/contracts/wsl-files.test.ts",
     "tests/contracts/wsl-route.test.ts",
     "tests/git/diagnostics.test.ts",
     "tests/git/discovery.test.ts",

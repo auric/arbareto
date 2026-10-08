@@ -18,6 +18,7 @@ import {
   RevokeReply,
   StartedReply as StartedReplySchema,
   WslDistrosReply,
+  WslFilesReply,
 } from "../contracts/channel";
 import { INLINE_PROCESS_INPUT_BYTES, NATIVE_CHUNK_BYTES, UNACKNOWLEDGED_INPUT_CHUNKS } from "../contracts/limits";
 import { isChannelPath, isIdentifier } from "../contracts/operations";
@@ -32,8 +33,11 @@ import {
   checkStarted,
   checkTrust,
   checkWslDistros,
+  checkWslFiles,
   checkWslProbe,
   createDiagnosticCounter,
+  indexFits,
+  wslResultsFit,
   RunnerRefusal,
   type FileFact,
   type FileFactsRequest,
@@ -41,6 +45,8 @@ import {
   type GitExit,
   type GitRunner,
   type WslDistrosResult,
+  type WslFileResult,
+  type WslIndexResult,
   type WslRunner,
   type IdentityReply,
   type RegisterReply,
@@ -293,6 +299,33 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         if (!reply.success) return undefined;
         if ("deadline" in reply.data) return DEADLINE;
         return reply.data.facts.length === files.length && reply.data.facts.every((fact, i) => factFits(request, fact, files[i]!.path.length)) ? reply.data.facts : undefined;
+      };
+      return ask("process", body, parse, { signal, value: CANCELED });
+    },
+
+    async indexedFileFacts(request, signal) {
+      checkFileFacts(request, true);
+      const { operationId, contextKind, gitInstallationId, repositoryId, digest, files, index } = request;
+      const body = { type: "fileFacts", operationId, contextKind, gitInstallationId, repositoryId, digest, files: files.map(({ root, path }) => ({ root, path: [...path] })), index: { ...index } };
+      const parse = (r: Body): { facts: FileFact[]; index: WslIndexResult } | WalkStop | undefined => {
+        const reply = FileFactsReply.safeParse(r);
+        if (!reply.success) return undefined;
+        if ("deadline" in reply.data) return DEADLINE;
+        const { facts, index: result } = reply.data;
+        const fit = facts.length === files.length && facts.every((fact, i) => factFits(request, fact, files[i]!.path.length));
+        return fit && result !== undefined && indexFits(result, index.sharedIndex) ? { facts, index: result } : undefined;
+      };
+      return ask("process", body, parse, { signal, value: CANCELED });
+    },
+
+    async wslFiles(request, signal) {
+      checkWslFiles(request);
+      const body = { type: "wslFiles", ...structuredClone(request) };
+      const parse = (r: Body): WslFileResult[] | WalkStop | undefined => {
+        const reply = WslFilesReply.safeParse(r);
+        if (!reply.success) return undefined;
+        if ("deadline" in reply.data) return DEADLINE;
+        return wslResultsFit(request, reply.data.results) ? reply.data.results : undefined;
       };
       return ask("process", body, parse, { signal, value: CANCELED });
     },

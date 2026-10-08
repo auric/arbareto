@@ -235,6 +235,8 @@ pub mod reply {
 
     use super::{mutation_reply as m, process_reply as p, trust_reply as t, typed};
     use crate::bootstrap::PhysicalIdentity;
+    use crate::process_requests::encode_base64;
+    use crate::settings::{hex, sha256};
 
     const DEADLINE: &str = "deadline";
     const APPROVED: &str = "approved";
@@ -406,10 +408,16 @@ pub mod reply {
         ))
     }
 
-    pub fn file_facts(call_id: &str, facts: Vec<p::FileFactsReplyFactsItem>) -> Value {
+    /// `index` only for a WSL request with `index` (contract §6 "Index digest in a read").
+    pub fn file_facts(
+        call_id: &str,
+        facts: Vec<p::FileFactsReplyFactsItem>,
+        index: Option<p::WslIndexResult>,
+    ) -> Value {
         encode(p::ProcessReply::FileFactsGroup(p::FileFactsGroup::Reply {
             call_id: field(call_id),
             facts,
+            index,
             type_: "fileFacts".into(),
         }))
     }
@@ -462,6 +470,140 @@ pub mod reply {
     /// The `digest` of a `file` fact: 64 lowercase hex digits.
     pub fn digest(hex: &str) -> p::FileFactFileDigest {
         field(hex)
+    }
+
+    // ---- `wslFiles` (contract §6 "WSL file work") ----
+
+    pub fn wsl_files(call_id: &str, results: Vec<p::WslFilesResultsResultsItem>) -> Value {
+        encode(p::ProcessReply::WslFilesReplyGroup(
+            p::WslFilesReplyGroup::Results {
+                call_id: field(call_id),
+                results,
+                type_: "wslFiles".into(),
+            },
+        ))
+    }
+
+    pub fn wsl_files_deadline(call_id: &str) -> Value {
+        encode(p::ProcessReply::WslFilesReplyGroup(
+            p::WslFilesReplyGroup::Deadline {
+                call_id: field(call_id),
+                deadline: DEADLINE.into(),
+                type_: "wslFiles".into(),
+            },
+        ))
+    }
+
+    /// `code` is one of the POSIX codes of contract §6 "File facts".
+    pub fn wsl_error(component: usize, code: &str) -> p::WslFilesResultsResultsItem {
+        p::WslFilesResultsResultsItem::Error {
+            code: field(code),
+            component: count(component),
+        }
+    }
+
+    /// A link at `component`. Only a final link holds its raw target and the SHA-256 of it.
+    pub fn wsl_link(component: usize, target: Option<&[u8]>) -> p::WslFilesResultsResultsItem {
+        p::WslFilesResultsResultsItem::Link {
+            component: count(component),
+            sha256: target.map(|bytes| field(&hex(&sha256(bytes)))),
+            target_bytes: target.map(|bytes| field(&encode_base64(bytes))),
+        }
+    }
+
+    /// A `digest` file: its SHA-256, or the bound name above the bound.
+    pub fn wsl_file(
+        size: i64,
+        changed: bool,
+        digest: Result<&str, &str>,
+    ) -> p::WslFilesResultsResultsItem {
+        p::WslFilesResultsResultsItem::File {
+            bound: digest.err().map(field),
+            changed,
+            sha256: digest.ok().map(field),
+            size,
+        }
+    }
+
+    pub fn wsl_object(
+        size: i64,
+        sha256: &str,
+        oid: Option<&str>,
+        git_exit: p::WslExit,
+        hash_exit: p::WslExit,
+    ) -> p::WslFilesResultsResultsItem {
+        p::WslFilesResultsResultsItem::Object {
+            git_exit,
+            hash_exit,
+            oid: oid.map(field),
+            sha256: field(sha256),
+            size,
+        }
+    }
+
+    pub fn wsl_blob(
+        size: i64,
+        sha256: &str,
+        over: bool,
+        git_exit: p::WslExit,
+        hash_exit: p::WslExit,
+    ) -> p::WslFilesResultsResultsItem {
+        p::WslFilesResultsResultsItem::Blob {
+            git_exit,
+            hash_exit,
+            over,
+            sha256: field(sha256),
+            size,
+        }
+    }
+
+    pub fn wsl_lock(device: u64, inode: u64) -> p::WslFilesResultsResultsItem {
+        p::WslFilesResultsResultsItem::Lock {
+            device: field(&device.to_string()),
+            inode: field(&inode.to_string()),
+        }
+    }
+
+    /// The index and the candidate: each its size, SHA-256, and `st_mtime` in whole seconds.
+    pub fn wsl_candidate(
+        index: (i64, String, i64),
+        candidate: (i64, String, i64),
+    ) -> p::WslFilesResultsResultsItem {
+        let copy = |(size, sha256, mtime): (i64, String, i64)| p::WslCopy {
+            mtime: field(&mtime.to_string()),
+            sha256: field(&sha256),
+            size,
+        };
+        p::WslFilesResultsResultsItem::Candidate {
+            candidate: copy(candidate),
+            index: copy(index),
+        }
+    }
+
+    pub fn wsl_published(size: i64, sha256: &str) -> p::WslFilesResultsResultsItem {
+        p::WslFilesResultsResultsItem::Published {
+            sha256: field(sha256),
+            size,
+        }
+    }
+
+    pub fn index_digest(size: i64, sha256: &str) -> p::WslIndexPart {
+        p::WslIndexPart::Digest {
+            sha256: field(sha256),
+            size,
+        }
+    }
+
+    pub fn index_error(code: &str) -> p::WslIndexPart {
+        p::WslIndexPart::Error { code: field(code) }
+    }
+
+    /// The `index` of a failed probe.
+    pub fn index_failed(component: usize, code: &str) -> p::WslIndexResult {
+        p::WslIndexResult::Error {
+            code: field(code),
+            component: count(component),
+        }
     }
 
     /// The reply holds the context path alone for a path without a WSL prefix.
@@ -730,11 +872,17 @@ mod tests {
             "wsl-request" => strict(text)
                 .and_then(|value| wsl_request(&value).map(drop).map_err(|code| text_of(&code))),
             // `ProcessRequests::dispatch` reads the `type` value, then its generated type (contract §6 "Channel frames").
-            // Only `fileFacts` vectors exist.
+            // Only `fileFacts` and `wslFiles` vectors exist.
             "process-request" => match strict(text) {
                 Ok(value) if value["type"] == "fileFacts" => typed(&value)
                     .ok_or(INVALID)
                     .and_then(|request| crate::file_facts::parse(&request).map(drop))
+                    .map_err(|code| text_of(&code)),
+                Ok(value) if value["type"] == "wslFiles" => typed(&value)
+                    .ok_or(INVALID)
+                    .and_then(|request| {
+                        crate::file_facts::wsl_files_request(&value, &request).map(drop)
+                    })
                     .map_err(|code| text_of(&code)),
                 _ => return None,
             },
@@ -779,7 +927,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 72 } else { 67 },
+            if cfg!(windows) { 93 } else { 88 },
             "shell-read vectors"
         );
     }
@@ -789,7 +937,8 @@ mod tests {
     fn each_reply_builder_gives_the_wire_form_of_its_variant() {
         use process_reply::{
             ExitDeadline, FileFactErrorCode, FileFactLinkTag, FileFactsReplyFactsItem as Fact,
-            IdentityRefusedReason, OutputStream, RegisterResultResult,
+            IdentityRefusedReason, OutputStream, RegisterResultResult, WslExit,
+            WslFilesResultsResultsItem as WslFile,
         };
         use trust_reply::ConfirmRunReplyResult;
 
@@ -926,8 +1075,76 @@ mod tests {
                 vector("resolve-git-reply-deadline.json"),
             ),
             (
-                reply::file_facts(call, facts),
+                reply::file_facts(call, facts, None),
                 vector("file-facts-reply.json"),
+            ),
+            (
+                reply::file_facts(
+                    "0f0f0f0f-0000-4000-8000-000000000001",
+                    vec![Fact::Absent],
+                    Some(process_reply::WslIndexResult::Index {
+                        index: reply::index_digest(104, &"a".repeat(64)),
+                        shared_index: Some(process_reply::WslIndexPart::Bound),
+                    }),
+                ),
+                vector("file-facts-reply-index.json"),
+            ),
+            (
+                reply::wsl_files(
+                    call,
+                    vec![
+                        reply::wsl_file(3, false, Ok(&"a".repeat(64))),
+                        reply::wsl_file(1_048_577, true, Err("COMPARED_RAW_VERSION_BYTES")),
+                        reply::wsl_link(1, Some(&[0xff])),
+                        reply::wsl_link(1, None),
+                        WslFile::Directory,
+                        WslFile::Absent,
+                        WslFile::Other,
+                        reply::wsl_error(2, "access-denied"),
+                    ],
+                ),
+                vector("wsl-files-reply.json"),
+            ),
+            (
+                reply::wsl_files(
+                    call,
+                    vec![
+                        WslFile::Index {
+                            index: reply::index_digest(104, &"a".repeat(64)),
+                            shared_index: Some(process_reply::WslIndexPart::Absent),
+                        },
+                        reply::wsl_object(
+                            12,
+                            &"a".repeat(64),
+                            Some(&"b".repeat(40)),
+                            WslExit::ExitCode(0),
+                            WslExit::ExitCode(0),
+                        ),
+                        reply::wsl_blob(
+                            1,
+                            &"a".repeat(64),
+                            true,
+                            WslExit::Signal(std::num::NonZeroU64::new(13).expect("13")),
+                            WslExit::ExitCode(0),
+                        ),
+                        reply::wsl_lock(2112, 57001),
+                        WslFile::Locked,
+                        reply::wsl_candidate(
+                            (104, "a".repeat(64), 1_791_410_531),
+                            (104, "a".repeat(64), 1_791_410_531),
+                        ),
+                        WslFile::Bound,
+                        reply::wsl_published(104, &"a".repeat(64)),
+                        WslFile::Mismatch,
+                        WslFile::NotOwned,
+                        WslFile::Removed,
+                    ],
+                ),
+                vector("wsl-files-reply-modes.json"),
+            ),
+            (
+                reply::wsl_files_deadline(call),
+                vector("wsl-files-reply-deadline.json"),
             ),
             (
                 reply::file_facts_deadline(call),

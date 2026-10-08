@@ -232,6 +232,8 @@ const Decimal = z
 const CandidateName = Component.refine((name) => name.startsWith("arbareto-candidate-"));
 // Contract §4 "WSL index publication": the lock content, 32 random bytes of the service as 64 lowercase hex digits.
 const LockToken = Fingerprint;
+// The device and inode of the `lock` reply.
+const LockIdentity = z.strictObject({ device: Decimal, inode: Decimal });
 // `sharedIndex`: the hash of the `link` extension that the service parsed last.
 export const WslIndexRequest = z.strictObject({ sharedIndex: ObjectId.optional() });
 // The byte value of each bound name (contract §5).
@@ -266,15 +268,24 @@ export const WslFilesGroup = z
         mode: z.literal("publish"),
         ...INDEX_BOUND,
         candidate: CandidateName,
-        lock: z.strictObject({ device: Decimal, inode: Decimal }),
+        lock: LockIdentity,
         token: LockToken,
         expected: Fingerprint,
       })
       .meta({ title: "WslFilesPublish" }),
-    // The owned lock by its `token`, or a candidate by the digest that the service verified last.
+    // The owned lock by the device and inode of the `lock` reply and its `token`, the lock by its `token` alone when no `lock` reply exists,
+    // or a candidate by the digest that the service verified last.
     z
-      .strictObject({ ...wslFiles, mode: z.literal("remove"), ...INDEX_BOUND, token: LockToken.optional(), candidate: CandidateName.optional(), expected: Fingerprint.optional() })
-      .refine((r) => (r.token !== undefined) !== (r.candidate !== undefined && r.expected !== undefined) && (r.candidate === undefined) === (r.expected === undefined))
+      .strictObject({
+        ...wslFiles,
+        mode: z.literal("remove"),
+        ...INDEX_BOUND,
+        lock: LockIdentity.optional(),
+        token: LockToken.optional(),
+        candidate: CandidateName.optional(),
+        expected: Fingerprint.optional(),
+      })
+      .refine((r) => (r.token !== undefined && r.candidate === undefined && r.expected === undefined) || (r.lock === undefined && r.token === undefined && r.candidate !== undefined && r.expected !== undefined))
       .meta({ title: "WslFilesRemove" }),
   ])
   .meta({ title: "WslFilesGroup" });

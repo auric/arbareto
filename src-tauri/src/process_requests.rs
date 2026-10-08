@@ -5846,11 +5846,16 @@ pub(crate) mod tests {
                 .into_bytes()
         );
 
-        // `remove` sends the name and then the token or the expected digest.
+        // `remove` sends the name and then the lock device, inode, and token, or the expected digest.
+        // The token-only lock form sends an empty device and inode.
         for (fields, input) in [
             (
+                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "lock": { "device": "2112", "inode": "57001" }, "token": TOKEN }),
+                format!("67108864\x00index.lock\x002112\x0057001\x00{TOKEN}\x00"),
+            ),
+            (
                 json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN }),
-                format!("67108864\x00index.lock\x00{TOKEN}\x00"),
+                format!("67108864\x00index.lock\x00\x00\x00{TOKEN}\x00"),
             ),
             (
                 json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7", "expected": HEX_A }),
@@ -5930,7 +5935,7 @@ pub(crate) mod tests {
                 json!({ "kind": "error", "component": 0, "code": "other-error" }),
             ),
             (
-                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN }),
+                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "lock": { "device": "1", "inode": "2" }, "token": TOKEN }),
                 "removed\x00".to_string(),
                 json!({ "kind": "removed" }),
             ),
@@ -5940,7 +5945,7 @@ pub(crate) mod tests {
                 json!({ "kind": "notOwned" }),
             ),
             (
-                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN }),
+                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "lock": { "device": "1", "inode": "2" }, "token": TOKEN }),
                 "mismatch\x00".to_string(),
                 json!({ "kind": "error", "component": 0, "code": "other-error" }),
             ),
@@ -6041,6 +6046,10 @@ pub(crate) mod tests {
             json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1" }),
             json!({ "mode": "lock" }),
             json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN, "expected": HEX_A }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "lock": { "device": "1", "inode": "2" } }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "lock": { "device": "01", "inode": "2" }, "token": TOKEN }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "lock": { "device": "1", "inode": "18446744073709551616" }, "token": TOKEN }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "lock": { "device": "1", "inode": "2" }, "candidate": "arbareto-candidate-1", "expected": HEX_A }),
             json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1" }),
             json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1", "token": TOKEN, "expected": HEX_A }),
             json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "index.lock", "expected": HEX_A }),

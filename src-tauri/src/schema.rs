@@ -927,7 +927,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 93 } else { 88 },
+            if cfg!(windows) { 95 } else { 90 },
             "shell-read vectors"
         );
     }

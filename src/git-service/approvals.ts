@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+// T108: data-model §6 "Mutation approvals", contract §2 repeat rule, §4 binding list, §5 "Approval lifetime", §8 "Token invalidation", and §9.
+// One store per service session, so a service restart invalidates every approval.
+
+import type { ChangeEntry } from "../contracts/envelope";
+import { APPROVAL_LIFETIME_MS } from "../contracts/limits";
+import type { PhysicalIdentity } from "./identity";
+import type { Head, IndexFingerprint, OperationState, TrustApproval, WorkingVersion } from "./snapshot";
+
+export type Direction = "stage" | "unstage";
+
+// Contract §4: the values that a comparison binds, in the order of its list.
+export interface ComparisonBinding {
+  gitInstallationId: string;
+  worktreeIdentity: [PhysicalIdentity, PhysicalIdentity];
+  commonIdentity: PhysicalIdentity;
+  head: Head;
+  // The complete index state with its shared-index dependency.
+  index: IndexFingerprint;
+  // The selected entry. `stage` is null for an entry that the index does not hold.
+  entry: Pick<ChangeEntry, "pathBytes" | "category" | "modes" | "oids"> & { stage: 0 | 1 | 2 | 3 | null };
+  // Raw working bytes, existence, type, and normalized content. Null when the comparison reads no working file.
+  working: WorkingVersion | null;
+  // The `check-attr` values of the selected path.
+  attributes: Readonly<Record<string, string>>;
+  // Data-model §4: effective configuration, trust approval, and Git installation identity.
+  policyFingerprint: string;
+  operationState: OperationState;
+}
+
+// Contract §4 list, last item: the canonical service diff and the selected hunk identity.
+export interface HunkBinding extends ComparisonBinding {
+  patchDigest: string;
+  hunkDigest: string;
+}
+
+// Contract §4 "Binding": the list without the canonical diff and the hunk. `working` holds the whole-file values only for `stage`.
+export interface FileBinding extends Omit<ComparisonBinding, "working"> {
+  working: { size: number; sha256: string } | null;
+}
+
+// Data-model §6 "Commit review".
+export interface CommitBinding {
+  stagedScope: string;
+  reviewedIndex: IndexFingerprint;
+  head: Head;
+  disclosure: string;
+  trust: TrustApproval;
+}
+
+interface Issued {
+  repositoryId: string;
+  snapshotId: string;
+  generation: number;
+}
+export type HunkApproval = Issued & { kind: "hunk"; comparisonId: string; hunkId: string; direction: Direction; binding: HunkBinding };
+export type FileApproval = Issued & { kind: "file"; comparisonId: string; entryId: string; direction: Direction; binding: FileBinding };
+export type CommitReview = Issued & { kind: "commit"; reviewToken: string; binding: CommitBinding };
+export type Approval = HunkApproval | FileApproval | CommitReview;
+
+// Contract §2: the repeat key of each approval.
+export type ApprovalKey =
+  | Pick<HunkApproval, "kind" | "comparisonId" | "hunkId" | "direction">
+  | Pick<FileApproval, "kind" | "comparisonId" | "direction">
+  | Pick<CommitReview, "kind" | "reviewToken">;
+
+export type Acceptance =
+  | { ok: true; approval: Approval }
+  | { ok: false; code: "UNKNOWN_TARGET" | "APPROVAL_EXPIRED" | "STALE_SELECTION" | "STALE_REVIEW" }
+  // Contract §2: the operation that consumed the approval.
+  | { ok: false; consumed: string };
+
+const keyOf = (k: ApprovalKey) =>
+  k.kind === "hunk" ? `hunk/${k.comparisonId}/${k.hunkId}/${k.direction}` : k.kind === "file" ? `file/${k.comparisonId}/${k.direction}` : `commit/${k.reviewToken}`;
+
+type Entry = { approval: Approval; issuedAt: number; state: { consumed: string } | { stale: true } | null };
+
+export function createApprovals(now: () => number = () => performance.now()) {
+  const entries = new Map<string, Entry>();
+
+  // Contract §9 acceptance order: a consumed approval answers the repeat before any other check.
+  function accept(key: ApprovalKey): Acceptance {
+    const e = entries.get(keyOf(key));
+    if (e === undefined) return { ok: false, code: "UNKNOWN_TARGET" };
+    if (e.state !== null && "consumed" in e.state) return { ok: false, consumed: e.state.consumed };
+    if (e.state !== null) return { ok: false, code: e.approval.kind === "commit" ? "STALE_REVIEW" : "STALE_SELECTION" };
+    if (now() - e.issuedAt > APPROVAL_LIFETIME_MS) return { ok: false, code: "APPROVAL_EXPIRED" };
+    return { ok: true, approval: e.approval };
+  }
+
+  return {
+    issue(approval: Approval): void {
+      entries.set(keyOf(approval), { approval, issuedAt: now(), state: null });
+    },
+
+    accept,
+
+    // One use. False when the approval is not acceptable now.
+    consume(key: ApprovalKey, operationId: string): boolean {
+      if (!accept(key).ok) return false;
+      entries.get(keyOf(key))!.state = { consumed: operationId };
+      return true;
+    },
+
+    // Contract §8 "Token invalidation". `refresh`, a release, or an eviction forgets the approval, so a later request gets UNKNOWN_TARGET.
+    // `change` keeps it as stale. A consumed approval stays bound to its operation for the session.
+    invalidate(match: (approval: Approval) => boolean, cause: "refresh" | "change"): void {
+      for (const [key, e] of entries) {
+        if ((e.state !== null && "consumed" in e.state) || !match(e.approval)) continue;
+        if (cause === "refresh") entries.delete(key);
+        else e.state = { stale: true };
+      }
+    },
+
+    // The binding fields whose values differ. Raw bytes compare byte by byte.
+    staleFields<B extends HunkBinding | FileBinding | CommitBinding>(bound: B, current: B): string[] {
+      return Object.keys(bound).filter((k) => !Bun.deepEquals(bound[k as keyof B], current[k as keyof B], true));
+    },
+  };
+}
+
+export type Approvals = ReturnType<typeof createApprovals>;

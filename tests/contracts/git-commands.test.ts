@@ -63,7 +63,7 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["blobFilterProofArgs", () => commands.blobFilterProofArgs("a.txt", SHA1, "sha1")],
   ["blobHashProofArgs", () => commands.blobHashProofArgs("a.txt")],
   ["gitmodulesListArgs", () => commands.gitmodulesListArgs()],
-  ["gitmodulesIndexArgs", () => commands.gitmodulesIndexArgs()],
+  ["gitmodulesIndexArgs", () => commands.gitmodulesIndexArgs(SHA1, "sha1")],
   ["gitmodulesHeadArgs", () => commands.gitmodulesHeadArgs()],
   ["gitlinkPatchArgs", () => commands.gitlinkPatchArgs(["sub"])],
 ];
@@ -414,7 +414,10 @@ test("the T227 submodule review reads are exact for a worktree and for a kept Gi
 // T227: the superproject reads. `--literal-pathspecs` would turn off the pathspec magic of `submodule.active` values, so the active-set read omits it (git(1) `--literal-pathspecs`, git-config(1) `submodule.active`).
 test("the T227 superproject submodule reads are exact", () => {
   expect(commands.gitmodulesListArgs()).toEqual([...R, "config", "--file", ".gitmodules", "--null", "--list"]);
-  expect(commands.gitmodulesIndexArgs()).toEqual([...R, "config", "--blob", ":.gitmodules", "--null", "--list"]);
+  // Contract §7: `:.gitmodules` loads the index, so the index source is its stage-0 object ID.
+  expect(commands.gitmodulesIndexArgs(SHA1, "sha1")).toEqual([...R, "config", "--blob", SHA1, "--null", "--list"]);
+  expect(commands.gitmodulesIndexArgs(SHA256, "sha256")).toEqual([...R, "config", "--blob", SHA256, "--null", "--list"]);
+  for (const oid of [":.gitmodules", "HEAD:.gitmodules", SHA256, "", SHA1.toUpperCase()]) expect(() => commands.gitmodulesIndexArgs(oid, "sha1")).toThrow(TypeError);
   expect(commands.gitmodulesHeadArgs()).toEqual([...R, "config", "--blob", "HEAD:.gitmodules", "--null", "--list"]);
   expect(commands.gitlinkPatchArgs(["sub", "-rf"])).toEqual([...R, "diff-files", "-p", "--ignore-submodules=dirty", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--", "sub", "-rf"]);
   expect(commands.activeSetArgs(["sub*", ":(glob)lib/**"])).toEqual(["--no-lazy-fetch", "--no-optional-locks", "ls-files", "-z", "--stage", "--", "sub*", ":(glob)lib/**"]);

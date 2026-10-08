@@ -415,8 +415,8 @@ export const WorkspaceSnapshot = z
     recoveryState: RecoveryState,
     completeness: Completeness,
     hunkEligibility: HunkEligibility,
-    // Contract §12 "Discovery notice": `paths` holds display paths within the §5 submodule review bound.
-    submoduleNotice: z.strictObject({ count: Count, paths: z.array(z.string()).max(limits.SUBMODULE_REVIEW_SUBMODULES) }),
+    // Contract §12 "Discovery notice": `count` has no bound. `paths` holds the first display paths in index order, within the §5 submodule review bound.
+    submoduleNotice: z.strictObject({ count: Count, paths: z.array(z.string()).max(limits.SUBMODULE_REVIEW_SUBMODULES), filter: z.enum(["applied", "skipped"]) }),
     entryCount: Count,
     entries: z.array(ChangeEntry),
     cursor: Identifier.nullable(),

@@ -2484,7 +2484,7 @@ Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-comm
 | Only the `remote-name` refusal, without `--` (H1) | A nested level can add a remote after the review. One guard then remains. | Reject; use both. |
 | A `& { $env:... }` block without `finally` for the fetch remedy (H1) | `$env:` changes the whole process, not the script block scope. | Reject; `finally` restores the value. |
 
-### Probes S1 to S34
+### Probes S1 to S35
 
 The probes ran on 2026-09-30 and 2026-10-01 with Git `2.55.0.windows.3` on the R13 host. They used only session scratch folders and the distro's `/tmp`. Each used an owned `GIT_CONFIG_GLOBAL` with `protocol.file.allow=always` and `GIT_CONFIG_NOSYSTEM=1`. The remotes were local bare repositories: a superproject with two submodules, one of which held a nested submodule. No probe fetched from the internet. These probes are not qualification evidence.
 
@@ -2754,6 +2754,17 @@ The probe S34 ran on 2026-10-01 for the verification remediation. It used Git `2
 - PowerShell 7.6 passed every value literally. With `$PSNativeCommandArgumentPassing = 'Legacy'`, 7.6 still passed each trailing `\` literally. That mode still dropped a U+0022, as 5.1 did in S28.
 - A second script built commands by the final rule. It removed trailing separators except at a drive root. It built no command for a value that ends in `\`. Every accepted command gave Git the intended arguments in both shells, with both Git paths. This included the forward-slash forms `D:/my repo` and `D:/`. The rule refused the remote names `x \` and `x\`.
 - No probe ran Git with a UNC share root or passed `\` through `wsl.exe`.
+
+The probe S35 ran on 2026-10-08 for the T229 discovery notice. It used Git `2.56.0.windows.1` and Git `2.55.0` on Ubuntu-26.04.
+
+**S35. Notice file checks and `.gitmodules` sources.**
+
+- In a WSL repository, the worktree root is a `\\wsl.localhost\…` path (`src/git-service/discovery.ts`). A Windows `lstat` of each gitlink `.git` path crossed 9P once per gitlink. Contract §11 does not allow this, so the notice uses `fileFacts` requests with `digest: false`.
+- In WSL, a gitlink `a/sub` with `a` as a symbolic link gave porcelain v2 `1 AD S... a/sub`. Git saw no worktree entry. `lstat("a/sub/.git")` followed the link and found an entry.
+- `config --file .gitmodules --null --list` exited 128 for a broken section line, with partial records on stdout. It also exited 128 for an absent file, and 0 for `path` without a value. No exit status identifies an invalid file. The `status` form of the app exited 0 with the same broken file.
+- A non-boolean `submodule.<name>.active=maybe`: `status` exited 0. `submodule status`, `submodule update`, and `submodule update --init` exited 128 with "bad boolean config value".
+- `config --blob :.gitmodules` loaded the index. With a command-valued `core.fsmonitor`, it ran the hook. With `core.fsmonitor=true`, it started `git fsmonitor--daemon`.
+- `config --blob HEAD:.gitmodules`, `config --blob <object ID>`, and `config --file` started no child.
 
 ### Security notes
 

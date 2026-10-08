@@ -412,11 +412,19 @@
               "items": {
                 "type": "string"
               }
+            },
+            "filter": {
+              "type": "string",
+              "enum": [
+                "applied",
+                "skipped"
+              ]
             }
           },
           "required": [
             "count",
-            "paths"
+            "paths",
+            "filter"
           ],
           "additionalProperties": false
         },

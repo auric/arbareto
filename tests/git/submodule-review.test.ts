@@ -83,7 +83,7 @@ function expectedNotice(b: Built, dir: string, excluded: string[] = []): string[
     .sort();
 }
 
-type Notice = { count: number; paths: string[] };
+type Notice = { count: number; paths: string[]; filter: "applied" | "skipped" };
 const noticeOf = (value: unknown) => valuesOf(value, "submoduleNotice")[0] as Notice | undefined;
 
 // The config value of a key, or null.
@@ -109,7 +109,7 @@ describe("notice (contract §12 \"Discovery notice\")", () => {
         const { repositoryId } = await service.register(superOf(b));
         const read = await readOk(service, repositoryId);
         const paths = expectedNotice(b, superOf(b));
-        expect(noticeOf(read)).toEqual({ count: paths.length, paths });
+        expect(noticeOf(read)).toEqual({ count: paths.length, paths, filter: "applied" });
         expect(submoduleCalls(service, superOf(b)).map((c) => c.arguments)).toEqual([]);
       });
     }, TIMEOUT_MS);
@@ -122,7 +122,7 @@ describe("notice (contract §12 \"Discovery notice\")", () => {
       const { repositoryId } = await service.register(superOf(b));
       const paths = expectedNotice(b, superOf(b), ["solo"]);
       expect(paths).not.toContain("solo");
-      expect(noticeOf(await readOk(service, repositoryId))).toEqual({ count: paths.length, paths });
+      expect(noticeOf(await readOk(service, repositoryId))).toEqual({ count: paths.length, paths, filter: "applied" });
     });
   }, TIMEOUT_MS);
 
@@ -136,7 +136,7 @@ describe("notice (contract §12 \"Discovery notice\")", () => {
       expect(submoduleCalls(service, superOf(b)).map((c) => c.arguments)).toEqual([]);
       const paths = expectedNotice(b, superOf(b));
       expect(paths).toContain("mid");
-      expect(noticeOf(read)).toEqual({ count: paths.length, paths });
+      expect(noticeOf(read)).toEqual({ count: paths.length, paths, filter: "applied" });
     });
   }, TIMEOUT_MS);
 });

@@ -3,7 +3,7 @@
 
 // Contract §3 `readWorkspace` and `readEntries`, contract §5 "Status page", and contract §8 "Change check" and "Changing working file".
 
-import { lstat, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { FileIdentity, type FileFact } from "../contracts/channel";
 import type { ChangeEntry, ReadEntriesResult, WorkspaceRefusal, WorkspaceSnapshot } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
@@ -23,7 +23,6 @@ import { wslIdentityPath } from "../contracts/wsl-route";
 import {
   batchCommandArgs,
   headOidArgs,
-  gitmodulesListArgs,
   headTargetArgs,
   indexEntryArgs,
   isObjectId,
@@ -62,7 +61,8 @@ import {
   type WorkingVersion,
 } from "./snapshot";
 import { createStatusParser, displayPath, type BranchHeaders, type StatusRecord } from "./status-parser";
-import { parseMaybeBool, readProgramFiles, type ChangeFiles, type ConfigEntry, type ListingOutcome, type ProgramFile, type Trust, type TrustListing } from "./trust";
+import { gitmodulesSource } from "./submodule-review";
+import { isComponent, parseMaybeBool, readProgramFiles, requestFacts, type ChangeFiles, type ConfigEntry, type ListingOutcome, type ProgramFile, type FactEntry, type Trust, type TrustListing } from "./trust";
 import { statFiles, type TupleFile } from "./watch";
 
 // Contract §7 "Missing objects".
@@ -162,9 +162,7 @@ const UNSET: Flags = { intentToAdd: false, assumeUnchanged: false, skipWorktree:
 const EMPTY = new Uint8Array(0);
 const MAX_GENERATION = Number.MAX_SAFE_INTEGER;
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const SLASH = Buffer.from("/");
-const DOT_GIT = Buffer.from(".git");
-const GITMODULES = Buffer.from(".gitmodules");
+const HEAD_GITMODULES = "HEAD:.gitmodules";
 // A `--null` configuration record: the key, then LF and the value when it has one.
 const keyOf = (record: Uint8Array) => latin1(record.indexOf(NEWLINE) < 0 ? record : record.subarray(0, record.indexOf(NEWLINE)));
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
@@ -483,30 +481,47 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     return parseCommitObjects(out.take(), [oid], t.workspace.objectFormat).objects[0]?.tree ?? null;
   }
 
+  // Contract §12 "Review reads": whether the HEAD source exists. git-cat-file(1) `--batch-check` prints `<object> missing` for a name that resolves to no object,
+  // and `<oid> <type> <size>` otherwise. A `<rev>:<path>` name loads no index (§7).
+  async function headHasGitmodules(t: ReadWorkspaceTarget): Promise<boolean | "skipped" | { refused: ErrorCode } | "canceled" | "deadline"> {
+    const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+    const step = await run(t, objectCheckArgs(), out, new TextEncoder().encode(`${HEAD_GITMODULES}\n`));
+    if (t.signal.aborted) return "canceled";
+    if ("refused" in step) return step;
+    if (step.exit.deadline !== undefined) return "deadline";
+    if (step.exit.diagnosticLimit) return { refused: "OUTPUT_LIMIT" };
+    if (step.exit.exitCode !== 0) return "skipped";
+    const line = out.limited ? null : (/^([^\n]*)\n$/.exec(latin1(out.take()))?.[1] ?? null);
+    if (line === `${HEAD_GITMODULES} missing`) return false;
+    const found = line === null ? null : /^(\S+) (?:blob|tree|commit|tag) [0-9]+$/.exec(line);
+    return found !== null && isObjectId(found[1]!, t.workspace.objectFormat) ? true : { refused: "MALFORMED_GIT_OUTPUT" };
+  }
+
   // Contract §12 "Discovery notice": superproject data only. No Git process starts inside a submodule.
   async function submoduleNotice(
     t: ReadWorkspaceTarget,
     entries: readonly Omit<IndexEntry, "intentToAdd">[],
     status: readonly StatusRecord[],
     config: readonly ConfigEntry[],
-  ): Promise<{ notice: Notice; limit: LimitName | null } | { refused: ErrorCode } | "canceled" | "deadline"> {
+  ): Promise<{ notice: Notice } | { refused: ErrorCode } | "canceled" | "deadline"> {
     const gitlinks = entries.filter((e) => e.stage === 0 && e.mode === "160000");
-    // git-status(1) porcelain v2 `<sub>`: `S<c><m><u>`, where `<c>` is `C` when the submodule commit changed.
-    const moved = new Set(status.filter((r) => "submodule" in r && r.submodule[0] === "S" && r.submodule[1] === "C").map((r) => latin1(r.path.bytes)));
-    const root = Buffer.from(t.workspace.worktreeRoot, "utf8");
-    const entryOf = (...parts: Uint8Array[]) => Buffer.concat([root, ...parts.flatMap((p) => [SLASH, p])]);
-    const present = async (path: Buffer): Promise<boolean | null> => {
+    // git-status(1) porcelain v2: `<sub>` is `S<c><m><u>`, where `<c>` is `C` when the submodule commit changed. `Y` of `XY` is `D` for a worktree deletion.
+    const unchecked = new Set(status.filter((r) => "xy" in r && ((r.submodule[0] === "S" && r.submodule[1] === "C") || r.xy[1] === "D")).map((r) => latin1(r.path.bytes)));
+    // Contract §6 "File facts": one component that breaks the rule refuses the whole request. Such a gitlink counts with no check.
+    const componentsOf = (path: Uint8Array): string[] | null => {
+      let text: string;
       try {
-        await lstat(path);
-        return true;
-      } catch (error) {
-        return isMissing(error) ? false : null;
+        text = utf8.decode(path);
+      } catch {
+        return null;
       }
+      const parts = text.split("/");
+      return parts.every(isComponent) ? parts : null;
     };
-    const found = await Promise.all(gitlinks.map((e) => (moved.has(latin1(e.path)) ? false : present(entryOf(e.path, DOT_GIT)))));
-    if (found.includes(null)) return { refused: "REPOSITORY_UNAVAILABLE" };
-    const counted = gitlinks.filter((_, i) => found[i] === false);
-    const notice = (kept: typeof counted) => ({ count: kept.length, paths: kept.slice(0, SUBMODULE_REVIEW_SUBMODULES).map((e) => displayPath(e.path)) });
+    const checked = gitlinks.flatMap((e) => {
+      const parts = unchecked.has(latin1(e.path)) ? null : componentsOf(e.path);
+      return parts === null ? [] : [{ e, path: [...parts, ".git"] }];
+    });
 
     // Git applies the last `submodule.<name>.active` entry of the listing. Only a false value excludes a gitlink.
     const active = new Map<string, string | null>();
@@ -514,19 +529,34 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       const key = keyOf(c.keyValueBytes);
       if (key.startsWith("submodule.") && key.endsWith(".active") && key.length > "submodule..active".length) active.set(key, c.value);
     }
-    if (counted.length === 0 || ![...active.values()].some((value) => parseMaybeBool(value) === 0)) return { notice: notice(counted), limit: null };
+    const filters = gitlinks.length > 0 && [...active.values()].some((value) => parseMaybeBool(value) === 0);
 
-    const file = await present(entryOf(GITMODULES));
-    if (file === null) return { refused: "REPOSITORY_UNAVAILABLE" };
-    if (!file) return { notice: notice(counted), limit: null };
+    // Contract §11 "Paths and file access": no check reads through `\\wsl.localhost`. The walk never follows a link.
+    const files: FactEntry[] = checked.map(({ path }) => ({ root: "worktreeRoot", path }));
+    if (filters) files.push({ root: "worktreeRoot", path: [".gitmodules"] });
+    const facts = files.length === 0 ? [] : await requestFacts(runner, t.operationId, t.workspace, false, files, t.signal);
+    if (t.signal.aborted) return "canceled";
+    if (!Array.isArray(facts)) return "stop" in facts ? facts.stop : { refused: facts.code };
+    if (facts.some((fact) => fact.kind === "error")) return { refused: "REPOSITORY_UNAVAILABLE" };
+    // A link before the last component means that no entry exists at the path.
+    const exists = (fact: FileFact, length: number) => fact.kind !== "absent" && (fact.kind !== "link" || fact.component === length);
+    const found = new Set(checked.filter(({ path }, i) => exists(facts[i]!, path.length)).map(({ e }) => e));
+    const counted = gitlinks.filter((e) => !found.has(e));
+    const notice = (kept: typeof counted, filter: Notice["filter"]) => ({ count: kept.length, paths: kept.slice(0, SUBMODULE_REVIEW_SUBMODULES).map((e) => displayPath(e.path)), filter });
+    if (counted.length === 0 || !filters) return { notice: notice(counted, "applied") };
+
+    const source = await gitmodulesSource(exists(facts.at(-1)!, 1), entries, t.workspace.objectFormat, () => headHasGitmodules(t));
+    if (source === "skipped") return { notice: notice(counted, "skipped") };
+    if (source === null) return { notice: notice(counted, "applied") };
+    if (!Array.isArray(source)) return source;
     const out = createCollector({ maxBytes: SUBMODULE_GITMODULES_BYTES });
-    const step = await run(t, gitmodulesListArgs(), out);
+    const step = await run(t, source, out);
     if (t.signal.aborted) return "canceled";
     if ("refused" in step) return step;
     if (step.exit.deadline !== undefined) return "deadline";
     if (step.exit.diagnosticLimit) return { refused: "OUTPUT_LIMIT" };
-    if (out.limited) return { notice: notice(counted), limit: "SUBMODULE_GITMODULES_BYTES" };
-    if (step.exit.exitCode !== 0) return { refused: "GIT_FAILED" };
+    // Git documents no exit status of `config --list` that identifies an invalid file. So a nonzero exit excludes nothing.
+    if (out.limited || step.exit.exitCode !== 0) return { notice: notice(counted, "skipped") };
     const bytes = out.take();
     if (bytes.length > 0 && bytes[bytes.length - 1] !== NUL) return { refused: "MALFORMED_GIT_OUTPUT" };
     // Git `submodule-config.c` `gitmodules_cb` sets `overwrite`: a later `path` value of a name replaces its earlier path.
@@ -552,8 +582,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
           const key = `submodule.${nameOf.get(latin1(e.path))}.active`;
           return !nameOf.has(latin1(e.path)) || !active.has(key) || parseMaybeBool(active.get(key)!) !== 0;
         }),
+        "applied",
       ),
-      limit: null,
     };
   }
 
@@ -781,7 +811,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     if ("refused" in submodules) return refusal(submodules.refused);
 
     const statusReason = parsed.state === "limited" ? (parsed.reason as LimitName) : null;
-    const firstLimit = statusReason ?? indexReason ?? fingerprintLimit ?? submodules.limit;
+    const firstLimit = statusReason ?? indexReason ?? fingerprintLimit;
     let completeness: Completeness =
       firstLimit !== null
         ? { state: "limited", code: "OUTPUT_LIMIT", reason: firstLimit }

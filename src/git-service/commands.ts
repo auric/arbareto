@@ -310,8 +310,9 @@ export function gitmodulesListArgs(): string[] {
 }
 
 // Contract §12 "Review reads": the fallback sources after the worktree `.gitmodules`. Git `submodule.h` names them `GITMODULES_INDEX` and `GITMODULES_HEAD`.
-export function gitmodulesIndexArgs(): string[] {
-  return read("config", "--blob", ":.gitmodules", "--null", "--list");
+// Contract §7: `:.gitmodules` loads the index, so the index source is the stage-0 object ID.
+export function gitmodulesIndexArgs(oid: string, objectFormat: ObjectFormat): string[] {
+  return read("config", "--blob", treeItem(oid, objectFormat), "--null", "--list");
 }
 
 export function gitmodulesHeadArgs(): string[] {

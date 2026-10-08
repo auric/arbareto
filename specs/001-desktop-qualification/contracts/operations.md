@@ -153,7 +153,7 @@ Any `working-tree-encoding` value other than `unspecified` gives reason `encodin
 **Limitation remedies.** `applyFile` refuses some entries ("File staging" below). Such an entry can still need staging or unstaging as a whole file. The service then attaches a copyable remedy command to the change entry. The app never runs it (FR-011).
 
 - An entry that `applyFile` refuses with reason `size`, `rename`, `type`, `symlink`, `LFS`, `filter`, or `blob-proof` gets a remedy. Other reasons get none.
-- An entry gets no remedy when no Git path is selected. A WSL entry gets no remedy when the §11 route of its worktree root fails.
+- A native entry gets no remedy when no Git path is selected. A WSL entry gets no remedy when the §11 route of its worktree root fails.
 - A `stage` result with `GIT_FAILED` also carries the `add` remedy of its entry and an `outputTail` (§9).
 - An Unstaged or Untracked entry gets `& '<selected Git path>' --literal-pathspecs -C '<worktree root>' add -- '<path>'`.
 - A Staged entry gets the same form with `restore --staged -- '<path>'`. In an unborn repository, it uses `rm --cached -- '<path>'`, because `restore --staged` needs HEAD.

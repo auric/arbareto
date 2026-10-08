@@ -107,7 +107,7 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
         const r = await reviewOk(service, repositoryId);
         CHANGES[change](repo, prepared);
         const after = refState(gitPath(), repo);
-        expect({ change, code: (await commit(service, repositoryId, r, "stale\n")).code, commits: commitCalls(service).length }).toEqual({ change, code: "STALE_REVIEW", commits: 0 });
+        expect({ change, ...outcome(await commit(service, repositoryId, r, "stale\n")), commits: commitCalls(service).length }).toEqual({ change, state: "failed", code: "STALE_REVIEW", commits: 0 });
         expect(refState(gitPath(), repo)).toEqual(after);
       });
     });
@@ -174,7 +174,7 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
       const kept = await service.readWorkspace(repositoryId, { refresh: false, check: "full" });
       expect({ ...outcome(kept), generation: kept.result?.generation }).toEqual({ ...SUCCEEDED, generation: r.read.generation });
       CHANGES.index(repo, prepared);
-      expect({ code: (await commit(service, repositoryId, r, "stale\n")).code, commits: commitCalls(service).length }).toEqual({ code: "STALE_REVIEW", commits: 0 });
+      expect({ ...outcome(await commit(service, repositoryId, r, "stale\n")), commits: commitCalls(service).length }).toEqual({ state: "failed", code: "STALE_REVIEW", commits: 0 });
     }),
   );
 });

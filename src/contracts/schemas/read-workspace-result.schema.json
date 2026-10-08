@@ -398,6 +398,36 @@
             }
           ]
         },
+        "submoduleNotice": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "paths": {
+              "maxItems": 256,
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "filter": {
+              "type": "string",
+              "enum": [
+                "applied",
+                "skipped"
+              ]
+            }
+          },
+          "required": [
+            "count",
+            "paths",
+            "filter"
+          ],
+          "additionalProperties": false
+        },
         "entryCount": {
           "type": "integer",
           "minimum": 0,
@@ -525,6 +555,7 @@
         "recoveryState",
         "completeness",
         "hunkEligibility",
+        "submoduleNotice",
         "entryCount",
         "entries",
         "cursor"

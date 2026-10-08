@@ -13,8 +13,8 @@ import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
-import { gitPath, readOk, todoCase, valuesOf } from "./hunk-harness";
-import { withFsCalls, type Capability, type Service } from "./service-harness";
+import { gitPath, readOk, TIMEOUT_MS, todoCase, valuesOf } from "./hunk-harness";
+import { caseTest, withFsCalls, type Capability, type Service } from "./service-harness";
 import {
   actionsOf,
   callsSince,
@@ -46,7 +46,6 @@ import {
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
 const TASK = "T222";
-const NOTICE = "(needs T229)";
 const REVIEW = "(needs T229/T231)";
 const TOKEN = "(needs T229/T230/T231)";
 const SHELL: Capability[] = ["shell-double"];
@@ -84,7 +83,7 @@ function expectedNotice(b: Built, dir: string, excluded: string[] = []): string[
     .sort();
 }
 
-type Notice = { count: number; paths: string[] };
+type Notice = { count: number; paths: string[]; filter: "applied" | "skipped" };
 const noticeOf = (value: unknown) => valuesOf(value, "submoduleNotice")[0] as Notice | undefined;
 
 // The config value of a key, or null.
@@ -103,31 +102,31 @@ function passReviewBound(b: Built, dir: string): void {
 
 describe("notice (contract §12 \"Discovery notice\")", () => {
   for (const variant of ["base", "behind-present", "behind-fetch"] as const) {
-    todoCase(TASK, `F27 ${variant}: readWorkspace reports the uninitialized and the behind submodules, and starts no Git process inside a submodule ${NOTICE}`, SHELL, () => {
+    caseTest(TASK, `F27 ${variant}: readWorkspace reports the uninitialized and the behind submodules, and starts no Git process inside a submodule`, SHELL, () => {
       const b = buildF27(gitPath(), `t222-notice-${variant}`, variant);
       return withFixture(b, `t222-notice-${variant}`, async (service) => {
         await underTestSubmodule("status");
         const { repositoryId } = await service.register(superOf(b));
         const read = await readOk(service, repositoryId);
         const paths = expectedNotice(b, superOf(b));
-        expect(noticeOf(read)).toEqual({ count: paths.length, paths });
+        expect(noticeOf(read)).toEqual({ count: paths.length, paths, filter: "applied" });
         expect(submoduleCalls(service, superOf(b)).map((c) => c.arguments)).toEqual([]);
       });
-    });
+    }, TIMEOUT_MS);
   }
 
-  todoCase(TASK, `F28 inactive: an explicit submodule.<name>.active=false excludes the gitlink from the notice ${NOTICE}`, SHELL, () => {
+  caseTest(TASK, `F28 inactive: an explicit submodule.<name>.active=false excludes the gitlink from the notice`, SHELL, () => {
     const b = buildF28(gitPath(), "t222-notice-inactive", "inactive");
     return withFixture(b, "t222-notice-inactive", async (service) => {
       await underTestSubmodule("status");
       const { repositoryId } = await service.register(superOf(b));
       const paths = expectedNotice(b, superOf(b), ["solo"]);
       expect(paths).not.toContain("solo");
-      expect(noticeOf(await readOk(service, repositoryId))).toEqual({ count: paths.length, paths });
+      expect(noticeOf(await readOk(service, repositoryId))).toEqual({ count: paths.length, paths, filter: "applied" });
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `F29 base: readWorkspace starts no Git process inside a submodule, and no submodule canary runs ${NOTICE}`, SHELL, () => {
+  caseTest(TASK, `F29 base: readWorkspace starts no Git process inside a submodule, and no submodule canary runs`, SHELL, () => {
     const b = buildF29(gitPath(), "t222-notice-f29", "base");
     return withFixture(b, "t222-notice-f29", async (service) => {
       await underTestSubmodule("status");
@@ -137,9 +136,9 @@ describe("notice (contract §12 \"Discovery notice\")", () => {
       expect(submoduleCalls(service, superOf(b)).map((c) => c.arguments)).toEqual([]);
       const paths = expectedNotice(b, superOf(b));
       expect(paths).toContain("mid");
-      expect(noticeOf(read)).toEqual({ count: paths.length, paths });
+      expect(noticeOf(read)).toEqual({ count: paths.length, paths, filter: "applied" });
     });
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("plan (contract §12 \"Plan\")", () => {

@@ -676,7 +676,7 @@ const unreadable = (path: string, reason: string): ListingFailure => ({
 const CHANGED = "the file changed during the read";
 
 // Contract §6 "File facts" component rule: 1 to 255 UTF-16 units, no lone surrogate, and the native name rule.
-const isComponent = (name: string) => name.length >= 1 && name.length <= FILE_FACT_COMPONENT_UNITS && name.isWellFormed() && NATIVE.isComponent(name);
+export const isComponent = (name: string) => name.length >= 1 && name.length <= FILE_FACT_COMPONENT_UNITS && name.isWellFormed() && NATIVE.isComponent(name);
 
 // Entries that differ only in ASCII letter case name one file on Windows, so the key folds as the Windows `fold` does.
 const keyOf = (at: Inside, rules: Rules) => JSON.stringify([at.root, ...at.below.map(rules.fold)]);
@@ -720,7 +720,7 @@ function settled(at: Inside, hops: Hop[]): Walked | null {
 
 // Contract §5 "File facts": at most 64 entries per request. A refusal keeps its code, and a walk stop ends the requests.
 // `index` goes with the first request only.
-async function requestFacts(
+export async function requestFacts(
   runner: ListingRunner,
   operationId: string,
   w: Workspace,

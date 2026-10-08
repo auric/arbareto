@@ -157,7 +157,7 @@ export function buildF25(host: WslHost): F25 {
   put(filter, "a.txt", "a\n");
   distroGit(filter, ["-c", "filter.canary.clean=cat", "add", "--", ".gitattributes", "a.txt"]);
   // The commit refreshes the index and can run the clean filter. A canary child of the build would stay outside every Job.
-  distroGit(filter, ["-c", "filter.canary.clean=cat", "commit", "-q", "--no-verify", "-m", "base"]);
+  distroGit(filter, ["-c", "filter.canary.clean=cat", "commit", "-q", "--no-verify", "--allow-empty", "-m", "base"]);
   // Keep the size. Git hashes the file through the clean filter only when the size matches (read-cache.c `ie_modified`).
   put(filter, "a.txt", "b\n");
   const linger = init(host, `${base}/linger`);

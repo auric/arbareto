@@ -199,7 +199,7 @@ The service retains the authoritative hunk data. The renderer receives display d
 | --- | --- |
 | Hunk approval | Repository, snapshot, comparison, hunk, direction, exact content bindings, and one-use token. |
 | File approval | Repository, snapshot, comparison, entry, direction, and one-use token. It binds the index entry and the HEAD entry of each changed path. For `stage`, it also binds the existence, type, size, and raw SHA-256 of the whole working file. `unstage` binds no working bytes (contract §4 "File staging"). |
-| Commit review | Repository, snapshot, complete staged scope, retained reviewed index, HEAD target/OID, execution-policy disclosure, trust, and review token. |
+| Commit review | Repository, snapshot, complete staged scope, retained reviewed index, HEAD target/OID, operation state, execution-policy disclosure, trust, and review token. |
 | Commit request | Review token, message, and explicit confirmation of the complete staged scope. The service issues the operation identifier in its accepted response. |
 | Submodule review | Repository, snapshot, superproject HEAD, index gitlinks, `.gitmodules` digest, and relevant configuration. The plan rows (§9), each submodule HEAD and `.git` entry, each `modules/<name>` state, and the reachability of each target. It also binds the folder state of each `reuse` row and the refusals. The submodule program list digest, trust, and one-use token. The update checks these values again after an approved run confirmation (contract §12 "Update protocol"). |
 

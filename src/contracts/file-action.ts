@@ -134,7 +134,7 @@ function validUtf8(bytes: Uint8Array): boolean {
 }
 
 // git convert.c `git_path_check_convert`: `set`, `unset`, and `unspecified` select no filter driver.
-function filterReason(attributes: Readonly<Record<string, string>>): FileActionReason | null {
+export function filterReason(attributes: Readonly<Record<string, string>>): "filter" | "LFS" | null {
   const value = attributes.filter;
   if (value === undefined || value === "unspecified" || value === "set" || value === "unset") return null;
   // Git LFS installs its driver as `filter=lfs`.

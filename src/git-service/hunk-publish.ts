@@ -565,13 +565,16 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
       };
 
       let ending: Ending;
+      let unexpected = false;
       try {
         ending = await steps();
       } catch {
+        unexpected = !signal.aborted;
         ending = signal.aborted ? CANCELED : stepFailed();
       }
 
-      const canceled = enterReconciling(registry, operationId, isStop(ending) && ending.stop === "deadline", run.executionLast);
+      const deadline = isStop(ending) && ending.stop === "deadline";
+      const canceled = enterReconciling(registry, operationId, deadline, run.executionLast);
       // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
       // Only an exit reply of these reads is a fresh process-end fact for the owned candidate.
       rec.reset();
@@ -611,8 +614,8 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
         // `publish()` threw, and the index matches neither retained digest. Contract §9 "publish without a typed result" gives `unknown`.
         registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
         return;
-      } else if (changed && (STEP_CAUSES as readonly unknown[]).includes(refusal?.cause)) {
-        // Contract §8: an execution failure with observed changes is failed-with-effects. A checkpoint code never is.
+      } else if (changed && (deadline || unexpected || (STEP_CAUSES as readonly unknown[]).includes(refusal?.cause))) {
+        // Contract §8: an execution failure with observed changes is failed-with-effects. A checkpoint code never is. Contract §9: a deadline keeps its reason.
         registry.apply(operationId, { type: "failed-with-effects" }, { effects: effectsWith(true), ...extra() }, cause);
       } else if (canceled) {
         registry.apply(operationId, { type: "no-effects", observed: "canceled" }, extra(), cause);

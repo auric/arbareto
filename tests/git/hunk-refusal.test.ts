@@ -559,6 +559,64 @@ describe("request checks (contract §4, §9)", () => {
     TIMEOUT_MS,
   );
 
+  // Contract §9: a deadline after the index changed ends failed-with-effects with reason `deadline`. Without a change, it ends failed with DEADLINE.
+  for (const write of [true, false]) {
+    const name = `t096-deadline-effects-${write}`;
+    caseTest(TASK, write ? `a deadline of the apply step while another writer changes the index ends failed-with-effects with effects.index true and reason deadline; the session log cause is DEADLINE` : `a deadline of the apply step with an unchanged index ends failed with DEADLINE and reason deadline; the session log cause is DEADLINE`, SHELL, () =>
+      withService({ name }, async (service) => {
+        const repo = repoOf(buildChanged(gitPath(), name, "F09"));
+        const copy = copyRepo(repo, `${name}-other`);
+        git(copy, ["reset", "-q", "--", "staged.txt"]);
+        const other = readFileSync(gitPathOf(copy, "index"));
+        const before = readFileSync(gitPathOf(repo, "index"));
+        await underTest("hunk-publish");
+        const { repositoryId } = await service.register(repo);
+        const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+        shortDeadline(service, (call) => {
+          const hit = call.arguments.includes("apply");
+          if (hit && write) writeFileSync(gitPathOf(repo, "index"), other);
+          return hit;
+        }).arm();
+        const response = (await applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage")) as ServiceResponse<{ effects?: Record<string, boolean> }>;
+        const view = (await service.getOperation(response.operationId!)).result as { reason?: string };
+        const entry = service.log().find((e) => (e as { operationId?: string }).operationId === response.operationId) as { cause?: string } | undefined;
+        expect({ ...outcome(response), index: response.result?.effects?.index, reason: view.reason, cause: entry?.cause }).toEqual(
+          write ? { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", index: true, reason: "deadline", cause: "DEADLINE" } : { state: "failed", code: "DEADLINE", index: undefined, reason: "deadline", cause: "DEADLINE" },
+        );
+        expect({ index: Buffer.compare(readFileSync(gitPathOf(repo, "index")), write ? other : before), lock: existsSync(gitPathOf(repo, "index.lock")), candidates: candidateFiles(repo) }).toEqual({ index: 0, lock: false, candidates: [] });
+      }),
+      TIMEOUT_MS,
+    );
+  }
+
+  // Contract §8: an unexpected failure with observed changes is failed-with-effects. Without a change, it ends failed with GIT_FAILED.
+  for (const write of [true, false]) {
+    const name = `t096-throw-effects-${write}`;
+    caseTest(TASK, write ? `an unexpected throw outside publish while another writer changes the index ends failed-with-effects with effects.index true` : `an unexpected throw outside publish with an unchanged index ends failed with GIT_FAILED`, SHELL, () => {
+      let other = new Uint8Array();
+      let repo = "";
+      // Test seam: the step 11 checkpoint observer throws after the candidate exists and before publication.
+      const hunkCheckpoint = ({ step }: HunkCheckpoint) => {
+        if (step !== 11) return;
+        if (write) writeFileSync(gitPathOf(repo, "index"), other);
+        throw new Error("test: unexpected failure");
+      };
+      return withService({ name, hunkCheckpoint }, async (service) => {
+        repo = repoOf(buildChanged(gitPath(), name, "F09"));
+        const copy = copyRepo(repo, `${name}-other`);
+        git(copy, ["reset", "-q", "--", "staged.txt"]);
+        other = readFileSync(gitPathOf(copy, "index"));
+        const before = readFileSync(gitPathOf(repo, "index"));
+        await underTest("hunk-publish");
+        const { repositoryId } = await service.register(repo);
+        const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+        const response = (await applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage")) as ServiceResponse<{ effects?: Record<string, boolean> }>;
+        expect({ ...outcome(response), index: response.result?.effects?.index }).toEqual(write ? { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", index: true } : { state: "failed", code: "GIT_FAILED", index: undefined });
+        expect({ index: Buffer.compare(readFileSync(gitPathOf(repo, "index")), write ? other : before), lock: existsSync(gitPathOf(repo, "index.lock")), candidates: candidateFiles(repo) }).toEqual({ index: 0, lock: false, candidates: [] });
+      });
+    }, TIMEOUT_MS);
+  }
+
   // T110 decision G18: only an exit reply of a reconciliation read is a fresh process-end fact. Without one, the owned candidate stays foreign.
   caseTest(TASK, `a failed lock write and a reconciliation without any exit reply end unknown; the result names the candidate and its lock in the Git-resolved form, and the candidate stays`, SHELL, () =>
     withService({ name: "t096-no-exit" }, async (service) => {

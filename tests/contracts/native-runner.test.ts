@@ -157,9 +157,8 @@ describe("native runner run requests", () => {
     expect(channel.sent).toEqual([]);
     void channel.runner.run(call({ limits: { deadlineMs: 120_000, stallMs: 15_000 } }));
     void channel.runner.run(call({ context: probe, environmentPolicy: "probe", arguments: version, limits: { deadlineMs: 30_000 } }));
-    // The runner refuses the `network` policy until T228, so the call sends no `run` frame.
-    void channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network })).catch(() => {});
-    expect(channel.bodies("run").length).toBe(2);
+    void channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }));
+    expect(channel.bodies("run").length).toBe(3);
   });
 
   test("strings with a NUL or a lone surrogate and over-long command lines are refused", async () => {
@@ -988,14 +987,15 @@ describe("native runner WSL frames (T212, contract §6 and §11)", () => {
   });
 });
 
-// T227, contract §7: `network` equals `mutation` without `GIT_INDEX_FILE`, plus `GIT_PROTOCOL_FROM_USER=0`. The runner refuses it until T228.
-test("the network policy is mutation without an index file plus GIT_PROTOCOL_FROM_USER=0, and the runner still refuses it", async () => {
+// T227, contract §7: `network` equals `mutation` without `GIT_INDEX_FILE`, plus `GIT_PROTOCOL_FROM_USER=0`. T228: the runner sends it.
+test("the network policy is mutation without an index file plus GIT_PROTOCOL_FROM_USER=0, and the runner sends it", async () => {
   const { mutation, network } = policyFile.policies;
   expect(network).toEqual({ ...mutation, set: { GIT_TERMINAL_PROMPT: "0", GIT_PROTOCOL_FROM_USER: "0" }, indexFileVariable: null });
   expect(network.remove).toContain("GIT_INDEX_FILE");
   expect([...network.remove, ...Object.keys(network.set)]).not.toContain("GIT_SSH_COMMAND");
   expect([...network.remove, ...Object.keys(network.set)]).not.toContain("GIT_ALLOW_PROTOCOL");
   const channel = createChannelDouble();
-  await expect(channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-  expect(channel.sent).toEqual([]);
+  void channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }));
+  const [run] = channel.bodies("run");
+  expect(run).toMatchObject({ environmentPolicy: "network", limits: PROCESS_LIMITS.network });
 });

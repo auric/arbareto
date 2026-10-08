@@ -272,6 +272,15 @@ pub mod reply {
         })
     }
 
+    /// The stall event of contract §6 "Activity and stall notice".
+    pub fn activity(call_id: &str, state: p::ActivityState) -> Value {
+        encode(p::ProcessReply::Activity {
+            call_id: field(call_id),
+            state,
+            type_: "activity".into(),
+        })
+    }
+
     /// `exit_code` `None` encodes as `null`.
     pub fn exit(
         call_id: &str,
@@ -936,9 +945,9 @@ mod tests {
     #[test]
     fn each_reply_builder_gives_the_wire_form_of_its_variant() {
         use process_reply::{
-            ExitDeadline, FileFactErrorCode, FileFactLinkTag, FileFactsReplyFactsItem as Fact,
-            IdentityRefusedReason, OutputStream, RegisterResultResult, WslExit,
-            WslFilesResultsResultsItem as WslFile,
+            ActivityState, ExitDeadline, FileFactErrorCode, FileFactLinkTag,
+            FileFactsReplyFactsItem as Fact, IdentityRefusedReason, OutputStream,
+            RegisterResultResult, WslExit, WslFilesResultsResultsItem as WslFile,
         };
         use trust_reply::ConfirmRunReplyResult;
 
@@ -1016,6 +1025,18 @@ mod tests {
             (
                 reply::exit(call, None, 2, Some(ExitDeadline::Deadline)),
                 json!({ "type": "exit", "callId": call, "exitCode": null, "activeDescendants": 2, "deadline": "deadline" }),
+            ),
+            (
+                reply::exit(call, None, 0, Some(ExitDeadline::Inactivity)),
+                json!({ "type": "exit", "callId": call, "exitCode": null, "activeDescendants": 0, "deadline": "inactivity" }),
+            ),
+            (
+                reply::activity(call, ActivityState::Stalled),
+                json!({ "type": "activity", "callId": call, "state": "stalled" }),
+            ),
+            (
+                reply::activity(call, ActivityState::Active),
+                json!({ "type": "activity", "callId": call, "state": "active" }),
             ),
             (
                 reply::refused(call, Code::GitChanged),

@@ -346,7 +346,6 @@ pub enum Mode {
     Probe,
     Read,
     Mutation,
-    #[cfg_attr(not(test), expect(dead_code, reason = "T233 starts the network mode"))]
     Network,
 }
 
@@ -1543,6 +1542,11 @@ impl Mutation {
             .map_or(0, |(count, _)| count)
     }
 
+    /// One anchor line while a tracked process runs. The answer gives the I/O sum (contract §6 "Activity and stall notice").
+    pub fn activity_sum(&self) -> Option<u64> {
+        self.anchor.as_ref()?.exchange().map(|(_, io)| io)
+    }
+
     /// The lingering count of a WSL Job is the last anchor count.
     pub fn lingering_count(&self) -> u32 {
         self.last().map_or(0, |(count, _)| count)
@@ -2619,6 +2623,7 @@ mod tests {
     /// Then it waits until that file exists, for at most 60 seconds.
     /// With a third argument `long`, it lingers with one `LONG_LINE` line in place of those lines.
     /// With a third argument `banner`, it prints `banner text` and a 300 ms pause before its answer to the second stdin line.
+    /// With a third argument `constant`, each answer holds the I/O sum 500. A second argument `-` means no release file.
     #[test]
     #[ignore = "child process entry for re-executed tests"]
     fn anchor_child_entry() {
@@ -2629,7 +2634,7 @@ mod tests {
         let Some(file) = args.get(split + 1) else {
             return;
         };
-        let release = args.get(split + 2).map(PathBuf::from);
+        let release = args.get(split + 2).filter(|a| *a != "-").map(PathBuf::from);
         let mode = args.get(split + 3).map(String::as_str);
         let long = mode == Some("long");
         let mut out = std::io::stdout();
@@ -2646,7 +2651,12 @@ mod tests {
                 let _ = out.flush();
                 std::thread::sleep(Duration::from_millis(300));
             }
-            let _ = writeln!(out, "{lines} {}", lines * 100);
+            let io = if mode == Some("constant") {
+                500
+            } else {
+                lines * 100
+            };
+            let _ = writeln!(out, "{lines} {io}");
             let _ = out.flush();
         }
         std::fs::write(file, lines.to_string()).expect("write line count");
@@ -2683,6 +2693,57 @@ mod tests {
         command.arguments = arguments;
         command.environment = std::env::vars_os().collect();
         command
+    }
+
+    // ---- T225, T228: activity of a WSL Job (contract §6 "Activity and stall notice") ----
+
+    /// A WSL Job takes its activity sum only from the anchor. A Job child changes the Job `IO_COUNTERS` every 100 ms.
+    /// With a constant anchor sum, the tracker still stalls. With a changing anchor sum, it never stalls.
+    /// The anchor gets one line each second while the process is tracked.
+    #[test]
+    fn a_wsl_job_takes_its_activity_only_from_one_anchor_line_each_second() {
+        use crate::jobs::Tracker;
+        use crate::jobs::tests::{kinds, recorder};
+
+        let fixture = Fixture::new();
+        let directory = std::env::temp_dir();
+        for (mode, stalls) in [("constant", true), ("count", false)] {
+            let supervisor = Supervisor::start().expect("supervisor");
+            supervisor.open(OPERATION).expect("open");
+            let lines_file = fixture.path(&format!("lines-{mode}"));
+            let mut anchor = stand_in_anchor(&lines_file, None);
+            anchor.arguments.extend(["-".to_string(), mode.to_string()]);
+            supervisor
+                .start_anchor(OPERATION, &anchor, &directory)
+                .expect("anchor");
+            let io_file = fixture.path(&format!("io-{mode}"));
+            let mut child = start_child(&["io", &io_file.to_string_lossy(), "0", "100", "60"]);
+            supervisor
+                .assign(OPERATION, child.handle())
+                .expect("assign");
+            let (events, sink) = recorder();
+            let tracker = Tracker::new(
+                Duration::from_millis(1500),
+                Some(Duration::from_secs(60)),
+                sink,
+            );
+            assert!(supervisor.track(OPERATION, &tracker));
+            std::thread::sleep(Duration::from_millis(4500));
+            let expected: &[crate::jobs::Event] = if stalls {
+                &[crate::jobs::Event::Stalled]
+            } else {
+                &[]
+            };
+            assert_eq!(kinds(&events), expected, "{mode}");
+            supervisor.untrack(OPERATION, &tracker);
+            supervisor.ended(OPERATION, false);
+            let lines = wait_file(&lines_file, "", WAIT).expect("the anchor ends after ended");
+            let lines: u64 = lines.parse().expect("line count");
+            assert!((3..=5).contains(&lines), "{mode}: {lines} anchor lines");
+            supervisor.close(OPERATION);
+            let _ = child.child.wait();
+            supervisor.shutdown();
+        }
     }
 
     #[test]

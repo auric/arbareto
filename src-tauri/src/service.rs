@@ -334,12 +334,16 @@ impl Service {
                     self.send("trust", reply);
                 }
             }
-            // T228 builds the `confirmRun` dialog. Until then, the shell answers as Cancel.
-            TrustRequest::ConfirmRun { .. } => {
-                self.send(
-                    "trust",
-                    reply::confirm_run(call_id, ConfirmRunReplyResult::Declined),
-                );
+            TrustRequest::ConfirmRun {
+                submodule_paths,
+                program_count,
+                unchecked_count,
+                ..
+            } => {
+                let paths = submodule_paths.into_iter().map(String::from).collect();
+                // `trust_request` refused a negative count.
+                let unchecked = u64::try_from(unchecked_count).unwrap_or(0);
+                self.confirm_run(paths, program_count.get(), unchecked, call_id);
             }
         });
         if let Err(code) = handled {
@@ -365,6 +369,33 @@ impl Service {
             );
             if current() {
                 me.send("trust", confirmed.reply(&call_id));
+            }
+        });
+    }
+
+    /// Shows the `confirmRun` confirmation on its own thread (contract §12 "Trust"). It writes no trust record.
+    /// A service exit closes the dialog as Cancel, and its result goes nowhere.
+    fn confirm_run(
+        self: &Arc<Self>,
+        paths: Vec<String>,
+        program_count: u64,
+        unchecked_count: u64,
+        call_id: &str,
+    ) {
+        let me = Arc::clone(self);
+        let call_id = call_id.to_string();
+        let exits = self.exits.load(Ordering::SeqCst);
+        std::thread::spawn(move || {
+            let current = || me.exits.load(Ordering::SeqCst) == exits;
+            let approved =
+                dialogs::confirm_run(&*me.dialogs, &paths, program_count, unchecked_count);
+            let result = if approved && current() {
+                ConfirmRunReplyResult::Approved
+            } else {
+                ConfirmRunReplyResult::Declined
+            };
+            if current() {
+                me.send("trust", reply::confirm_run(&call_id, result));
             }
         });
     }

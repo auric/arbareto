@@ -135,7 +135,9 @@ describeGit("bun runner", (git) => {
     const mutation = indexPath({ environmentPolicy: "mutation", transaction: { transactionId: id(), indexFile } });
     await runner.run(mutation);
     expect(slash(text(mutation.stdout).trim())).toBe(slash(indexFile));
-    await expect(runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    const network = indexPath({ environmentPolicy: "network", limits: PROCESS_LIMITS.network });
+    await runner.run(network);
+    expect(text(network.stdout).trim()).toBe(".git/index");
   });
 
   test("the call forwards every byte written before the exit and keeps 64 KiB of stderr", async () => {

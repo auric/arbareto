@@ -9,7 +9,7 @@ import { chmodSync, closeSync, lstatSync, mkdtempSync, openSync, rmSync, symlink
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Handshake } from "../../src/contracts/channel";
+import type { Handshake, MutationStarted } from "../../src/contracts/channel";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import { FrameBoundError, type Frame } from "../../src/git-service/transport";
@@ -21,7 +21,7 @@ import { GIT } from "./git-binary";
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
-export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo" | "pwsh" | "windows-powershell" | "disposable-volume";
+export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo" | "pwsh" | "windows-powershell" | "disposable-volume" | "restart-keeps-lingering";
 
 const WINDOWS = process.platform === "win32";
 const LINUX = process.platform === "linux";
@@ -114,6 +114,8 @@ const PRESENT: Record<Capability, boolean> = {
   "windows-powershell": WINDOWS && Bun.which("powershell") !== null,
   // T096 F15: no probe creates and mounts a VHD without elevation (`buildF15` notes).
   "disposable-volume": false,
+  // T100: `restart` disposes the double runner, and its `dispose` ends every recorded process. The shell keeps lingering Jobs across a service restart (contract §6).
+  "restart-keeps-lingering": false,
 };
 
 export function missingCapability(...needs: Capability[]): Capability | null {
@@ -195,6 +197,11 @@ export interface OpenOptions extends ServiceSeams {
   restarted?: boolean;
   // Test seam: the writer refuses each frame that this accepts, as `encodeFrame` refuses a frame above the bound.
   refuseFrame?: (frame: Frame) => boolean;
+  // The recovery markers and the unloaded marker count of the startup handshake (contract §6 "Startup handshake").
+  markers?: Handshake["markers"];
+  unloadedMarkers?: number;
+  // Runs when the service sends a `started` mutation frame, before the double writes the marker and replies.
+  onStarted?: (frame: MutationStarted) => void;
 }
 
 export interface ServiceResponse<R = unknown> {
@@ -439,7 +446,14 @@ export async function openService(options: OpenOptions): Promise<Service> {
   };
   const sessionOptions: SessionOptions & ServiceSeams = {
     writer,
-    runner: { ...runner, receive: () => false },
+    runner: {
+      ...runner,
+      receive: () => false,
+      started: (frame: MutationStarted) => {
+        options.onStarted?.(frame);
+        return runner.started(frame);
+      },
+    },
     fail: () => {
       failed = true;
     },
@@ -458,8 +472,8 @@ export async function openService(options: OpenOptions): Promise<Service> {
       osBuild: 26200,
       webView2Version: "140.0.0.0",
       buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
-      markers: [],
-      unloadedMarkers: 0,
+      markers: options.markers ?? [],
+      unloadedMarkers: options.unloadedMarkers ?? 0,
       damagedMarkers: [],
       trustRecords: trustStore.records,
     } satisfies Handshake,

@@ -180,9 +180,9 @@ describe("support decisions (data-model §5)", () => {
         ["sub-moved", "unstaged", ["submodule"]],
         ["asset.psd", "unstaged", ["LFS"]],
         ["custom.cf", "unstaged", ["filter"]],
-        // Contract gap: a symbolic link on one side of a type change fits both reasons, and no precedence exists.
-        ["type-change.txt", "staged", ["type", "symlink"]],
-        ["type-change.txt", "unstaged", ["type", "symlink"]],
+        // Contract §4 "File staging": a type change with a symbolic link on either side gives `type`.
+        ["type-change.txt", "staged", ["type"]],
+        ["type-change.txt", "unstaged", ["type"]],
       ];
       for (const [path, category, reasons] of cases) {
         const c = await compare(service, repositoryId, path, category, read);
@@ -427,7 +427,7 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
       const custom = await compare(service, repositoryId, "custom.cf", "unstaged", read);
       expect({ fileAction: fileAction(custom), remedy: remedy(custom) }).toEqual({ fileAction: "filter", remedy: { text: REMEDY_TEXT, command: addRemedy(root, "custom.cf") } });
       const type = await compare(service, repositoryId, "type-change.txt", "staged", read);
-      expect({ fileAction: ["type", "symlink"].includes(fileAction(type)), remedy: remedy(type) }).toEqual({ fileAction: true, remedy: { text: REMEDY_TEXT, command: restoreRemedy(root, "type-change.txt") } });
+      expect({ fileAction: fileAction(type), remedy: remedy(type) }).toEqual({ fileAction: "type", remedy: { text: REMEDY_TEXT, command: restoreRemedy(root, "type-change.txt") } });
       const binary = await compare(service, repositoryId, "binary.dat", "unstaged", read);
       expect({ fileAction: fileAction(binary), remedies: remedies(binary) }).toEqual({ fileAction: "stage", remedies: [] });
       const rename = await compare(service, repositoryId, "rename-dst.txt", "staged", read);

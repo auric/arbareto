@@ -176,7 +176,7 @@ Graph positions are not Git identities or mutation approvals. Current HEAD/branc
 | Change entry | `entryId`, literal path bytes, display path, category, source path, modes, object IDs, conflict stages, limitation, and limitation remedy. The remedy is a copyable whole-file command or none (contract §4 "Limitation remedies"). |
 | Comparison | `comparisonId`, snapshot, entry, scope, canonical service diff, hunk identifiers, completeness, support decision, and file-action decision. |
 | Hunk | `hunkId`, ordinal, old/new ranges, exact canonical hunk digest, and service-owned application data. |
-| Support decision | `supported` or an explicit reason: binary, encoding, size, rename, mode, type, symlink, submodule, LFS, filter, state, `line-endings`, `index-flag`, or `path`. |
+| Support decision | `supported` or an explicit reason: binary, encoding, size, rename, mode, type, symlink, submodule, LFS, filter, state, `line-endings`, `index-flag`, or `path`. A type change with a symbolic link on either side gives `type`. `symlink` applies only without a type change. `binary` comes only from `--numstat -z` (contract §7). |
 | File-action decision | `stage`, `unstage`, or a refusal reason from the support-decision list. Contract §4 "File staging" defines the accepted entries and each reason. It is independent of the support decision, so a binary entry can carry `stage`. An `applyFile` result can also carry reason `blob-proof`, which only step 6 gives (contract §4 "Blob proof"). |
 
 An entry identifier distinguishes staged and unstaged entries for the same path. A staged deletion and untracked replacement remain separate entries.

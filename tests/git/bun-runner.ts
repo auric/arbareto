@@ -1008,9 +1008,12 @@ export function createBunRunner(options: BunRunnerOptions) {
 
     async started(frame) {
       checkStarted(frame);
-      frames.push({ type: "started", ...frame });
-      if (inject.markerFailure) return { failure: inject.markerFailure, folder: recoveryFolder };
+      if (inject.markerFailure) {
+        frames.push({ type: "started", ...frame });
+        return { failure: inject.markerFailure, folder: recoveryFolder };
+      }
       const markerId = crypto.randomUUID();
+      frames.push({ type: "started", ...frame, markerId });
       markers.set(markerId, { ...frame });
       tags.set(frame.operationId, frame.commonDirectory);
       return { markerId };
@@ -1202,6 +1205,10 @@ export function createBunRunner(options: BunRunnerOptions) {
     },
     get spawned() {
       return spawned;
+    },
+    // The count of recorded fixture processes that still run.
+    liveRecorded(): number {
+      return live(() => true).length;
     },
     // Returns the bootstrap ID of a new native context.
     addContext(kind: "gitProbe" | "repositoryDiscovery", path: string): string {

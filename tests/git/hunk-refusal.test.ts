@@ -278,9 +278,10 @@ describe("request checks (contract §4, §9)", () => {
         const { repositoryId } = await service.register(repo);
         const c = await compare(service, repositoryId, path, category);
         expect({ label, ...outcome(c.response), hunks: c.hunkIds }).toEqual({ label, ...SUCCEEDED, hunks: [] });
-        // Contract gap: such a comparison issues no hunk ID. The case names a well-formed ID that no comparison issued.
+        // Contract §9: an unsupported comparison gives UNSUPPORTED_COMPARISON before the hunk ID check. It issues no hunk ID, so the case names one that no comparison issued.
+        const calls = service.runner.calls.length;
         const response = await refused(service, repo, () => applyHunk(service, repositoryId, c, crypto.randomUUID(), "stage"));
-        expect({ label, code: code(response) }).toEqual({ label, code: "UNSUPPORTED_COMPARISON" });
+        expect({ label, ...outcome(response), runs: service.runner.calls.length - calls }).toEqual({ label, state: "rejected", code: "UNSUPPORTED_COMPARISON", runs: 0 });
       });
     }
   });
@@ -366,7 +367,7 @@ describe("request checks (contract §4, §9)", () => {
     }),
   );
 
-  todoCase(TASK, `a hunk ID from another comparison is refused, and a direction that does not match the comparison gives INVALID_REQUEST ${NEEDS}`, SHELL, () =>
+  todoCase(TASK, `a hunk ID from another comparison and a never-issued hunk ID give UNKNOWN_TARGET, and a direction that does not match the comparison gives INVALID_REQUEST; each is rejected, and no Git process starts ${NEEDS}`, SHELL, () =>
     withService({ name: "t096-other-comparison" }, async (service) => {
       const repo = repoOf(buildF02(gitPath(), "t096-other-comparison"));
       await underTest("hunk-publish");
@@ -374,10 +375,21 @@ describe("request checks (contract §4, §9)", () => {
       const read = await readOk(service, repositoryId);
       const staged = await selectHunks(service, repositoryId, "multi.txt", "staged", read);
       const unstaged: Comparison = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
-      // Contract §4: the hunk must belong to the requested comparison. §9 names no code for it.
-      const foreign = await refused(service, repo, () => applyHunk(service, repositoryId, unstaged, staged.hunkIds[0]!, "stage"));
-      expect(foreign.state).toBe("rejected");
-      expect(code(await refused(service, repo, () => applyHunk(service, repositoryId, unstaged, unstaged.hunkIds[0]!, "unstage")))).toBe("INVALID_REQUEST");
+      // Contract §9: the hunk ID must come from the named comparison.
+      const calls = service.runner.calls.length;
+      const results = [
+        await refused(service, repo, () => applyHunk(service, repositoryId, unstaged, staged.hunkIds[0]!, "stage")),
+        await refused(service, repo, () => applyHunk(service, repositoryId, unstaged, crypto.randomUUID(), "stage")),
+        await refused(service, repo, () => applyHunk(service, repositoryId, unstaged, unstaged.hunkIds[0]!, "unstage")),
+      ];
+      expect({ results: results.map(outcome), runs: service.runner.calls.length - calls }).toEqual({
+        results: [
+          { state: "rejected", code: "UNKNOWN_TARGET" },
+          { state: "rejected", code: "UNKNOWN_TARGET" },
+          { state: "rejected", code: "INVALID_REQUEST" },
+        ],
+        runs: 0,
+      });
     }),
   );
 

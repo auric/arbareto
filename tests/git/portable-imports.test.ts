@@ -31,7 +31,8 @@ const HARNESS_FILES = ["fixture-root.ts", "git-binary.ts", "git-oracle.ts", "bun
 const HOST_MODULES = ["./win32", "./win32.ts", "./linux", "./linux.ts", "bun:ffi"];
 
 test("the generic harness holds no static import of a host module or bun:ffi", () => {
-  console.log(`ORIGIN ${HARNESS}`);
+  // The scan reads test harness files, not a `src/` module, so its root is no ORIGIN line.
+  console.log(`SCAN_ROOT ${HARNESS}`);
   const hits: string[] = [];
   for (const file of HARNESS_FILES) {
     const imports = new Bun.Transpiler({ loader: "ts" }).scanImports(readFileSync(join(HARNESS, file), "utf8"));

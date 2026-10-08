@@ -2,8 +2,10 @@
   "roots": ["tests/contracts", "tests/git", "tests/wsl"],
   "serial": {
     "tests/git/bun-runner.test.ts": "asserts call wall time (durationMs) and LINGER_MS - 1000 bounds",
+    "tests/git/commit.test.ts": "asserts a commit outcome within 2000 ms of the Git exit",
     "tests/git/external-changes.test.ts": "asserts watcher hints within HINT_BUDGET_MS",
     "tests/git/file-facts.test.ts": "asserts elapsed time below FIFO_BOUND_MS",
+    "tests/git/mutation-lifecycle.test.ts": "asserts child ends within END_MS and reports maintenance run time",
     "tests/git/poll-cost.test.ts": "T192 observations: wall and CPU time of reads",
     "tests/git/read-inputs.test.ts": "asserts no watcher hint within HINT_BUDGET_MS",
     "tests/git/read-lifecycle.test.ts": "asserts DEADLINE_MS and RECONCILIATION_TARGET_MS bounds",
@@ -36,6 +38,7 @@
     "tests/contracts/vectors.test.ts",
     "tests/contracts/wsl-files.test.ts",
     "tests/contracts/wsl-route.test.ts",
+    "tests/git/commit-races.test.ts",
     "tests/git/comparison.test.ts",
     "tests/git/diagnostics.test.ts",
     "tests/git/discovery.test.ts",

@@ -92,7 +92,7 @@ The shell sends four events to the main window. `operation-progress` carries one
 | `revokeTrust` | Current trust ID. | Delete the stored approval, revoke future executable operations, and invalidate dependent approvals. Running work needs explicit cancellation. The shell also closes every lingering Job of that common directory (§6 "Lingering Jobs"). The result states how many processes ended. An unfinished mutation of that common directory ends its processes at `ended` and never lingers (§6). Without a current trust ID, no remedy or outcome text offers Revoke trust (§9 "Lingering count"). |
 | `applyHunk` | Comparison ID, hunk ID, snapshot ID, and direction `stage` or `unstage`. | Profile check, fresh validation, exact candidate publication, and reconciled outcome. No renderer patch or whole-file fallback. |
 | `applyFile` | Comparison ID, snapshot ID, and direction `stage` or `unstage`. | Whole-file staging of the compared entry (§4 "File staging"). Profile check, fresh validation, verified candidate publication, and reconciled outcome. No renderer path, patch, or content. |
-| `reviewCommit` | Current snapshot ID. | Complete staged scope, reviewed index/checkout, execution-policy disclosure, limitations, and one-use review token. Read-only inspection only. |
+| `reviewCommit` | Current snapshot ID. | Complete staged scope, reviewed index/checkout, execution-policy disclosure, limitations, and one-use review token. Read-only inspection only. A `reviewCommit` with an empty staged scope succeeds. Its result shows the empty scope and carries no `reviewToken`. A `commit` without a valid review token gives `UNKNOWN_TARGET` (§2). A malformed or missing token gives `INVALID_REQUEST`. |
 | `commit` | `reviewToken`, `message`, and `confirmFullScope`: `true`. Any other `confirmFullScope` value gives `INVALID_REQUEST`. | Fresh preflight, one ordinary canonical Git commit invocation, progress events with the §6 stall flag, and a reconciled outcome: `succeeded`, `completed-with-effects`, `failed`, `failed-with-effects`, `canceled`, or `unknown`. A repeated `commit` with a consumed review token returns the existing operation state and `operationId`, and starts no Git process. |
 | `reviewSubmodules` | Current snapshot ID. | Read-only submodule plan (§12 "Plan"), each refusal, the submodule program list, and a one-use submodule review token. Trust gating follows the read rule in §7. |
 | `updateSubmodules` | `submoduleReviewToken` and `start`: `true`. Any other `start` value gives `INVALID_REQUEST`. | Fresh preflight, and a native confirmation when §12 lists submodule programs. Fetch, check, and checkout steps for each row, level by level, with progress events (§12 "Update protocol"). A reconciled outcome with one result per submodule (§12). A repeated request with a consumed token returns the existing operation state and `operationId`, and starts no Git process. |
@@ -147,6 +147,8 @@ Do not accept raw patch text or line ranges from the renderer. Validate that the
 Preserve additions, deletions, empty blobs, and absent entries distinctly. A metadata-only empty-file change has no selectable text hunk.
 
 Support valid UTF-8 LF/CRLF content within the specified limits. Reject binary, invalid encoding, rename, mode/type, symlink, submodule, LFS, custom-filter, and encoding-conversion hunk requests. Also reject hunk requests for intent-to-add, assume-unchanged, and skip-worktree entries.
+
+Any `working-tree-encoding` value other than `unspecified` gives reason `encoding`, also `UTF-8`. No source check confirms that Git skips that conversion.
 
 **Limitation remedies.** `applyFile` refuses some entries ("File staging" below). Such an entry can still need staging or unstaging as a whole file. The service then attaches a copyable remedy command to the change entry. The app never runs it (FR-011).
 
@@ -242,7 +244,7 @@ Unexpected candidate effects prevent publication and require reconciliation. Rem
 A refused entry gives `UNSUPPORTED_COMPARISON` with one of these reasons. Operation state keeps its own code, such as `CONFLICTED` or `OPERATION_IN_PROGRESS`.
 
 - `type`: a type change, or a working path that is not a regular file.
-- `symlink`: a symbolic link on either side.
+- `symlink`: a symbolic link on either side. A type change with a symbolic link on either side gives `type`. `symlink` applies only without a type change.
 - `submodule`: a gitlink on either side, or an untracked nested repository.
 - `index-flag`: an intent-to-add, assume-unchanged, or skip-worktree entry.
 - `path`: the data-model §5 path rule applies.
@@ -1206,6 +1208,8 @@ Map these cases to codes:
 - The choice between `REPOSITORY_CHANGED` and these checkpoint codes depends on the request sequence. A `readWorkspace` that observes the change increases the generation, so a later request gives `REPOSITORY_CHANGED` at acceptance. Without such a read, the generation still matches, and the checkpoint code applies.
 - A checkpoint that detects a changed trust fingerprint gives `TRUST_CHANGED`. This includes a configuration change during a hunk or file request.
 - An entry that `applyFile` refuses gives `UNSUPPORTED_COMPARISON` with its file-action reason (§4 "File staging"). A direction that does not match the comparison scope gives `INVALID_REQUEST`.
+- At acceptance, `applyHunk` gives `UNSUPPORTED_COMPARISON` with the support reason for an unsupported comparison. Otherwise it gives `UNKNOWN_TARGET` for a hunk ID that the named comparison did not issue, and `INVALID_REQUEST` for a direction that does not match the comparison scope. Each response is `rejected`, and no Git process starts.
+- A `commit` with a review token from an earlier service session gives `UNKNOWN_TARGET`. The response is `rejected`, and no Git process starts.
 - A failed `stage` Git step without a missing object gives `GIT_FAILED`. The result carries the `outputTail` of that step ("Commit failure output" below) and the `add` remedy of the entry (§4). A terminal run of the remedy repeats Git's message. `core.safecrlf=true` can cause this failure, as it does for `git add`.
 - A `stage` whose staged blob has no proof gives `UNSUPPORTED_COMPARISON` with reason `blob-proof` and the `add` remedy. After a changed digest, it gives `STALE_SELECTION` (§4 "Blob proof").
 - A split index or `core.splitIndex=true` gives `UNSUPPORTED_HUNK_PROFILE` with reason `split-index` for `applyHunk` and `applyFile` (§4 "Split index").

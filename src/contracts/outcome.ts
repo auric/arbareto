@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { codeFitsState, TERMINAL_STATES, type TerminalState } from "./errors";
+import * as limits from "./limits";
 import { MUTATIONS } from "./operations";
 
 // Data-model §7 "Operation and outcome". The service issues `operationId` in the accepted event (contract §2). `requestId` correlates a request with exactly one terminal response.
@@ -45,11 +46,16 @@ export type OperationEvent =
   | { type: "processes-stopped"; lingeringDescendants?: number }
   | { type: "cancel-deadline"; lingeringDescendants?: number }
   | { type: "intended-effects-confirmed" }
-  | { type: "no-effects"; observed: "canceled" | "failed"; code?: string }
+  // `reason`: only with `OUTPUT_LIMIT`, the name of the reached bound (contract §9).
+  | { type: "no-effects"; observed: "canceled" | "failed"; code?: string; reason?: string }
   | { type: "differing-effects" }
   | { type: "failed-with-effects" }
   | { type: "attribution-undetermined"; reason: string }
   | { type: "reconciliation-read-deadline" }
+  // A reconciliation read failed with `code` before its deadline.
+  | { type: "reconciliation-read-failed"; code: string }
+  // Contract §5 "Deadline outcomes": the `started` reply carried `deadline`, so no marker exists.
+  | { type: "started-deadline" }
   | { type: "interrupt-and-close" }
   | { type: "revoke-trust"; endedProcesses?: number };
 
@@ -106,6 +112,7 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
       }
       if (event.type === "exclusion-unavailable" && mutation) return next("rejected", { code: event.code }, ["no-queue", "start-no-process"]);
       if (event.type === "invalid-approval" && event.code !== "RECOVERY_MARKER_FAILED") return next("rejected", { code: event.code }, ["start-no-process"]);
+      if (event.type === "started-deadline" && mutation) return next("failed", { code: "DEADLINE", cause: "DEADLINE", reason: "deadline" }, ["close-job"]);
       break;
 
     case "running":
@@ -168,8 +175,9 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
         case "intended-effects-confirmed":
           return next("succeeded", { cause: undefined, reason: undefined });
         case "no-effects":
+          if (event.reason !== undefined && (event.observed !== "failed" || event.code !== "OUTPUT_LIMIT" || !Object.hasOwn(limits, event.reason))) break;
           if (event.observed === "canceled") return next("canceled", { code: "CANCELED" });
-          return next("failed", { code: event.code ?? snapshot.cause });
+          return next("failed", { code: event.code ?? snapshot.cause, ...(event.reason === undefined ? {} : { reason: event.reason }) });
         case "differing-effects":
           return next("completed-with-effects", { code: "COMPLETED_WITH_EFFECTS" }, [
             "identify-grounded-results",
@@ -185,6 +193,8 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
           return next("reconciling", { endProcesses: true, lingeringDescendants: 0 }, ["continue-reconciliation-reads"]);
         case "reconciliation-read-deadline":
           return next("unknown", { code: "STATE_UNKNOWN" }, ["close-job", "block-mutations", "keep-marker"]);
+        case "reconciliation-read-failed":
+          return next("unknown", { code: "STATE_UNKNOWN", cause: event.code, reason: undefined }, ["block-mutations", "keep-marker"]);
         case "interrupt-and-close":
           return next("reconciling", {}, ["close-job", "keep-marker", "follow-application-close"]);
         case "revoke-trust":

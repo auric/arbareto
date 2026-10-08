@@ -1576,6 +1576,10 @@ export function createTrust({ runner, environment, configFiles = () => undefined
       return worktrees.get(worktreeKey(w))?.trustId === trustId ? null : "UNKNOWN_TARGET";
     },
 
+    currentTrustId(w: Workspace): string | undefined {
+      return worktrees.get(worktreeKey(w))?.trustId;
+    },
+
     // Contract §7 "Trust approval store" `revoke`: the shell deletes the records of every worktree of the common directory and ends its lingering Jobs.
     async revokeTrust(target: ListingTarget): Promise<TrustOutcome<{ endedProcesses: number }>> {
       const w = target.workspace;

@@ -4,10 +4,16 @@
 // T093: `readComparison` (contract §3, §4, §5, §7; data-model §5). `src/git-service/comparison.ts` comes with T105.
 
 import { describe, expect } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { COMPARED_RAW_VERSION_BYTES, NATIVE_CHUNK_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
-import { fixtureDir, fixtureEnv, useFixtureRoot } from "./fixture-root";
+import { createComparisonReader, type ComparisonTarget } from "../../src/git-service/comparison";
+import { probeGit } from "../../src/git-service/git-installation";
+import { createRegistrations } from "../../src/git-service/registration";
+import { readWorkingVersion } from "../../src/git-service/snapshot";
+import { createWorkspaceReader } from "../../src/git-service/status";
+import { createTrust } from "../../src/git-service/trust";
+import { fixtureDir, fixtureEnv, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF02, buildF03, buildF04, buildF04Stage, buildF05, buildF10, buildF16Comparison, buildF17, buildFileAccepted, put, run, type F04Variant, type Repo } from "./fixtures";
 import { indexEntries } from "./git-oracle";
 import {
@@ -644,4 +650,71 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
       }
     }, TIMEOUT_MS);
   }
+});
+
+// T110 (WP1 step 6): the retained data that hunk publication binds.
+describe("retained comparison binding (T110)", () => {
+  const ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding"];
+
+  caseTest("T110", "a retained comparison keeps the attributes and the working version, a working change between the two reads gives REPOSITORY_CHANGED, and onDrop reports each dropped comparison", SHELL, () =>
+    withService({ name: "t110-retained" }, async (service) => {
+      await underTest("comparison");
+      const repo = repoOf(buildF02(gitPath(), "t110-retained"));
+      const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+      if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+      const { installation } = probed;
+      const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+      const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal: new AbortController().signal });
+      if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+      const workspace = registrations.get(registered.result.repositoryId)!;
+      const trust = createTrust({ runner: service.runner, environment: serviceEnv() });
+      const reader = createWorkspaceReader({ runner: service.runner, trust });
+      const dropped: string[] = [];
+      const comparisons = createComparisonReader({ runner: service.runner, trust, onDrop: (id) => dropped.push(id) });
+      const signal = new AbortController().signal;
+      const read = await reader.readWorkspace({ operationId: crypto.randomUUID(), signal, installation, workspace, refresh: false });
+      if (read.result !== "succeeded") throw new Error(`read failed: ${JSON.stringify(read)}`);
+      const target = (category: string): ComparisonTarget => {
+        const entry = read.value.entries.find((e) => e.path === "multi.txt" && e.category === category)!;
+        const found = reader.entry(workspace.repositoryId, read.value.generation, read.value.snapshotId, entry.entryId);
+        if (!found.ok) throw new Error(found.code);
+        return { operationId: crypto.randomUUID(), signal, installation, workspace, snapshot: found.snapshot, entry: found.entry };
+      };
+      const idOf = (o: Awaited<ReturnType<typeof comparisons.readComparison>>) => (o as { value: { comparisonId: string } }).value.comparisonId;
+
+      const unstaged = await comparisons.readComparison(target("unstaged"));
+      expect(unstaged.result).toBe("succeeded");
+      const kept = comparisons.get(idOf(unstaged))!;
+      const working = await readWorkingVersion(workspace.worktreeRoot, new Uint8Array(Buffer.from("multi.txt")), "COMPARED_RAW_VERSION_BYTES", null);
+      if (!working.ok) throw new Error("working version");
+      expect(kept.workingVersion).toEqual(working.value);
+      // git-check-attr(1) prints `<path>: <attribute>: <info>`.
+      expect(kept.attributes).toEqual(Object.fromEntries(ATTRIBUTES.map((name) => [name, gitText(repo, ["check-attr", name, "--", "multi.txt"]).trimEnd().split(": ").at(-1)!])));
+
+      // `head-to-index` compares no working file.
+      const staged = await comparisons.readComparison(target("staged"));
+      expect(staged.result).toBe("succeeded");
+      expect(comparisons.get(idOf(staged))!.workingVersion).toBeNull();
+
+      // A same-size save while `diff-files` starts: the second read differs from the first.
+      const file = join(repo, "multi.txt");
+      const bytes = readFileSync(file);
+      let saved = false;
+      const release = service.runner.holdStart((call) => {
+        if (!saved && call.arguments.includes("diff-files")) {
+          saved = true;
+          writeFileSync(file, Buffer.concat([Buffer.from(bytes[0] === 0x5a ? "Y" : "Z"), bytes.subarray(1)]));
+        }
+        return false;
+      });
+      try {
+        expect(await comparisons.readComparison(target("unstaged"))).toEqual({ result: "failed", code: "REPOSITORY_CHANGED" });
+      } finally {
+        release();
+      }
+      expect(saved).toBe(true);
+
+      comparisons.release(workspace.repositoryId);
+      expect(dropped.toSorted()).toEqual([idOf(unstaged), idOf(staged)].toSorted());
+    }), TIMEOUT_MS);
 });

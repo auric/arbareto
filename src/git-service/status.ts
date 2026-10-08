@@ -149,6 +149,8 @@ interface WorkspaceState {
   recorded: number;
   // Contract §11 "Change polling": the raw-index part of the last index that a WSL read parsed.
   parsed: RawIndexPart | null;
+  // The working paths that `bind` folded into the retained observation, by their latin1 key. A generation advance clears them.
+  bound: Map<string, Uint8Array>;
 }
 
 type Step = { exit: GitExit } | { refused: ErrorCode };
@@ -249,7 +251,7 @@ export async function hasPromisor(entries: readonly ConfigEntry[], w: Workspace,
 }
 
 // Git `wt-status.c` `wt_status_get_state` order. Data-model §2 lists no value for `git am`, so `rebase-apply/applying` gives `unknown`.
-function stateOf(present: Record<OperationMarker, boolean | null>, unmerged: boolean): OperationState {
+export function stateOf(present: Record<OperationMarker, boolean | null>, unmerged: boolean): OperationState {
   if (Object.values(present).includes(null)) return "unknown";
   if (present.MERGE_HEAD) return "merging";
   if (present["rebase-apply"]) return present["rebase-apply/applying"] ? "unknown" : "rebasing";
@@ -365,26 +367,26 @@ function paginate(entries: readonly ChangeEntry[], firstOverhead: number): { sta
   return { starts, kept: entries.length };
 }
 
+// Data-model §4 `policyFingerprint`.
+export function policyOf(trust: Trust, w: Workspace, listing: TrustListing, installation: ReadInstallation): string {
+  const view = trust.view(w, listing, installation);
+  const input = { attributes: EMPTY, trust: { state: view.state, trustId: view.trustId ?? null }, configurationFingerprint: listing.fingerprint };
+  return policyFingerprint({ ...input, git: installation });
+}
+
 export function createWorkspaceReader({ runner, trust, workingVersion = {}, readRawIndex: readIndex = readRawIndex }: WorkspaceReaderOptions) {
   const snapshots = createSnapshotStore<StatusSnapshot>();
   const states = new Map<string, WorkspaceState>();
   const stateOfWorkspace = (repositoryId: string): WorkspaceState => {
     let found = states.get(repositoryId);
     if (found === undefined) {
-      found = { hints: 0, unwatched: false, head: null, refFiles: new Map(), kept: null, refreshing: 0, unavailable: false, changeFiles: null, markers: null, recorded: 0, parsed: null };
+      found = { hints: 0, unwatched: false, head: null, refFiles: new Map(), kept: null, refreshing: 0, unavailable: false, changeFiles: null, markers: null, recorded: 0, parsed: null, bound: new Map() };
       states.set(repositoryId, found);
     }
     return found;
   };
   // Counts the read attempts in start order.
   let started = 0;
-
-  // Data-model §4 `policyFingerprint`.
-  const policyOf = (w: Workspace, listing: TrustListing, installation: ReadInstallation) => {
-    const view = trust.view(w, listing, installation);
-    const input = { attributes: EMPTY, trust: { state: view.state, trustId: view.trustId ?? null }, configurationFingerprint: listing.fingerprint };
-    return policyFingerprint({ ...input, git: installation });
-  };
 
   const run = (t: ProcessTarget, args: string[], stdout: Collector, input?: Uint8Array): Promise<Step> => runRead(runner, t, args, stdout, input);
 
@@ -408,7 +410,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
   }
 
   // Git resolves the marker paths once for each workspace. A failed resolution is not kept.
-  function markerPaths(t: ReadWorkspaceTarget, st: WorkspaceState): Promise<Record<OperationMarker, string> | null> {
+  function markerPaths(t: ProcessTarget, st: WorkspaceState): Promise<Record<OperationMarker, string> | null> {
     st.markers ??= (async (): Promise<Record<OperationMarker, string> | null> => {
       const lines = await gitPaths(t, markerPathArgs(), OPERATION_MARKERS.length);
       return lines === null ? null : (Object.fromEntries(OPERATION_MARKERS.map((name, i) => [name, lines[i]!])) as Record<OperationMarker, string>);
@@ -421,7 +423,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
   }
 
   // OS file facts of the Git-resolved marker paths. Null: the fact is unknown.
-  async function markerFacts(t: ReadWorkspaceTarget, st: WorkspaceState): Promise<{ present: Record<OperationMarker, boolean | null>; steps: Step[] }> {
+  async function markerFacts(t: ProcessTarget, st: WorkspaceState): Promise<{ present: Record<OperationMarker, boolean | null>; steps: Step[] }> {
     const paths = await markerPaths(t, st);
     const present = Object.fromEntries(OPERATION_MARKERS.map((name) => [name, null])) as Record<OperationMarker, boolean | null>;
     const steps: Step[] = [];
@@ -767,7 +769,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     const versions: WorkingVersion[] = [];
     let changed = false;
     let workingLimit: LimitName | null = null;
-    for (const path of t.bound ?? []) {
+    for (const path of t.bound ?? [...st.bound.values()].sort(Buffer.compare)) {
       const read = await readWorkingVersion(w.worktreeRoot, path, "COMPARED_RAW_VERSION_BYTES", null, workingVersion);
       if (read.ok) versions.push(read.value);
       else if (read.completeness.state === "failed" && read.completeness.code === "REPOSITORY_CHANGED") changed = true;
@@ -821,7 +823,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
             ? { state: "limited", code: "OUTPUT_LIMIT", reason: workingLimit }
             : { state: "complete" };
 
-    const policy = policyOf(w, lst, t.installation);
+    const policy = policyOf(trust, w, lst, t.installation);
     const operationState = stateOf(markers.present, parsed.records.some((r) => r.kind === "unmerged"));
     finish();
     st.unavailable = false;
@@ -876,8 +878,11 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       for (const { entryId: _, ...entry } of entries) hasher.update(`${JSON.stringify(entry)}\n`);
       const entriesDigest = hasher.digest("hex");
       const retained = snapshots.retained(w.repositoryId);
-      const advance = last || (retained !== null && retained.entriesDigest !== entriesDigest);
-      snapshot = snapshots.record(observation, { entries, starts, cursors, pages: new Map(cursors.slice(1).map((cursor, i) => [cursor, i + 1])), entriesDigest }, advance);
+      const advance = last || (retained !== null && (retained.entriesDigest !== entriesDigest || snapshots.retainedEqual(observation) === null));
+      // Contract §8: an advance invalidates every token of the old generation, so its bound paths leave the observation.
+      const dropped = advance && t.bound === undefined;
+      if (dropped) st.bound.clear();
+      snapshot = snapshots.record(dropped ? { ...observation, workingVersions: [] } : observation, { entries, starts, cursors, pages: new Map(cursors.slice(1).map((cursor, i) => [cursor, i + 1])), entriesDigest }, advance);
       st.recorded = sequence;
       w.generation = snapshot.generation;
       ownerGeneration ??= snapshot.generation;
@@ -918,7 +923,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
         // Contract §5 "Deadline outcomes": a walk deadline ends the read as a Git step deadline does, never with a full read.
         if (facts !== null && "stop" in facts) return { result: facts.stop };
         const same = facts !== null && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
-        if (same && policyOf(t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st) } };
+        if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st) } };
       }
       if (t.refresh) st.refreshing++;
       let running = t.refresh;
@@ -962,6 +967,24 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     snapshot(repositoryId: string, generation: number, snapshotId: string): { ok: true; snapshot: ChangeSnapshot } | { ok: false; code: "REPOSITORY_CHANGED" | "UNKNOWN_TARGET" } {
       snapshots.register(repositoryId);
       return snapshots.lookup(repositoryId, generation, snapshotId);
+    },
+
+    // Data-model §4 `workingVersions`: later reads of this generation compare the bound path too. False: no snapshot of `generation` exists.
+    bind(repositoryId: string, generation: number, version: WorkingVersion): boolean {
+      if (!snapshots.bind(repositoryId, generation, version)) return false;
+      stateOfWorkspace(repositoryId).bound.set(latin1(version.path), version.path);
+      return true;
+    },
+
+    // Data-model §2 `operationState` from the marker facts. `unmerged`: the index holds an entry above stage 0.
+    async operationState(t: ProcessTarget, unmerged: boolean): Promise<OperationState | { refused: ErrorCode } | "canceled" | "deadline"> {
+      const { present, steps } = await markerFacts(t, stateOfWorkspace(t.workspace.repositoryId));
+      if (t.signal.aborted) return "canceled";
+      for (const step of steps) if ("refused" in step) return { refused: step.refused };
+      const exits = steps.map((step) => (step as { exit: GitExit }).exit);
+      if (exits.some((exit) => exit.deadline !== undefined)) return "deadline";
+      if (exits.some((exit) => exit.diagnosticLimit)) return { refused: "OUTPUT_LIMIT" };
+      return stateOf(present, unmerged);
     },
 
     // Data-model §7: the re-read after a canceled or failed read. Contract §6 "Registration bootstrap": every nonzero exit of the first discovery call gives REPOSITORY_UNAVAILABLE.

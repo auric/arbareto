@@ -22,6 +22,8 @@ export type PublishResult =
   | { published: false; reason: "time" }
   // `errno` is null for a short write.
   | { published: false; reason: "write-failed"; errno: string | null }
+  // The time set or its read-back failed. The lock stays owned.
+  | { published: false; reason: "publish-time"; errno: string }
   | { published: false; reason: "replace-failed"; errno: string };
 
 export interface IndexLock {
@@ -113,12 +115,16 @@ export async function createIndexLock(indexPath: string, testFileId?: bigint): P
           const { bytesWritten } = await handle.write(bytes, 0, bytes.length, 0);
           if (bytesWritten !== bytes.length) return { published: false, reason: "write-failed", errno: null };
           await handle.sync();
+        } catch (error) {
+          return { published: false, reason: "write-failed", errno: errnoOf(error) };
+        }
+        try {
           // Node.js sets whole milliseconds, so this is the whole millisecond at or before `mtimeNs`.
           const time = new Date(Number(mtimeNs / NS_PER_MS));
           await handle.utimes(time, time);
           if ((await handle.stat({ bigint: true })).mtimeNs > mtimeNs) return { published: false, reason: "time" };
         } catch (error) {
-          return { published: false, reason: "write-failed", errno: errnoOf(error) };
+          return { published: false, reason: "publish-time", errno: errnoOf(error) };
         }
         // A window stays between this check and the rename. Git's `commit_lock_file` renames by path as well.
         if (!(await owned())) {

@@ -82,6 +82,16 @@ describe("accepted", () => {
     const reconciling = step({ operation: COMMIT, ...running } as Snapshot, { type: "execution-ended", lingeringDescendants: 0 });
     expect(step({ operation: COMMIT, ...reconciling } as Snapshot, { type: "intended-effects-confirmed" }).state).toBe("succeeded");
   });
+
+  // Contract §5 "Deadline outcomes": a `started` reply with `deadline` ends the mutation before any marker exists.
+  test.each([[COMMIT], [HUNK], ["applyFile"], [SUBMODULES]])("a %s started deadline ends failed with DEADLINE, reason deadline, and closes the Job", (operation) => {
+    const result = expectStep({ operation, state: "accepted" }, { type: "started-deadline" }, { state: "failed", code: "DEADLINE", cause: "DEADLINE", reason: "deadline" });
+    expect(result.actions).toEqual(["close-job"]);
+  });
+
+  test("a read has no started deadline", () => {
+    expect(() => step({ operation: READ, state: "accepted" }, { type: "started-deadline" })).toThrow();
+  });
 });
 
 describe("running", () => {
@@ -240,6 +250,11 @@ describe("deadline reconciliation classifies from observed state", () => {
     const entered = { operation, ...step({ operation, state: "running" }, event) } as Snapshot;
     expectStep(entered, { type: "reconciliation-read-deadline" }, { state: "unknown", code: "STATE_UNKNOWN", reason });
   });
+
+  test("a failed reconciliation read after a deadline gives unknown without the deadline reason", () => {
+    const result = expectStep(afterDeadline(), { type: "reconciliation-read-failed", code: "GIT_FAILED" }, { state: "unknown", code: "STATE_UNKNOWN", cause: "GIT_FAILED" });
+    expect(result.reason).toBeUndefined();
+  });
 });
 
 describe("cancel-requested", () => {
@@ -291,6 +306,20 @@ describe("reconciling", () => {
 
   test("no confirmed effects give failed with the observed code", () => {
     expectStep(reconciling(), { type: "no-effects", observed: "failed", code: "HOOK_FAILED" }, { state: "failed", code: "HOOK_FAILED" });
+  });
+
+  // Contract §9: OUTPUT_LIMIT names the reached bound.
+  test("no confirmed effects give failed OUTPUT_LIMIT with the bound name as reason", () => {
+    const event = { type: "no-effects", observed: "failed", code: "OUTPUT_LIMIT", reason: "MUTATION_RAW_INDEX_BYTES" } as const;
+    expectStep({ operation: HUNK, state: "reconciling", lingeringDescendants: 0 }, event, { state: "failed", code: "OUTPUT_LIMIT", reason: "MUTATION_RAW_INDEX_BYTES" });
+    expect(() => step(reconciling(), { ...event, reason: "NOT_A_LIMIT" })).toThrow();
+    expect(() => step(reconciling(), { ...event, code: "GIT_FAILED" })).toThrow();
+  });
+
+  test("a failed reconciliation read gives unknown with STATE_UNKNOWN, keeps the marker, and closes no Job", () => {
+    const result = expectStep(reconciling(), { type: "reconciliation-read-failed", code: "MALFORMED_GIT_OUTPUT" }, { state: "unknown", code: "STATE_UNKNOWN", cause: "MALFORMED_GIT_OUTPUT" });
+    expect(result.actions).toEqual(["block-mutations", "keep-marker"]);
+    expect(result.reason).toBeUndefined();
   });
 
   test("differing effects give completed-with-effects", () => {

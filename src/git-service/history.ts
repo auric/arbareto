@@ -224,49 +224,51 @@ function rowOf(oid: string, parents: readonly string[], object: CommitObject): H
   };
 }
 
+async function runStep(runner: GitRunner, t: ProcessTarget, args: string[], stdout: Bytes, input?: Uint8Array): Promise<Step> {
+  if (t.signal.aborted) return { aborted: true };
+  let step: ReadStep;
+  try {
+    step = await runRead(runner, t, args, stdout, input);
+  } catch (error) {
+    if (t.signal.aborted) return { aborted: true };
+    throw error;
+  }
+  if (t.signal.aborted) return { aborted: true };
+  return "refused" in step ? step : { ...step, stdout };
+}
+
+const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+
+// Contract §7 "Held history steps": `symbolic-ref` and `rev-parse --verify`. git-symbolic-ref(1) `-q`: only exit 1 without output is a detached HEAD.
+// A failed `rev-parse` with a symbolic target is an unborn branch only when `show-ref --exists` gives the missing status.
+export async function captureHead(runner: GitRunner, t: ProcessTarget): Promise<Head | Stop> {
+  const objectFormat = t.workspace.objectFormat;
+  const steps = await Promise.all([runStep(runner, t, headTargetArgs(), small()), runStep(runner, t, headOidArgs(), small())]);
+  const stop = stepStop(t.signal, steps);
+  if (stop !== null) return stop;
+  const [symbolic, resolved] = steps as [Ran, Ran];
+  let target: string | null = null;
+  if (symbolic.exit.exitCode === 0) {
+    target = oneLine(symbolic.stdout);
+    if (target === null || !isRefName(target)) return { failed: "MALFORMED_GIT_OUTPUT" };
+  } else if (symbolic.exit.exitCode !== 1 || symbolic.stdout.bytes > 0 || symbolic.stderrBytes > 0) {
+    return { failed: "GIT_FAILED" };
+  }
+  if (resolved.exit.exitCode === 0) {
+    const oid = oneLine(resolved.stdout);
+    if (oid === null || !isObjectId(oid, objectFormat)) return { failed: "MALFORMED_GIT_OUTPUT" };
+    return target === null ? { state: "detached", oid } : { state: "branch", target, oid };
+  }
+  if (target === null) return { failed: "GIT_FAILED" };
+  const exists = await runStep(runner, t, headRefExistsArgs(target), small());
+  const existsStop = stepStop(t.signal, [exists]);
+  if (existsStop !== null) return existsStop;
+  const found = exists as Ran;
+  return found.exit.exitCode === REF_MISSING_STATUS && found.stdout.bytes === 0 ? { state: "unborn", target } : { failed: "GIT_FAILED" };
+}
+
 export function createHistoryReader({ runner, trust, listingTuple, markUnavailable }: HistoryReaderOptions) {
-  async function run(t: ProcessTarget, args: string[], stdout: Bytes, input?: Uint8Array): Promise<Step> {
-    if (t.signal.aborted) return { aborted: true };
-    let step: ReadStep;
-    try {
-      step = await runRead(runner, t, args, stdout, input);
-    } catch (error) {
-      if (t.signal.aborted) return { aborted: true };
-      throw error;
-    }
-    if (t.signal.aborted) return { aborted: true };
-    return "refused" in step ? step : { ...step, stdout };
-  }
-
-  const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-
-  // Contract §7 "Held history steps": `symbolic-ref` and `rev-parse --verify`. git-symbolic-ref(1) `-q`: only exit 1 without output is a detached HEAD.
-  // A failed `rev-parse` with a symbolic target is an unborn branch only when `show-ref --exists` gives the missing status.
-  async function captureHead(t: ProcessTarget): Promise<Head | Stop> {
-    const objectFormat = t.workspace.objectFormat;
-    const steps = await Promise.all([run(t, headTargetArgs(), small()), run(t, headOidArgs(), small())]);
-    const stop = stepStop(t.signal, steps);
-    if (stop !== null) return stop;
-    const [symbolic, resolved] = steps as [Ran, Ran];
-    let target: string | null = null;
-    if (symbolic.exit.exitCode === 0) {
-      target = oneLine(symbolic.stdout);
-      if (target === null || !isRefName(target)) return { failed: "MALFORMED_GIT_OUTPUT" };
-    } else if (symbolic.exit.exitCode !== 1 || symbolic.stdout.bytes > 0 || symbolic.stderrBytes > 0) {
-      return { failed: "GIT_FAILED" };
-    }
-    if (resolved.exit.exitCode === 0) {
-      const oid = oneLine(resolved.stdout);
-      if (oid === null || !isObjectId(oid, objectFormat)) return { failed: "MALFORMED_GIT_OUTPUT" };
-      return target === null ? { state: "detached", oid } : { state: "branch", target, oid };
-    }
-    if (target === null) return { failed: "GIT_FAILED" };
-    const exists = await run(t, headRefExistsArgs(target), small());
-    const existsStop = stepStop(t.signal, [exists]);
-    if (existsStop !== null) return existsStop;
-    const found = exists as Ran;
-    return found.exit.exitCode === REF_MISSING_STATUS && found.stdout.bytes === 0 ? { state: "unborn", target } : { failed: "GIT_FAILED" };
-  }
+  const run = (t: ProcessTarget, args: string[], stdout: Bytes, input?: Uint8Array) => runStep(runner, t, args, stdout, input);
 
   // Contract §3: Git resolves the shallow file. The path is relative to the worktree root, where Git ran.
   async function shallowPath(t: ProcessTarget): Promise<string | Stop> {
@@ -295,7 +297,7 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
   // The held steps (contract §7 "Held history steps"). They run beside the trust listing and start no object check.
   async function heldSteps(t: ProcessTarget): Promise<Held | Stop> {
     const w = t.workspace;
-    const [head, path] = await Promise.all([captureHead(t), shallowPath(t)]);
+    const [head, path] = await Promise.all([captureHead(runner, t), shallowPath(t)]);
     if (t.signal.aborted) return { stop: "canceled" };
     if (isStop(head)) return head;
     if (isStop(path)) return path;

@@ -4,8 +4,9 @@
 // T107: research R3 steps 4 and 13, contract §4 "Hunk eligibility and publication", §8 "Observed locks", and §9 "Other locks".
 // Every refusal leaves the index byte-identical (tests/git/git-oracle.ts).
 
-import { describe, expect } from "bun:test";
+import { describe, expect, spyOn } from "bun:test";
 import { existsSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { createIndexLock, LOCKED_REMEDY } from "../../src/git-service/index-lock";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
@@ -110,6 +111,32 @@ describe("index lock (T107)", () => {
       expect(after.entries).not.toEqual(before.entries);
       // A finished lock owns nothing.
       expect(await lock.release()).toBe("notOwned");
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T110",
+    "a failed time set gives publish-time, the index stays byte-identical, and release removes the owned lock",
+    [],
+    async () => {
+      const { repo, index, lockPath, candidate, mtimeNs, before } = setup("t110-publish-time");
+      const bytes = readFileSync(index);
+      const lock = await owned(index);
+      const probe = await open(lockPath, "r");
+      const utimes = spyOn(Object.getPrototypeOf(probe), "utimes").mockImplementation(() => Promise.reject(Object.assign(new Error("EPERM"), { code: "EPERM" })));
+      await probe.close();
+      try {
+        expect(await lock.publish(candidate, mtimeNs)).toEqual({ published: false, reason: "publish-time", errno: "EPERM" });
+        expect(utimes).toHaveBeenCalledTimes(1);
+      } finally {
+        utimes.mockRestore();
+      }
+      expect(readFileSync(index)).toEqual(bytes);
+      expect(existsSync(lockPath)).toBe(true);
+      expect(await lock.release()).toBe("removed");
+      expect(existsSync(lockPath)).toBe(false);
+      expect(repoState(repo)).toEqual(before);
     },
     TIMEOUT_MS,
   );

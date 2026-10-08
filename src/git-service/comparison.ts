@@ -37,7 +37,7 @@ import { parseNumstat, parsePatch, type NumstatResult, type PatchHunk, type Patc
 import { createCollector, RunnerRefusal, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
 import { contextOf, isMissing, objectCheckInput, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
-import { readWorkingVersion, type ChangeSnapshot, type Completeness, type LimitName, type ReadInstallation } from "./snapshot";
+import { readWorkingVersion, type ChangeSnapshot, type Checked, type Completeness, type LimitName, type ReadInstallation, type WorkingVersion } from "./snapshot";
 import { hasPromisor, OBJECT_MISSING_REMEDY } from "./status";
 import type { StatusRecord } from "./status-parser";
 import { decideSupport, parseAttributes, parseEolListing, type SupportDecision } from "./support";
@@ -63,6 +63,10 @@ export interface RetainedComparison {
   fileAction: FileActionDecision;
   // Contract §4 "Binding": the whole working file of a `stage` decision.
   working: { size: number; sha256: string } | null;
+  // The `check-attr` values of the path that the support decision used.
+  attributes: Readonly<Record<string, string>>;
+  // The compared working version, read before and after the diff. Null for `head-to-index`, a WSL workspace, or a failed read; then no hunk approval exists.
+  workingVersion: WorkingVersion | null;
 }
 
 export interface ComparisonTarget {
@@ -194,15 +198,20 @@ function blobSizes(raw: Uint8Array, oids: readonly string[]): number[] | "missin
 export interface ComparisonReaderOptions {
   runner: GitRunner & WslRunner;
   trust: Trust;
+  // Gets the ID of each retained comparison that eviction or a release drops.
+  onDrop?: (comparisonId: string) => void;
 }
 
-export function createComparisonReader({ runner, trust }: ComparisonReaderOptions) {
+export function createComparisonReader({ runner, trust, onDrop }: ComparisonReaderOptions) {
   // Contract §5 "Retained comparison data": insertion order is age order. An evicted comparison gives UNKNOWN_TARGET to every later request that names it.
   const retained = new Map<string, RetainedComparison>();
   let retainedBytes = 0;
   const drop = (id: string) => {
-    retainedBytes -= retained.get(id)?.patch.length ?? 0;
+    const c = retained.get(id);
+    if (c === undefined) return;
+    retainedBytes -= c.patch.length;
     retained.delete(id);
+    onDrop?.(id);
   };
   const retain = (c: RetainedComparison) => {
     retained.set(c.comparisonId, c);
@@ -341,6 +350,7 @@ export function createComparisonReader({ runner, trust }: ComparisonReaderOption
     let sizes = [] as number[] | "missing" | null;
     let tree = null as string | null;
     let failedStep = false as boolean;
+    let firstVersion = null as Checked<WorkingVersion> | null;
     try {
       if (readable) {
         const facts = async () => {
@@ -350,6 +360,7 @@ export function createComparisonReader({ runner, trust }: ComparisonReaderOption
           else {
             const others = scope === "empty-to-untracked" ? [] : t.snapshot.indexEntries.filter((x) => x.stage === 0 && !Buffer.from(x.path).equals(path)).map((x) => x.path);
             working = await localFacts(w.worktreeRoot, parts, others);
+            if (scope !== "head-to-index") firstVersion = await readWorkingVersion(w.worktreeRoot, path, "COMPARED_RAW_VERSION_BYTES", null);
           }
         };
         const attrs = async () => {
@@ -464,6 +475,17 @@ export function createComparisonReader({ runner, trust }: ComparisonReaderOption
         }
       }
 
+      // Contract §8 "Changing working file": the working version before the diff must equal the version after it.
+      let workingVersion: WorkingVersion | null = null;
+      if (firstVersion?.ok) {
+        const second = await readWorkingVersion(w.worktreeRoot, path, "COMPARED_RAW_VERSION_BYTES", null);
+        if (t.signal.aborted) return { result: "canceled" };
+        if (second.ok) {
+          if (!Bun.deepEquals(firstVersion.value, second.value)) throw fail("REPOSITORY_CHANGED");
+          workingVersion = second.value;
+        }
+      }
+
       const supported = decision?.supported === true && patch.ok;
       const hunks = supported && patch.ok ? patch.patch.hunks.map((h) => ({ ...h, hunkId: crypto.randomUUID() })) : [];
       const kept = patch.ok ? rawPatch : new Uint8Array();
@@ -480,6 +502,8 @@ export function createComparisonReader({ runner, trust }: ComparisonReaderOption
         support: decision,
         fileAction,
         working: binding,
+        attributes,
+        workingVersion,
       };
       if (t.signal.aborted) return { result: "canceled" };
       retain(comparison);

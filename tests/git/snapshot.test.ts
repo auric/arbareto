@@ -631,4 +631,60 @@ describe("snapshot record, generation counter, and status snapshot retention (da
     },
     TIMEOUT_MS,
   );
+
+  caseTest(
+    "T110",
+    "bind adds or replaces a working version in the retained observation and keeps the generation and the snapshot ID",
+    [],
+    async () => {
+      const built = buildF02(gitPath(), "t110-bind");
+      const repo = repoOf(built);
+      const repositoryId = crypto.randomUUID();
+      const fingerprint = okValue(await fingerprintOf(repo));
+      const observation = (workingVersions: Observation["workingVersions"]): Observation => ({
+        repositoryId,
+        head: branchHead(built),
+        indexFingerprint: fingerprint,
+        indexEntries: entriesOf(repo),
+        workingVersions,
+        policyFingerprint: policyFingerprint(POLICY),
+        operationState: "normal",
+        completeness: { state: "complete" },
+        entryCount: 4,
+        observedAt: UTC,
+      });
+      const version = async (path: string) => okValue(await readWorkingVersion(repo, new Uint8Array(Buffer.from(path)), "COMPARED_RAW_VERSION_BYTES", null));
+
+      const store = createSnapshotStore();
+      const multi = await version("multi.txt");
+      expect(store.bind(repositoryId, 0, multi)).toBe(false);
+      store.register(repositoryId);
+      expect(store.bind(repositoryId, 0, multi)).toBe(false);
+      const base = store.record(observation([]));
+
+      expect(store.bind(repositoryId, 0, multi)).toBe(true);
+      const keep = await version("keep.txt");
+      expect(store.bind(repositoryId, 0, keep)).toBe(true);
+      const bound = store.retained(repositoryId)!;
+      expect({ generation: bound.generation, snapshotId: bound.snapshotId }).toEqual({ generation: 0, snapshotId: base.snapshotId });
+      // `Buffer.compare` order: "keep.txt" sorts before "multi.txt".
+      expect(bound.workingVersions).toEqual([keep, multi]);
+      expect(store.retainedEqual(observation([keep, multi]))).toBe(bound);
+      expect(store.retainedEqual(observation([]))).toBeNull();
+
+      // The same path replaces its version.
+      put(repo, "multi.txt", "changed for bind\n");
+      const changed = await version("multi.txt");
+      expect(store.bind(repositoryId, 0, changed)).toBe(true);
+      expect(store.retained(repositoryId)!.workingVersions).toEqual([keep, changed]);
+      expect(store.retainedEqual(observation([keep, multi]))).toBeNull();
+      expect(store.retainedEqual(observation([keep, changed]))).toBe(store.retained(repositoryId));
+      expect(store.record(observation([keep, changed])).generation).toBe(0);
+
+      // A stale generation binds nothing.
+      expect(store.bind(repositoryId, 1, multi)).toBe(false);
+      expect(store.retained(repositoryId)!.workingVersions).toEqual([keep, changed]);
+    },
+    TIMEOUT_MS,
+  );
 });

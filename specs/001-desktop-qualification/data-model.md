@@ -217,6 +217,8 @@ Unsupported diff content can remain in a commit review. Its path, type, and stag
 
 A hunk or file approval requires initial and pre-publication validation. The canonical lock protects cooperating index writers, not independent working-file or reference changes.
 
+A WSL hunk or file publication retains the lock token, the `lock` device and inode, and the verified candidate digest until reconciliation succeeds. A recovery marker never holds the token.
+
 A file approval stages Git's conversion of the working file, not retained bytes. The service cannot recompute that blob, because Git's conversion can depend on the index. Working-file digests before and after the Git step bind the bytes. Step 6 proves that the staged blob matches those bytes, or the request refuses (contract §4 "Blob proof").
 
 Commit approval authorizes ordinary Git execution after preflight. It is not an immutable future tree, parent, or destination. Retain reviewed index data until reconciliation, even after token consumption or expiry.

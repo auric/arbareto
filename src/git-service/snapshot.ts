@@ -148,9 +148,7 @@ async function boundedDigest(
 // Contract §5 "Raw index eligible for mutation": the bound covers the raw index and its shared index file together.
 export async function indexFingerprint(input: IndexFingerprintInput): Promise<Checked<IndexFingerprint>> {
   const { rawIndex, objectFormat, gitDirectory, entries } = input;
-  for (const e of entries) {
-    if (!OID_HEX[objectFormat].test(e.oid) || !INDEX_MODES.has(e.mode) || ![0, 1, 2, 3].includes(e.stage) || e.path.length === 0) return failed("MALFORMED_GIT_OUTPUT");
-  }
+  if (!validEntries(entries, objectFormat)) return failed("MALFORMED_GIT_OUTPUT");
   if (rawIndex !== null && rawIndex.length > MUTATION_RAW_INDEX_BYTES) return limited("MUTATION_RAW_INDEX_BYTES");
   let link: string | null = null;
   try {
@@ -179,6 +177,21 @@ export async function indexFingerprint(input: IndexFingerprintInput): Promise<Ch
     }
   }
   const rawIndexDigest = rawIndex === null ? null : new Bun.CryptoHasher("sha256").update(rawIndex).digest("hex");
+  return { ok: true, value: fingerprintOf({ rawIndexDigest, sharedIndex }, objectFormat, entries) };
+}
+
+const validEntries = (entries: readonly IndexEntry[], objectFormat: ObjectFormat) =>
+  entries.every((e) => OID_HEX[objectFormat].test(e.oid) && INDEX_MODES.has(e.mode) && [0, 1, 2, 3].includes(e.stage) && e.path.length > 0);
+
+// The raw-index part of `indexFingerprint`: the raw index digest, the `link` hash, and the shared index digest.
+export type RawIndexPart = Omit<IndexFingerprint, "digest">;
+
+// Contract §11 "Change polling": the fingerprint from a retained raw-index part and the entries of this read.
+export function retainedIndexFingerprint(part: RawIndexPart, objectFormat: ObjectFormat, entries: readonly IndexEntry[]): Checked<IndexFingerprint> {
+  return validEntries(entries, objectFormat) ? { ok: true, value: fingerprintOf(part, objectFormat, entries) } : failed("MALFORMED_GIT_OUTPUT");
+}
+
+function fingerprintOf({ rawIndexDigest, sharedIndex }: RawIndexPart, objectFormat: ObjectFormat, entries: readonly IndexEntry[]): IndexFingerprint {
   const digest = new Digest()
     .field("objectFormat", objectFormat)
     .field("rawIndex", rawIndexDigest)
@@ -189,7 +202,7 @@ export async function indexFingerprint(input: IndexFingerprintInput): Promise<Ch
     digest.field("path", e.path).field("stage", e.stage).field("mode", e.mode).field("oid", e.oid);
     digest.field("intentToAdd", e.intentToAdd).field("assumeUnchanged", e.assumeUnchanged).field("skipWorktree", e.skipWorktree);
   }
-  return { ok: true, value: { digest: digest.hex(), rawIndexDigest, sharedIndex } };
+  return { digest: digest.hex(), rawIndexDigest, sharedIndex };
 }
 
 // Data-model §3 `state` and `trustId`.

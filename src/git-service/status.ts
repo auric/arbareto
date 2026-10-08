@@ -45,6 +45,7 @@ import {
   indexFingerprint,
   policyFingerprint,
   readWorkingVersion,
+  retainedIndexFingerprint,
   type ChangeSnapshot,
   type Completeness,
   type Head,
@@ -53,6 +54,7 @@ import {
   type Observation,
   type OperationState,
   type ReadInstallation,
+  type RawIndexPart,
   type ReadWorkingVersionOptions,
   type WorkingVersion,
 } from "./snapshot";
@@ -95,6 +97,8 @@ export interface WorkspaceReaderOptions {
   trust: Trust;
   // Test seam only. Production never sets it.
   workingVersion?: ReadWorkingVersionOptions;
+  // Test seam only. Production never sets it.
+  readRawIndex?: typeof readRawIndex;
 }
 
 // Contract §5 "Status page": each page holds whole entries. `starts[i]` is the first entry of page i, and `cursors[i]` names page i from 1 on.
@@ -140,6 +144,8 @@ interface WorkspaceState {
   markers: Promise<Record<OperationMarker, string> | null> | null;
   // The start number of the read whose observation the snapshot store holds.
   recorded: number;
+  // Contract §11 "Change polling": the raw-index part of the last index that a WSL read parsed.
+  parsed: RawIndexPart | null;
 }
 
 type Step = { exit: GitExit } | { refused: ErrorCode };
@@ -270,7 +276,7 @@ function headOf(branch: BranchHeaders, symbolic: { exitCode: number | null; stdo
 }
 
 // Contract §5 "Raw index eligible for mutation". Null: the index file is absent.
-async function readRawIndex(path: string): Promise<Uint8Array | null | "over" | "unavailable"> {
+export async function readRawIndex(path: string): Promise<Uint8Array | null | "over" | "unavailable"> {
   const read = await readBounded(path, MUTATION_RAW_INDEX_BYTES);
   return read === "absent" ? null : read;
 }
@@ -352,13 +358,13 @@ function paginate(entries: readonly ChangeEntry[], firstOverhead: number): { sta
   return { starts, kept: entries.length };
 }
 
-export function createWorkspaceReader({ runner, trust, workingVersion = {} }: WorkspaceReaderOptions) {
+export function createWorkspaceReader({ runner, trust, workingVersion = {}, readRawIndex: readIndex = readRawIndex }: WorkspaceReaderOptions) {
   const snapshots = createSnapshotStore<StatusSnapshot>();
   const states = new Map<string, WorkspaceState>();
   const stateOfWorkspace = (repositoryId: string): WorkspaceState => {
     let found = states.get(repositoryId);
     if (found === undefined) {
-      found = { hints: 0, unwatched: false, head: null, refFiles: new Map(), kept: null, refreshing: 0, unavailable: false, changeFiles: null, markers: null, recorded: 0 };
+      found = { hints: 0, unwatched: false, head: null, refFiles: new Map(), kept: null, refreshing: 0, unavailable: false, changeFiles: null, markers: null, recorded: 0, parsed: null };
       states.set(repositoryId, found);
     }
     return found;
@@ -513,7 +519,11 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read records nothing.
     if (t.signal.aborted) return end({ result: "canceled" });
     if (before !== null && "stop" in before) return end({ result: before.stop });
-    const listing = trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
+    // Contract §11 "Change polling": a WSL listing takes the index digest, with the shared index of the last parse.
+    const lastParse = w.wsl === undefined ? null : st.parsed;
+    const sharedDigest = lastParse?.sharedIndex?.digest ?? null;
+    const ask = sharedDigest === null ? {} : { sharedIndex: lastParse!.sharedIndex!.hash };
+    const listing = trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w, ...(w.wsl === undefined ? {} : { index: ask }) });
     if (prior !== null && before !== null && known !== null) trust.shared.record(w.repositoryId, { tuple: tupleText(prior, priorPrograms, before), listing, generation: () => ownerGeneration });
     else trust.shared.release(w.repositoryId);
     const listed = await listing;
@@ -603,13 +613,21 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     // Contract §9: an uncertain cause gives GIT_FAILED. An inconsistent pair shows that HEAD moved between the two processes.
     if (head === "failed" || head === "inconsistent") return refusal("GIT_FAILED");
 
-    const raw = await readRawIndex(w.indexPath);
+    // Contract §11 "Change polling": SHA-256 equality of the index, and of the shared index the request named, proves the same bytes.
+    const digests = lst.index;
+    const reuse =
+      lastParse !== null &&
+      digests?.kind === "index" &&
+      digests.index.kind === "digest" &&
+      digests.index.sha256 === lastParse.rawIndexDigest &&
+      (sharedDigest === null ? digests.sharedIndex === undefined : digests.sharedIndex?.kind === "digest" && digests.sharedIndex.sha256 === sharedDigest);
+    const raw = reuse ? null : await readIndex(w.indexPath);
     if (raw === "unavailable") return refusal("REPOSITORY_UNAVAILABLE");
     const rawIndex = raw === "over" ? null : raw;
     let eligibility: HunkEligibility | null = null;
     if (raw !== "over") {
       try {
-        eligibility = hunkEligibility(rawIndex, w.objectFormat, lst);
+        eligibility = hunkEligibility(reuse ? { link: lastParse.sharedIndex?.hash ?? null } : rawIndex, w.objectFormat, lst);
       } catch (error) {
         if (error instanceof IndexFormatError) return refusal("MALFORMED_GIT_OUTPUT");
         throw error;
@@ -622,9 +640,13 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {} }: Wo
     let fingerprint = null;
     if (raw === "over") fingerprintLimit = "MUTATION_RAW_INDEX_BYTES";
     else if (indexReason === null) {
-      const checked = await indexFingerprint({ rawIndex, objectFormat: w.objectFormat, gitDirectory: w.gitDirectory, entries: indexEntries });
-      if (checked.ok) fingerprint = checked.value;
-      else if (checked.completeness.state === "failed") return refusal(checked.completeness.code);
+      const checked = reuse
+        ? retainedIndexFingerprint(lastParse, w.objectFormat, indexEntries)
+        : await indexFingerprint({ rawIndex, objectFormat: w.objectFormat, gitDirectory: w.gitDirectory, entries: indexEntries });
+      if (checked.ok) {
+        fingerprint = checked.value;
+        if (w.wsl !== undefined && !reuse) st.parsed = { rawIndexDigest: checked.value.rawIndexDigest, sharedIndex: checked.value.sharedIndex };
+      } else if (checked.completeness.state === "failed") return refusal(checked.completeness.code);
       else if (checked.completeness.state === "limited" && checked.completeness.code === "OUTPUT_LIMIT") fingerprintLimit = checked.completeness.reason;
     }
 

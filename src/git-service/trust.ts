@@ -22,7 +22,7 @@ import { wslIdentityPath } from "../contracts/wsl-route";
 import { gitPathText } from "./wsl";
 import { configListArgs, HOOK_EVENTS, hooksPathArgs } from "./commands";
 import type { ReadInstallation } from "./snapshot";
-import { createCollector, RunnerRefusal, type FileFactsRequest, type GitRunner, type WalkStop } from "./git-runner";
+import { createCollector, RunnerRefusal, type FileFactsRequest, type GitRunner, type WalkStop, type WslIndexResult, type WslRunner } from "./git-runner";
 import { sameIdentity, type PhysicalIdentity } from "./identity";
 import type { Workspace } from "./registration";
 
@@ -657,6 +657,15 @@ type Walked =
 
 type ListingFailure = Exclude<ListingOutcome, { ok: true }>;
 
+// Contract §6 "Index digest in a read": only a WSL listing calls `indexedFileFacts`.
+type ListingRunner = GitRunner & Partial<Pick<WslRunner, "indexedFileFacts">>;
+
+// The `index` of the first phase-1 request, and the receiver of its result.
+interface IndexAsk {
+  request: { sharedIndex?: string };
+  got(result: WslIndexResult): void;
+}
+
 // Contract §7 "Program file digests": the text names the path and the `code` of an `error` fact, never an OS message text.
 const unreadable = (path: string, reason: string): ListingFailure => ({
   ok: false,
@@ -710,13 +719,15 @@ function settled(at: Inside, hops: Hop[]): Walked | null {
 }
 
 // Contract §5 "File facts": at most 64 entries per request. A refusal keeps its code, and a walk stop ends the requests.
+// `index` goes with the first request only.
 async function requestFacts(
-  runner: GitRunner,
+  runner: ListingRunner,
   operationId: string,
   w: Workspace,
   digest: boolean,
   files: readonly FactEntry[],
   signal: AbortSignal,
+  index?: IndexAsk,
 ): Promise<FileFact[] | { code: ErrorCode } | WalkStop> {
   const context = { operationId, contextKind: "registeredOperation" as const, gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId };
   const out: FileFact[] = [];
@@ -724,7 +735,15 @@ async function requestFacts(
     const chunk = files.slice(i, i + FILE_FACT_ENTRIES).map(({ root, path }) => ({ root, path: [...path] }));
     let reply: FileFact[] | WalkStop;
     try {
-      reply = await runner.fileFacts({ ...context, digest, files: chunk }, signal);
+      if (i === 0 && index !== undefined) {
+        if (runner.indexedFileFacts === undefined) throw new Error("trust listing: the runner has no indexedFileFacts");
+        const indexed = await runner.indexedFileFacts({ ...context, digest, files: chunk, index: index.request }, signal);
+        if ("stop" in indexed) reply = indexed;
+        else {
+          index.got(indexed.index);
+          reply = indexed.facts;
+        }
+      } else reply = await runner.fileFacts({ ...context, digest, files: chunk }, signal);
     } catch (error) {
       if (error instanceof RunnerRefusal) return { code: error.code };
       throw error;
@@ -747,15 +766,20 @@ export async function readProgramFiles(runner: GitRunner, operationId: string, w
 }
 
 // Contract §7 "Program file digests". The service reads repository-controlled program and hook paths only through these requests.
-function createFactReader(runner: GitRunner, target: ListingTarget, roots: Roots) {
+function createFactReader(runner: ListingRunner, target: ListingTarget, roots: Roots) {
   const { workspace: w, operationId, signal } = target;
   const facts = new Map<string, FileFact>();
   // Contract §8 "Change check": each phase-1 entry with its fact, in request order.
   const programFiles: ProgramFile[] = [];
+  // Contract §6 "Index digest in a read": the first phase-1 request carries `index`.
+  let indexResult: WslIndexResult | undefined;
+  let indexAsk: IndexAsk | undefined = target.index && { request: target.index, got: (result) => void (indexResult = result) };
 
   async function send(digest: boolean, places: readonly Inside[]): Promise<FileFact[] | ListingFailure> {
     if (signal.aborted) return { ok: false, stop: "canceled" };
-    const reply = await requestFacts(runner, operationId, w, digest, places.map((at) => ({ root: at.root, path: at.below })), signal);
+    const ask = digest ? undefined : indexAsk;
+    if (!digest) indexAsk = undefined;
+    const reply = await requestFacts(runner, operationId, w, digest, places.map((at) => ({ root: at.root, path: at.below })), signal, ask);
     if (signal.aborted) return { ok: false, stop: "canceled" };
     if (Array.isArray(reply)) return reply;
     return "stop" in reply ? { ok: false, stop: reply.stop } : { ok: false, code: reply.code };
@@ -777,6 +801,8 @@ function createFactReader(runner: GitRunner, target: ListingTarget, roots: Roots
 
   return {
     programFiles,
+    // The `index` result of the first phase-1 request. Undefined when no phase-1 request ran.
+    index: () => indexResult,
 
     // Phase 1. Each link adds one request round, at most 8 hops (contract §5). The result maps the `keyOf` key of each start.
     async walk(starts: readonly Inside[]): Promise<Map<string, Walked> | ListingFailure> {
@@ -966,12 +992,16 @@ export interface TrustListing {
   inputLimited: boolean;
   approvalRequired: { reads: boolean; commit: boolean };
   changeFiles: ChangeFiles;
+  // Contract §11 "Change polling": the index digest of the first phase-1 request, when the target asked for it.
+  index?: WslIndexResult;
 }
 
 export interface ListingTarget {
   operationId: string;
   signal: AbortSignal;
   workspace: Workspace;
+  // Contract §6 "Index digest in a read": only a WSL `readWorkspace` sets it.
+  index?: { sharedIndex?: string };
 }
 
 // `text` names the path and the reason of a file failure.
@@ -981,7 +1011,7 @@ const NEWLINE = 0x0a;
 
 // Contract §7 "Hook registrations": the trust listing starts two Git processes and no `hook list`. Neither runs a filter or loads the index.
 // `configFiles` holds the kept `git var` lines of the workspace installation, or undefined when the installation keeps none.
-export async function listTrust(runner: GitRunner, target: ListingTarget, environment: ServiceEnvironment, configFiles: readonly string[] | undefined): Promise<ListingOutcome> {
+export async function listTrust(runner: ListingRunner, target: ListingTarget, environment: ServiceEnvironment, configFiles: readonly string[] | undefined): Promise<ListingOutcome> {
   const { workspace, operationId, signal } = target;
   const context = { contextKind: "registeredOperation" as const, gitInstallationId: workspace.gitInstallationId, repositoryId: workspace.repositoryId };
   const call = (args: string[]) => {
@@ -1018,7 +1048,7 @@ export async function listTrust(runner: GitRunner, target: ListingTarget, enviro
 }
 
 async function buildListing(
-  runner: GitRunner,
+  runner: ListingRunner,
   target: ListingTarget,
   entries: ConfigEntry[],
   hooksText: string | null,
@@ -1253,6 +1283,7 @@ async function buildListing(
       inputLimited,
       approvalRequired,
       changeFiles: { configPaths: config.paths, programFiles: reader.programFiles, complete: config.complete },
+      ...(reader.index() === undefined ? {} : { index: reader.index() }),
     },
   };
 }
@@ -1384,7 +1415,7 @@ const stopped = (outcome: Exclude<ListingOutcome, { ok: true }>): TrustOutcome<n
   "stop" in outcome ? { result: outcome.stop } : { result: "failed", code: outcome.code, ...(outcome.text === undefined ? {} : { value: { remedy: { text: outcome.text } } }) };
 
 export interface TrustOptions {
-  runner: GitRunner;
+  runner: ListingRunner;
   environment: ServiceEnvironment;
   // The kept `git var` lines of an installation (contract §7 "Configuration file paths"). Undefined: the installation keeps none.
   configFiles?: (gitInstallationId: string) => readonly string[] | undefined;

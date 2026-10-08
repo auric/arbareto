@@ -18,7 +18,7 @@ import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
 import { createRegistrations, type RegistrationOutcome, type Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
-import { createWorkspaceReader, type ReadOutcome } from "./status";
+import { createWorkspaceReader, type ReadOutcome, type WorkspaceReaderOptions } from "./status";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
@@ -47,6 +47,8 @@ export interface SessionOptions {
   readDeadlineMs?: number;
   // `false` starts no watcher, so only the contract §8 stat tuple starts a full read. Tests use it.
   watchHints?: boolean;
+  // Test seam only. Production never sets it.
+  readRawIndex?: WorkspaceReaderOptions["readRawIndex"];
 }
 
 // The outcome forms of the reads that `read-scheduler.ts` runs.
@@ -55,7 +57,7 @@ type ReadResult =
   | { result: "canceled" }
   | { result: "deadline" };
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -116,7 +118,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     environment,
     configFiles: (gitInstallationId) => (git?.ok && git.installation.gitInstallationId === gitInstallationId ? git.installation.configFiles : undefined),
   });
-  const reader = createWorkspaceReader({ runner, trust });
+  const reader = createWorkspaceReader({ runner, trust, readRawIndex });
   const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();

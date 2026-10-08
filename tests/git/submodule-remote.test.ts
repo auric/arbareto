@@ -1,34 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T253: the fallback remote rule of contract §12 "Update protocol" step 5. `src/git-service/submodule-remote.ts` comes with T254.
+// T253: the fallback remote rule of contract §12 "Update protocol" step 5, against real superprojects.
 // Oracles: the `submodule.<name>.url` that `git submodule init` writes in a copy, and `git submodule--helper get-default-remote <path>` (research.md R14 S23, S32).
 // The helper is a test-only oracle. The product never runs it.
 
-import { describe, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { cpSync } from "node:fs";
 import { join } from "node:path";
-import { fixtureDir, useFixtureRoot } from "./fixture-root";
-import { todoCase } from "./hunk-harness";
-import { configMap, miniGit, miniWorld, underTestSubmodule, type MiniSub, type MiniWorld } from "./submodule-harness";
+import { fallbackRemote, resolveGitmodulesUrl, type GitPlatform, type RemoteContext } from "../../src/git-service/submodule-remote";
+import { parseConfigListing } from "../../src/git-service/trust";
+import { printOrigin } from "../origin";
+import { FIXTURE_ROOT, fixtureDir, ownedGit, useFixtureRoot } from "./fixture-root";
+import { gitPath, TIMEOUT_MS } from "./hunk-harness";
+import { configMap, miniGit, miniWorld, type MiniSub, type MiniWorld } from "./submodule-harness";
 
-const TASK = "T253";
-const NEEDS = "(needs T254)";
+printOrigin("../../src/git-service/submodule-remote.ts", import.meta.dir);
 
 useFixtureRoot();
 
-// Assumed T254 API. The inputs are exact parses of Git output: `config list -z`, `symbolic-ref -q --short HEAD`, and `remote get-url --all -- <name>`.
-interface SubmoduleRemote {
-  // Contract §12: a relative URL resolves against the raw parent `remote.<default remote>.url`, else against the parent worktree root.
-  resolveSubmoduleUrl(input: { url: string; parentConfig: Record<string, string[]>; parentBranch: string | null; parentWorktree: string }): string;
-  // Contract §12: the first remote whose rewritten URL equals the resolved URL, else the default remote.
-  chooseFallbackRemote(input: { resolvedUrl: string; config: Record<string, string[]>; branch: string | null; remoteUrls: Record<string, string[]> }): string;
+// The native Git of the run: Git for Windows on Windows, else a POSIX Git.
+const PLATFORM: GitPlatform = process.platform === "win32" ? "windows" : "posix";
+
+const line = (text: string) => text.replace(/\n$/, "");
+const configOf = (w: MiniWorld, dir: string, extra: string[] = []) => configMap(miniGit(w, dir, ["config", "list", ...extra, "-z"]));
+
+// The inputs of the product: `config list --show-scope --show-origin -z` and `symbolic-ref -q HEAD`.
+function contextOf(w: MiniWorld, dir: string): RemoteContext {
+  const listing = parseConfigListing(ownedGit(gitPath(), FIXTURE_ROOT, dir, ["config", "list", "--show-scope", "--show-origin", "-z"], { env: w.env }), false);
+  if (listing === null) throw new Error("config listing refused");
+  return { listing, headRef: line(miniGit(w, dir, ["symbolic-ref", "-q", "HEAD"], [0, 1])) || null };
 }
 
-const remoteModule = async () => (await underTestSubmodule("submodule-remote")) as unknown as SubmoduleRemote;
+const worktreeRoot = (w: MiniWorld, dir: string) => line(miniGit(w, dir, ["rev-parse", "--show-toplevel"]));
 
-const headBranch = (w: MiniWorld, dir: string) => miniGit(w, dir, ["symbolic-ref", "-q", "--short", "HEAD"], [0, 1]).trim() || null;
-const configOf = (w: MiniWorld, dir: string, extra: string[] = []) => configMap(miniGit(w, dir, ["config", "list", ...extra, "-z"]));
+// The version text of the Git that runs the fixture, such as `2.56.0.windows.1`.
+function versionOf(w: MiniWorld): string {
+  const m = /^git version (\S+)$/.exec(line(miniGit(w, w.root, ["version"])));
+  if (m === null) throw new Error("git version output refused");
+  return m[1]!;
+}
 
 // ---- Resolved URL ----
 
@@ -50,15 +61,6 @@ const PARENTS: Parent[] = ["default remote", "no default remote", "insteadOf par
 const slug = (text: string) => text.replaceAll(" ", "-");
 const formName = (i: number) => `form${i}`;
 
-// `git submodule init` in a disposable copy. Each `submodule.<name>.url` key is unset before that run.
-function initOracle(w: MiniWorld, copyName: string): Record<string, string[]> {
-  const copy = join(w.root, copyName);
-  cpSync(w.sup.dir, copy, { recursive: true });
-  expect(miniGit(w, copy, ["config", "--local", "--get-regexp", "^submodule\\."], [0, 1])).toBe("");
-  miniGit(w, copy, ["submodule", "init"]);
-  return configOf(w, copy, ["--local"]);
-}
-
 describe("resolved URL equals `git submodule init` (contract §12, research.md R14 S32)", () => {
   const worlds = new Map<Parent, MiniWorld>();
   // One superproject per parent form, built once. The `insteadOf` parent keeps the raw `fake:` value of `remote.origin.url`, as a clone from `fake:super.git` writes it.
@@ -78,15 +80,19 @@ describe("resolved URL equals `git submodule init` (contract §12, research.md R
   for (const parent of PARENTS) {
     FORMS.forEach((form, i) => {
       if (parent !== "default remote" && !form.relative) return;
-      todoCase(TASK, `${parent}: the ${form.label} form resolves to the submodule.<name>.url that git submodule init writes ${NEEDS}`, [], async () => {
+      test(`${parent}: the ${form.label} form resolves to the submodule.<name>.url that git submodule init writes`, () => {
         const w = world(parent);
         const name = formName(i);
         const url = configOf(w, w.sup.dir, ["--file", ".gitmodules"])[`submodule.${name}.url`]![0]!;
-        const written = initOracle(w, `init-${slug(parent)}-${i}`)[`submodule.${name}.url`];
-        const m = await remoteModule();
-        const resolved = m.resolveSubmoduleUrl({ url, parentConfig: configOf(w, w.sup.dir), parentBranch: headBranch(w, w.sup.dir), parentWorktree: w.sup.dir });
+        // Git resolves against its current folder, so the product reads the same disposable copy that `git submodule init` runs in.
+        const copy = join(w.root, `init-${slug(parent)}-${i}`);
+        cpSync(w.sup.dir, copy, { recursive: true });
+        expect(miniGit(w, copy, ["config", "--local", "--get-regexp", "^submodule\\."], [0, 1])).toBe("");
+        const resolved = resolveGitmodulesUrl(url, contextOf(w, copy), worktreeRoot(w, copy), PLATFORM);
+        miniGit(w, copy, ["submodule", "init"]);
+        const written = configOf(w, copy, ["--local"])[`submodule.${name}.url`];
         expect({ form: form.label, url: [resolved] }).toEqual({ form: form.label, url: written });
-      });
+      }, TIMEOUT_MS);
     });
   }
 });
@@ -139,7 +145,7 @@ const CASES: RemoteCase[] = [
 
 describe("chosen remote equals `git submodule--helper get-default-remote` (contract §12, research.md R14 S23)", () => {
   CASES.forEach((c, i) => {
-    todoCase(TASK, `${c.label}: the chosen remote equals the helper output, and the resolved URL equals the registered URL ${NEEDS}`, [], async () => {
+    test(`${c.label}: the chosen remote equals the helper output, and the resolved URL equals the registered URL`, () => {
       const name = `t253-remote-${i}`;
       const w = miniWorld(name, [{ name: "solo", path: "solo", url: "../solo.git" }], c.global);
       if (c.label.startsWith("a parent")) miniGit(w, w.sup.dir, ["config", "remote.origin.url", "fake:super.git"]);
@@ -148,16 +154,12 @@ describe("chosen remote equals `git submodule--helper get-default-remote` (contr
       const sub = join(w.sup.dir, "solo");
       c.setup(w, sub);
       const registered = configOf(w, w.sup.dir, ["--local"])["submodule.solo.url"]![0]!;
-      const helper = miniGit(w, w.sup.dir, ["submodule--helper", "get-default-remote", "solo"]).trim();
-      const config = configOf(w, sub);
-      const names = Object.keys(config)
-        .filter((key) => key.startsWith("remote.") && key.endsWith(".url"))
-        .map((key) => key.slice("remote.".length, -".url".length));
-      const remoteUrls = Object.fromEntries(names.map((n) => [n, miniGit(w, sub, ["remote", "get-url", "--all", "--", n]).split("\n").filter((u) => u !== "")]));
-      const m = await remoteModule();
-      const resolved = m.resolveSubmoduleUrl({ url: gitmodulesUrl, parentConfig: configOf(w, w.sup.dir), parentBranch: headBranch(w, w.sup.dir), parentWorktree: w.sup.dir });
-      const chosen = m.chooseFallbackRemote({ resolvedUrl: resolved, config, branch: headBranch(w, sub), remoteUrls });
+      const helper = line(miniGit(w, w.sup.dir, ["submodule--helper", "get-default-remote", "solo"]));
+      const names = miniGit(w, sub, ["remote"]).split("\n").filter((n) => n !== "");
+      const remoteUrls = new Map(names.map((n) => [n, miniGit(w, sub, ["remote", "get-url", "--all", "--", n]).split("\n").filter((u) => u !== "")]));
+      const resolved = resolveGitmodulesUrl(gitmodulesUrl, contextOf(w, w.sup.dir), worktreeRoot(w, w.sup.dir), PLATFORM);
+      const chosen = fallbackRemote(resolved, contextOf(w, sub), remoteUrls, versionOf(w));
       expect({ case: c.label, resolved, chosen }).toEqual({ case: c.label, resolved: registered, chosen: helper });
-    });
+    }, TIMEOUT_MS);
   });
 });

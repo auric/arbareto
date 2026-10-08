@@ -95,18 +95,6 @@ describe("relative_url (remote.c)", () => {
 describe("resolve_relative_url (builtin/submodule--helper.c)", () => {
   const ROOT = "C:/Users/u/super";
 
-  test("a relative URL resolves against the raw remote URL of the default remote", () => {
-    // Probe S32: `submodule init` wrote `fake:sub.git` from the raw `remote.origin.url`, before any `insteadOf` rewrite.
-    const parent = context([["url.C:/real/.insteadof", "fake:"], ["remote.origin.url", "fake:super.git"]]);
-    expect(resolveGitmodulesUrl("../sub.git", parent, ROOT, "windows")).toBe("fake:sub.git");
-  });
-
-  test("without the default remote URL, Git's current folder is the base", () => {
-    expect(resolveGitmodulesUrl("./s", context([]), ROOT, "windows")).toBe("C:/Users/u/super/s");
-    expect(resolveGitmodulesUrl("../s", context([]), ROOT, "windows")).toBe("C:/Users/u/s");
-    expect(resolveGitmodulesUrl("../../s", context([]), ROOT, "windows")).toBe("C:/Users/s");
-  });
-
   test("the branch remote is the default remote, and the last URL value wins", () => {
     const parent = context([["remote.origin.url", "https://h/o/x"], ["remote.up.url", "https://h/u/x"], ["remote.up.url", "https://h/v/x"], ["branch.main.remote", "up"]]);
     expect(resolveGitmodulesUrl("../s", parent, ROOT, "windows")).toBe("https://h/v/s");

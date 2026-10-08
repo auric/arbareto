@@ -60,6 +60,10 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["lineEndingArgs", () => commands.lineEndingArgs()],
   ["emptyTreeArgs", () => commands.emptyTreeArgs()],
   ["commitTreeArgs", () => commands.commitTreeArgs(SHA1, "sha1")],
+  ["blobFilterProofArgs", () => commands.blobFilterProofArgs("a.txt", SHA1, "sha1")],
+  ["blobHashProofArgs", () => commands.blobHashProofArgs("a.txt")],
+  ["gitmodulesListArgs", () => commands.gitmodulesListArgs()],
+  ["gitlinkPatchArgs", () => commands.gitlinkPatchArgs(["sub"])],
 ];
 
 // The arrays of every exported builder without a parameter. `discoveryProfiles` gives several arrays.
@@ -253,11 +257,32 @@ const builderArrays = (): string[][] =>
     .map((a) => a.args)
     .filter((args): args is string[] => Array.isArray(args) && args.every((item) => typeof item === "string"));
 
-// The builder families of T092, T101, T104, T199, and T227. No task fixes the names of builders with a path parameter yet, so those bodies name the gap.
-const unnamed = (task: string) => () => {
-  throw new Error(`${task}: no task fixes the name of this path builder yet`);
-};
-test.todo("`--` comes before any path, and option-like names such as `-rf` and `--output=x` stay single literal items after `--` (needs T101, T199, T227)", unnamed("T101, T199, T227"));
+// The path builders of T101, T199, and T227. Each puts the literal item after `--`.
+const LITERAL_AFTER_SEPARATOR: [string, (value: string) => string[], (value: string) => string][] = [
+  ["stagedPatchArgs", (p) => commands.stagedPatchArgs(SHA1, "sha1", p), (p) => p],
+  ["unstagedPatchArgs", (p) => commands.unstagedPatchArgs(p), (p) => p],
+  ["untrackedPatchArgs", (p) => commands.untrackedPatchArgs(p), (p) => p],
+  ["stagedNumstatArgs", (p) => commands.stagedNumstatArgs(SHA1, "sha1", p), (p) => p],
+  ["unstagedNumstatArgs", (p) => commands.unstagedNumstatArgs(p), (p) => p],
+  ["untrackedNumstatArgs", (p) => commands.untrackedNumstatArgs(p), (p) => p],
+  ["gitlinkPatchArgs", (p) => commands.gitlinkPatchArgs([p]), (p) => p],
+  ["activeSetArgs", (p) => commands.activeSetArgs([p]), (p) => p],
+  ["submoduleCloneArgs", (p) => commands.submoduleCloneArgs("C:/repo", p), (p) => `:(literal)${p}`],
+  ["submoduleCheckoutArgs", (p) => commands.submoduleCheckoutArgs("C:/repo", p), (p) => `:(literal)${p}`],
+  ["submoduleRegisterArgs", (p) => commands.submoduleRegisterArgs("C:/repo", p), (p) => `:(literal)${p}`],
+  ["submoduleFallbackFetchArgs", (p) => commands.submoduleFallbackFetchArgs("C:/repo/sub", p, SHA1, "sha1"), (p) => p],
+  ["remoteUrlArgs", (p) => commands.remoteUrlArgs({ worktree: "C:/repo/sub" }, p), (p) => p],
+];
+test.each(LITERAL_AFTER_SEPARATOR)("%s puts `--` before the path, and option-like names stay single literal items after `--`", (_name, build, literal) => {
+  for (const value of ["-rf", "--output=x", "a b/c d.txt"]) {
+    const args = build(value);
+    const at = args.indexOf(literal(value));
+    expect(args.filter((item) => item === literal(value))).toHaveLength(1);
+    expect(args.indexOf("--")).toBeGreaterThan(-1);
+    expect(args.indexOf("--")).toBeLessThan(at);
+  }
+  for (const value of ["", "a\0b"]) expect(() => build(value)).toThrow(TypeError);
+});
 // Contract §4 and §7: Git runs in the worktree root, and the path is relative to that root (research R3).
 test("the untracked read is the T092 form, and the path stays one literal item after `--`", () => {
   const form = ["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--", "/dev/null"];
@@ -303,8 +328,9 @@ test("the attribute, line-ending, and empty-tree reads are exact", () => {
   expect(commands.lineEndingArgs()).toEqual([...R, "ls-files", "--eol", "-z"]);
   expect(commands.emptyTreeArgs()).toEqual([...R, "hash-object", "-t", "tree", "--stdin"]);
 });
-test.todo("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object -t tree --stdin` exists (needs T104, T199)", () => {
-  const hashes = builderArrays().filter((args) => args.includes("hash-object"));
+test("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object -t tree --stdin` exists (needs T104, T199)", () => {
+  const hashes = [...builderArrays(), commands.blobHashProofArgs("a.txt")].filter((args) => args.includes("hash-object"));
+  expect(hashes.length).toBeGreaterThanOrEqual(3);
   expect(hashes.some((args) => args.includes("-t") && args.includes("tree") && args.includes("--stdin"))).toBe(true);
   for (const args of hashes) {
     expect(args).toContain("--stdin");
@@ -312,7 +338,7 @@ test.todo("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object 
   }
 });
 const endsWith = (args: string[], tail: string[]) => args.length > tail.length && tail.every((item, i) => args[args.length - tail.length + i] === item);
-test.todo("the applyHunk and applyFile steps start with `--no-lazy-fetch`, end with the contract §4 forms, and `apply --cached` reads the retained patch on stdin (needs T104, T199)", () => {
+test("the applyHunk and applyFile steps start with `--no-lazy-fetch`, end with the contract §4 forms, and `apply --cached` reads the retained patch on stdin (needs T104, T199)", () => {
   const arrays = builderArrays();
   for (const tail of [["read-tree", "--empty"], ["update-index", "--add", "--remove", "-z", "--stdin"], ["update-index", "-z", "--index-info"], ["hash-object", "--no-filters", "--stdin"]]) {
     expect({ tail, found: arrays.some((args) => args[0] === "--no-lazy-fetch" && endsWith(args, tail)) }).toEqual({ tail, found: true });
@@ -339,8 +365,99 @@ test("the T104 mutation arrays are exact, and the ls-tree read takes one full co
     expect(args.join("\0")).not.toContain("GIT_INDEX_FILE");
   }
 });
-test.todo("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` with `config --file .gitmodules --null --list`, and never add `--recursive` (needs T227)", () => {
-  const arrays = builderArrays();
+// T199: the contract §4 "File staging" step 5 forms and the "Blob proof" reads. The update steps read their input on stdin.
+test("the T199 file-staging arrays and blob proofs are exact", () => {
+  const N = "--no-lazy-fetch";
+  expect(commands.updateIndexAddArgs()).toEqual([N, "update-index", "--add", "--remove", "-z", "--stdin"]);
+  expect(commands.updateIndexInfoArgs()).toEqual([N, "update-index", "-z", "--index-info"]);
+  expect(commands.blobFilterProofArgs("dir/a b.txt", SHA1, "sha1")).toEqual([...R, "cat-file", "--filters", "--path=dir/a b.txt", SHA1]);
+  expect(commands.blobFilterProofArgs("-rf", SHA256, "sha256")).toEqual([...R, "cat-file", "--filters", "--path=-rf", SHA256]);
+  expect(commands.blobHashProofArgs("--output=x")).toEqual([...R, "hash-object", "--stdin", "--path=--output=x"]);
+  for (const oid of ["HEAD", SHA256, "--all", ""]) expect(() => commands.blobFilterProofArgs("a.txt", oid, "sha1")).toThrow(TypeError);
+  for (const path of ["", "a\0b"]) {
+    expect(() => commands.blobFilterProofArgs(path, SHA1, "sha1")).toThrow(TypeError);
+    expect(() => commands.blobHashProofArgs(path)).toThrow(TypeError);
+  }
+});
+
+// T227: contract §12 "Review reads". Each read inside a submodule starts with `--no-lazy-fetch --no-optional-locks` and then `-C <worktree>`, or `--git-dir=<dir> --work-tree=<dir>` for a kept Git directory.
+test("the T227 submodule review reads are exact for a worktree and for a kept Git directory", () => {
+  const W = ["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub"];
+  const K = ["--no-lazy-fetch", "--no-optional-locks", "--git-dir=C:/repo/.git/modules/a/b", "--work-tree=C:/repo/.git/modules/a/b"];
+  for (const [location, prefix] of [[{ worktree: "C:/repo/sub" }, W], [{ gitDir: "C:/repo/.git/modules/a/b" }, K]] as const) {
+    expect(commands.submoduleHeadOidArgs(location)).toEqual([...prefix, "rev-parse", "--verify", "-q", "HEAD"]);
+    expect(commands.submoduleGitDirArgs(location)).toEqual([...prefix, "rev-parse", "--absolute-git-dir"]);
+    expect(commands.submoduleHooksPathArgs(location)).toEqual([...prefix, "rev-parse", "--git-path", "hooks"]);
+    expect(commands.submoduleHeadTargetArgs(location)).toEqual([...prefix, "symbolic-ref", "-q", "HEAD"]);
+    expect(commands.submoduleConfigListArgs(location)).toEqual([...prefix, "config", "list", "--show-scope", "--show-origin", "-z"]);
+    expect(commands.submoduleHeadRefArgs(location)).toEqual([...prefix, "for-each-ref", "--contains=HEAD", "--count=1", "--format=%(refname)"]);
+    expect(commands.submoduleObjectCheckArgs(location)).toEqual([...prefix, "cat-file", "--batch-check"]);
+    expect(commands.submoduleReachArgs(location, SHA1, "sha1")).toEqual([...prefix, "rev-list", "-n", "1", SHA1, "--not", "--all"]);
+    expect(commands.submoduleTreeArgs(location, SHA256, "sha256")).toEqual([...prefix, "ls-tree", "-r", "-z", "--full-tree", SHA256]);
+    expect(commands.submoduleGitmodulesBlobArgs(location, SHA1, "sha1")).toEqual([...prefix, "config", "--blob", `${SHA1}:.gitmodules`, "--null", "--list"]);
+    expect(commands.remoteUrlArgs(location, "origin")).toEqual([...prefix, "remote", "get-url", "--all", "--", "origin"]);
+  }
+  for (const oid of ["HEAD", SHA256, "--all", ""]) {
+    expect(() => commands.submoduleReachArgs({ worktree: "C:/repo/sub" }, oid, "sha1")).toThrow(TypeError);
+    expect(() => commands.submoduleTreeArgs({ worktree: "C:/repo/sub" }, oid, "sha1")).toThrow(TypeError);
+    expect(() => commands.submoduleGitmodulesBlobArgs({ worktree: "C:/repo/sub" }, oid, "sha1")).toThrow(TypeError);
+  }
+  for (const location of [{ worktree: "" }, { gitDir: "" }, { worktree: "a\0b" }, {}, { worktree: "a", gitDir: "b" }]) {
+    expect(() => commands.submoduleHeadOidArgs(location as never)).toThrow(TypeError);
+  }
+});
+
+// T227: the superproject reads. `--literal-pathspecs` would turn off the pathspec magic of `submodule.active` values, so the active-set read omits it (git(1) `--literal-pathspecs`, git-config(1) `submodule.active`).
+test("the T227 superproject submodule reads are exact", () => {
+  expect(commands.gitmodulesListArgs()).toEqual([...R, "config", "--file", ".gitmodules", "--null", "--list"]);
+  expect(commands.gitlinkPatchArgs(["sub", "-rf"])).toEqual([...R, "diff-files", "-p", "--ignore-submodules=dirty", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--", "sub", "-rf"]);
+  expect(commands.activeSetArgs(["sub*", ":(glob)lib/**"])).toEqual(["--no-lazy-fetch", "--no-optional-locks", "ls-files", "-z", "--stage", "--", "sub*", ":(glob)lib/**"]);
+  expect(commands.activeSetArgs(["x"], "C:/repo/sub")).toEqual(["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub", "ls-files", "-z", "--stage", "--", "x"]);
+  for (const build of [commands.gitlinkPatchArgs, commands.activeSetArgs]) expect(() => build([])).toThrow(TypeError);
+  for (const parent of ["", "a\0b"]) expect(() => commands.activeSetArgs(["x"], parent)).toThrow(TypeError);
+});
+
+// T227: contract §12 "Update protocol" step 5. The steps take only `--no-lazy-fetch`, as the T104 mutation steps do.
+test("the T227 submodule step arrays are exact", () => {
+  const N = "--no-lazy-fetch";
+  expect(commands.submoduleCloneArgs("C:/repo", "lib/a[1]")).toEqual([N, "-c", "fetch.recurseSubmodules=no", "-C", "C:/repo", "submodule", "update", "--init", "--progress", "--", ":(literal)lib/a[1]"]);
+  expect(commands.submoduleCheckoutArgs("C:/repo", "lib/a")).toEqual([N, "-C", "C:/repo", "submodule", "update", "--init", "--no-fetch", "--progress", "--", ":(literal)lib/a"]);
+  expect(commands.submoduleRegisterArgs("C:/repo", "lib/a")).toEqual([N, "-C", "C:/repo", "submodule", "init", "--", ":(literal)lib/a"]);
+  expect(commands.submoduleFetchArgs("C:/repo/lib/a")).toEqual([N, "-C", "C:/repo/lib/a", "fetch", "--progress", "--no-recurse-submodules"]);
+  expect(commands.submoduleFallbackFetchArgs("C:/repo/lib/a", "origin", SHA256, "sha256")).toEqual([N, "-C", "C:/repo/lib/a", "fetch", "--progress", "--no-recurse-submodules", "--", "origin", SHA256]);
+  for (const oid of ["HEAD", SHA256, "--all", ""]) expect(() => commands.submoduleFallbackFetchArgs("C:/repo/lib/a", "origin", oid, "sha1")).toThrow(TypeError);
+  for (const dir of ["", "a\0b"]) {
+    expect(() => commands.submoduleCloneArgs(dir, "a")).toThrow(TypeError);
+    expect(() => commands.submoduleCheckoutArgs(dir, "a")).toThrow(TypeError);
+    expect(() => commands.submoduleRegisterArgs(dir, "a")).toThrow(TypeError);
+    expect(() => commands.submoduleFetchArgs(dir)).toThrow(TypeError);
+  }
+});
+
+test("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` with `config --file .gitmodules --null --list`, and never add `--recursive` (needs T227)", () => {
+  const location = { worktree: "C:/repo/sub" };
+  const submodule = [
+    commands.submoduleHeadOidArgs(location),
+    commands.submoduleGitDirArgs(location),
+    commands.submoduleHooksPathArgs(location),
+    commands.submoduleHeadTargetArgs(location),
+    commands.submoduleConfigListArgs(location),
+    commands.submoduleHeadRefArgs(location),
+    commands.submoduleObjectCheckArgs(location),
+    commands.submoduleReachArgs(location, SHA1, "sha1"),
+    commands.submoduleTreeArgs(location, SHA1, "sha1"),
+    commands.submoduleGitmodulesBlobArgs(location, SHA1, "sha1"),
+    commands.remoteUrlArgs(location, "origin"),
+    commands.gitlinkPatchArgs(["sub"]),
+    commands.activeSetArgs(["sub"]),
+    commands.submoduleCloneArgs("C:/repo", "sub"),
+    commands.submoduleCheckoutArgs("C:/repo", "sub"),
+    commands.submoduleRegisterArgs("C:/repo", "sub"),
+    commands.submoduleFetchArgs("C:/repo/sub"),
+    commands.submoduleFallbackFetchArgs("C:/repo/sub", "origin", SHA1, "sha1"),
+  ];
+  const arrays = [...builderArrays(), ...submodule];
   expect(arrays.some((args) => ["config", "--file", ".gitmodules", "--null", "--list"].every((item) => args.includes(item)))).toBe(true);
+  for (const args of submodule) expect(args[0]).toBe("--no-lazy-fetch");
   for (const args of arrays) expect(args).not.toContain("--recursive");
 });

@@ -224,7 +224,7 @@ export function checkCall(call: GitCall): void {
   } else if (args[0] !== "--no-lazy-fetch") {
     refuse("first argument must be --no-lazy-fetch");
   }
-  // `git-environment.json` has no `network` policy, so the shell refuses it until T228.
+  // The shell refuses the `network` policy until T228.
   if (bootstrap ? policy !== "probe" : !["read", "mutation"].includes(policy)) refuse("environment policy");
   if (input !== undefined && (!(input instanceof Uint8Array) || input.length > STREAMED_PROCESS_INPUT_BYTES)) refuse("input");
   if (transaction !== undefined && !(policy === "mutation" && fits(Transaction, transaction))) refuse("transaction");

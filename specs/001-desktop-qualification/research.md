@@ -2303,7 +2303,7 @@ The user asked for this design on 2026-10-07. The main session made the decision
 | T111 and T112 (planned) | The compare of the retained raw index. |
 | T113 and T114 (planned) | Working bytes and digests. |
 
-**Decision**: bulk file work of a WSL repository stays inside the distro. Only facts, sizes, SHA-256 digests, object IDs, exit statuses, and link targets cross. The new request `wslFiles` (contract §6 "WSL file work") has the modes `digest`, `indexDigest`, `hashObject`, `catFile`, `lock`, `candidate`, and `publish`. A WSL read takes the index digest in the first phase-1 `fileFacts` request of its trust listing, so it adds no `wsl.exe` start (contract §11 "Change polling"). An unchanged digest reuses the parsed eligibility. Reasons:
+**Decision**: bulk file work of a WSL repository stays inside the distro. Only facts, sizes, SHA-256 digests, object IDs, exit statuses, and link targets cross. The new request `wslFiles` (contract §6 "WSL file work") has the modes `digest`, `indexDigest`, `hashObject`, `catFile`, `lock`, `candidate`, `publish`, and `remove` (`remove` added in the T325 review, 2026-10-08). A WSL read takes the index digest in the first phase-1 `fileFacts` request of its trust listing, so it adds no `wsl.exe` start (contract §11 "Change polling"). An unchanged digest reuses the parsed eligibility. Reasons:
 
 - Reads through 9P and Linux reads of `/mnt` (drvfs) are slow. No probe measured the byte throughput.
 - No probe verified an atomic replace through 9P. A Linux `rename(2)` on one file system is atomic (POSIX.1-2024 `rename`).
@@ -2314,7 +2314,7 @@ Design choices of this record:
 
 - Index publication uses modes of the same request, not a second request type. The modes map to protocol steps 2, 4, and 8 (contract §4).
 - Perl core `utime` sets whole seconds (`doio.c` `apply`, `OP_UTIME`, sets `tv_usec` to 0), and Perl `stat` gives whole seconds. So the candidate and the published lock get the whole seconds of their source time. An earlier time only makes more entries racy (contract §4 "Candidate time"). `Time::HiRes` could set nanoseconds, but its presence in `perl-base` is unverified.
-- The unlink of an owned lock or candidate stays a UNC crossing. It moves no file data, and a new mode would add surface.
+- The removal of an owned lock or candidate uses mode `remove` (T325 review, 2026-10-08). Correction, 2026-10-08: this replaces the first rule, an unlink through UNC.
 - `indexDigest` digests `sharedindex.<hash>` only when the request names the hash from the last parse. A file-name search would be a heuristic.
 
 **Rejected**:

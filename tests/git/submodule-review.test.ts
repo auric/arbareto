@@ -307,9 +307,27 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     ["no-url", () => ({ path: "orphan", reason: "no-url", text: TEXTS.noUrl("orphan"), command: null })],
     ["interrupted", () => ({ path: "solo", reason: "clone-interrupted", text: TEXTS.cloneInterrupted("solo"), command: null })],
     ["folder", () => ({ path: "solo", reason: "folder-not-empty", text: TEXTS.folderNotEmpty("solo"), command: null })],
-    ["path", (b) => ({ path: Buffer.from(b.facts.notes.invalidPath as string, "hex").toString("utf8"), reason: "path", text: TEXTS.path(Buffer.from(b.facts.notes.invalidPath as string, "hex").toString("utf8")), command: null })],
+    ["path", (b) => ({ path: shownPath(b.facts.notes.invalidPath as string), reason: "path", text: TEXTS.path(shownPath(b.facts.notes.invalidPath as string)), command: null })],
     ["remote-name", (b) => ({ path: "solo", reason: "remote-name", text: TEXTS.remoteName("solo", remoteName(b)), command: null })],
   ];
+  // Data-model §5: each byte outside a well-formed UTF-8 sequence shows as a `\xNN` escape.
+  function shownPath(hex: string): string {
+    const bytes = Buffer.from(hex, "hex");
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let out = "";
+    for (let at = 0; at < bytes.length; ) {
+      const n = [1, 2, 3, 4].find((k) => {
+        try {
+          return decoder.decode(bytes.subarray(at, at + k)).length > 0;
+        } catch {
+          return false;
+        }
+      });
+      out += n === undefined ? `\\x${bytes[at]!.toString(16).padStart(2, "0")}` : decoder.decode(bytes.subarray(at, at + n));
+      at += n ?? 1;
+    }
+    return out;
+  }
   const shape = (x: SubmoduleRefusal) => ({ path: x.path, reason: x.reason, text: x.text, command: x.remedy?.command ?? null, ...(x.remedy?.text === undefined ? {} : { remedyText: x.remedy.text }) });
 
   for (const [variant, expected] of CASES) {
@@ -460,11 +478,24 @@ describe("refusals (contract §12 \"Refusals\")", () => {
 describe("programs (contract §12 \"Trust\")", () => {
   // The script file of a canary: `<root>/canaries/<name>.sh` beside its log.
   const script = (b: Built, name: string) => join(b.root, b.facts.canaries[name]!.replace(/\.log$/, ".sh"));
-  const programDigests = (b: Built, label: string) => {
-    const gitDir = join(b.root, (b.facts.notes.programs as Record<string, string>)[label]!);
-    const hooks = (b.facts.notes.hookEvents as string[]).map((e) => fileSha256(join(gitDir, "hooks", e)));
-    const keys = ["fsmonitor", "clean", "smudge", "ssh", "credential", "uploadpack"].map((k) => fileSha256(script(b, `${label}-${k}`)));
-    return [...hooks, ...keys];
+  const gitDirOf = (b: Built, label: string) => join(b.root, (b.facts.notes.programs as Record<string, string>)[label]!);
+  const hookDigests = (b: Built, label: string) => (b.facts.notes.hookEvents as string[]).map((e) => fileSha256(join(gitDirOf(b, label), "hooks", e)));
+  // The `programCanaries` keys as `config list` names them, and whether the §7 value display allowlist shows the value.
+  const CANARY_KEYS: [key: string, canary: string, shown: boolean][] = [
+    ["core.fsmonitor", "fsmonitor", true],
+    ["filter.f29.clean", "clean", true],
+    ["filter.f29.smudge", "smudge", true],
+    ["core.sshcommand", "ssh", false],
+    ["credential.helper", "credential", false],
+    ["remote.origin.uploadpack", "uploadpack", false],
+  ];
+  // Contract §7 "Program file digests": the canary scripts lie outside every root, so each entry is `unchecked` with its location.
+  const expectOutsideCanaries = (b: Built, r: SubmoduleReview, label: string) => {
+    const config = join(gitDirOf(b, label), "config");
+    for (const [key, canary, shown] of CANARY_KEYS) {
+      const entries = r.programs.filter((p) => p.key === key && p.origin.startsWith("file:") && relative(config, p.origin.slice(5)) === "").map((p) => ({ program: p.program, digest: p.digest }));
+      expect({ label, key, entries: [...new Set(entries.map((e) => JSON.stringify(e)))] }).toEqual({ label, key, entries: [JSON.stringify({ program: shown ? script(b, `${label}-${canary}`) : "", digest: "unchecked" })] });
+    }
   };
 
   reviewCase(`F29 base: the review lists every canary program with its origin and digest, and no canary runs during the review`, () => {
@@ -473,20 +504,32 @@ describe("programs (contract §12 \"Trust\")", () => {
       const { r } = await reviewed(service, b);
       expect(ranCanaries(b)).toEqual([]);
       const digests = r.programs.map((p) => p.digest);
-      for (const label of ["mid", "mid-leaf"]) for (const d of programDigests(b, label)) expect({ label, d, listed: digests.includes(d) }).toEqual({ label, d, listed: true });
+      for (const label of ["mid", "mid-leaf"]) {
+        for (const d of hookDigests(b, label)) expect({ label, d, listed: digests.includes(d) }).toEqual({ label, d, listed: true });
+        expectOutsideCanaries(b, r, label);
+      }
       expect(r.programs.every((p) => p.origin !== "")).toBe(true);
-      expect(r.programs.filter((p) => p.key === "core.fsmonitor").map((p) => p.digest).sort()).toEqual([fileSha256(script(b, "mid-fsmonitor")), fileSha256(script(b, "mid-leaf-fsmonitor"))].sort());
+      expect(r.programs.filter((p) => p.key === "core.fsmonitor").map((p) => [p.program, p.digest]).sort()).toEqual([[script(b, "mid-fsmonitor"), "unchecked"], [script(b, "mid-leaf-fsmonitor"), "unchecked"]].sort());
     });
   });
 
-  reviewCase(`F29 relative-hooks: the review lists one unchecked hooks directory for each clone, reuse, checkout, and fetch-checkout row`, () => {
+  reviewCase(`F29 relative-hooks: the review lists one unchecked hooks directory for each clone, reuse, checkout, and fetch-checkout row, and one more for a row without its local target commit`, () => {
     const b = buildF29(gitPath(), "t222-programs-relative", "relative-hooks");
+    const paths = Object.keys(b.facts.notes.rows as Record<string, string>);
+    const target = (b.facts.notes.commits as { B: string }).B;
+    // Contract §12 "Review reads": without a local target commit, the nested submodules stay unknown until the update fetches.
+    const local = (path: string) => {
+      const dir = moduleDirOf(b, superOf(b), path);
+      return existsSync(dir) && fixtureGit(b, b.root, ["--git-dir", dir, "rev-parse", "--verify", "-q", `${target}^{commit}`], [0, 1]).trim() === target;
+    };
+    const expected = paths.map((path) => ({ path, keys: local(path) ? ["core.hooksPath"] : ["core.hooksPath", "core.hooksPath"] }));
+    expect(expected.filter((e) => e.keys.length === 2).length).toBeGreaterThan(0);
     return withFixture(b, "t222-programs-relative", async (service) => {
       const { r } = await reviewed(service, b);
       expect(actionsOf(r)).toEqual(b.facts.notes.rows as Record<string, SubmoduleAction>);
       const unchecked = r.programs.filter((p) => p.digest === "unchecked");
-      const perRow = Object.keys(b.facts.notes.rows as Record<string, string>).map((path) => ({ path, keys: unchecked.filter((p) => "rowId" in p && p.rowId === rowOf(r, path).rowId).map((p) => p.key) }));
-      expect(perRow).toEqual(Object.keys(b.facts.notes.rows as Record<string, string>).map((path) => ({ path, keys: ["core.hooksPath"] })));
+      const perRow = paths.map((path) => ({ path, keys: unchecked.filter((p) => "rowId" in p && p.rowId === rowOf(r, path).rowId).map((p) => p.key) }));
+      expect(perRow).toEqual(expected);
     });
   });
 
@@ -504,7 +547,10 @@ describe("programs (contract §12 \"Trust\")", () => {
       const { r } = await reviewed(service, b);
       expect(ranCanaries(b)).toEqual([]);
       const digests = r.programs.map((p) => p.digest);
-      for (const label of ["mid", "mid-leaf"]) for (const d of programDigests(b, label)) expect({ label, listed: digests.includes(d) }).toEqual({ label, listed: true });
+      for (const label of ["mid", "mid-leaf"]) {
+        for (const d of hookDigests(b, label)) expect({ label, listed: digests.includes(d) }).toEqual({ label, listed: true });
+        expectOutsideCanaries(b, r, label);
+      }
       const reads = walkReads(service);
       for (const dir of keptDirs) expect({ dir, read: reads.some((x) => x.gitDir !== undefined && relative(dir, x.gitDir) === "" && x.workTree !== undefined && relative(dir, x.workTree) === "") }).toEqual({ dir, read: true });
       expect(r.programs.filter((p) => "gitDirectory" in p && !relative(nonGit, p.gitDirectory).startsWith(".."))).toEqual([]);
@@ -517,7 +563,8 @@ describe("programs (contract §12 \"Trust\")", () => {
       const { r } = await reviewed(service, b);
       expect(ranCanaries(b)).toEqual([]);
       const digests = r.programs.map((p) => p.digest);
-      for (const d of programDigests(b, "mid-leaf")) expect(digests).toContain(d);
+      for (const d of hookDigests(b, "mid-leaf")) expect(digests).toContain(d);
+      expectOutsideCanaries(b, r, "mid-leaf");
     });
   });
 

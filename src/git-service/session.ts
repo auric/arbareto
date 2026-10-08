@@ -143,7 +143,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       reader.release(workspace.repositoryId);
       comparisons.release(workspace.repositoryId);
       reviews.release(workspace.repositoryId);
-      approvals.invalidate((a) => a.repositoryId === workspace.repositoryId, "refresh");
+      approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
       trust.release(workspace);
     },
   });

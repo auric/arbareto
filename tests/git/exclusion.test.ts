@@ -87,14 +87,16 @@ describe("exclusion (T106)", () => {
     ["a marker failure", { failure: "disk-full", folder: "C:\\data\\recovery" }, { ok: false, code: "RECOVERY_MARKER_FAILED", failure: "disk-full", folder: "C:\\data\\recovery", remedy: { text: MARKER_REMEDY } }],
     ["a walk deadline", { stop: "deadline" }, { ok: false, code: "DEADLINE" }],
   ])("a %s reply refuses, sends closeJob and no ended frame, and releases the exclusion", async (_name, reply, expected) => {
-    const { runner, frames } = shell(() => reply);
+    // The first started frame gets `reply`. Every later one gets a marker ID.
+    let first = true;
+    const { runner, frames } = shell(() => (first ? ((first = false), reply) : { markerId: crypto.randomUUID() }));
     const exclusion = createExclusion(runner);
     const e = entry();
     expect(await exclusion.enter(e)).toEqual(expected as never);
     expect(frames.slice(1)).toEqual([`closeJob ${e.operationId}`]);
     expect(exclusion.holds(e.workspace.repositoryId)).toBe(false);
-    // The released exclusion admits the next mutation.
-    expect(await exclusion.enter(entry())).toMatchObject({ ok: false });
+    // The released slot admits the next mutation on the same commonIdentity.
+    expect(await exclusion.enter(entry())).toMatchObject({ ok: true });
     expect(frames.filter((f) => f.startsWith("started"))).toHaveLength(2);
   });
 

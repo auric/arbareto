@@ -5,7 +5,7 @@
 // The caller holds the owned index lock (T107). This module never writes the canonical index.
 
 import { constants } from "node:fs";
-import { open, type FileHandle } from "node:fs/promises";
+import { lstat, open, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_PROCESS_DEADLINE_MS, MUTATION_RAW_INDEX_BYTES } from "../contracts/limits";
 import { applyCachedArgs, applyCachedReverseArgs, batchCommandArgs, entryHashArgs, isObjectId, readTreeEmptyArgs } from "./commands";
@@ -13,7 +13,7 @@ import type { RetainedComparison } from "./comparison";
 import { parsePatch, type PatchHunk } from "./diff-parser";
 import { IndexFormatError, rawIndexEntries, type RawIndexEntry } from "./eligibility";
 import { createCollector, RunnerRefusal, type Collector, type GitRunner, type RefusedCode } from "./git-runner";
-import { contextOf, isMissing, latin1 } from "./read-steps";
+import { contextOf, isMissing, latin1, readHandleBounded } from "./read-steps";
 import type { Workspace } from "./registration";
 
 // Contract §8: the fixed prefix of every candidate file.
@@ -30,6 +30,10 @@ export type CandidateFailure =
   | { reason: "split-index" }
   // The canonical index differs from the captured raw index.
   | { reason: "index-changed" }
+  // The canonical index or the candidate is above MUTATION_RAW_INDEX_BYTES.
+  | { reason: "bound" }
+  // `cat-file` answered `<oid> missing` for the captured index blob (contract §7 "Missing objects").
+  | { reason: "object-missing" }
   | { reason: "unavailable"; errno: string }
   // Contract §4 "Candidate time": the read-back time is later than the set time.
   | { reason: "candidate-time"; canonicalNs: bigint; candidateNs: bigint }
@@ -47,6 +51,8 @@ export interface Candidate {
   // The verified raw bytes. Publication writes exactly these bytes.
   bytes: Uint8Array;
   digest: string;
+  // The last-write time of the verified candidate, read through the handle before its bytes (contract §4 "Published time").
+  mtimeNs: bigint;
 }
 
 // `path`: the owned candidate file that the caller removes after its processes stop, or null when none exists.
@@ -72,18 +78,10 @@ class Stop {
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const sameBytes = (a: Uint8Array, b: Uint8Array) => Buffer.compare(a, b) === 0;
 
-// Reads at most `bound` bytes from an open file. Null above the bound.
-async function readAll(handle: FileHandle, bound: number): Promise<Uint8Array | null> {
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const chunk = new Uint8Array(Math.min(1024 * 1024, bound + 1 - size));
-    const { bytesRead } = await handle.read(chunk, 0, chunk.length);
-    if (bytesRead === 0) return Buffer.concat(chunks);
-    size += bytesRead;
-    if (size > bound) return null;
-    chunks.push(chunk.subarray(0, bytesRead));
-  }
+// The time and the bytes come from one handle, so both belong to one file. The time comes first.
+async function timeAndBytes(handle: FileHandle) {
+  const { mtimeNs } = await handle.stat({ bigint: true });
+  return { mtimeNs, bytes: await readHandleBounded(handle, MUTATION_RAW_INDEX_BYTES) };
 }
 
 // The lines of `bytes`, each with its LF. The last line can lack the LF.
@@ -182,6 +180,8 @@ export async function prepareCandidate(t: CandidateTarget): Promise<CandidateOut
     await step("blob", batchCommandArgs(), out, new TextEncoder().encode(`contents ${oid}\0`), false);
     const raw = out.take();
     const head = raw.indexOf(NUL);
+    // git-cat-file(1) BATCH OUTPUT: `<object> SP missing`, here ended by NUL.
+    if (!out.limited && head === raw.length - 1 && latin1(raw.subarray(0, head)) === `${oid} missing`) throw new Stop({ reason: "object-missing" });
     const m = head < 0 ? null : /^([0-9a-f]+) blob (0|[1-9][0-9]*)$/.exec(latin1(raw.subarray(0, head)));
     const size = Number(m?.[2]);
     if (out.limited || m?.[1] !== oid || raw.length !== head + size + 2 || raw[raw.length - 1] !== NUL) throw new Stop({ reason: "malformed", step: "blob" });
@@ -198,20 +198,23 @@ export async function prepareCandidate(t: CandidateTarget): Promise<CandidateOut
       if (t.rawIndexDigest !== null) throw new Stop({ reason: "index-changed" });
       if (t.signal.aborted) throw new Stop({ reason: "canceled" });
       // Contract §4: an absent index gets its first candidate from Git, never a zero-byte file.
-      created = true;
-      await step("read-tree", readTreeEmptyArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), new Uint8Array(), true);
+      // The step reply comes after its process ends, so the file state is then final.
+      try {
+        await step("read-tree", readTreeEmptyArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), new Uint8Array(), true);
+      } finally {
+        created = await lstat(path).then(() => true, (error) => !isMissing(error));
+      }
       return null;
     }
-    let bytes: Uint8Array | null;
-    let canonicalNs: bigint;
+    let read: { bytes: Uint8Array | "over"; mtimeNs: bigint };
     try {
-      // The time and the bytes come from one handle, so both belong to one file.
-      canonicalNs = (await canonical.stat({ bigint: true })).mtimeNs;
-      bytes = await readAll(canonical, MUTATION_RAW_INDEX_BYTES);
+      read = await timeAndBytes(canonical);
     } finally {
       await canonical.close();
     }
-    if (bytes === null || t.rawIndexDigest === null || sha256(bytes) !== t.rawIndexDigest) throw new Stop({ reason: "index-changed" });
+    const { bytes, mtimeNs: canonicalNs } = read;
+    if (bytes === "over") throw new Stop({ reason: "bound" });
+    if (t.rawIndexDigest === null || sha256(bytes) !== t.rawIndexDigest) throw new Stop({ reason: "index-changed" });
     if (t.signal.aborted) throw new Stop({ reason: "canceled" });
     const entries = parse(bytes);
     const candidate = await open(path, "wx");
@@ -245,15 +248,16 @@ export async function prepareCandidate(t: CandidateTarget): Promise<CandidateOut
     return parsed.entries;
   }
 
-  async function readCandidate(): Promise<Uint8Array> {
+  async function readCandidate(): Promise<{ bytes: Uint8Array; mtimeNs: bigint }> {
     const handle = await open(path, constants.O_RDONLY);
+    let read;
     try {
-      const bytes = await readAll(handle, MUTATION_RAW_INDEX_BYTES);
-      if (bytes === null) throw new Stop({ reason: "malformed", step: "candidate" });
-      return bytes;
+      read = await timeAndBytes(handle);
     } finally {
       await handle.close();
     }
+    if (read.bytes === "over") throw new Stop({ reason: "bound" });
+    return { bytes: read.bytes, mtimeNs: read.mtimeNs };
   }
 
   try {
@@ -265,7 +269,7 @@ export async function prepareCandidate(t: CandidateTarget): Promise<CandidateOut
     const header = patch.patch.header;
 
     const copied = await copy();
-    const canonicalEntries = copied ?? parse(await readCandidate());
+    const canonicalEntries = copied ?? parse((await readCandidate()).bytes);
 
     // Research R3 steps 7 and 8: one service-selected hunk, reversed for unstaging.
     const reverse = scope === "head-to-index";
@@ -302,15 +306,17 @@ export async function prepareCandidate(t: CandidateTarget): Promise<CandidateOut
     }
 
     // Research R3 step 10: exact entry checks of the candidate bytes.
-    const bytes = await readCandidate();
+    const { bytes, mtimeNs } = await readCandidate();
     const entries = parse(bytes);
     const isSelected = (e: RawIndexEntry) => sameBytes(e.path, selected);
     const want = expected === null ? [] : [{ path: selected, mode: expected.mode, oid: oid!, stage: 0, assumeUnchanged: false, skipWorktree: false, intentToAdd: false }];
     if (!Bun.deepEquals(entries.filter(isSelected), want, true)) throw new Stop({ reason: "verification", detail: "selected-entry" });
     if (!Bun.deepEquals(entries.filter((e) => !isSelected(e)), canonicalEntries.filter((e) => !isSelected(e)), true)) throw new Stop({ reason: "verification", detail: "unrelated-entries" });
-    return { ok: true, candidate: { path, bytes, digest: sha256(bytes) } };
+    return { ok: true, candidate: { path, bytes, digest: sha256(bytes), mtimeNs } };
   } catch (error) {
     if (error instanceof Stop) return { ok: false, path: created ? path : null, failure: error.failure };
+    // The caller removes an owned candidate, so a path never gets lost.
+    if (created) return { ok: false, path, failure: { reason: "unavailable", errno: (error as NodeJS.ErrnoException).code ?? "unknown" } };
     throw error;
   }
 }

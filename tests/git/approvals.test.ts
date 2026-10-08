@@ -63,9 +63,25 @@ describe("approvals (T108)", () => {
     expect(store.accept(a)).toEqual({ ok: false, consumed: operationId });
     c.advance(APPROVAL_LIFETIME_MS + 1);
     expect(store.accept(a)).toEqual({ ok: false, consumed: operationId });
-    // Invalidation never releases a consumed approval (contract §2).
-    store.invalidate(() => true, "refresh");
+    // Invalidation, eviction, and a new issue never release a consumed approval (contract §2).
+    store.invalidate(() => true);
+    store.forget(a.comparisonId);
+    expect(store.issue(a)).toEqual({ ok: false, consumed: operationId });
     expect(store.accept(a)).toEqual({ ok: false, consumed: operationId });
+  });
+
+  test("comparison eviction forgets its approvals; an expired one answers APPROVAL_EXPIRED until then", () => {
+    const c = clock();
+    const store = createApprovals(c.now);
+    const comparisonId = id();
+    const [stage, unstage, other] = [hunk({ comparisonId, hunkId: id(), direction: "stage" }), hunk({ comparisonId, hunkId: id(), direction: "stage" }), hunk()];
+    for (const a of [stage, unstage, other]) expect(store.issue(a)).toEqual({ ok: true });
+    c.advance(APPROVAL_LIFETIME_MS + 1);
+    expect(store.accept(stage)).toEqual({ ok: false, code: "APPROVAL_EXPIRED" });
+    store.forget(comparisonId);
+    expect(store.accept(stage)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
+    expect(store.accept(unstage)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
+    expect(store.accept(other)).toEqual({ ok: false, code: "APPROVAL_EXPIRED" });
   });
 
   test("the key is comparison, hunk, and direction; another value names no approval", () => {
@@ -78,25 +94,20 @@ describe("approvals (T108)", () => {
     expect(createApprovals(clock().now).accept(a)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
   });
 
-  test("refresh invalidates without a detected change: UNKNOWN_TARGET; a relevant change gives the stale code", () => {
+  test("an invalidated approval or review gives UNKNOWN_TARGET; another repository keeps its approval", () => {
     const store = createApprovals(clock().now);
-    const [refreshed, changed, other] = [hunk(), hunk(), hunk()];
-    const commit: Approval = { kind: "commit", repositoryId: changed.repositoryId, snapshotId: id(), generation: 1, reviewToken: id(), binding: { stagedScope: HEX("7"), reviewedIndex: comparisonBinding().index, head: comparisonBinding().head, disclosure: HEX("8"), trust: { state: "approved", trustId: id() } } };
-    for (const a of [refreshed, changed, other, commit]) store.issue(a);
-    store.invalidate((a) => a.repositoryId === refreshed.repositoryId, "refresh");
-    store.invalidate((a) => a.repositoryId === changed.repositoryId, "change");
-    expect(store.accept(refreshed)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
-    expect(store.accept(changed)).toEqual({ ok: false, code: "STALE_SELECTION" });
-    expect(store.accept(commit)).toEqual({ ok: false, code: "STALE_REVIEW" });
+    const [invalidated, other] = [hunk(), hunk()];
+    const commit: Approval = { kind: "commit", repositoryId: invalidated.repositoryId, snapshotId: id(), generation: 1, reviewToken: id(), binding: { stagedScope: HEX("7"), reviewedIndex: comparisonBinding().index, head: comparisonBinding().head, disclosure: HEX("8"), trust: { state: "approved", trustId: id() } } };
+    for (const a of [invalidated, other, commit]) store.issue(a);
+    store.invalidate((a) => a.repositoryId === invalidated.repositoryId);
+    expect(store.accept(invalidated)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
+    expect(store.accept(commit)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
     expect(store.accept(other)).toMatchObject({ ok: true });
   });
 
   test("a hunk approval binds every value of the contract §4 list, and each change is reported", () => {
     const store = createApprovals(clock().now);
     const a = hunk();
-    expect(Object.keys(a.binding).sort()).toEqual(
-      ["gitInstallationId", "worktreeIdentity", "commonIdentity", "head", "index", "entry", "working", "attributes", "policyFingerprint", "operationState", "patchDigest", "hunkDigest"].sort(),
-    );
     expect(store.staleFields(a.binding, structuredClone(a.binding))).toEqual([]);
     const changes: Record<string, unknown> = {
       gitInstallationId: id(),

@@ -309,6 +309,15 @@ export function gitmodulesListArgs(): string[] {
   return read("config", "--file", ".gitmodules", "--null", "--list");
 }
 
+// Contract §12 "Review reads": the fallback sources after the worktree `.gitmodules`. Git `submodule.h` names them `GITMODULES_INDEX` and `GITMODULES_HEAD`.
+export function gitmodulesIndexArgs(): string[] {
+  return read("config", "--blob", ":.gitmodules", "--null", "--list");
+}
+
+export function gitmodulesHeadArgs(): string[] {
+  return read("config", "--blob", "HEAD:.gitmodules", "--null", "--list");
+}
+
 function pathItems(paths: readonly string[]): string[] {
   if (!Array.isArray(paths) || paths.length === 0) throw new TypeError("path list refused");
   return paths.map(pathItem);
@@ -349,6 +358,12 @@ export function submoduleHooksPathArgs(location: SubmoduleLocation): string[] {
 
 export function submoduleHeadTargetArgs(location: SubmoduleLocation): string[] {
   return submoduleRead(location, "symbolic-ref", "-q", "HEAD");
+}
+
+// Contract §12 "Update protocol", read failures: only the exit status decides. git-show-ref(1) `--exists`: 0 present, 2 missing, 1 another lookup error.
+export function submoduleRefExistsArgs(location: SubmoduleLocation, name: string): string[] {
+  if (!isRefName(name)) throw new TypeError("ref name refused");
+  return submoduleRead(location, "show-ref", "--exists", name);
 }
 
 export function submoduleConfigListArgs(location: SubmoduleLocation): string[] {

@@ -3,7 +3,7 @@
 
 // Contract §3 `readWorkspace` and `readEntries`, contract §5 "Status page", and contract §8 "Change check" and "Changing working file".
 
-import { stat } from "node:fs/promises";
+import { lstat, stat } from "node:fs/promises";
 import { FileIdentity, type FileFact } from "../contracts/channel";
 import type { ChangeEntry, ReadEntriesResult, WorkspaceRefusal, WorkspaceSnapshot } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
@@ -15,12 +15,15 @@ import {
   STATUS_LISTING_BYTES,
   STATUS_LISTING_RECORDS,
   STATUS_PAGE_BYTES,
+  SUBMODULE_GITMODULES_BYTES,
+  SUBMODULE_REVIEW_SUBMODULES,
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import {
   batchCommandArgs,
   headOidArgs,
+  gitmodulesListArgs,
   headTargetArgs,
   indexEntryArgs,
   isObjectId,
@@ -58,7 +61,7 @@ import {
   type ReadWorkingVersionOptions,
   type WorkingVersion,
 } from "./snapshot";
-import { createStatusParser, type BranchHeaders, type StatusRecord } from "./status-parser";
+import { createStatusParser, displayPath, type BranchHeaders, type StatusRecord } from "./status-parser";
 import { parseMaybeBool, readProgramFiles, type ChangeFiles, type ConfigEntry, type ListingOutcome, type ProgramFile, type Trust, type TrustListing } from "./trust";
 import { statFiles, type TupleFile } from "./watch";
 
@@ -149,6 +152,7 @@ interface WorkspaceState {
 }
 
 type Step = { exit: GitExit } | { refused: ErrorCode };
+type Notice = WorkspaceSnapshot["submoduleNotice"];
 type Flags = NonNullable<ChangeEntry["flags"]>;
 
 const NUL = 0x00;
@@ -158,6 +162,11 @@ const UNSET: Flags = { intentToAdd: false, assumeUnchanged: false, skipWorktree:
 const EMPTY = new Uint8Array(0);
 const MAX_GENERATION = Number.MAX_SAFE_INTEGER;
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const SLASH = Buffer.from("/");
+const DOT_GIT = Buffer.from(".git");
+const GITMODULES = Buffer.from(".gitmodules");
+// A `--null` configuration record: the key, then LF and the value when it has one.
+const keyOf = (record: Uint8Array) => latin1(record.indexOf(NEWLINE) < 0 ? record : record.subarray(0, record.indexOf(NEWLINE)));
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 
 // Splits NUL-terminated records. Bytes after the last NUL belong to no record.
@@ -474,6 +483,80 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     return parseCommitObjects(out.take(), [oid], t.workspace.objectFormat).objects[0]?.tree ?? null;
   }
 
+  // Contract §12 "Discovery notice": superproject data only. No Git process starts inside a submodule.
+  async function submoduleNotice(
+    t: ReadWorkspaceTarget,
+    entries: readonly Omit<IndexEntry, "intentToAdd">[],
+    status: readonly StatusRecord[],
+    config: readonly ConfigEntry[],
+  ): Promise<{ notice: Notice; limit: LimitName | null } | { refused: ErrorCode } | "canceled" | "deadline"> {
+    const gitlinks = entries.filter((e) => e.stage === 0 && e.mode === "160000");
+    // git-status(1) porcelain v2 `<sub>`: `S<c><m><u>`, where `<c>` is `C` when the submodule commit changed.
+    const moved = new Set(status.filter((r) => "submodule" in r && r.submodule[0] === "S" && r.submodule[1] === "C").map((r) => latin1(r.path.bytes)));
+    const root = Buffer.from(t.workspace.worktreeRoot, "utf8");
+    const entryOf = (...parts: Uint8Array[]) => Buffer.concat([root, ...parts.flatMap((p) => [SLASH, p])]);
+    const present = async (path: Buffer): Promise<boolean | null> => {
+      try {
+        await lstat(path);
+        return true;
+      } catch (error) {
+        return isMissing(error) ? false : null;
+      }
+    };
+    const found = await Promise.all(gitlinks.map((e) => (moved.has(latin1(e.path)) ? false : present(entryOf(e.path, DOT_GIT)))));
+    if (found.includes(null)) return { refused: "REPOSITORY_UNAVAILABLE" };
+    const counted = gitlinks.filter((_, i) => found[i] === false);
+    const notice = (kept: typeof counted) => ({ count: kept.length, paths: kept.slice(0, SUBMODULE_REVIEW_SUBMODULES).map((e) => displayPath(e.path)) });
+
+    // Git applies the last `submodule.<name>.active` entry of the listing. Only a false value excludes a gitlink.
+    const active = new Map<string, string | null>();
+    for (const c of config) {
+      const key = keyOf(c.keyValueBytes);
+      if (key.startsWith("submodule.") && key.endsWith(".active") && key.length > "submodule..active".length) active.set(key, c.value);
+    }
+    if (counted.length === 0 || ![...active.values()].some((value) => parseMaybeBool(value) === 0)) return { notice: notice(counted), limit: null };
+
+    const file = await present(entryOf(GITMODULES));
+    if (file === null) return { refused: "REPOSITORY_UNAVAILABLE" };
+    if (!file) return { notice: notice(counted), limit: null };
+    const out = createCollector({ maxBytes: SUBMODULE_GITMODULES_BYTES });
+    const step = await run(t, gitmodulesListArgs(), out);
+    if (t.signal.aborted) return "canceled";
+    if ("refused" in step) return step;
+    if (step.exit.deadline !== undefined) return "deadline";
+    if (step.exit.diagnosticLimit) return { refused: "OUTPUT_LIMIT" };
+    if (out.limited) return { notice: notice(counted), limit: "SUBMODULE_GITMODULES_BYTES" };
+    if (step.exit.exitCode !== 0) return { refused: "GIT_FAILED" };
+    const bytes = out.take();
+    if (bytes.length > 0 && bytes[bytes.length - 1] !== NUL) return { refused: "MALFORMED_GIT_OUTPUT" };
+    // Git `submodule-config.c` `gitmodules_cb` sets `overwrite`: a later `path` value of a name replaces its earlier path.
+    // `parse_config` ignores a value that looks like a command-line option.
+    const pathOf = new Map<string, string>();
+    const nameOf = new Map<string, string>();
+    for (const record of records(bytes)) {
+      const key = keyOf(record);
+      if (key === "") return { refused: "MALFORMED_GIT_OUTPUT" };
+      const newline = record.indexOf(NEWLINE);
+      if (!key.startsWith("submodule.") || !key.endsWith(".path") || key.length <= "submodule..path".length || newline < 0) continue;
+      const value = latin1(record.subarray(newline + 1));
+      if (value.startsWith("-")) continue;
+      const name = key.slice("submodule.".length, -".path".length);
+      const old = pathOf.get(name);
+      if (old !== undefined) nameOf.delete(old);
+      pathOf.set(name, value);
+      nameOf.set(value, name);
+    }
+    return {
+      notice: notice(
+        counted.filter((e) => {
+          const key = `submodule.${nameOf.get(latin1(e.path))}.active`;
+          return !nameOf.has(latin1(e.path)) || !active.has(key) || parseMaybeBool(active.get(key)!) !== 0;
+        }),
+      ),
+      limit: null,
+    };
+  }
+
   function recoveryOf(st: WorkspaceState): RecoveryState {
     if (st.unavailable) return "unavailable";
     return st.refreshing > 0 ? "refreshing" : "ready";
@@ -693,8 +776,12 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       }
     }
 
+    const submodules = await submoduleNotice(t, listedEntries, parsed.records, lst.entries);
+    if (submodules === "canceled" || submodules === "deadline") return end({ result: submodules });
+    if ("refused" in submodules) return refusal(submodules.refused);
+
     const statusReason = parsed.state === "limited" ? (parsed.reason as LimitName) : null;
-    const firstLimit = statusReason ?? indexReason ?? fingerprintLimit;
+    const firstLimit = statusReason ?? indexReason ?? fingerprintLimit ?? submodules.limit;
     let completeness: Completeness =
       firstLimit !== null
         ? { state: "limited", code: "OUTPUT_LIMIT", reason: firstLimit }
@@ -717,6 +804,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       recoveryState: recoveryOf(st),
       completeness,
       hunkEligibility: eligibility,
+      submoduleNotice: submodules.notice,
       entryCount: entries.length,
       entries: [] as ChangeEntry[],
       cursor: crypto.randomUUID() as string | null,

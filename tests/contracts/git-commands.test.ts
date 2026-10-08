@@ -63,6 +63,8 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["blobFilterProofArgs", () => commands.blobFilterProofArgs("a.txt", SHA1, "sha1")],
   ["blobHashProofArgs", () => commands.blobHashProofArgs("a.txt")],
   ["gitmodulesListArgs", () => commands.gitmodulesListArgs()],
+  ["gitmodulesIndexArgs", () => commands.gitmodulesIndexArgs()],
+  ["gitmodulesHeadArgs", () => commands.gitmodulesHeadArgs()],
   ["gitlinkPatchArgs", () => commands.gitlinkPatchArgs(["sub"])],
 ];
 
@@ -389,6 +391,7 @@ test("the T227 submodule review reads are exact for a worktree and for a kept Gi
     expect(commands.submoduleGitDirArgs(location)).toEqual([...prefix, "rev-parse", "--absolute-git-dir"]);
     expect(commands.submoduleHooksPathArgs(location)).toEqual([...prefix, "rev-parse", "--git-path", "hooks"]);
     expect(commands.submoduleHeadTargetArgs(location)).toEqual([...prefix, "symbolic-ref", "-q", "HEAD"]);
+    expect(commands.submoduleRefExistsArgs(location, "refs/heads/main")).toEqual([...prefix, "show-ref", "--exists", "refs/heads/main"]);
     expect(commands.submoduleConfigListArgs(location)).toEqual([...prefix, "config", "list", "--show-scope", "--show-origin", "-z"]);
     expect(commands.submoduleHeadRefArgs(location)).toEqual([...prefix, "for-each-ref", "--contains=HEAD", "--count=1", "--format=%(refname)"]);
     expect(commands.submoduleObjectCheckArgs(location)).toEqual([...prefix, "cat-file", "--batch-check"]);
@@ -402,6 +405,7 @@ test("the T227 submodule review reads are exact for a worktree and for a kept Gi
     expect(() => commands.submoduleTreeArgs({ worktree: "C:/repo/sub" }, oid, "sha1")).toThrow(TypeError);
     expect(() => commands.submoduleGitmodulesBlobArgs({ worktree: "C:/repo/sub" }, oid, "sha1")).toThrow(TypeError);
   }
+  for (const name of ["HEAD", "main", "--all", "refs/heads/", "refs/heads/a..b", ""]) expect(() => commands.submoduleRefExistsArgs({ worktree: "C:/repo/sub" }, name)).toThrow(TypeError);
   for (const location of [{ worktree: "" }, { gitDir: "" }, { worktree: "a\0b" }, {}, { worktree: "a", gitDir: "b" }]) {
     expect(() => commands.submoduleHeadOidArgs(location as never)).toThrow(TypeError);
   }
@@ -410,6 +414,8 @@ test("the T227 submodule review reads are exact for a worktree and for a kept Gi
 // T227: the superproject reads. `--literal-pathspecs` would turn off the pathspec magic of `submodule.active` values, so the active-set read omits it (git(1) `--literal-pathspecs`, git-config(1) `submodule.active`).
 test("the T227 superproject submodule reads are exact", () => {
   expect(commands.gitmodulesListArgs()).toEqual([...R, "config", "--file", ".gitmodules", "--null", "--list"]);
+  expect(commands.gitmodulesIndexArgs()).toEqual([...R, "config", "--blob", ":.gitmodules", "--null", "--list"]);
+  expect(commands.gitmodulesHeadArgs()).toEqual([...R, "config", "--blob", "HEAD:.gitmodules", "--null", "--list"]);
   expect(commands.gitlinkPatchArgs(["sub", "-rf"])).toEqual([...R, "diff-files", "-p", "--ignore-submodules=dirty", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--", "sub", "-rf"]);
   expect(commands.activeSetArgs(["sub*", ":(glob)lib/**"])).toEqual(["--no-lazy-fetch", "--no-optional-locks", "ls-files", "-z", "--stage", "--", "sub*", ":(glob)lib/**"]);
   expect(commands.activeSetArgs(["x"], "C:/repo/sub")).toEqual(["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub", "ls-files", "-z", "--stage", "--", "x"]);

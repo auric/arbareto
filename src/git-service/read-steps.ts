@@ -4,7 +4,7 @@
 // The read steps that `readWorkspace` and `readHistory` share: the bounded file read, the Git run, and the object check (contract §7 "Missing objects").
 
 import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, type FileHandle } from "node:fs/promises";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
 import { createCollector, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
@@ -20,6 +20,20 @@ export const isMissing = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((err
 export const latin1 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
 export const contextOf = (w: Workspace) => ({ contextKind: "registeredOperation" as const, gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId });
 
+// Reads an open file from its current position. At most `maxBytes` plus one byte.
+export async function readHandleBounded(handle: FileHandle, maxBytes: number): Promise<Uint8Array | "over"> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const chunk = new Uint8Array(Math.min(1024 * 1024, maxBytes + 1 - size));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length);
+    if (bytesRead === 0) return Buffer.concat(chunks);
+    size += bytesRead;
+    if (size > maxBytes) return "over";
+    chunks.push(chunk.subarray(0, bytesRead));
+  }
+}
+
 // At most `maxBytes` plus one byte. O_NONBLOCK keeps a FIFO from blocking the open.
 export async function readBounded(path: string, maxBytes: number): Promise<Uint8Array | "absent" | "over" | "unavailable"> {
   let handle;
@@ -30,17 +44,7 @@ export async function readBounded(path: string, maxBytes: number): Promise<Uint8
   }
   try {
     if (!(await handle.stat()).isFile()) return "unavailable";
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (;;) {
-      const chunk = new Uint8Array(Math.min(1024 * 1024, maxBytes + 1 - size));
-      const { bytesRead } = await handle.read(chunk, 0, chunk.length);
-      if (bytesRead === 0) break;
-      size += bytesRead;
-      if (size > maxBytes) return "over";
-      chunks.push(chunk.subarray(0, bytesRead));
-    }
-    return Buffer.concat(chunks);
+    return await readHandleBounded(handle, maxBytes);
   } catch {
     return "unavailable";
   } finally {

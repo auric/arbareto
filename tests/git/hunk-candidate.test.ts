@@ -5,12 +5,16 @@
 // The canonical index stays byte-identical in every case (tests/git/git-oracle.ts). Git's own `add -p` and `reset -p` give the expected candidate.
 
 import { describe, expect } from "bun:test";
-import { existsSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { ChangeEntry } from "../../src/contracts/envelope";
+import { MUTATION_RAW_INDEX_BYTES } from "../../src/contracts/limits";
 import type { GitInstallation } from "../../src/git-service/git-installation";
+import { applyCachedArgs, readTreeEmptyArgs } from "../../src/git-service/commands";
 import { parsePatch, type PatchHunk } from "../../src/git-service/diff-parser";
+import type { GitRunner } from "../../src/git-service/git-runner";
 import { prepareCandidate } from "../../src/git-service/hunk-candidate";
+import { createIndexLock } from "../../src/git-service/index-lock";
 import { createRegistrations } from "../../src/git-service/registration";
 import { printOrigin } from "../origin";
 import { createBunRunner } from "./bun-runner";
@@ -73,14 +77,18 @@ function selection(repo: string, path: string, scope: Scope) {
   return { comparison: { entry, scope, patch: new Uint8Array(patch) }, hunks: parsed.patch.hunks };
 }
 
-async function prepare(name: string, repo: string, path: string, scope: Scope, pick: (hunks: PatchHunk[]) => PatchHunk, extra: Partial<Target> = {}) {
-  const { runner, workspace } = await registered(name, repo);
+// `wrap` replaces the `run` of the shell double. It is a test seam of this file only.
+type Run = GitRunner["run"];
+async function prepare(name: string, repo: string, path: string, scope: Scope, pick: (hunks: PatchHunk[]) => PatchHunk, extra: Partial<Target> = {}, wrap?: (run: Run) => Run) {
+  const registration = await registered(name, repo);
+  const runner = wrap ? { ...registration.runner, run: wrap(registration.runner.run) } : registration.runner;
+  const { workspace } = registration;
   try {
     const { comparison, hunks } = selection(repo, path, scope);
     const rawIndexDigest = repoState(repo).rawIndex;
     return await prepareCandidate({ runner, operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, rawIndexDigest, comparison, hunk: pick(hunks), ...extra });
   } finally {
-    await runner.dispose();
+    await registration.runner.dispose();
   }
 }
 
@@ -230,14 +238,11 @@ describe("hunk candidate (T109)", () => {
     [],
     async () => {
       const repo = repoOf(buildF02(gitPath(), "t109-racy", "racy"));
-      const canonical = statSync(gitPathOf(repo, "index"), { bigint: true }).mtimeNs;
       const before = repoState(repo);
       const c = okCandidate(await prepare("t109-racy", repo, "multi.txt", "index-to-worktree", (h) => h[0]!), repo);
       expect(repoState(repo)).toEqual(before);
       const changed = gitText(repo, ["--no-optional-locks", "diff-files", "--name-only"], { env: { GIT_INDEX_FILE: c.path } }).split("\n");
       expect(changed).toContain("racy.txt");
-      // Git wrote the candidate after the copy, so only the copy step had the earlier time.
-      expect(canonical).toBeGreaterThan(0n);
     },
     TIMEOUT_MS,
   );
@@ -304,7 +309,7 @@ describe("hunk candidate (T109)", () => {
         const other = sides(repo, "keep.txt");
         const entry = { ...comparison.entry, oids: [comparison.entry.oids![0]!, other.oids[1]!] };
         const outcome = await prepareCandidate({ runner, operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, rawIndexDigest: before.rawIndex, comparison: { ...comparison, entry }, hunk: hunks[0]! });
-        expect(outcome).toMatchObject({ ok: false, failure: { reason: "verification" } });
+        expect(outcome).toMatchObject({ ok: false, failure: { reason: "verification", detail: "content" } });
       } finally {
         await runner.dispose();
       }
@@ -326,6 +331,190 @@ describe("hunk candidate (T109)", () => {
       expect(outcome).toEqual({ ok: false, path: null, failure: { reason: "canceled" } });
       expect(candidateFiles(repo)).toEqual([]);
       expect(repoState(repo)).toEqual(before);
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a selected entry with another mode than the expected one fails the verification with selected-entry",
+    [],
+    async () => {
+      const repo = repoOf(buildF02(gitPath(), "t109-selected"));
+      const before = repoState(repo);
+      const { runner, workspace } = await registered("t109-selected", repo);
+      try {
+        const { comparison, hunks } = selection(repo, "multi.txt", "index-to-worktree");
+        // The captured index side names mode 100755 with the right blob. Git keeps 100644, so only the mode differs.
+        const modes = [...comparison.entry.modes!];
+        modes[1] = "100755";
+        const entry = { ...comparison.entry, modes } as ChangeEntry;
+        const outcome = await prepareCandidate({ runner, operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, rawIndexDigest: before.rawIndex, comparison: { ...comparison, entry }, hunk: hunks[1]! });
+        expect(outcome).toMatchObject({ ok: false, failure: { reason: "verification", detail: "selected-entry" } });
+      } finally {
+        await runner.dispose();
+      }
+      expect(repoState(repo)).toEqual(before);
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "an unrelated entry that changes in the candidate fails the verification with unrelated-entries",
+    [],
+    async () => {
+      const repo = repoOf(buildF02(gitPath(), "t109-unrelated"));
+      const before = repoState(repo);
+      // After the apply step, another writer sets the executable bit of keep.txt in the candidate.
+      const wrap =
+        (run: Run): Run =>
+        async (call) => {
+          const exit = await run(call);
+          if (Bun.deepEquals(call.arguments, applyCachedArgs())) git(repo, ["update-index", "--chmod=+x", "--", "keep.txt"], { env: { GIT_INDEX_FILE: call.transaction!.indexFile } });
+          return exit;
+        };
+      const outcome = await prepare("t109-unrelated", repo, "multi.txt", "index-to-worktree", (h) => h[1]!, {}, wrap);
+      expect(outcome).toMatchObject({ ok: false, failure: { reason: "verification", detail: "unrelated-entries" } });
+      expect(repoState(repo)).toEqual(before);
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a captured index blob that the object store lacks gives object-missing, not malformed",
+    [],
+    async () => {
+      const repo = repoOf(buildF02(gitPath(), "t109-missing"));
+      const before = repoState(repo);
+      const { runner, workspace } = await registered("t109-missing", repo);
+      try {
+        const { comparison, hunks } = selection(repo, "multi.txt", "index-to-worktree");
+        // `cat-file` answers `<oid> missing` for an object ID that no object has.
+        const entry = { ...comparison.entry, oids: [comparison.entry.oids![0]!, "1".repeat(40)] } as ChangeEntry;
+        const outcome = await prepareCandidate({ runner, operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, rawIndexDigest: before.rawIndex, comparison: { ...comparison, entry }, hunk: hunks[1]! });
+        expect(outcome).toMatchObject({ ok: false, failure: { reason: "object-missing" } });
+      } finally {
+        await runner.dispose();
+      }
+      expect(repoState(repo)).toEqual(before);
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a canonical index above MUTATION_RAW_INDEX_BYTES gives bound, and no candidate exists",
+    [],
+    async () => {
+      const repo = repoOf(buildF02(gitPath(), "t109-bound"));
+      const { runner, workspace } = await registered("t109-bound", repo);
+      try {
+        const { comparison, hunks } = selection(repo, "multi.txt", "index-to-worktree");
+        const rawIndexDigest = repoState(repo).rawIndex;
+        writeFileSync(gitPathOf(repo, "index"), new Uint8Array(MUTATION_RAW_INDEX_BYTES + 1));
+        const outcome = await prepareCandidate({ runner, operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace, rawIndexDigest, comparison, hunk: hunks[0]! });
+        expect(outcome).toEqual({ ok: false, path: null, failure: { reason: "bound" } });
+        expect(candidateFiles(repo)).toEqual([]);
+      } finally {
+        await runner.dispose();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "an error after the candidate exists returns its path with reason unavailable",
+    [],
+    async () => {
+      const repo = repoOf(buildF02(gitPath(), "t109-leak"));
+      const before = repoState(repo);
+      const wrap = (): Run => async () => {
+        throw new Error("channel closed");
+      };
+      const outcome = await prepare("t109-leak", repo, "multi.txt", "index-to-worktree", (h) => h[0]!, {}, wrap);
+      if (outcome.ok) throw new Error("candidate accepted");
+      expect(outcome.failure).toEqual({ reason: "unavailable", errno: "unknown" });
+      expect(outcome.path).not.toBeNull();
+      expect(candidateFiles(repo)).toEqual([basename(outcome.path!)]);
+      expect(repoState(repo)).toEqual(before);
+    },
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "an absent index whose read-tree step creates no file returns no candidate path",
+    [],
+    async () => {
+      const repo = repoOf(buildF01(gitPath(), "t109-absent-failed", "empty"));
+      put(repo, "first.txt", "first\n");
+      const before = repoState(repo);
+      const wrap =
+        (run: Run): Run =>
+        async (call) =>
+          Bun.deepEquals(call.arguments, readTreeEmptyArgs()) ? { exitCode: 1, activeDescendants: 0 } : run(call);
+      const outcome = await prepare("t109-absent-failed", repo, "first.txt", "empty-to-untracked", (h) => h[0]!, {}, wrap);
+      expect(outcome).toMatchObject({ ok: false, path: null, failure: { reason: "git-failed", step: "read-tree" } });
+      expect(candidateFiles(repo)).toEqual([]);
+      expect(repoState(repo)).toEqual(before);
+    },
+    TIMEOUT_MS,
+  );
+
+  // Research R3 step 9 branches without a kept entry or without an index entry. Git's own `add -p` and `reset -p` give the expected index.
+  for (const c of [
+    { name: "staging a working deletion removes the entry", path: "keep.txt", scope: "index-to-worktree" as const, command: "add" as const, setup: (repo: string) => rmSync(join(repo, "keep.txt")) },
+    { name: "unstaging an addition removes the entry", path: "other-b.txt", scope: "head-to-index" as const, command: "reset" as const, setup: () => {} },
+    { name: "unstaging a staged deletion restores the HEAD entry", path: "keep.txt", scope: "head-to-index" as const, command: "reset" as const, setup: (repo: string) => void git(repo, ["rm", "-q", "--cached", "--", "keep.txt"]) },
+  ]) {
+    caseTest(
+      TASK,
+      `${c.name}, exactly as git ${c.command} -p does`,
+      [],
+      async () => {
+        const slug = `t109-${c.command}-${c.path.replace(".", "-")}`;
+        const repo = repoOf(buildF02(gitPath(), slug));
+        c.setup(repo);
+        const before = repoState(repo);
+        const candidate = okCandidate(await prepare(slug, repo, c.path, c.scope, (h) => h[0]!), repo);
+        expect(repoState(repo)).toEqual(before);
+        const oracle = scriptedPatch(repo, `${slug}-oracle`, c.command, c.path, ["y"]);
+        expect(indexEntries(gitPath(), oracle)).not.toEqual(before.entries);
+        expect(candidateEntries(repo, `${slug}-copy`, candidate.bytes)).toEqual(indexEntries(gitPath(), oracle));
+      },
+      TIMEOUT_MS,
+    );
+  }
+
+  caseTest(
+    TASK,
+    "published time: a same-size change after the candidate write stays visible after a publication one second later",
+    [],
+    async () => {
+      const repo = repoOf(buildF02(gitPath(), "t109-published", "racy"));
+      const index = gitPathOf(repo, "index");
+      const keep = join(repo, "keep.txt");
+      // keep.txt gets a stat time ahead of every index write of this case. Git for Windows compares whole seconds.
+      const ahead = Math.floor(Date.now() / 1000) + 4;
+      utimesSync(keep, ahead, ahead);
+      git(repo, ["add", "--", "keep.txt"]);
+      const c = okCandidate(await prepare("t109-published", repo, "multi.txt", "index-to-worktree", (h) => h[0]!), repo);
+      expect(c.mtimeNs).toBe(statSync(c.path, { bigint: true }).mtimeNs);
+      // Precondition: Git wrote the candidate in or before the entry second. Otherwise widen the margin.
+      expect(Number(c.mtimeNs / 1_000_000_000n)).toBeLessThanOrEqual(ahead);
+      // A same-size change that keeps the stat time of the index entry.
+      writeFileSync(keep, "KEEP\n");
+      utimesSync(keep, ahead, ahead);
+      // At most five seconds, because `ahead` is four seconds after the start.
+      while (Date.now() < (ahead + 1) * 1000) await Bun.sleep(50);
+      const created = await createIndexLock(index);
+      if (!created.ok) throw new Error(`lock refused: ${JSON.stringify(created)}`);
+      expect(await created.lock.publish(c.bytes, c.mtimeNs)).toEqual({ published: true });
+      expect(statSync(index, { bigint: true }).mtimeNs).toBeLessThanOrEqual(c.mtimeNs);
+      expect(gitText(repo, ["--no-optional-locks", "diff-files", "--name-only"]).split("\n")).toContain("keep.txt");
     },
     TIMEOUT_MS,
   );

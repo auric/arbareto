@@ -66,16 +66,17 @@ export type ApprovalKey =
   | Pick<FileApproval, "kind" | "comparisonId" | "direction">
   | Pick<CommitReview, "kind" | "reviewToken">;
 
+// A state change advances the generation, so the caller refuses it with REPOSITORY_CHANGED before acceptance (contract §9).
 export type Acceptance =
   | { ok: true; approval: Approval }
-  | { ok: false; code: "UNKNOWN_TARGET" | "APPROVAL_EXPIRED" | "STALE_SELECTION" | "STALE_REVIEW" }
+  | { ok: false; code: "UNKNOWN_TARGET" | "APPROVAL_EXPIRED" }
   // Contract §2: the operation that consumed the approval.
   | { ok: false; consumed: string };
 
 const keyOf = (k: ApprovalKey) =>
   k.kind === "hunk" ? `hunk/${k.comparisonId}/${k.hunkId}/${k.direction}` : k.kind === "file" ? `file/${k.comparisonId}/${k.direction}` : `commit/${k.reviewToken}`;
 
-type Entry = { approval: Approval; issuedAt: number; state: { consumed: string } | { stale: true } | null };
+type Entry = { approval: Approval; issuedAt: number; consumed: string | null };
 
 export function createApprovals(now: () => number = () => performance.now()) {
   const entries = new Map<string, Entry>();
@@ -84,15 +85,19 @@ export function createApprovals(now: () => number = () => performance.now()) {
   function accept(key: ApprovalKey): Acceptance {
     const e = entries.get(keyOf(key));
     if (e === undefined) return { ok: false, code: "UNKNOWN_TARGET" };
-    if (e.state !== null && "consumed" in e.state) return { ok: false, consumed: e.state.consumed };
-    if (e.state !== null) return { ok: false, code: e.approval.kind === "commit" ? "STALE_REVIEW" : "STALE_SELECTION" };
+    if (e.consumed !== null) return { ok: false, consumed: e.consumed };
     if (now() - e.issuedAt > APPROVAL_LIFETIME_MS) return { ok: false, code: "APPROVAL_EXPIRED" };
     return { ok: true, approval: e.approval };
   }
 
   return {
-    issue(approval: Approval): void {
-      entries.set(keyOf(approval), { approval, issuedAt: now(), state: null });
+    // A consumed approval stays bound to its operation for the session (contract §2), so a new one with its key is refused.
+    issue(approval: Approval): { ok: true } | { ok: false; consumed: string } {
+      const key = keyOf(approval);
+      const consumed = entries.get(key)?.consumed ?? null;
+      if (consumed !== null) return { ok: false, consumed };
+      entries.set(key, { approval, issuedAt: now(), consumed: null });
+      return { ok: true };
     },
 
     accept,
@@ -100,18 +105,18 @@ export function createApprovals(now: () => number = () => performance.now()) {
     // One use. False when the approval is not acceptable now.
     consume(key: ApprovalKey, operationId: string): boolean {
       if (!accept(key).ok) return false;
-      entries.get(keyOf(key))!.state = { consumed: operationId };
+      entries.get(keyOf(key))!.consumed = operationId;
       return true;
     },
 
-    // Contract §8 "Token invalidation". `refresh`, a release, or an eviction forgets the approval, so a later request gets UNKNOWN_TARGET.
-    // `change` keeps it as stale. A consumed approval stays bound to its operation for the session.
-    invalidate(match: (approval: Approval) => boolean, cause: "refresh" | "change"): void {
-      for (const [key, e] of entries) {
-        if ((e.state !== null && "consumed" in e.state) || !match(e.approval)) continue;
-        if (cause === "refresh") entries.delete(key);
-        else e.state = { stale: true };
-      }
+    // Contract §8 "Token invalidation": a later request gets UNKNOWN_TARGET. A consumed approval stays bound to its operation for the session.
+    invalidate(match: (approval: Approval) => boolean): void {
+      for (const [key, e] of entries) if (e.consumed === null && match(e.approval)) entries.delete(key);
+    },
+
+    // Contract §5: comparison eviction forgets its approvals. An expired approval stays until then, so it answers APPROVAL_EXPIRED.
+    forget(comparisonId: string): void {
+      for (const [key, e] of entries) if (e.consumed === null && e.approval.kind !== "commit" && e.approval.comparisonId === comparisonId) entries.delete(key);
     },
 
     // The binding fields whose values differ. Raw bytes compare byte by byte.

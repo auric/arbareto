@@ -2418,6 +2418,8 @@ Design choices of this record:
 - `Digest::SHA` and `Time::HiRes` in `perl-base`.
 - The byte-throughput savings. No probe measured them.
 
+**Limit (T105, 2026-10-08)**: a WSL comparison sets `diskPath` to the index path bytes (`src/git-service/comparison.ts`). Linux name lookup is exact, so a found file has the index name. A folder with the ext4 `casefold` attribute looks up names without letter case. The service does not detect such a folder. So a letter-case difference there gets no `path` refusal (contract §11 "Paths and file access"). No probe ran with a `casefold` folder.
+
 Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-commands), [WSLENV](https://learn.microsoft.com/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl-with-wslenv), [wsl.conf](https://learn.microsoft.com/windows/wsl/wsl-config#wslconf), [systemd in WSL](https://learn.microsoft.com/windows/wsl/systemd), [background tasks](https://devblogs.microsoft.com/commandline/background-task-support-in-wsl/), Git Extensions source clone (PathUtil.cs, GitExecutor.cs, GitStatusMonitor.cs), git-config(1) `maintenance.autoDetach`, pid_namespaces(7).
 
 ## R14. Submodule initialization and update

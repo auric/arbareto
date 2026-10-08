@@ -388,7 +388,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 - A `started` deadline ends the mutation `failed` with `DEADLINE`, because no Git process ran and no marker exists. A `revoke` deadline ends `revokeTrust` `failed` with `DEADLINE`, and the service revocation stays. A `lingeringCount` deadline adds no lingering sentence (§9 "Lingering count"). A `resolveGit` deadline gives `DEADLINE`.
 - An ordinary read deadline closes the operation Job. The service then re-reads the repository state. A canceled or failed read that held a slot gets the same re-read. The re-read is discovery call 1 (§6 "Registration bootstrap"), and it has the 5-second reconciliation target. When the re-read refuses, its refusal replaces the read result. Otherwise the read ends `failed` with `DEADLINE`, `canceled`, or its failure code.
 - A deadline of an `applyHunk` or `applyFile` Git step moves the mutation to `reconciling` (data-model §7). So does a commit preflight read deadline. Neither publication nor Git execution has started. Without observed effects, the result is `failed` with `DEADLINE` and reason `deadline` (§9). The service releases its owned lock only after the Job closes.
-- A mutation reconciliation read deadline fails reconciliation. The outcome is `unknown`, and the recovery marker stays (§8).
+- A mutation reconciliation read deadline fails reconciliation. The outcome is `unknown`, and the recovery marker stays (§8). After an update or mutation deadline, that `unknown` keeps the recorded deadline reason. A `canceled` outcome after such a deadline also keeps it. An attribution reason (§9) replaces it.
 - The commit process deadline follows §4.
 - A `reviewSubmodules` read deadline ends the read `failed` with `DEADLINE`. An `updateSubmodules` preflight read deadline moves the mutation to `reconciling`, and no update process has started. A level read or check read deadline also moves it to `reconciling`, and no later process starts.
 - An `updateSubmodules` process deadline moves the mutation to `reconciling` with `DEADLINE` and reason `inactivity` or `ceiling` (§12). No later update process starts.
@@ -1205,7 +1205,7 @@ Each terminal state (data-model §7) carries one result code:
 - `canceled`: `CANCELED`.
 - `completed-with-effects`: `COMPLETED_WITH_EFFECTS`.
 - `failed-with-effects`: `FAILED_WITH_EFFECTS`. After an update or mutation deadline, it also carries the deadline `reason` (below).
-- `unknown`: `STATE_UNKNOWN`, with its attribution reason.
+- `unknown`: `STATE_UNKNOWN`, with its attribution reason. An `unknown` from a reconciliation read deadline after an update or mutation deadline carries the recorded deadline reason instead (§5 "Deadline outcomes").
 - `rejected`: the refusal code. `SERVICE_UNAVAILABLE` is always a `rejected` result.
 
 A mutation request in a workspace whose recovery state is `unknown` is rejected with `STATE_UNKNOWN`. Above the recovery-marker limit (§5), every mutation is rejected with `STATE_UNKNOWN`. Unexpected diagnostic output above 4 MiB cancels the operation. A read then ends `failed` with `OUTPUT_LIMIT`. A mutation enters `reconciling`, and its diagnostic names `OUTPUT_LIMIT` as the cause.

@@ -193,8 +193,15 @@ describe("running", () => {
     expect(() => step({ operation: SUBMODULES, state: "running" }, { type: "update-process-deadline", reason: "deadline" })).toThrow();
   });
 
-  test.each([[COMMIT], [HUNK], ["applyFile"], [SUBMODULES]])("a %s step, preflight, read, or process deadline enters reconciling with cause DEADLINE and reason deadline", (operation) => {
-    expectStep({ operation, state: "running" }, { type: "mutation-deadline" }, { state: "reconciling", cause: "DEADLINE", reason: "deadline" }, ["close-job"]);
+  // Contract §5 "Deadline outcomes" and §12: no later process or level starts after an update deadline.
+  test.each([
+    [COMMIT, ["close-job"]],
+    [HUNK, ["close-job"]],
+    ["applyFile", ["close-job"]],
+    [SUBMODULES, ["close-job", "start-no-later-process"]],
+  ])("a %s step, preflight, read, or process deadline enters reconciling with cause DEADLINE and reason deadline", (operation, actions) => {
+    const result = expectStep({ operation, state: "running" }, { type: "mutation-deadline" }, { state: "reconciling", cause: "DEADLINE", reason: "deadline" });
+    expect(result.actions).toEqual(actions);
   });
 });
 
@@ -227,6 +234,11 @@ describe("deadline reconciliation classifies from observed state", () => {
     const entered = { operation, ...step({ operation, state: "running" }, event) } as Snapshot;
     expectStep(entered, { type: "no-effects", observed: "failed" }, { state: "failed", code: "DEADLINE", reason });
     expectStep(entered, { type: "failed-with-effects" }, { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", reason });
+  });
+
+  test.each(deadlines)("a %s deadline keeps its reason in unknown after a reconciliation read deadline", (operation, event, reason) => {
+    const entered = { operation, ...step({ operation, state: "running" }, event) } as Snapshot;
+    expectStep(entered, { type: "reconciliation-read-deadline" }, { state: "unknown", code: "STATE_UNKNOWN", reason });
   });
 });
 

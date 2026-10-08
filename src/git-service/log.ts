@@ -5,7 +5,7 @@ import { isErrorCode, type ErrorCode } from "../contracts/errors";
 import { SESSION_LOG_ENTRIES } from "../contracts/limits";
 import { isIdentifier, isOperationName, type OperationName } from "../contracts/operations";
 
-// Contract §7: the log holds only allowlisted operation kinds, internal IDs, durations, safe codes, counts, and reconciled effect summaries. It stays in memory and writes no file.
+// Contract §7: the log holds only allowlisted operation kinds, internal IDs, durations, safe codes, diagnostic causes, counts, and reconciled effect summaries. It stays in memory and writes no file.
 
 export interface EffectSummary {
   head: boolean;
@@ -14,11 +14,17 @@ export interface EffectSummary {
   operationState: boolean;
 }
 
+// Contract §9: the causes of a failed hunk or file step.
+export const STEP_CAUSES = ["lock-create", "candidate-copy", "candidate-time", "publish-time", "verification", "write", "replace"] as const;
+// A step cause, or the code of a failed reconciliation observation (contract §8).
+export type DiagnosticCause = (typeof STEP_CAUSES)[number] | ErrorCode;
+
 export interface LogEntry {
   kind: OperationName;
   operationId?: string;
   durationMs?: number;
   code?: ErrorCode;
+  cause?: DiagnosticCause;
   count?: number;
   effects?: EffectSummary;
 }
@@ -37,6 +43,7 @@ const FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   operationId: isIdentifier,
   durationMs: isCount,
   code: isErrorCode,
+  cause: (value) => (STEP_CAUSES as readonly unknown[]).includes(value) || isErrorCode(value),
   count: isCount,
   effects: isEffectSummary,
 };

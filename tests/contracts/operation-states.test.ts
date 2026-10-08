@@ -251,9 +251,10 @@ describe("deadline reconciliation classifies from observed state", () => {
     expectStep(entered, { type: "reconciliation-read-deadline" }, { state: "unknown", code: "STATE_UNKNOWN", reason });
   });
 
-  test("a failed reconciliation read after a deadline gives unknown without the deadline reason", () => {
-    const result = expectStep(afterDeadline(), { type: "reconciliation-read-failed", code: "GIT_FAILED" }, { state: "unknown", code: "STATE_UNKNOWN", cause: "GIT_FAILED" });
-    expect(result.reason).toBeUndefined();
+  // Contract §8: the observation's code goes to the diagnostic, not to the outcome.
+  test.each(deadlines)("a %s deadline keeps its cause and reason in unknown after a failed reconciliation read", (operation, event, reason) => {
+    const entered = { operation, ...step({ operation, state: "running" }, event) } as Snapshot;
+    expectStep(entered, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, { state: "unknown", code: "STATE_UNKNOWN", cause: "DEADLINE", reason });
   });
 });
 
@@ -317,9 +318,9 @@ describe("reconciling", () => {
   });
 
   test("a failed reconciliation read gives unknown with STATE_UNKNOWN, keeps the marker, and closes no Job", () => {
-    const result = expectStep(reconciling(), { type: "reconciliation-read-failed", code: "MALFORMED_GIT_OUTPUT" }, { state: "unknown", code: "STATE_UNKNOWN", cause: "MALFORMED_GIT_OUTPUT" });
+    const result = expectStep(reconciling(), { type: "reconciliation-read-failed", code: "MALFORMED_GIT_OUTPUT" }, { state: "unknown", code: "STATE_UNKNOWN" });
     expect(result.actions).toEqual(["block-mutations", "keep-marker"]);
-    expect(result.reason).toBeUndefined();
+    expect({ cause: result.cause, reason: result.reason }).toEqual({ cause: undefined, reason: undefined });
   });
 
   test("differing effects give completed-with-effects", () => {

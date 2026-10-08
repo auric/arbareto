@@ -110,7 +110,20 @@ describe("session log", () => {
     expect(text).not.toContain("canary-user");
   });
 
-  test.each([["kind"], ["operationId"], ["code"], ["durationMs"], ["count"]])(
+  // Contract §9: a failed file step keeps its cause in the diagnostic. §8: a failed reconciliation observation keeps its code there.
+  test.each([["verification"], ["lock-create"], ["replace"], ["MALFORMED_GIT_OUTPUT"]])("keeps the diagnostic cause %s", (cause) => {
+    const log = createSessionLog();
+    log.record({ ...SAFE_ENTRY, cause } as never);
+    expect(log.entries()).toContainEqual(expect.objectContaining({ ...SAFE_ENTRY, cause }));
+  });
+
+  test.each([["verify"], ["D:\\repo\\.git\\index.lock"], [".git/index.lock"], [""], [1]])("refuses the diagnostic cause %p", (cause) => {
+    const log = createSessionLog();
+    expect(() => log.record({ ...SAFE_ENTRY, cause } as never)).toThrow("session log entry refused");
+    expect(log.entries()).toEqual([]);
+  });
+
+  test.each([["kind"], ["operationId"], ["code"], ["cause"], ["durationMs"], ["count"]])(
     "a canary in allowlisted field %s never reaches the log",
     (field) => {
       const log = createSessionLog();

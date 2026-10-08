@@ -2603,6 +2603,12 @@ The probes ran on 2026-09-30 and 2026-10-01 with Git `2.55.0.windows.3` on the R
 - A silent `git fetch -q` of a 40 MB blob from a local remote wrote no output byte. Its Job read 120,049,500 bytes and wrote 160,053,980 bytes.
 - Microsoft Learn states that the Job counters cover every process that was ever in the Job.
 
+**T225 record (2026-10-08).**
+
+- A silent `git fetch -q` of a 300 MB blob from a local remote ran under a 2-second inactivity limit. It exited 0 after 70 to 74 seconds. No false inactivity end occurred.
+- The Job I/O sum rose every second, from about 9.5 MB to 2.08 GB.
+- The F11 commit hook and the F30 fetch both waited on `ssh-keygen`. Each sent `stalled` 15.5 to 15.6 seconds after its last activity.
+
 **S17. Consoles of shell-run programs (2026-10-01).**
 
 - A Python harness started `git --no-lazy-fetch commit --quiet --file=-` with `DETACHED_PROCESS` and `GIT_TERMINAL_PROMPT=0`. It closed the stdin pipe after the message. Each `pre-commit` hook ran one variant, and the harness killed the tree after 15 seconds.

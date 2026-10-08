@@ -52,7 +52,7 @@ export type OperationEvent =
   | { type: "failed-with-effects" }
   | { type: "attribution-undetermined"; reason: string }
   | { type: "reconciliation-read-deadline" }
-  // A reconciliation read failed with `code` before its deadline.
+  // A reconciliation read failed with `code` before its deadline. `code` goes to the session log, not to the outcome (contract §8).
   | { type: "reconciliation-read-failed"; code: string }
   // Contract §5 "Deadline outcomes": the `started` reply carried `deadline`, so no marker exists.
   | { type: "started-deadline" }
@@ -194,7 +194,7 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
         case "reconciliation-read-deadline":
           return next("unknown", { code: "STATE_UNKNOWN" }, ["close-job", "block-mutations", "keep-marker"]);
         case "reconciliation-read-failed":
-          return next("unknown", { code: "STATE_UNKNOWN", cause: event.code, reason: undefined }, ["block-mutations", "keep-marker"]);
+          return next("unknown", { code: "STATE_UNKNOWN" }, ["block-mutations", "keep-marker"]);
         case "interrupt-and-close":
           return next("reconciling", {}, ["close-job", "keep-marker", "follow-application-close"]);
         case "revoke-trust":

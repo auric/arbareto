@@ -272,7 +272,7 @@ export function keyParts(key: string): KeyParts | null {
 }
 
 // Contract §7 "Value display allowlist".
-function valueShown(p: KeyParts): boolean {
+export function valueShown(p: KeyParts): boolean {
   const { section, subsection, variable } = p;
   if (section === "filter") return subsection !== null && (variable === "clean" || variable === "process" || variable === "smudge");
   if (section === "core") return subsection === null && (variable === "fsmonitor" || variable === "hookspath");
@@ -290,7 +290,8 @@ function submoduleRegistration(p: KeyParts, value: string | null): boolean {
 
 // How Git starts the program of a key. `shell`: `use_shell`. `monitor`: a path value that runs with `use_shell` (fsmonitor-settings.c).
 // `pathname`: `git_config_pathname`, run directly (gpg-interface.c). `split`: `split_cmdline` (gpg-interface.c).
-type ProgramForm = "shell" | "monitor" | "pathname" | "split";
+// `credential`: credential.c `run_credential_helper` runs each helper with `use_shell`. A `!` value is a shell snippet, an absolute path runs as written, and any other name becomes `git credential-<name>` (gitcredentials(7)).
+type ProgramForm = "shell" | "monitor" | "pathname" | "split" | "credential";
 
 // Contract §7: the read blocking class and the "Mutation trust" `commit` class. A configured hook joins `commit` through its events.
 interface ProgramKey {
@@ -299,8 +300,15 @@ interface ProgramKey {
   commit: boolean;
 }
 
-function programKey(p: KeyParts): ProgramKey | null {
+// `submodule`: contract §12 "Trust" also lists the transport programs that a submodule fetch can run (probe S6).
+// git-config(1): Git runs `core.sshCommand` and `remote.<name>.uploadpack` through the shell.
+function programKey(p: KeyParts, submodule = false): ProgramKey | null {
   const { section, subsection, variable } = p;
+  if (submodule) {
+    if (section === "core" && subsection === null && variable === "sshcommand") return { form: "shell", reads: false, commit: false };
+    if (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack")) return { form: "shell", reads: false, commit: false };
+    if (section === "credential" && variable === "helper") return { form: "credential", reads: false, commit: false };
+  }
   if (section === "filter" && subsection !== null) {
     if (variable === "clean" || variable === "process") return { form: "shell", reads: true, commit: true };
     if (variable === "smudge") return { form: "shell", reads: false, commit: false };
@@ -318,6 +326,7 @@ export type Program = { kind: "path"; text: string } | { kind: "bare"; name: str
 function programOf(form: ProgramForm, value: string, home: string | undefined, rules: Rules): Program {
   let word: string | null;
   if (form === "shell") word = shellProgram(value);
+  else if (form === "credential") word = value.startsWith("!") ? shellProgram(value.slice(1)) : rules.isAbsolute(value) ? shellProgram(value) : "git";
   else if (form === "split") word = splitCmdlineProgram(value);
   else {
     const path = interpolatePath(value, home);
@@ -992,6 +1001,8 @@ export interface TrustListing {
   inputLimited: boolean;
   approvalRequired: { reads: boolean; commit: boolean };
   changeFiles: ChangeFiles;
+  // The file state of each integration and each folder hook, in list order. Null: the file lies outside the roots, or the integration is not repository-controlled.
+  files: { integrations: (FileState | null)[]; folder: (FileState | null)[] };
   // Contract §11 "Change polling": the index digest of the first phase-1 request, when the target asked for it.
   index?: WslIndexResult;
 }
@@ -1047,6 +1058,19 @@ export async function listTrust(runner: ListingRunner, target: ListingTarget, en
   return buildListing(runner, target, entries, hooksText, inputLimited, viewOf(workspace, environment), configFiles);
 }
 
+// Contract §12 "Trust": the listing of a submodule Git directory from its own `config list` output. `root` is the folder where Git runs its programs.
+// `hooksDirectory` is the absolute hooks folder, or null. The workspace roots decide inside and outside.
+export function listSubmoduleTrust(
+  runner: ListingRunner,
+  target: ListingTarget,
+  environment: ServiceEnvironment,
+  entries: ConfigEntry[],
+  hooksDirectory: string | null,
+  root: string,
+): Promise<ListingOutcome> {
+  return buildListing(runner, target, entries, hooksDirectory, false, viewOf(target.workspace, environment), undefined, { root });
+}
+
 async function buildListing(
   runner: ListingRunner,
   target: ListingTarget,
@@ -1055,12 +1079,13 @@ async function buildListing(
   inputLimited: boolean,
   view: View,
   configFiles: readonly string[] | undefined,
+  submodule?: { root: string },
 ): Promise<ListingOutcome> {
   const { rules, path } = view;
   const roots = rootsOf(view.roots, rules);
   const layout: Layout = {
     rules,
-    root: roots.paths.worktreeRoot,
+    root: submodule?.root ?? roots.paths.worktreeRoot,
     pathEntries: path === undefined || path === "" ? [] : path.split(rules.path.delimiter),
     relativeEntries: relativePathEntries(path, rules),
     home: view.home,
@@ -1091,8 +1116,9 @@ async function buildListing(
   const programs: { entry: ConfigEntry; kind: ProgramKey; program: Program; controlled: boolean }[] = [];
   for (const entry of entries) {
     const parts = keyParts(entry.key);
-    const kind = parts && programKey(parts);
-    if (!kind || last.get(entry.key) !== entry || entry.value === null || entry.value === "") continue;
+    const kind = parts && programKey(parts, submodule !== undefined);
+    // Git runs every `credential.helper` value in order (credential.c), so each one counts.
+    if (!kind || (kind.form !== "credential" && last.get(entry.key) !== entry) || entry.value === null || entry.value === "") continue;
     // fsmonitor-settings.c: a boolean `core.fsmonitor` names the built-in daemon, not a command (contract §7).
     if (kind.form === "monitor" && parseMaybeBool(entry.value) !== -1) continue;
     const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules) : ({ kind: "unresolved" } as const);
@@ -1217,16 +1243,20 @@ async function buildListing(
   let bound: TrustBound | undefined;
   const digest = new Digest().field("format", "arbareto-trust-1").field("inputLimited", inputLimited);
   // Contract §7 fact table. A path without a link adds only the `file` field, as before. So old approvals stay valid.
-  const fileFields = (entry: Walked): void => {
+  // Null: the file lies outside the roots.
+  const fileFields = (entry: Walked): FileState | null => {
     for (const hop of entry.hops) digest.field("hop", hop);
     if (entry.kind === "outside") {
       digest.field("resolved", entry.location).field("file", "outside");
-      return;
+      return null;
     }
     const state: FileState = entry.kind === "unresolved" ? { kind: "unchecked", bound: entry.bound } : stateOf(entry);
     if (state.kind === "unchecked") bound ??= state.bound;
     digest.field("file", fileValue(state));
+    return state;
   };
+  const integrationFiles: (FileState | null)[] = integrations.map(() => null);
+  const folderFiles: (FileState | null)[] = [];
   for (const entry of entries) {
     const parts = keyParts(entry.key);
     if (parts !== null && submoduleRegistration(parts, entry.value)) continue;
@@ -1249,20 +1279,22 @@ async function buildListing(
       const location = resolveIn(layout, program.text);
       const place = programPlace(i, location);
       digest.field("location", location);
-      if (place.inside) fileFields(walkedAt(place));
+      if (place.inside) integrationFiles[i] = fileFields(walkedAt(place));
       else digest.field("file", "outside");
     } else if (program.kind === "bare") {
       const lookup = lookups.get(integration)!;
       digest.field("name", program.name).field("path", layout.pathEntries.join(rules.path.delimiter));
       for (const entry of lookup.relative) digest.field("relativeEntry", entry);
       digest.field("found", lookup.found);
-      if (lookup.walked === null) digest.field("file", "absent");
-      else fileFields(lookup.walked);
+      if (lookup.walked === null) {
+        digest.field("file", "absent");
+        integrationFiles[i] = { kind: "absent" };
+      } else integrationFiles[i] = fileFields(lookup.walked);
     }
   }
   for (const { hook, walked: entry } of listedFolder) {
     digest.field("hook", hook.event).field("location", hook.path);
-    fileFields(entry);
+    folderFiles.push(fileFields(entry));
   }
 
   const commitHooks = [...configured.filter((h) => !h.disabled && !h.eventDisabled), ...folder].some((h) => COMMIT_EVENTS.has(h.event) && h.repositoryControlled);
@@ -1283,6 +1315,7 @@ async function buildListing(
       inputLimited,
       approvalRequired,
       changeFiles: { configPaths: config.paths, programFiles: reader.programFiles, complete: config.complete },
+      files: { integrations: integrationFiles, folder: folderFiles },
       ...(reader.index() === undefined ? {} : { index: reader.index() }),
     },
   };

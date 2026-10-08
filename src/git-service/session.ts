@@ -23,6 +23,7 @@ import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
 import { createRegistrations, type RegistrationOutcome, type Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
+import { createSubmoduleReviewer } from "./submodule-review";
 import { createWorkspaceReader, type ReadOutcome, type WorkspaceReaderOptions } from "./status";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
@@ -133,6 +134,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
   const reviews = createCommitReviewer({ runner, trust, approvals });
+  const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
   const exclusion = createExclusion({ started: (frame) => runner.started(frame), ended: () => {}, closeJob: () => {} });
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
@@ -152,6 +154,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       reader.release(workspace.repositoryId);
       comparisons.release(workspace.repositoryId);
       reviews.release(workspace.repositoryId);
+      submoduleReviews.release(workspace.repositoryId);
       approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
       trust.release(workspace);
     },
@@ -306,7 +309,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readTrust" | "readComparison" | "reviewCommit"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -425,6 +428,24 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     );
   };
 
+  // Contract §3 `reviewSubmodules`. Contract §9: the generation and the snapshot decide at acceptance, and no Git process starts.
+  const reviewSubmodules: Handler<"reviewSubmodules"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const found = reader.snapshot(request.repositoryId, request.repositoryGeneration, request.payload.snapshotId);
+    if (!found.ok) {
+      const { operationId } = registry.start("reviewSubmodules", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+    }
+    scheduleRead(
+      request,
+      (t) => submoduleReviews.reviewSubmodules({ ...t, installation, workspace, snapshot: found.snapshot }),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+      { result: "failed", code: "GIT_FAILED" },
+    );
+  };
+
   // `undefined`: a later task adds the handler. The request then gets SERVICE_UNAVAILABLE.
   const handlers: { [K in ServiceOperation]: Handler<K> | undefined } = {
     getEnvironment: (request) => {
@@ -473,7 +494,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     applyFile: undefined,
     reviewCommit,
     commit: undefined,
-    reviewSubmodules: undefined,
+    reviewSubmodules,
     updateSubmodules: undefined,
     cancel: (request) =>
       operationTarget(request, () => {

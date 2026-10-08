@@ -21,6 +21,7 @@ export const SUBMODULE_REFUSAL_REASONS = [
   "folder-not-empty",
   "no-url",
   "path",
+  "active-value",
   "remote-name",
   "gitdir-config",
   "limit",
@@ -261,7 +262,7 @@ export type SubmoduleRefusalRemedyRequest =
   | { reason: "limit"; gitPath: string; parentWorktree: string; path?: never; wsl?: SubmoduleWslTarget }
   | ({ reason: "unsaved-commits"; source: Source; gitPath: string; commit: string; wsl?: SubmoduleWslTarget } & Location)
   | {
-      reason: "clone-interrupted" | "folder-not-empty" | "no-url" | "path" | "remote-name" | SubmoduleRunRefusalReason;
+      reason: "clone-interrupted" | "folder-not-empty" | "no-url" | "path" | "active-value" | "remote-name" | SubmoduleRunRefusalReason;
       gitPath?: string;
       parentWorktree?: string;
       path?: string | Uint8Array;

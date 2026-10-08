@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T222: `reviewSubmodules` and the `submoduleNotice` of `readWorkspace` (contract §12 "Discovery notice", "Review reads", "Plan", "Refusals", "Trust").
-// `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T231 registers the operations in the session.
+// `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T229 registers `reviewSubmodules`, and T231 registers `updateSubmodules`.
 
 import { describe, expect, setSystemTime } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -46,9 +46,9 @@ import {
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
 const TASK = "T222";
-const REVIEW = "(needs T229/T231)";
 const TOKEN = "(needs T229/T230/T231)";
 const SHELL: Capability[] = ["shell-double"];
+const reviewCase = (name: string, fn: () => Promise<void>) => caseTest(TASK, name, SHELL, fn, TIMEOUT_MS);
 
 useFixtureRoot();
 
@@ -159,7 +159,7 @@ describe("plan (contract §12 \"Plan\")", () => {
   const FETCHES: Partial<Record<F27Variant, string[]>> = { "behind-fetch": ["solo"], "kept-remote": ["solo"], "unreachable-target": ["solo"] };
 
   for (const variant of Object.keys(ACTIONS) as F27Variant[]) {
-    todoCase(TASK, `F27 ${variant}: each row has the action and the notes that Git's own update in a copy confirms, and each URL equals the configured or .gitmodules value ${REVIEW}`, SHELL, () => {
+    reviewCase(`F27 ${variant}: each row has the action and the notes that Git's own update in a copy confirms, and each URL equals the configured or .gitmodules value`, () => {
       const b = buildF27(gitPath(), `t222-plan-${variant}`, variant);
       const sup = superOf(b);
       const subs = b.facts.notes.submodules as Record<string, { name: string; url: string; recorded: string; head: string | null }>;
@@ -193,7 +193,7 @@ describe("plan (contract §12 \"Plan\")", () => {
     });
   }
 
-  todoCase(TASK, `F27 behind-present at its target and initialized recursively: the row is none, and the nested row has depth 1 and its parent row ${REVIEW}`, SHELL, () => {
+  reviewCase(`F27 behind-present at its target and initialized recursively: the row is none, and the nested row has depth 1 and its parent row`, () => {
     const b = buildF27(gitPath(), "t222-plan-none", "behind-present");
     const sup = superOf(b);
     const subs = b.facts.notes.submodules as Record<string, { recorded: string }>;
@@ -207,7 +207,7 @@ describe("plan (contract §12 \"Plan\")", () => {
     });
   });
 
-  todoCase(TASK, `F27 unreachable-target: the row is fetch-checkout, and the runner sees rev-list -n 1 <target> --not --all in that submodule ${REVIEW}`, SHELL, () => {
+  reviewCase(`F27 unreachable-target: the row is fetch-checkout, and the runner sees rev-list -n 1 <target> --not --all in that submodule`, () => {
     const b = buildF27(gitPath(), "t222-plan-unreachable", "unreachable-target");
     const { path, target } = b.facts.notes.unreachable as { path: string; target: string };
     return withFixture(b, "t222-plan-unreachable", async (service) => {
@@ -222,7 +222,7 @@ describe("plan (contract §12 \"Plan\")", () => {
   const keptRemotes = (b: Built, kept: string) =>
     Object.fromEntries(["origin", "good"].map((n) => [n, configValue(b, b.root, ["--file", join(kept, "config"), "--get", `remote.${n}.url`])]));
 
-  todoCase(TASK, `F27 kept-remote: the reuse row lists both remotes, redacted, and marks origin; without the matching remote it shows the differs note ${REVIEW}`, SHELL, () => {
+  reviewCase(`F27 kept-remote: the reuse row lists both remotes, redacted, and marks origin; without the matching remote it shows the differs note`, () => {
     const b = buildF27(gitPath(), "t222-kept-remotes", "kept-remote");
     const kept = join(b.root, (b.facts.notes.kept as Record<string, string>).solo!);
     const urls = keptRemotes(b, kept);
@@ -239,7 +239,7 @@ describe("plan (contract §12 \"Plan\")", () => {
     });
   });
 
-  todoCase(TASK, `F27 kept-remote: a kept remote URL with a token shows <redacted> in the row, and no response or log holds the token ${REVIEW}`, SHELL, () => {
+  reviewCase(`F27 kept-remote: a kept remote URL with a token shows <redacted> in the row, and no response or log holds the token`, () => {
     const b = buildF27(gitPath(), "t222-plan-kept-token", "kept-remote");
     const kept = join(b.root, (b.facts.notes.kept as Record<string, string>).solo!);
     fixtureGit(b, b.root, ["--git-dir", kept, "remote", "set-url", "good", "https://u:TOKEN@host.example/solo.git"]);
@@ -251,7 +251,7 @@ describe("plan (contract §12 \"Plan\")", () => {
     });
   });
 
-  todoCase(TASK, `F28 inactive: active=false without submodule.active gives the activation note ${REVIEW}`, SHELL, () => {
+  reviewCase(`F28 inactive: active=false without submodule.active gives the activation note`, () => {
     const b = buildF28(gitPath(), "t222-plan-inactive", "inactive");
     return withFixture(b, "t222-plan-inactive", async (service) => {
       const { r } = await reviewed(service, b);
@@ -259,7 +259,7 @@ describe("plan (contract §12 \"Plan\")", () => {
     });
   });
 
-  todoCase(TASK, `F28 active-pathspec: a submodule outside the submodule.active pathspec is skip ${REVIEW}`, SHELL, () => {
+  reviewCase(`F28 active-pathspec: a submodule outside the submodule.active pathspec is skip`, () => {
     const b = buildF28(gitPath(), "t222-plan-active-pathspec", "active-pathspec");
     return withFixture(b, "t222-plan-active-pathspec", async (service) => {
       const { r } = await reviewed(service, b);
@@ -267,7 +267,7 @@ describe("plan (contract §12 \"Plan\")", () => {
     });
   });
 
-  todoCase(TASK, `F27 update-none: the uninitialized update = none row is skip with the registration note ${REVIEW}`, SHELL, () => {
+  reviewCase(`F27 update-none: the uninitialized update = none row is skip with the registration note`, () => {
     const b = buildF27(gitPath(), "t222-skip-update-none", "update-none");
     return withFixture(b, "t222-skip-update-none", async (service) => {
       const { r } = await reviewed(service, b);
@@ -277,7 +277,7 @@ describe("plan (contract §12 \"Plan\")", () => {
     });
   });
 
-  todoCase(TASK, `F27 base with .gitmodules update = rebase: the clone row does not refuse ${REVIEW}`, SHELL, () => {
+  reviewCase(`F27 base with .gitmodules update = rebase: the clone row does not refuse`, () => {
     const b = buildF27(gitPath(), "t222-plan-clone-rebase", "base");
     fixtureGit(b, superOf(b), ["config", "--file", ".gitmodules", "submodule.solo.update", "rebase"]);
     return withFixture(b, "t222-plan-clone-rebase", async (service) => {
@@ -313,7 +313,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
   const shape = (x: SubmoduleRefusal) => ({ path: x.path, reason: x.reason, text: x.text, command: x.remedy?.command ?? null, ...(x.remedy?.text === undefined ? {} : { remedyText: x.remedy.text }) });
 
   for (const [variant, expected] of CASES) {
-    todoCase(TASK, `F28 ${variant}: the review gives UNSUPPORTED_SUBMODULE with its reason, its contract §12 text and remedy, and no canary runs ${REVIEW}`, SHELL, () => {
+    reviewCase(`F28 ${variant}: the review gives UNSUPPORTED_SUBMODULE with its reason, its contract §12 text and remedy, and no canary runs`, () => {
       const b = buildF28(gitPath(), `t222-refuse-${variant}`, variant);
       const want = expected(b);
       return withFixture(b, `t222-refuse-${variant}`, async (service) => {
@@ -325,7 +325,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   }
 
-  todoCase(TASK, `F28 path: the review gives reason path, starts no Git process inside a submodule, and every repository digest stays equal ${REVIEW}`, SHELL, () => {
+  reviewCase(`F28 path: the review gives reason path, starts no Git process inside a submodule, and every repository digest stays equal`, () => {
     const b = buildF28(gitPath(), "t222-refuse-path-digests", "path");
     const sup = superOf(b);
     const before = { index: rawIndexDigest(gitPath(), sup), files: workingFileDigests(sup), refs: refState(gitPath(), sup) };
@@ -337,7 +337,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   });
 
-  todoCase(TASK, `F28 folder: the folder check reads no file data; an absent folder and an empty folder pass ${REVIEW}`, SHELL, () => {
+  reviewCase(`F28 folder: the folder check reads no file data; an absent folder and an empty folder pass`, () => {
     const b = buildF28(gitPath(), "t222-folder-reads", "folder");
     const absent = copySuper(b, "super-absent");
     rmSync(join(absent, "solo"), { recursive: true });
@@ -355,7 +355,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   });
 
-  todoCase(TASK, `F28 prune: the review passes with a fetch-checkout row, because every ref counts; for-each-ref runs without --exclude ${REVIEW}`, SHELL, () => {
+  reviewCase(`F28 prune: the review passes with a fetch-checkout row, because every ref counts; for-each-ref runs without --exclude`, () => {
     const b = buildF28(gitPath(), "t222-refuse-prune", "prune");
     return withFixture(b, "t222-refuse-prune", async (service) => {
       const { r } = await reviewed(service, b);
@@ -366,7 +366,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   });
 
-  todoCase(TASK, `F28 deinit-unsaved: the kept Git folder is read with --git-dir and --work-tree, and the review gives unsaved-commits ${REVIEW}`, SHELL, () => {
+  reviewCase(`F28 deinit-unsaved: the kept Git folder is read with --git-dir and --work-tree, and the review gives unsaved-commits`, () => {
     const b = buildF28(gitPath(), "t222-refuse-deinit", "deinit-unsaved");
     const dir = kept(b, "solo");
     return withFixture(b, "t222-refuse-deinit", async (service) => {
@@ -377,7 +377,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   });
 
-  todoCase(TASK, `a nested kept folder with an unsaved HEAD that the walk finds gives unsaved-commits with the --git-dir save command ${REVIEW}`, SHELL, () => {
+  reviewCase(`a nested kept folder with an unsaved HEAD that the walk finds gives unsaved-commits with the --git-dir save command`, () => {
     const b = buildF27(gitPath(), "t222-refuse-nested-kept", "base");
     const sup = superOf(b);
     fixtureGit(b, sup, ["submodule", "update", "--init", "--recursive", "-q", "--", "mid"]);
@@ -395,7 +395,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   });
 
-  todoCase(TASK, `F28 detached-unsaved with update = merge: unsaved-commits comes before update-mode ${REVIEW}`, SHELL, () => {
+  reviewCase(`F28 detached-unsaved with update = merge: unsaved-commits comes before update-mode`, () => {
     const b = buildF28(gitPath(), "t222-refuse-two", "detached-unsaved");
     fixtureGit(b, superOf(b), ["config", "submodule.solo.update", "merge"]);
     return withFixture(b, "t222-refuse-two", async (service) => {
@@ -408,7 +408,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
   });
 
   // The task names a test-injected bound. No seam lowers the §5 bound, so the copy holds one gitlink more than SUBMODULE_REVIEW_SUBMODULES.
-  todoCase(TASK, `F27 base with ${SUBMODULE_REVIEW_SUBMODULES + 1} gitlinks gives limit with the update command without a path ${REVIEW}`, SHELL, () => {
+  reviewCase(`F27 base with ${SUBMODULE_REVIEW_SUBMODULES + 1} gitlinks gives limit with the update command without a path`, () => {
     const b = buildF27(gitPath(), "t222-refuse-limit", "base");
     passReviewBound(b, superOf(b));
     return withFixture(b, "t222-refuse-limit", async (service) => {
@@ -418,7 +418,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   });
 
-  todoCase(TASK, `a copy with update-mode, gitdir-config, and limit beside unsaved-commits and no-url lists unsaved-commits and no-url first ${REVIEW}`, SHELL, () => {
+  reviewCase(`a copy with update-mode, gitdir-config, and limit beside unsaved-commits and no-url lists unsaved-commits and no-url first`, () => {
     const b = buildF28(gitPath(), "t222-refuse-order", "detached-unsaved");
     const sup = superOf(b);
     fixtureGit(b, sup, ["config", "submodule.solo.update", "merge"]);
@@ -438,7 +438,7 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   });
 
-  todoCase(TASK, `a test-injected folder read error gives REPOSITORY_UNAVAILABLE with the path, and no token goes out ${REVIEW}`, SHELL, () => {
+  reviewCase(`a test-injected folder read error gives REPOSITORY_UNAVAILABLE with the path, and no token goes out`, () => {
     const b = buildF27(gitPath(), "t222-refuse-folder-error", "deinit-kept");
     const folder = join(superOf(b), "solo");
     return withFixture(b, "t222-refuse-folder-error", async (service) => {
@@ -467,7 +467,7 @@ describe("programs (contract §12 \"Trust\")", () => {
     return [...hooks, ...keys];
   };
 
-  todoCase(TASK, `F29 base: the review lists every canary program with its origin and digest, and no canary runs during the review ${REVIEW}`, SHELL, () => {
+  reviewCase(`F29 base: the review lists every canary program with its origin and digest, and no canary runs during the review`, () => {
     const b = buildF29(gitPath(), "t222-programs-base", "base");
     return withFixture(b, "t222-programs-base", async (service) => {
       const { r } = await reviewed(service, b);
@@ -479,7 +479,7 @@ describe("programs (contract §12 \"Trust\")", () => {
     });
   });
 
-  todoCase(TASK, `F29 relative-hooks: the review lists one unchecked hooks directory for each clone, reuse, checkout, and fetch-checkout row ${REVIEW}`, SHELL, () => {
+  reviewCase(`F29 relative-hooks: the review lists one unchecked hooks directory for each clone, reuse, checkout, and fetch-checkout row`, () => {
     const b = buildF29(gitPath(), "t222-programs-relative", "relative-hooks");
     return withFixture(b, "t222-programs-relative", async (service) => {
       const { r } = await reviewed(service, b);
@@ -496,7 +496,7 @@ describe("programs (contract §12 \"Trust\")", () => {
       .filter((c) => commandOf(c.arguments).join(" ") === "rev-parse --absolute-git-dir")
       .map((c) => ({ gitDir: c.arguments.find((a) => a.startsWith("--git-dir="))?.slice(10), workTree: c.arguments.find((a) => a.startsWith("--work-tree="))?.slice(12) }));
 
-  todoCase(TASK, `F29 kept-folder: the review lists the canaries of the top-level and the nested kept Git folder, reads each with --git-dir=<folder> --work-tree=<folder>, skips the non-Git folder, and finds the name with / ${REVIEW}`, SHELL, () => {
+  reviewCase(`F29 kept-folder: the review lists the canaries of the top-level and the nested kept Git folder, reads each with --git-dir=<folder> --work-tree=<folder>, skips the non-Git folder, and finds the name with /`, () => {
     const b = buildF29(gitPath(), "t222-programs-kept", "kept-folder");
     const keptDirs = Object.values(b.facts.notes.kept as Record<string, string>).map((d) => join(b.root, d));
     const nonGit = join(b.root, b.facts.notes.nonGitFolder as string);
@@ -511,7 +511,7 @@ describe("programs (contract §12 \"Trust\")", () => {
     });
   });
 
-  todoCase(TASK, `F29 kept-nested: the review lists the canaries of the nested kept folder inside an initialized submodule ${REVIEW}`, SHELL, () => {
+  reviewCase(`F29 kept-nested: the review lists the canaries of the nested kept folder inside an initialized submodule`, () => {
     const b = buildF29(gitPath(), "t222-programs-kept-nested", "kept-nested");
     return withFixture(b, "t222-programs-kept-nested", async (service) => {
       const { r } = await reviewed(service, b);
@@ -522,7 +522,7 @@ describe("programs (contract §12 \"Trust\")", () => {
   });
 
   // The task names a test-injected walk. No seam lowers the §5 bound, so the copy holds one folder more than SUBMODULE_REVIEW_SUBMODULES under `modules`.
-  todoCase(TASK, `a modules walk above ${SUBMODULE_REVIEW_SUBMODULES} folders gives limit ${REVIEW}`, SHELL, () => {
+  reviewCase(`a modules walk above ${SUBMODULE_REVIEW_SUBMODULES} folders gives limit`, () => {
     const b = buildF27(gitPath(), "t222-programs-walk", "base");
     const modules = join(superOf(b), ".git", "modules", "walk");
     for (let i = 0; i <= SUBMODULE_REVIEW_SUBMODULES; i++) mkdirSync(join(modules, `f${i}`), { recursive: true });
@@ -532,7 +532,7 @@ describe("programs (contract §12 \"Trust\")", () => {
     });
   });
 
-  todoCase(TASK, `F29 base: inside submodules, the runner sees only the review reads, each with --no-lazy-fetch --no-optional-locks first ${REVIEW}`, SHELL, () => {
+  reviewCase(`F29 base: inside submodules, the runner sees only the review reads, each with --no-lazy-fetch --no-optional-locks first`, () => {
     const b = buildF29(gitPath(), "t222-programs-reads", "base");
     return withFixture(b, "t222-programs-reads", async (service) => {
       await reviewed(service, b);
@@ -542,7 +542,7 @@ describe("programs (contract §12 \"Trust\")", () => {
     });
   });
 
-  todoCase(TASK, `the review waits for read trust like other reads: after Revoke trust it gives TRUST_REQUIRED and starts no Git process inside a submodule ${REVIEW}`, SHELL, () => {
+  reviewCase(`the review waits for read trust like other reads: after Revoke trust it gives TRUST_REQUIRED and starts no Git process inside a submodule`, () => {
     const b = buildF27(gitPath(), "t222-programs-trust", "behind-present");
     const monitor = put(b.root, "programs/monitor.sh", "#!/bin/sh\nexit 1\n").replaceAll("\\", "/");
     fixtureGit(b, superOf(b), ["config", "core.fsmonitor", `'${monitor}'`]);

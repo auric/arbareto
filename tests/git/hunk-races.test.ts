@@ -139,7 +139,7 @@ describe("protocol races (research.md R3 steps 5, 11, and 13)", () => {
     }, TIMEOUT_MS);
   }
 
-  // A throw from `publish()` after the rename leaves publication open. An index that matches neither retained digest gives unknown (contract §8).
+  // A throw from `publish()` after the rename leaves publication open. An index that matches neither retained digest gives unknown (contract §9 "publish without a typed result").
   caseTest(TASK, `a throw from publish after the rename, with other index bytes later, ends unknown, not failed`, SHELL, async () => {
     const name = "t097-publish-throws";
     const probe = await open(fileURLToPath(import.meta.url), "r");

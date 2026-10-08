@@ -276,7 +276,7 @@ describe("refusals (contract §3, §9)", () => {
     }),
   );
 
-  todoCase(TASK, `missing identity (owned global configuration with user.useConfigOnly=true and no name) gives IDENTITY_REQUIRED, and no commit process starts ${COMMIT}`, SHELL, async () => {
+  todoCase(TASK, `missing identity (owned global configuration with user.useConfigOnly=true and no name) gives failed with GIT_FAILED and the Git output tail, and no commit process starts ${COMMIT}`, SHELL, async () => {
     const name = "t098-identity";
     const config = join(fixtureDir(name), "no-identity.gitconfig");
     writeFileSync(config, "[user]\n\tuseConfigOnly = true\n[init]\n\tdefaultBranch = main\n");
@@ -285,7 +285,9 @@ describe("refusals (contract §3, §9)", () => {
       const head = refState(gitPath(), repo);
       await underTest("commit");
       const { repositoryId, r } = await reviewed(service, repo);
-      expect((await commit(service, repositoryId, r, "identity\n")).code).toBe("IDENTITY_REQUIRED");
+      const response = await commit(service, repositoryId, r, "identity\n");
+      expect(outcome(response)).toEqual(FAILED("GIT_FAILED"));
+      expect(typeof one<string>(response.result, "outputTail")).toBe("string");
       expect(commitCalls(service)).toEqual([]);
       expect(refState(gitPath(), repo)).toEqual(head);
     });

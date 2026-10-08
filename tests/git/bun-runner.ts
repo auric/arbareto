@@ -290,6 +290,8 @@ export interface RecordedCall {
   repositoryId?: string;
   arguments: readonly string[];
   environmentPolicy: string;
+  // The request `limits`, as the service sent them (contract §6 "Process fields").
+  limits?: Record<string, unknown>;
   input?: Uint8Array;
   refused?: string;
   exit?: GitExit;
@@ -409,6 +411,9 @@ export function createBunRunner(options: BunRunnerOptions) {
     confirmRun: "approved" as "approved" | "declined" | ((request: TrustRequest) => Promise<"approved" | "declined">),
     // A matching call reports `stalled` through `onActivity` before it starts (contract §6 "Activity and stall notice").
     stall: null as CallMatch | null,
+    // Shorter activity limits than the request (contract §6 "Activity and stall notice", §12 "Deadlines and Cancel").
+    // The double holds no Job. Only a forwarded output byte, or a changed anchor I/O sum of a WSL call, is activity.
+    limits: {} as { inactivityMs?: number; ceilingMs?: number; stallMs?: number },
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -424,6 +429,9 @@ export function createBunRunner(options: BunRunnerOptions) {
   const wslSaved = new Map<string, Omit<WslSavedGit, "guid">>();
   const startBarriers: Barriers = { every: null, matched: [] };
   const stdoutBarriers: Barriers = { every: null, matched: [] };
+  // The `run` calls that have no exit reply yet, and the activity input of each spawned one.
+  const inflight = new Set<GitCall>();
+  const touches = new Map<GitCall, () => void>();
   let spawned = 0;
   let disposed = false;
 
@@ -520,7 +528,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     return [...wslHead(inst.distro), WSL_TEXTS.wrapper, "sh", unit, mode, index, inst.systemdRun, inst.systemctl, inst.setsid, program, ...args];
   }
 
-  // Starts the anchor of a WSL mutation before its first Git process, in the operation's process set.
+  // Starts the anchor of a WSL mutation or submodule update before its first Git process, in the operation's process set.
   function wslAnchor(operationId: string, inst: WslInstallation): WslAnchor {
     const existing = wslAnchors.get(operationId);
     if (existing) return existing;
@@ -771,7 +779,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     })().catch(() => {});
 
     let killed = false;
-    let expired = false;
+    let expired: GitExit["deadline"];
     // The double ends only the spawned process.
     const kill = () => {
       halt();
@@ -779,17 +787,49 @@ export function createBunRunner(options: BunRunnerOptions) {
       killed = true;
       proc.kill();
     };
-    const limit = "deadlineMs" in call.limits ? call.limits.deadlineMs : call.limits.ceilingMs;
-    const deadlineMs = Math.min(limit, inject.deadlineMs ?? limit);
-    const timer = setTimeout(() => {
-      expired = true;
+    const expire = (reason: NonNullable<GitExit["deadline"]>) => {
+      expired ??= reason;
       kill();
-    }, deadlineMs);
+    };
+    const shorter = (limit: number, injected: number | null | undefined) => Math.min(limit, injected ?? limit);
+    // Contract §6 "Process fields": a `network` request has an inactivity limit and a ceiling, every other request a deadline.
+    const limits = call.limits;
+    const network = "inactivityMs" in limits ? limits : null;
+    const timer =
+      "inactivityMs" in limits
+        ? setTimeout(() => expire("ceiling"), shorter(limits.ceilingMs, inject.limits.ceilingMs))
+        : setTimeout(() => expire("deadline"), shorter(limits.deadlineMs, inject.deadlineMs));
+    // Contract §6 "Activity and stall notice": only a call with `stallMs` gets activity events, and only at a state change.
+    const stallMs = call.limits.stallMs === undefined ? undefined : shorter(call.limits.stallMs, inject.limits.stallMs);
+    let inactivity: ReturnType<typeof setTimeout> | undefined;
+    let stall: ReturnType<typeof setTimeout> | undefined;
+    let stalled = false;
+    let exited = false;
+    const touch = () => {
+      if (exited) return;
+      if (network) {
+        clearTimeout(inactivity);
+        inactivity = setTimeout(() => expire("inactivity"), shorter(network.inactivityMs, inject.limits.inactivityMs));
+      }
+      if (stallMs === undefined) return;
+      clearTimeout(stall);
+      if (stalled) {
+        stalled = false;
+        call.onActivity?.("active");
+      }
+      stall = setTimeout(() => {
+        stalled = true;
+        call.onActivity?.("stalled");
+      }, stallMs);
+    };
+    touch();
+    touches.set(call, touch);
     call.signal.addEventListener("abort", kill, { once: true });
     const streams = [
       drain(
         pipes[0],
         (chunk) => {
+          touch();
           call.stdout.push(chunk);
           if (call.stdout.limited) kill();
         },
@@ -798,6 +838,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       drain(
         pipes[1],
         (chunk) => {
+          touch();
           call.stderr.push(chunk);
           recorded?.stderr?.push(chunk);
           if (diagnostics.add(call, chunk.length)) kill();
@@ -807,7 +848,9 @@ export function createBunRunner(options: BunRunnerOptions) {
     ];
 
     await proc.exited;
-    clearTimeout(timer);
+    exited = true;
+    touches.delete(call);
+    for (const t of [timer, inactivity, stall]) clearTimeout(t);
     call.signal.removeEventListener("abort", kill);
     own.delete(proc);
     const usage = proc.resourceUsage();
@@ -819,7 +862,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     return {
       exitCode: killed ? null : proc.exitCode,
       activeDescendants: live((r) => r.operationId === call.operationId).length,
-      ...(expired ? { deadline: "deadline" as const } : {}),
+      ...(expired ? { deadline: expired } : {}),
       ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}),
     };
   }
@@ -868,8 +911,20 @@ export function createBunRunner(options: BunRunnerOptions) {
     if (!dir || index === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL path");
     const args = wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir.linux, ...call.arguments.slice(1)]);
     if (commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
-    const anchor = call.environmentPolicy === "mutation" ? wslAnchor(call.operationId, inst) : null;
-    const exit = await execute(call, [WSL_EXE, ...args], launchDirectory, wslEnvironment(), recorded);
+    const anchor = call.environmentPolicy === "mutation" || call.environmentPolicy === "network" ? wslAnchor(call.operationId, inst) : null;
+    // Contract §6 "Activity and stall notice": one anchor line each second while a tracked process runs. Any change of the I/O sum is activity.
+    let sum: number | undefined;
+    const poll =
+      anchor && call.limits.stallMs !== undefined
+        ? setInterval(() => {
+            void anchor.ask().then((answer) => {
+              if (answer === null) return;
+              if (sum !== undefined && answer[1] !== sum) touches.get(call)?.();
+              sum = answer[1];
+            });
+          }, 1_000)
+        : undefined;
+    const exit = await execute(call, [WSL_EXE, ...args], launchDirectory, wslEnvironment(), recorded).finally(() => clearInterval(poll));
     await inject.afterWslExit?.(call);
     // The anchor count after the exit of an execution process becomes `activeDescendants`.
     return anchor ? { ...exit, activeDescendants: (await anchor.ask())?.[0] ?? 0 } : exit;
@@ -885,11 +940,13 @@ export function createBunRunner(options: BunRunnerOptions) {
         ...(typeof context.repositoryId === "string" ? { repositoryId: context.repositoryId } : {}),
         arguments: Array.isArray(call.arguments) ? [...call.arguments] : [],
         environmentPolicy: text(call.environmentPolicy),
+        ...(typeof call.limits === "object" && call.limits !== null ? { limits: { ...call.limits } } : {}),
         ...(call.input instanceof Uint8Array ? { input: call.input } : {}),
         stderr: [],
       };
       calls.push(recorded);
       if (inject.stall?.(recorded)) call.onActivity?.("stalled");
+      inflight.add(call);
       try {
         recorded.exit = await start(call, recorded);
         recorded.durationMs = performance.now() - recorded.at;
@@ -897,6 +954,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       } catch (error) {
         recorded.refused = error instanceof RunnerRefusal ? error.code : error instanceof Error ? error.name : "unknown";
         throw error;
+      } finally {
+        inflight.delete(call);
       }
     },
 
@@ -1239,6 +1298,13 @@ export function createBunRunner(options: BunRunnerOptions) {
     // The path of a live native context, or `undefined` after its end.
     contextPath(bootstrapId: string): string | undefined {
       return contexts.get(bootstrapId)?.path;
+    },
+    // Sends one activity event to each `run` call without an exit reply that `match` accepts, as the shell does (T255). Only a call with `stallMs` gets it.
+    // Returns the count of calls that got the event.
+    activity(match: CallMatch, state: "stalled" | "active"): number {
+      const reached = [...inflight].filter((call) => call.limits.stallMs !== undefined && match(call));
+      for (const call of reached) call.onActivity?.(state);
+      return reached.length;
     },
     // Test barrier: no matching process starts until the returned function runs. Without `match`, it holds every call.
     holdStart(match?: CallMatch): () => void {

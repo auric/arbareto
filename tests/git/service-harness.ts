@@ -5,7 +5,7 @@
 // Its imports must load off Windows without `dlopen` (tests/git/portable-imports.test.ts).
 
 import { spyOn, test } from "bun:test";
-import { chmodSync, closeSync, lstatSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -17,11 +17,12 @@ import { printOrigin } from "../origin";
 import { createBunRunner, createTrustStore, type BunRunner, type CallMatch, type TrustStore } from "./bun-runner";
 import { FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
 import { GIT } from "./git-binary";
+import { gitOpenssl } from "./http-401";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
-export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo" | "pwsh" | "windows-powershell" | "disposable-volume" | "restart-keeps-lingering";
+export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo" | "pwsh" | "windows-powershell" | "disposable-volume" | "restart-keeps-lingering" | "openssh" | "openssl" | "ssh-server" | "ssh-key";
 
 const WINDOWS = process.platform === "win32";
 const LINUX = process.platform === "linux";
@@ -95,6 +96,15 @@ function fifoCreation(): boolean {
   }
 }
 
+// `gitOpenssl` throws when `git --exec-path` fails. A capability probe never throws.
+function opensslPresent(): boolean {
+  try {
+    return GIT !== null && gitOpenssl(GIT) !== null;
+  } catch {
+    return false;
+  }
+}
+
 const PRESENT: Record<Capability, boolean> = {
   // `bun-runner.ts` has host calls only for Windows (`win32.ts`) and Linux (`linux.ts`).
   "shell-double": WINDOWS || LINUX,
@@ -116,6 +126,13 @@ const PRESENT: Record<Capability, boolean> = {
   "disposable-volume": false,
   // T100: `restart` disposes the double runner, and its `dispose` ends every recorded process. The shell keeps lingering Jobs across a service restart (contract §6).
   "restart-keeps-lingering": false,
+  // T220 F30 "stall": Windows OpenSSH `ssh-keygen`, as `buildF30` finds it.
+  openssh: WINDOWS && existsSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "OpenSSH", "ssh-keygen.exe")),
+  // T220 `tests/git/http-401.ts` `https` mode: the `openssl` of the Git under test.
+  openssl: opensslPresent(),
+  // T224 SSH cases: a test SSH server and a passphrase key for it, named by the environment.
+  "ssh-server": Boolean(process.env.ARBARETO_TEST_SSH_URL),
+  "ssh-key": Boolean(process.env.ARBARETO_TEST_SSH_KEY),
 };
 
 export function missingCapability(...needs: Capability[]): Capability | null {

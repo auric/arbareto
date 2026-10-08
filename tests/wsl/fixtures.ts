@@ -11,7 +11,7 @@ import { printOrigin } from "../origin";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import type { BunRunner } from "../git/bun-runner";
 import { FIXTURE_ROOT, fixtureDir, ownedGit } from "../git/fixture-root";
-import { inDistro, uncPath, type WslHost } from "./wsl-host";
+import { inDistro, uncPath, wslExec, type WslHost } from "./wsl-host";
 
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
@@ -47,7 +47,7 @@ export function writeLinux(host: WslHost, path: string, content: string | Uint8A
   if (mode) inDistro(host.distro, ["/usr/bin/chmod", mode, "--", path]);
 }
 
-export function distroGit(r: WslRepo, args: string[], options: { input?: Uint8Array; allowExit?: number[] } = {}): string {
+export function distroGit(r: WslRepo, args: string[], options: { input?: Uint8Array; allowExit?: number[]; timeoutMs?: number } = {}): string {
   const git = r.host.probe.paths.git;
   if (!git) throw new Error("no distro Git");
   return inDistro(r.host.distro, [...gitEnv(r.host), git, "-C", r.dir, ...args], options);
@@ -364,4 +364,162 @@ export function buildF26(host: WslHost, windowsGit: string): F26 {
     colonPath: uncPath(host, colonDir).replace(":", ""),
     entries: { repo: entries, path: uncPath(host, entries.dir), entry: "a\\b.txt" },
   };
+}
+
+// ---- F31: the F27, F29, and F30 submodule layouts in the distro (plan.md fixture matrix) ----
+
+export type F31Variant = "base" | "tty" | "linger" | "sleep" | "uploadpack" | "prune" | "big-clone" | "silent-fetch";
+// Contract §12 "Network policy": tests enable local transport only in the owned global file.
+const FILE_ALLOW = '[protocol "file"]\n\tallow = always\n';
+export const F31_BIG_BYTES = 300_000_000;
+
+export interface F31 {
+  root: string;
+  sup: WslRepo;
+  // The recorded commit of each top-level submodule path.
+  recorded: Record<string, string>;
+  // The HEAD of each populated top-level submodule at construction.
+  heads: Record<string, string>;
+  // The Linux path of the hook canary file, and the `pgrep -f` pattern of a lingering child.
+  canary: string;
+  pattern: string;
+}
+
+// `<root>/<name>.git` remotes with `leaf`, `mid` (with `leaf` nested), and `solo`, and a superproject clone at `<root>/super`.
+// "base": `mid` and `solo` are uninitialized. "tty", "linger", and "sleep": `solo` is one commit behind with its commit present, and its `post-checkout` hook
+// reads `/dev/tty`, starts a lingering child, or sleeps 60 seconds without output. "uploadpack": `solo` needs a fetch, and `remote.origin.uploadpack` names a canary
+// that records `GIT_PROTOCOL_FROM_USER`. "prune": only `refs/remotes/origin/feat` holds the `solo` HEAD, the remote deletes `feat`, and `fetch.prune` is true (research.md R14 S15).
+// "big-clone": an uninitialized `big` whose recorded commit adds a 300 MB random file. "silent-fetch": `big` is populated at its first commit.
+export function buildF31(host: WslHost, variant: F31Variant): F31 {
+  const root = `${host.folder}/f31-${variant}-${crypto.randomUUID().slice(0, 8)}`;
+  inDistro(host.distro, ["/usr/bin/mkdir", "-p", "--", root]);
+  const top = { host, dir: root };
+  const allow = ["-c", "protocol.file.allow=always"];
+  const remote = (name: string): { src: WslRepo; url: string } => {
+    distroGit(top, ["init", "-q", "--bare", "-b", "main", `${name}.git`]);
+    return { src: init(host, `${root}/src/${name}`), url: `${root}/${name}.git` };
+  };
+  const publish = (r: { src: WslRepo; url: string }, message: string, files: Record<string, string>, gitlinks: Record<string, string> = {}, branch = "main"): string => {
+    for (const [path, content] of Object.entries(files)) put(r.src, path, content);
+    if (Object.keys(files).length > 0) distroGit(r.src, ["--literal-pathspecs", "add", "--", ...Object.keys(files)]);
+    for (const [path, oid] of Object.entries(gitlinks)) distroGit(r.src, ["update-index", "--add", "--cacheinfo", `160000,${oid},${path}`]);
+    const oid = commit(r.src, message);
+    distroGit(r.src, ["push", "-q", r.url, `HEAD:refs/heads/${branch}`], { timeoutMs: 120_000 });
+    return oid;
+  };
+  const gitmodules = (rows: [string, string][]) => rows.map(([name, url]) => `[submodule "${name}"]\n\tpath = ${name}\n\turl = ${url}\n`).join("");
+
+  const leaf = remote("leaf");
+  const leafTip = publish(leaf, "leaf 1", { "leaf.txt": "leaf 1\n" });
+  const mid = remote("mid");
+  const midTip = publish(mid, "mid 1", { "mid.txt": "mid 1\n", ".gitmodules": gitmodules([["leaf", "../leaf.git"]]) }, { leaf: leafTip });
+  const solo = remote("solo");
+  const behind = variant === "tty" || variant === "linger" || variant === "sleep";
+  const s1 = publish(solo, "solo 1", { "solo.txt": "solo 1\n" });
+  let feat: string | null = null;
+  if (variant === "prune") {
+    distroGit(solo.src, ["checkout", "-q", "-b", "feat"]);
+    feat = publish(solo, "feat", { "feat.txt": "feat\n" }, {}, "feat");
+    distroGit(solo.src, ["checkout", "-q", "main"]);
+  }
+  const s2 = behind ? publish(solo, "solo 2", { "solo.txt": "solo 2\n" }) : s1;
+  const recorded: Record<string, string> = { mid: midTip, solo: s2 };
+  const usesBig = variant === "big-clone" || variant === "silent-fetch";
+  const big = usesBig ? remote("big") : null;
+  let b1 = "";
+  if (big !== null) {
+    distroGit(big.src, ["config", "core.compression", "0"]);
+    b1 = publish(big, "big 1", { "big.txt": "small\n" });
+    recorded.big = b1;
+  }
+  const superRemote = remote("super");
+  const rows: [string, string][] = Object.keys(recorded).sort().map((name) => [name, `../${name}.git`]);
+  publish(superRemote, "super", { "super.txt": "super\n", ".gitmodules": gitmodules(rows) }, recorded);
+  distroGit(top, ["clone", "-q", superRemote.url, "super"]);
+  const sup = { host, dir: `${root}/super` };
+  for (const [key, value] of [["core.autocrlf", "false"], ["core.eol", "lf"]] as const) distroGit(sup, ["config", key, value]);
+  const record = (path: string, oid: string) => {
+    distroGit(sup, ["update-index", "--cacheinfo", `160000,${oid},${path}`]);
+    commit(sup, `record ${path}`);
+    recorded[path] = oid;
+  };
+  const heads: Record<string, string> = {};
+  const soloDir = { host, dir: `${sup.dir}/solo` };
+  const soloGitDir = `${sup.dir}/.git/modules/solo`;
+  if (behind || variant === "uploadpack" || variant === "prune") {
+    distroGit(sup, [...allow, "submodule", "update", "--init", "--", "solo"]);
+    heads.solo = s2;
+  }
+  if (behind) {
+    distroGit(soloDir, ["checkout", "-q", "--detach", s1]);
+    heads.solo = s1;
+  }
+  if (variant === "uploadpack") record("solo", publish(solo, "solo 2", { "solo.txt": "solo 2\n" }));
+  if (variant === "prune") {
+    distroGit(soloDir, ["checkout", "-q", "--detach", feat!]);
+    distroGit(solo.src, ["push", "-q", solo.url, "--delete", "feat"]);
+    record("solo", publish(solo, "solo 2", { "solo.txt": "solo 2\n" }));
+    distroGit(soloDir, ["config", "fetch.prune", "true"]);
+    heads.solo = feat!;
+  }
+  if (big !== null) {
+    if (variant === "silent-fetch") {
+      distroGit(sup, [...allow, "submodule", "update", "--init", "--", "big"]);
+      heads.big = b1;
+    }
+    inDistro(host.distro, ["/usr/bin/dd", "if=/dev/urandom", `of=${big.src.dir}/big.bin`, `bs=${F31_BIG_BYTES / 300}`, "count=300", "status=none"], { timeoutMs: 120_000 });
+    distroGit(big.src, ["add", "--", "big.bin"], { timeoutMs: 120_000 });
+    const b2 = commit(big.src, "big 2");
+    distroGit(big.src, ["push", "-q", big.url, "HEAD:refs/heads/main"], { timeoutMs: 120_000 });
+    record("big", b2);
+  }
+
+  const canary = `${root}/canary.txt`;
+  // `exec` replaces the script command line, so the `sleep` arguments carry the pattern. GNU `sleep` adds its arguments.
+  const pattern = `sleep 300 0.${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+  const hook = (body: string) => writeLinux(host, `${soloGitDir}/hooks/post-checkout`, `#!/bin/sh\n${body}`, "755");
+  if (variant === "tty") hook(`( : </dev/tty ) 2>/dev/null\nprintf 'prompt=%s tty=%s\\n' "\${GIT_TERMINAL_PROMPT-unset}" "$?" > '${canary}'\n`);
+  if (variant === "linger") {
+    const script = `${root}/linger.sh`;
+    writeLinux(host, script, `#!/bin/sh\nexec ${pattern}\n`, "755");
+    hook(`setsid '${script}' >/dev/null 2>&1 &\nexit 0\n`);
+  }
+  if (variant === "sleep") hook(`: > '${canary}'\nexec sleep 60\n`);
+  if (variant === "uploadpack") {
+    const program = `${root}/uploadpack.sh`;
+    writeLinux(host, program, `#!/bin/sh\nprintf '%s\\n' "\${GIT_PROTOCOL_FROM_USER-unset}" > '${canary}'\nexec '${host.probe.paths.git}' upload-pack "$@"\n`, "755");
+    distroGit(soloDir, ["config", "remote.origin.uploadpack", program]);
+  }
+  // `init` rewrites the owned global file, so the transport lines go in last.
+  // A clone from a local path links the object files and writes no `tmp_pack_*` file. The `file://` rewrite makes the "big-clone" clone use the pack protocol.
+  const packTransport = variant === "big-clone" ? `[url "file://${root}/"]\n\tinsteadOf = ${root}/\n` : "";
+  writeLinux(host, globalConfig(host), `[user]\n\tname = ${FIXED.name}\n\temail = ${FIXED.email}\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n${FILE_ALLOW}${packTransport}`);
+  return { root, sup, recorded, heads, canary, pattern };
+}
+
+// The submodule HEADs, Git folders (relative to `dir`), and `submodule.*` keys of a distro superproject, as `submoduleState` of `tests/git/git-oracle.ts` reads them.
+export function distroSubmoduleState(r: WslRepo): { heads: Record<string, string>; gitDirs: Record<string, string>; keys: Record<string, string[]> } {
+  const heads: Record<string, string> = {};
+  const gitDirs: Record<string, string> = {};
+  const script = 'printf "%s\\0%s\\0%s\\0" "$displaypath" "$(git rev-parse HEAD)" "$(git rev-parse --absolute-git-dir)"';
+  const fields = distroGit(r, ["submodule", "foreach", "--quiet", "--recursive", script], { allowExit: [0, 1, 128] }).split("\0");
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    heads[fields[i]!] = fields[i + 1]!;
+    gitDirs[fields[i]!] = fields[i + 2]!.startsWith(`${r.dir}/`) ? fields[i + 2]!.slice(r.dir.length + 1) : fields[i + 2]!;
+  }
+  const keys: Record<string, string[]> = {};
+  for (const entry of distroGit(r, ["config", "--local", "-z", "--get-regexp", "^submodule\\."], { allowExit: [0, 1] }).split("\0")) {
+    if (entry === "") continue;
+    const nl = entry.indexOf("\n");
+    (keys[entry.slice(0, nl)] ??= []).push(entry.slice(nl + 1));
+  }
+  return { heads, gitDirs, keys };
+}
+
+// Git's own `submodule update --init --recursive` in a distro copy of `r` (contract §12 "Scope"). The copy keeps relative Git links.
+export function distroSubmoduleOracle(r: WslRepo, copy: string): { exitCode: number | null } & ReturnType<typeof distroSubmoduleState> {
+  inDistro(r.host.distro, ["/usr/bin/cp", "-a", "--", r.dir, copy]);
+  const git = r.host.probe.paths.git!;
+  const result = wslExec(["--distribution", r.host.distro, "--cd", "/", "--exec", ...gitEnv(r.host), git, "-C", copy, "submodule", "update", "--init", "--recursive"], { timeoutMs: 120_000 });
+  return { exitCode: result.exitCode, ...distroSubmoduleState({ host: r.host, dir: copy }) };
 }

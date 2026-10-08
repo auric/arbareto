@@ -3,7 +3,7 @@
 
 // Test oracle. It shares no code with `src/git-service/`.
 
-import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { closeSync, cpSync, existsSync, lstatSync, openSync, readdirSync, readlinkSync, readSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fixtureEnv } from "./fixture-root";
 
@@ -49,6 +49,19 @@ export function sha256(bytes: Uint8Array): string {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 
+// Reads in 1 MiB chunks, because a fixture file can be 512 MiB (F16 stage-input).
+export function fileSha256(path: string): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  const chunk = Buffer.alloc(1024 * 1024);
+  const fd = openSync(path, "r");
+  try {
+    for (let n = readSync(fd, chunk); n > 0; n = readSync(fd, chunk)) hasher.update(chunk.subarray(0, n));
+  } finally {
+    closeSync(fd);
+  }
+  return hasher.digest("hex");
+}
+
 export function indexEntries(gitPath: string, repo: string, config: string[] = []): IndexEntry[] {
   const out = Buffer.from(git(gitPath, repo, ["ls-files", "-z", "--stage", "--debug"], [0], config));
   const entries: IndexEntry[] = [];
@@ -91,7 +104,7 @@ function gitPath(gitExe: string, repo: string, names: string[]): string[] {
 // Null when the index file does not exist.
 export function rawIndexDigest(gitExe: string, repo: string): string | null {
   const [path] = gitPath(gitExe, repo, ["index"]);
-  return existsSync(path!) ? sha256(readFileSync(path!)) : null;
+  return existsSync(path!) ? fileSha256(path!) : null;
 }
 
 // Keys are worktree-relative paths with `/`. The top-level `.git` entry is excluded. A link digest covers its target text.
@@ -105,7 +118,7 @@ export function workingFileDigests(worktree: string): Record<string, string> {
       const stat = lstatSync(path);
       if (stat.isSymbolicLink()) digests[key] = `link:${sha256(Buffer.from(readlinkSync(path)))}`;
       else if (stat.isDirectory()) walk(path, `${key}/`);
-      else digests[key] = sha256(readFileSync(path));
+      else digests[key] = fileSha256(path);
     }
   };
   walk(worktree, "");

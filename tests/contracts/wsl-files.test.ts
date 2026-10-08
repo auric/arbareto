@@ -36,7 +36,8 @@ const MODES: [string, Body][] = [
   ["catFile", { mode: "catFile", bound: "WHOLE_FILE_STAGE_INPUT_BYTES", files: [entry()], oid: OID, size: 536_870_912 }],
   ["lock", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }],
   ["candidate", { mode: "candidate", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1" }],
-  ["remove of the lock", { mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }],
+  ["remove of the lock", { mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", lock: { device: "2112", inode: "57001" }, token: TOKEN }],
+  ["remove of the lock by its token alone", { mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }],
   ["remove of a candidate", { mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", expected: HEX }],
   ["publish", { mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", lock: { device: "2112", inode: "57001" }, token: TOKEN, expected: HEX }],
 ];
@@ -56,7 +57,7 @@ describe("the wslFiles request (contract §6 WSL file work)", () => {
   });
 
   test.each(MODES)("%s without a field or with an extra field is refused", (_name, fields) => {
-    for (const key of Object.keys(fields).filter((k) => k !== "sharedIndex" && !(fields.mode === "remove" && k === "candidate"))) {
+    for (const key of Object.keys(fields).filter((k) => k !== "sharedIndex" && !(fields.mode === "remove" && (k === "candidate" || k === "lock")))) {
       const { [key]: _gone, ...rest } = fields;
       expect(valid(frame(rest))).toBe(false);
     }
@@ -66,8 +67,15 @@ describe("the wslFiles request (contract §6 WSL file work)", () => {
     expect(valid(frame({ ...fields, digest: false }))).toBe(false);
   });
 
-  test("remove takes the token alone, or a candidate with its expected digest", () => {
+  test("remove takes the token with or without the lock device and inode, or a candidate with its expected digest", () => {
     const remove = (fields: Body) => frame({ mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", ...fields });
+    const lock = { device: "2112", inode: "57001" };
+    // The token-only lock form, for a lock walk without a `lock` reply.
+    expect(valid(remove({ token: TOKEN }))).toBe(true);
+    expect(valid(remove({ lock }))).toBe(false);
+    expect(valid(remove({ lock, candidate: "arbareto-candidate-1", expected: HEX }))).toBe(false);
+    expect(valid(remove({ lock, token: TOKEN, expected: HEX }))).toBe(false);
+    for (const bad of [{ device: "01", inode: "2" }, { device: "1", inode: "18446744073709551616" }, { device: "1" }, { device: "1", inode: "2", size: "0" }]) expect(valid(remove({ lock: bad, token: TOKEN }))).toBe(false);
     expect(valid(remove({ token: TOKEN, expected: HEX }))).toBe(false);
     expect(valid(remove({ candidate: "arbareto-candidate-1", token: TOKEN }))).toBe(false);
     expect(valid(remove({ candidate: "arbareto-candidate-1", token: TOKEN, expected: HEX }))).toBe(false);

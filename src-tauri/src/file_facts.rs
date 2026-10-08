@@ -122,6 +122,14 @@ fn candidate(name: &str) -> Result<String, Code> {
     Ok(name.to_string())
 }
 
+/// The device and inode of a `lock` reply. The pattern keeps the decimal form. The value must fit in 64 bits.
+fn lock_identity(device: &str, inode: &str) -> Result<[String; 2], Code> {
+    if device.parse::<u64>().is_err() || inode.parse::<u64>().is_err() {
+        return Err(INVALID);
+    }
+    Ok([device.to_string(), inode.to_string()])
+}
+
 /// The fields of a `wslFiles` frame: the operation, Git, and repository IDs, and the checked request. It reads no file.
 /// `value` is the frame that `typed` read into `request`, so the ID fields hold valid text.
 /// typify drops the `contextKind`, `bound`, and `root` constants, the array bounds, the 64-bit bound of the lock texts, and the candidate rule.
@@ -251,30 +259,37 @@ pub(crate) fn wsl_files_request<'a>(
             expected,
             ..
         } => {
-            // The pattern keeps the decimal form. The value must fit in 64 bits.
-            if lock.device.parse::<u64>().is_err() || lock.inode.parse::<u64>().is_err() {
-                return Err(INVALID);
-            }
+            let [device, inode] = lock_identity(&lock.device, &lock.inode)?;
             let fields = vec![
                 candidate(name)?,
-                lock.device.to_string(),
-                lock.inode.to_string(),
+                device,
+                inode,
                 token.to_string(),
                 expected.to_string(),
             ];
             files("publish", only(bound, FileBound::Index)?, vec![], fields)
         }
-        // The lock by its token, or a candidate by its expected digest. Perl gets the name and then the token or the digest.
+        // The lock by the device and inode of its `lock` reply and its token, the lock by its token alone, or a candidate by its expected digest.
+        // Perl gets the name, then the device, inode, and token, or the digest. The token-only form sends an empty device and inode.
         G::Remove {
             bound,
+            lock,
             token,
             candidate: name,
             expected,
             ..
         } => {
-            let fields = match (token, name, expected) {
-                (Some(token), None, None) => vec!["index.lock".to_string(), token.to_string()],
-                (None, Some(name), Some(expected)) => vec![candidate(name)?, expected.to_string()],
+            let fields = match (lock, token, name, expected) {
+                (lock, Some(token), None, None) => {
+                    let [device, inode] = match lock {
+                        Some(lock) => lock_identity(&lock.device, &lock.inode)?,
+                        None => [String::new(), String::new()],
+                    };
+                    vec!["index.lock".to_string(), device, inode, token.to_string()]
+                }
+                (None, None, Some(name), Some(expected)) => {
+                    vec![candidate(name)?, expected.to_string()]
+                }
                 _ => return Err(INVALID),
             };
             files("remove", only(bound, FileBound::Index)?, vec![], fields)

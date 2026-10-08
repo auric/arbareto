@@ -232,7 +232,9 @@ export function wslFilesInput(request: WslFilesCall): Uint8Array {
   if (request.mode === "lock") tokens.push(request.token);
   if (request.mode === "candidate") tokens.push(request.candidate);
   if (request.mode === "publish") tokens.push(request.candidate, request.lock.device, request.lock.inode, request.token, request.expected);
-  if (request.mode === "remove") tokens.push(request.candidate ?? "index.lock", request.token ?? request.expected ?? "");
+  // The token-only lock form sends an empty device and inode.
+  if (request.mode === "remove" && request.token !== undefined) tokens.push("index.lock", request.lock?.device ?? "", request.lock?.inode ?? "", request.token);
+  if (request.mode === "remove" && request.token === undefined) tokens.push(request.candidate ?? "", request.expected ?? "");
   return new TextEncoder().encode(tokens.map((t) => `${t}\0`).join(""));
 }
 

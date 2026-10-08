@@ -441,10 +441,11 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
         const publish = log.filter((f) => f.request.operationId === response.operationId && f.request.mode === "publish");
         expect(publish.map((f) => f.reply)).toEqual([[{ kind: "notOwned" }]]);
         expect({ sha: sha256(host, indexPath(repo)), inode: inode(host, indexPath(repo)) }).toEqual(index);
-        // `remove` decides ownership by the token content, so a swapped lock that holds the token can go. The original inode never returns.
+        // `remove` with the `lock` reply checks the device and inode, so a copy at another inode stays. The original inode never returns.
         const lockAfter = exists(host, lockPath(repo)) ? inode(host, lockPath(repo)) : null;
         expect({ swap, sameLock: lockAfter === lockInode }).toEqual({ swap, sameLock: swap !== "another inode" });
-        console.log(`OBSERVATION ${TASK}: publish with ${swap}: outcome ${response.state} ${response.code ?? ""}, lock after ${lockAfter === null ? "absent" : lockAfter === lockInode ? "kept" : "other inode"}`);
+        expect({ swap, state: response.state, code: response.code }).toEqual({ swap, state: "failed", code: "STALE_SELECTION" });
+        console.log(`OBSERVATION ${TASK}: publish with ${swap}: lock after ${lockAfter === null ? "absent" : lockAfter === lockInode ? "kept" : "other inode"}`);
       },
     );
   }

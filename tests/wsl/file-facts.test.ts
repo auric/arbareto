@@ -259,6 +259,8 @@ const lockOf = (host: WslHost, token = newToken()) => {
   if (result?.kind !== "lock") throw new Error(`lock: ${JSON.stringify(result)}`);
   return { device: result.device, inode: result.inode, token };
 };
+// The `remove` lock form: the device and inode of the `lock` reply and its token.
+const lockForm = ({ device, inode, token }: ReturnType<typeof lockOf>) => ({ lock: { device, inode }, token });
 const content = (host: WslHost, path: string) => inDistro(host.distro, ["/usr/bin/cat", "--", path]);
 
 describe("the WSL wslFiles Perl text (T325)", () => {
@@ -485,7 +487,7 @@ describe("the WSL wslFiles Perl text (T325)", () => {
         inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
         inDistro(host.distro, ["/usr/bin/mkdir", "--", lockPath]);
         expect(wslFiles(host, request)).toEqual([{ kind: "error", component: 0, code: "other-error" }]);
-        expect(wslFiles(host, callOf({ mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", token }))).toEqual([{ kind: "error", component: 0, code: "other-error" }]);
+        expect(wslFiles(host, callOf({ mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", lock: { device, inode }, token }))).toEqual([{ kind: "error", component: 0, code: "other-error" }]);
         expect(stat(host, "%F", lockPath)).toBe("directory");
       } finally {
         inDistro(host.distro, ["/usr/bin/rm", "-rf", "--", lockPath]);
@@ -503,15 +505,31 @@ describe("the WSL wslFiles Perl text (T325)", () => {
       const remove = (fields: Record<string, unknown>) => wslFiles(host, callOf({ mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", ...fields }));
       try {
         const owned = lockOf(host);
-        expect(remove({ token: owned.token })).toEqual([{ kind: "removed" }]);
+        expect(remove(lockForm(owned))).toEqual([{ kind: "removed" }]);
         expect(exists(host, lockPath)).toBe(false);
-        expect(remove({ token: owned.token })).toEqual([{ kind: "notOwned" }]);
+        expect(remove(lockForm(owned))).toEqual([{ kind: "notOwned" }]);
+        // A copy of the lock at a new inode holds the token, but it is not the lock of the `lock` reply. It stays.
+        const copied = lockOf(host);
+        inDistro(host.distro, ["/usr/bin/mv", "--", lockPath, `${lockPath}.first`]);
+        inDistro(host.distro, ["/usr/bin/cp", "--", `${lockPath}.first`, lockPath]);
+        expect(stat(host, "%i", lockPath)).not.toBe(copied.inode);
+        expect(content(host, lockPath)).toBe(copied.token);
+        expect(remove(lockForm(copied))).toEqual([{ kind: "notOwned" }]);
+        expect(content(host, lockPath)).toBe(copied.token);
+        // The token-only form, for a lock walk without a `lock` reply, removes such a copy. This is the accepted limit of that form.
+        expect(remove({ token: copied.token })).toEqual([{ kind: "removed" }]);
+        expect(exists(host, lockPath)).toBe(false);
+        inDistro(host.distro, ["/usr/bin/rm", "--", `${lockPath}.first`]);
+        // The token-only form removes an owned lock.
+        const unreplied = lockOf(host);
+        expect(remove({ token: unreplied.token })).toEqual([{ kind: "removed" }]);
+        expect(exists(host, lockPath)).toBe(false);
         // A deleted lock that another writer creates again with the same inode and 64 bytes of Git index data stays.
         const first = lockOf(host);
         inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
         inDistro(host.distro, ["/usr/bin/perl", "-e", 'use Fcntl; sysopen(my $f, $ARGV[0], O_WRONLY|O_CREAT|O_EXCL, 0666) or die; print $f "DIRC", "\\0" x 60', "--", lockPath]);
         expect(stat(host, "%d %i %s", lockPath)).toBe(`${first.device} ${first.inode} 64`);
-        expect(remove({ token: first.token })).toEqual([{ kind: "notOwned" }]);
+        expect(remove(lockForm(first))).toEqual([{ kind: "notOwned" }]);
         expect(content(host, lockPath).startsWith("DIRC")).toBe(true);
         inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
         // A candidate goes only with the digest that the service verified last.
@@ -523,7 +541,7 @@ describe("the WSL wslFiles Perl text (T325)", () => {
         expect(remove({ candidate: name, expected: digest })).toEqual([{ kind: "removed" }]);
         expect(exists(host, `${t.roots[1]}/${name}`)).toBe(false);
       } finally {
-        inDistro(host.distro, ["/usr/bin/rm", "-f", "--", lockPath]);
+        inDistro(host.distro, ["/usr/bin/rm", "-f", "--", lockPath, `${lockPath}.first`]);
       }
     },
     CASE_TIMEOUT_MS,

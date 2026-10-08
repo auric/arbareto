@@ -254,8 +254,8 @@ describe("refusals (contract §3, §9)", () => {
     }),
   );
 
-  // Contract §3 refuses an empty staged scope and names no code for it. The case accepts a refusal at review or at commit.
-  todoCase(TASK, `an empty staged scope is refused, and no commit process starts ${COMMIT}`, SHELL, () =>
+  // Contract §3: the review of an empty staged scope succeeds without a token. Without an issued token, a commit names a well-formed ID that the session did not issue (§2).
+  todoCase(TASK, `an empty staged scope gives a succeeded review without a reviewToken; a commit without a valid token gives UNKNOWN_TARGET, and no commit process starts ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-empty" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-empty", "F09"));
       git(repo, ["reset", "-q"]);
@@ -264,8 +264,10 @@ describe("refusals (contract §3, §9)", () => {
       await underTest("commit");
       const { repositoryId } = await service.register(repo);
       const r = await review(service, repositoryId);
-      const final = r.token === undefined ? r.response : await commit(service, repositoryId, r, "empty\n");
-      expect(final.state).toBe("rejected");
+      expect({ ...outcome(r.response), token: r.token, paths: valuesOf(r.response.result, "path") }).toEqual({ ...SUCCEEDED, token: undefined, paths: [] });
+      const from = service.runner.calls.length;
+      const response = await commit(service, repositoryId, { ...r, token: crypto.randomUUID() }, "empty\n");
+      expect({ ...outcome(response), runs: runsSince(service, from) }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
       expect(commitCalls(service)).toEqual([]);
       expect(refState(gitPath(), repo)).toEqual(head);
     }),

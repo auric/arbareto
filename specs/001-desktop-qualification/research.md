@@ -288,6 +288,7 @@ Unexpected effects during candidate execution prevent publication and remain vis
 - Preserve full logical index assertions and every working-file byte in ordinary fixtures.
 - Concurrent fixtures verify external writers' resulting bytes separately from application publication.
 - Windows replacement, cancellation, owned-lock cleanup, and crash behavior still require real packaged qualification.
+- Any `working-tree-encoding` value other than `unspecified` gives reason `encoding`, also `UTF-8`. No source check confirms that Git skips that conversion, so hunk actions refuse it (contract §4).
 - The installed build has no test barrier. T161 triggers the late write on the step 13 index replacement (T141 `--late-write`). So the write always follows step 11. Reconciliation can read the file before or after that write. T161 records the branch that ran. T097 covers the `completed-with-effects` branch in process. Whether Bun `fs.watch` on Windows reports the rename to `index` is unverified; T161 records it.
 
 No mutation fixture has run. This is an implementable design with mandatory proof cases, not a runtime pass.

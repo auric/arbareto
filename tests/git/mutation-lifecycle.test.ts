@@ -248,8 +248,8 @@ describe("lost responses and tokens (contract §2, data-model §6)", () => {
     }),
   );
 
-  // Data-model §6: "Tokens expire on refresh, relevant state change, service restart, or successful consumption." Contract §9 names no code for this refusal.
-  todoCase(TASK, `a new service session invalidates all tokens and cannot replay a commit ${NEEDS}`, SHELL, async () => {
+  // Data-model §6: "Tokens expire on refresh, relevant state change, service restart, or successful consumption." Contract §9 gives UNKNOWN_TARGET.
+  todoCase(TASK, `a new service session invalidates all tokens: a commit with an earlier review token gives UNKNOWN_TARGET and cannot replay ${NEEDS}`, SHELL, async () => {
     const repo = repoOf(buildChanged(gitPath(), "t100-new-session", "F09"));
     await underTest("recovery");
     const service = await openService({ git: gitPath(), name: "t100-new-session" });
@@ -264,7 +264,7 @@ describe("lost responses and tokens (contract §2, data-model §6)", () => {
       const read = await readOk(next, id);
       const from = next.runner.calls.length;
       const response = await next.request("commit", commitPayload(r, "replay\n"), { repositoryId: id, repositoryGeneration: read.generation });
-      expect({ state: response.state, runs: next.runner.calls.length - from }).toEqual({ state: "rejected", runs: 0 });
+      expect({ ...outcome(response), runs: next.runner.calls.length - from }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
       expect(refState(gitPath(), repo)).toEqual(head);
     } finally {
       await next.dispose();

@@ -187,6 +187,30 @@ describeGit("bun runner", (git) => {
   );
 
   test(
+    "injected activity limits: a silent network process ends at inactivity, an active one at the ceiling, and a tracked call gets stalled and active at each state change",
+    async () => {
+      // A `!` alias that writes `x` to stderr at each time in `at`, then exits at `end` milliseconds.
+      const script = (at: number[], end: number) => `alias.act=!"${slash(process.execPath)}" -e '${at.map((t) => `setTimeout(() => process.stderr.write("x"), ${t});`).join(" ")} setTimeout(() => {}, ${end})'`;
+      const act = (fields: Partial<GitCall>, at: number[], end: number) => call({ arguments: ["--no-lazy-fetch", "-c", script(at, end), "act"], ...fields });
+      try {
+        runner.inject.limits = { inactivityMs: 300 };
+        expect(await runner.run(act({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }, [], 5_000))).toMatchObject({ exitCode: null, deadline: "inactivity" });
+        runner.inject.limits = { ceilingMs: 1_000 };
+        const busy = Array.from({ length: 50 }, (_, i) => i * 100);
+        expect(await runner.run(act({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }, busy, 5_000))).toMatchObject({ exitCode: null, deadline: "ceiling" });
+        runner.inject.limits = { stallMs: 300 };
+        const states: string[] = [];
+        const tracked = act({ environmentPolicy: "mutation", limits: PROCESS_LIMITS.commit, onActivity: (state) => void states.push(state) }, [1_000], 2_000);
+        expect(await runner.run(tracked)).toEqual({ exitCode: 0, activeDescendants: 0 });
+        expect(states).toEqual(["stalled", "active", "stalled"]);
+      } finally {
+        runner.inject.limits = {};
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
     "a descendant holds the pipes after Git exits, and the call still resolves at the exit",
     async () => {
       const operationId = id();

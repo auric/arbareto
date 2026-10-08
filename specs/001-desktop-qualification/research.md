@@ -352,7 +352,7 @@ Additional sources for probes 7 to 9: [racy Git](https://github.com/git-for-wind
 
 ### Untracked hunk content
 
-**Decision (2026-10-08, T092)**: The untracked read is `--no-lazy-fetch diff --no-index --no-ext-diff --no-textconv --no-color -- /dev/null <path>`. Its new side equals the `git add` blob in every probed case where `git add` writes a blob, except an attribute file that only the index holds. Two case groups have no admissible method. They get no hunk action and reason `line-endings` (R10 "T092 cases without a method").
+**Decision (2026-10-08, T092)**: The untracked read is `--no-lazy-fetch diff --no-index --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ -- /dev/null <path>`. The probe ran without the prefix flags. They change only the patch headers. The new side equals the oracle blob in every probed case, except an attribute file that only the index holds. Under `core.safecrlf=true`, the oracle is `git add -p` (FR-010), and the read equals it ("Re-probe under `core.safecrlf=true`" below). Only the index-only attribute group has no admissible method. It gets no hunk action and reason `line-endings` (R10 "T092 cases without a method").
 
 **Rationale**: Only this form and `hash-object` are reads. Both fail the same case. Only the `diff` form gives bytes without an object write.
 
@@ -383,12 +383,22 @@ Canaries: a local clean filter on a tracked stat-dirty file and on a second untr
 Consequences:
 
 - Index-only attribute file: for check-in, Git reads the working `.gitattributes` and reads the index entry only when that file is absent (attr.c `read_attr`). `diff --no-index` and `hash-object` load no index. Signal: an index entry `.gitattributes` in the folder of the path or an ancestor folder, with no regular working file at that path. The untracked entry then gets reason `line-endings`. This also refuses LF files that the form gives correctly. The refusal is fail-closed and stays a recorded limit.
-- `core.safecrlf=true`: under `core.autocrlf=true`, `git add` exited 128 for `u-lf.txt`, `u-mixed.txt`, and `u-noeol.txt`. The read gave bytes, because Git applies safecrlf only when it writes an object (probe 3). `apply --cached` writes the patch post-image without conversion. So an untracked hunk could stage content that `git add` refuses. Signal: an effective `core.safecrlf` that Git reads as boolean true, from the configuration listing. Git compares `warn` without case first, and only then reads the value as a boolean (environment.c). So `yes`, `on`, `1`, and a key without a value also refuse, and `warn` does not. Every untracked entry then gets reason `line-endings`. This also refuses files that `git add` accepts, such as the CRLF file, and every file without line-ending conversion. Tracked hunks still follow `git add -p` (contract §4).
+- `core.safecrlf=true`: under `core.autocrlf=true`, `git add` exited 128 for `u-lf.txt`, `u-mixed.txt`, and `u-noeol.txt`. The read gave bytes, because Git applies safecrlf only when it writes an object (probe 3). FR-010 accepts what `git add` refuses here, as `git add -p` does. The re-probe below uses that oracle, and the read equals it. So `core.safecrlf` gives no untracked refusal.
 - `nul` and `/dev/null` both give an absent side in Git for Windows (diff-no-index.c `get_mode`). The form uses `/dev/null`.
 - A `filter` attribute from `check-attr` still gives reason `filter` before the read runs (contract §4).
 - Patch header settings (source reading, no probe): `diff.noprefix`, `diff.mnemonicPrefix`, `diff.srcPrefix`, `diff.dstPrefix`, and `diff.relative` are UI keys (diff.c `git_diff_ui_config`). `diff-files` and `diff-index` read only the basic keys, so these keys cannot change their headers. Porcelain `diff --no-index` reads them. `repo_diff_setup` applies them before option parsing, so explicit `--src-prefix=a/ --dst-prefix=b/` override them. The untracked read and the tracked patch reads carry both flags, which closes the untested-config item. The tracked patch reads also carry `--no-relative`, which clears `relative_name` (diff.c `diff_opt_relative`). `diff --no-index` sets `relative_name` again after option parsing, so `--no-relative` has no effect there and the form omits it. Git runs in the worktree root, so that prefix is empty.
 
-Sources: [check-in attribute order](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/attr.c#L841-L871), [empty side](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff-no-index.c#L81-L95), [safecrlf value](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/environment.c#L401-L411), [conversion flags](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/object-file.c#L33-L41), [diff UI keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L360-L426), [diff setup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L5133-L5175), [relative option](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L5902-L5911), [diff-files basic keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/diff-files.c#L34), [diff-index basic keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/diff-index.c#L31), [no-index relative names](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff-no-index.c#L411-L425).
+**Re-probe under `core.safecrlf=true`, 2026-10-08.** The run used main `e5fd355`, the same Git, root, and builders, and a fresh fixture root. It set local `core.safecrlf=true` in each of the 11 fixtures and added the same 60 untracked files. The read was the full form with the prefix flags. The oracle ran in a copy: `add -N -- <path>`, then `add -p -- <path>` with `y` lines on stdin. Git state proved that every hunk was staged. `add -p` exited 0, `diff-files --quiet -- <path>` exited 0, and the entry had no intent-to-add flag. The oracle blob was then compared with the new side byte by byte.
+
+| Fixtures | Cases | Equal | Differs |
+| --- | --- | --- | --- |
+| The six `buildF04` variants | 40 | 40 | None |
+| `buildF04Stage` "index-attribute" | 4 | 2 | `u-crlf.txt` and `u-mixed.txt`, first difference at byte 6 |
+| The other four `buildF04Stage` variants | 16 | 16 | None |
+
+The `buildF04` "safecrlf" files `u-lf.txt`, `u-mixed.txt`, and `u-noeol.txt` are equal. The only differences are the index-only attribute cases of the first probe.
+
+Sources: [check-in attribute order](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/attr.c#L841-L871), [empty side](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff-no-index.c#L81-L95), [conversion flags](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/object-file.c#L33-L41), [diff UI keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L360-L426), [diff setup](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L5133-L5175), [relative option](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff.c#L5902-L5911), [diff-files basic keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/diff-files.c#L34), [diff-index basic keys](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/diff-index.c#L31), [no-index relative names](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/diff-no-index.c#L411-L425).
 
 ## R4. Selected commit design: standard Git handoff
 
@@ -1679,13 +1689,16 @@ OBSERVATION T207: Git probe exit 0, git /usr/bin/git, git version 2.43.0, gitfs 
 - Control mutation: `src/git-service/discovery.ts:179` returned the Linux path unchanged. All 6 live `reads.test.ts` cases then failed.
 - Two T208 comparison cases are now todo cases for T115.
 
-**T092 cases without a method, 2026-10-08.** No admissible untracked read equals the `git add` blob in these F04 cases (R3 "Untracked hunk content"). They get no hunk action and reason `line-endings`. SC-003 records each case, and the requirement does not change. The probe ran on main `763fcac` with Git `2.56.0.windows.1` at `C:\Git\cmd\git.exe`. No retest is planned.
+**T092 cases without a method, 2026-10-08.** No admissible untracked read equals the oracle blob in two F04 cases (R3 "Untracked hunk content"). The refusal signal is an index-only `.gitattributes` in the folder of the path or an ancestor folder. So it also refuses the other untracked files under that folder, whose read is correct. Each refused case gets no hunk action and reason `line-endings`. This is a recorded limit. SC-003 records each case, and the requirement does not change. The probes ran on main `763fcac` and `e5fd355` with Git `2.56.0.windows.1` at `C:\Git\cmd\git.exe`. No retest is planned.
 
-- `fail`: index-only `.gitattributes` with `*.txt eol=crlf` (`buildF04Stage` "index-attribute"), untracked `u-crlf.txt`. The read differs from the blob at byte 6.
-- `fail`: the same fixture, untracked `u-mixed.txt`. The read differs from the blob at byte 6.
-- `fail`: `core.autocrlf=true` and `core.safecrlf=true` (`buildF04` "safecrlf"), untracked `u-lf.txt`. `git add` exits 128, and the read gives bytes.
-- `fail`: the same fixture, untracked `u-mixed.txt`. `git add` exits 128, and the read gives bytes.
-- `fail`: the same fixture, untracked `u-noeol.txt`. `git add` exits 128, and the read gives bytes.
+These are refusals. They do not fail the hunk and file staging correctness gate. SC-003 stays `fail` for these cases until a product decision accepts the limit.
+
+- `fail`: index-only `.gitattributes` with `*.txt eol=crlf` (`buildF04Stage` "index-attribute"), untracked `u-crlf.txt`. No method: the read differs from the blob at byte 6.
+- `fail`: the same fixture, untracked `u-mixed.txt`. No method: the read differs from the blob at byte 6.
+- `fail`: the same fixture, untracked `u-lf.txt`. Refused by the folder signal; the read equals the blob.
+- `fail`: the same fixture, untracked `u-noeol.txt`. Refused by the folder signal; the read equals the blob.
+
+The `core.safecrlf=true` cases of the first probe are not refused. The re-probe with the `git add -p` oracle of FR-010 found the read equal (R3).
 
 ### Batch reviews
 

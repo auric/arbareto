@@ -181,6 +181,16 @@ export interface ServiceSeams {
   environment?: Record<string, string>;
   // The in-process checkpoint observer of `src/git-service/hunk-publish.ts` (T110). The service awaits it after research R3 steps 5, 11, and 13 of a hunk publication.
   hunkCheckpoint?: (checkpoint: HunkCheckpoint) => Promise<void> | void;
+  // The in-process checkpoint observer of `src/git-service/submodule-update.ts` (T230). The service awaits it before each named contract §12 step.
+  submoduleCheckpoint?: (checkpoint: SubmoduleCheckpoint) => Promise<void> | void;
+}
+
+// Contract §12 "Update protocol" step 5 and "Trust": `folder-check` comes before the folder check of a `reuse` row, `clone-check` before the clone check of a row,
+// and `nested-active-set` before the program re-check of a nested active-set read. `path` is the display path of the row, or of the parent row for `nested-active-set`.
+export interface SubmoduleCheckpoint {
+  point: "folder-check" | "clone-check" | "nested-active-set";
+  operationId: string;
+  path: string;
 }
 
 export interface HunkCheckpoint {
@@ -443,6 +453,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     ...(options.readDeadlineMs === undefined ? {} : { readDeadlineMs: options.readDeadlineMs }),
     ...(options.watchHints === undefined ? {} : { watchHints: options.watchHints }),
     ...(options.hunkCheckpoint === undefined ? {} : { hunkCheckpoint: options.hunkCheckpoint }),
+    ...(options.submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint: options.submoduleCheckpoint }),
   };
   const sessionOptions: SessionOptions & ServiceSeams = {
     writer,

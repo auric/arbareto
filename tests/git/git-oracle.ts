@@ -153,6 +153,11 @@ export interface SubmoduleUpdateResult {
 export function submoduleUpdateOracle(gitExe: string, superDir: string, copyDir: string, env: Record<string, string>): SubmoduleUpdateResult {
   cpSync(superDir, copyDir, { recursive: true });
   const update = Bun.spawnSync([gitExe, "submodule", "update", "--init", "--recursive"], { cwd: copyDir, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  return { exitCode: update.exitCode, ...submoduleState(gitExe, copyDir, env) };
+}
+
+// The submodule HEADs, Git folders, and `submodule.*` keys of `superDir`, as `submoduleUpdateOracle` reads them after its update.
+export function submoduleState(gitExe: string, copyDir: string, env: Record<string, string>): Omit<SubmoduleUpdateResult, "exitCode"> {
   const heads: Record<string, string> = {};
   const gitDirs: Record<string, string> = {};
   const script = 'printf "%s\\0%s\\0%s\\0" "$displaypath" "$(git rev-parse HEAD)" "$(git rev-parse --absolute-git-dir)"';
@@ -168,7 +173,7 @@ export function submoduleUpdateOracle(gitExe: string, superDir: string, copyDir:
     const nl = entry.indexOf("\n");
     (keys[entry.slice(0, nl)] ??= []).push(entry.slice(nl + 1));
   }
-  return { exitCode: update.exitCode, heads, gitDirs, keys };
+  return { heads, gitDirs, keys };
 }
 
 // The names of the present markers, in `OPERATION_MARKERS` order.

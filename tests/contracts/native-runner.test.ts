@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { ProcessRequest, type FileFact } from "../../src/contracts/channel";
+import policyFile from "../../src/contracts/git-environment.json";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
   INLINE_PROCESS_INPUT_BYTES,
@@ -17,6 +18,7 @@ import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, type GitCall,
 import { createNativeRunner } from "../../src/git-service/native-runner";
 
 printOrigin("../../src/contracts/channel.ts", import.meta.dir);
+printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
@@ -155,7 +157,7 @@ describe("native runner run requests", () => {
     expect(channel.sent).toEqual([]);
     void channel.runner.run(call({ limits: { deadlineMs: 120_000, stallMs: 15_000 } }));
     void channel.runner.run(call({ context: probe, environmentPolicy: "probe", arguments: version, limits: { deadlineMs: 30_000 } }));
-    // `git-environment.json` has no `network` policy until T228, so the call sends no `run` frame.
+    // The runner refuses the `network` policy until T228, so the call sends no `run` frame.
     void channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network })).catch(() => {});
     expect(channel.bodies("run").length).toBe(2);
   });
@@ -984,4 +986,16 @@ describe("native runner WSL frames (T212, contract §6 and §11)", () => {
     await expect(pending).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
     await expect(channel.runner.register({ ...request, confirm: false } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
   });
+});
+
+// T227, contract §7: `network` equals `mutation` without `GIT_INDEX_FILE`, plus `GIT_PROTOCOL_FROM_USER=0`. The runner refuses it until T228.
+test("the network policy is mutation without an index file plus GIT_PROTOCOL_FROM_USER=0, and the runner still refuses it", async () => {
+  const { mutation, network } = policyFile.policies;
+  expect(network).toEqual({ ...mutation, set: { GIT_TERMINAL_PROMPT: "0", GIT_PROTOCOL_FROM_USER: "0" }, indexFileVariable: null });
+  expect(network.remove).toContain("GIT_INDEX_FILE");
+  expect([...network.remove, ...Object.keys(network.set)]).not.toContain("GIT_SSH_COMMAND");
+  expect([...network.remove, ...Object.keys(network.set)]).not.toContain("GIT_ALLOW_PROTOCOL");
+  const channel = createChannelDouble();
+  await expect(channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+  expect(channel.sent).toEqual([]);
 });

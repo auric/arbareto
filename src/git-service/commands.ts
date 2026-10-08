@@ -275,6 +275,24 @@ export function commitArgs(): string[] {
   return [NO_LAZY_FETCH, "commit", "--quiet", "--file=-"];
 }
 
+// T199, contract §4 "File staging" step 5. `stage` writes the literal path bytes on stdin. `unstage` writes the HEAD mode and object ID of each path, and mode 0 removes a path.
+export function updateIndexAddArgs(): string[] {
+  return [NO_LAZY_FETCH, "update-index", "--add", "--remove", "-z", "--stdin"];
+}
+
+export function updateIndexInfoArgs(): string[] {
+  return [NO_LAZY_FETCH, "update-index", "-z", "--index-info"];
+}
+
+// Contract §4 "Blob proof". Proof A writes the staged blob in working-tree form. Proof B reads the working-file stream on stdin. Without `-w`, Git writes no object.
+export function blobFilterProofArgs(path: string, oid: string, objectFormat: ObjectFormat): string[] {
+  return read("cat-file", "--filters", `--path=${pathItem(path)}`, treeItem(oid, objectFormat));
+}
+
+export function blobHashProofArgs(path: string): string[] {
+  return read("hash-object", "--stdin", `--path=${pathItem(path)}`);
+}
+
 // T113: the reconciliation read of the actual commit tree. It takes one full commit OID, never a revision expression.
 export function commitTreeArgs(oid: string, objectFormat: ObjectFormat): string[] {
   return read("ls-tree", "-r", "-z", treeItem(oid, objectFormat));
@@ -284,4 +302,108 @@ export function commitTreeArgs(oid: string, objectFormat: ObjectFormat): string[
 // Run it only after the first profile gives no refusal. `--path-format=absolute` stays in effect for the later path options, as in the separate profiles.
 export function discoveryLayoutArgs(): string[] {
   return [NO_LAZY_FETCH, "rev-parse", "--show-toplevel", "--absolute-git-dir", "--path-format=absolute", "--git-common-dir", "--git-path", "index", "--show-object-format", "--show-ref-format"];
+}
+
+// T227, contract §12 "Discovery notice": this read loads no index and runs no filter (§7).
+export function gitmodulesListArgs(): string[] {
+  return read("config", "--file", ".gitmodules", "--null", "--list");
+}
+
+function pathItems(paths: readonly string[]): string[] {
+  if (!Array.isArray(paths) || paths.length === 0) throw new TypeError("path list refused");
+  return paths.map(pathItem);
+}
+
+// Contract §12 "Review reads": the top-level checked-out commits. The caller splits long lists under the §6 command-line limit.
+export function gitlinkPatchArgs(paths: readonly string[]): string[] {
+  return read("diff-files", "-p", "--ignore-submodules=dirty", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--", ...pathItems(paths));
+}
+
+// Contract §12 "Plan": the `submodule.active` values are pathspecs for Git's own matcher (git-config(1)). `--literal-pathspecs` turns that matcher off (git(1)), so this read omits it.
+// A nested level runs it in the worktree of the parent submodule.
+export function activeSetArgs(pathspecs: readonly string[], parentWorktree?: string): string[] {
+  const at = parentWorktree === undefined ? [] : ["-C", pathItem(parentWorktree)];
+  return [NO_LAZY_FETCH, "--no-optional-locks", ...at, "ls-files", "-z", "--stage", "--", ...pathItems(pathspecs)];
+}
+
+// Contract §12 "Review reads": an initialized submodule runs Git in its worktree. A kept Git directory, or a `reuse` row, names the Git directory as the work tree too.
+export type SubmoduleLocation = { worktree: string } | { gitDir: string };
+
+function submoduleRead(location: SubmoduleLocation, ...args: string[]): string[] {
+  if (location === null || typeof location !== "object" || Object.keys(location).length !== 1) throw new TypeError("submodule location refused");
+  const at = "worktree" in location ? ["-C", pathItem(location.worktree)] : [`--git-dir=${pathItem(location.gitDir)}`, `--work-tree=${location.gitDir}`];
+  return [NO_LAZY_FETCH, "--no-optional-locks", ...at, ...args];
+}
+
+export function submoduleHeadOidArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "rev-parse", "--verify", "-q", "HEAD");
+}
+
+export function submoduleGitDirArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "rev-parse", "--absolute-git-dir");
+}
+
+export function submoduleHooksPathArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "rev-parse", "--git-path", "hooks");
+}
+
+export function submoduleHeadTargetArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "symbolic-ref", "-q", "HEAD");
+}
+
+export function submoduleConfigListArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "config", "list", "--show-scope", "--show-origin", "-z");
+}
+
+// Contract §12 "Refusals": every ref counts. Exit 0 without output means that no ref contains HEAD.
+export function submoduleHeadRefArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "for-each-ref", "--contains=HEAD", "--count=1", "--format=%(refname)");
+}
+
+// Object IDs go only on stdin.
+export function submoduleObjectCheckArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "cat-file", "--batch-check");
+}
+
+// Git `is_tip_reachable` (builtin/submodule--helper.c:2493-2514): exit 0 without output means that a ref or HEAD reaches the target.
+export function submoduleReachArgs(location: SubmoduleLocation, target: string, objectFormat: ObjectFormat): string[] {
+  return submoduleRead(location, "rev-list", "-n", "1", treeItem(target, objectFormat), "--not", "--all");
+}
+
+export function submoduleTreeArgs(location: SubmoduleLocation, commit: string, objectFormat: ObjectFormat): string[] {
+  return submoduleRead(location, "ls-tree", "-r", "-z", "--full-tree", treeItem(commit, objectFormat));
+}
+
+export function submoduleGitmodulesBlobArgs(location: SubmoduleLocation, commit: string, objectFormat: ObjectFormat): string[] {
+  return submoduleRead(location, "config", "--blob", `${treeItem(commit, objectFormat)}:.gitmodules`, "--null", "--list");
+}
+
+// Contract §12 "Update protocol" step 5: the fallback fetch reads the rewritten remote URLs. `--` keeps the remote name literal.
+export function remoteUrlArgs(location: SubmoduleLocation, name: string): string[] {
+  return submoduleRead(location, "remote", "get-url", "--all", "--", pathItem(name));
+}
+
+// Contract §12 "Update protocol" step 5: the update steps. `:(literal)` keeps the path literal (probe S8). No step passes `--recursive`.
+const literalPathspec = (path: string): string => `:(literal)${pathItem(path)}`;
+
+// `-c fetch.recurseSubmodules=no` stops the on-demand fetch recursion inside the clone step (probe S27).
+export function submoduleCloneArgs(parentWorktree: string, path: string): string[] {
+  return [NO_LAZY_FETCH, "-c", "fetch.recurseSubmodules=no", "-C", pathItem(parentWorktree), "submodule", "update", "--init", "--progress", "--", literalPathspec(path)];
+}
+
+// The connect step and the checkout step use the same command.
+export function submoduleCheckoutArgs(parentWorktree: string, path: string): string[] {
+  return [NO_LAZY_FETCH, "-C", pathItem(parentWorktree), "submodule", "update", "--init", "--no-fetch", "--progress", "--", literalPathspec(path)];
+}
+
+export function submoduleRegisterArgs(parentWorktree: string, path: string): string[] {
+  return [NO_LAZY_FETCH, "-C", pathItem(parentWorktree), "submodule", "init", "--", literalPathspec(path)];
+}
+
+export function submoduleFetchArgs(worktree: string): string[] {
+  return [NO_LAZY_FETCH, "-C", pathItem(worktree), "fetch", "--progress", "--no-recurse-submodules"];
+}
+
+export function submoduleFallbackFetchArgs(worktree: string, remote: string, target: string, objectFormat: ObjectFormat): string[] {
+  return [NO_LAZY_FETCH, "-C", pathItem(worktree), "fetch", "--progress", "--no-recurse-submodules", "--", pathItem(remote), treeItem(target, objectFormat)];
 }

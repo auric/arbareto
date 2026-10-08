@@ -41,6 +41,7 @@ import {
   type ProcessContext,
   type RegisterReply,
   type TrustRecord,
+  type TrustRequest,
   type WalkStop,
   type WslDistrosCall,
   type WslFileResult,
@@ -296,6 +297,8 @@ export interface RecordedCall {
   cpuMicros?: number;
   // Milliseconds from `at` to the resolved exit. A refused call has none.
   durationMs?: number;
+  // The stderr chunks of the process, as the double forwarded them.
+  stderr?: Uint8Array[];
 }
 
 export type CallMatch = (call: { operationId: string; arguments: readonly string[] }) => boolean;
@@ -400,6 +403,12 @@ export function createBunRunner(options: BunRunnerOptions) {
     holdWalk: null as (() => Promise<void>) | null,
     // Bytes replace the process of a call. No process starts, and the bytes go to stdout in 64 KiB chunks. The exit code is 0, or null after abort, closeJob, or a limited stdout collector.
     stdout: undefined as ((call: { arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
+    // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
+    exit: undefined as ((call: { arguments: readonly string[] }) => number | undefined) | undefined,
+    // The `confirmRun` reply (contract §12 "Trust"). A function can hold the reply on a test barrier.
+    confirmRun: "approved" as "approved" | "declined" | ((request: TrustRequest) => Promise<"approved" | "declined">),
+    // A matching call reports `stalled` through `onActivity` before it starts (contract §6 "Activity and stall notice").
+    stall: null as CallMatch | null,
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -710,6 +719,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       return barrier && Promise.race([barrier.promise, stopped.promise]);
     };
     try {
+      const exitCode = inject.exit?.({ arguments: call.arguments });
+      if (exitCode !== undefined) return { exitCode, activeDescendants: 0 };
       const injected = inject.stdout?.({ arguments: call.arguments, input: call.input });
       if (injected === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout);
       // Contract §5 "Native stdout/stderr chunk": at most 64 KiB in one chunk.
@@ -788,6 +799,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         pipes[1],
         (chunk) => {
           call.stderr.push(chunk);
+          recorded?.stderr?.push(chunk);
           if (diagnostics.add(call, chunk.length)) kill();
         },
         () => null,
@@ -874,8 +886,10 @@ export function createBunRunner(options: BunRunnerOptions) {
         arguments: Array.isArray(call.arguments) ? [...call.arguments] : [],
         environmentPolicy: text(call.environmentPolicy),
         ...(call.input instanceof Uint8Array ? { input: call.input } : {}),
+        stderr: [],
       };
       calls.push(recorded);
+      if (inject.stall?.(recorded)) call.onActivity?.("stalled");
       try {
         recorded.exit = await start(call, recorded);
         recorded.durationMs = performance.now() - recorded.at;
@@ -1052,7 +1066,12 @@ export function createBunRunner(options: BunRunnerOptions) {
         for (const [op] of [...wslAnchors].filter(([op]) => tags.get(op) === request.commonDirectory)) endAnchor(op);
         return { endedProcesses: end((r) => r.tag === request.commonDirectory) + wslCount };
       }
-      if (request.type === "confirmRun") throw new RunnerRefusal("INVALID_REQUEST", "confirmRun is not in this double yet");
+      if (request.type === "confirmRun") {
+        // `callsBefore` orders the frame against the recorded Git calls.
+        frames.push({ ...request, callsBefore: calls.length });
+        const result = typeof inject.confirmRun === "function" ? await inject.confirmRun(request) : inject.confirmRun;
+        return result === "approved" ? { result: "approved" } : { result: "declined" };
+      }
       trustStore.persists.push(request.persist);
       if (inject.confirmResult === "declined") return { result: "declined" };
       const commonIdentity = identityOf(request.commonDirectory);

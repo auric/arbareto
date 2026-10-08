@@ -175,6 +175,56 @@ export function objectCheckArgs(): string[] {
   return read("cat-file", "--batch-check");
 }
 
+// A path is relative to the worktree root, where Git runs (research R3). An argv item cannot hold NUL, and an empty pathspec matches every path.
+function pathItem(path: string): string {
+  if (typeof path !== "string" || path.length === 0 || path.includes("\0")) throw new TypeError("path refused");
+  return path;
+}
+
+function treeItem(oid: string, objectFormat: ObjectFormat): string {
+  if (!isObjectId(oid, objectFormat)) throw new TypeError("object ID refused");
+  return oid;
+}
+
+// Contract §7: status and diff reads pass `--ignore-submodules=dirty`. Research R3: the prefix and relative options override the diff UI keys.
+const PATCH_OPTIONS = ["-p", "--no-textconv", "--no-ext-diff", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=dirty"] as const;
+
+// Contract §4: the unstage hunks. The tree is the captured HEAD OID or the empty tree of `emptyTreeArgs`.
+export function stagedPatchArgs(tree: string, objectFormat: ObjectFormat, path: string): string[] {
+  return read("diff-index", "--cached", ...PATCH_OPTIONS, treeItem(tree, objectFormat), "--", pathItem(path));
+}
+
+// T111: the complete staged scope of `reviewCommit`.
+export function stagedNameStatusArgs(tree: string, objectFormat: ObjectFormat): string[] {
+  return read("diff-index", "--cached", "-z", "--name-status", "--ignore-submodules=dirty", treeItem(tree, objectFormat));
+}
+
+// Contract §4: the stage hunks.
+export function unstagedPatchArgs(path: string): string[] {
+  return read("diff-files", ...PATCH_OPTIONS, "--", pathItem(path));
+}
+
+// Contract §4 and research R3 "Untracked hunk content": the T092 form. `--no-relative` has no effect with `--no-index`, so the form omits it.
+// The clean filter still runs, so `check-attr` refuses a `filter` attribute first.
+export function untrackedPatchArgs(path: string): string[] {
+  return read("diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--", "/dev/null", pathItem(path));
+}
+
+// T103: the attributes of the support decision. Paths go only on stdin.
+export function attributeArgs(): string[] {
+  return read("check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding");
+}
+
+// Contract §4: `mixed` on the index or working side refuses hunks. `i/none` does not mean a missing object.
+export function lineEndingArgs(): string[] {
+  return read("ls-files", "--eol", "-z");
+}
+
+// The empty tree OID of the object format, with empty stdin. Without `-w`, Git writes no object.
+export function emptyTreeArgs(): string[] {
+  return read("hash-object", "-t", "tree", "--stdin");
+}
+
 // T082 and the T283 record in research R2: the second call of the two-call discovery form. It holds the `rev-parse` options of profiles 2 to 7 in T082 order.
 // Run it only after the first profile gives no refusal. `--path-format=absolute` stays in effect for the later path options, as in the separate profiles.
 export function discoveryLayoutArgs(): string[] {

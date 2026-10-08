@@ -34,6 +34,7 @@
     "tests/contracts/service-boundary.test.ts",
     "tests/contracts/session-startup.test.ts",
     "tests/contracts/strict-json.test.ts",
+    "tests/contracts/submodule-remote.test.ts",
     "tests/contracts/submodules.test.ts",
     "tests/contracts/support.test.ts",
     "tests/contracts/vectors.test.ts",

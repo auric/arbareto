@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     CloseHandle, E_INVALIDARG, ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
@@ -16,8 +17,9 @@ use windows::Win32::System::IO::{
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
+    JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
+    JobObjectBasicAccountingInformation, JobObjectBasicAndIoAccountingInformation,
     JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
     SetInformationJobObject, TerminateJobObject,
 };
@@ -30,10 +32,10 @@ use crate::bootstrap::PhysicalIdentity;
 use crate::spawn::SpawnError;
 use crate::wsl;
 
-/// The port thread waits at most 1 second per call (contract §6 "Lingering Jobs").
-const PORT_WAIT_MS: u32 = 1000;
 /// No Job uses this completion key. A packet with it only wakes the port thread.
 const WAKE_KEY: usize = 0;
+/// Contract §6 "Activity and stall notice": the shell reads each activity sum once per second.
+const SAMPLE_PERIOD: Duration = Duration::from_secs(1);
 
 /// One Job object. It has kill-on-close and no breakaway, and its handle is not inheritable (contract §6).
 pub struct Job {
@@ -97,6 +99,35 @@ impl Job {
 
     pub fn active_processes(&self) -> windows::core::Result<u32> {
         Ok(self.accounting()?.ActiveProcesses)
+    }
+
+    /// The sum of the six `IO_COUNTERS` fields of every process that was ever in the Job (contract §6 "Activity and stall notice").
+    pub(crate) fn io_sum(&self) -> Option<u64> {
+        let mut info = JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION::default();
+        // SAFETY: `info` matches the information class and the passed size.
+        unsafe {
+            QueryInformationJobObject(
+                Some(self.handle),
+                JobObjectBasicAndIoAccountingInformation,
+                (&raw mut info).cast(),
+                size_of_val(&info) as u32,
+                None,
+            )
+        }
+        .ok()?;
+        let io = info.IoInfo;
+        Some(
+            [
+                io.ReadOperationCount,
+                io.WriteOperationCount,
+                io.OtherOperationCount,
+                io.ReadTransferCount,
+                io.WriteTransferCount,
+                io.OtherTransferCount,
+            ]
+            .into_iter()
+            .fold(0u64, u64::wrapping_add),
+        )
     }
 
     /// The count of every process that was ever in the Job.
@@ -166,6 +197,134 @@ impl Drop for Job {
     }
 }
 
+/// An activity event of contract §6 "Activity and stall notice" and §12 "Deadlines and Cancel".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    Stalled,
+    Active,
+    /// The inactivity limit expired. No event follows.
+    Inactivity,
+}
+
+/// The activity state of one tracked process. Activity is a forwarded output byte or a changed I/O sum.
+/// A lower sum counts too: a WSL child that exits before its parent reaps it lowers the anchor sum (contract §6).
+pub struct Activity {
+    stall: Duration,
+    inactivity: Option<Duration>,
+    last: Instant,
+    sum: Option<u64>,
+    stalled: bool,
+    /// No event follows: the limit expired, or the run ended.
+    ended: bool,
+    expired: bool,
+}
+
+impl Activity {
+    pub fn new(now: Instant, stall: Duration, inactivity: Option<Duration>) -> Activity {
+        Activity {
+            stall,
+            inactivity,
+            last: now,
+            sum: None,
+            stalled: false,
+            ended: false,
+            expired: false,
+        }
+    }
+
+    /// A forwarded output byte.
+    pub fn output(&mut self, now: Instant) -> Option<Event> {
+        self.active(now)
+    }
+
+    /// One sample of the I/O sum. `None` is a failed read, which shows no activity.
+    pub fn sample(&mut self, now: Instant, sum: Option<u64>) -> Option<Event> {
+        let changed = matches!((self.sum, sum), (Some(old), Some(new)) if old != new);
+        if sum.is_some() {
+            self.sum = sum;
+        }
+        if changed {
+            return self.active(now);
+        }
+        if self.ended {
+            return None;
+        }
+        let idle = now.saturating_duration_since(self.last);
+        if self.inactivity.is_some_and(|limit| idle >= limit) {
+            self.ended = true;
+            self.expired = true;
+            Some(Event::Inactivity)
+        } else if !self.stalled && idle >= self.stall {
+            self.stalled = true;
+            Some(Event::Stalled)
+        } else {
+            None
+        }
+    }
+
+    fn active(&mut self, now: Instant) -> Option<Event> {
+        if self.ended {
+            return None;
+        }
+        self.last = now;
+        std::mem::take(&mut self.stalled).then_some(Event::Active)
+    }
+}
+
+/// One tracked process: its activity state and the sink of its events.
+/// The sink runs under the state lock, so the events of one process keep their order.
+pub struct Tracker {
+    activity: Mutex<Activity>,
+    sink: Box<dyn Fn(Event) + Send + Sync>,
+}
+
+impl Tracker {
+    pub fn new(
+        stall: Duration,
+        inactivity: Option<Duration>,
+        sink: impl Fn(Event) + Send + Sync + 'static,
+    ) -> Arc<Tracker> {
+        Arc::new(Tracker {
+            activity: Mutex::new(Activity::new(Instant::now(), stall, inactivity)),
+            sink: Box::new(sink),
+        })
+    }
+
+    fn activity(&self) -> MutexGuard<'_, Activity> {
+        self.activity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn output(&self) {
+        let mut activity = self.activity();
+        if let Some(event) = activity.output(Instant::now()) {
+            (self.sink)(event);
+        }
+    }
+
+    fn sample(&self, sum: Option<u64>) {
+        let mut activity = self.activity();
+        if let Some(event) = activity.sample(Instant::now(), sum) {
+            (self.sink)(event);
+        }
+    }
+
+    /// True after the inactivity limit expired.
+    pub fn expired(&self) -> bool {
+        self.activity().expired
+    }
+
+    /// Ends the events of the process. Its run calls it before the exit reply.
+    fn finish(&self) {
+        self.activity().ended = true;
+    }
+
+    fn finished(&self) -> bool {
+        self.activity().ended
+    }
+}
+
 struct Port(HANDLE);
 
 // SAFETY: the port handle is a kernel handle that any thread can use. `Port` is its only owner.
@@ -191,6 +350,8 @@ struct Entry {
     new_processes: Vec<u32>,
     /// The anchor of a WSL mutation (contract §11 "Process ownership").
     wsl: wsl::Mutation,
+    /// The tracked processes of a Windows Job. The port thread samples them (contract §6 "Activity and stall notice").
+    tracked: Vec<Arc<Tracker>>,
 }
 
 impl Entry {
@@ -256,7 +417,14 @@ impl Shared {
     }
 
     fn read_port(&self) {
+        let mut next = Instant::now() + SAMPLE_PERIOD;
         while !self.stop.load(Ordering::SeqCst) {
+            if Instant::now() >= next {
+                next = Instant::now() + SAMPLE_PERIOD;
+                self.sample();
+            }
+            // Contract §6 "Lingering Jobs": each wait lasts at most 1 second. It ends at the next sample.
+            let wait = next.saturating_duration_since(Instant::now()).as_millis() as u32;
             let (mut message, mut key) = (0u32, 0usize);
             let mut overlapped: *mut OVERLAPPED = std::ptr::null_mut();
             // SAFETY: the out pointers name live locals, and `self` keeps the port open.
@@ -266,7 +434,7 @@ impl Shared {
                     &mut message,
                     &mut key,
                     &mut overlapped,
-                    PORT_WAIT_MS,
+                    wait,
                 )
             };
             match result {
@@ -298,6 +466,23 @@ impl Shared {
                 state.remove(&operation_id);
             }
             _ => {}
+        }
+    }
+
+    /// Reads the I/O sum of each Job with a tracked process. The state lock is free while the sinks run.
+    fn sample(&self) {
+        let tracked: Vec<(Arc<Job>, Vec<Arc<Tracker>>)> = self
+            .state()
+            .jobs
+            .values()
+            .filter(|entry| !entry.tracked.is_empty())
+            .map(|entry| (Arc::clone(&entry.job), entry.tracked.clone()))
+            .collect();
+        for (job, trackers) in tracked {
+            let sum = job.io_sum();
+            for tracker in trackers {
+                tracker.sample(sum);
+            }
         }
     }
 
@@ -364,6 +549,7 @@ impl Supervisor {
                 #[cfg(test)]
                 new_processes: Vec::new(),
                 wsl: wsl::Mutation::default(),
+                tracked: Vec::new(),
             },
         );
         Ok(())
@@ -418,6 +604,39 @@ impl Supervisor {
                 anchor.end();
                 Err(SpawnError::OwnershipFailed)
             }
+        }
+    }
+
+    /// Tracks the activity of a process in a running operation Job (contract §6 "Activity and stall notice").
+    /// A WSL Job takes the sum only from its anchor, and one thread exchanges one anchor line each second.
+    /// It never reads the `IO_COUNTERS` of a WSL Job, because the anchor exchange changes them.
+    pub fn track(&self, operation_id: &str, tracker: &Arc<Tracker>) -> bool {
+        let mut state = self.shared.state();
+        let Some(entry) = state.jobs.get_mut(operation_id).filter(|e| !e.lingering) else {
+            return false;
+        };
+        if !entry.wsl.has_anchor() {
+            entry.tracked.push(Arc::clone(tracker));
+            return true;
+        }
+        let (wsl, tracker) = (entry.wsl.clone(), Arc::clone(tracker));
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(SAMPLE_PERIOD);
+                if tracker.finished() {
+                    break;
+                }
+                tracker.sample(wsl.activity_sum());
+            }
+        });
+        true
+    }
+
+    /// Ends the activity events of a process before its exit reply.
+    pub fn untrack(&self, operation_id: &str, tracker: &Arc<Tracker>) {
+        tracker.finish();
+        if let Some(entry) = self.shared.state().jobs.get_mut(operation_id) {
+            entry.tracked.retain(|t| !Arc::ptr_eq(t, tracker));
         }
     }
 
@@ -1100,6 +1319,22 @@ pub(crate) mod tests {
                 print_line(&format!("GRANDCHILD {}", suspended.pid));
                 std::thread::sleep(Duration::from_secs(60));
             }
+            // io <file> <delay ms> <period ms> <count>: no output after its PID line. After the delay, it writes 4 KiB to the file each period.
+            "io" => {
+                print_line(&format!("PID {pid}"));
+                let ms = |text: &String| Duration::from_millis(text.parse().expect("ms"));
+                std::thread::sleep(ms(&args[1]));
+                for _ in 0..args[3].parse::<usize>().expect("count") {
+                    std::fs::write(&args[0], [0u8; 4096]).expect("write the io file");
+                    std::thread::sleep(ms(&args[2]));
+                }
+            }
+            // late <ms>: prints its PID line, waits without I/O, then prints `LATE`.
+            "late" => {
+                print_line(&format!("PID {pid}"));
+                std::thread::sleep(Duration::from_millis(args[0].parse().expect("ms")));
+                print_line("LATE");
+            }
             // slow-stdin <ms>: reads stdin only after the delay.
             "slow-stdin" => {
                 print_line(&format!("PID {pid}"));
@@ -1635,6 +1870,177 @@ pub(crate) mod tests {
         assert!(
             grandchild.exits_within(CLOSE_BOUND),
             "the close ends the grandchild"
+        );
+        supervisor.shutdown();
+    }
+
+    // ---- T225, T228: activity (contract §6 "Activity and stall notice", §12 "Deadlines and Cancel") ----
+
+    pub(crate) type Events = Arc<Mutex<Vec<(Instant, Event)>>>;
+
+    /// A sink that records each event with its time.
+    pub(crate) fn recorder() -> (Events, impl Fn(Event) + Send + Sync + 'static) {
+        let events: Events = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::clone(&events);
+        (events, move |event| {
+            shared.lock().expect("events").push((Instant::now(), event));
+        })
+    }
+
+    pub(crate) fn kinds(events: &Events) -> Vec<Event> {
+        events
+            .lock()
+            .expect("events")
+            .iter()
+            .map(|(_, e)| *e)
+            .collect()
+    }
+
+    const STALL: Duration = Duration::from_secs(15);
+
+    #[test]
+    fn a_changed_sum_or_an_output_byte_is_activity_and_each_state_change_sends_one_event() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut a = Activity::new(t0, STALL, Some(Duration::from_secs(300)));
+        assert_eq!(
+            a.sample(at(1), Some(100)),
+            None,
+            "the first sum is the base"
+        );
+        assert_eq!(a.sample(at(14), Some(100)), None);
+        assert_eq!(
+            a.sample(at(15), None),
+            Some(Event::Stalled),
+            "a failed read is no activity"
+        );
+        assert_eq!(a.sample(at(16), Some(100)), None, "stalled goes out once");
+        assert_eq!(
+            a.sample(at(17), Some(101)),
+            Some(Event::Active),
+            "a changed sum"
+        );
+        assert_eq!(a.sample(at(31), Some(101)), None);
+        assert_eq!(a.sample(at(32), Some(101)), Some(Event::Stalled));
+        assert_eq!(a.output(at(33)), Some(Event::Active), "an output byte");
+        assert_eq!(a.output(at(34)), None, "active goes out once");
+        assert_eq!(
+            a.sample(at(40), Some(7)),
+            None,
+            "a lower sum is activity too"
+        );
+        assert_eq!(a.sample(at(54), Some(7)), None);
+        assert_eq!(a.sample(at(55), Some(7)), Some(Event::Stalled));
+    }
+
+    #[test]
+    fn an_unchanged_sum_without_output_ends_at_the_inactivity_limit_and_a_commit_has_none() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut a = Activity::new(t0, STALL, Some(Duration::from_secs(300)));
+        assert_eq!(a.sample(at(1), Some(5)), None);
+        assert_eq!(a.sample(at(15), Some(5)), Some(Event::Stalled));
+        assert_eq!(a.sample(at(299), Some(5)), None);
+        assert_eq!(a.sample(at(300), Some(5)), Some(Event::Inactivity));
+        assert_eq!(
+            a.sample(at(301), Some(6)),
+            None,
+            "no event follows the expiry"
+        );
+        assert_eq!(a.output(at(302)), None);
+        let mut commit = Activity::new(t0, STALL, None);
+        assert_eq!(commit.sample(at(15), Some(5)), Some(Event::Stalled));
+        assert_eq!(commit.sample(at(100_000), Some(5)), None);
+    }
+
+    #[test]
+    fn the_io_sum_of_a_job_grows_with_file_io_and_an_idle_child_keeps_it() {
+        let fixture = Fixture::new();
+        let job = Job::create().expect("Job");
+        let file = fixture.path("io");
+        let idle = start_child(&["sleep", "10000"]);
+        job.assign(idle.handle()).expect("assign");
+        idle.lines.wait("PID", WAIT);
+        std::thread::sleep(Duration::from_millis(500));
+        let before = job.io_sum().expect("sum");
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(
+            job.io_sum(),
+            Some(before),
+            "an idle child changes no counter"
+        );
+        let mut writer = start_child(&["io", &file.to_string_lossy(), "0", "50", "20"]);
+        job.assign(writer.handle()).expect("assign");
+        let _ = writer.child.wait();
+        let after = job.io_sum().expect("sum");
+        // Twenty 4 KiB writes add at least their transfer bytes to `WriteTransferCount`.
+        assert!(after >= before + 20 * 4096, "{before} -> {after}");
+    }
+
+    #[test]
+    fn the_port_thread_sends_stalled_for_an_idle_job_and_active_when_its_io_resumes() {
+        let fixture = Fixture::new();
+        let supervisor = Supervisor::start().expect("supervisor");
+        supervisor.open("op-activity").expect("open");
+        let file = fixture.path("io");
+        let mut child = start_child(&["io", &file.to_string_lossy(), "4500", "100", "20"]);
+        supervisor
+            .assign("op-activity", child.handle())
+            .expect("assign");
+        child.lines.wait("PID", WAIT);
+        let (events, sink) = recorder();
+        let start = Instant::now();
+        let tracker = Tracker::new(Duration::from_millis(1500), None, sink);
+        assert!(supervisor.track("op-activity", &tracker));
+        assert!(
+            eventually(Duration::from_secs(10), || kinds(&events).len() >= 2),
+            "{:?}",
+            kinds(&events)
+        );
+        let recorded = events.lock().expect("events").clone();
+        assert_eq!(kinds(&events), [Event::Stalled, Event::Active]);
+        let stalled = recorded[0].0 - start;
+        // The port thread reads the sum once per second.
+        assert!(
+            stalled >= Duration::from_millis(1500) && stalled < Duration::from_millis(3000),
+            "{stalled:?}"
+        );
+        assert!(recorded[1].0 - start >= Duration::from_millis(4500));
+        supervisor.untrack("op-activity", &tracker);
+        let _ = child.child.wait();
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(kinds(&events).len(), 2, "no event after untrack");
+        assert!(!tracker.expired());
+        supervisor.shutdown();
+    }
+
+    #[test]
+    fn an_idle_job_reaches_the_inactivity_limit_once() {
+        let supervisor = Supervisor::start().expect("supervisor");
+        supervisor.open("op-idle").expect("open");
+        let child = start_child(&["sleep", "20000"]);
+        supervisor
+            .assign("op-idle", child.handle())
+            .expect("assign");
+        child.lines.wait("PID", WAIT);
+        let (events, sink) = recorder();
+        let start = Instant::now();
+        let tracker = Tracker::new(STALL, Some(Duration::from_millis(1500)), sink);
+        assert!(supervisor.track("op-idle", &tracker));
+        assert!(eventually(Duration::from_secs(10), || !kinds(&events).is_empty()));
+        let elapsed = events.lock().expect("events")[0].0 - start;
+        assert!(
+            elapsed >= Duration::from_millis(1500) && elapsed < Duration::from_millis(3000),
+            "{elapsed:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(kinds(&events), [Event::Inactivity]);
+        assert!(tracker.expired());
+        supervisor.close("op-idle");
+        assert!(exits_within(child.handle(), CLOSE_BOUND));
+        assert!(
+            !supervisor.track("op-idle", &tracker),
+            "a closed Job tracks nothing"
         );
         supervisor.shutdown();
     }

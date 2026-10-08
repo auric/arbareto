@@ -323,6 +323,53 @@ pub fn confirm_damaged_dismissal(native: &dyn Native, damaged: &Damaged) -> bool
     native.confirm(&confirmation) == Some(confirmation.accept_button)
 }
 
+/// Contract §12 "Trust": `<paths>` names at most 10 paths and then the count of the others.
+const RUN_PATHS: usize = 10;
+
+/// The `confirmRun` confirmation: Run and Cancel (contract §12 "Trust").
+pub fn run_confirmation(
+    paths: &[String],
+    program_count: u64,
+    unchecked_count: u64,
+) -> Confirmation {
+    let mut named = paths
+        .iter()
+        .take(RUN_PATHS)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match paths.len().saturating_sub(RUN_PATHS) {
+        0 => {}
+        1 => named.push_str(", and 1 other"),
+        others => named.push_str(&format!(", and {others} others")),
+    }
+    let programs = if program_count == 1 {
+        "program"
+    } else {
+        "programs"
+    };
+    let mut text = format!(
+        "Update submodules runs {program_count} {programs} from submodule settings and hooks in {named}. They can run any code on this computer."
+    );
+    if unchecked_count > 0 {
+        text.push_str(&format!(
+            " Arbareto cannot check {unchecked_count} of them before the run."
+        ));
+    }
+    confirmation(text, "Run", None)
+}
+
+/// True only for the Run button. It reads and writes no trust record.
+pub fn confirm_run(
+    native: &dyn Native,
+    paths: &[String],
+    program_count: u64,
+    unchecked_count: u64,
+) -> bool {
+    let confirmation = run_confirmation(paths, program_count, unchecked_count);
+    native.confirm(&confirmation) == Some(confirmation.accept_button)
+}
+
 /// The startup failure dialog. T142 adds Restart service.
 pub fn service_stopped() -> Confirmation {
     Confirmation {
@@ -1110,6 +1157,62 @@ pub(crate) mod tests {
                 &Fake::pressing(&[press]),
                 &damaged
             ));
+        }
+    }
+
+    // ---- confirmRun (contract §12 "Trust") ----
+
+    fn paths(count: usize) -> Vec<String> {
+        (1..=count).map(|n| format!(r"C:\repo\sub{n}")).collect()
+    }
+
+    #[test]
+    fn the_run_confirmation_shows_the_contract_text_with_run_and_a_cancel_default() {
+        let confirmation = run_confirmation(&paths(2), 3, 0);
+        assert_eq!(
+            confirmation.text,
+            r"Update submodules runs 3 programs from submodule settings and hooks in C:\repo\sub1, C:\repo\sub2. They can run any code on this computer."
+        );
+        assert_eq!(labels(&confirmation), ["Run", "Cancel"]);
+        assert_eq!(confirmation.default_button, id_of(&confirmation, "Cancel"));
+        assert_eq!(confirmation.accept_button, id_of(&confirmation, "Run"));
+        assert_eq!(
+            run_confirmation(&paths(1), 1, 1).text,
+            r"Update submodules runs 1 program from submodule settings and hooks in C:\repo\sub1. They can run any code on this computer. Arbareto cannot check 1 of them before the run."
+        );
+        assert!(
+            run_confirmation(&paths(1), 5, 2)
+                .text
+                .ends_with(" Arbareto cannot check 2 of them before the run.")
+        );
+    }
+
+    #[test]
+    fn the_run_confirmation_names_at_most_ten_paths_and_then_the_count_of_the_others() {
+        let text = run_confirmation(&paths(12), 12, 0).text;
+        let named = paths(10).join(", ");
+        assert!(
+            text.contains(&format!("hooks in {named}, and 2 others. They")),
+            "{text}"
+        );
+        assert!(!text.contains(r"C:\repo\sub11"));
+        let text = run_confirmation(&paths(11), 11, 0).text;
+        assert!(text.contains(", and 1 other. They"), "{text}");
+        let text = run_confirmation(&paths(10), 10, 0).text;
+        assert!(text.contains(&format!("hooks in {}. They", paths(10).join(", "))));
+    }
+
+    #[test]
+    fn only_run_accepts_the_run_confirmation() {
+        let paths = paths(1);
+        assert!(confirm_run(
+            &Fake::pressing(&[Press::Label("Run")]),
+            &paths,
+            1,
+            0
+        ));
+        for press in CANCELS {
+            assert!(!confirm_run(&Fake::pressing(&[press]), &paths, 1, 0));
         }
     }
 

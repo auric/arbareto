@@ -257,14 +257,14 @@ export function parseConfigListing(bytes: Uint8Array, truncated: boolean): Confi
   return entries;
 }
 
-interface KeyParts {
+export interface KeyParts {
   section: string;
   subsection: string | null;
   variable: string;
 }
 
 // Git `parse_config_key`: the section ends at the first dot and the variable starts after the last dot. Git prints both in lowercase.
-function keyParts(key: string): KeyParts | null {
+export function keyParts(key: string): KeyParts | null {
   const first = key.indexOf(".");
   const last = key.lastIndexOf(".");
   if (first <= 0 || last === key.length - 1) return null;

@@ -29,8 +29,10 @@ use crate::bootstrap::{
 use crate::dialogs::Registered;
 use crate::file_facts;
 use crate::git_env::child_environment;
-use crate::jobs::Supervisor;
-use crate::schema::process_reply::{ExitDeadline, OutputStream, RegisterResultResult};
+use crate::jobs::{Event, Supervisor, Tracker};
+use crate::schema::process_reply::{
+    ActivityState, ExitDeadline, OutputStream, RegisterResultResult,
+};
 use crate::schema::process_request::{self as frame, EnvironmentPolicy};
 use crate::schema::{self, reply, typed};
 use crate::settings::SavedWslGit;
@@ -53,6 +55,8 @@ pub const PATH_UNITS: usize = 32_767;
 pub const BOOTSTRAP_DEADLINE_MS: u64 = 30_000;
 pub const REGISTERED_DEADLINE_MS: u64 = 120_000;
 pub const STALL_MS: u64 = 15_000;
+pub const INACTIVITY_MS: u64 = 300_000;
+pub const CEILING_MS: u64 = 14_400_000;
 /// Contract §5 "Walk deadline": each walk (contract §6 "Walks").
 pub const WALK_DEADLINE_MS: u64 = 30_000;
 /// Contract §6 "Context rules": `register` field `version` is printable ASCII.
@@ -308,6 +312,8 @@ struct Run {
     changed: Condvar,
     /// True after `watch` removed the call. The input writer holds this lock while it sends `inputWritten`.
     exited: Arc<Mutex<bool>>,
+    /// The activity of a request with `stallMs` (contract §6 "Activity and stall notice").
+    tracker: Option<Arc<Tracker>>,
 }
 
 #[derive(Default)]
@@ -704,9 +710,13 @@ impl ProcessRequests {
                         *environment_policy,
                         match limits {
                             frame::$limits::DeadlineLimits { deadline_ms, stall_ms } => {
-                                Some((deadline_ms.get(), *stall_ms))
+                                Limits::Deadline(deadline_ms.get(), *stall_ms)
                             }
-                            frame::$limits::NetworkLimits { .. } => None,
+                            frame::$limits::NetworkLimits {
+                                inactivity_ms,
+                                ceiling_ms,
+                                stall_ms,
+                            } => Limits::Network(inactivity_ms.get(), ceiling_ms.get(), *stall_ms),
                         },
                         input.as_ref().map(|data| data.as_str()),
                         input_bytes.map(|total| total.get()),
@@ -722,12 +732,13 @@ impl ProcessRequests {
             RegisteredOperation(RunRegisteredLimits)
         );
         let mutation = matches!(policy, EnvironmentPolicy::Mutation);
-        // `network` waits for its inactivity and ceiling limits (T228).
+        // Contract §12: `network` serves only the update processes of the `updateSubmodules` mutation.
+        let changes = mutation || matches!(policy, EnvironmentPolicy::Network);
         let policy_fits = match kind {
             Kind::Bootstrap(_) => matches!(policy, EnvironmentPolicy::Probe),
             Kind::Registered => matches!(
                 policy,
-                EnvironmentPolicy::Read | EnvironmentPolicy::Mutation
+                EnvironmentPolicy::Read | EnvironmentPolicy::Mutation | EnvironmentPolicy::Network
             ),
         };
         if !policy_fits {
@@ -738,7 +749,7 @@ impl ProcessRequests {
         {
             return Err(INVALID);
         }
-        let limit = deadline(limits.ok_or(INVALID)?, kind)?;
+        let limits = run_limits(limits, kind, policy)?;
         let input = match (input, input_bytes) {
             (None, None) => RunInput::Closed,
             (Some(data), None) => RunInput::Bytes(chunk(data, INLINE_INPUT_BYTES)?),
@@ -757,7 +768,7 @@ impl ProcessRequests {
         }
         check_active(&state, operation_id)?;
         // The marker and the mutex exist before the first side effect (contract §6 "Recovery markers").
-        if mutation && !state.started.contains(operation_id) {
+        if changes && !state.started.contains(operation_id) {
             return Err(INVALID);
         }
         let target = self.target(&mut state, ids, kind, operation_id)?;
@@ -858,7 +869,7 @@ impl ProcessRequests {
                     (Some((installation, _)), Some(command)) => {
                         let host = me.wsl_host(&operation);
                         // Contract §11 "Process ownership": a WSL mutation starts its anchor before its first Git process.
-                        if mutation {
+                        if changes {
                             let anchored = wsl::anchor_command(
                                 installation,
                                 &operation,
@@ -907,6 +918,12 @@ impl ProcessRequests {
                             unacknowledged,
                         );
                     }
+                    let tracker = limits.stall.map(|stall| {
+                        let sink = me.activity_sink(&call, &operation, generation);
+                        let tracker = Tracker::new(stall, limits.inactivity, sink);
+                        me.jobs.track(&operation, &tracker);
+                        tracker
+                    });
                     let run = Arc::new(Run {
                         call_id: call,
                         operation_id: operation,
@@ -915,12 +932,14 @@ impl ProcessRequests {
                         state: Mutex::new(Drain::default()),
                         changed: Condvar::new(),
                         exited,
+                        tracker,
                     });
                     for stream in 0..2 {
                         let (me, run) = (Arc::clone(&me), Arc::clone(&run));
                         std::thread::spawn(move || me.read_stream(&run, stream));
                     }
-                    std::thread::spawn(move || me.watch(&run, process, limit));
+                    let wait = (limits.wait, limits.expiry);
+                    std::thread::spawn(move || me.watch(&run, process, wait));
                     None
                 })
             },
@@ -1758,7 +1777,7 @@ impl ProcessRequests {
             EnvironmentPolicy::Probe => wsl::Mode::Probe,
             EnvironmentPolicy::Read => wsl::Mode::Read,
             EnvironmentPolicy::Mutation => wsl::Mode::Mutation,
-            EnvironmentPolicy::Network => return Err(INVALID),
+            EnvironmentPolicy::Network => wsl::Mode::Network,
         };
         let index = index_file
             .map(|file| wsl::linux_path(file, &installation.distro).ok_or(INVALID))
@@ -2378,6 +2397,9 @@ impl ProcessRequests {
                 run.generation,
                 reply::output(&run.call_id, STREAMS[stream], &data),
             );
+            if let Some(tracker) = &run.tracker {
+                tracker.output();
+            }
             queued -= 1;
             drain = lock(&run.state);
         }
@@ -2388,11 +2410,37 @@ impl ProcessRequests {
         while matches!((&*pipe).read(&mut buffer), Ok(read) if read > 0) {}
     }
 
+    /// The `activity` replies of one call. An expired inactivity limit closes the Job (contract §12 "Deadlines and Cancel").
+    fn activity_sink(
+        &self,
+        call_id: &str,
+        operation_id: &str,
+        generation: u64,
+    ) -> impl Fn(Event) + Send + Sync + 'static {
+        let (me, call) = (self.me.clone(), call_id.to_string());
+        let operation = operation_id.to_string();
+        move |event| {
+            let Some(me) = me.upgrade() else {
+                return;
+            };
+            let state = match event {
+                Event::Stalled => ActivityState::Stalled,
+                Event::Active => ActivityState::Active,
+                Event::Inactivity => {
+                    close_job_of(&me.jobs, &mut me.state(), &operation);
+                    return;
+                }
+            };
+            me.send(generation, reply::activity(&call, state));
+        }
+    }
+
     /// Ends the run at its process handle signal, never at pipe end-of-file (contract §6 "Completion signal").
-    fn watch(&self, run: &Run, process: Owned, deadline: Duration) {
-        let mut expired = false;
-        if !wait(process.0, deadline) {
-            expired = true;
+    /// `limit` is the deadline, or the ceiling of a `network` request. `reason` names it in the exit reply.
+    fn watch(&self, run: &Run, process: Owned, (limit, reason): (Duration, ExitDeadline)) {
+        let mut expired = None;
+        if !wait(process.0, limit) {
+            expired = Some(reason);
             close_job_of(&self.jobs, &mut self.state(), &run.operation_id);
             wait(process.0, CLOSE_WAIT);
         }
@@ -2424,13 +2472,18 @@ impl ProcessRequests {
         }
         drop(drain);
 
+        if let Some(tracker) = &run.tracker {
+            self.jobs.untrack(&run.operation_id, tracker);
+            if expired.is_none() && tracker.expired() {
+                expired = Some(ExitDeadline::Inactivity);
+            }
+        }
         // Removing the call drops its input channel, so later `input` and `cancel` frames are dropped.
         self.state().calls.remove(&run.call_id);
         *lock(&run.exited) = true;
-        let deadline = expired.then_some(ExitDeadline::Deadline);
         self.send(
             run.generation,
-            reply::exit(&run.call_id, exit_code, active, deadline),
+            reply::exit(&run.call_id, exit_code, active, expired),
         );
     }
 }
@@ -2561,19 +2614,63 @@ fn own(
     }
 }
 
-/// `deadlineMs` within the contract cap. `stallMs` exists only in `registeredOperation`.
-/// typify drops the integer range and the `stallMs` const, so this check keeps them.
-fn deadline((ms, stall): (u64, Option<f64>), kind: Kind) -> Result<Duration, Code> {
-    let cap = match kind {
-        Kind::Registered => REGISTERED_DEADLINE_MS,
-        Kind::Bootstrap(_) => BOOTSTRAP_DEADLINE_MS,
+/// The `limits` field of a `run` request, in milliseconds.
+enum Limits {
+    /// `deadlineMs` and the optional `stallMs`.
+    Deadline(u64, Option<f64>),
+    /// `inactivityMs`, `ceilingMs`, and `stallMs`.
+    Network(u64, u64, f64),
+}
+
+/// The checked `limits` of a `run` request (contract §6 "Channel frames").
+struct RunLimits {
+    /// The deadline, or the ceiling of a `network` request.
+    wait: Duration,
+    /// The `deadline` value of the exit reply when `wait` expires.
+    expiry: ExitDeadline,
+    /// With `stallMs`, the shell tracks the activity of the process.
+    stall: Option<Duration>,
+    inactivity: Option<Duration>,
+}
+
+/// Each limit within its contract cap. `stallMs` exists only in `registeredOperation`.
+/// The `network` policy carries the inactivity limit and the ceiling, and no other policy carries them.
+/// typify drops the integer ranges and the `stallMs` const, so this check keeps them.
+fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<RunLimits, Code> {
+    let stall = |ms: f64| {
+        (kind == Kind::Registered && ms == STALL_MS as f64)
+            .then_some(Duration::from_millis(STALL_MS))
+            .ok_or(INVALID)
     };
-    // T228 sends the activity events of `stallMs`.
-    let stall_fits = stall.is_none_or(|stall| kind == Kind::Registered && stall == STALL_MS as f64);
-    if ms > cap || !stall_fits {
-        return Err(INVALID);
+    let network = matches!(policy, EnvironmentPolicy::Network);
+    match limits {
+        Limits::Network(inactivity, ceiling, stall_ms)
+            if network && inactivity <= INACTIVITY_MS && ceiling <= CEILING_MS =>
+        {
+            Ok(RunLimits {
+                wait: Duration::from_millis(ceiling),
+                expiry: ExitDeadline::Ceiling,
+                stall: Some(stall(stall_ms)?),
+                inactivity: Some(Duration::from_millis(inactivity)),
+            })
+        }
+        Limits::Deadline(ms, stall_ms) if !network => {
+            let cap = match kind {
+                Kind::Registered => REGISTERED_DEADLINE_MS,
+                Kind::Bootstrap(_) => BOOTSTRAP_DEADLINE_MS,
+            };
+            if ms > cap {
+                return Err(INVALID);
+            }
+            Ok(RunLimits {
+                wait: Duration::from_millis(ms),
+                expiry: ExitDeadline::Deadline,
+                stall: stall_ms.map(stall).transpose()?,
+                inactivity: None,
+            })
+        }
+        _ => Err(INVALID),
     }
-    Ok(Duration::from_millis(ms))
 }
 
 /// A base64 chunk with 1 to `max` decoded bytes.
@@ -3590,6 +3687,199 @@ pub(crate) mod tests {
             refused(&call, "INVALID_REQUEST"),
             "argument with a lone surrogate"
         );
+    }
+
+    // ---- T225, T228: the `network` policy and activity (contract §6 "Process fields", §12 "Deadlines and Cancel") ----
+
+    fn network_limits(inactivity: u64, ceiling: u64) -> Value {
+        json!({ "inactivityMs": inactivity, "ceilingMs": ceiling, "stallMs": STALL_MS })
+    }
+
+    #[test]
+    fn network_runs_follow_their_limit_rules() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started(&operation, &workspace);
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "network with deadlineMs",
+                set(
+                    "limits",
+                    json!({ "deadlineMs": 30_000, "stallMs": STALL_MS }),
+                ),
+            ),
+            (
+                "inactivityMs above 300 s",
+                set("limits", network_limits(INACTIVITY_MS + 1, 1000)),
+            ),
+            ("inactivityMs 0", set("limits", network_limits(0, 1000))),
+            (
+                "ceilingMs above 4 h",
+                set("limits", network_limits(1000, CEILING_MS + 1)),
+            ),
+            (
+                "stallMs not 15 s",
+                set(
+                    "limits",
+                    json!({ "inactivityMs": 1000, "ceilingMs": 1000, "stallMs": STALL_MS - 1 }),
+                ),
+            ),
+            (
+                "stallMs missing",
+                set("limits", json!({ "inactivityMs": 1000, "ceilingMs": 1000 })),
+            ),
+            (
+                "network limits with read",
+                set("environmentPolicy", json!("read")),
+            ),
+            (
+                "network limits with mutation",
+                set("environmentPolicy", json!("mutation")),
+            ),
+            ("network before started", set("operationId", json!(uuid()))),
+        ];
+        let base = |call: &str| {
+            run_body(
+                call,
+                &operation,
+                &workspace,
+                &["sleep", "10"],
+                "network",
+                network_limits(1000, 1000),
+            )
+        };
+        expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+    }
+
+    #[test]
+    fn a_network_run_starts_detached_and_ends_at_its_ceiling_or_its_inactivity_limit() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started(&operation, &workspace);
+        // Contract §12 "Environment and console": a `network` process gets `DETACHED_PROCESS`, as every Git process does.
+        let call = uuid();
+        harness.send(run_body(
+            &call,
+            &operation,
+            &workspace,
+            &["report"],
+            "network",
+            network_limits(30_000, 60_000),
+        ));
+        let report: Value =
+            serde_json::from_str(&harness.output_line(&call, "stdout", "REPORT")).expect("report");
+        assert_eq!(report["conout"], false, "no console");
+        assert_eq!(report["consoleWindowNull"], true);
+        let exit = harness.exit(&call, WAIT).expect("exit").1;
+        assert_eq!(exit["exitCode"], 0);
+        assert!(exit.get("deadline").is_none());
+
+        for (limits, reason, bound) in [
+            (network_limits(INACTIVITY_MS, 1000), "ceiling", 1000),
+            (network_limits(1500, 60_000), "inactivity", 1500),
+        ] {
+            let call = uuid();
+            let sent = Instant::now();
+            harness.send(run_body(
+                &call,
+                &operation,
+                &workspace,
+                &["sleep", "20000"],
+                "network",
+                limits,
+            ));
+            let (at, exit) = harness.exit(&call, WAIT).expect("exit");
+            assert_eq!(exit["deadline"], reason);
+            assert_eq!(exit["exitCode"], Value::Null, "{reason}");
+            let elapsed = at - sent;
+            assert!(
+                elapsed >= Duration::from_millis(bound)
+                    && elapsed < Duration::from_millis(bound + 2500),
+                "{reason}: {elapsed:?}"
+            );
+            assert!(
+                !harness
+                    .replies_for(&call)
+                    .iter()
+                    .any(|(_, v)| v["type"] == "activity"),
+                "{reason}: no stall within the limit"
+            );
+        }
+    }
+
+    /// Contract §6 "Activity and stall notice": with the 15-second threshold, `stalled` goes out 15 to 17 seconds after the last activity.
+    /// A commit request and a `network` request get the same tracking. A request without `stallMs` gets no event.
+    #[test]
+    fn a_tracked_run_sends_stalled_after_15_seconds_without_activity_and_active_at_its_next_output()
+    {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let (network, commit, read) = (uuid(), uuid(), uuid());
+        harness.started(&network, &workspace);
+        harness.started(&commit, &workspace);
+        let calls = [
+            (
+                uuid(),
+                &network,
+                "network",
+                network_limits(INACTIVITY_MS, 60_000),
+            ),
+            (
+                uuid(),
+                &commit,
+                "mutation",
+                json!({ "deadlineMs": 60_000, "stallMs": STALL_MS }),
+            ),
+            (uuid(), &read, "read", json!({ "deadlineMs": 60_000 })),
+        ];
+        for (call, operation, policy, limits) in &calls {
+            harness.send(run_body(
+                call,
+                operation,
+                &workspace,
+                &["late", "17000"],
+                policy,
+                limits.clone(),
+            ));
+        }
+        for (call, _, policy, _) in &calls {
+            let (at, exit) = harness
+                .exit(call, Duration::from_secs(30))
+                .unwrap_or_else(|| panic!("{policy}: no exit"));
+            assert_eq!(exit["exitCode"], 0, "{policy}");
+            let replies = harness.replies_for(call);
+            let activity: Vec<(Instant, Value)> = replies
+                .iter()
+                .filter(|(_, v)| v["type"] == "activity")
+                .cloned()
+                .collect();
+            if *policy == "read" {
+                assert!(activity.is_empty(), "no stallMs, no event");
+                continue;
+            }
+            let states: Vec<&Value> = activity.iter().map(|(_, v)| &v["state"]).collect();
+            assert_eq!(states, [&json!("stalled"), &json!("active")], "{policy}");
+            assert_eq!(
+                activity[0].1,
+                json!({ "type": "activity", "callId": call, "state": "stalled" })
+            );
+            let first_output = replies
+                .iter()
+                .find(|(_, v)| v["type"] == "output")
+                .expect("PID line")
+                .0;
+            let stalled = activity[0].0 - first_output;
+            assert!(
+                stalled >= Duration::from_secs(15) && stalled < Duration::from_secs(17),
+                "{policy}: {stalled:?}"
+            );
+            assert!(
+                activity[1].0 <= at,
+                "{policy}: the events come before the exit"
+            );
+        }
     }
 
     #[test]
@@ -6579,6 +6869,46 @@ pub(crate) mod tests {
             vec![
                 anchor.arguments,
                 git_command(wsl::Mode::Mutation, &mutation, 1, &arguments)
+            ]
+        );
+
+        // T228: an `updateSubmodules` process starts the anchor too, and the wrapper runs in `network` mode.
+        let network = uuid();
+        let common = wsl::WslIdentity {
+            guid: WSL_GUID.to_string(),
+            file_system_id: "fedc9aa3bd65bc57".to_string(),
+            inode: "4243".to_string(),
+        };
+        wsl.harness
+            .requests
+            .tag(&network, crate::bootstrap::PhysicalIdentity::Wsl(common));
+        let before = wsl.host.commands().len();
+        let arguments = [
+            "--no-lazy-fetch",
+            "fetch",
+            "--progress",
+            "--no-recurse-submodules",
+        ];
+        let call = uuid();
+        wsl.harness.send(json!({
+            "type": "run", "callId": call, "operationId": network, "contextKind": "registeredOperation",
+            "gitInstallationId": git, "repositoryId": repository, "arguments": arguments,
+            "environmentPolicy": "network", "limits": { "inactivityMs": INACTIVITY_MS, "ceilingMs": CEILING_MS, "stallMs": STALL_MS },
+        }));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            refused(&call, "PROCESS_OWNERSHIP_FAILED")
+        );
+        let anchor = wsl::anchor_command(&installation, &network, &base).expect("anchor");
+        let launched: Vec<Vec<String>> = wsl.host.commands()[before..]
+            .iter()
+            .map(|command| command.arguments.clone())
+            .collect();
+        assert_eq!(
+            launched,
+            vec![
+                anchor.arguments,
+                git_command(wsl::Mode::Network, &network, 1, &arguments)
             ]
         );
     }

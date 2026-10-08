@@ -10,7 +10,7 @@
 // - Kinds `ordinary`, `rename`, and `unmerged` also hold `xy`, `submodule`, `modes`, and `oids` in git-status(1) field order. `rename` adds `score` and `originalPath`.
 // - Branch headers are not records. A rename record counts as one record.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { codeFitsState, type ErrorCode } from "../../src/contracts/errors";
 import * as LIMITS from "../../src/contracts/limits";
@@ -115,18 +115,17 @@ function wellFormedLength(b: Uint8Array, at: number): number {
 
 // Data-model §5: valid UTF-8 displays as text, and each byte outside a well-formed sequence displays as `\xNN`.
 function displayOf(b: Uint8Array): string {
-  let out = "";
+  const parts: string[] = [];
+  let run = 0;
   for (let at = 0; at < b.length; ) {
     const n = wellFormedLength(b, at);
     if (n === 0) {
-      out += `\\x${b[at]!.toString(16).padStart(2, "0")}`;
-      at++;
-    } else {
-      out += Buffer.from(b.subarray(at, at + n)).toString("utf8");
-      at += n;
-    }
+      parts.push(Buffer.from(b.subarray(run, at)).toString("utf8"), `\\x${b[at]!.toString(16).padStart(2, "0")}`);
+      run = ++at;
+    } else at += n;
   }
-  return out;
+  parts.push(Buffer.from(b.subarray(run)).toString("utf8"));
+  return parts.join("");
 }
 
 // Data-model §5 fixes the `\xNN` form, not the letter case of the hex digits.
@@ -333,6 +332,46 @@ interface Output {
   oracle: Oracle;
 }
 
+// The 32 MiB listings keep large oracles alive. A full collection after each test bounds the peak RSS.
+afterEach(() => Bun.gc(true));
+
+test("the run-based display oracle equals the per-byte display oracle", () => {
+  const perByte = (b: Uint8Array) => {
+    let out = "";
+    for (let at = 0; at < b.length; ) {
+      const n = wellFormedLength(b, at);
+      out += n === 0 ? `\\x${b[at]!.toString(16).padStart(2, "0")}` : Buffer.from(b.subarray(at, at + n)).toString("utf8");
+      at += n === 0 ? 1 : n;
+    }
+    return out;
+  };
+  const cases = [
+    Buffer.from("abc"),
+    Buffer.from([0xff, 0x61, 0xe2, 0x82, 0x61, 0xc3, 0xa9, 0xf0, 0x9f, 0x98, 0x80, 0xed, 0xa0, 0x80, 0x80]),
+    Buffer.from("é中"),
+    Buffer.from([0xc0, 0xaf, 0xf4, 0x90, 0x80, 0x80, 0xfe]),
+    Buffer.from([0x61, 0xe2, 0x82]),
+    Buffer.alloc(0),
+  ];
+  for (const c of cases) expect({ hex: hex(c), display: displayOf(c) }).toEqual({ hex: hex(c), display: perByte(c) });
+  expect(displayOf(cases[1]!)).toBe("\\xffa\\xe2\\x82aé\u{1f600}\\xed\\xa0\\x80\\x80");
+});
+
+test("parsed paths stay unchanged after the caller overwrites a pushed Buffer chunk", () => {
+  const listing = Buffer.from(`# branch.oid ${"a".repeat(40)}\0# branch.head main\0? split.txt\0? whole.txt\0`);
+  const cut = listing.indexOf("split") + 3;
+  const chunks = [Buffer.from(listing.subarray(0, cut)), Buffer.from(listing.subarray(cut))];
+  const parser = createStatusParser("sha1");
+  for (const chunk of chunks) {
+    parser.push(chunk);
+    chunk.fill(0x7a);
+  }
+  const result = parser.end();
+  expect(result.state).toBe("complete");
+  if (result.state !== "complete") return;
+  expect(result.records.map((r) => Buffer.from(r.path.bytes).toString("latin1"))).toEqual(["split.txt", "whole.txt"]);
+});
+
 describeGit("status parser (T285)", (git) => {
   const outputs = new Map<string, Output>();
   const run = (repo: string, args: string[], allowExit = [0]) => ownedGit(git, FIXTURE_ROOT, repo, args, { allowExit });
@@ -397,7 +436,12 @@ describeGit("status parser (T285)", (git) => {
             const offsets = boundaries(o.listing, o.oracle.items, boundary);
             expect(offsets.length).toBeGreaterThan(0);
             // Each offset alone, then all offsets of this type at once.
-            const wrong = offsets.filter((at) => json(parse(o.listing, [at], o.objectFormat)) !== whole);
+            // An F16 parse leaves hundreds of MB of garbage. A full collection after each parse bounds the peak RSS.
+            const wrong = offsets.filter((at) => {
+              const differs = json(parse(o.listing, [at], o.objectFormat)) !== whole;
+              Bun.gc(true);
+              return differs;
+            });
             expect({ boundary, wrong: wrong.slice(0, 10) }).toEqual({ boundary, wrong: [] });
             expect(json(parse(o.listing, offsets, o.objectFormat))).toBe(whole);
           },

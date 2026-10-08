@@ -271,6 +271,14 @@ describe("native runner run requests", () => {
     expect(channel.bodies("cancel")).toEqual([]);
   });
 
+  test("a collector keeps its bytes after the caller overwrites a pushed Buffer chunk", () => {
+    const collector = createCollector({ maxBytes: 6 });
+    const chunk = Buffer.from("abcdefgh");
+    collector.push(chunk);
+    chunk.fill(0x7a);
+    expect(Buffer.from(collector.take()).toString("latin1")).toBe("abcdef");
+  });
+
   test("a stdout stream above its result bound gets cancel", async () => {
     const channel = createChannelDouble();
     const c = call({ stdout: createCollector({ maxBytes: 10 }) });

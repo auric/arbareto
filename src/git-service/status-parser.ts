@@ -209,12 +209,12 @@ export function createStatusParser(objectFormat: ObjectFormat): StatusParser {
   const keep = (segment: Uint8Array) => {
     if (segment.length === 0) return;
     // A caller can reuse its chunk buffer, so a kept segment is a copy.
-    parts.push(segment.slice());
+    parts.push(new Uint8Array(segment));
     partBytes += segment.length;
   };
   const take = (tail: Uint8Array): Uint8Array => {
     let out: Uint8Array;
-    if (parts.length === 0) out = tail.slice();
+    if (parts.length === 0) out = new Uint8Array(tail);
     else {
       out = new Uint8Array(partBytes + tail.length);
       let at = 0;

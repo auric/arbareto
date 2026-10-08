@@ -608,7 +608,7 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
         if (Object.values(effects).some(Boolean)) registry.apply(operationId, { type: "differing-effects" }, { effects, ...extra() }, cause);
         else registry.apply(operationId, { type: "intended-effects-confirmed" }, extra(), cause);
       } else if (run.publishing && changed) {
-        // `publish()` threw, and the index matches neither retained digest. No contract row decides publication, so the outcome is unknown.
+        // `publish()` threw, and the index matches neither retained digest. Contract §9 "publish without a typed result" gives `unknown`.
         registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
         return;
       } else if (changed && (STEP_CAUSES as readonly unknown[]).includes(refusal?.cause)) {

@@ -1150,7 +1150,7 @@ Cancellation means stopping further owned work, not undoing completed work. The 
 
 After any mutation outcome, inspect actual HEAD target/OID, index, relevant working bytes, and operation markers. Unknown state blocks further mutations in the affected workspace.
 
-**Observed locks.** After a failed mutation, reconciliation also checks a fixed set of lock files. They are the Git-resolved `index.lock` and `HEAD.lock` in the worktree administration directory. For the `files` ref format, they include the current branch ref lock and `packed-refs.lock` in the common directory. For `reftable`, they include `reftable/tables.list.lock` in both administration directories. The outcome names each existing one as foreign, with its path (§9 "Other locks"). A file check is an observation, not a cause. After `updateSubmodules`, the set also holds the superproject `config.lock`. It also holds the `index.lock` and `HEAD.lock` of each submodule Git directory in the plan (§12).
+**Observed locks.** After a failed mutation, reconciliation also checks a fixed set of lock files. They are the Git-resolved `index.lock` and `HEAD.lock` in the worktree administration directory. For the `files` ref format, they include the current branch ref lock and `packed-refs.lock` in the common directory. For `reftable`, they include `reftable/tables.list.lock` in both administration directories. The outcome names each existing one as foreign, with its path (§9 "Other locks"). A file check is an observation, not a cause. After `updateSubmodules`, the set also holds the superproject `config.lock`. It also holds the `index.lock` and `HEAD.lock` of each submodule Git directory in the plan (§12). The terminal result names foreign files in `foreign`, a list of paths. The §8 set of the operation bounds its size. `applyHunk` and `applyFile` name at most 6 files: the 4 locks, the candidate, and the candidate `.lock`. `commit` names at most 4. `updateSubmodules` names at most 5 + 2 × 256 (§5 "Submodule review").
 
 Distinguish `succeeded`, `completed-with-effects`, `failed-with-effects`, `canceled`, and `unknown`. A known checkpoint mismatch after acceptance ends `failed` with its checkpoint code, not `completed-with-effects`, because `rejected` applies only to a refusal at or before acceptance with no Git process (§9).
 
@@ -1170,7 +1170,7 @@ From `unknown`, only `readWorkspace` with `refresh: true` performs recovery reco
 
 - No process that the service requested for the prior operation runs. Its operation Job is closed or lingering (§6 "Lingering Jobs"). A lingering descendant does not block recovery.
 - A complete snapshot exists: HEAD target and OID, complete index, operation markers, and relevant working bytes.
-- Owned lock and candidate files are released, or the result names them as foreign.
+- Owned lock and candidate files are released, or the terminal result names their paths in its `foreign` list. The §8 set of the operation bounds that list ("Observed locks").
 - For `commit`, one attribution attempt ran within the §5 caps. Its result is an identified commit, no commit, or `unknown`. An `unknown` result names its reason: `ambiguous`, `evidence-limit`, or `no-retained-request`.
 - For `applyHunk` and `applyFile`, no attribution step runs. The observed canonical index is compared with two retained digests: the verified candidate and the index before publication. The result names the match: `published`, `not-published`, or `neither`. Without a retained request, the result is `unknown` with reason `no-retained-request`.
 - For `updateSubmodules`, no attribution step runs. The refresh re-reads every row of the retained plan with the §12 review reads and states each row state. The retained plan holds the rows that the run added. Without a retained request, it reports attribution `unknown` with reason `no-retained-request`, and the next review shows the observed submodule states.
@@ -1181,7 +1181,7 @@ Do not remove locks after interruption unless ownership and lifetime are certain
 
 For a WSL repository, a closed Job is not a process-end fact. Without a process-end fact, recovery names a lock or candidate with unknown ownership as foreign and keeps it. Recovery sends `remove` with the retained token, or with the retained candidate digest, only after a process-end fact (§4 "WSL index publication", "Process end").
 
-After a restart, the app has no ownership record. Treat every leftover lock and candidate file as foreign. Name candidate files with the fixed prefix `arbareto-candidate-` so users can identify them.
+After a restart, the app has no ownership record. Treat every leftover lock and candidate file as foreign. The recovery result bounds this list; T114 defines the bound. Name candidate files with the fixed prefix `arbareto-candidate-` so users can identify them.
 
 On restart, obtain a fresh snapshot and review. Do not replay requests or claim that a previous interrupted operation rolled back.
 
@@ -1269,7 +1269,7 @@ Map these cases to codes:
 - A failed `applyFile` `stage` Git step carries an `outputTail` from the stderr of its `update-index` process, by these rules.
 - The discovery `REPOSITORY_UNAVAILABLE` of the first discovery call carries an `outputTail` from the stderr of that call. It follows these rules with the §12 "Output tail" change.
 
-**Other locks.** Return `LOCKED` only when the app's own exclusive `index.lock` creation fails. A lingering process can hold another lock, such as a ref lock or `HEAD.lock`. Git then fails after handoff, and the commit ends `GIT_FAILED`, or `failed-with-effects` when reconciliation observes hook effects. The outcome names each observed lock (§8 "Observed locks") with its path. Its remedy text is: "Git could not take a lock. Another Git process, or a process that Git or a hook started, can hold it. Use Refresh after that process ends."
+**Other locks.** Return `LOCKED` only when the app's own exclusive `index.lock` creation fails. A lingering process can hold another lock, such as a ref lock or `HEAD.lock`. Git then fails after handoff, and the commit ends `GIT_FAILED`, or `failed-with-effects` when reconciliation observes hook effects. The outcome names each observed lock (§8 "Observed locks") with its path. The terminal result lists these paths in `foreign`, and the §8 set of the operation bounds its size. Its remedy text is: "Git could not take a lock. Another Git process, or a process that Git or a hook started, can hold it. Use Refresh after that process ends."
 
 **Lingering count.** Before a `LOCKED` result, a commit failure, or a failed `updateSubmodules` outcome, the service sends the §6 lingering count request. The request names the common directory. A nonzero count adds this sentence to the remedy: "Arbareto still runs <count> processes that Git or a hook started in this repository. Closing Arbareto ends them." A count of 1 uses "1 process" in place of "<count> processes" (plan.md "Long text"). When the workspace holds a current trust ID, the remedy adds: "Revoke trust also ends them." `revokeTrust` needs that ID (§3), and an untrusted repository has none.
 

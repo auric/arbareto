@@ -198,6 +198,8 @@ export interface ServiceSeams {
   environment?: Record<string, string>;
   // The in-process checkpoint observer of `src/git-service/hunk-publish.ts` (T110). The service awaits it after research R3 steps 5, 11, and 13 of a hunk publication.
   hunkCheckpoint?: (checkpoint: HunkCheckpoint) => Promise<void> | void;
+  // The clock of the contract §5 approval lifetime (T110 decision G5). The service uses `performance.now()` without it.
+  approvalClock?: () => number;
   // The in-process checkpoint observer of `src/git-service/submodule-update.ts` (T230). The service awaits it before each named contract §12 step.
   submoduleCheckpoint?: (checkpoint: SubmoduleCheckpoint) => Promise<void> | void;
 }
@@ -470,6 +472,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     ...(options.readDeadlineMs === undefined ? {} : { readDeadlineMs: options.readDeadlineMs }),
     ...(options.watchHints === undefined ? {} : { watchHints: options.watchHints }),
     ...(options.hunkCheckpoint === undefined ? {} : { hunkCheckpoint: options.hunkCheckpoint }),
+    ...(options.approvalClock === undefined ? {} : { approvalClock: options.approvalClock }),
     ...(options.submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint: options.submoduleCheckpoint }),
   };
   const sessionOptions: SessionOptions & ServiceSeams = {

@@ -9,11 +9,10 @@ import { join } from "node:path";
 import { useFixtureRoot } from "./fixture-root";
 import { buildChanged, put } from "./fixtures";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
-import { applyHunk, blobOf, candidateFiles, gitDirOf, gitPath, outcome, repoOf, scriptedPatch, selectHunks, SUCCEEDED, todoCase, underTest, withService } from "./hunk-harness";
-import type { Capability, HunkCheckpoint, Service, ServiceResponse } from "./service-harness";
+import { applyHunk, blobOf, candidateFiles, gitDirOf, gitPath, outcome, repoOf, scriptedPatch, selectHunks, SUCCEEDED, TIMEOUT_MS, underTest, withService } from "./hunk-harness";
+import { caseTest, type Capability, type HunkCheckpoint, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T097";
-const NEEDS = "(needs T110/T115)";
 const SHELL: Capability[] = ["shell-double"];
 // Contract §8: a fixed prefix names candidate files. This one belongs to no operation of the service.
 const FOREIGN = "arbareto-candidate-foreign";
@@ -64,7 +63,7 @@ async function race(name: string, at: Partial<Record<HunkCheckpoint["step"], (se
 const EXTERNAL = (repo: string) => `${readFileSync(join(repo, "multi.txt"), "utf8")}external line\n`;
 
 describe("protocol races (research.md R3 steps 5, 11, and 13)", () => {
-  todoCase(TASK, `a working-file change before the final recheck refuses publication with STALE_SELECTION, and the external bytes stay ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a working-file change before the final recheck refuses publication with STALE_SELECTION, and the external bytes stay`, SHELL, async () => {
     let written = "";
     let index: string | null = null;
     const { repo, response } = await race("t097-before-recheck", {
@@ -77,9 +76,9 @@ describe("protocol races (research.md R3 steps 5, 11, and 13)", () => {
     expect(response.code).toBe("STALE_SELECTION");
     expect(rawIndexDigest(gitPath(), repo)).toBe(index);
     expect(readFileSync(join(repo, "multi.txt"), "utf8")).toBe(written);
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `a working-file change after the final recheck lets publication finish: completed-with-effects with the observed change, the external bytes intact, and no undo ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a working-file change after the final recheck lets publication finish: completed-with-effects with the observed change, the external bytes intact, and no undo`, SHELL, async () => {
     let written = "";
     const { repo, oracle, response } = await race("t097-after-recheck", {
       11: (_s, _o, repo) => {
@@ -90,9 +89,9 @@ describe("protocol races (research.md R3 steps 5, 11, and 13)", () => {
     expect({ state: response.state, code: response.code, workingFiles: response.result?.effects?.workingFiles }).toEqual({ state: "completed-with-effects", code: "COMPLETED_WITH_EFFECTS", workingFiles: true });
     expect(readFileSync(join(repo, "multi.txt"), "utf8")).toBe(written);
     expect(blobOf(repo, "multi.txt")).toBe(blobOf(oracle, "multi.txt"));
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `cancellation before publication gives canceled with the canonical index unchanged ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `cancellation before publication gives canceled with the canonical index unchanged`, SHELL, async () => {
     let index: string | null = null;
     const { repo, response } = await race("t097-cancel-before", {
       11: async (service, operationId, repo) => {
@@ -102,9 +101,9 @@ describe("protocol races (research.md R3 steps 5, 11, and 13)", () => {
     });
     expect(outcome(response)).toEqual({ state: "canceled", code: "CANCELED" });
     expect(rawIndexDigest(gitPath(), repo)).toBe(index);
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `cancellation after publication gives succeeded ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `cancellation after publication gives succeeded`, SHELL, async () => {
     const { repo, oracle, response } = await race("t097-cancel-after", {
       13: async (service, operationId) => {
         expect((await service.cancel(operationId)).state).toBe("succeeded");
@@ -112,5 +111,5 @@ describe("protocol races (research.md R3 steps 5, 11, and 13)", () => {
     });
     expect(outcome(response)).toEqual(SUCCEEDED);
     expect(indexEntries(gitPath(), repo)).toEqual(indexEntries(gitPath(), oracle));
-  });
+  }, TIMEOUT_MS);
 });

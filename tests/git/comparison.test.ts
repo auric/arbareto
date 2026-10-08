@@ -38,7 +38,6 @@ import {
   resultOf,
   SUCCEEDED,
   TIMEOUT_MS,
-  todoCase,
   underTest,
   valuesOf,
   withService,
@@ -350,8 +349,7 @@ describe("bounds (contract §5)", () => {
     expect(completeness).toMatchObject({ state: "limited", reason: "STATUS_LISTING_BYTES" });
   }, TIMEOUT_MS);
 
-  // `applyHunk` has no handler before T110, so a refusal here would prove nothing about eviction.
-  todoCase(TASK, `retained comparisons cap at 4, and eviction invalidates their approvals: a hunk of the evicted comparison is refused and starts no Git process (needs T110)`, SHELL, () =>
+  caseTest(TASK, `retained comparisons cap at 4, and eviction invalidates their approvals: a hunk of the evicted comparison is refused and starts no Git process`, SHELL, () =>
     withService({ name: "t093-retained" }, async (service) => {
       const repo = repoOf(buildF02(gitPath(), "t093-retained"));
       put(repo, "new.txt", "new\n");
@@ -370,6 +368,7 @@ describe("bounds (contract §5)", () => {
       expect({ state: response.state, runs: service.runner.calls.length - calls }).toEqual({ state: "rejected", runs: 0 });
       expect(repoState(repo)).toEqual(before);
     }),
+    TIMEOUT_MS,
   );
 });
 

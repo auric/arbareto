@@ -1082,7 +1082,7 @@ describe("token invalidation (contract §8 \"Token invalidation\")", () => {
     }
   }
 
-  test.todo("a hint and the next readWorkspace invalidate each token whose fingerprint part changed: a ref change that moves HEAD invalidates every token that binds HEAD (needs T110)", () =>
+  caseTest("T075", "a hint and the next readWorkspace invalidate each token whose fingerprint part changed: a ref change that moves HEAD invalidates every token that binds HEAD", W, () =>
     withToken("t075-token-head", {}, async (service, repo, repositoryId) => {
       const token = await hunkToken(service, repositoryId);
       git(repo, ["update-ref", "refs/heads/main", newCommit(repo)]);
@@ -1091,18 +1091,20 @@ describe("token invalidation (contract §8 \"Token invalidation\")", () => {
       expect(next.generation).toBeGreaterThan(token.generation);
       expect((await token.apply(next.generation)).state).not.toBe("succeeded");
     }),
+    TIMEOUT_MS,
   );
 
-  test.todo("a refresh: false read with an unchanged fingerprint keeps an issued hunk token (needs T110)", () =>
+  caseTest("T075", "a refresh: false read with an unchanged fingerprint keeps an issued hunk token", W, () =>
     withToken("t075-token-kept", { watchHints: false }, async (service, _repo, repositoryId) => {
       const token = await hunkToken(service, repositoryId);
       const next = (await service.readWorkspace(repositoryId, FULL)).result!;
       expect(next.generation).toBe(token.generation);
       expect(outcome(await token.apply(next.generation))).toEqual(SUCCEEDED);
     }),
+    TIMEOUT_MS,
   );
 
-  test.todo("a refresh: false read after an index change invalidates an issued hunk token (needs T110)", () =>
+  caseTest("T075", "a refresh: false read after an index change invalidates an issued hunk token", W, () =>
     withToken("t075-token-index", { watchHints: false }, async (service, repo, repositoryId) => {
       const token = await hunkToken(service, repositoryId);
       put(repo, "keep.txt", "keep t075\n");
@@ -1111,13 +1113,15 @@ describe("token invalidation (contract §8 \"Token invalidation\")", () => {
       expect(next.generation).toBeGreaterThan(token.generation);
       expect((await token.apply(next.generation)).state).not.toBe("succeeded");
     }),
+    TIMEOUT_MS,
   );
 
-  test.todo("a refresh: true read invalidates an issued hunk token without any change (needs T110)", () =>
+  caseTest("T075", "a refresh: true read invalidates an issued hunk token without any change", W, () =>
     withToken("t075-token-refresh", { watchHints: false }, async (service, _repo, repositoryId) => {
       const token = await hunkToken(service, repositoryId);
       const next = (await service.readWorkspace(repositoryId, { refresh: true, check: "full" })).result!;
       expect((await token.apply(next.generation)).state).not.toBe("succeeded");
     }),
+    TIMEOUT_MS,
   );
 });

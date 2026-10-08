@@ -7,11 +7,10 @@ import { describe, expect } from "bun:test";
 import { useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF02, buildF06 } from "./fixtures";
 import { indexEntries, workingFileDigests } from "./git-oracle";
-import { applyHunk, gitPath, outcome, repoOf, repoState, scriptedPatch, selectHunks, SUCCEEDED, todoCase, underTest, withService } from "./hunk-harness";
-import type { Capability, Service } from "./service-harness";
+import { applyHunk, gitPath, outcome, repoOf, repoState, scriptedPatch, selectHunks, SUCCEEDED, TIMEOUT_MS, underTest, withService } from "./hunk-harness";
+import { caseTest, type Capability, type Service } from "./service-harness";
 
 const TASK = "T095";
-const NEEDS = "(needs T110/T115)";
 const SHELL: Capability[] = ["shell-double"];
 
 useFixtureRoot();
@@ -24,7 +23,7 @@ async function unstageFirst(service: Service, repo: string, path: string) {
 }
 
 describe("unstage one hunk (contract §4)", () => {
-  todoCase(TASK, `F02: one of two staged hunks leaves the index as scripted git reset -p does, while the file keeps more unstaged edits, and working bytes stay unchanged ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F02: one of two staged hunks leaves the index as scripted git reset -p does, while the file keeps more unstaged edits, and working bytes stay unchanged`, SHELL, () =>
     withService({ name: "t095-f02" }, async (service) => {
       const repo = repoOf(buildF02(gitPath(), "t095-f02", "staged-hunks"));
       const before = repoState(repo);
@@ -34,9 +33,10 @@ describe("unstage one hunk (contract §4)", () => {
       expect(indexEntries(gitPath(), repo)).toEqual(indexEntries(gitPath(), oracle));
       expect(workingFileDigests(repo)).toEqual(before.files);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F06: unstaging the only hunk of an added file removes the entry ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F06: unstaging the only hunk of an added file removes the entry`, SHELL, () =>
     withService({ name: "t095-f06" }, async (service) => {
       const repo = repoOf(buildF06(gitPath(), "t095-f06"));
       const before = repoState(repo);
@@ -47,9 +47,10 @@ describe("unstage one hunk (contract §4)", () => {
       expect(indexEntries(gitPath(), repo)).toEqual(indexEntries(gitPath(), oracle));
       expect(workingFileDigests(repo)).toEqual(before.files);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F01: unstaging in an unborn repository works against the empty baseline ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F01: unstaging in an unborn repository works against the empty baseline`, SHELL, () =>
     withService({ name: "t095-f01" }, async (service) => {
       const repo = repoOf(buildF01(gitPath(), "t095-f01", "unborn-added"));
       const before = repoState(repo);
@@ -60,5 +61,6 @@ describe("unstage one hunk (contract §4)", () => {
       expect(indexEntries(gitPath(), repo)).toEqual(indexEntries(gitPath(), oracle));
       expect(workingFileDigests(repo)).toEqual(before.files);
     }),
+    TIMEOUT_MS,
   );
 });

@@ -14,8 +14,10 @@ import { createApprovals } from "./approvals";
 import { createCommitReviewer } from "./commit-review";
 import { createComparisonReader } from "./comparison";
 import { getEnvironment } from "./environment";
+import { createExclusion } from "./exclusion";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createHistoryReader, type HistoryOutcome } from "./history";
+import { createHunkPublisher, hunkApprovals, type HunkCheckpoint } from "./hunk-publish";
 import { createSessionLog } from "./log";
 import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
@@ -52,6 +54,10 @@ export interface SessionOptions {
   watchHints?: boolean;
   // Test seam only. Production never sets it.
   readRawIndex?: WorkspaceReaderOptions["readRawIndex"];
+  // Test seam only. Production never sets it. The service awaits it after research R3 steps 5, 11, and 13 of a hunk publication.
+  hunkCheckpoint?: (checkpoint: HunkCheckpoint) => Promise<void> | void;
+  // Test seam only. Production uses the monotonic `performance.now()` for the contract §5 approval lifetime.
+  approvalClock?: () => number;
 }
 
 // The outcome forms of the reads that `read-scheduler.ts` runs.
@@ -60,7 +66,7 @@ type ReadResult =
   | { result: "canceled" }
   | { result: "deadline" };
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -123,15 +129,18 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   });
   const reader = createWorkspaceReader({ runner, trust, readRawIndex });
   const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
-  const comparisons = createComparisonReader({ runner, trust });
-  const approvals = createApprovals();
+  const approvals = createApprovals(approvalClock);
+  // Contract §5: comparison eviction invalidates its approvals.
+  const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
   const reviews = createCommitReviewer({ runner, trust, approvals });
+  // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
+  const exclusion = createExclusion({ started: (frame) => runner.started(frame), ended: () => {}, closeJob: () => {} });
+  const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
-  // No mutation handler exists yet, so no mutation can be unfinished.
   const registrations = createRegistrations({
     runner,
-    unfinishedMutation: () => false,
+    unfinishedMutation: (repositoryId) => exclusion.holds(repositoryId),
     onRegister: (w) => {
       // Contract §11 "Change polling": a WSL workspace gets no watcher.
       if (watchHints && w.wsl === undefined) watchers.set(w.repositoryId, watchWorkspace([w.worktreeRoot, w.gitDirectory, w.commonDirectory], (lost) => reader.hint(w.repositoryId, lost)));
@@ -323,6 +332,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     const workspace = workspaceOf(request.repositoryId);
     const installation = installationOf(workspace);
     if (installation === null) return reject(request.requestId, gitCode());
+    // Contract §8 "Token invalidation": a refresh invalidates every dependent token before its result arrives.
+    if (request.payload.refresh) approvals.invalidate((a) => a.repositoryId === request.repositoryId);
     scheduleRead(
       request,
       (t) =>
@@ -377,9 +388,19 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const { operationId } = registry.start("readComparison", request.requestId);
       return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
     }
+    // Data-model §6: the hunk approvals of a succeeded comparison, issued before its response. A WSL comparison issues none until T214.
+    // A working-file comparison issues only after its working version joins the read observation (data-model §4 `workingVersions`).
+    const issue = (o: ReadResult): ReadResult => {
+      const id = o.result === "succeeded" ? (o.value as { comparisonId?: unknown } | undefined)?.comparisonId : undefined;
+      const c = typeof id === "string" && workspace.wsl === undefined ? comparisons.get(id) : undefined;
+      if (c === undefined || c.hunks.length === 0 || workspace.generation !== c.generation) return o;
+      const bound = c.scope === "head-to-index" || (c.workingVersion !== null && reader.bind(request.repositoryId, c.generation, c.workingVersion));
+      if (bound) for (const approval of hunkApprovals(c, found.snapshot, workspace)) approvals.issue(approval);
+      return o;
+    };
     scheduleRead(
       request,
-      (t) => comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }),
+      (t) => comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }).then(issue),
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
       "readComparison",
@@ -443,7 +464,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const workspace = workspaceOf(request.repositoryId);
       trustOperation(request, () => trust.acceptRevoke(workspace, request.payload.trustId), (t) => trust.revokeTrust({ ...t, workspace }));
     },
-    applyHunk: undefined,
+    applyHunk: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      publisher.applyHunk(request, workspace, installation);
+    },
     applyFile: undefined,
     reviewCommit,
     commit: undefined,

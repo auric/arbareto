@@ -64,6 +64,24 @@ describe("operation registry", () => {
     expect(sent).toEqual([{ kind: "progress", value: { requestId, operationId, state: "accepted", counters: {} } }]);
   });
 
+  // Contract §8, §9, and data-model §7 `diagnostic`: the cause goes into the session log entry of the terminal response, never into the response.
+  test("apply writes a diagnostic cause into the session log entry of the terminal response only", () => {
+    const log = createSessionLog();
+    const responses: Record<string, unknown>[] = [];
+    const ops = createOperationRegistry((value) => void responses.push({ ...value }), () => {}, log, { closeJob: () => {}, ended: () => {} });
+    const { operationId } = ops.start("applyHunk", crypto.randomUUID());
+    ops.apply(operationId, { type: "marker-recorded" }, undefined, "write");
+    ops.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 }, undefined, "write");
+    expect(log.entries()).toEqual([]);
+    ops.apply(operationId, { type: "reconciliation-read-failed", code: "MALFORMED_GIT_OUTPUT" }, undefined, "MALFORMED_GIT_OUTPUT");
+    expect(log.entries()).toEqual([expect.objectContaining({ kind: "applyHunk", operationId, code: "STATE_UNKNOWN", cause: "MALFORMED_GIT_OUTPUT" })]);
+    expect(responses).toEqual([{ requestId: expect.any(String), operationId, state: "unknown", code: "STATE_UNKNOWN" }]);
+    const plain = ops.start("readHistory", crypto.randomUUID()).operationId;
+    ops.apply(plain, { type: "valid-read" });
+    ops.apply(plain, { type: "read-complete", result: "succeeded" });
+    expect(Object.hasOwn(log.entries()[1]!, "cause")).toBe(false);
+  });
+
   test("every progress event carries the requestId and the current state", () => {
     const { ops, progress } = registry();
     const requestId = crypto.randomUUID();

@@ -7,7 +7,7 @@ import { FINISHED_OPERATION_RECORDS } from "../contracts/limits";
 import { MUTATIONS, type OperationName } from "../contracts/operations";
 import { transition, type OperationEvent, type OperationSnapshot, type TransitionResult } from "../contracts/outcome";
 import type { GitRunner } from "./git-runner";
-import type { SessionLog } from "./log";
+import type { DiagnosticCause, SessionLog } from "./log";
 
 export interface OperationView extends OperationSnapshot {
   operationId: string;
@@ -61,8 +61,8 @@ export function createOperationRegistry(
       return { operationId, signal: controller.signal };
     },
 
-    // `result` goes into the terminal response only.
-    apply(operationId: string, event: OperationEvent, result?: unknown): TransitionResult {
+    // `result` goes into the terminal response only. `cause` goes only into the session log entry of the terminal response (contract §7, §9).
+    apply(operationId: string, event: OperationEvent, result?: unknown, cause?: DiagnosticCause): TransitionResult {
       const e = entry(operationId);
       const next = transition(e.view, event);
       const { actions, terminalResponse, endedProcesses, rowResult, ...fields } = next;
@@ -80,6 +80,7 @@ export function createOperationRegistry(
           operationId,
           durationMs: Math.round(performance.now() - e.startedAt),
           ...(code ? { code } : {}),
+          ...(cause === undefined ? {} : { cause }),
         });
         // Contract §6: `ended` follows the terminal response of a mutation with a marker. Every other operation gets `closeJob`.
         if (e.marker) runner.ended(operationId, e.view.endProcesses === true);

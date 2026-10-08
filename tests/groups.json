@@ -68,6 +68,7 @@
     "tests/git/history-parser.test.ts",
     "tests/git/history.test.ts",
     "tests/git/hunk-candidate.test.ts",
+    "tests/git/hunk-publish.test.ts",
     "tests/git/hunk-races.test.ts",
     "tests/git/hunk-refusal.test.ts",
     "tests/git/hunk-stage.test.ts",

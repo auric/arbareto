@@ -1324,6 +1324,72 @@
           ],
           "additionalProperties": false,
           "title": "WslFilesPublish"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wslFiles"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "registeredOperation"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "type": "string",
+              "const": "remove"
+            },
+            "bound": {
+              "type": "string",
+              "const": "MUTATION_RAW_INDEX_BYTES"
+            },
+            "token": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "candidate": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "expected": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "contextKind",
+            "gitInstallationId",
+            "repositoryId",
+            "mode",
+            "bound"
+          ],
+          "additionalProperties": false,
+          "title": "WslFilesRemove"
         }
       ],
       "title": "WslFilesGroup"

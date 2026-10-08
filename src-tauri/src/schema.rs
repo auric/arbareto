@@ -927,7 +927,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 90 } else { 85 },
+            if cfg!(windows) { 93 } else { 88 },
             "shell-read vectors"
         );
     }
@@ -1137,6 +1137,7 @@ mod tests {
                         reply::wsl_published(104, &"a".repeat(64)),
                         WslFile::Mismatch,
                         WslFile::NotOwned,
+                        WslFile::Removed,
                     ],
                 ),
                 vector("wsl-files-reply-modes.json"),

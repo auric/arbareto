@@ -257,6 +257,7 @@ const MODE_KINDS: Record<WslFilesCall["mode"], readonly string[]> = {
   lock: ["lock", "locked", "error"],
   candidate: ["candidate", "absent", "bound", "error"],
   publish: ["published", "mismatch", "notOwned", "error"],
+  remove: ["removed", "notOwned", "error"],
 };
 
 // The rules between a request and its results that the reply schema cannot state.

@@ -5845,6 +5845,29 @@ pub(crate) mod tests {
             format!("67108864\x00arbareto-candidate-7\x002112\x0057001\x00{TOKEN}\x00{HEX_A}\x00")
                 .into_bytes()
         );
+
+        // `remove` sends the name and then the token or the expected digest.
+        for (fields, input) in [
+            (
+                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN }),
+                format!("67108864\x00index.lock\x00{TOKEN}\x00"),
+            ),
+            (
+                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7", "expected": HEX_A }),
+                format!("67108864\x00arbareto-candidate-7\x00{HEX_A}\x00"),
+            ),
+        ] {
+            wsl.host.push(0, b"removed\x00");
+            let call = uuid();
+            wsl.harness
+                .send(wsl_files_body(&call, &git, &repository, fields));
+            assert_eq!(
+                wsl.harness.reply(&call)["results"],
+                json!([{ "kind": "removed" }])
+            );
+            let probe = wsl.host.commands().last().expect("Perl text").clone();
+            assert_eq!(stdin_of(&probe), input.into_bytes());
+        }
     }
 
     #[test]
@@ -5904,6 +5927,21 @@ pub(crate) mod tests {
             (
                 lock_fields(),
                 "bound\x00".to_string(),
+                json!({ "kind": "error", "component": 0, "code": "other-error" }),
+            ),
+            (
+                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN }),
+                "removed\x00".to_string(),
+                json!({ "kind": "removed" }),
+            ),
+            (
+                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-7", "expected": HEX_A }),
+                "notOwned\x00".to_string(),
+                json!({ "kind": "notOwned" }),
+            ),
+            (
+                json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN }),
+                "mismatch\x00".to_string(),
                 json!({ "kind": "error", "component": 0, "code": "other-error" }),
             ),
             // Broken records: a kind of another mode, an exit form without its number, a lock with a leading zero, and trailing bytes.
@@ -6002,6 +6040,11 @@ pub(crate) mod tests {
             json!({ "mode": "lock", "bound": "COMPARED_RAW_VERSION_BYTES" }),
             json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1" }),
             json!({ "mode": "lock" }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "token": TOKEN, "expected": HEX_A }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1" }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "arbareto-candidate-1", "token": TOKEN, "expected": HEX_A }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES", "candidate": "index.lock", "expected": HEX_A }),
+            json!({ "mode": "remove", "bound": "MUTATION_RAW_INDEX_BYTES" }),
             json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES" }),
             json!({ "mode": "lock", "bound": "MUTATION_RAW_INDEX_BYTES", "token": "C".repeat(64) }),
             json!({ "mode": "hashObject", "bound": "WHOLE_FILE_STAGE_INPUT_BYTES", "files": [{ "root": "gitDirectory", "path": ["index"] }] }),

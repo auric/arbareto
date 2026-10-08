@@ -264,6 +264,21 @@ pub(crate) fn wsl_files_request<'a>(
             ];
             files("publish", only(bound, FileBound::Index)?, vec![], fields)
         }
+        // The lock by its token, or a candidate by its expected digest. Perl gets the name and then the token or the digest.
+        G::Remove {
+            bound,
+            token,
+            candidate: name,
+            expected,
+            ..
+        } => {
+            let fields = match (token, name, expected) {
+                (Some(token), None, None) => vec!["index.lock".to_string(), token.to_string()],
+                (None, Some(name), Some(expected)) => vec![candidate(name)?, expected.to_string()],
+                _ => return Err(INVALID),
+            };
+            files("remove", only(bound, FileBound::Index)?, vec![], fields)
+        }
     };
     Ok((ids, request))
 }

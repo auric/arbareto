@@ -1319,7 +1319,8 @@ fn files_result(records: &mut Records, request: &FilesRequest, at: usize) -> Opt
             Some(reply::wsl_published(size, &hex64(records)?))
         }
         ("publish", "mismatch") => Some(FileResult::Mismatch),
-        ("publish", "notOwned") => Some(FileResult::NotOwned),
+        ("publish" | "remove", "notOwned") => Some(FileResult::NotOwned),
+        ("remove", "removed") => Some(FileResult::Removed),
         (_, "error") => error_result(records, 0),
         _ => None,
     }

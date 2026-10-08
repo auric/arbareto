@@ -1243,6 +1243,20 @@
                     ],
                     "additionalProperties": false,
                     "title": "WslFileNotOwned"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "removed"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslFileRemoved"
                   }
                 ]
               }

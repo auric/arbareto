@@ -232,6 +232,7 @@ export function wslFilesInput(request: WslFilesCall): Uint8Array {
   if (request.mode === "lock") tokens.push(request.token);
   if (request.mode === "candidate") tokens.push(request.candidate);
   if (request.mode === "publish") tokens.push(request.candidate, request.lock.device, request.lock.inode, request.token, request.expected);
+  if (request.mode === "remove") tokens.push(request.candidate ?? "index.lock", request.token ?? request.expected ?? "");
   return new TextEncoder().encode(tokens.map((t) => `${t}\0`).join(""));
 }
 
@@ -342,6 +343,9 @@ function modeRecord(r: Records, request: WslFilesCall, i: number): WslFileResult
       const [index, candidate] = [copy(), copy()];
       return kind === "candidate" && index !== null && candidate !== null ? { kind, index, candidate } : null;
     }
+    case "remove":
+      if (kind === "removed" || kind === "notOwned") return { kind };
+      return kind === "error" ? errorRecord(r, 0) : null;
     case "publish": {
       if (kind === "mismatch" || kind === "notOwned") return { kind };
       if (kind === "error") return errorRecord(r, 0);

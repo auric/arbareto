@@ -235,9 +235,9 @@ const callOf = (fields: Record<string, unknown>) => ({ operationId: crypto.rando
 const worktree = (...path: string[]) => ({ root: "worktreeRoot" as const, path });
 
 // Runs the text as the shell does, without the wrapper. `prefix` runs Perl code before the text (a test seam), and `sha` replaces sha256sum.
-function wslFiles(host: WslHost, request: WslFilesCall, options: { sha?: string; prefix?: string[] } = {}): WslFileResult[] {
+function wslFiles(host: WslHost, request: WslFilesCall, options: { sha?: string; prefix?: string[]; seam?: string } = {}): WslFileResult[] {
   const t = files(host);
-  const text = options.prefix ? ["-e", SEAM, "--", ...options.prefix, WSL_FILES_TEXT] : ["-e", WSL_FILES_TEXT, "--"];
+  const text = options.prefix ? ["-e", options.seam ?? SEAM, "--", ...options.prefix, WSL_FILES_TEXT] : ["-e", WSL_FILES_TEXT, "--"];
   const args = ["--distribution", host.distro, "--cd", "/", "--exec", "/usr/bin/perl", ...text, request.mode, ...t.roots, t.git, options.sha ?? t.sha];
   const result = wslExec(args, { input: wslFilesInput(request) });
   return wslFilesResults(result.exitCode, result.bytes, request);
@@ -246,6 +246,9 @@ function wslFiles(host: WslHost, request: WslFilesCall, options: { sha?: string;
 // The seam renames its first argument over the name `target` just before the text opens that name.
 const SEAM =
   "BEGIN { *CORE::GLOBAL::sysopen = sub (*$$;$) { rename($::swap, $_[1]) if $_[1] eq q(target); @_ > 3 ? CORE::sysopen($_[0], $_[1], $_[2], $_[3]) : CORE::sysopen($_[0], $_[1], $_[2]) } } ($::swap, $::text) = splice(@ARGV, 0, 2); eval $::text; die $@ if $@;";
+// With a first argument of 1, `lstat` of the name `index.lock` fails with `EACCES`.
+const LSTAT_SEAM =
+  "BEGIN { *CORE::GLOBAL::lstat = sub (;*) { if ($_[0] eq q(index.lock) && $::fail) { require POSIX; $! = POSIX::EACCES(); return } CORE::lstat($_[0]) } } ($::fail, $::text) = splice(@ARGV, 0, 2); eval $::text; die $@ if $@;";
 
 const stat = (host: WslHost, format: string, path: string) => inDistro(host.distro, ["/usr/bin/stat", `--format=${format}`, "--", path]).trim();
 const exists = (host: WslHost, path: string) => wslExec(["--distribution", host.distro, "--cd", "/", "--exec", "/usr/bin/test", "-e", path]).exitCode === 0;
@@ -456,6 +459,71 @@ describe("the WSL wslFiles Perl text (T325)", () => {
         expect(publish(lock)).toEqual([{ kind: "notOwned" }]);
       } finally {
         inDistro(host.distro, ["/usr/bin/rm", "-f", "--", lockPath, `${lockPath}.first`]);
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "publish gives error for an lstat failure other than ENOENT, renames nothing, and writes the token back",
+    GIT_NEEDS,
+    (host) => {
+      const t = files(host);
+      const index = `${t.roots[1]}/index`;
+      const lockPath = `${t.roots[1]}/index.lock`;
+      const name = `arbareto-candidate-${crypto.randomUUID()}`;
+      wslFiles(host, callOf({ mode: "candidate", bound: "MUTATION_RAW_INDEX_BYTES", candidate: name }));
+      const expected = sha256(host, `${t.roots[1]}/${name}`);
+      const before = stat(host, "%i", index);
+      try {
+        const { device, inode, token } = lockOf(host);
+        const request = callOf({ mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: name, lock: { device, inode }, token, expected });
+        expect(wslFiles(host, request, { seam: LSTAT_SEAM, prefix: ["1"] })).toEqual([{ kind: "error", component: 0, code: "access-denied" }]);
+        expect(stat(host, "%i", index)).toBe(before);
+        expect(content(host, lockPath)).toBe(token);
+        // A directory at index.lock is no lock: publish and remove give error, and the directory stays.
+        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
+        inDistro(host.distro, ["/usr/bin/mkdir", "--", lockPath]);
+        expect(wslFiles(host, request)).toEqual([{ kind: "error", component: 0, code: "other-error" }]);
+        expect(wslFiles(host, callOf({ mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", token }))).toEqual([{ kind: "error", component: 0, code: "other-error" }]);
+        expect(stat(host, "%F", lockPath)).toBe("directory");
+      } finally {
+        inDistro(host.distro, ["/usr/bin/rm", "-rf", "--", lockPath]);
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "remove deletes an owned lock or candidate and keeps every other file",
+    GIT_NEEDS,
+    (host) => {
+      const t = files(host);
+      const lockPath = `${t.roots[1]}/index.lock`;
+      const remove = (fields: Record<string, unknown>) => wslFiles(host, callOf({ mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", ...fields }));
+      try {
+        const owned = lockOf(host);
+        expect(remove({ token: owned.token })).toEqual([{ kind: "removed" }]);
+        expect(exists(host, lockPath)).toBe(false);
+        expect(remove({ token: owned.token })).toEqual([{ kind: "notOwned" }]);
+        // A deleted lock that another writer creates again with the same inode and 64 bytes of Git index data stays.
+        const first = lockOf(host);
+        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
+        inDistro(host.distro, ["/usr/bin/perl", "-e", 'use Fcntl; sysopen(my $f, $ARGV[0], O_WRONLY|O_CREAT|O_EXCL, 0666) or die; print $f "DIRC", "\\0" x 60', "--", lockPath]);
+        expect(stat(host, "%d %i %s", lockPath)).toBe(`${first.device} ${first.inode} 64`);
+        expect(remove({ token: first.token })).toEqual([{ kind: "notOwned" }]);
+        expect(content(host, lockPath).startsWith("DIRC")).toBe(true);
+        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
+        // A candidate goes only with the digest that the service verified last.
+        const name = `arbareto-candidate-${crypto.randomUUID()}`;
+        wslFiles(host, callOf({ mode: "candidate", bound: "MUTATION_RAW_INDEX_BYTES", candidate: name }));
+        const digest = sha256(host, `${t.roots[1]}/${name}`);
+        expect(remove({ candidate: name, expected: "0".repeat(64) })).toEqual([{ kind: "notOwned" }]);
+        expect(exists(host, `${t.roots[1]}/${name}`)).toBe(true);
+        expect(remove({ candidate: name, expected: digest })).toEqual([{ kind: "removed" }]);
+        expect(exists(host, `${t.roots[1]}/${name}`)).toBe(false);
+      } finally {
+        inDistro(host.distro, ["/usr/bin/rm", "-f", "--", lockPath]);
       }
     },
     CASE_TIMEOUT_MS,

@@ -36,6 +36,8 @@ const MODES: [string, Body][] = [
   ["catFile", { mode: "catFile", bound: "WHOLE_FILE_STAGE_INPUT_BYTES", files: [entry()], oid: OID, size: 536_870_912 }],
   ["lock", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }],
   ["candidate", { mode: "candidate", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1" }],
+  ["remove of the lock", { mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }],
+  ["remove of a candidate", { mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", expected: HEX }],
   ["publish", { mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", lock: { device: "2112", inode: "57001" }, token: TOKEN, expected: HEX }],
 ];
 
@@ -54,7 +56,7 @@ describe("the wslFiles request (contract §6 WSL file work)", () => {
   });
 
   test.each(MODES)("%s without a field or with an extra field is refused", (_name, fields) => {
-    for (const key of Object.keys(fields).filter((k) => k !== "sharedIndex")) {
+    for (const key of Object.keys(fields).filter((k) => k !== "sharedIndex" && !(fields.mode === "remove" && k === "candidate"))) {
       const { [key]: _gone, ...rest } = fields;
       expect(valid(frame(rest))).toBe(false);
     }
@@ -62,6 +64,15 @@ describe("the wslFiles request (contract §6 WSL file work)", () => {
     expect(valid(withoutOperation)).toBe(false);
     expect(valid(frame({ ...fields, extra: 1 }))).toBe(false);
     expect(valid(frame({ ...fields, digest: false }))).toBe(false);
+  });
+
+  test("remove takes the token alone, or a candidate with its expected digest", () => {
+    const remove = (fields: Body) => frame({ mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", ...fields });
+    expect(valid(remove({ token: TOKEN, expected: HEX }))).toBe(false);
+    expect(valid(remove({ candidate: "arbareto-candidate-1", token: TOKEN }))).toBe(false);
+    expect(valid(remove({ candidate: "arbareto-candidate-1", token: TOKEN, expected: HEX }))).toBe(false);
+    expect(valid(remove({ candidate: "index.lock", expected: HEX }))).toBe(false);
+    expect(valid(remove({}))).toBe(false);
   });
 
   test("digest takes at most 64 entries, and exactly 1 entry with WHOLE_FILE_STAGE_INPUT_BYTES", () => {
@@ -135,6 +146,7 @@ describe("the wslFiles reply", () => {
     ["a candidate", { kind: "candidate", index: { size: 104, sha256: HEX, mtime: "1791410531" }, candidate: { size: 104, sha256: HEX, mtime: "1791410531" } }],
     ["published", { kind: "published", size: 104, sha256: HEX }],
     ["mismatch", { kind: "mismatch" }],
+    ["removed", { kind: "removed" }],
     ["notOwned", { kind: "notOwned" }],
     ["an error", { kind: "error", component: 0, code: "other-error" }],
   ])("%s is a valid result", (_name, result) => {
@@ -185,6 +197,7 @@ describe("native runner wslFiles", () => {
     ["a count that differs from the entry count", { mode: "digest", bound: "COMPARED_RAW_VERSION_BYTES", files: [entry()] }, [{ kind: "absent" }, { kind: "absent" }]],
     ["a kind of another mode", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }, [{ kind: "published", size: 1, sha256: HEX }]],
     ["bound for a lock", { mode: "lock", bound: "MUTATION_RAW_INDEX_BYTES", token: TOKEN }, [{ kind: "bound" }]],
+    ["removed for a publish", { mode: "publish", bound: "MUTATION_RAW_INDEX_BYTES", candidate: "arbareto-candidate-1", lock: { device: "1", inode: "2" }, token: TOKEN, expected: HEX }, [{ kind: "removed" }]],
     ["a component past the entry path", { mode: "digest", bound: "COMPARED_RAW_VERSION_BYTES", files: [entry()] }, [{ kind: "error", component: 3, code: "io-error" }]],
     ["targetBytes on a middle link", { mode: "digest", bound: "COMPARED_RAW_VERSION_BYTES", files: [entry()] }, [{ kind: "link", component: 1, targetBytes: "/w==", sha256: HEX }]],
     ["another bound name", { mode: "digest", bound: "COMPARED_RAW_VERSION_BYTES", files: [entry()] }, [{ kind: "file", size: 1, changed: false, bound: "WHOLE_FILE_STAGE_INPUT_BYTES" }]],

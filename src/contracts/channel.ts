@@ -271,6 +271,11 @@ export const WslFilesGroup = z
         expected: Fingerprint,
       })
       .meta({ title: "WslFilesPublish" }),
+    // The owned lock by its `token`, or a candidate by the digest that the service verified last.
+    z
+      .strictObject({ ...wslFiles, mode: z.literal("remove"), ...INDEX_BOUND, token: LockToken.optional(), candidate: CandidateName.optional(), expected: Fingerprint.optional() })
+      .refine((r) => (r.token !== undefined) !== (r.candidate !== undefined && r.expected !== undefined) && (r.candidate === undefined) === (r.expected === undefined))
+      .meta({ title: "WslFilesRemove" }),
   ])
   .meta({ title: "WslFilesGroup" });
 type WslFilesFrame = z.infer<typeof WslFilesGroup>;
@@ -517,6 +522,7 @@ export const WslFileResult = z.union([
   z.strictObject({ kind: z.literal("published"), size: Count, sha256: Fingerprint }).meta({ title: "WslFilePublished" }),
   z.strictObject({ kind: z.literal("mismatch") }).meta({ title: "WslFileMismatch" }),
   z.strictObject({ kind: z.literal("notOwned") }).meta({ title: "WslFileNotOwned" }),
+  z.strictObject({ kind: z.literal("removed") }).meta({ title: "WslFileRemoved" }),
 ]);
 export type WslFileResult = z.infer<typeof WslFileResult>;
 export const WslFilesReply = z.union([

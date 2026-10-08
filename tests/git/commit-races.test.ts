@@ -3,9 +3,9 @@
 
 // T099: commit races before and after handoff, attribution bounds, and the recovery refresh (contract §4, §8, §9). `commit.ts`, `reconcile.ts`, `attribution.ts`, and `recovery.ts` come with T112 to T114.
 
-import { describe, expect } from "bun:test";
+import { describe, expect, setSystemTime } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
-import { STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
+import { APPROVAL_LIFETIME_MS, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { useFixtureRoot } from "./fixture-root";
 import { buildChanged, buildF11, buildF20, type F20Variant } from "./fixtures";
 import { refState } from "./git-oracle";
@@ -125,6 +125,56 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
       const from = service.runner.calls.length;
       const response = await commit(service, repositoryId, r, "stale\n");
       expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "REPOSITORY_CHANGED", runs: 0 });
+    }),
+  );
+
+  // Contract §9: the code of a review token that is no longer valid.
+  todoCase(TASK, `a review token older than 60 seconds on an injected clock gives APPROVAL_EXPIRED at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
+    withService({ name: "t099-expired" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t099-expired", "F09"));
+      await underTest("commit");
+      const { repositoryId } = await service.register(repo);
+      const r = await reviewOk(service, repositoryId);
+      const from = service.runner.calls.length;
+      // Bun `setSystemTime` moves `Date.now()` only. Timers and `performance.now()` keep running.
+      setSystemTime(new Date(Date.now() + APPROVAL_LIFETIME_MS + 1));
+      let response: ServiceResponse;
+      try {
+        response = await commit(service, repositoryId, r, "expired\n");
+      } finally {
+        setSystemTime();
+      }
+      expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "APPROVAL_EXPIRED", runs: 0 });
+    }),
+  );
+
+  // Contract §8: a `refresh: true` read invalidates the token. An equal observation keeps the generation, so acceptance sees a released ID (§2).
+  todoCase(TASK, `a review token that a refresh: true readWorkspace invalidated without a change gives UNKNOWN_TARGET at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
+    withService({ name: "t099-refreshed" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t099-refreshed", "F09"));
+      await underTest("commit");
+      const { repositoryId } = await service.register(repo);
+      const r = await reviewOk(service, repositoryId);
+      const refresh = await service.readWorkspace(repositoryId, { refresh: true, check: "full" });
+      expect({ ...outcome(refresh), generation: refresh.result?.generation }).toEqual({ ...SUCCEEDED, generation: r.read.generation });
+      const from = service.runner.calls.length;
+      const response = await commit(service, repositoryId, r, "refreshed\n");
+      expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
+    }),
+  );
+
+  // Contract §8: a `refresh: false` read with an unchanged fingerprint keeps the token. The later change reaches the commit preflight.
+  todoCase(TASK, `a review token that a refresh: false read kept gives STALE_REVIEW after an index change, and no commit process starts ${BEFORE}`, SHELL, () =>
+    withService({ name: "t099-kept-stale" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t099-kept-stale", "F09"));
+      const prepared = prepare(repo, "t099-kept-stale");
+      await underTest("commit");
+      const { repositoryId } = await service.register(repo);
+      const r = await reviewOk(service, repositoryId);
+      const kept = await service.readWorkspace(repositoryId, { refresh: false, check: "full" });
+      expect({ ...outcome(kept), generation: kept.result?.generation }).toEqual({ ...SUCCEEDED, generation: r.read.generation });
+      CHANGES.index(repo, prepared);
+      expect({ code: (await commit(service, repositoryId, r, "stale\n")).code, commits: commitCalls(service).length }).toEqual({ code: "STALE_REVIEW", commits: 0 });
     }),
   );
 });

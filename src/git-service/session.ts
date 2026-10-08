@@ -10,6 +10,7 @@ import { decodeStrictJson, hasFractionOrExponent } from "../contracts/strict-jso
 import { isWindows } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { RunnerRefusal, type GitRunner, type WslRunner } from "./git-runner";
+import { createComparisonReader } from "./comparison";
 import { getEnvironment } from "./environment";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createHistoryReader, type HistoryOutcome } from "./history";
@@ -120,6 +121,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   });
   const reader = createWorkspaceReader({ runner, trust, readRawIndex });
   const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
+  const comparisons = createComparisonReader({ runner, trust });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
   // No mutation handler exists yet, so no mutation can be unfinished.
@@ -135,6 +137,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       watchers.delete(workspace.repositoryId);
       scheduler.release(workspace.repositoryId);
       reader.release(workspace.repositoryId);
+      comparisons.release(workspace.repositoryId);
       trust.release(workspace);
     },
   });
@@ -288,10 +291,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readTrust"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readTrust" | "readComparison"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
+    selection?: string,
   ) => {
     if (!scheduler.accepts(request.repositoryId)) return reject(request.requestId, "BUSY");
     const { operationId, signal } = registry.start(request.operation, request.requestId);
@@ -300,6 +304,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       operationId,
       repositoryId: request.repositoryId,
       signal,
+      ...(selection === undefined ? {} : { selection }),
       run: (work) => run({ operationId, signal: work }).catch(() => failed),
       failed: (outcome) => outcome.result === "failed" || outcome.result === "deadline",
       reread: (target) => reread(target).catch(() => null),
@@ -355,6 +360,26 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     registry.apply(operationId, { type: "read-complete", result: "succeeded" }, page.value);
   };
 
+  // Contract §3 `readComparison`. Contract §9: the generation, the snapshot, and the entry decide at acceptance, and no Git process starts.
+  // Contract §5 "Pending reads": a new `readComparison` cancels each unfinished one of its workspace.
+  const readComparison: Handler<"readComparison"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const found = reader.entry(request.repositoryId, request.repositoryGeneration, request.payload.snapshotId, request.payload.entryId);
+    if (!found.ok) {
+      const { operationId } = registry.start("readComparison", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+    }
+    scheduleRead(
+      request,
+      (t) => comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+      { result: "failed", code: "GIT_FAILED" },
+      "readComparison",
+    );
+  };
+
   // `undefined`: a later task adds the handler. The request then gets SERVICE_UNAVAILABLE.
   const handlers: { [K in ServiceOperation]: Handler<K> | undefined } = {
     getEnvironment: (request) => {
@@ -368,7 +393,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readWorkspace,
     readEntries,
     readHistory,
-    readComparison: undefined,
+    readComparison,
     readTrust: (request) => {
       const workspace = workspaceOf(request.repositoryId);
       const installation = installationOf(workspace);

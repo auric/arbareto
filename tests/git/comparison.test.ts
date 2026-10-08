@@ -4,7 +4,7 @@
 // T093: `readComparison` (contract §3, §4, §5, §7; data-model §5). `src/git-service/comparison.ts` comes with T105.
 
 import { describe, expect } from "bun:test";
-import { mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { COMPARED_RAW_VERSION_BYTES } from "../../src/contracts/limits";
 import { fixtureDir, fixtureEnv, useFixtureRoot } from "./fixture-root";
@@ -30,16 +30,16 @@ import {
   repoState,
   resultOf,
   SUCCEEDED,
+  TIMEOUT_MS,
   todoCase,
   underTest,
   valuesOf,
   withService,
   type Comparison,
 } from "./hunk-harness";
-import type { Capability } from "./service-harness";
+import { caseTest, type Capability, type Service } from "./service-harness";
 
 const TASK = "T093";
-const NEEDS = "(needs T105/T115)";
 const SHELL: Capability[] = ["shell-double"];
 
 useFixtureRoot();
@@ -105,12 +105,20 @@ function filteredRepo(dir: string, path: string): Repo {
   return r;
 }
 
+// Contract §7 "Protected programs that change trust": a system-scope `git-lfs filter-process` can install hooks during the first F05 read. The user then approves the new fingerprint.
+async function approvedRead(service: Service, repositoryId: string) {
+  await approve(service, repositoryId);
+  await service.readWorkspace(repositoryId);
+  await approve(service, repositoryId);
+  return readOk(service, repositoryId);
+}
+
 const MARKER = "arbareto-t093-marker";
 // Contract §4 quoting cases: one worktree root and one file name per quote character, each with the payload `; ni <marker>`. The root payload ends with `#`.
 const hostile = (q: string, i: number) => ({ dir: join(fixtureDir(`t093-quote-${i}`), `w${q}; ni ${MARKER}#`), path: `f${q}; ni ${MARKER}.txt` });
 
 describe("comparison scopes and tracked hunks (contract §4, data-model §5)", () => {
-  todoCase(TASK, `F02 gives two distinct entryId values and comparisons for one path, and each tracked hunk equals the git add -p oracle hunk, sent as base64 ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F02 gives two distinct entryId values and comparisons for one path, and each tracked hunk equals the git add -p oracle hunk, sent as base64`, SHELL, () =>
     withService({ name: "t093-scopes" }, async (service) => {
       const repo = repoOf(buildF02(gitPath(), "t093-scopes"));
       const expected = { staged: hunksOf(oraclePatch(repo, "multi.txt", "head-to-index")), unstaged: hunksOf(oraclePatch(repo, "multi.txt", "index-to-worktree")) };
@@ -130,9 +138,10 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
       expect({ staged: staged.hunkIds.length, unstaged: unstaged.hunkIds.length }).toEqual({ staged: 1, unstaged: 2 });
       expect(new Set([...staged.hunkIds, ...unstaged.hunkIds]).size).toBe(3);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F01: an unborn staged comparison uses an empty committed baseline ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F01: an unborn staged comparison uses an empty committed baseline`, SHELL, () =>
     withService({ name: "t093-unborn" }, async (service) => {
       const repo = repoOf(buildF01(gitPath(), "t093-unborn", "unborn-added"));
       const expected = hunksOf(oraclePatch(repo, "first.txt", "head-to-index", true));
@@ -145,9 +154,10 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
       expect(hunksOf(patchOf(c.response.result))).toEqual(expected);
       expect(c.hunkIds.length).toBe(1);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F01: a metadata-only empty-file change has no selectable hunk ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F01: a metadata-only empty-file change has no selectable hunk`, SHELL, () =>
     withService({ name: "t093-empty-file" }, async (service) => {
       const repo = repoOf(buildF01(gitPath(), "t093-empty-file", "unborn-added"));
       expect(hunksOf(oraclePatch(repo, "empty.txt", "head-to-index", true))).toEqual([]);
@@ -157,18 +167,21 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
       expect(outcome(c.response)).toEqual(SUCCEEDED);
       expect(c.hunkIds).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("support decisions (data-model §5)", () => {
-  todoCase(TASK, `each F05 case returns its reason, and no filter canary runs ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `each F05 case returns its reason, and no comparison runs a filter canary`, SHELL, () =>
     withService({ name: "t093-f05" }, async (service) => {
       const built = buildF05(gitPath(), "t093-f05");
       const repo = repoOf(built, "super");
       await underTest("comparison");
       const { repositoryId } = await service.register(repo);
-      await approve(service, repositoryId);
-      const read = await readOk(service, repositoryId);
+      const read = await approvedRead(service, repositoryId);
+      // Contract §7: an approved read may run the approved clean filter. Status reads it for a stat-dirty path. No comparison may run it.
+      const canaryLogs = () => Object.fromEntries(readdirSync(join(built.root, "canaries")).filter((name) => name.endsWith(".log")).map((name) => [name, readFileSync(join(built.root, "canaries", name), "utf8")]));
+      const before = canaryLogs();
       // Each path, category, and reason by contract §4 and data-model §5.
       const cases: [string, "staged" | "unstaged", string[]][] = [
         ["rename-dst.txt", "staged", ["rename"]],
@@ -180,9 +193,10 @@ describe("support decisions (data-model §5)", () => {
         ["sub-moved", "unstaged", ["submodule"]],
         ["asset.psd", "unstaged", ["LFS"]],
         ["custom.cf", "unstaged", ["filter"]],
-        // Contract §4 "File staging": a type change with a symbolic link on either side gives `type`.
+        // Contract §4 "File staging": a type change with a symbolic link on either side gives `type`. `symlink` applies only without a type change.
+        // Status prints `TM` with modes 100644 120000 120000: only the staged side is a type change, and the unstaged side compares two symbolic links.
         ["type-change.txt", "staged", ["type"]],
-        ["type-change.txt", "unstaged", ["type"]],
+        ["type-change.txt", "unstaged", ["symlink"]],
       ];
       for (const [path, category, reasons] of cases) {
         const c = await compare(service, repositoryId, path, category, read);
@@ -190,11 +204,12 @@ describe("support decisions (data-model §5)", () => {
         const reason = support(c);
         expect({ path, category, reason: reasons.includes(reason) ? reasons : reason, hunks: c.hunkIds }).toEqual({ path, category, reason: reasons, hunks: [] });
       }
-      expect(readdirSync(join(built.root, "canaries")).filter((name) => name.endsWith(".log"))).toEqual([]);
+      expect(canaryLogs()).toEqual(before);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F04 mixed files give line-endings and no hunk, and a normalization-only difference gives no selectable hunk ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F04 mixed files give line-endings and no hunk, and a normalization-only difference gives no selectable hunk`, SHELL, () =>
     withService({ name: "t093-mixed" }, async (service) => {
       const built = buildF04(gitPath(), "t093-mixed", "autocrlf-true");
       const repo = repoOf(built);
@@ -213,9 +228,10 @@ describe("support decisions (data-model §5)", () => {
       if (listed) expect((await compare(service, repositoryId, "lf.txt", "unstaged", read)).hunkIds).toEqual([]);
       else expect(read.entries.filter((e) => e.path === "lf.txt")).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F10 flagged entries give index-flag and no hunk ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F10 flagged entries give index-flag and no hunk`, SHELL, () =>
     withService({ name: "t093-flags" }, async (service) => {
       const repo = repoOf(buildF10(gitPath(), "t093-flags", "flags"));
       await underTest("comparison");
@@ -227,9 +243,10 @@ describe("support decisions (data-model §5)", () => {
       // Git lists no assume-unchanged or skip-worktree entry, so no entry exists for them.
       expect(read.entries.filter((e) => e.path === "keep.txt" || e.path === "conflict.txt")).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F03 case-differing names, case-colliding index paths, and a path of 260 or more UTF-16 units give path ${NEEDS}`, [...SHELL, "windows-path-rules"], () =>
+  caseTest(TASK, `F03 case-differing names, case-colliding index paths, and a path of 260 or more UTF-16 units give path`, [...SHELL, "windows-path-rules"], () =>
     withService({ name: "t093-paths" }, async (service) => {
       const built = buildF03(gitPath(), "t093-paths");
       const repo = repoOf(built);
@@ -258,11 +275,12 @@ describe("support decisions (data-model §5)", () => {
         expect({ path, reason: support(c), fileAction: fileAction(c), hunks: c.hunkIds }).toEqual({ path, reason: "path", fileAction: "path", hunks: [] });
       }
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("bounds (contract §5)", () => {
-  todoCase(TASK, `F16: 1,048,576-byte sides and 20,000 diff lines are supported; one byte or one line more, or more than 4 MiB of patch bytes, gives size or limited with no hunk ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F16: 1,048,576-byte sides and 20,000 diff lines are supported; one byte or one line more, or more than 4 MiB of patch bytes, gives size or limited with no hunk`, SHELL, async () => {
     const builds = (["side-at-limit", "lines-at-limit", "side-over-limit", "lines-over-limit", "patch-bytes"] as const).map((variant) => {
       const built = buildF16Comparison(gitPath(), `t093-f16-${variant}`, variant);
       const repo = repoOf(built);
@@ -284,9 +302,10 @@ describe("bounds (contract §5)", () => {
         }
       });
     }
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `retained comparisons cap at 4, and eviction invalidates their approvals: a hunk of the evicted comparison is refused and starts no Git process ${NEEDS}`, SHELL, () =>
+  // `applyHunk` has no handler before T110, so a refusal here would prove nothing about eviction.
+  todoCase(TASK, `retained comparisons cap at 4, and eviction invalidates their approvals: a hunk of the evicted comparison is refused and starts no Git process (needs T110)`, SHELL, () =>
     withService({ name: "t093-retained" }, async (service) => {
       const repo = repoOf(buildF02(gitPath(), "t093-retained"));
       put(repo, "new.txt", "new\n");
@@ -309,7 +328,7 @@ describe("bounds (contract §5)", () => {
 });
 
 describe("isolation (contract §4, §7)", () => {
-  todoCase(TASK, `diff.<driver>.textconv, diff.<driver>.command, and diff.external canaries never run, also for an untracked entry ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `diff.<driver>.textconv, diff.<driver>.command, and diff.external canaries never run, also for an untracked entry`, SHELL, () =>
     withService({ name: "t093-canaries" }, async (service) => {
       const built = buildF02(gitPath(), "t093-canaries");
       const repo = repoOf(built);
@@ -331,9 +350,10 @@ describe("isolation (contract §4, §7)", () => {
       }
       expect(Object.values(canaries).filter((c) => readdirSync(join(built.root, "canaries")).includes(basename(c.log)))).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F17 partial-read-tree: an unstaged comparison whose index blob is missing gives OBJECT_MISSING and no hunk, and i/none is never a line-ending value ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F17 partial-read-tree: an unstaged comparison whose index blob is missing gives OBJECT_MISSING and no hunk, and i/none is never a line-ending value`, SHELL, () =>
     withService({ name: "t093-missing-blob" }, async (service) => {
       const built = buildF17(gitPath(), "t093-missing-blob", "partial-read-tree");
       const clone = repoOf(built, "clone");
@@ -347,11 +367,12 @@ describe("isolation (contract §4, §7)", () => {
       expect(valuesOf(c.response.result, "support")).not.toContain("line-endings");
       expect(readdirSync(join(built.root, "canaries")).filter((name) => name.endsWith(".log"))).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("untracked hunks (research.md R3 \"Untracked hunk content\")", () => {
-  todoCase(TASK, `untracked hunks of every F04 variant except safecrlf equal the git add blob of the T092 oracle ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `untracked hunks of every F04 variant except safecrlf equal the git add blob of the T092 oracle`, SHELL, async () => {
     const builds = (["autocrlf-false", "autocrlf-true", "autocrlf-input", "eol-crlf", "attributes"] as const).map((variant) => {
       const repo = repoOf(buildF04(gitPath(), `t093-untracked-${variant}`, variant));
       const paths = F04_FOLDERS[variant].flatMap((folder) => putUntracked(repo, folder));
@@ -372,9 +393,9 @@ describe("untracked hunks (research.md R3 \"Untracked hunk content\")", () => {
         }
       });
     }
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `an untracked entry gives line-endings and no hunk when only the index holds .gitattributes for its folder ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `an untracked entry gives line-endings and no hunk when only the index holds .gitattributes for its folder`, SHELL, () =>
     withService({ name: "t093-index-attribute" }, async (service) => {
       const repo = repoOf(buildF04Stage(gitPath(), "t093-index-attribute", "index-attribute"));
       const paths = putUntracked(repo, "");
@@ -387,9 +408,10 @@ describe("untracked hunks (research.md R3 \"Untracked hunk content\")", () => {
         expect({ path, ...outcome(c.response), reason: support(c), hunks: c.hunkIds }).toEqual({ path, ...SUCCEEDED, reason: "line-endings", hunks: [] });
       }
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `under core.safecrlf=true, untracked hunks stay selectable and equal the git add -N then git add -p oracle ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `under core.safecrlf=true, untracked hunks stay selectable and equal the git add -N then git add -p oracle`, SHELL, () =>
     withService({ name: "t093-safecrlf" }, async (service) => {
       const repo = repoOf(buildF04(gitPath(), "t093-safecrlf", "safecrlf"));
       expect(gitText(repo, ["config", "core.safecrlf"]).trim()).toBe("true");
@@ -412,17 +434,17 @@ describe("untracked hunks (research.md R3 \"Untracked hunk content\")", () => {
         expect({ path, bytes: newSide(patchOf(c.response.result)).toString("hex") }).toEqual({ path, bytes: blobBytes(oracle, blobOf(oracle, path)!).toString("hex") });
       }
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("limitation remedies and file-action decisions (contract §4)", () => {
-  todoCase(TASK, `F05: a filtered Unstaged entry carries the add remedy, a staged type or symlink entry carries restore --staged, and binary and staged rename entries carry none; each carries its file-action decision ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F05: a filtered Unstaged entry carries the add remedy, a staged type or symlink entry carries restore --staged, and binary and staged rename entries carry none; each carries its file-action decision`, SHELL, () =>
     withService({ name: "t093-f05-remedies" }, async (service) => {
       const repo = repoOf(buildF05(gitPath(), "t093-f05-remedies"), "super");
       await underTest("comparison");
       const { repositoryId } = await service.register(repo);
-      await approve(service, repositoryId);
-      const read = await readOk(service, repositoryId);
+      const read = await approvedRead(service, repositoryId);
       const root = read.identity.worktreeRoot;
       const custom = await compare(service, repositoryId, "custom.cf", "unstaged", read);
       expect({ fileAction: fileAction(custom), remedy: remedy(custom) }).toEqual({ fileAction: "filter", remedy: { text: REMEDY_TEXT, command: addRemedy(root, "custom.cf") } });
@@ -433,9 +455,10 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
       const rename = await compare(service, repositoryId, "rename-dst.txt", "staged", read);
       expect({ fileAction: fileAction(rename), remedies: remedies(rename) }).toEqual({ fileAction: "unstage", remedies: [] });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F01 unborn: a staged symbolic-link entry carries rm --cached ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F01 unborn: a staged symbolic-link entry carries rm --cached`, SHELL, () =>
     withService({ name: "t093-unborn-link" }, async (service) => {
       const repo = repoOf(buildF01(gitPath(), "t093-unborn-link", "unborn-added"));
       const r: Repo = { git: gitPath(), dir: repo, pre: [] };
@@ -448,9 +471,10 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
       const c = await compare(service, repositoryId, "new-link", "staged", read);
       expect({ fileAction: fileAction(c), remedy: remedy(c) }).toEqual({ fileAction: "symlink", remedy: { text: REMEDY_TEXT, command: rmCachedRemedy(read.identity.worktreeRoot, "new-link") } });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `an Unstaged rename record carries an add remedy that names the source and the destination path ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `an Unstaged rename record carries an add remedy that names the source and the destination path`, SHELL, () =>
     withService({ name: "t093-rename-record" }, async (service) => {
       const built = buildFileAccepted(gitPath(), "t093-rename-record");
       expect(built.facts.notes.renames).toContainEqual({ xy: ".R", path: "ita-dst.txt", orig: "ita-src.txt" });
@@ -460,9 +484,10 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
       const c = await compare(service, repositoryId, "ita-dst.txt", "unstaged", read);
       expect({ fileAction: fileAction(c), remedy: remedy(c) }).toEqual({ fileAction: "rename", remedy: { text: REMEDY_TEXT, command: addRemedy(read.identity.worktreeRoot, "ita-src.txt", "ita-dst.txt") } });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `an F03 path with invalid UTF-8 bytes, a conflicted entry, and an index-flag entry carry no remedy ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `an F03 path with invalid UTF-8 bytes, a conflicted entry, and an index-flag entry carry no remedy`, SHELL, async () => {
     const built = buildF03(gitPath(), "t093-no-remedy-f03");
     const invalid = Buffer.from(built.facts.notes.invalidUtf8IndexPath as string, "hex");
     const conflict = repoOf(buildF10(gitPath(), "t093-no-remedy-conflict", "merge"));
@@ -483,9 +508,9 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
         expect({ path, remedies: remedies(await compare(service, repositoryId, path, category)) }).toEqual({ path, remedies: [] });
       });
     }
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `a staged symbolic-link entry whose path holds U+0022 or TAB, and a remedy whose worktree root holds U+201C, carry no command and show the value as text ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a staged symbolic-link entry whose path holds U+0022 or TAB, and a remedy whose worktree root holds U+201C, carry no command and show the value as text`, SHELL, async () => {
     const repo = repoOf(buildF02(gitPath(), "t093-refused-paths"));
     const r: Repo = { git: gitPath(), dir: repo, pre: [] };
     const oid = gitText(repo, ["hash-object", "-w", "--stdin"], { input: Buffer.from("multi.txt") }).trim();
@@ -511,9 +536,9 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
       const found = remedy(await compare(service, repositoryId, "f.txt", "unstaged", read));
       expect({ command: found.command, shown: found.text.includes(read.identity.worktreeRoot) }).toEqual({ command: null, shown: true });
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `each remedy doubles all five quote characters in the file name and the worktree root ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `each remedy doubles all five quote characters in the file name and the worktree root`, SHELL, async () => {
     const repos = QUOTES.map((q, i) => ({ q, i, ...hostile(q, i) }));
     for (const { dir, path } of repos) filteredRepo(dir, path);
     await underTest("comparison");
@@ -525,11 +550,11 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
         expect({ q, fileAction: fileAction(c), remedy: remedy(c) }).toEqual({ q, fileAction: "filter", remedy: { text: REMEDY_TEXT, command: addRemedy(read.identity.worktreeRoot, path) } });
       });
     }
-  });
+  }, TIMEOUT_MS);
 
   // Contract §4: PowerShell 7 and Windows PowerShell 5.1 must keep each value literal. The oracle index equals `git add` of that path.
   for (const [shell, capability] of [["pwsh", "pwsh"], ["powershell", "windows-powershell"]] as const) {
-    todoCase(TASK, `each quoted remedy runs in ${shell} -NoProfile -Command without the marker payload, and the index equals git add ${NEEDS}`, [...SHELL, capability], async () => {
+    caseTest(TASK, `each quoted remedy runs in ${shell} -NoProfile -Command without the marker payload, and the index equals git add`, [...SHELL, capability], async () => {
       const repos = QUOTES.map((q, i) => {
         const { dir, path } = hostile(q, i);
         const name = `t093-${shell}-${i}`;
@@ -554,6 +579,6 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
         expect({ shell, q, entries: indexEntries(gitPath(), repo) }).toEqual({ shell, q, entries: indexEntries(gitPath(), oracle) });
         rmSync(cwd, { recursive: true, force: true });
       }
-    });
+    }, TIMEOUT_MS);
   }
 });

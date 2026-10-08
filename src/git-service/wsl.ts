@@ -23,6 +23,8 @@ export interface WslGit {
   identity: string;
   // The `PATH` of the probe, for the contract §11 bare-name rule.
   pathEnv: string;
+  // Contract §11 "Remedy commands": `<System32 path>\wsl.exe` from the shell's `wslDistros` reply.
+  wslExecutable: string;
 }
 
 export type WslRefusal = { ok: false; code: ErrorCode; result?: RegistrationResult };
@@ -194,7 +196,7 @@ export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutabl
   if (fileSystem === undefined || /^0+$/.test(fileSystem) || !/^[0-9]+:[0-9]+:[0-9]+$/.test(file)) {
     return { ok: false, code: "GIT_UNSUPPORTED", result: { reason: "no-fs-uuid", text: TEXT["git-no-fs-uuid"](distro) } };
   }
-  return { ok: true, git: { distro, path: git.path, version: checked.version, identity: `${fileSystem}:${file}`, pathEnv: facts.pathenv ?? "" } };
+  return { ok: true, git: { distro, path: git.path, version: checked.version, identity: `${fileSystem}:${file}`, pathEnv: facts.pathenv ?? "", wslExecutable } };
 }
 
 // ---- The route and the Git probe of one registration ----

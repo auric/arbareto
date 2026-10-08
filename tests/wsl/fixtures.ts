@@ -281,7 +281,7 @@ export interface PublicProgress {
 
 const RESPONSE_WAIT_MS = 120_000;
 
-export function startSession(runner: BunRunner) {
+export function startSession(runner: BunRunner, options: Pick<SessionOptions, "readRawIndex"> = {}) {
   const responses: PublicResponse[] = [];
   const progress: PublicProgress[] = [];
   const session = createSession({
@@ -294,6 +294,7 @@ export function startSession(runner: BunRunner) {
     },
     runner: { ...runner, receive: () => false } as unknown as SessionOptions["runner"],
     fail: () => {},
+    ...options,
   });
   const send = (frame: object) => session.receive({ type: "frame", body: new TextEncoder().encode(JSON.stringify(frame)) });
   const handshake = {

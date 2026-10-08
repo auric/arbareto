@@ -152,15 +152,16 @@ function effective(entries: readonly ConfigEntry[], key: string): ConfigEntry | 
 }
 
 // `rawIndex` holds the index file bytes that the read captured, or null when the index file is absent.
+// `{ link }` holds the `link` hash of index bytes that an earlier read parsed (contract §11 "Change polling").
 // This function starts no process and never asks Git for the shared index path (contract §6).
 // It throws IndexFormatError for bytes that are no Git index. The caller must not treat that as eligible.
-export function hunkEligibility(rawIndex: Uint8Array | null, objectFormat: ObjectFormat, listing: Pick<TrustListing, "entries" | "hooks">): HunkEligibility {
+export function hunkEligibility(rawIndex: Uint8Array | null | { link: string | null }, objectFormat: ObjectFormat, listing: Pick<TrustListing, "entries" | "hooks">): HunkEligibility {
   const refuse = (reason: HunkRefusalReason): HunkEligibility => ({ eligible: false, reason });
   const { entries, hooks } = listing;
   // repo-settings.c `prepare_repo_settings`: `index.sparse` is a Git boolean.
   const sparse = effective(entries, "index.sparse");
   if (sparse !== undefined && parseMaybeBool(sparse.value) === 1) return refuse("sparse-index");
-  if (rawIndex !== null && splitIndexLink(rawIndex, objectFormat) !== null) return refuse("split-index");
+  if (rawIndex !== null && (rawIndex instanceof Uint8Array ? splitIndexLink(rawIndex, objectFormat) : rawIndex.link) !== null) return refuse("split-index");
   // config.c `repo_config_get_split_index`: only a valid true value splits the index.
   const split = effective(entries, "core.splitindex");
   if (split !== undefined && parseMaybeBool(split.value) === 1) return refuse("split-index");

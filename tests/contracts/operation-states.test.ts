@@ -131,13 +131,15 @@ describe("running", () => {
     }
   });
 
-  test("a read deadline closes the Job, refreshes state, and ends failed with DEADLINE", () => {
-    expectStep(
+  // Contract §12: a read `DEADLINE` carries no reason.
+  test("a read deadline closes the Job, refreshes state, and ends failed with DEADLINE without a reason", () => {
+    const result = expectStep(
       { operation: READ, state: "running" },
       { type: "read-deadline" },
       { state: "failed", code: "DEADLINE" },
       ["close-job", "refresh-state"],
     );
+    expect(result.reason).toBeUndefined();
   });
 
   test("a declined submodule program confirmation ends canceled and resolves the marker", () => {
@@ -186,8 +188,13 @@ describe("running", () => {
     );
   });
 
-  test.each([[COMMIT], [HUNK], ["applyFile"]])("a %s step, preflight, or process deadline enters reconciling with cause DEADLINE", (operation) => {
-    expectStep({ operation, state: "running" }, { type: "mutation-deadline" }, { state: "reconciling", cause: "DEADLINE" }, ["close-job"]);
+  // Contract §12: only `inactivity` and `ceiling` end an update process. A read deadline in the update is `mutation-deadline`.
+  test("a submodule process deadline with reason deadline has no transition", () => {
+    expect(() => step({ operation: SUBMODULES, state: "running" }, { type: "update-process-deadline", reason: "deadline" })).toThrow();
+  });
+
+  test.each([[COMMIT], [HUNK], ["applyFile"], [SUBMODULES]])("a %s step, preflight, read, or process deadline enters reconciling with cause DEADLINE and reason deadline", (operation) => {
+    expectStep({ operation, state: "running" }, { type: "mutation-deadline" }, { state: "reconciling", cause: "DEADLINE", reason: "deadline" }, ["close-job"]);
   });
 });
 
@@ -207,6 +214,19 @@ describe("deadline reconciliation classifies from observed state", () => {
 
   test("left effects give failed-with-effects", () => {
     expectStep(afterDeadline(), { type: "failed-with-effects" }, { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
+  });
+
+  // Contract §5 "Deadline outcomes" and §9: `failed` and `failed-with-effects` keep the reason of the deadline.
+  const deadlines: Array<[string, Event, string]> = [
+    [COMMIT, { type: "mutation-deadline" }, "deadline"],
+    [SUBMODULES, { type: "mutation-deadline" }, "deadline"],
+    [SUBMODULES, { type: "update-process-deadline", reason: "inactivity" }, "inactivity"],
+    [SUBMODULES, { type: "update-process-deadline", reason: "ceiling" }, "ceiling"],
+  ];
+  test.each(deadlines)("a %s deadline keeps its reason in failed and failed-with-effects", (operation, event, reason) => {
+    const entered = { operation, ...step({ operation, state: "running" }, event) } as Snapshot;
+    expectStep(entered, { type: "no-effects", observed: "failed" }, { state: "failed", code: "DEADLINE", reason });
+    expectStep(entered, { type: "failed-with-effects" }, { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", reason });
   });
 });
 
@@ -228,13 +248,14 @@ describe("cancel-requested", () => {
     );
   });
 
-  test("a read deadline before the stop ends failed with DEADLINE", () => {
-    expectStep(
+  test("a read deadline before the stop ends failed with DEADLINE without a reason", () => {
+    const result = expectStep(
       { operation: READ, state: "cancel-requested" },
       { type: "read-deadline" },
       { state: "failed", code: "DEADLINE" },
       ["close-job", "refresh-state"],
     );
+    expect(result.reason).toBeUndefined();
   });
 });
 

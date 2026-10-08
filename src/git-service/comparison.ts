@@ -299,19 +299,20 @@ export function createComparisonReader({ runner, trust }: ComparisonReaderOption
     const path = new Uint8Array(Buffer.from(e.pathBytes, "base64"));
     const scope: ComparisonScope = e.category === "staged" ? "head-to-index" : e.category === "untracked" ? "empty-to-untracked" : "index-to-worktree";
     const flags = e.flags;
+
+    // Contract §7: the read gate decides before any comparison limit check and any diff read.
+    const listed = await trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
+    if (!listed.ok) return "stop" in listed ? { result: listed.stop } : { result: "failed", code: listed.code };
+    const lst = listed.listing;
+    const gate = trust.gate(w, lst, t.installation, "reads");
+    if (gate !== null) return { result: "failed", code: gate };
+
     // Without index flags the snapshot listing was cut, so no decision is exact.
     if (e.category !== "conflicted" && flags === undefined) {
       const c = t.snapshot.completeness;
       return c.state === "limited" ? { result: "limited", code: c.code, value: { completeness: c } } : { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
     }
     const indexFlags = flags ?? { intentToAdd: false, assumeUnchanged: false, skipWorktree: false };
-
-    // Contract §7: the read gate decides before any diff read.
-    const listed = await trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
-    if (!listed.ok) return "stop" in listed ? { result: listed.stop } : { result: "failed", code: listed.code };
-    const lst = listed.listing;
-    const gate = trust.gate(w, lst, t.installation, "reads");
-    if (gate !== null) return { result: "failed", code: gate };
 
     const text = decode(path);
     const source = e.sourcePathBytes === undefined ? null : decode(Buffer.from(e.sourcePathBytes, "base64"));
@@ -362,7 +363,8 @@ export function createComparisonReader({ runner, trust }: ComparisonReaderOption
         const eol = async () => {
           const out = createCollector({ maxBytes: STATUS_LISTING_BYTES, maxRecords: STATUS_LISTING_RECORDS, separator: NUL });
           const exit = await step(t, lineEndingArgs(), out);
-          if (out.limited) eolLimit = out.records > STATUS_LISTING_RECORDS ? "STATUS_LISTING_RECORDS" : "STATUS_LISTING_BYTES";
+          // `out.records` also counts the separators after the cut.
+          if (out.limited) eolLimit = out.take().reduce((n, b) => n + (b === NUL ? 1 : 0), 0) >= STATUS_LISTING_RECORDS ? "STATUS_LISTING_RECORDS" : "STATUS_LISTING_BYTES";
           else if (exit.exitCode !== 0) failedStep = true;
           else eolOut = out.take();
         };

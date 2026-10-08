@@ -144,7 +144,7 @@ export function transition(snapshot: OperationSnapshot, event: OperationEvent): 
           return next("reconciling", { cause: "DEADLINE", reason: event.reason, lingeringDescendants: 0 }, ["close-job", "start-no-later-process"]);
         case "mutation-deadline":
           if (!mutation) break;
-          return next("reconciling", { cause: "DEADLINE", lingeringDescendants: 0 }, ["close-job"]);
+          return next("reconciling", { cause: "DEADLINE", reason: "deadline", lingeringDescendants: 0 }, ["close-job"]);
         case "revoke-trust":
           if (!mutation) break;
           return next("running", { endProcesses: true });

@@ -6,7 +6,7 @@
 import { describe, expect } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
-import { COMPARED_RAW_VERSION_BYTES } from "../../src/contracts/limits";
+import { COMPARED_RAW_VERSION_BYTES, NATIVE_CHUNK_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { fixtureDir, fixtureEnv, useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF02, buildF03, buildF04, buildF04Stage, buildF05, buildF10, buildF16Comparison, buildF17, buildFileAccepted, put, run, type F04Variant, type Repo } from "./fixtures";
 import { indexEntries } from "./git-oracle";
@@ -16,6 +16,7 @@ import {
   blobOf,
   compare,
   copyRepo,
+  entryOf,
   git,
   gitPath,
   gitText,
@@ -304,6 +305,45 @@ describe("bounds (contract §5)", () => {
     }
   }, TIMEOUT_MS);
 
+  // `ls-files --eol -z` records of a fixed width. A cut listing is never parsed, so only the record count and the byte total matter.
+  const eolRecords = (from: number, count: number, width: number) =>
+    Buffer.concat(Array.from({ length: count }, (_, i) => Buffer.from(`${`i/lf    w/lf    attr/                 \tf/${from + i}/`.padEnd(width - 1, "x")}\0`)));
+  const eolLimit = async (name: string, listing: Buffer) => {
+    let completeness: { state: string; reason?: string } | undefined;
+    await withService({ name }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), name));
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      let injected = 0;
+      service.runner.inject.stdout = (call) => (call.arguments.includes("--eol") ? (injected++, listing) : undefined);
+      const c = await compare(service, repositoryId, "multi.txt", "unstaged", read);
+      service.runner.inject.stdout = undefined;
+      expect(injected).toBe(1);
+      completeness = one(c.response.result, "completeness");
+    });
+    return completeness;
+  };
+
+  caseTest(TASK, `a line-ending listing cut at record ${STATUS_LISTING_RECORDS + 1} gives limited with reason STATUS_LISTING_RECORDS`, SHELL, async () => {
+    const completeness = await eolLimit("t093-eol-records", eolRecords(0, STATUS_LISTING_RECORDS + 1, 48));
+    expect(completeness).toMatchObject({ state: "limited", reason: "STATUS_LISTING_RECORDS" });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, `a line-ending listing cut at byte ${STATUS_LISTING_BYTES} gives limited with reason STATUS_LISTING_BYTES, also when the cut chunk brings more than ${STATUS_LISTING_RECORDS} NUL separators`, SHELL, async () => {
+    // Wide records fill the byte bound below the record bound. Narrow records follow, so the chunk of the cut holds many more separators.
+    const WIDE = 340;
+    const wide = Math.ceil((STATUS_LISTING_BYTES + 1) / WIDE);
+    const listing = Buffer.concat([eolRecords(0, wide, WIDE), eolRecords(wide, 4096, 42)]);
+    const nuls = (end: number) => listing.subarray(0, end).reduce((n, b) => n + (b === 0 ? 1 : 0), 0);
+    // The harness sends injected stdout in chunks of NATIVE_CHUNK_BYTES from byte 0, so the cut chunk starts at the byte bound.
+    expect(STATUS_LISTING_BYTES % NATIVE_CHUNK_BYTES).toBe(0);
+    expect(nuls(STATUS_LISTING_BYTES)).toBeLessThan(STATUS_LISTING_RECORDS);
+    expect(nuls(STATUS_LISTING_BYTES + NATIVE_CHUNK_BYTES)).toBeGreaterThan(STATUS_LISTING_RECORDS);
+    const completeness = await eolLimit("t093-eol-bytes", listing);
+    expect(completeness).toMatchObject({ state: "limited", reason: "STATUS_LISTING_BYTES" });
+  }, TIMEOUT_MS);
+
   // `applyHunk` has no handler before T110, so a refusal here would prove nothing about eviction.
   todoCase(TASK, `retained comparisons cap at 4, and eviction invalidates their approvals: a hunk of the evicted comparison is refused and starts no Git process (needs T110)`, SHELL, () =>
     withService({ name: "t093-retained" }, async (service) => {
@@ -349,6 +389,29 @@ describe("isolation (contract §4, §7)", () => {
         expect(c.hunkIds.length).toBeGreaterThan(0);
       }
       expect(Object.values(canaries).filter((c) => readdirSync(join(built.root, "canaries")).includes(basename(c.log)))).toEqual([]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §7: the trust gate runs before any comparison limit check.
+  caseTest(TASK, `an entry without index flags gives TRUST_REQUIRED, not limited, when a repository-controlled read key appears after the read`, SHELL, () =>
+    withService({ name: "t093-untrusted-cut" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-untrusted-cut"));
+      const oid = gitText(repo, ["rev-parse", "HEAD:multi.txt"]).trim();
+      // An index listing cut at record STATUS_LISTING_RECORDS + 1 leaves every tracked entry without flags (contract §5).
+      const cut = Buffer.from(Array.from({ length: STATUS_LISTING_RECORDS + 1 }, (_, i) => `H 100644 ${oid} 0\tcut/${i}\0`).join(""));
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      service.runner.inject.stdout = (call) => (call.arguments.includes("--stage") ? cut : undefined);
+      const read = await service.readWorkspace(repositoryId);
+      service.runner.inject.stdout = undefined;
+      expect({ state: read.state, completeness: read.result?.completeness }).toMatchObject({ state: "limited", completeness: { state: "limited", reason: "STATUS_LISTING_RECORDS" } });
+      const entry = entryOf(read.result!, "multi.txt", "unstaged");
+      expect(entry.flags).toBeUndefined();
+      // A repository-controlled `filter.<driver>.clean` blocks reads until approval (contract §7).
+      run({ git: gitPath(), dir: repo, pre: [] }, ["config", "filter.t093.clean", "t093-untrusted"]);
+      const response = await service.request("readComparison", { snapshotId: read.result!.snapshotId, entryId: entry.entryId }, { repositoryId, repositoryGeneration: read.result!.generation, selectionId: crypto.randomUUID() });
+      expect(outcome(response)).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
     }),
     TIMEOUT_MS,
   );

@@ -1082,7 +1082,7 @@ describe("token invalidation (contract §8 \"Token invalidation\")", () => {
     }
   }
 
-  test.todo("a hint and the next readWorkspace invalidate each token whose fingerprint part changed: a ref change that moves HEAD invalidates every token that binds HEAD (needs T105/T115)", () =>
+  test.todo("a hint and the next readWorkspace invalidate each token whose fingerprint part changed: a ref change that moves HEAD invalidates every token that binds HEAD (needs T110)", () =>
     withToken("t075-token-head", {}, async (service, repo, repositoryId) => {
       const token = await hunkToken(service, repositoryId);
       git(repo, ["update-ref", "refs/heads/main", newCommit(repo)]);
@@ -1093,7 +1093,7 @@ describe("token invalidation (contract §8 \"Token invalidation\")", () => {
     }),
   );
 
-  test.todo("a refresh: false read with an unchanged fingerprint keeps an issued hunk token (needs T105/T115)", () =>
+  test.todo("a refresh: false read with an unchanged fingerprint keeps an issued hunk token (needs T110)", () =>
     withToken("t075-token-kept", { watchHints: false }, async (service, _repo, repositoryId) => {
       const token = await hunkToken(service, repositoryId);
       const next = (await service.readWorkspace(repositoryId, FULL)).result!;
@@ -1102,7 +1102,7 @@ describe("token invalidation (contract §8 \"Token invalidation\")", () => {
     }),
   );
 
-  test.todo("a refresh: false read after an index change invalidates an issued hunk token (needs T105/T115)", () =>
+  test.todo("a refresh: false read after an index change invalidates an issued hunk token (needs T110)", () =>
     withToken("t075-token-index", { watchHints: false }, async (service, repo, repositoryId) => {
       const token = await hunkToken(service, repositoryId);
       put(repo, "keep.txt", "keep t075\n");
@@ -1113,7 +1113,7 @@ describe("token invalidation (contract §8 \"Token invalidation\")", () => {
     }),
   );
 
-  test.todo("a refresh: true read invalidates an issued hunk token without any change (needs T105/T115)", () =>
+  test.todo("a refresh: true read invalidates an issued hunk token without any change (needs T110)", () =>
     withToken("t075-token-refresh", { watchHints: false }, async (service, _repo, repositoryId) => {
       const token = await hunkToken(service, repositoryId);
       const next = (await service.readWorkspace(repositoryId, { refresh: true, check: "full" })).result!;

@@ -5,6 +5,7 @@
     "tests/git/commit.test.ts": "asserts a commit outcome within 2000 ms of the Git exit",
     "tests/git/external-changes.test.ts": "asserts watcher hints within HINT_BUDGET_MS",
     "tests/git/file-facts.test.ts": "asserts elapsed time below FIFO_BOUND_MS",
+    "tests/git/file-stage.test.ts": "T196 observation: the Git step time of a 512 MiB stage",
     "tests/git/mutation-lifecycle.test.ts": "asserts child ends within END_MS and reports maintenance run time",
     "tests/git/poll-cost.test.ts": "T192 observations: wall and CPU time of reads",
     "tests/git/read-inputs.test.ts": "asserts no watcher hint within HINT_BUDGET_MS",
@@ -43,6 +44,7 @@
     "tests/git/diagnostics.test.ts",
     "tests/git/discovery.test.ts",
     "tests/git/eligibility.test.ts",
+    "tests/git/file-refusal.test.ts",
     "tests/git/fixture-root.test.ts",
     "tests/git/fixtures-f16.test.ts",
     "tests/git/fixtures-f27a.test.ts",
@@ -74,6 +76,7 @@
     "tests/wsl/file-facts.test.ts",
     "tests/wsl/identity-order.test.ts",
     "tests/wsl/index-gate.test.ts",
+    "tests/wsl/mutations.test.ts",
     "tests/wsl/reads.test.ts",
     "tests/wsl/registration.test.ts",
     "tests/wsl/trust.test.ts"

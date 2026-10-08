@@ -446,6 +446,15 @@ export function createSnapshotStore<S extends ChangeSnapshot = ChangeSnapshot>()
       const w = workspaces.get(observation.repositoryId);
       return w !== undefined && w.digest === observationDigest(observation) ? w.snapshot : null;
     },
+    // Adds or replaces the version of one path in the retained observation. The generation and the snapshot ID stay, so tokens of this generation stay valid.
+    bind(repositoryId: string, generation: number, version: WorkingVersion): boolean {
+      const w = workspaces.get(repositoryId);
+      if (w === undefined || w.snapshot === null || w.generation !== generation) return false;
+      const workingVersions = [...w.snapshot.workingVersions.filter((v) => Buffer.compare(v.path, version.path) !== 0), version].sort((a, b) => Buffer.compare(a.path, b.path));
+      w.snapshot = { ...w.snapshot, workingVersions };
+      w.digest = observationDigest(w.snapshot);
+      return true;
+    },
     // `readEntries` checks the generation first, then the snapshot (data-model §4).
     lookup(repositoryId: string, repositoryGeneration: number, snapshotId: string): SnapshotLookup<S> {
       const w = workspaces.get(repositoryId);

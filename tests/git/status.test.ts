@@ -7,7 +7,8 @@ import { join, resolve } from "node:path";
 import * as LIMITS from "../../src/contracts/limits";
 import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
 import { createRegistrations, type Workspace } from "../../src/git-service/registration";
-import { createWorkspaceReader, hasPromisor } from "../../src/git-service/status";
+import { readWorkingVersion } from "../../src/git-service/snapshot";
+import { createWorkspaceReader, hasPromisor, policyOf } from "../../src/git-service/status";
 import { createTrust, type ConfigEntry } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
@@ -790,6 +791,61 @@ describe("release during a read (contract §6 \"Registration reuse and release\"
           },
         );
         expect(value).toEqual({ result: "canceled" });
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+// T110: `bind` folds a selected working version into the retained observation (WP1 step 5).
+describe("bound working versions (contract §8 \"Token invalidation\")", () => {
+  caseTest(
+    "T110",
+    "a bound working version keeps the generation on equal reads, a working-file-only change advances it once, and the advance drops the binding",
+    ["shell-double"],
+    () =>
+      withService("t110-bind", async (service) => {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t110-bind"));
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const { installation } = probed;
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation, signal: new AbortController().signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        const reader = createWorkspaceReader({ runner: service.runner, trust: createTrust({ runner: service.runner, environment: serviceEnv() }) });
+        const signal = new AbortController().signal;
+        const read = async () => {
+          const outcome = await reader.readWorkspace({ operationId: crypto.randomUUID(), signal, installation, workspace, refresh: false });
+          if (outcome.result !== "succeeded") throw new Error(`read failed: ${JSON.stringify(outcome)}`);
+          return outcome.value.generation;
+        };
+        const version = async () => {
+          const read = await readWorkingVersion(workspace.worktreeRoot, new Uint8Array(Buffer.from("multi.txt")), "COMPARED_RAW_VERSION_BYTES", null);
+          if (!read.ok) throw new Error("working version");
+          return read.value;
+        };
+
+        const base = await read();
+        expect(reader.bind(workspace.repositoryId, base + 1, await version())).toBe(false);
+        expect(reader.bind(workspace.repositoryId, base, await version())).toBe(true);
+        // The reads fold the bound version into their observation, so an equal state keeps the generation.
+        expect([await read(), await read()]).toEqual([base, base]);
+
+        // A working-file-only change advances the generation once. The advance drops the binding, so the next read advances nothing.
+        put(repo, "multi.txt", "changed after bind\n");
+        expect([await read(), await read()]).toEqual([base + 1, base + 1]);
+        put(repo, "multi.txt", "changed again\n");
+        expect(await read()).toBe(base + 1);
+        expect(reader.bind(workspace.repositoryId, base, await version())).toBe(false);
+
+        // The checkpoint helpers: the operation state from the marker facts, and the policy fingerprint of the reader.
+        const t = { operationId: crypto.randomUUID(), signal, workspace };
+        expect([await reader.operationState(t, false), await reader.operationState(t, true)]).toEqual(["normal", "conflicted"]);
+        const trust = createTrust({ runner: service.runner, environment: serviceEnv() });
+        const listing = await trust.listTrust(t);
+        if (!listing.ok) throw new Error(`listing failed: ${JSON.stringify(listing)}`);
+        expect(policyOf(trust, workspace, listing.listing, installation)).toMatch(/^[0-9a-f]{64}$/);
       }),
     TIMEOUT_MS,
   );

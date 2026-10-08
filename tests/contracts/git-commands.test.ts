@@ -49,6 +49,13 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["refPathArgs", () => commands.refPathArgs("refs/heads/main")],
   ["pseudorefExistsArgs", () => commands.pseudorefExistsArgs("CHERRY_PICK_HEAD")],
   ["recheckArgs", () => commands.recheckArgs()],
+  ["stagedPatchArgs", () => commands.stagedPatchArgs(SHA1, "sha1", "a.txt")],
+  ["stagedNameStatusArgs", () => commands.stagedNameStatusArgs(SHA1, "sha1")],
+  ["unstagedPatchArgs", () => commands.unstagedPatchArgs("a.txt")],
+  ["untrackedPatchArgs", () => commands.untrackedPatchArgs("a.txt")],
+  ["attributeArgs", () => commands.attributeArgs()],
+  ["lineEndingArgs", () => commands.lineEndingArgs()],
+  ["emptyTreeArgs", () => commands.emptyTreeArgs()],
 ];
 
 // The arrays of every exported builder without a parameter. `discoveryProfiles` gives several arrays.
@@ -247,8 +254,37 @@ const unnamed = (task: string) => () => {
   throw new Error(`${task}: no task fixes the name of this path builder yet`);
 };
 test.todo("`--` comes before any path, and option-like names such as `-rf` and `--output=x` stay single literal items after `--` (needs T101, T199, T227)", unnamed("T101, T199, T227"));
-test.todo("the untracked read is the T092 form, and a `diff` form carries `--no-ext-diff --no-textconv`, such as `diff --no-index --no-ext-diff --no-textconv -- /dev/null <path>` (needs T092, T101)", unnamed("T092, T101"));
-test.todo("diff reads carry `--ignore-submodules=dirty` and `--no-textconv --no-ext-diff` (needs T101)", unnamed("T101"));
+// Contract §4 and §7: Git runs in the worktree root, and the path is relative to that root (research R3).
+test("the untracked read is the T092 form, and the path stays one literal item after `--`", () => {
+  const form = ["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--", "/dev/null"];
+  expect(commands.untrackedPatchArgs("dir/u-crlf.txt")).toEqual([...R, ...form, "dir/u-crlf.txt"]);
+  for (const path of ["-rf", "--output=x", "a b/c d.txt"]) expect(commands.untrackedPatchArgs(path)).toEqual([...R, ...form, path]);
+  for (const path of ["", "a\0b"]) expect(() => commands.untrackedPatchArgs(path)).toThrow(TypeError);
+});
+
+// Contract §7: status and diff reads pass `--ignore-submodules=dirty`. The patch reads also carry `--no-textconv --no-ext-diff --no-relative` and fixed prefixes.
+test("diff reads carry `--ignore-submodules=dirty`, and the patch reads carry `--no-textconv --no-ext-diff`", () => {
+  const patch = ["-p", "--no-textconv", "--no-ext-diff", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=dirty"];
+  expect(commands.stagedPatchArgs(SHA1, "sha1", "-rf")).toEqual([...R, "diff-index", "--cached", ...patch, SHA1, "--", "-rf"]);
+  expect(commands.stagedPatchArgs(SHA256, "sha256", "a.txt")).toEqual([...R, "diff-index", "--cached", ...patch, SHA256, "--", "a.txt"]);
+  expect(commands.unstagedPatchArgs("--output=x")).toEqual([...R, "diff-files", ...patch, "--", "--output=x"]);
+  expect(commands.stagedNameStatusArgs(SHA1, "sha1")).toEqual([...R, "diff-index", "--cached", "-z", "--name-status", "--ignore-submodules=dirty", SHA1]);
+  for (const oid of ["HEAD", SHA256, "--all", ""]) {
+    expect(() => commands.stagedPatchArgs(oid, "sha1", "a.txt")).toThrow(TypeError);
+    expect(() => commands.stagedNameStatusArgs(oid, "sha1")).toThrow(TypeError);
+  }
+  for (const path of ["", "a\0b"]) {
+    expect(() => commands.stagedPatchArgs(SHA1, "sha1", path)).toThrow(TypeError);
+    expect(() => commands.unstagedPatchArgs(path)).toThrow(TypeError);
+  }
+});
+
+// Contract §7 read list and T103: the attribute, line-ending, and empty-tree reads. Paths go only on stdin.
+test("the attribute, line-ending, and empty-tree reads are exact", () => {
+  expect(commands.attributeArgs()).toEqual([...R, "check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding"]);
+  expect(commands.lineEndingArgs()).toEqual([...R, "ls-files", "--eol", "-z"]);
+  expect(commands.emptyTreeArgs()).toEqual([...R, "hash-object", "-t", "tree", "--stdin"]);
+});
 test.todo("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object -t tree --stdin` exists (needs T101, T104, T199)", () => {
   const hashes = builderArrays().filter((args) => args.includes("hash-object"));
   expect(hashes.some((args) => args.includes("-t") && args.includes("tree") && args.includes("--stdin"))).toBe(true);

@@ -16,7 +16,6 @@ import { blobFilterProofArgs, blobHashProofArgs, isObjectId, objectCheckArgs, up
 import { wholeFileRemedy, type RetainedComparison, type WholeFileRemedy } from "./comparison";
 import { createTailCollector } from "./discovery";
 import type { ObjectFormat, RawIndexEntry } from "./eligibility";
-import type { Entered, NotEntered } from "./exclusion";
 import { createCollector, type Collector } from "./git-runner";
 import { ownedCandidate } from "./hunk-candidate";
 import {
@@ -24,30 +23,24 @@ import {
   candidateRefusal,
   checkpointRefusal,
   comparisonBinding,
+  directionOf,
   isStop,
-  lockRefusal,
   missingObject,
-  notEntered,
   observePolicy,
   observeState,
-  publishRefusal,
-  reconcilePublication,
-  recording,
   refusalOf,
-  removeOwned,
   settled,
+  startPublication,
   stepOf,
   workingOf,
-  type Ending,
   type Fact,
   type HunkPublisherOptions,
   type ObserveContext,
-  type PublicationRun,
+  type PublicationSession,
+  type PublicationStores,
   type Refusal,
-  type RetainedPublication,
   type Stop,
 } from "./hunk-publish";
-import { createIndexLock } from "./index-lock";
 import { latin1, objectCheckInput, objectCheckOutcome } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, ReadInstallation, WorkingVersion } from "./snapshot";
@@ -65,9 +58,6 @@ const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export type FileAction = Extract<FileActionDecision, { direction: "stage" | "unstage" }>;
 type WholeFile = NonNullable<FileBinding["working"]>;
-
-// The direction that the comparison scope allows (contract §9).
-const directionOf = (c: Pick<RetainedComparison, "scope">) => (c.scope === "head-to-index" ? "unstage" : "stage");
 
 // Data-model §6 "File approval". Null for a refused entry or an incomplete snapshot. The caller issues it only for a succeeded comparison.
 export function fileApproval(c: RetainedComparison, s: ChangeSnapshot, w: Workspace): FileApproval | null {
@@ -155,7 +145,8 @@ async function verifiedBytes(file: string, bound: WholeFile): Promise<Uint8Array
     return null;
   }
   try {
-    if (!(await handle.stat()).isFile()) return null;
+    const st = await handle.stat();
+    if (!st.isFile() || st.size !== bound.size) return null;
     const buffer = Buffer.allocUnsafe(bound.size + 1);
     const hasher = new Bun.CryptoHasher("sha256");
     let size = 0;
@@ -195,18 +186,14 @@ async function blobProof(ctx: ObserveContext, path: Uint8Array, oid: string, bou
   return { code: "UNSUPPORTED_COMPARISON", reason: "blob-proof", ...(remedy === null ? {} : { remedy: remedy.command === null ? remedy : { text: BLOB_PROOF_TEXT, command: remedy.command } }) };
 }
 
-export interface FilePublisherOptions extends HunkPublisherOptions {
-  // Contract §5 and §8: the store of the hunk publisher, so that recovery (T114) reads one store.
-  retained: Map<string, RetainedPublication>;
-  // Contract §2: the workspace of each operation that consumed an approval. The store of the hunk publisher.
-  owners: Map<string, string>;
-}
+// Contract §5 and §8: the stores of the hunk publisher, so that recovery (T114) reads one store.
+export type FilePublisherOptions = HunkPublisherOptions & PublicationStores;
 
 type ApplyFileRequest = Extract<ServiceRequest, { operation: "applyFile" }>;
 type Admitted = { approval: FileApproval; comparison: RetainedComparison; action: FileAction };
 
 export function createFilePublisher(o: FilePublisherOptions) {
-  const { registry, retained, owners } = o;
+  const { registry } = o;
 
   // Contract §2, §9: the `applyHunk` acceptance order after the accepted event. Memory only, so no Git process starts.
   function admit(request: ApplyFileRequest, w: Workspace, key: ApprovalKey): Admitted | { code: ErrorCode; result?: unknown } {
@@ -229,189 +216,92 @@ export function createFilePublisher(o: FilePublisherOptions) {
     return { approval, comparison: c, action };
   }
 
-  async function publish(request: ApplyFileRequest, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, admitted: Admitted, key: ApprovalKey): Promise<void> {
-    const { approval, comparison: c, action } = admitted;
-    const binding = approval.binding;
+  // Contract §4 steps 3 to 7 under the lock.
+  async function prepare({ approval: { binding }, comparison: c, action }: Admitted, { ctx, rec, run, path }: PublicationSession): Promise<Refusal | Stop | null> {
+    const { workspace: w, signal, operationId, installation } = ctx;
     const stage = action.direction === "stage";
-    const path = new Uint8Array(Buffer.from(binding.entry.pathBytes, "base64"));
-    let entered: Entered | NotEntered;
-    try {
-      entered = await o.exclusion.enter({ operationId, kind: "applyFile", workspace: w });
-    } catch {
-      return void registry.apply(operationId, { type: "exclusion-unavailable", code: "GIT_FAILED" });
-    }
-    if (!entered.ok) return notEntered(registry, operationId, entered);
-    const marker = entered;
-    const rec = recording(o.runner);
-    const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-    const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, publishStarted: false, published: false, executionLast: 0, listing: null };
-    const foreign: string[] = [];
-    // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
-    const releaseOwned = async (processesEnded: boolean) => {
-      const { lock, candidatePath } = run;
-      run.lock = null;
-      run.candidatePath = null;
-      if (lock !== null && (await lock.release().catch(() => "remove-failed" as const)) === "remove-failed") foreign.push(lock.path);
-      if (candidatePath !== null) foreign.push(...(await removeOwned([candidatePath, `${candidatePath}.lock`], processesEnded)));
-    };
-    const extra = () => (foreign.length > 0 ? { foreign } : undefined);
     // Contract §4 "Limitation remedies": the `add` remedy of the entry.
     const addRemedy = () => wholeFileRemedy({ entry: c.entry, workspace: w, installation, headUnborn: binding.head.state === "unborn" }, path);
-    try {
-      registry.apply(operationId, { type: "marker-recorded" });
-      owners.set(operationId, request.repositoryId);
 
-      // Contract §4 steps 3 and 7 with the §9 checkpoint order. For `stage`, the whole working file decides last.
-      const checkpoint = async (): Promise<Refusal | Stop | null> => {
-        const policy = await observePolicy(ctx, path);
-        if ("listing" in policy) run.listing = policy.listing;
-        const refused = checkpointRefusal({ ...binding, working: null }, policy, await observeState(ctx, path, false), w.objectFormat);
-        if (refused !== null || !stage) return refused;
-        const read = differs(binding.working, await settled(signal, workingOf(w, path, WHOLE)));
-        if (!("value" in read)) return refusalOrStop(read);
-        return read.value ? STALE : null;
-      };
+    // Contract §4 steps 3 and 7 with the §9 checkpoint order. For `stage`, the whole working file decides last.
+    const checkpoint = async (): Promise<Refusal | Stop | null> => {
+      const policy = await observePolicy(ctx, path);
+      if ("listing" in policy) run.listing = policy.listing;
+      const refused = checkpointRefusal({ ...binding, working: null }, policy, await observeState(ctx, path, false), w.objectFormat);
+      if (refused !== null || !stage) return refused;
+      const read = differs(binding.working, await settled(signal, workingOf(w, path, WHOLE)));
+      if (!("value" in read)) return refusalOrStop(read);
+      return read.value ? STALE : null;
+    };
 
-      const steps = async (): Promise<Ending> => {
-        if (!o.approvals.consume(key, operationId)) {
-          const now = o.approvals.accept(key);
-          return { code: !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET" };
-        }
-        // Contract §4 step 2.
-        if (signal.aborted) return CANCELED;
-        const locked = await createIndexLock(w.indexPath);
-        if (!locked.ok) {
-          let count: number | null = null;
-          if ("code" in locked) {
-            const answer = await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null);
-            count = typeof answer === "number" ? answer : null;
-          }
-          return lockRefusal(locked, count, o.trust.currentTrustId(w) !== undefined);
-        }
-        run.lock = locked.lock;
-        // Contract §4 step 3 under the lock. No observer runs here.
-        registry.progress(operationId, "preflight");
-        const first = await checkpoint();
-        if (first !== null) return first;
-        // Contract §4 steps 4 to 6.
-        registry.progress(operationId, "candidate-verification");
-        const owned = ownedCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest });
-        const tail = createTailCollector("plain");
-        let staged = null as string | null;
-        const prepared = await owned.settle(async () => {
-          const canonical = (await owned.copy()) ?? owned.parse((await owned.readCandidate()).bytes);
-          const input = action.direction === "stage" ? Buffer.concat([path, NUL]) : indexInfoInput(action.changedPaths);
-          await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail);
-          // T197 races write the working file at this observer point, after the Git step and before the proofs.
-          await o.hunkCheckpoint?.({ step: 5, operationId });
-          if (signal.aborted) return owned.fail({ reason: "canceled" });
-          const read = await owned.readCandidate();
-          const expected = { action, mode: c.entry.category === "untracked" ? null : c.entry.modes![2]!, deletion: stage && binding.working === null, objectFormat: w.objectFormat };
-          const checked = changedEntries(expected, owned.parse(read.bytes), canonical);
-          if ("detail" in checked) return owned.fail({ reason: "verification", detail: checked.detail });
-          staged = checked.staged;
-          if (staged !== null) {
-            const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-            await owned.step("check", objectCheckArgs(), out, objectCheckInput([staged]), false);
-            // `step` throws for every exit other than 0.
-            if (objectCheckOutcome({ exit: { exitCode: 0, activeDescendants: 0 } }, out, [staged]) !== "present") return owned.fail({ reason: "verification", detail: "selected-entry" });
-          }
-          return read;
-        });
-        run.executionLast = rec.last ?? 0;
-        if (!prepared.ok) {
-          run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
-          const refused = candidateRefusal(prepared.failure);
-          if (!("check" in refused)) return refused;
-          // Contract §7 "Missing objects": the index object of `stage`, or the HEAD object IDs that `unstage` names.
-          const oid = action.direction === "unstage" ? action.changedPaths.find((r) => r.mode !== 0)?.objectId : c.entry.oids?.[1];
-          const checked = await missingObject(ctx, run.listing, oid, refused.check);
-          const f = prepared.failure;
-          // Contract §9: a failed `stage` Git step carries the `add` remedy and the output tail of its `update-index` process.
-          if (stage && f.reason === "git-failed" && f.step === "update-index" && !isStop(checked) && checked.code === "GIT_FAILED") {
-            return { code: "GIT_FAILED", remedy: addRemedy() ?? checked.remedy!, outputTail: tail.outputTail() };
-          }
-          return checked;
-        }
-        const candidate = prepared.candidate;
-        run.candidate = candidate;
-        run.candidatePath = besideIndex(w, candidate.path);
-        if (staged !== null && binding.working !== null) {
-          const proof = await blobProof(ctx, path, staged, binding.working, addRemedy());
-          run.executionLast = rec.last ?? 0;
-          if (proof !== null) return proof;
-        }
-        // Contract §4 step 7.
-        const second = await checkpoint();
-        if (second !== null) return second;
-        await o.hunkCheckpoint?.({ step: 11, operationId });
-        if (signal.aborted) return CANCELED;
-        // Contract §4 step 8. Contract §5: the digests stay until reconciliation succeeds.
-        retained.set(operationId, { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: candidate.digest });
-        registry.progress(operationId, "publication");
-        run.publishing = true;
-        run.publishStarted = true;
-        const result = await run.lock.publish(candidate.bytes, candidate.mtimeNs);
-        run.publishing = false;
-        if (!result.published) return publishRefusal(result, run.lock.path);
-        run.published = true;
-        await o.hunkCheckpoint?.({ step: 13, operationId });
-        return { published: true };
-      };
-
-      let ending: Ending;
-      let unexpected = false;
-      try {
-        ending = await steps();
-      } catch {
-        unexpected = !signal.aborted;
-        ending = signal.aborted ? CANCELED : refusalOf({ code: "GIT_FAILED" });
+    // Contract §4 step 3 under the lock. No observer runs here.
+    registry.progress(operationId, "preflight");
+    const first = await checkpoint();
+    if (first !== null) return first;
+    // Contract §4 steps 4 to 6.
+    registry.progress(operationId, "candidate-verification");
+    const owned = ownedCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest });
+    const tail = createTailCollector("plain");
+    let staged = null as string | null;
+    const prepared = await owned.settle(async () => {
+      const canonical = (await owned.copy()) ?? owned.parse((await owned.readCandidate()).bytes);
+      const input = action.direction === "stage" ? Buffer.concat([path, NUL]) : indexInfoInput(action.changedPaths);
+      await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail);
+      // T197 races write the working file at this observer point, after the Git step and before the proofs.
+      await o.hunkCheckpoint?.({ step: 5, operationId });
+      if (signal.aborted) return owned.fail({ reason: "canceled" });
+      const read = await owned.readCandidate();
+      const expected = { action, mode: c.entry.category === "untracked" ? null : c.entry.modes![2]!, deletion: stage && binding.working === null, objectFormat: w.objectFormat };
+      const checked = changedEntries(expected, owned.parse(read.bytes), canonical);
+      if ("detail" in checked) return owned.fail({ reason: "verification", detail: checked.detail });
+      staged = checked.staged;
+      if (staged !== null) {
+        const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+        await owned.step("check", objectCheckArgs(), out, objectCheckInput([staged]), false);
+        // `step` throws for every exit other than 0.
+        if (objectCheckOutcome({ exit: { exitCode: 0, activeDescendants: 0 } }, out, [staged]) !== "present") return owned.fail({ reason: "verification", detail: "selected-entry" });
       }
-
-      // Contract §4 step 9.
-      await reconcilePublication({
-        registry,
-        runner: o.runner,
-        retained,
-        operationId,
-        markerId: marker.markerId,
-        rec,
-        ctx,
-        path,
-        binding,
-        run,
-        ending,
-        unexpected,
-        foreign,
-        releaseOwned,
-        // Contract §4 "Blob proof": after publication, a new digest of the working file decides the working-file effect. `unstage` reads no working file.
-        working: async (q) => (stage ? differs(binding.working, await workingOf(q.workspace, path, WHOLE)) : { value: false }),
-      });
-    } catch {
-      // A broken step leaves the outcome unknown. The marker stays (contract §8). Without a fresh process-end fact, the candidate stays foreign.
-      await releaseOwned(false);
-      const state = registry.get(operationId)?.state;
-      if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
-      if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
-      if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
-    } finally {
-      // The registry sent `ended` with the terminal response, so this only frees the exclusion slot.
-      marker.end(false);
+      return read;
+    });
+    run.executionLast = rec.last ?? 0;
+    if (!prepared.ok) {
+      run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
+      const refused = candidateRefusal(prepared.failure);
+      if (!("check" in refused)) return refused;
+      // Contract §7 "Missing objects": the index object of `stage`, or the HEAD object IDs that `unstage` names.
+      const oid = action.direction === "unstage" ? action.changedPaths.find((r) => r.mode !== 0)?.objectId : c.entry.oids?.[1];
+      const checked = await missingObject(ctx, run.listing, oid, refused.check);
+      const f = prepared.failure;
+      // Contract §9: a failed `stage` Git step carries the `add` remedy and the output tail of its `update-index` process.
+      if (stage && f.reason === "git-failed" && f.step === "update-index" && !isStop(checked) && checked.code === "GIT_FAILED") {
+        return { code: "GIT_FAILED", remedy: addRemedy() ?? checked.remedy!, outputTail: tail.outputTail() };
+      }
+      return checked;
     }
+    const candidate = prepared.candidate;
+    run.candidate = candidate;
+    run.candidatePath = besideIndex(w, candidate.path);
+    if (staged !== null && binding.working !== null) {
+      const proof = await blobProof(ctx, path, staged, binding.working, addRemedy());
+      run.executionLast = rec.last ?? 0;
+      if (proof !== null) return proof;
+    }
+    // Contract §4 step 7.
+    const second = await checkpoint();
+    if (second !== null) return second;
+    await o.hunkCheckpoint?.({ step: 11, operationId });
+    return signal.aborted ? CANCELED : null;
+  }
+
+  // Contract §4 "Blob proof": after publication, a new digest of the working file decides the working-file effect. `unstage` reads no working file.
+  async function working({ approval: { binding }, action }: Admitted, ctx: ObserveContext, path: Uint8Array): Promise<Fact<boolean>> {
+    return action.direction === "stage" ? differs(binding.working, await workingOf(ctx.workspace, path, WHOLE)) : { value: false };
   }
 
   function applyFile(request: ApplyFileRequest, w: Workspace, installation: ReadInstallation): void {
     const { comparisonId, direction } = request.payload;
     const key: ApprovalKey = { kind: "file", comparisonId, direction };
-    // Contract §2: an approval that an accepted operation consumed answers a repeat with that operation, without an accepted event or a process.
-    const peek = o.approvals.accept(key);
-    if (!peek.ok && "consumed" in peek && owners.get(peek.consumed) === request.repositoryId) {
-      return void o.respond({ requestId: request.requestId, operationId: peek.consumed, state: "succeeded", result: registry.get(peek.consumed) });
-    }
-    const { operationId, signal } = registry.start("applyFile", request.requestId);
-    const admitted = admit(request, w, key);
-    if ("code" in admitted) return void registry.apply(operationId, { type: "invalid-approval", code: admitted.code }, admitted.result);
-    void publish(request, w, installation, operationId, signal, admitted, key);
+    startPublication(o, request, w, installation, key, { admit: () => admit(request, w, key), prepare, working });
   }
 
   return { applyFile };

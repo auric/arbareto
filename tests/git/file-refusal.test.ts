@@ -186,6 +186,34 @@ describe("checkpoints (contract §4 \"File staging\" steps 3 and 7, §9)", () =>
     }, TIMEOUT_MS);
   }
 
+  // Contract §4: every detected mismatch prevents publication. An external index equal to the verified candidate before `publish()` is no publication.
+  caseTest(TASK, `an index change to the candidate bytes before the second checkpoint gives failed STALE_SELECTION, not succeeded`, SHELL, () => {
+    const name = "t197-second-candidate-bytes";
+    return withObserver(name, async (service, hooks) => {
+      const repo = changed(name);
+      await underTest();
+      const { repositoryId } = await service.register(repo);
+      const c = await compare(service, repositoryId, "multi.txt", "unstaged");
+      const baseline = { state: repoState(repo) };
+      let armed = false;
+      let wrote = false;
+      hooks[5] = () => void (armed = true);
+      // The first `check-attr` after step 5 belongs to the step 7 checkpoint. The candidate is complete then.
+      // An independent writer copies the owned candidate over the canonical index and ignores the lock.
+      atStart(service, "check-attr", () => {
+        if (!armed) return;
+        armed = false;
+        const owned = candidateFiles(repo).filter((f) => !f.endsWith(".lock"));
+        expect(owned.length).toBe(1);
+        writeFileSync(gitPathOf(repo, "index"), readFileSync(join(gitDirOf(repo), owned[0]!)));
+        baseline.state = repoState(repo);
+        wrote = true;
+      });
+      const response = await refused(service, repo, () => applyFile(service, repositoryId, c, "stage"), baseline);
+      expect({ ...outcome(response), wrote }).toEqual({ state: "failed", code: "STALE_SELECTION", wrote: true });
+    });
+  }, TIMEOUT_MS);
+
   caseTest(TASK, `a working-file change alone does not refuse unstage, and the index equals git restore --staged`, SHELL, () =>
     withService({ name: "t197-unstage-working" }, async (service) => {
       const repo = changed("t197-unstage-working");

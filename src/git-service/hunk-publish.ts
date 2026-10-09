@@ -321,7 +321,7 @@ export function comparisonBinding(c: RetainedComparison, s: ChangeSnapshot, w: W
 }
 
 // The direction that the comparison scope allows (contract §9).
-const directionOf = (c: Pick<RetainedComparison, "scope">) => (c.scope === "head-to-index" ? "unstage" : "stage");
+export const directionOf = (c: Pick<RetainedComparison, "scope">) => (c.scope === "head-to-index" ? "unstage" : "stage");
 
 // One approval for each hunk of the comparison. The caller issues them only after the working version binds (status `bind`).
 export function hunkApprovals(c: RetainedComparison, s: ChangeSnapshot, w: Workspace): HunkApproval[] {
@@ -539,16 +539,159 @@ export interface HunkPublisherOptions {
   hunkCheckpoint?: (checkpoint: HunkCheckpoint) => Promise<void> | void;
 }
 
+// Contract §5 and §8: one store for `applyHunk` and `applyFile`, so that recovery (T114) reads one store.
+export interface PublicationStores {
+  retained: Map<string, RetainedPublication>;
+  // Contract §2: the workspace of each operation that consumed an approval.
+  owners: Map<string, string>;
+}
+
+export interface PublicationSession {
+  ctx: ObserveContext;
+  rec: ReturnType<typeof recording>;
+  run: PublicationRun;
+  path: Uint8Array;
+}
+
+type Admission = { approval: { binding: PublicationReconciliation["binding"] & { entry: { pathBytes: string } } } };
+
+// The parts of one publisher. `A` holds the admitted approval.
+export interface PublicationSteps<A extends Admission> {
+  // Contract §2, §9: the acceptance checks after the accepted event. Memory only, so no Git process starts.
+  admit(): A | { code: ErrorCode; result?: unknown };
+  // The steps between the owned lock and `publish()`. Null: `run.candidate` goes to `publish()`.
+  prepare(a: A, s: PublicationSession): Promise<Refusal | Stop | null>;
+  // True: the working file differs from the binding.
+  working(a: A, ctx: ObserveContext, path: Uint8Array): Promise<Fact<boolean>>;
+}
+
+type PublicationRequest = Extract<ServiceRequest, { operation: "applyHunk" | "applyFile" }>;
+
+// The `applyHunk` and `applyFile` skeleton: the repeat answer, acceptance, the exclusion, the owned lock, `publish()`, and reconciliation.
+export function startPublication<A extends Admission>(o: HunkPublisherOptions & PublicationStores, request: PublicationRequest, w: Workspace, installation: ReadInstallation, key: ApprovalKey, p: PublicationSteps<A>): void {
+  const { registry } = o;
+  // Contract §2: an approval that an accepted operation consumed answers a repeat with that operation, without an accepted event or a process.
+  const peek = o.approvals.accept(key);
+  if (!peek.ok && "consumed" in peek && o.owners.get(peek.consumed) === request.repositoryId) {
+    return void o.respond({ requestId: request.requestId, operationId: peek.consumed, state: "succeeded", result: registry.get(peek.consumed) });
+  }
+  const { operationId, signal } = registry.start(request.operation, request.requestId);
+  const admitted = p.admit();
+  if ("code" in admitted) return void registry.apply(operationId, { type: "invalid-approval", code: admitted.code }, admitted.result);
+  void publish(o, request, w, installation, operationId, signal, key, admitted, p);
+}
+
+async function publish<A extends Admission>(o: HunkPublisherOptions & PublicationStores, request: PublicationRequest, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, key: ApprovalKey, a: A, p: PublicationSteps<A>): Promise<void> {
+  const { registry, retained } = o;
+  const binding = a.approval.binding;
+  const path = new Uint8Array(Buffer.from(binding.entry.pathBytes, "base64"));
+  let entered: Entered | NotEntered;
+  try {
+    entered = await o.exclusion.enter({ operationId, kind: request.operation, workspace: w });
+  } catch {
+    return void registry.apply(operationId, { type: "exclusion-unavailable", code: "GIT_FAILED" });
+  }
+  if (!entered.ok) return notEntered(registry, operationId, entered);
+  const marker = entered;
+  const rec = recording(o.runner);
+  const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
+  const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, publishStarted: false, published: false, executionLast: 0, listing: null };
+  const foreign: string[] = [];
+  // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
+  const releaseOwned = async (processesEnded: boolean) => {
+    const { lock, candidatePath } = run;
+    run.lock = null;
+    run.candidatePath = null;
+    if (lock !== null && (await lock.release().catch(() => "remove-failed" as const)) === "remove-failed") foreign.push(lock.path);
+    if (candidatePath !== null) foreign.push(...(await removeOwned([candidatePath, `${candidatePath}.lock`], processesEnded)));
+  };
+  const extra = () => (foreign.length > 0 ? { foreign } : undefined);
+  try {
+    registry.apply(operationId, { type: "marker-recorded" });
+    o.owners.set(operationId, request.repositoryId);
+
+    const steps = async (): Promise<Ending> => {
+      if (!o.approvals.consume(key, operationId)) {
+        const now = o.approvals.accept(key);
+        return { code: !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET" };
+      }
+      // Research R3 step 4 and contract §4 "File staging" step 2.
+      if (signal.aborted) return CANCELED;
+      const locked = await createIndexLock(w.indexPath);
+      if (!locked.ok) {
+        let count: number | null = null;
+        if ("code" in locked) {
+          const answer = await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null);
+          count = typeof answer === "number" ? answer : null;
+        }
+        return lockRefusal(locked, count, o.trust.currentTrustId(w) !== undefined);
+      }
+      const lock = locked.lock;
+      run.lock = lock;
+      const refused = await p.prepare(a, { ctx, rec, run, path });
+      if (refused !== null) return refused;
+      const candidate = run.candidate!;
+      // Research R3 step 13 and contract §4 step 8. Contract §5: the digests stay until reconciliation succeeds.
+      retained.set(operationId, { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: candidate.digest });
+      registry.progress(operationId, "publication");
+      run.publishing = true;
+      run.publishStarted = true;
+      const result = await lock.publish(candidate.bytes, candidate.mtimeNs);
+      run.publishing = false;
+      if (!result.published) return publishRefusal(result, lock.path);
+      run.published = true;
+      await o.hunkCheckpoint?.({ step: 13, operationId });
+      return { published: true };
+    };
+
+    let ending: Ending;
+    let unexpected = false;
+    try {
+      ending = await steps();
+    } catch {
+      unexpected = !signal.aborted;
+      ending = signal.aborted ? CANCELED : stepFailed();
+    }
+
+    // Research R3 step 14 and contract §4 step 9.
+    await reconcilePublication({
+      registry,
+      runner: o.runner,
+      retained,
+      operationId,
+      markerId: marker.markerId,
+      rec,
+      ctx,
+      path,
+      binding,
+      run,
+      ending,
+      unexpected,
+      foreign,
+      releaseOwned,
+      working: (q) => p.working(a, q, path),
+    });
+  } catch {
+    // A broken step leaves the outcome unknown. The marker stays (contract §8). Without a fresh process-end fact, the candidate stays foreign.
+    await releaseOwned(false);
+    const state = registry.get(operationId)?.state;
+    if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
+    if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
+    if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
+  } finally {
+    // The registry sent `ended` with the terminal response, so this only frees the exclusion slot.
+    marker.end(false);
+  }
+}
+
 type ApplyHunkRequest = Extract<ServiceRequest, { operation: "applyHunk" }>;
 type Admitted = { approval: HunkApproval; comparison: RetainedComparison; hunk: RetainedComparison["hunks"][number] };
 
 export function createHunkPublisher(o: HunkPublisherOptions) {
-  const retained = new Map<string, RetainedPublication>();
-  // Contract §2: the workspace of each operation that consumed a hunk approval.
-  const owners = new Map<string, string>();
+  const stores: PublicationStores = { retained: new Map(), owners: new Map() };
+  const shared = { ...o, ...stores };
   const { registry } = o;
 
-  // Contract §2, §9: the acceptance checks after the accepted event. Memory only, so no Git process starts.
   function admit(request: ApplyHunkRequest, w: Workspace, key: ApprovalKey): Admitted | { code: ErrorCode; result?: unknown } {
     const { comparisonId, hunkId, snapshotId, direction } = request.payload;
     if (request.repositoryGeneration !== w.generation) return { code: "REPOSITORY_CHANGED" };
@@ -570,154 +713,50 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     return { approval, comparison: c, hunk };
   }
 
-  async function publish(request: ApplyHunkRequest, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, admitted: Admitted, key: ApprovalKey): Promise<void> {
-    const { approval, comparison: c, hunk } = admitted;
-    const binding = approval.binding;
-    const path = new Uint8Array(Buffer.from(binding.entry.pathBytes, "base64"));
-    const bindsWorking = binding.working !== null;
-    let entered: Entered | NotEntered;
-    try {
-      entered = await o.exclusion.enter({ operationId, kind: "applyHunk", workspace: w });
-    } catch {
-      return void registry.apply(operationId, { type: "exclusion-unavailable", code: "GIT_FAILED" });
-    }
-    if (!entered.ok) return notEntered(registry, operationId, entered);
-    const marker = entered;
-    const rec = recording(o.runner);
-    const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-    const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, publishStarted: false, published: false, executionLast: 0, listing: null };
-    const foreign: string[] = [];
-    // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
-    const releaseOwned = async (processesEnded: boolean) => {
-      const { lock, candidatePath } = run;
-      run.lock = null;
-      run.candidatePath = null;
-      if (lock !== null && (await lock.release().catch(() => "remove-failed" as const)) === "remove-failed") foreign.push(lock.path);
-      if (candidatePath !== null) foreign.push(...(await removeOwned([candidatePath, `${candidatePath}.lock`], processesEnded)));
+  // Research R3 steps 5 to 12 under the lock.
+  async function prepare({ approval: { binding }, comparison: c, hunk }: Admitted, { ctx, rec, run, path }: PublicationSession): Promise<Refusal | Stop | null> {
+    const { workspace: w, signal, operationId } = ctx;
+    const checkpoint = async (step: 5 | 11): Promise<Refusal | Stop | null> => {
+      const policy = await observePolicy(ctx, path);
+      if ("listing" in policy) run.listing = policy.listing;
+      const refused = checkpointRefusal(binding, policy, await observeState(ctx, path, binding.working !== null), w.objectFormat);
+      if (refused !== null) return refused;
+      await o.hunkCheckpoint?.({ step, operationId });
+      return signal.aborted ? CANCELED : null;
     };
-    const extra = () => (foreign.length > 0 ? { foreign } : undefined);
-    try {
-      registry.apply(operationId, { type: "marker-recorded" });
-      owners.set(operationId, request.repositoryId);
-
-      const checkpoint = async (step: 5 | 11): Promise<Refusal | Stop | null> => {
-        const policy = await observePolicy(ctx, path);
-        if ("listing" in policy) run.listing = policy.listing;
-        const refused = checkpointRefusal(binding, policy, await observeState(ctx, path, bindsWorking), w.objectFormat);
-        if (refused !== null) return refused;
-        await o.hunkCheckpoint?.({ step, operationId });
-        return signal.aborted ? CANCELED : null;
-      };
-
-      const steps = async (): Promise<Ending> => {
-        if (!o.approvals.consume(key, operationId)) {
-          const now = o.approvals.accept(key);
-          return { code: !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET" };
-        }
-        // Research R3 step 4.
-        if (signal.aborted) return CANCELED;
-        const locked = await createIndexLock(w.indexPath);
-        if (!locked.ok) {
-          let count: number | null = null;
-          if ("code" in locked) {
-            const answer = await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null);
-            count = typeof answer === "number" ? answer : null;
-          }
-          return lockRefusal(locked, count, o.trust.currentTrustId(w) !== undefined);
-        }
-        run.lock = locked.lock;
-        // Research R3 step 5 under the lock.
-        registry.progress(operationId, "preflight");
-        const first = await checkpoint(5);
-        if (first !== null) return first;
-        // Research R3 steps 6 to 10.
-        registry.progress(operationId, "candidate-verification");
-        const prepared = await prepareCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest, comparison: c, hunk });
-        run.executionLast = rec.last ?? 0;
-        if (!prepared.ok) {
-          run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
-          const refused = candidateRefusal(prepared.failure);
-          return "check" in refused ? await missingObject(ctx, run.listing, c.entry.oids?.[1], refused.check) : refused;
-        }
-        const candidate = prepared.candidate;
-        run.candidate = candidate;
-        run.candidatePath = besideIndex(w, candidate.path);
-        // Research R3 steps 11 and 12.
-        const second = await checkpoint(11);
-        if (second !== null) return second;
-        // Research R3 step 13. Contract §5: the digests stay until reconciliation succeeds.
-        retained.set(operationId, { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: candidate.digest });
-        registry.progress(operationId, "publication");
-        run.publishing = true;
-        run.publishStarted = true;
-        const result = await run.lock.publish(candidate.bytes, candidate.mtimeNs);
-        run.publishing = false;
-        if (!result.published) return publishRefusal(result, run.lock.path);
-        run.published = true;
-        await o.hunkCheckpoint?.({ step: 13, operationId });
-        return { published: true };
-      };
-
-      let ending: Ending;
-      let unexpected = false;
-      try {
-        ending = await steps();
-      } catch {
-        unexpected = !signal.aborted;
-        ending = signal.aborted ? CANCELED : stepFailed();
-      }
-
-      await reconcilePublication({
-        registry,
-        runner: o.runner,
-        retained,
-        operationId,
-        markerId: marker.markerId,
-        rec,
-        ctx,
-        path,
-        binding,
-        run,
-        ending,
-        unexpected,
-        foreign,
-        releaseOwned,
-        // Contract §8: the bound working version, else no working-file effect.
-        working: async (c) => {
-          if (binding.working === null) return { value: false };
-          const read = await workingOf(c.workspace, path);
-          if ("changed" in read) return { value: true };
-          return "value" in read ? { value: !sameVersion(read.value, binding.working) } : read;
-        },
-      });
-    } catch {
-      // A broken step leaves the outcome unknown. The marker stays (contract §8). Without a fresh process-end fact, the candidate stays foreign.
-      await releaseOwned(false);
-      const state = registry.get(operationId)?.state;
-      if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
-      if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
-      if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
-    } finally {
-      // The registry sent `ended` with the terminal response, so this only frees the exclusion slot.
-      marker.end(false);
+    registry.progress(operationId, "preflight");
+    const first = await checkpoint(5);
+    if (first !== null) return first;
+    // Research R3 steps 6 to 10.
+    registry.progress(operationId, "candidate-verification");
+    const prepared = await prepareCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest, comparison: c, hunk });
+    run.executionLast = rec.last ?? 0;
+    if (!prepared.ok) {
+      run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
+      const refused = candidateRefusal(prepared.failure);
+      return "check" in refused ? await missingObject(ctx, run.listing, c.entry.oids?.[1], refused.check) : refused;
     }
+    run.candidate = prepared.candidate;
+    run.candidatePath = besideIndex(w, prepared.candidate.path);
+    // Research R3 steps 11 and 12.
+    return checkpoint(11);
+  }
+
+  // Contract §8: the bound working version, else no working-file effect.
+  async function working({ approval: { binding } }: Admitted, ctx: ObserveContext, path: Uint8Array): Promise<Fact<boolean>> {
+    if (binding.working === null) return { value: false };
+    const read = await workingOf(ctx.workspace, path);
+    if ("changed" in read) return { value: true };
+    return "value" in read ? { value: !sameVersion(read.value, binding.working) } : read;
   }
 
   function applyHunk(request: ApplyHunkRequest, w: Workspace, installation: ReadInstallation): void {
     const { comparisonId, hunkId, direction } = request.payload;
     const key: ApprovalKey = { kind: "hunk", comparisonId, hunkId, direction };
-    // Contract §2: an approval that an accepted operation consumed answers a repeat with that operation, without an accepted event or a process.
-    const peek = o.approvals.accept(key);
-    if (!peek.ok && "consumed" in peek && owners.get(peek.consumed) === request.repositoryId) {
-      return void o.respond({ requestId: request.requestId, operationId: peek.consumed, state: "succeeded", result: registry.get(peek.consumed) });
-    }
-    const { operationId, signal } = registry.start("applyHunk", request.requestId);
-    const admitted = admit(request, w, key);
-    if ("code" in admitted) return void registry.apply(operationId, { type: "invalid-approval", code: admitted.code }, admitted.result);
-    void publish(request, w, installation, operationId, signal, admitted, key);
+    startPublication(shared, request, w, installation, key, { admit: () => admit(request, w, key), prepare, working });
   }
 
-  return { applyHunk, retained, owners };
+  return { applyHunk, ...stores };
 }
 
 export type HunkPublisher = ReturnType<typeof createHunkPublisher>;

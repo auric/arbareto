@@ -6,7 +6,7 @@ import { validateRequest, type Response, type ServiceRequest } from "../contract
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
 import { GIT_PROCESS_DEADLINE_MS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier, type OperationName } from "../contracts/operations";
-import { decodeStrictJson, hasFractionOrExponent } from "../contracts/strict-json";
+import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
 import { isWindows } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { RunnerRefusal, type GitRunner, type WslRunner } from "./git-runner";
@@ -34,8 +34,6 @@ import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "./ws
 export type { Handshake } from "../contracts/channel";
 
 type Fields = Record<string, unknown>;
-
-const isObject = (v: unknown): v is Fields => typeof v === "object" && v !== null && !Array.isArray(v);
 
 // Contract §3 without the shell-only `requestClose` and `currentSession`.
 type ServiceOperation = Exclude<OperationName, "requestClose" | "currentSession">;

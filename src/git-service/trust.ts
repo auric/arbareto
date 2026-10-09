@@ -62,19 +62,23 @@ export function environmentValue(environment: ServiceEnvironment, name: string):
 // Git `parse.c` `git_parse_maybe_bool`: 1, 0, or -1 for a value that is no boolean. A key without `=` is true.
 export function parseMaybeBool(value: string | null): -1 | 0 | 1 {
   if (value === null) return 1;
-  const text = value.toLowerCase();
-  if (text === "" || text === "false" || text === "no" || text === "off") return 0;
-  if (text === "true" || text === "yes" || text === "on") return 1;
+  // Git compares the words with `strcasecmp`, which folds only ASCII letters. ECMA-262 Canonicalize without the `u` flag never folds a non-ASCII character to ASCII.
+  if (/^(?:|false|no|off)$/i.test(value)) return 0;
+  if (/^(?:true|yes|on)$/i.test(value)) return 1;
   const number = parseConfigInt(value);
   return number === null ? -1 : number === 0 ? 0 : 1;
 }
 
 const INT_MAX = 2 ** 31 - 1;
+// `get_unit_factor` compares the unit with `strcasecmp`, which folds only ASCII letters.
 const UNIT: ReadonlyMap<string, number> = new Map([
   ["", 1],
   ["k", 1024],
+  ["K", 1024],
   ["m", 1024 * 1024],
+  ["M", 1024 * 1024],
   ["g", 1024 * 1024 * 1024],
+  ["G", 1024 * 1024 * 1024],
 ]);
 
 // `git_parse_int`: C `strtoimax` with base 0 (blanks, a sign, then hex, octal, or decimal digits), one optional unit, and the `int` range.
@@ -82,7 +86,7 @@ function parseConfigInt(value: string): number | null {
   const match = /^[ \t\n\v\f\r]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$/s.exec(value);
   if (!match) return null;
   const [, sign, digits, rest] = match as unknown as [string, string, string, string];
-  const factor = UNIT.get(rest.toLowerCase());
+  const factor = UNIT.get(rest);
   if (factor === undefined) return null;
   const magnitude = /^0[xX]/.test(digits) ? BigInt(digits) : digits.length > 1 && digits.startsWith("0") ? BigInt(`0o${digits.slice(1)}`) : BigInt(digits);
   const signed = (sign === "-" ? -magnitude : magnitude) * BigInt(factor);

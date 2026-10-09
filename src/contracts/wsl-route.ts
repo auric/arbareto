@@ -3,6 +3,7 @@
 
 // Contract §11 "WSL repositories": the route rule, the path conversions, the unit name, the WSL remedy commands, and the Git version rule.
 
+import { foldAscii } from "./fold-ascii";
 import { buildRemedyCommand, type RemedyCommand, type RemedyValue } from "./remedy-command";
 
 export { WSL_UNAVAILABLE_REASONS, type WslUnavailableReason } from "./errors";
@@ -50,9 +51,10 @@ export function routeWslPath(path: string, facts: WslDistroFacts): WslRoute {
   const rest = path.slice(prefix[0].length);
   const end = rest.search(/[\\/]/);
   const segment = end < 0 ? rest : rest.slice(0, end);
-  // An exact match wins. Without one, one match that ignores letter case counts.
+  // An exact match wins. Without one, one match that ignores ASCII letter case counts.
+  // WSL `s_ValidateDistroName` admits only `[a-zA-Z0-9._-]`. The Rust shell `linux_path` also folds only ASCII letters.
   const exact = facts.listed.find((name) => name === segment);
-  const folded = facts.listed.filter((name) => name.toLowerCase() === segment.toLowerCase());
+  const folded = facts.listed.filter((name) => foldAscii(name) === foldAscii(segment));
   const distro = exact ?? (folded.length === 1 ? folded[0] : undefined);
   if (distro === undefined) return { kind: "refused", code: "WSL_UNAVAILABLE", reason: "distro-missing", distro: segment };
   const key = facts.registry.find((k) => k.name === distro);

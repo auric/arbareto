@@ -3,6 +3,7 @@
 
 // T103: the hunk support decision of contract §4 and data-model §5 "Support decision". It reads no file and starts no process.
 
+import { isUtf8 } from "node:buffer";
 import { filterReason, type WorkingFacts } from "../contracts/file-action";
 import { COMPARED_NORMALIZED_VERSION_BYTES, COMPARED_RAW_VERSION_BYTES } from "../contracts/limits";
 import type { NumstatResult, PatchResult } from "./diff-parser";
@@ -48,20 +49,9 @@ const GITLINK = "160000";
 const SYMLINK = "120000";
 const ABSENT_MODE = "000000";
 
-const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const latin1 = (b: Uint8Array) => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString("latin1");
-const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((value, i) => value === b[i]);
 const refuse = (reason: SupportReason): SupportDecision => ({ supported: false, code: "UNSUPPORTED_COMPARISON", reason });
 const MALFORMED: SupportDecision = { supported: false, code: "MALFORMED_GIT_OUTPUT" };
-
-function validUtf8(b: Uint8Array): boolean {
-  try {
-    utf8.decode(b);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // git-check-attr(1) `-z`: `<path> NUL <attribute> NUL <info> NUL` for each attribute, in request order, for each stdin path.
 export function parseAttributes(stdout: Uint8Array, paths: readonly Uint8Array[]): SupportAttributes[] | null {
@@ -78,7 +68,7 @@ export function parseAttributes(stdout: Uint8Array, paths: readonly Uint8Array[]
   for (const path of paths) {
     const values = {} as SupportAttributes;
     for (const name of SUPPORT_ATTRIBUTES) {
-      if (!sameBytes(fields[f]!, path) || latin1(fields[f + 1]!) !== name) return null;
+      if (Buffer.compare(fields[f]!, path) !== 0 || latin1(fields[f + 1]!) !== name) return null;
       values[name] = latin1(fields[f + 2]!);
       f += 3;
     }
@@ -131,7 +121,7 @@ function validContent(hunk: Uint8Array): boolean {
   let at = hunk.indexOf(LF) + 1;
   while (at < hunk.length) {
     const end = hunk.indexOf(LF, at) + 1;
-    if (hunk[at] !== BACKSLASH && !validUtf8(hunk.subarray(at, end))) return false;
+    if (hunk[at] !== BACKSLASH && !isUtf8(hunk.subarray(at, end))) return false;
     at = end;
   }
   return true;
@@ -146,7 +136,7 @@ export function decideSupport(input: SupportInput): SupportDecision {
   const staged = input.scope === "head-to-index";
   const path = record.path.bytes;
 
-  if (!validUtf8(path) || (record.kind === "rename" && !validUtf8(record.originalPath.bytes))) return refuse("path");
+  if (!isUtf8(path) || (record.kind === "rename" && !isUtf8(record.originalPath.bytes))) return refuse("path");
   const flags = input.indexFlags;
   if (flags.intentToAdd || flags.assumeUnchanged || flags.skipWorktree) return refuse("index-flag");
   // With `--untracked-files=all`, Git lists a directory record only for a nested repository.
@@ -154,7 +144,7 @@ export function decideSupport(input: SupportInput): SupportDecision {
   // Data-model §5 path rule, as in `decideFileAction`.
   const working = input.working;
   if (working.type === "unreadable") return refuse("path");
-  if (working.type !== "absent" && !sameBytes(working.diskPath, path)) return refuse("path");
+  if (working.type !== "absent" && Buffer.compare(working.diskPath, path) !== 0) return refuse("path");
 
   // HEAD and index modes for `head-to-index`, index and worktree modes for `index-to-worktree`.
   const side = !tracked ? null : staged ? { letter: tracked.xy[0], modes: [tracked.modes[0], tracked.modes[1]] } : { letter: tracked.xy[1], modes: [tracked.modes[1], tracked.modes[2]] };

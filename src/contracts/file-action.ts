@@ -3,6 +3,7 @@
 
 // Contract §4 "File staging" and data-model §5 "File-action decision". The decision reads no file and starts no process.
 
+import { isUtf8 } from "node:buffer";
 import { WHOLE_FILE_STAGE_INPUT_BYTES } from "./limits";
 
 export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof"] as const;
@@ -70,7 +71,6 @@ const GITLINK = "160000";
 const SYMLINK = "120000";
 const ABSENT_MODE = "000000";
 
-const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const latin1 = new TextDecoder("latin1");
 const MODE = /^[0-7]{6}$/;
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -122,17 +122,6 @@ function parseRecord(record: Uint8Array): StatusRecord | null {
   return { kind: kind[0] as "1" | "2", x: xy[0]!, y: xy[1]!, sub, mH, mI, mW, hH, path, origPath };
 }
 
-const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((value, i) => value === b[i]);
-
-function validUtf8(bytes: Uint8Array): boolean {
-  try {
-    utf8.decode(bytes);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // git convert.c `git_path_check_convert`: `set`, `unset`, and `unspecified` select no filter driver.
 export function filterReason(attributes: Readonly<Record<string, string>>): "filter" | "LFS" | null {
   const value = attributes.filter;
@@ -163,7 +152,7 @@ export function decideFileAction(input: FileActionInput): FileActionDecision {
   if (input.category === "untracked" ? record.kind !== "?" : record.kind === "?") return MALFORMED;
   if ((staged && record.x === ".") || (input.category === "unstaged" && record.y === ".")) return MALFORMED;
 
-  if (!validUtf8(record.path) || (record.origPath && !validUtf8(record.origPath))) return refuse("path");
+  if (!isUtf8(record.path) || (record.origPath && !isUtf8(record.origPath))) return refuse("path");
   const flags = input.indexFlags;
   if (flags.intentToAdd || flags.assumeUnchanged || flags.skipWorktree) return refuse("index-flag");
   // With `--untracked-files=all`, Git lists a directory record only for a nested repository.
@@ -172,7 +161,7 @@ export function decideFileAction(input: FileActionInput): FileActionDecision {
   // Data-model §5 path rule: an unreadable entry, or an on-disk name that differs from the index path bytes.
   const working = input.working;
   if (working.type === "unreadable") return refuse("path");
-  if (working.type !== "absent" && !sameBytes(working.diskPath, record.path)) return refuse("path");
+  if (working.type !== "absent" && Buffer.compare(working.diskPath, record.path) !== 0) return refuse("path");
 
   if (staged) {
     if (record.x === "T") return refuse("type");

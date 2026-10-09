@@ -12,7 +12,11 @@ import { readHandleBounded } from "./read-steps";
 export const LOCKED_REMEDY = "Another Git process or a crash left this lock. Remove it only after all Git tools stop, including other Arbareto windows.";
 
 // MS-FSCC 2.1.9: a file ID of 0 or all ones is not unique. Bun can show all ones as -1.
-const NO_FILE_ID = [0n, -1n, 0xffff_ffff_ffff_ffffn];
+export const NO_FILE_ID = [0n, -1n, 0xffff_ffff_ffff_ffffn];
+// Test seam only. Production never sets it. It replaces each `ino` that `noFileId` checks.
+export const fileIdSeam: { ino?: (ino: bigint) => bigint } = {};
+// Contract §6: a 0 or all-ones `ino` on either side of a Bun `fs.stat` compare proves no identity.
+export const noFileId = (...inos: bigint[]) => inos.some((ino) => NO_FILE_ID.includes(fileIdSeam.ino?.(ino) ?? ino));
 const NS_PER_MS = 1_000_000n;
 
 export type PublishResult =

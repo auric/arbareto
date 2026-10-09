@@ -14,6 +14,8 @@ use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
+use time::OffsetDateTime;
+use time::macros::format_description;
 use windows::Win32::Foundation::{
     CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
@@ -545,33 +547,23 @@ pub(crate) fn utc_time(text: &str) -> Option<(&str, u32)> {
 }
 
 /// The current UTC time in RFC 3339 form with nanoseconds.
-fn utc_now() -> String {
-    let since = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let seconds = since.as_secs();
-    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
-    let time = seconds % 86_400;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:09}Z",
-        time / 3600,
-        time / 60 % 60,
-        time % 60,
-        since.subsec_nanos()
-    )
+fn utc_now() -> io::Result<String> {
+    utc_from(SystemTime::now())
 }
 
-/// Howard Hinnant, "chrono-Compatible Low-Level Date Algorithms", `civil_from_days`: days since 1970-01-01 to a civil date.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (yoe + era * 400 + i64::from(month <= 2), month, day)
+/// `OffsetDateTime::now_utc()` panics outside the `time` year range. `from_unix_timestamp_nanos` returns an error.
+fn utc_from(clock: SystemTime) -> io::Result<String> {
+    let nanos = match clock.duration_since(UNIX_EPOCH) {
+        Ok(after) => after.as_nanos() as i128,
+        Err(before) => -(before.duration().as_nanos() as i128),
+    };
+    let invalid = |error| io::Error::new(io::ErrorKind::InvalidData, error);
+    OffsetDateTime::from_unix_timestamp_nanos(nanos)
+        .map_err(|error| invalid(time::Error::from(error)))?
+        .format(format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:9]Z"
+        ))
+        .map_err(|error| invalid(time::Error::from(error)))
 }
 
 /// The SHA-256 of `bytes` through Windows CNG.
@@ -592,17 +584,10 @@ pub(crate) fn random_id() -> io::Result<String> {
     if status.is_err() {
         return Err(io::Error::other(format!("BCryptGenRandom: {status:?}")));
     }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let h = hex(&bytes);
-    Ok(format!(
-        "{}-{}-{}-{}-{}",
-        &h[..8],
-        &h[8..12],
-        &h[12..16],
-        &h[16..20],
-        &h[20..]
-    ))
+    Ok(uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .hyphenated()
+        .to_string())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -938,7 +923,7 @@ impl Markers {
         let marker = Marker {
             marker_id: random_id()?,
             kind: request.kind.to_string(),
-            started_at: utc_now(),
+            started_at: utc_now()?,
             worktree_root: request.worktree_root.to_path_buf(),
             common_directory: request.common_directory.to_path_buf(),
             common_identity: identity,
@@ -1311,7 +1296,7 @@ impl Trust {
             "gitDirectory": request.git_directory.to_str()?,
             "worktreeIdentity": identities.worktree,
             "configurationFingerprint": request.fingerprint,
-            "approvedAt": utc_now(),
+            "approvedAt": utc_now().ok()?,
             "gitSelectedPath": request.git_selected_path.to_str()?,
         });
         let bytes = record.to_string().into_bytes();
@@ -1561,40 +1546,6 @@ mod tests {
         let mut names: Vec<String> = names.iter().map(|s| s.to_string()).collect();
         names.sort();
         names
-    }
-
-    /// RFC 3339 UTC: `YYYY-MM-DDTHH:MM:SS`, an optional fraction, then `Z` or `+00:00`.
-    fn is_utc_time(text: &str) -> bool {
-        let b = text.as_bytes();
-        let digits = |mut range: std::ops::Range<usize>| {
-            range.all(|i| b.get(i).is_some_and(u8::is_ascii_digit))
-        };
-        if b.len() < 20
-            || !(digits(0..4)
-                && digits(5..7)
-                && digits(8..10)
-                && digits(11..13)
-                && digits(14..16)
-                && digits(17..19))
-            || b[4] != b'-'
-            || b[7] != b'-'
-            || b[10] != b'T'
-            || b[13] != b':'
-            || b[16] != b':'
-        {
-            return false;
-        }
-        let mut rest = &text[19..];
-        if let Some(fraction) = rest.strip_prefix('.') {
-            let end = fraction
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(fraction.len());
-            if end == 0 {
-                return false;
-            }
-            rest = &fraction[end..];
-        }
-        rest == "Z" || rest == "+00:00"
     }
 
     fn identity_reply(path: &Path) -> Value {
@@ -2123,7 +2074,7 @@ mod tests {
         assert_eq!(file["worktreeRoot"], json!(repository.worktree));
         assert_eq!(file["commonDirectory"], json!(repository.common));
         assert_eq!(file["commonIdentity"], identity_reply(&repository.common));
-        assert!(is_utc_time(file["startedAt"].as_str().expect("startedAt")));
+        assert!(utc_time(file["startedAt"].as_str().expect("startedAt")).is_some());
         let scan = markers.scan();
         assert_eq!(scan.unloaded, 0);
         assert_eq!(scan.markers.len(), 1);
@@ -2656,9 +2607,7 @@ mod tests {
         );
         assert_eq!(record["configurationFingerprint"], json!(FINGERPRINT));
         assert_eq!(record["gitSelectedPath"], json!(GIT_PATH));
-        assert!(is_utc_time(
-            record["approvedAt"].as_str().expect("approvedAt")
-        ));
+        assert!(utc_time(record["approvedAt"].as_str().expect("approvedAt")).is_some());
         assert_eq!(trust.records(), vec![record.clone()]);
         let files = entries(&folder);
         assert_eq!(files.len(), 1, "one record file");
@@ -3039,10 +2988,44 @@ mod tests {
     }
 
     #[test]
-    fn civil_from_days_gives_known_dates() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
-        assert_eq!(civil_from_days(20_729), (2026, 10, 3));
-        assert!(is_utc_time(&utc_now()));
+    fn utc_now_gives_a_contract_utc_time() {
+        let now = utc_now().expect("now");
+        assert!(utc_time(&now).is_some(), "{now}");
+        assert_eq!((now.len(), &now[19..20]), (30, "."), "{now}");
+    }
+
+    #[test]
+    fn utc_from_keeps_nine_digits_before_and_after_1970() {
+        use std::time::Duration;
+        // A Windows `SystemTime` counts 100 ns intervals.
+        let cases = [
+            (
+                UNIX_EPOCH - Duration::from_secs(1),
+                "1969-12-31T23:59:59.000000000Z",
+            ),
+            (
+                UNIX_EPOCH - Duration::from_nanos(100),
+                "1969-12-31T23:59:59.999999900Z",
+            ),
+            (
+                UNIX_EPOCH + Duration::from_nanos(1_000),
+                "1970-01-01T00:00:00.000001000Z",
+            ),
+            (
+                UNIX_EPOCH + Duration::new(951_782_400, 500),
+                "2000-02-29T00:00:00.000000500Z",
+            ),
+        ];
+        for (clock, text) in cases {
+            assert_eq!(utc_from(clock).expect("format"), text);
+            assert!(utc_time(text).is_some(), "{text}");
+        }
+    }
+
+    #[test]
+    fn utc_from_refuses_a_clock_outside_the_year_range() {
+        let clock = UNIX_EPOCH + std::time::Duration::from_secs(10_000 * 366 * 86_400);
+        let error = utc_from(clock).expect_err("a year after 9999");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }

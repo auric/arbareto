@@ -52,8 +52,10 @@ impl Identity {
 
     /// `volumeSerial` and `fileId` in lowercase hex, in array order.
     pub fn hex(&self) -> (String, String) {
-        let file_id: String = self.file_id.iter().map(|b| format!("{b:02x}")).collect();
-        (format!("{:016x}", self.volume_serial), file_id)
+        (
+            format!("{:016x}", self.volume_serial),
+            crate::settings::hex(&self.file_id),
+        )
     }
 }
 
@@ -601,17 +603,6 @@ pub(crate) mod tests {
         (info.VolumeSerialNumber, info.FileId.Identifier)
     }
 
-    fn uuid_shaped(id: &str) -> bool {
-        id.len() == 36
-            && id.char_indices().all(|(i, c)| {
-                if [8, 13, 18, 23].contains(&i) {
-                    c == '-'
-                } else {
-                    c.is_ascii_hexdigit() && !c.is_ascii_uppercase()
-                }
-            })
-    }
-
     fn file(fixture: &Fixture, name: &str) -> PathBuf {
         let path = fixture.path(name);
         std::fs::write(&path, name).expect("write fixture file");
@@ -698,7 +689,10 @@ pub(crate) mod tests {
         let id = contexts
             .create(ContextKind::GitProbe, &git, now)
             .expect("create");
-        assert!(uuid_shaped(&id), "UUID-shaped bootstrapId: {id}");
+        assert!(
+            crate::process_requests::is_identifier(&id),
+            "UUID-shaped bootstrapId: {id}"
+        );
         let context = contexts.get(&id, now).expect("get");
         assert_eq!(context.kind, ContextKind::GitProbe);
         assert_eq!(context.path, git);

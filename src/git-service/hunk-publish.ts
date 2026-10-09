@@ -39,6 +39,8 @@ export const PROFILE_TEXTS: Record<HunkRefusalReason, string> = {
 };
 // Contract §4 "Windows lock ownership".
 export const FILE_ID_TEXT = "This volume gives the index lock no unique file ID. Stage this change in a terminal.";
+// Contract §9: the working-file `file-id` text.
+export const WORKING_FILE_ID_TEXT = "This volume gives this file no unique file ID. Stage this change in a terminal.";
 // Contract §9: the remedy of a failed file step.
 export const STEP_FAILED_TEXT = "Arbareto could not finish this staging step. Nothing was staged. Use Refresh, then try again or stage in a terminal.";
 // Contract §9 "Lingering count".
@@ -52,7 +54,8 @@ export interface HunkCheckpoint {
 }
 
 export type Stop = { stop: "canceled" | "deadline" };
-export type Failure = { code: ErrorCode; reason?: LimitName };
+// `file-id`: a working-file read found a sentinel file ID (contract §6).
+export type Failure = { code: ErrorCode; reason?: LimitName } | { code: "UNSUPPORTED_HUNK_PROFILE"; reason: "file-id" };
 export type Fact<T> = { value: T } | Failure | Stop;
 
 const CANCELED: Stop = { stop: "canceled" };
@@ -76,7 +79,8 @@ export interface Refusal {
 const STALE: Refusal = { code: "STALE_SELECTION" };
 const stepFailed = (cause?: DiagnosticCause): Refusal => ({ code: "GIT_FAILED", ...(cause === undefined ? {} : { cause }), remedy: { text: STEP_FAILED_TEXT } });
 // Contract §9 "Total unexpected diagnostic output": the diagnostic names OUTPUT_LIMIT as the cause. A failed observation gets the step remedy.
-export const refusalOf = (f: Failure): Refusal => (f.reason === DIAGNOSTIC_LIMIT.reason ? { ...f, cause: "OUTPUT_LIMIT" } : f.code === "GIT_FAILED" ? stepFailed() : f);
+export const refusalOf = (f: Failure): Refusal =>
+  f.reason === DIAGNOSTIC_LIMIT.reason ? { ...f, cause: "OUTPUT_LIMIT" } : f.reason === "file-id" ? { ...f, remedy: { text: WORKING_FILE_ID_TEXT } } : f.code === "GIT_FAILED" ? stepFailed() : f;
 const profileRefusal = (reason: HunkRefusalReason): Refusal => ({ code: "UNSUPPORTED_HUNK_PROFILE", reason, remedy: { text: PROFILE_TEXTS[reason] } });
 
 export const isStop = (f: unknown): f is Stop => typeof f === "object" && f !== null && "stop" in f;
@@ -235,6 +239,7 @@ export async function workingOf(w: Workspace, path: Uint8Array, bound: WorkingBo
   if (read.ok) return { value: read.value };
   const c = read.completeness;
   if (c.state === "limited" || (c.state === "failed" && c.code === "REPOSITORY_CHANGED")) return { changed: true };
+  if (c.state === "failed" && c.code === "UNSUPPORTED_HUNK_PROFILE") return { code: c.code, reason: "file-id" };
   return { code: c.state === "failed" ? c.code : "GIT_FAILED" };
 }
 

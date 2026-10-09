@@ -1,0 +1,5 @@
+{
+  "schema": "read-comparison-result",
+  "expected": "valid",
+  "text": "{\"completeness\":{\"state\":\"limited\",\"code\":\"OBJECT_MISSING\"},\"scope\":\"index-to-worktree\",\"support\":null,\"fileAction\":\"stage\",\"remedy\":null,\"objectRemedy\":{\"text\":\"This partial clone lacks objects that Git needs here. Arbareto never downloads objects. Download them in a terminal, for example with git backfill, then use Refresh.\"}}"
+}

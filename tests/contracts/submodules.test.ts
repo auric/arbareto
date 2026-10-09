@@ -68,7 +68,7 @@ describe("closed lists (data-model §9, contract §9 and §12)", () => {
   });
 
   test("UNSUPPORTED_SUBMODULE reasons, and the two run-only reasons", () => {
-    expect([...SUBMODULE_REFUSAL_REASONS]).toEqual(["unsaved-commits", "update-mode", "clone-interrupted", "folder-not-empty", "no-url", "path", "remote-name", "gitdir-config", "limit"]);
+    expect([...SUBMODULE_REFUSAL_REASONS]).toEqual(["unsaved-commits", "update-mode", "clone-interrupted", "folder-not-empty", "no-url", "path", "active-value", "remote-name", "gitdir-config", "limit"]);
     expect([...SUBMODULE_RUN_REFUSAL_REASONS]).toEqual(["programs", "changed-after-review"]);
   });
 
@@ -439,8 +439,8 @@ describe("refusal remedies (contract §12 'Refusals' and 'Remedies')", () => {
     expect(out?.command ?? null).toBeNull();
   });
 
-  test("remote-name, programs, changed-after-review, no-url, path, clone-interrupted, and folder-not-empty give no command", () => {
-    for (const reason of ["remote-name", "programs", "changed-after-review", "no-url", "path", "clone-interrupted", "folder-not-empty"] as const) {
+  test("remote-name, programs, changed-after-review, no-url, path, active-value, clone-interrupted, and folder-not-empty give no command", () => {
+    for (const reason of ["remote-name", "programs", "changed-after-review", "no-url", "path", "active-value", "clone-interrupted", "folder-not-empty"] as const) {
       const out = buildRefusalRemedy({ reason, gitPath: GIT, parentWorktree: ROOT, path: "libs/sub" });
       expect(out?.command ?? null).toBeNull();
     }

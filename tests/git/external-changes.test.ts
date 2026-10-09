@@ -904,22 +904,26 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
     TIMEOUT_MS,
   );
 
-  test.todo('with a suppressed hint, a check "changes" read detects a change of the selected working file and then runs a full read (needs T105/T115)', async () => {
-    const repo = repoOf(buildF02(gitPath(), "t075-selected"));
-    const service = await openService({ git: gitPath(), name: "t075-selected", watchHints: false });
-    try {
-      const { repositoryId } = await service.register(repo);
-      const first = (await service.readWorkspace(repositoryId)).result!;
-      const entry = first.entries.find((e) => e.path === "multi.txt" && e.category === "unstaged")!;
-      // The comparison binds the working file of the selected entry (`workingVersions`).
-      await service.request("readComparison", { snapshotId: first.snapshotId, entryId: entry.entryId }, { repositoryId, repositoryGeneration: first.generation, selectionId: crypto.randomUUID() });
-      writeFileSync(join(repo, "multi.txt"), "selected file changed\n");
-      const next = await read(service, repositoryId, CHANGES);
-      expect(ranFullRead(next.calls)).toBe(true);
-    } finally {
-      await service.dispose();
-    }
-  });
+  caseTest(
+    "T320",
+    'with a suppressed hint, a check "changes" read detects a change of the selected working file and then runs a full read',
+    W,
+    () =>
+      withService({ name: "t075-selected", watchHints: false }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t075-selected"));
+        const { repositoryId } = await service.register(repo);
+        const first = (await settled(service, repositoryId)).result;
+        const entry = first.entries.find((e) => e.path === "multi.txt" && e.category === "unstaged")!;
+        // The comparison binds the working file of the selected entry (`workingVersions`).
+        const compared = await service.request("readComparison", { snapshotId: first.snapshotId, entryId: entry.entryId }, { repositoryId, repositoryGeneration: first.generation, selectionId: crypto.randomUUID() });
+        expect(outcome(compared)).toEqual(SUCCEEDED);
+        expect((await read(service, repositoryId, CHANGES)).calls.length).toBe(0);
+        writeFileSync(join(repo, "multi.txt"), "selected file changed\n");
+        const next = await read(service, repositoryId, CHANGES);
+        expect(ranFullRead(next.calls)).toBe(true);
+      }),
+    TIMEOUT_MS,
+  );
 });
 
 describe("reftable change check with suppressed hints (contract §8 \"Change check\")", () => {

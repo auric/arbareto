@@ -44,7 +44,7 @@ import {
 import { caseTest, openService, type Capability, type ChangeEntry, type Envelope, type HunkCheckpoint, type OpenOptions, type Refusal, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T197";
-const RECOVERY = "(needs T200/T114/T115)";
+const RECOVERY = "(needs T114/T115)";
 const SHELL: Capability[] = ["shell-double"];
 
 useFixtureRoot();

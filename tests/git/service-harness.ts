@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Handshake, MutationStarted } from "../../src/contracts/channel";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
+import { isObject } from "../../src/contracts/strict-json";
 import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import { FrameBoundError, type Frame } from "../../src/git-service/transport";
@@ -380,7 +381,6 @@ export function checkFrame(frame: object): void {
   if (bytes > PIPE_FRAME_BYTES) throw new FrameBoundError(`a service frame of ${bytes} bytes is above the ${PIPE_FRAME_BYTES}-byte frame bound`);
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isResponse =(value: unknown): value is ServiceResponse => isObject(value) && typeof value.state === "string" && (value.requestId === null || typeof value.requestId === "string");
 
 export async function openService(options: OpenOptions): Promise<Service> {

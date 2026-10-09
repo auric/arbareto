@@ -6,7 +6,7 @@ import { validateRequest, type Response, type ServiceRequest } from "../contract
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
 import { GIT_PROCESS_DEADLINE_MS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier, type OperationName } from "../contracts/operations";
-import { decodeStrictJson, hasFractionOrExponent } from "../contracts/strict-json";
+import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
 import { isWindows } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { RunnerRefusal, type GitRunner, type WslRunner } from "./git-runner";
@@ -25,6 +25,7 @@ import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
 import { createRegistrations, type RegistrationOutcome, type Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
+import { createSubmoduleReviewer } from "./submodule-review";
 import { createWorkspaceReader, type ReadOutcome, type WorkspaceReaderOptions } from "./status";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
@@ -34,8 +35,6 @@ import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "./ws
 export type { Handshake } from "../contracts/channel";
 
 type Fields = Record<string, unknown>;
-
-const isObject = (v: unknown): v is Fields => typeof v === "object" && v !== null && !Array.isArray(v);
 
 // Contract §3 without the shell-only `requestClose` and `currentSession`.
 type ServiceOperation = Exclude<OperationName, "requestClose" | "currentSession">;
@@ -136,6 +135,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
   const reviews = createCommitReviewer({ runner, trust, approvals, now: approvalClock });
+  const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
   const exclusion = createExclusion({ started: (frame) => runner.started(frame), ended: () => {}, closeJob: () => {} });
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
@@ -158,6 +158,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       reader.release(workspace.repositoryId);
       comparisons.release(workspace.repositoryId);
       reviews.release(workspace.repositoryId);
+      submoduleReviews.release(workspace.repositoryId);
       approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
       trust.release(workspace);
     },
@@ -312,7 +313,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readTrust" | "readComparison" | "reviewCommit"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -397,11 +398,14 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     // Data-model §6: the hunk and file approvals of a succeeded comparison, issued before its response. A WSL comparison issues none until T214.
     // A working-file comparison issues hunk approvals only after its working version joins the read observation (data-model §4 `workingVersions`).
     // A working version above the compared bound cannot join it. Its file approval relies on the whole-file digests of steps 3 and 7.
-    const issue = (o: ReadResult): ReadResult => {
+    // `fact`: the contract §8 "Change check" fact of the entry path, taken before the comparison reads the working file.
+    const path = new Uint8Array(Buffer.from(found.entry.pathBytes, "base64"));
+    const issue = (o: ReadResult, fact: string | null): ReadResult => {
       const id = o.result === "succeeded" ? (o.value as { comparisonId?: unknown } | undefined)?.comparisonId : undefined;
       const c = typeof id === "string" && workspace.wsl === undefined ? comparisons.get(id) : undefined;
       if (c === undefined || workspace.generation !== c.generation) return o;
-      const bound = c.scope === "head-to-index" || (c.workingVersion !== null && reader.bind(request.repositoryId, c.generation, c.workingVersion));
+      const v = c.workingVersion;
+      const bound = c.scope === "head-to-index" || (v !== null && reader.bind(request.repositoryId, c.generation, v, Buffer.compare(v.path, path) === 0 ? fact : null));
       if (bound) for (const approval of hunkApprovals(c, found.snapshot, workspace)) approvals.issue(approval);
       const file = bound || c.workingVersion === null ? fileApproval(c, found.snapshot, workspace) : null;
       if (file !== null) approvals.issue(file);
@@ -409,7 +413,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     };
     scheduleRead(
       request,
-      (t) => comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }).then(issue),
+      async (t) => {
+        const fact = workspace.wsl === undefined ? await reader.workingFact(workspace, path) : null;
+        return issue(await comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }), fact);
+      },
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
       "readComparison",
@@ -429,6 +436,24 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     scheduleRead(
       request,
       (t) => reviews.reviewCommit({ ...t, installation, workspace, snapshot: found.snapshot }),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+      { result: "failed", code: "GIT_FAILED" },
+    );
+  };
+
+  // Contract §3 `reviewSubmodules`. Contract §9: the generation and the snapshot decide at acceptance, and no Git process starts.
+  const reviewSubmodules: Handler<"reviewSubmodules"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const found = reader.snapshot(request.repositoryId, request.repositoryGeneration, request.payload.snapshotId);
+    if (!found.ok) {
+      const { operationId } = registry.start("reviewSubmodules", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+    }
+    scheduleRead(
+      request,
+      (t) => submoduleReviews.reviewSubmodules({ ...t, installation, workspace, snapshot: found.snapshot }),
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
     );
@@ -494,7 +519,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       if (workspace.wsl !== undefined) return reject(request.requestId, "SERVICE_UNAVAILABLE");
       committer.commit(request, workspace, installation);
     },
-    reviewSubmodules: undefined,
+    reviewSubmodules,
     updateSubmodules: undefined,
     cancel: (request) =>
       operationTarget(request, () => {

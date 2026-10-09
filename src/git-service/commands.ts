@@ -319,6 +319,11 @@ export function gitmodulesHeadArgs(): string[] {
   return read("config", "--blob", "HEAD:.gitmodules", "--null", "--list");
 }
 
+// Contract §12 "Review reads": the folder of the kept submodule Git directories. A linked worktree keeps its own folder. Git prints one absolute path.
+export function modulesPathArgs(): string[] {
+  return read("rev-parse", "--path-format=absolute", "--git-path", "modules");
+}
+
 function pathItems(paths: readonly string[]): string[] {
   if (!Array.isArray(paths) || paths.length === 0) throw new TypeError("path list refused");
   return paths.map(pathItem);

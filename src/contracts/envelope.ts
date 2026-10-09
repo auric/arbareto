@@ -4,11 +4,12 @@
 import { z } from "zod";
 import { DamagedMarker, TRUST_BOUNDS, UtcTime } from "./channel";
 import { ERROR_CODES, TERMINAL_STATES, WSL_UNAVAILABLE_REASONS, type ErrorCode } from "./errors";
+import { FILE_ACTION_REASONS } from "./file-action";
 import * as limits from "./limits";
 import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REGISTERED_WORKSPACES } from "./limits";
 import { ChannelPath, Count, Fingerprint, Identifier, isOperationName, MutationKind, OPERATION_NAMES, SHELL_ONLY, Text, type OperationName } from "./operations";
 import { OPERATION_STATES } from "./outcome";
-import { decodeStrictJson, hasFractionOrExponent } from "./strict-json";
+import { decodeStrictJson, hasFractionOrExponent, isObject } from "./strict-json";
 
 const ErrorCodeSchema = z.enum(ERROR_CODES as [ErrorCode, ...ErrorCode[]]);
 
@@ -133,8 +134,6 @@ export type ServiceRequest = z.infer<typeof ServiceEnvelope>;
 
 export type Side = "renderer" | "service";
 type Result<T> = { ok: true; request: T } | { ok: false; code: ErrorCode };
-
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function decodeRequest(bytes: Uint8Array, side: "renderer"): Result<RendererRequest>;
 export function decodeRequest(bytes: Uint8Array, side: "service"): Result<ServiceRequest>;
@@ -481,6 +480,66 @@ export const ReadHistoryResult = z.union([HistoryPage, HistoryRefusal]).meta({ t
 export type HistoryRow = z.infer<typeof HistoryRow>;
 export type HistoryPage = z.infer<typeof HistoryPage>;
 export type HistoryRefusal = z.infer<typeof HistoryRefusal>;
+
+// Data-model §5 "Support decision". `src/git-service/support.ts` `SUPPORT_REASONS` holds the same list.
+const SupportValue = z.enum(["supported", "binary", "encoding", "size", "rename", "mode", "type", "symlink", "submodule", "LFS", "filter", "state", "line-endings", "index-flag", "path"]);
+// Data-model §5 "File-action decision". `state` is the operation-state refusal. Contract §4: `blob-proof` never occurs in `readComparison`.
+const FileActionValue = z.enum(["stage", "unstage", "state", ...FILE_ACTION_REASONS.filter((r) => r !== "blob-proof")]);
+// Contract §4 "Limitation remedies": a refused file action can carry a copyable command. A null `command` shows the refused value in `text`.
+const FileRemedy = z.strictObject({ text: z.string().min(1), command: z.string().nullable() }).meta({ title: "FileRemedy" }).nullable();
+const ComparisonScope = z.enum(["head-to-index", "index-to-worktree", "empty-to-untracked"]);
+
+// Data-model §5 "Hunk". `ordinal` counts from 0 in patch order. `digest` is the SHA-256 hex of the canonical hunk bytes.
+export const ComparisonHunk = z
+  .strictObject({ hunkId: Identifier, ordinal: Count, oldStart: Count, oldCount: Count, newStart: Count, newCount: Count, digest: Fingerprint })
+  .meta({ title: "ComparisonHunk" });
+
+// Contract §3 `readComparison` with a retained comparison: `succeeded`, or `limited` with `OUTPUT_LIMIT`. `patch` holds the canonical patch in base64.
+// Hunks exist only for a supported comparison. A line-ending listing limit gives `support: null` (contract §4 "Comparison limits").
+export const Comparison = z
+  .strictObject({
+    comparisonId: Identifier,
+    snapshotId: Identifier,
+    entryId: Identifier,
+    scope: ComparisonScope,
+    completeness: Completeness,
+    patch: z.base64(),
+    hunks: z.array(ComparisonHunk),
+    support: SupportValue.nullable(),
+    fileAction: FileActionValue,
+    remedy: FileRemedy,
+  })
+  .refine(
+    (c) =>
+      (c.completeness.state === "complete" || (c.completeness.state === "limited" && c.completeness.code === "OUTPUT_LIMIT")) &&
+      (c.hunks.length === 0 || c.support === "supported") &&
+      c.hunks.every((h, i) => h.ordinal === i),
+  )
+  .meta({ title: "Comparison" });
+
+// Contract §4 "Comparison limits" and §7 "Missing objects": no `comparisonId`, patch, or hunks. `objectRemedy` holds the §7 remedy text.
+export const ComparisonObjectMissing = z
+  .strictObject({
+    completeness: z.strictObject({ state: z.literal("limited"), code: z.literal("OBJECT_MISSING") }),
+    scope: ComparisonScope,
+    support: z.null(),
+    fileAction: FileActionValue,
+    remedy: FileRemedy,
+    objectRemedy: Remedy,
+  })
+  .meta({ title: "ComparisonObjectMissing" });
+
+// Contract §4 "Comparison limits": an entry without index `flags` in a limited snapshot gets only the snapshot completeness.
+export const ComparisonWithoutFlags = z
+  .strictObject({ completeness: Completeness })
+  .refine((c) => c.completeness.state === "limited")
+  .meta({ title: "ComparisonWithoutFlags" });
+
+// Contract §3 `readComparison`: a `failed` or `canceled` result carries no value.
+export const ReadComparisonResult = z.union([Comparison, ComparisonObjectMissing, ComparisonWithoutFlags]).meta({ title: "ReadComparisonResult" });
+export type ReadComparisonResult = z.infer<typeof ReadComparisonResult>;
+export type Comparison = z.infer<typeof Comparison>;
+export type ComparisonHunk = z.infer<typeof ComparisonHunk>;
 
 // Contract §3 `cancel` and `getOperation`: the current or retained state of an issued operation (data-model §7).
 export const OperationResult = z.strictObject({

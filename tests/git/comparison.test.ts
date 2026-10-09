@@ -165,6 +165,22 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
     TIMEOUT_MS,
   );
 
+  caseTest(TASK, `F01: each hunk carries digest, the SHA-256 hex of its canonical hunk bytes (T331)`, SHELL, () =>
+    withService({ name: "t093-hunk-digest" }, async (service) => {
+      const repo = repoOf(buildF01(gitPath(), "t093-hunk-digest", "unborn-added"));
+      const expected = hunksOf(oraclePatch(repo, "first.txt", "head-to-index", true));
+      // The SHA-256 hex of the canonical hunk bytes `@@ -0,0 +1 @@\n+first line\n`.
+      const known = "6d013f8b8cf37a87098987cbd4736e0c62091790b35b26c87e3074435810345c";
+      expect(expected.map((h) => new Bun.CryptoHasher("sha256").update(h, "latin1").digest("hex"))).toEqual([known]);
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const c = await compare(service, repositoryId, "first.txt", "staged");
+      expect(outcome(c.response)).toEqual(SUCCEEDED);
+      expect(one<{ digest?: string }[]>(resultOf(c), "hunks").map((h) => h.digest)).toEqual([known]);
+    }),
+    TIMEOUT_MS,
+  );
+
   caseTest(TASK, `F01: a metadata-only empty-file change has no selectable hunk`, SHELL, () =>
     withService({ name: "t093-empty-file" }, async (service) => {
       const repo = repoOf(buildF01(gitPath(), "t093-empty-file", "unborn-added"));

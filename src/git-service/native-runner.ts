@@ -22,6 +22,7 @@ import {
 } from "../contracts/channel";
 import { INLINE_PROCESS_INPUT_BYTES, NATIVE_CHUNK_BYTES, UNACKNOWLEDGED_INPUT_CHUNKS } from "../contracts/limits";
 import { isChannelPath, isIdentifier } from "../contracts/operations";
+import { isObject } from "../contracts/strict-json";
 import {
   checkCall,
   checkContext,
@@ -64,7 +65,6 @@ type Body = Record<string, unknown>;
 const DEADLINE: WalkDeadline = { stop: "deadline" };
 const CANCELED: WalkStop = { stop: "canceled" };
 
-const isObject = (v: unknown): v is Body => typeof v === "object" && v !== null && !Array.isArray(v);
 const ownershipFailed = () => new RunnerRefusal("PROCESS_OWNERSHIP_FAILED", "shell reply refused");
 const invalid = (detail: string): never => {
   throw new RunnerRefusal("INVALID_REQUEST", detail);

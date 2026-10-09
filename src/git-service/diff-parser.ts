@@ -39,13 +39,6 @@ export interface ParsedPatch {
 export type PatchResult = { ok: true; patch: ParsedPatch } | { ok: false; completeness: Completeness };
 
 const latin1 = (b: Uint8Array) => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString("latin1");
-const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((value, i) => value === b[i]);
-const concat = (a: Uint8Array, b: Uint8Array) => {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a);
-  out.set(b, a.length);
-  return out;
-};
 
 const PREFIX_A = Uint8Array.of(0x61, 0x2f);
 const PREFIX_B = Uint8Array.of(0x62, 0x2f);
@@ -91,20 +84,20 @@ export function unquote(b: Uint8Array, at: number): { value: Uint8Array; end: nu
 // The `diff --git` names. Git prints both as `quote_two(prefix, path)`, so both are raw or both are C-quoted.
 // Returns the two printed labels, which the `---` and `+++` lines repeat.
 function gitNames(rest: Uint8Array, path: Uint8Array): [Uint8Array, Uint8Array] | null {
-  const a = concat(PREFIX_A, path);
-  const b = concat(PREFIX_B, path);
-  if (sameBytes(rest, concat(concat(a, Uint8Array.of(SPACE)), b))) return [a, b];
+  const a = Buffer.concat([PREFIX_A, path]);
+  const b = Buffer.concat([PREFIX_B, path]);
+  if (Buffer.compare(rest, Buffer.concat([a, Uint8Array.of(SPACE), b])) === 0) return [a, b];
   const first = unquote(rest, 0);
   if (!first || rest[first.end] !== SPACE) return null;
   const second = unquote(rest, first.end + 1);
-  if (!second || second.end !== rest.length || !sameBytes(first.value, a) || !sameBytes(second.value, b)) return null;
+  if (!second || second.end !== rest.length || Buffer.compare(first.value, a) !== 0 || Buffer.compare(second.value, b) !== 0) return null;
   return [rest.subarray(0, first.end), rest.subarray(first.end + 1)];
 }
 
 // diff.c `DIFF_SYMBOL_FILEPAIR_MINUS` and `_PLUS`: the label, and a TAB when the label holds a space.
 function fileLine(marker: string, label: Uint8Array): Uint8Array {
-  const line = concat(new TextEncoder().encode(`${marker} `), label);
-  return label.includes(SPACE) ? concat(line, Uint8Array.of(0x09)) : line;
+  const line = Buffer.concat([new TextEncoder().encode(`${marker} `), label]);
+  return label.includes(SPACE) ? Buffer.concat([line, Uint8Array.of(0x09)]) : line;
 }
 
 // Contract §5: line N starts after the (N-1)th LF. The empty segment after a final LF is no line. The first reached bound wins.
@@ -136,7 +129,7 @@ export function parsePatch(raw: Uint8Array, path: Uint8Array): PatchResult {
   // diff.c `builtin_diff`: `diff --git`, the mode lines, then the `index` line of `fill_metainfo`.
   const gitLine = line(n++);
   const head = new TextEncoder().encode("diff --git ");
-  if (!sameBytes(gitLine.subarray(0, head.length), head)) return MALFORMED;
+  if (Buffer.compare(gitLine.subarray(0, head.length), head) !== 0) return MALFORMED;
   const names = gitNames(gitLine.subarray(head.length), path);
   if (!names) return MALFORMED;
   let kind: "plain" | "new" | "deleted" | "mode" = "plain";
@@ -166,7 +159,7 @@ export function parsePatch(raw: Uint8Array, path: Uint8Array): PatchResult {
   if (n + 1 >= count) return MALFORMED;
   const oldLabel = kind === "new" ? DEV_NULL : names[0];
   const newLabel = kind === "deleted" ? DEV_NULL : names[1];
-  if (!sameBytes(line(n), fileLine("---", oldLabel)) || !sameBytes(line(n + 1), fileLine("+++", newLabel))) return MALFORMED;
+  if (Buffer.compare(line(n), fileLine("---", oldLabel)) !== 0 || Buffer.compare(line(n + 1), fileLine("+++", newLabel)) !== 0) return MALFORMED;
   n += 2;
   const header = raw.subarray(0, starts[n]);
 
@@ -228,7 +221,7 @@ export function parseNumstat(stdout: Uint8Array, path: Uint8Array, from: Uint8Ar
   if (stdout.length === 0) return { ok: true, binary: false };
   const counts = COUNTS.exec(latin1(stdout.subarray(0, 24)));
   if (!counts) return MALFORMED;
-  const names = from === null ? path : concat(concat(concat(Uint8Array.of(0), from), Uint8Array.of(0)), path);
-  if (!sameBytes(stdout.subarray(counts[0].length), concat(names, Uint8Array.of(0)))) return MALFORMED;
+  const names = from === null ? [path] : [Uint8Array.of(0), from, Uint8Array.of(0), path];
+  if (Buffer.compare(stdout.subarray(counts[0].length), Buffer.concat([...names, Uint8Array.of(0)])) !== 0) return MALFORMED;
   return { ok: true, binary: counts[0][0] === "-" };
 }

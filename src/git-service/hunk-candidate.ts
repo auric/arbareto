@@ -76,7 +76,6 @@ class Stop {
 }
 
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-const sameBytes = (a: Uint8Array, b: Uint8Array) => Buffer.compare(a, b) === 0;
 
 // The time and the bytes come from one handle, so both belong to one file. The time comes first.
 async function timeAndBytes(handle: FileHandle) {
@@ -127,7 +126,7 @@ export function applyToContent(base: Uint8Array, hunk: PatchHunk, reverse: boole
   // xdiff `xdl_emit_hunk_hdr`: a count of 0 prints the line before the change as its start.
   const at = count === 0 ? start : start - 1;
   const lines = splitLines(base);
-  if (at + count > lines.length || !from.every((l, i) => sameBytes(l, lines[at + i]!))) return null;
+  if (at + count > lines.length || !from.every((l, i) => Buffer.compare(l, lines[at + i]!) === 0)) return null;
   return Buffer.concat([...lines.slice(0, at), ...to, ...lines.slice(at + count)]);
 }
 
@@ -334,7 +333,7 @@ export function prepareCandidate(t: CandidateTarget): Promise<CandidateOutcome> 
     // Research R3 step 10: exact entry checks of the candidate bytes.
     const { bytes, mtimeNs } = await readCandidate();
     const entries = parse(bytes);
-    const isSelected = (e: RawIndexEntry) => sameBytes(e.path, selected);
+    const isSelected = (e: RawIndexEntry) => Buffer.compare(e.path, selected) === 0;
     const want = expected === null ? [] : [{ path: selected, mode: expected.mode, oid: oid!, stage: 0, assumeUnchanged: false, skipWorktree: false, intentToAdd: false }];
     if (!Bun.deepEquals(entries.filter(isSelected), want, true)) throw new Stop({ reason: "verification", detail: "selected-entry" });
     if (!Bun.deepEquals(entries.filter((e) => !isSelected(e)), canonicalEntries.filter((e) => !isSelected(e)), true)) throw new Stop({ reason: "verification", detail: "unrelated-entries" });

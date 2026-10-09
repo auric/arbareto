@@ -9,7 +9,7 @@ import * as limits from "./limits";
 import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REGISTERED_WORKSPACES } from "./limits";
 import { ChannelPath, Count, Fingerprint, Identifier, isOperationName, MutationKind, OPERATION_NAMES, SHELL_ONLY, Text, type OperationName } from "./operations";
 import { OPERATION_STATES } from "./outcome";
-import { decodeStrictJson, hasFractionOrExponent } from "./strict-json";
+import { decodeStrictJson, hasFractionOrExponent, isObject } from "./strict-json";
 
 const ErrorCodeSchema = z.enum(ERROR_CODES as [ErrorCode, ...ErrorCode[]]);
 
@@ -134,8 +134,6 @@ export type ServiceRequest = z.infer<typeof ServiceEnvelope>;
 
 export type Side = "renderer" | "service";
 type Result<T> = { ok: true; request: T } | { ok: false; code: ErrorCode };
-
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function decodeRequest(bytes: Uint8Array, side: "renderer"): Result<RendererRequest>;
 export function decodeRequest(bytes: Uint8Array, side: "service"): Result<ServiceRequest>;

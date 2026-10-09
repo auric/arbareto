@@ -395,11 +395,14 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     // Data-model §6: the hunk and file approvals of a succeeded comparison, issued before its response. A WSL comparison issues none until T214.
     // A working-file comparison issues hunk approvals only after its working version joins the read observation (data-model §4 `workingVersions`).
     // A working version above the compared bound cannot join it. Its file approval relies on the whole-file digests of steps 3 and 7.
-    const issue = (o: ReadResult): ReadResult => {
+    // `fact`: the contract §8 "Change check" fact of the entry path, taken before the comparison reads the working file.
+    const path = new Uint8Array(Buffer.from(found.entry.pathBytes, "base64"));
+    const issue = (o: ReadResult, fact: string | null): ReadResult => {
       const id = o.result === "succeeded" ? (o.value as { comparisonId?: unknown } | undefined)?.comparisonId : undefined;
       const c = typeof id === "string" && workspace.wsl === undefined ? comparisons.get(id) : undefined;
       if (c === undefined || workspace.generation !== c.generation) return o;
-      const bound = c.scope === "head-to-index" || (c.workingVersion !== null && reader.bind(request.repositoryId, c.generation, c.workingVersion));
+      const v = c.workingVersion;
+      const bound = c.scope === "head-to-index" || (v !== null && reader.bind(request.repositoryId, c.generation, v, Buffer.compare(v.path, path) === 0 ? fact : null));
       if (bound) for (const approval of hunkApprovals(c, found.snapshot, workspace)) approvals.issue(approval);
       const file = bound || c.workingVersion === null ? fileApproval(c, found.snapshot, workspace) : null;
       if (file !== null) approvals.issue(file);
@@ -407,7 +410,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     };
     scheduleRead(
       request,
-      (t) => comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }).then(issue),
+      async (t) => {
+        const fact = workspace.wsl === undefined ? await reader.workingFact(workspace, path) : null;
+        return issue(await comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }), fact);
+      },
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
       "readComparison",

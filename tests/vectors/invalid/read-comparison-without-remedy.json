@@ -1,0 +1,5 @@
+{
+  "schema": "read-comparison-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"comparisonId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"snapshotId\":\"0f0f0f0f-0000-4000-8000-000000000002\",\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000003\",\"scope\":\"head-to-index\",\"completeness\":{\"state\":\"complete\"},\"patch\":\"ZGlmZiAtLWdpdCBhL2ZpcnN0LnR4dCBiL2ZpcnN0LnR4dApuZXcgZmlsZSBtb2RlIDEwMDY0NAppbmRleCAwMDAwMDAwLi4wOGZlMjcyCi0tLSAvZGV2L251bGwKKysrIGIvZmlyc3QudHh0CkBAIC0wLDAgKzEgQEAKK2ZpcnN0IGxpbmUK\",\"hunks\":[{\"hunkId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"ordinal\":0,\"oldStart\":0,\"oldCount\":0,\"newStart\":1,\"newCount\":1,\"digest\":\"6d013f8b8cf37a87098987cbd4736e0c62091790b35b26c87e3074435810345c\"}],\"support\":\"supported\",\"fileAction\":\"unstage\"}"
+}

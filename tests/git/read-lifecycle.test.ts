@@ -178,24 +178,30 @@ describe("cancellation (data-model §7)", () => {
     TIMEOUT_MS,
   );
 
-  test.todo("a superseded selection read is canceled (needs T105/T115)", async () => {
-    const repo = repoOf(buildF02(gitPath(), "t074-superseded"));
-    const service = await openService({ git: gitPath(), name: "t074-superseded" });
-    const release = service.runner.pauseStdout(once((c) => c.arguments.includes("diff-files")));
-    try {
-      const { repositoryId } = await service.register(repo);
-      const read = (await service.readWorkspace(repositoryId)).result!;
-      const [first, second] = ["multi.txt", "other-a.txt"].map((path) => read.entries.find((e) => e.path === path)!);
-      const older = service.send("readComparison", { snapshotId: read.snapshotId, entryId: first!.entryId }, { repositoryId, repositoryGeneration: read.generation, selectionId: crypto.randomUUID() });
-      await heldCall(service, await service.operationId(older), (c) => c.arguments.includes("diff-files"));
-      const newer = await service.request("readComparison", { snapshotId: read.snapshotId, entryId: second!.entryId }, { repositoryId, repositoryGeneration: read.generation, selectionId: crypto.randomUUID() });
-      expect(outcome(newer)).toEqual(SUCCEEDED);
-      expect(outcome(await service.response(older))).toEqual({ state: "canceled", code: "CANCELED" });
-    } finally {
-      release();
-      await service.dispose();
-    }
-  });
+  caseTest(
+    "T320",
+    "a superseded selection read is canceled",
+    W,
+    () =>
+      withService({ name: "t074-superseded" }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), "t074-superseded"));
+        const release = service.runner.pauseStdout(once((c) => c.arguments.includes("diff-files")));
+        try {
+          const { repositoryId } = await service.register(repo);
+          const read = (await service.readWorkspace(repositoryId)).result!;
+          const first = read.entries.find((e) => e.path === "multi.txt" && e.category === "unstaged")!;
+          const second = read.entries.find((e) => e.path === "other-a.txt")!;
+          const older = service.send("readComparison", { snapshotId: read.snapshotId, entryId: first.entryId }, { repositoryId, repositoryGeneration: read.generation, selectionId: crypto.randomUUID() });
+          await heldCall(service, await service.operationId(older), (c) => c.arguments.includes("diff-files"));
+          const newer = await service.request("readComparison", { snapshotId: read.snapshotId, entryId: second.entryId }, { repositoryId, repositoryGeneration: read.generation, selectionId: crypto.randomUUID() });
+          expect(outcome(newer)).toEqual(SUCCEEDED);
+          expect(outcome(await service.response(older))).toEqual({ state: "canceled", code: "CANCELED" });
+        } finally {
+          release();
+        }
+      }),
+    TIMEOUT_MS,
+  );
 });
 
 describe("re-read after a failed read and the read deadline (data-model §7)", () => {

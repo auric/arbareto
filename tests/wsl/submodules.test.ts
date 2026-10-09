@@ -19,7 +19,7 @@ import { inDistro, listScopes, missingCapability, pgrep, uncPath, useWslFolder, 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
-const TODO = "(needs T229/T230/T231/T233)";
+const TODO = "(needs T230/T231/T233)";
 const CASE_TIMEOUT_MS = 600_000;
 // Contract §11 "Process ownership": no Linux process of the operation remains 1 second after the Job close.
 const AFTER_CLOSE_MS = 1_000;

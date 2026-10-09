@@ -3,8 +3,8 @@
 
 // T099: commit races before and after handoff, attribution bounds, and the recovery refresh (contract §4, §8, §9). `commit.ts`, `reconcile.ts`, `attribution.ts`, and `recovery.ts` come with T112 to T114.
 
-import { describe, expect, setSystemTime } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { describe, expect } from "bun:test";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { APPROVAL_LIFETIME_MS, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { useFixtureRoot } from "./fixture-root";
 import { buildChanged, buildF11, buildF20, type F20Variant } from "./fixtures";
@@ -15,6 +15,7 @@ import {
   barrier,
   commit,
   commitCalls,
+  commitPayload,
   copyRepo,
   git,
   gitPath,
@@ -30,6 +31,7 @@ import {
   selectHunks,
   subcommand,
   SUCCEEDED,
+  TIMEOUT_MS,
   todoCase,
   treeOf,
   underTest,
@@ -37,7 +39,7 @@ import {
   withService,
 } from "./hunk-harness";
 import type { Built } from "./fixtures";
-import type { Capability, Service, ServiceResponse, WorkspaceResult } from "./service-harness";
+import { caseTest, type Capability, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 const TASK = "T099";
 const BEFORE = "(needs T112/T115)";
@@ -97,7 +99,7 @@ async function stageHunk(service: Service, repositoryId: string): Promise<Servic
 
 describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
   for (const change of Object.keys(CHANGES) as (keyof typeof CHANGES)[]) {
-    todoCase(TASK, `F09: a ${change} change before handoff, with no read between the change and commit, gives STALE_REVIEW, and no commit process starts ${BEFORE}`, SHELL, () => {
+    caseTest(TASK, `F09: a ${change} change before handoff, with no read between the change and commit, gives STALE_REVIEW, and no commit process starts ${BEFORE}`, SHELL, () => {
       const name = `t099-${change.replaceAll(" ", "-").toLowerCase()}`;
       return withService({ name }, async (service) => {
         const repo = repoOf(buildChanged(gitPath(), name, "F09"));
@@ -110,10 +112,10 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
         expect({ change, ...outcome(await commit(service, repositoryId, r, "stale\n")), commits: commitCalls(service).length }).toEqual({ change, state: "failed", code: "STALE_REVIEW", commits: 0 });
         expect(refState(gitPath(), repo)).toEqual(after);
       });
-    });
+    }, TIMEOUT_MS);
   }
 
-  todoCase(TASK, `F09: a readWorkspace between the change and commit gives REPOSITORY_CHANGED at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
+  caseTest(TASK, `F09: a readWorkspace between the change and commit gives REPOSITORY_CHANGED at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
     withService({ name: "t099-generation" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t099-generation", "F09"));
       const prepared = prepare(repo, "t099-generation");
@@ -126,30 +128,28 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
       const response = await commit(service, repositoryId, r, "stale\n");
       expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "REPOSITORY_CHANGED", runs: 0 });
     }),
+    TIMEOUT_MS,
   );
 
   // Contract §9: the code of a review token that is no longer valid.
-  todoCase(TASK, `a review token older than 60 seconds on an injected clock gives APPROVAL_EXPIRED at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
-    withService({ name: "t099-expired" }, async (service) => {
+  caseTest(TASK, `a review token older than 60 seconds on an injected clock gives APPROVAL_EXPIRED at acceptance, and no Git process starts ${BEFORE}`, SHELL, () => {
+    // The approval lifetime runs on the monotonic service clock (T110 decision G5). The case moves that clock.
+    let elapsed = 0;
+    const approvalClock = () => performance.now() + elapsed;
+    return withService({ name: "t099-expired", approvalClock }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t099-expired", "F09"));
       await underTest("commit");
       const { repositoryId } = await service.register(repo);
       const r = await reviewOk(service, repositoryId);
       const from = service.runner.calls.length;
-      // Bun `setSystemTime` moves `Date.now()` only. Timers and `performance.now()` keep running.
-      setSystemTime(new Date(Date.now() + APPROVAL_LIFETIME_MS + 1));
-      let response: ServiceResponse;
-      try {
-        response = await commit(service, repositoryId, r, "expired\n");
-      } finally {
-        setSystemTime();
-      }
+      elapsed = APPROVAL_LIFETIME_MS + 1;
+      const response = await commit(service, repositoryId, r, "expired\n");
       expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "APPROVAL_EXPIRED", runs: 0 });
-    }),
-  );
+    });
+  }, TIMEOUT_MS);
 
   // Contract §8: a `refresh: true` read invalidates the token. An equal observation keeps the generation, so acceptance sees a released ID (§2).
-  todoCase(TASK, `a review token that a refresh: true readWorkspace invalidated without a change gives UNKNOWN_TARGET at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
+  caseTest(TASK, `a review token that a refresh: true readWorkspace invalidated without a change gives UNKNOWN_TARGET at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
     withService({ name: "t099-refreshed" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t099-refreshed", "F09"));
       await underTest("commit");
@@ -161,10 +161,11 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
       const response = await commit(service, repositoryId, r, "refreshed\n");
       expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
     }),
+    TIMEOUT_MS,
   );
 
   // Contract §8: a `refresh: false` read with an unchanged fingerprint keeps the token. The later change reaches the commit preflight.
-  todoCase(TASK, `a review token that a refresh: false read kept gives STALE_REVIEW after an index change, and no commit process starts ${BEFORE}`, SHELL, () =>
+  caseTest(TASK, `a review token that a refresh: false read kept gives STALE_REVIEW after an index change, and no commit process starts ${BEFORE}`, SHELL, () =>
     withService({ name: "t099-kept-stale" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t099-kept-stale", "F09"));
       const prepared = prepare(repo, "t099-kept-stale");
@@ -176,7 +177,59 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
       CHANGES.index(repo, prepared);
       expect({ ...outcome(await commit(service, repositoryId, r, "stale\n")), commits: commitCalls(service).length }).toEqual({ state: "failed", code: "STALE_REVIEW", commits: 0 });
     }),
+    TIMEOUT_MS,
   );
+
+  // Research R4 step 4: a refusal before handoff leaves the token unconsumed. Until T113, a commit that reached Git ends in an after-handoff state.
+  caseTest("T112", `F09: STALE_REVIEW leaves the review token unconsumed; after the index bytes come back, the same token reaches one commit process in a new operation`, SHELL, () =>
+    withService({ name: "t112-consume-after" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t112-consume-after", "F09"));
+      const prepared = prepare(repo, "t112-consume-after");
+      await underTest("commit");
+      const { repositoryId } = await service.register(repo);
+      const r = await reviewOk(service, repositoryId);
+      const original = readFileSync(gitPathOf(repo, "index"));
+      CHANGES.index(repo, prepared);
+      const stale = await commit(service, repositoryId, r, "consume\n");
+      expect({ ...outcome(stale), commits: commitCalls(service).length }).toEqual({ state: "failed", code: "STALE_REVIEW", commits: 0 });
+      writeFileSync(gitPathOf(repo, "index"), original);
+      const again = await commit(service, repositoryId, r, "consume\n");
+      expect({ other: again.operationId !== stale.operationId, handoff: AFTER_HANDOFF.includes(again.state), commits: commitCalls(service).length }).toEqual({ other: true, handoff: true, commits: 1 });
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §9: a stop decides first at the commit preflight. The held Git process is the first one after the `started` reply.
+  caseTest("T112", `a cancel during the preflight gives canceled, starts no commit process, and leaves no index.lock; the same token then reaches one commit process`, SHELL, () => {
+    let commitOperation = "";
+    return withService({ name: "t112-cancel-preflight", onStarted: (frame) => void (commitOperation = frame.operationId) }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t112-cancel-preflight", "F09"));
+      await underTest("commit");
+      const { repositoryId } = await service.register(repo);
+      const r = await reviewOk(service, repositoryId);
+      let reached = () => {};
+      const held = new Promise<void>((resolve) => (reached = resolve));
+      let first = true;
+      const release = service.runner.holdStart((call) => {
+        if (!first || call.operationId !== commitOperation) return false;
+        first = false;
+        reached();
+        return true;
+      });
+      const requestId = crypto.randomUUID();
+      try {
+        service.send("commit", commitPayload(r, "cancel\n"), { repositoryId, repositoryGeneration: r.read.generation, requestId });
+        await held;
+        expect((await service.cancel(commitOperation)).state).toBe("succeeded");
+      } finally {
+        release();
+      }
+      const canceled = await service.response(requestId);
+      expect({ ...outcome(canceled), commits: commitCalls(service).length, lock: existsSync(gitPathOf(repo, "index.lock")) }).toEqual({ state: "canceled", code: "CANCELED", commits: 0, lock: false });
+      const again = await commit(service, repositoryId, r, "cancel\n");
+      expect({ other: again.operationId !== canceled.operationId, handoff: AFTER_HANDOFF.includes(again.state), commits: commitCalls(service).length }).toEqual({ other: true, handoff: true, commits: 1 });
+    });
+  }, TIMEOUT_MS);
 });
 
 describe("changes after handoff (contract §4, §8)", () => {

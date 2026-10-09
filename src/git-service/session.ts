@@ -11,6 +11,7 @@ import { isWindows } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { RunnerRefusal, type GitRunner, type WslRunner } from "./git-runner";
 import { createApprovals } from "./approvals";
+import { createCommitter } from "./commit";
 import { createCommitReviewer } from "./commit-review";
 import { createComparisonReader } from "./comparison";
 import { getEnvironment } from "./environment";
@@ -140,6 +141,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   // Contract §5 and §8: both publishers keep their retained digests and approval owners in one store, because recovery (T114) reads it.
   const files = createFilePublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
+  const committer = createCommitter({ runner, trust, reader, reviews, approvals, registry, exclusion, respond });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
   const registrations = createRegistrations({
@@ -484,7 +486,14 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       files.applyFile(request, workspace, installation);
     },
     reviewCommit,
-    commit: undefined,
+    commit: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      // T214 adds the WSL commit.
+      if (workspace.wsl !== undefined) return reject(request.requestId, "SERVICE_UNAVAILABLE");
+      committer.commit(request, workspace, installation);
+    },
     reviewSubmodules: undefined,
     updateSubmodules: undefined,
     cancel: (request) =>

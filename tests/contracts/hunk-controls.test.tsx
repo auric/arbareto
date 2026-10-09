@@ -2,19 +2,18 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { act, isValidElement, type ReactElement, type ReactNode } from "react";
+import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { HunkControls, wrapHunkToolbar } from "../../src/frontend/changes/HunkControls";
-import { ComparisonHeading, fitComparisonHeading } from "../../src/frontend/changes/ComparisonView";
+import type { HunkControls as HunkControlsType } from "../../src/frontend/changes/HunkControls";
 
 printOrigin("../../src/frontend/changes/HunkControls.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/ComparisonView.tsx", import.meta.dir);
-
-// A pending case fails under `bun test --todo` until a mounted-DOM test can run it.
-const pending = (name: string) => test.todo(name, () => {
-  throw new Error("needs a mounted DOM");
-});
+registerDom();
+const { renderToStaticMarkup } = await import("react-dom/server");
+const { createRoot } = await import("react-dom/client");
+const { HunkControls, wrapHunkToolbar } = await import("../../src/frontend/changes/HunkControls");
+const { ComparisonHeading, fitComparisonHeading } = await import("../../src/frontend/changes/ComparisonView");
 
 // plan.md "Task flow and command placement" ("Select a hunk"), "Hunk toolbar layout", and "Long text".
 
@@ -40,7 +39,7 @@ function comparison(count: number, support = "supported") {
   };
 }
 
-type Props = Parameters<typeof HunkControls>[0];
+type Props = Parameters<typeof HunkControlsType>[0];
 function setup(fields: Partial<Props> = {}, count = 3) {
   const value = comparison(count);
   const selected: string[] = [];
@@ -235,6 +234,33 @@ describe("comparison heading", () => {
     expect(fitComparisonHeading({ ...parts, width: 100 })).toEqual({ folder: 20, file: 30, sides: 20, scope: 20 });
   });
 
-  // Alt+Up and Alt+Down reach the selection through the comparison pane and the T127 handler. Delivering them needs a DOM.
-  pending("at hunk 3, Alt+Down selects nothing, and at hunk 1, Alt+Up selects nothing");
+  // Alt+Up and Alt+Down reach the selection through the comparison pane and the T127 handler. The keys go to the focused hunk toolbar button.
+  test("at hunk 3, Alt+Down selects nothing, and at hunk 1, Alt+Up selects nothing", async () => {
+    const s = setup();
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const alt = async (selected: number, label: string, key: "ArrowUp" | "ArrowDown") => {
+      await act(async () => root.render(<HunkControls {...s.props} selectedHunk={s.id(selected)} />));
+      const found = [...host.querySelectorAll("button")].filter((b) => (b.textContent ?? "").includes(label));
+      expect(found).toHaveLength(1);
+      await act(async () => {
+        found[0]!.focus();
+        found[0]!.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, altKey: true, bubbles: true, cancelable: true }));
+        found[0]!.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, altKey: true, bubbles: true, cancelable: true }));
+      });
+    };
+    try {
+      await alt(3, "Next hunk", "ArrowDown");
+      await alt(1, "Previous hunk", "ArrowUp");
+      expect(s.selected).toEqual([]);
+      // Control: from hunk 2, the same keys select hunk 3 and hunk 1.
+      await alt(2, "Next hunk", "ArrowDown");
+      await alt(2, "Previous hunk", "ArrowUp");
+      expect(s.selected).toEqual([s.id(3), s.id(1)]);
+      expect(s.double.calls).toEqual([]);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
 });

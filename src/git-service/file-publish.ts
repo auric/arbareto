@@ -244,7 +244,7 @@ export function createFilePublisher(o: FilePublisherOptions) {
     const marker = entered;
     const rec = recording(o.runner);
     const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-    const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, published: false, executionLast: 0, listing: null };
+    const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, publishStarted: false, published: false, executionLast: 0, listing: null };
     const foreign: string[] = [];
     // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
     const releaseOwned = async (processesEnded: boolean) => {
@@ -350,6 +350,7 @@ export function createFilePublisher(o: FilePublisherOptions) {
         retained.set(operationId, { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: candidate.digest });
         registry.progress(operationId, "publication");
         run.publishing = true;
+        run.publishStarted = true;
         const result = await run.lock.publish(candidate.bytes, candidate.mtimeNs);
         run.publishing = false;
         if (!result.published) return publishRefusal(result, run.lock.path);

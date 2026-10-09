@@ -424,6 +424,8 @@ export interface PublicationRun {
   candidatePath: string | null;
   // `publish()` started and did not return.
   publishing: boolean;
+  // `publish()` was called. It is never reset.
+  publishStarted: boolean;
   // `publish()` returned `published`.
   published: boolean;
   // Data-model §7 `lingeringDescendants`: the count of the last execution process before reconciliation.
@@ -497,7 +499,8 @@ export async function reconcilePublication(r: PublicationReconciliation): Promis
     operationState: operationState !== binding.operationState,
   });
   // Contract §9: the canonical index digest decides publication. A returned publication with another digest is published with an index effect.
-  const viaDigest = run.candidate !== null && digest === run.candidate.digest;
+  // Contract §4: a refusal before `publish()` prevents publication. An equal digest before that call comes from an external writer.
+  const viaDigest = run.publishStarted && run.candidate !== null && digest === run.candidate.digest;
   const changed = digest !== binding.index.rawIndexDigest;
   const cause = diagnosticCause(null, refusal, registry.get(operationId)!.cause);
   if (viaDigest || run.published) {
@@ -582,7 +585,7 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     const marker = entered;
     const rec = recording(o.runner);
     const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-    const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, published: false, executionLast: 0, listing: null };
+    const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, publishStarted: false, published: false, executionLast: 0, listing: null };
     const foreign: string[] = [];
     // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
     const releaseOwned = async (processesEnded: boolean) => {
@@ -646,6 +649,7 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
         retained.set(operationId, { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: candidate.digest });
         registry.progress(operationId, "publication");
         run.publishing = true;
+        run.publishStarted = true;
         const result = await run.lock.publish(candidate.bytes, candidate.mtimeNs);
         run.publishing = false;
         if (!result.published) return publishRefusal(result, run.lock.path);

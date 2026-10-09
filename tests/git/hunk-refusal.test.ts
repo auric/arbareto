@@ -119,6 +119,39 @@ describe("checkpoints (contract §4, §9)", () => {
     }
   }
 
+  // Contract §4: every detected mismatch prevents publication. An external index equal to the verified candidate before `publish()` is no publication.
+  caseTest(TASK, `F09: an index change to the candidate bytes before the second checkpoint gives failed STALE_SELECTION, not succeeded`, SHELL, () => {
+    const name = "t096-second-candidate-bytes";
+    return withObserver(name, async (service, at5) => {
+      const repo = repoOf(buildChanged(gitPath(), name, "F09"));
+      await underTest("hunk-publish");
+      const { repositoryId } = await service.register(repo);
+      const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+      const baseline = { state: repoState(repo) };
+      let armed = false;
+      let wrote = false;
+      at5.run = () => void (armed = true);
+      // The first `check-attr` after step 5 belongs to the step 11 checkpoint. The candidate is complete then.
+      // An independent writer copies the owned candidate over the canonical index and ignores the lock.
+      const release = service.runner.holdStart((call) => {
+        if (!armed || !call.arguments.includes("check-attr")) return false;
+        armed = false;
+        const owned = candidateFiles(repo).filter((f) => !f.endsWith(".lock"));
+        expect(owned.length).toBe(1);
+        writeFileSync(gitPathOf(repo, "index"), readFileSync(join(gitDirOf(repo), owned[0]!)));
+        baseline.state = repoState(repo);
+        wrote = true;
+        return false;
+      });
+      try {
+        const response = await refused(service, repo, () => applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage"), baseline);
+        expect({ ...outcome(response), wrote }).toEqual({ state: "failed", code: "STALE_SELECTION", wrote: true });
+      } finally {
+        release();
+      }
+    });
+  }, TIMEOUT_MS);
+
   caseTest(TASK, `F09: a readWorkspace between the change and applyHunk gives REPOSITORY_CHANGED at acceptance, and no Git process starts`, SHELL, () =>
     withService({ name: "t096-generation" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t096-generation", "F09"));

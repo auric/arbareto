@@ -372,8 +372,8 @@ export function relativePathEntries(path: string | undefined, rules: typeof NATI
 const repositoryScope = (entry: ConfigEntry) => entry.scope === "local" || entry.scope === "worktree";
 
 // The three program rules. A program that the service cannot name counts as repository-controlled.
-function programControlled(program: Program, layout: Layout, placeOf: (path: string) => Place): boolean {
-  if (program.kind === "path") return placeOf(resolveIn(layout, program.text)).inside;
+function programControlled(program: Program, layout: Layout, inside: (path: string) => boolean): boolean {
+  if (program.kind === "path") return inside(resolveIn(layout, program.text));
   if (program.kind === "bare") return layout.relativeEntries.length > 0;
   return true;
 }
@@ -1003,6 +1003,8 @@ export interface TrustListing {
   changeFiles: ChangeFiles;
   // The file state of each integration and each folder hook, in list order. Null: the file lies outside the roots, or the integration is not repository-controlled.
   files: { integrations: (FileState | null)[]; folder: (FileState | null)[] };
+  // Contract §12 "Trust": a submodule listing whose repository-controlled hooks folder lies outside the roots. It lists no hook of that folder.
+  hooksOutside?: true;
   // Contract §11 "Change polling": the index digest of the first phase-1 request, when the target asked for it.
   index?: WslIndexResult;
 }
@@ -1060,15 +1062,17 @@ export async function listTrust(runner: ListingRunner, target: ListingTarget, en
 
 // Contract §12 "Trust": the listing of a submodule Git directory from its own `config list` output. `root` is the folder where Git runs its programs.
 // `hooksDirectory` is the absolute hooks folder, or null. The workspace roots decide inside and outside.
+// A path below `gitDirectory` but outside the roots is repository-controlled, as a location only (contract §6 "File facts").
+// A null `gitDirectory`: a `clone` row before its clone.
 export function listSubmoduleTrust(
   runner: ListingRunner,
   target: ListingTarget,
   environment: ServiceEnvironment,
   entries: ConfigEntry[],
   hooksDirectory: string | null,
-  root: string,
+  submodule: { root: string; gitDirectory: string | null },
 ): Promise<ListingOutcome> {
-  return buildListing(runner, target, entries, hooksDirectory, false, viewOf(target.workspace, environment), undefined, { root });
+  return buildListing(runner, target, entries, hooksDirectory, false, viewOf(target.workspace, environment), undefined, submodule);
 }
 
 async function buildListing(
@@ -1079,7 +1083,7 @@ async function buildListing(
   inputLimited: boolean,
   view: View,
   configFiles: readonly string[] | undefined,
-  submodule?: { root: string },
+  submodule?: { root: string; gitDirectory: string | null },
 ): Promise<ListingOutcome> {
   const { rules, path } = view;
   const roots = rootsOf(view.roots, rules);
@@ -1094,6 +1098,14 @@ async function buildListing(
   const hooksDirectory = hooksText === null ? null : resolveIn(layout, hooksText);
   const places = createPlaces(runner, target, roots, view.identityPath);
   const placeFor = (at: string, controlled: boolean): Place => (controlled ? placeByText(at, roots) : places.at(at));
+  // Contract §12 "Trust": a submodule Git directory outside the roots is repository-controlled by its Git-printed text. The service reads nothing there.
+  const ownGitDirectory = submodule?.gitDirectory == null ? null : componentsOf(submodule.gitDirectory, rules);
+  const inOwnGitDirectory = (at: string): boolean => {
+    if (ownGitDirectory === null) return false;
+    const parts = componentsOf(at, rules);
+    return ownGitDirectory.length <= parts.length && ownGitDirectory.every((part, i) => rules.fold(part) === rules.fold(parts[i]!));
+  };
+  const inRepository = (at: string): boolean => places.at(at).inside || inOwnGitDirectory(at);
 
   // Contract §7 "Repository-controlled resolution", the two entry rules. An origin that Git printed in another encoding counts as inside.
   // The origin places decide which values are repository-controlled. So they come before the identity requests for those values.
@@ -1107,7 +1119,7 @@ async function buildListing(
   const entryControlled = (entry: ConfigEntry): boolean => {
     if (repositoryScope(entry)) return true;
     const file = originFile(entry, layout);
-    return file !== null && (!entry.exact || places.at(file).inside);
+    return file !== null && (!entry.exact || inRepository(file));
   };
 
   // The last entry of a key wins (Git `config.c` `git_config_get_value`). An empty value names no program.
@@ -1142,7 +1154,7 @@ async function buildListing(
     key: entry.key,
     entry,
     program,
-    repositoryControlled: controlled || programControlled(program, layout, places.at),
+    repositoryControlled: controlled || programControlled(program, layout, inRepository),
     reads: kind.reads,
     commit: kind.commit,
   }));
@@ -1156,6 +1168,8 @@ async function buildListing(
   // Contract §7 "Program file digests": phase 1 reads the hooks folder and each `<event>` with its native suffixes.
   // It also reads each bare-name candidate and each program path inside the roots. A folder outside every root gets no request.
   const folderPlace = hooksDirectory === null ? outside : placeFor(hooksDirectory, hooksPathControlled);
+  // Contract §12 "Trust": a repository-controlled submodule hooks folder outside the roots enters the list as a location only.
+  const hooksOutside = submodule !== undefined && hooksDirectory !== null && !folderPlace.inside && (hooksPathControlled || inOwnGitDirectory(hooksDirectory));
   const eventAt = (folder: Inside, name: string): Inside => ({ inside: true, root: folder.root, below: [...folder.below, name] });
   const starts: Inside[] = [];
   if (folderPlace.inside) {
@@ -1316,6 +1330,7 @@ async function buildListing(
       approvalRequired,
       changeFiles: { configPaths: config.paths, programFiles: reader.programFiles, complete: config.complete },
       files: { integrations: integrationFiles, folder: folderFiles },
+      ...(hooksOutside ? { hooksOutside: true as const } : {}),
       ...(reader.index() === undefined ? {} : { index: reader.index() }),
     },
   };

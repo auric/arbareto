@@ -5,7 +5,7 @@
 // `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T229 registers `reviewSubmodules`, and T231 registers `updateSubmodules`.
 
 import { describe, expect, setSystemTime } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES } from "../../src/contracts/limits";
 import { redactUrlUserInfo, type SubmoduleAction } from "../../src/contracts/submodules";
@@ -204,6 +204,21 @@ describe("plan (contract §12 \"Plan\")", () => {
       expect(actionsOf(r)).toEqual({ mid: "none", solo: "none", "mid/leaf": "none" });
       const nested = rowOf(r, "mid/leaf");
       expect({ depth: nested.depth, parent: nested.parentRowId }).toEqual({ depth: 1, parent: rowOf(r, "mid").rowId });
+    });
+  });
+
+  // Git keeps the submodule Git directories of a linked worktree in its own `modules` folder (`rev-parse --git-path modules`), not in the common directory.
+  reviewCase(`F27 base in a linked worktree: a kept Git folder of that worktree makes the row reuse`, () => {
+    const b = buildF27(gitPath(), "t222-plan-linked", "base");
+    const linked = join(b.root, "linked");
+    fixtureGit(b, superOf(b), ["worktree", "add", "-q", "--detach", linked]);
+    fixtureGit(b, linked, ["submodule", "update", "--init", "-q", "--", "solo"]);
+    fixtureGit(b, linked, ["submodule", "deinit", "-q", "-f", "--", "solo"]);
+    const modules = fixtureGit(b, linked, ["rev-parse", "--path-format=absolute", "--git-path", "modules"]).trim();
+    expect(existsSync(join(modules, "solo"))).toBe(true);
+    return withFixture(b, "t222-plan-linked", async (service) => {
+      const { r } = await reviewed(service, b, linked);
+      expect(actionsOf(r)).toEqual({ mid: "clone", solo: "reuse" });
     });
   });
 
@@ -425,6 +440,49 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   });
 
+  reviewCase(`a kept Git folder without a plan row that sets submodule.<name>.gitdir gives gitdir-config with its Git folder path and the update command without a path`, () => {
+    const b = buildF27(gitPath(), "t222-refuse-kept-gitdir", "base");
+    const sup = superOf(b);
+    const extra = join(sup, ".git", "modules", "extra");
+    fixtureGit(b, sup, ["init", "-q", "--bare", extra]);
+    fixtureGit(b, b.root, ["config", "--file", join(extra, "config"), "submodule.x.gitdir", "elsewhere"]);
+    return withFixture(b, "t222-refuse-kept-gitdir", async (service) => {
+      const { r } = await reviewed(service, b);
+      const found = r.refusals.filter((x) => x.reason === "gitdir-config");
+      expect(found.map((x) => ({ at: relative(extra, x.path), text: x.text, command: x.remedy?.command ?? null }))).toEqual([{ at: "", text: TEXTS.gitdirConfig, command: updateCommand(sup) }]);
+    });
+  });
+
+  // Git dies when it parses a `.gitmodules` update value `!command` or an unknown value, whatever the effective value (probe of 2026-10-09: exit 128).
+  // The refusal names the value that refuses.
+  for (const effective of ["none", "checkout"]) {
+    reviewCase(`F28 gitmodules-command with effective update = ${effective}: the row refuses with update-mode and names the .gitmodules value`, () => {
+      const b = buildF28(gitPath(), `t222-refuse-gitmodules-${effective}`, "gitmodules-command");
+      const sup = superOf(b);
+      fixtureGit(b, sup, ["config", "submodule.solo.update", effective]);
+      const value = mode(b, ["--file", ".gitmodules", "--get", "submodule.solo.update"]);
+      return withFixture(b, `t222-refuse-gitmodules-${effective}`, async (service) => {
+        const { r } = await reviewed(service, b);
+        expect(r.refusals.map(shape)).toEqual([{ path: "solo", reason: "update-mode", text: TEXTS.updateMode("solo", value), command: updateCommand(sup, "solo"), remedyText: UPDATE_TEXT }]);
+        expect(rowOf(r, "solo").refusal).toBe("update-mode");
+      });
+    });
+  }
+
+  // Git `parse_submodule_update_type` knows `none`, `checkout`, `rebase`, `merge`, and `!command`. Another value exits 128 from either source, also for a clone (probe of 2026-10-09).
+  for (const source of [".gitmodules", "local"] as const) {
+    reviewCase(`F27 base with the ${source} update value foo: the clone row refuses with update-mode`, () => {
+      const b = buildF27(gitPath(), `t222-refuse-unknown-${source.replace(".", "")}`, "base");
+      const sup = superOf(b);
+      fixtureGit(b, sup, ["config", ...(source === "local" ? [] : ["--file", ".gitmodules"]), "submodule.solo.update", "foo"]);
+      return withFixture(b, `t222-refuse-unknown-${source.replace(".", "")}`, async (service) => {
+        const { r } = await reviewed(service, b);
+        expect(r.refusals.map(shape)).toEqual([{ path: "solo", reason: "update-mode", text: TEXTS.updateMode("solo", "foo"), command: updateCommand(sup, "solo"), remedyText: UPDATE_TEXT }]);
+        expect({ action: rowOf(r, "solo").action, refusal: rowOf(r, "solo").refusal }).toEqual({ action: "clone", refusal: "update-mode" });
+      });
+    });
+  }
+
   // The task names a test-injected bound. No seam lowers the §5 bound, so the copy holds one gitlink more than SUBMODULE_REVIEW_SUBMODULES.
   reviewCase(`F27 base with ${SUBMODULE_REVIEW_SUBMODULES + 1} gitlinks gives limit with the update command without a path`, () => {
     const b = buildF27(gitPath(), "t222-refuse-limit", "base");
@@ -565,6 +623,43 @@ describe("programs (contract §12 \"Trust\")", () => {
       const digests = r.programs.map((p) => p.digest);
       for (const d of hookDigests(b, "mid-leaf")) expect(digests).toContain(d);
       expectOutsideCanaries(b, r, "mid-leaf");
+    });
+  });
+
+  // Contract §12 "Trust": a submodule listing uses the superproject roots as the repository directories.
+  // A global `core.sshCommand` in the superproject worktree runs during each fetch, so each fetching row lists it with its digest.
+  for (const [variant, action] of [["base", "clone"], ["behind-fetch", "fetch-checkout"], ["kept-remote", "reuse"]] as const) {
+    reviewCase(`F27 ${variant}: a global core.sshCommand in the superproject worktree is listed with its digest in the ${action} row`, () => {
+      const b = buildF27(gitPath(), `t222-programs-super-roots-${variant}`, variant);
+      const ssh = put(superOf(b), "tools/ssh.sh", "#!/bin/sh\nexit 1\n").replaceAll("\\", "/");
+      appendFileSync(join(b.root, b.facts.notes.globalConfig as string), `[core]\n\tsshCommand = '${ssh}'\n`);
+      return withFixture(b, `t222-programs-super-roots-${variant}`, async (service) => {
+        const { r } = await reviewed(service, b);
+        const row = rowOf(r, "solo");
+        const listed = r.programs.filter((p) => "rowId" in p && p.rowId === row.rowId && p.key === "core.sshcommand").map((p) => p.digest);
+        expect({ action: row.action, listed }).toEqual({ action, listed: [fileSha256(ssh)] });
+      });
+    });
+  }
+
+  // Contract §12 "Trust" and §6 "File facts": a submodule Git directory outside the superproject roots gives locations only, with digest `unchecked`.
+  reviewCase(`F27 behind-present with the solo Git directory outside the superproject: its hooks folder and a global program in it are unchecked locations`, () => {
+    const b = buildF27(gitPath(), "t222-programs-outside-gitdir", "behind-present");
+    const sup = superOf(b);
+    const inside = moduleDirOf(b, sup, "solo");
+    const moved = join(b.root, "outside-solo.git");
+    renameSync(inside, moved);
+    const slash = (p: string) => p.replaceAll("\\", "/");
+    writeFileSync(join(sup, "solo", ".git"), `gitdir: ${slash(moved)}\n`);
+    fixtureGit(b, b.root, ["config", "--file", join(moved, "config"), "core.worktree", slash(join(sup, "solo"))]);
+    const helper = slash(put(moved, "cred.sh", "#!/bin/sh\nexit 2\n"));
+    appendFileSync(join(b.root, b.facts.notes.globalConfig as string), `[credential]\n\thelper = ${helper}\n`);
+    return withFixture(b, "t222-programs-outside-gitdir", async (service) => {
+      const { r } = await reviewed(service, b);
+      const row = rowOf(r, "solo");
+      const listed = r.programs.filter((p) => "rowId" in p && p.rowId === row.rowId && (p.key === "core.hooksPath" || p.key === "credential.helper")).map((p) => ({ key: p.key, at: p.key === "core.hooksPath" ? relative(join(moved, "hooks"), p.program) : "", digest: p.digest }));
+      expect({ action: row.action, listed }).toEqual({ action: "checkout", listed: expect.arrayContaining([{ key: "core.hooksPath", at: "", digest: "unchecked" }, { key: "credential.helper", at: "", digest: "unchecked" }]) });
+      expect(listed).toHaveLength(2);
     });
   });
 

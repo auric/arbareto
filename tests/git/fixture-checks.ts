@@ -6,6 +6,7 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
+import { displayPath } from "../../src/git-service/status-parser";
 import { FIXTURE_ROOT, ownedGit } from "./fixture-root";
 import { indexEntries, operationMarkers, rawIndexDigest, refState, submoduleUpdateOracle, workingFileDigests } from "./git-oracle";
 import * as F from "./fixtures";
@@ -26,7 +27,17 @@ function snapshot(git: string, repo: string, disarm: string[]) {
   };
 }
 
-export const paths = (out: Buffer) => [...new Set(out.toString("utf8").split("\0").filter((p) => p !== ""))].sort();
+// Data-model §5: a byte outside a well-formed UTF-8 sequence shows as `\xNN`.
+export function paths(out: Buffer): string[] {
+  const records: string[] = [];
+  for (let at = 0; at < out.length; ) {
+    const end = out.indexOf(0, at);
+    const stop = end < 0 ? out.length : end;
+    if (stop > at) records.push(displayPath(out.subarray(at, stop)));
+    at = stop + 1;
+  }
+  return [...new Set(records)].sort();
+}
 
 // Checks one repository against the facts of its builder through Git plumbing and the oracle.
 function verify(git: string, repo: string, facts: F.RepoFacts, disarm: string[]): void {

@@ -27,6 +27,7 @@ import {
   gitmodulesIndexArgs,
   gitmodulesListArgs,
   isObjectId,
+  modulesPathArgs,
   objectCheckArgs,
   submoduleConfigListArgs,
   submoduleGitDirArgs,
@@ -273,9 +274,8 @@ function setsGitdir(entries: readonly ConfigEntry[]): boolean {
   });
 }
 
-// Git `submodule.c` `parse_submodule_update_type`: the modes that Git checks out, skips, or refuses here.
-const CHECKED_OUT = new Set(["checkout"]);
-const isCommandMode = (mode: string) => mode.startsWith("!");
+// Git `submodule.c` `parse_submodule_update_type`: the named modes. Every other value is a `!command` or an invalid value.
+const UPDATE_MODES = new Set(["none", "checkout", "rebase", "merge"]);
 
 // Contract §12 "Trust": the Git-written keys. None names a program.
 const GIT_WRITTEN_CORE = new Set(["repositoryformatversion", "filemode", "bare", "logallrefupdates", "symlinks", "ignorecase", "precomposeunicode", "worktree"]);
@@ -325,7 +325,8 @@ interface Level {
   worktree: string;
   components: string[];
   prefix: Uint8Array;
-  gitDir: string;
+  // The folder that holds the kept Git directories of this level.
+  modules: string;
   config: readonly ConfigEntry[];
   depth: number;
   parentRowId: string | null;
@@ -688,6 +689,15 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         }
         if (lv.parentPath !== null && parentSetsActive) row.notes.push(NOTES.nestedActive(lv.parentPath));
 
+        const updateRemedy = () => (gitPath === null ? null : buildRefusalRemedy({ reason: "update-mode", gitPath, parentWorktree: lv.worktree, path: link.path }));
+        let modeRefused = false;
+        const refuseMode = (value: string) => {
+          modeRefused = true;
+          refuse("update-mode", display, REFUSAL_TEXTS.updateMode(display, value), updateRemedy(), row);
+        };
+        // Git `submodule-config.c` `parse_config` dies on a `.gitmodules` `!command` or unknown update value, whatever the effective value or the active set.
+        if (module?.update !== undefined && !UPDATE_MODES.has(module.update)) refuseMode(module.update);
+
         // Contract §12 "Plan", active set (Git `is_submodule_active`). A value that is no boolean makes Git exit 128.
         const explicit = lastValue(lv.config, submoduleKey(nameText, "active"));
         const explicitValue = explicit === undefined ? undefined : parseMaybeBool(explicit.value);
@@ -705,9 +715,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
 
         const modeEntry = lastValue(lv.config, submoduleKey(nameText, "update"));
         const mode = modeEntry?.value ?? module?.update ?? "checkout";
-        const updateRemedy = () => (gitPath === null ? null : buildRefusalRemedy({ reason: "update-mode", gitPath, parentWorktree: lv.worktree, path: link.path }));
-        // A `.gitmodules` value `!command` makes Git refuse the update for every row (probe S5).
-        const gitmodulesCommand = module?.update !== undefined && isCommandMode(module.update);
+        // An effective `!command` or invalid value refuses every row kind, a clone included (probe of 2026-10-09: exit 128).
+        if (!modeRefused && !UPDATE_MODES.has(mode)) refuseMode(mode);
         const registered = configUrl !== undefined;
         if (!registered) {
           if (lv.parentPath === null || !parentSetsActive) row.notes.push(NOTES.registers);
@@ -715,12 +724,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         }
 
         if (!initialized[i]) {
-          const kept = join(lv.gitDir, "modules", ...nameText.split("/"));
+          const kept = join(lv.modules, ...nameText.split("/"));
           if (mode === "none") {
             row.action = "skip";
             continue;
           }
-          if (gitmodulesCommand || isCommandMode(mode)) refuse("update-mode", display, REFUSAL_TEXTS.updateMode(display, mode), updateRemedy(), row);
           if (!(await keptExists(kept))) {
             row.action = "clone";
             pending.writes = true;
@@ -733,7 +741,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           const empty = await folderEmpty(worktree);
           observed.push({ folder: display, empty });
           if (!empty) refuse("folder-not-empty", display, REFUSAL_TEXTS.folderNotEmpty(display), null, row);
-          if (!isCommandMode(mode) && !CHECKED_OUT.has(mode) && !gitmodulesCommand) refuse("update-mode", display, REFUSAL_TEXTS.updateMode(display, mode), updateRemedy(), row);
+          if (!modeRefused && mode !== "checkout") refuseMode(mode);
           const repo = await readRepo({ gitDir: kept });
           pending.repo = repo;
           row.head = repo.head;
@@ -758,7 +766,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         if (mode === "none") {
           row.action = "skip";
         } else {
-          if (gitmodulesCommand || !CHECKED_OUT.has(mode)) refuse("update-mode", display, REFUSAL_TEXTS.updateMode(display, mode), updateRemedy(), row);
+          if (!modeRefused && mode !== "checkout") refuseMode(mode);
           if (row.head === link.oid) row.action = "none";
           else await plan(pending, repo, link.oid);
           pending.writes = writing.has(row.action);
@@ -793,7 +801,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         }
         const parts = componentsOf(pending.pathBytes)!;
         await level(
-          { worktree: pending.worktree, components: parts, prefix: pending.pathBytes, gitDir: repo.gitDir, config: repo.entries, depth: lv.depth + 1, parentRowId: pending.row.rowId, parentPath: pending.row.path },
+          { worktree: pending.worktree, components: parts, prefix: pending.pathBytes, modules: join(repo.gitDir, "modules"), config: repo.entries, depth: lv.depth + 1, parentRowId: pending.row.rowId, parentPath: pending.row.path },
           parsed.gitlinks.map((g) => ({ path: g.path, oid: local ? g.oid : null })),
           childModules,
         );
@@ -874,7 +882,10 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     };
     const urlsByPath = new Map<string, string>();
 
-    const top: Level = { worktree: root, components: [], prefix: new Uint8Array(), gitDir: w.commonDirectory, config: superListing.entries, depth: 0, parentRowId: null, parentPath: null, active };
+    const modulesRead = await git(modulesPathArgs());
+    const modules = modulesRead.code === 0 ? oneLine(modulesRead.out) : null;
+    if (modules === null) throw failed("GIT_FAILED");
+    const top: Level = { worktree: root, components: [], prefix: new Uint8Array(), modules, config: superListing.entries, depth: 0, parentRowId: null, parentPath: null, active };
     await level(top, gitlinks.map((e) => ({ path: e.path, oid: e.oid })), superModules);
 
     // ---- Kept Git directories (contract §12 "Review reads") ----
@@ -906,7 +917,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         if (limited) return;
       }
     };
-    await walk(join(w.commonDirectory, "modules"));
+    await walk(modules);
     for (const p of rows) if (p.repo !== null && !limited) await walk(join(p.repo.gitDir, "modules"));
     const rowless: Repo[] = [];
     for (const dir of keptDirs) {
@@ -962,8 +973,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       }
     };
 
-    const listRepo = async (owner: { rowId: string } | { gitDirectory: string }, repo: Repo, root: string | null, writes: boolean, unknownNested: boolean) => {
-      const listed = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: w }, environment, repo.entries, repo.hooks, root ?? w.worktreeRoot);
+    const listRepo = async (owner: { rowId: string } | { gitDirectory: string }, repo: Pick<Repo, "entries" | "hooks"> & { gitDir: string | null }, root: string | null, writes: boolean, unknownNested: boolean) => {
+      const listed = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: w }, environment, repo.entries, repo.hooks, { root: root ?? w.worktreeRoot, gitDirectory: repo.gitDir });
       if (!listed.ok) throw "stop" in listed ? new Stop({ result: listed.stop }) : failed(listed.code);
       const listing = listed.listing;
       programInputs.push([ownerKey(owner), listing.fingerprint]);
@@ -988,6 +999,9 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         ]);
       }
       const hooksRelative = relative.some((v) => v.key === "core.hooksPath");
+      if (!hooksRelative && listing.hooksOutside && listing.hooksDirectory !== null) {
+        add(owner, seen, { key: "core.hooksPath", scope: "hooks", origin: listing.hooksDirectory, program: listing.hooksDirectory, digest: "unchecked" }, ["hooks-outside", listing.hooksDirectory]);
+      }
       if (!hooksRelative) {
         for (const [j, hook] of listing.hooks.folder.entries()) {
           add(owner, seen, { key: hook.event, scope: "hooks", origin: hook.path, program: hook.path, digest: stateValue(listing.files.folder[j] ?? null) }, ["hook", hook.path]);
@@ -1009,10 +1023,10 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     for (const p of rows) {
       const action = p.row.action;
       if (p.repo !== null) await listRepo({ rowId: p.row.rowId }, p.repo, p.worktree, p.writes, p.unknownNested);
+      // Contract §12 "Trust": before its clone, a `clone` row sees only the system, global, and command entries.
       else if (action === "clone") {
-        const seen = new Set<string>();
-        unchecked({ rowId: p.row.rowId }, seen, superRelative, p.worktree);
-        unchecked({ rowId: p.row.rowId }, seen, superRelative, p.worktree, "nested");
+        const outer = superListing.entries.filter((e) => e.scope === "system" || e.scope === "global" || e.scope === "command");
+        await listRepo({ rowId: p.row.rowId }, { entries: outer, hooks: null, gitDir: null }, p.worktree, true, true);
       }
     }
     for (const repo of rowless) await listRepo({ gitDirectory: repo.gitDir }, repo, null, false, false);

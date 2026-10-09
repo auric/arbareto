@@ -15,6 +15,7 @@ import { createCommitReviewer } from "./commit-review";
 import { createComparisonReader } from "./comparison";
 import { getEnvironment } from "./environment";
 import { createExclusion } from "./exclusion";
+import { createFilePublisher, fileApproval } from "./file-publish";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createHistoryReader, type HistoryOutcome } from "./history";
 import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from "./hunk-publish";
@@ -55,6 +56,7 @@ export interface SessionOptions {
   // Test seam only. Production never sets it.
   readRawIndex?: WorkspaceReaderOptions["readRawIndex"];
   // Test seam only. Production never sets it. The service awaits it after research R3 steps 5, 11, and 13 of a hunk publication.
+  // A file publication uses the same numbers: 5 after the Git step, 11 after the final recheck, and 13 after publication.
   hunkCheckpoint?: HunkPublisherOptions["hunkCheckpoint"];
   // Test seam only. Production uses the monotonic `performance.now()` for the contract §5 approval lifetime.
   approvalClock?: () => number;
@@ -136,6 +138,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
   const exclusion = createExclusion({ started: (frame) => runner.started(frame), ended: () => {}, closeJob: () => {} });
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
+  // Contract §5 and §8: both publishers keep their retained digests and approval owners in one store, because recovery (T114) reads it.
+  const files = createFilePublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
   const registrations = createRegistrations({
@@ -388,14 +392,17 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const { operationId } = registry.start("readComparison", request.requestId);
       return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
     }
-    // Data-model §6: the hunk approvals of a succeeded comparison, issued before its response. A WSL comparison issues none until T214.
-    // A working-file comparison issues only after its working version joins the read observation (data-model §4 `workingVersions`).
+    // Data-model §6: the hunk and file approvals of a succeeded comparison, issued before its response. A WSL comparison issues none until T214.
+    // A working-file comparison issues hunk approvals only after its working version joins the read observation (data-model §4 `workingVersions`).
+    // A working version above the compared bound cannot join it. Its file approval relies on the whole-file digests of steps 3 and 7.
     const issue = (o: ReadResult): ReadResult => {
       const id = o.result === "succeeded" ? (o.value as { comparisonId?: unknown } | undefined)?.comparisonId : undefined;
       const c = typeof id === "string" && workspace.wsl === undefined ? comparisons.get(id) : undefined;
-      if (c === undefined || c.hunks.length === 0 || workspace.generation !== c.generation) return o;
+      if (c === undefined || workspace.generation !== c.generation) return o;
       const bound = c.scope === "head-to-index" || (c.workingVersion !== null && reader.bind(request.repositoryId, c.generation, c.workingVersion));
       if (bound) for (const approval of hunkApprovals(c, found.snapshot, workspace)) approvals.issue(approval);
+      const file = bound || c.workingVersion === null ? fileApproval(c, found.snapshot, workspace) : null;
+      if (file !== null) approvals.issue(file);
       return o;
     };
     scheduleRead(
@@ -470,7 +477,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       if (installation === null) return reject(request.requestId, gitCode());
       publisher.applyHunk(request, workspace, installation);
     },
-    applyFile: undefined,
+    applyFile: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      files.applyFile(request, workspace, installation);
+    },
     reviewCommit,
     commit: undefined,
     reviewSubmodules: undefined,

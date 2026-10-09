@@ -85,6 +85,7 @@
     "tests/git/status-parser.test.ts",
     "tests/git/status.test.ts",
     "tests/git/submodule-notice.test.ts",
+    "tests/git/submodule-plan.test.ts",
     "tests/git/submodule-remote.test.ts",
     "tests/git/submodule-review.test.ts",
     "tests/git/submodule-update.test.ts",

@@ -64,7 +64,7 @@ const ZEROS = /^0+$/;
 
 // quote.c `unquote_c_style`: letter escapes, `\\`, `\"`, and three octal digits with a first digit of 0 to 3.
 const ESCAPES: Record<number, number> = { 0x61: 0x07, 0x62: 0x08, 0x66: 0x0c, 0x6e: 0x0a, 0x72: 0x0d, 0x74: 0x09, 0x76: 0x0b, 0x5c: 0x5c, 0x22: 0x22 };
-function unquote(b: Uint8Array, at: number): { value: Uint8Array; end: number } | null {
+export function unquote(b: Uint8Array, at: number): { value: Uint8Array; end: number } | null {
   if (b[at] !== QUOTE) return null;
   const out: number[] = [];
   for (let i = at + 1; i < b.length; i++) {

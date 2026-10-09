@@ -185,9 +185,9 @@ function boundBytes(text: string): string {
   return start > 0 && text[start - 1] !== "\n" && lf >= 0 && lf < kept.length - 1 ? kept.slice(lf + 1) : kept;
 }
 
-// Contract §9 "Commit failure output" with the §12 "Output tail" change. `retained` holds the raw stderr bytes of the ring buffer.
+// Contract §9 "Commit failure output". `progress` adds the §12 "Output tail" change. `retained` holds the raw stderr bytes of the ring buffer.
 // `droppedBefore` is true when bytes were dropped before the buffer.
-export function buildSubmoduleOutputTail(retained: Uint8Array, droppedBefore: boolean): string {
+export function buildSubmoduleOutputTail(retained: Uint8Array, droppedBefore: boolean, mode: "progress" | "plain" = "progress"): string {
   let bytes = retained;
   let dropped = droppedBefore;
   if (bytes.length > COMMIT_OUTPUT_TAIL_BYTES) {
@@ -205,17 +205,20 @@ export function buildSubmoduleOutputTail(retained: Uint8Array, droppedBefore: bo
     .replace(CONTROL_SEQUENCE, "")
     .replace(ESCAPE_SEQUENCE, "")
     .replace(CONTROLS, "")
-    .replace(/\r\n/g, "\n");
+    .replace(mode === "plain" ? /\r\n?/g : /\r\n/g, "\n");
   // A segment that ends with a lone CR gives way to the text after it.
-  const collapsed = sanitized
-    .split("\n")
-    .map((line) =>
-      line
-        .split("\r")
-        .filter((segment) => segment !== "")
-        .at(-1) ?? "",
-    )
-    .join("\n");
+  const collapsed =
+    mode === "plain"
+      ? sanitized
+      : sanitized
+          .split("\n")
+          .map((line) =>
+            line
+              .split("\r")
+              .filter((segment) => segment !== "")
+              .at(-1) ?? "",
+          )
+          .join("\n");
   const lines = redactUrlUserInfo(collapsed).split("\n");
   const trailing = lines.at(-1) === "";
   const body = trailing ? lines.slice(0, -1) : lines;

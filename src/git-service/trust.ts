@@ -1470,7 +1470,7 @@ export function createTrust({ runner, environment, configFiles = () => undefined
   }
 
   // Contract §7: the gate of reads and of `commit`. Null: the operation may run. An input-limited listing can never pass.
-  function gate(w: Workspace, listing: TrustListing, installation: ReadInstallation, kind: "reads" | "commit"): "TRUST_REQUIRED" | "TRUST_CHANGED" | null {
+  function gate(w: Workspace, listing: Pick<TrustListing, "approvalRequired" | "fingerprint" | "inputLimited">, installation: ReadInstallation, kind: "reads" | "commit"): "TRUST_REQUIRED" | "TRUST_CHANGED" | null {
     if (!listing.approvalRequired[kind]) return null;
     const { state } = stateOf(w, listing.fingerprint, installation.selectedPath);
     if (state === "approved" && !listing.inputLimited) return null;

@@ -22,7 +22,7 @@ import { STEP_CAUSES, type DiagnosticCause } from "./log";
 import type { OperationRegistry } from "./operations";
 import { contextOf, isMissing, objectCheckInput, objectCheckOutcome, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
-import { readWorkingVersion, type ChangeSnapshot, type Head, type LimitName, type OperationState, type ReadInstallation, type WorkingVersion } from "./snapshot";
+import { readWorkingVersion, type ChangeSnapshot, type Head, type LimitName, type OperationState, type ReadInstallation, type WorkingBound, type WorkingVersion } from "./snapshot";
 import { hasPromisor, OBJECT_MISSING_REMEDY, policyOf, readRawIndex, type WorkspaceReader } from "./status";
 import { parseAttributes } from "./support";
 import type { Trust, TrustListing } from "./trust";
@@ -42,7 +42,7 @@ export const FILE_ID_TEXT = "This volume gives the index lock no unique file ID.
 // Contract §9: the remedy of a failed file step.
 export const STEP_FAILED_TEXT = "Arbareto could not finish this staging step. Nothing was staged. Use Refresh, then try again or stage in a terminal.";
 // Contract §9 "Lingering count".
-const REVOKE_TEXT = "Revoke trust also ends them.";
+export const REVOKE_TEXT = "Revoke trust also ends them.";
 export const lingeringSentence = (count: number) => `Arbareto still runs ${count === 1 ? "1 process" : `${count} processes`} that Git or a hook started in this repository. Closing Arbareto ends them.`;
 
 // The in-process checkpoint observer: after the research R3 step 5 revalidation, after the step 11 recheck, and after the step 13 publication. Production passes none.
@@ -59,14 +59,16 @@ const CANCELED: Stop = { stop: "canceled" };
 const DEADLINE: Stop = { stop: "deadline" };
 // Contract §9: unexpected diagnostic output above the §5 bound. Each observation step gives OUTPUT_LIMIT only for this bound.
 const DIAGNOSTIC_LIMIT: Failure = { code: "OUTPUT_LIMIT", reason: "UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION" };
-const failureOf = (code: ErrorCode): Failure => (code === "OUTPUT_LIMIT" ? DIAGNOSTIC_LIMIT : { code });
+export const failureOf = (code: ErrorCode): Failure => (code === "OUTPUT_LIMIT" ? DIAGNOSTIC_LIMIT : { code });
 
 // A refusal after acceptance. `reason`, `remedy`, `path`, and `foreign` go into the response result. `cause` goes only into the session log (contract §9).
 export interface Refusal {
   code: ErrorCode;
   reason?: string;
-  remedy?: { text: string };
+  remedy?: { text: string; command?: string | null };
   path?: string;
+  // Contract §9 "Commit failure output".
+  outputTail?: string;
   cause?: DiagnosticCause;
   foreign?: string[];
 }
@@ -74,10 +76,10 @@ export interface Refusal {
 const STALE: Refusal = { code: "STALE_SELECTION" };
 const stepFailed = (cause?: DiagnosticCause): Refusal => ({ code: "GIT_FAILED", ...(cause === undefined ? {} : { cause }), remedy: { text: STEP_FAILED_TEXT } });
 // Contract §9 "Total unexpected diagnostic output": the diagnostic names OUTPUT_LIMIT as the cause. A failed observation gets the step remedy.
-const refusalOf = (f: Failure): Refusal => (f.reason === DIAGNOSTIC_LIMIT.reason ? { ...f, cause: "OUTPUT_LIMIT" } : f.code === "GIT_FAILED" ? stepFailed() : f);
+export const refusalOf = (f: Failure): Refusal => (f.reason === DIAGNOSTIC_LIMIT.reason ? { ...f, cause: "OUTPUT_LIMIT" } : f.code === "GIT_FAILED" ? stepFailed() : f);
 const profileRefusal = (reason: HunkRefusalReason): Refusal => ({ code: "UNSUPPORTED_HUNK_PROFILE", reason, remedy: { text: PROFILE_TEXTS[reason] } });
 
-const isStop = (f: unknown): f is Stop => typeof f === "object" && f !== null && "stop" in f;
+export const isStop = (f: unknown): f is Stop => typeof f === "object" && f !== null && "stop" in f;
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const sameVersion = (a: WorkingVersion, b: WorkingVersion) => Buffer.compare(a.path, b.path) === 0 && Bun.deepEquals({ ...a, path: null }, { ...b, path: null }, true);
 
@@ -160,7 +162,7 @@ export interface PolicyFacts {
   listing: Pick<TrustListing, "entries" | "hooks">;
   gate: "TRUST_REQUIRED" | "TRUST_CHANGED" | null;
   policyFingerprint: string;
-  // Null when the gate refused. `check-attr` runs only after the gate (contract §7).
+  // Null when the gate refused, the listing alone refuses the profile, or no path was given. `check-attr` runs only after the gate (contract §7).
   attributes: Fact<Readonly<Record<string, string>>> | null;
 }
 export type PolicyObservation = PolicyFacts | Failure | Stop;
@@ -182,9 +184,9 @@ export interface StateObservation {
 }
 
 // An abort makes a pending `run` throw. Any other throw is no Git answer.
-const settled = <T>(signal: AbortSignal, work: Promise<T>): Promise<T | Stop | Failure> => work.catch(() => (signal.aborted ? CANCELED : { code: "GIT_FAILED" }));
+export const settled = <T>(signal: AbortSignal, work: Promise<T>): Promise<T | Stop | Failure> => work.catch(() => (signal.aborted ? CANCELED : { code: "GIT_FAILED" }));
 
-async function stepOf(ctx: ObserveContext, args: string[], out: Collector, input?: Uint8Array): Promise<{ exit: GitExit } | Failure | Stop> {
+export async function stepOf(ctx: ObserveContext, args: string[], out: Collector, input?: Uint8Array): Promise<{ exit: GitExit } | Failure | Stop> {
   const s = await settled(ctx.signal, runRead(ctx.runner, ctx, args, out, input));
   if (ctx.signal.aborted) return CANCELED;
   if (!("exit" in s)) return "refused" in s ? failureOf(s.refused) : s;
@@ -202,15 +204,17 @@ async function attributesOf(ctx: ObserveContext, path: Uint8Array): Promise<Fact
   return { value: parsed[0]! };
 }
 
-// Contract §4 and §7: the configuration listing, the trust gate, the policy fingerprint, and the attributes of `path`.
-export async function observePolicy(ctx: ObserveContext, path: Uint8Array): Promise<PolicyObservation> {
+// Contract §4 and §7: the configuration listing, the trust gate, the policy fingerprint, and the attributes of `path`. A null `path` runs no `check-attr`.
+export async function observePolicy(ctx: ObserveContext, path: Uint8Array | null, kind: "reads" | "commit" = "reads"): Promise<PolicyObservation> {
   const { trust, workspace: w, installation } = ctx;
   const listed = await settled(ctx.signal, trust.listTrust({ operationId: ctx.operationId, signal: ctx.signal, workspace: w }));
   if (!("ok" in listed)) return listed;
   if (!listed.ok) return "stop" in listed ? { stop: listed.stop } : failureOf(listed.code);
   const listing = listed.listing;
-  const gate = trust.gate(w, listing, installation, "reads");
-  return { listing, gate, policyFingerprint: policyOf(trust, w, listing, installation), attributes: gate === null ? await attributesOf(ctx, path) : null };
+  const gate = trust.gate(w, listing, installation, kind);
+  // `check-attr` reads the index, so a command-valued `core.fsmonitor` would run. `checkpointRefusal` gives the profile refusal before it reads the attributes.
+  const attributes = path !== null && gate === null && hunkEligibility({ link: null }, w.objectFormat, listing).eligible ? await attributesOf(ctx, path) : null;
+  return { listing, gate, policyFingerprint: policyOf(trust, w, listing, installation), attributes };
 }
 
 async function indexOf(w: Workspace): Promise<Fact<IndexFacts>> {
@@ -226,8 +230,8 @@ async function indexOf(w: Workspace): Promise<Fact<IndexFacts>> {
   }
 }
 
-async function workingOf(w: Workspace, path: Uint8Array): Promise<Fact<WorkingVersion> | { changed: true }> {
-  const read = await readWorkingVersion(w.worktreeRoot, path, "COMPARED_RAW_VERSION_BYTES", null);
+export async function workingOf(w: Workspace, path: Uint8Array, bound: WorkingBound = "COMPARED_RAW_VERSION_BYTES"): Promise<Fact<WorkingVersion> | { changed: true }> {
+  const read = await readWorkingVersion(w.worktreeRoot, path, bound, null);
   if (read.ok) return { value: read.value };
   const c = read.completeness;
   if (c.state === "limited" || (c.state === "failed" && c.code === "REPOSITORY_CHANGED")) return { changed: true };
@@ -410,6 +414,116 @@ export interface RetainedPublication {
   candidate: string;
 }
 
+export type Ending = Refusal | Stop | { published: true };
+
+// The owned files and the progress of one publication.
+export interface PublicationRun {
+  lock: IndexLock | null;
+  candidate: Candidate | null;
+  // The Git-resolved form (`besideIndex`).
+  candidatePath: string | null;
+  // `publish()` started and did not return.
+  publishing: boolean;
+  // `publish()` returned `published`.
+  published: boolean;
+  // Data-model §7 `lingeringDescendants`: the count of the last execution process before reconciliation.
+  executionLast: number;
+  listing: PolicyFacts["listing"] | null;
+}
+
+// Data-model §7 rows for a `started` reply without a marker ID.
+export function notEntered(registry: OperationRegistry, operationId: string, n: NotEntered): void {
+  if (n.code === "BUSY") {
+    if (n.remedy === undefined) return void registry.apply(operationId, { type: "exclusion-unavailable", code: "BUSY" });
+    return void registry.apply(operationId, { type: "marker-refused", code: "BUSY" }, { remedy: n.remedy });
+  }
+  if (n.code === "RECOVERY_MARKER_FAILED") return void registry.apply(operationId, { type: "marker-refused", code: n.code }, { failure: n.failure, path: n.folder, remedy: n.remedy });
+  if (n.code === "DEADLINE") return void registry.apply(operationId, { type: "started-deadline" }, undefined, "DEADLINE");
+  registry.apply(operationId, { type: "exclusion-unavailable", code: n.code });
+}
+
+export interface PublicationReconciliation {
+  registry: OperationRegistry;
+  runner: Pick<GitRunner, "resolved">;
+  retained: Map<string, RetainedPublication>;
+  operationId: string;
+  markerId: string;
+  rec: ReturnType<typeof recording>;
+  // Its `runner` is `rec`.
+  ctx: ObserveContext;
+  path: Uint8Array;
+  binding: Pick<CheckpointBinding, "head" | "index" | "operationState">;
+  run: PublicationRun;
+  ending: Ending;
+  unexpected: boolean;
+  foreign: string[];
+  releaseOwned: (processesEnded: boolean) => Promise<void>;
+  // True: the working file differs from the binding.
+  working: (ctx: ObserveContext) => Promise<Fact<boolean>>;
+}
+
+// Research R3 step 14 and contract §8: the reconciliation of an `applyHunk` or `applyFile` publication.
+export async function reconcilePublication(r: PublicationReconciliation): Promise<void> {
+  const { registry, operationId, run, ending, binding, foreign } = r;
+  const deadline = isStop(ending) && ending.stop === "deadline";
+  const canceled = enterReconciling(registry, operationId, deadline, run.executionLast);
+  // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
+  // Only an exit reply of these reads is a fresh process-end fact for the owned candidate.
+  r.rec.reset();
+  const quiet = { ...r.ctx, signal: new AbortController().signal };
+  const [observed, working] = await Promise.all([observeState(quiet, r.path, false), settled(quiet.signal, r.working(quiet))]);
+
+  const refusal = "code" in ending ? ending : null;
+  foreign.push(...(refusal?.foreign ?? []));
+  await r.releaseOwned(r.rec.last === 0);
+  const extra = () => (foreign.length > 0 ? { foreign } : undefined);
+
+  const failedRead = [observed.head, observed.index, observed.operationState, working].find((f) => !("value" in f)) as Failure | Stop | undefined;
+  if (failedRead !== undefined) {
+    // Contract §8: a failed observation gives `unknown`. The marker and the retained digests stay.
+    const code = "code" in failedRead ? failedRead.code : "DEADLINE";
+    const event = "code" in failedRead ? { type: "reconciliation-read-failed" as const, code } : { type: "reconciliation-read-deadline" as const };
+    registry.apply(operationId, event, extra(), diagnosticCause(code, refusal, undefined));
+    return;
+  }
+  const head = (observed.head as { value: Head }).value;
+  const digest = (observed.index as { value: IndexFacts }).value.digest;
+  const operationState = (observed.operationState as { value: OperationState }).value;
+  const workingFiles = (working as { value: boolean }).value;
+  const effectsWith = (index: boolean) => ({
+    head: !Bun.deepEquals(head, binding.head, true),
+    index,
+    workingFiles,
+    operationState: operationState !== binding.operationState,
+  });
+  // Contract §9: the canonical index digest decides publication. A returned publication with another digest is published with an index effect.
+  const viaDigest = run.candidate !== null && digest === run.candidate.digest;
+  const changed = digest !== binding.index.rawIndexDigest;
+  const cause = diagnosticCause(null, refusal, registry.get(operationId)!.cause);
+  if (viaDigest || run.published) {
+    const effects = effectsWith(!viaDigest);
+    if (Object.values(effects).some(Boolean)) registry.apply(operationId, { type: "differing-effects" }, { effects, ...extra() }, cause);
+    else registry.apply(operationId, { type: "intended-effects-confirmed" }, extra(), cause);
+  } else if (run.publishing && changed) {
+    // `publish()` threw, and the index matches neither retained digest. Contract §9 "publish without a typed result" gives `unknown`.
+    registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
+    return;
+  } else if (changed && (deadline || r.unexpected || (STEP_CAUSES as readonly unknown[]).includes(refusal?.cause))) {
+    // Contract §8: an execution failure with observed changes is failed-with-effects. A checkpoint code never is. Contract §9: a deadline keeps its reason.
+    registry.apply(operationId, { type: "failed-with-effects" }, { effects: effectsWith(true), ...extra() }, cause);
+  } else if (canceled) {
+    registry.apply(operationId, { type: "no-effects", observed: "canceled" }, extra(), cause);
+  } else {
+    const { code, cause: _cause, foreign: _foreign, ...fields }: Partial<Refusal> = refusal ?? {};
+    const result = { ...fields, ...extra() };
+    const reason = code === "OUTPUT_LIMIT" ? fields.reason : undefined;
+    registry.apply(operationId, { type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) }, Object.keys(result).length > 0 ? result : undefined, cause);
+  }
+  // Contract §6: `resolved` follows a known outcome.
+  r.runner.resolved(r.markerId);
+  r.retained.delete(operationId);
+}
+
 export interface HunkPublisherOptions {
   runner: GitRunner;
   trust: Trust;
@@ -424,7 +538,6 @@ export interface HunkPublisherOptions {
 
 type ApplyHunkRequest = Extract<ServiceRequest, { operation: "applyHunk" }>;
 type Admitted = { approval: HunkApproval; comparison: RetainedComparison; hunk: RetainedComparison["hunks"][number] };
-type Ending = Refusal | Stop | { published: true };
 
 export function createHunkPublisher(o: HunkPublisherOptions) {
   const retained = new Map<string, RetainedPublication>();
@@ -454,17 +567,6 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     return { approval, comparison: c, hunk };
   }
 
-  // Data-model §7 rows for a `started` reply without a marker ID.
-  function notEntered(operationId: string, n: NotEntered): void {
-    if (n.code === "BUSY") {
-      if (n.remedy === undefined) return void registry.apply(operationId, { type: "exclusion-unavailable", code: "BUSY" });
-      return void registry.apply(operationId, { type: "marker-refused", code: "BUSY" }, { remedy: n.remedy });
-    }
-    if (n.code === "RECOVERY_MARKER_FAILED") return void registry.apply(operationId, { type: "marker-refused", code: n.code }, { failure: n.failure, path: n.folder, remedy: n.remedy });
-    if (n.code === "DEADLINE") return void registry.apply(operationId, { type: "started-deadline" }, undefined, "DEADLINE");
-    registry.apply(operationId, { type: "exclusion-unavailable", code: n.code });
-  }
-
   async function publish(request: ApplyHunkRequest, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, admitted: Admitted, key: ApprovalKey): Promise<void> {
     const { approval, comparison: c, hunk } = admitted;
     const binding = approval.binding;
@@ -476,23 +578,11 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     } catch {
       return void registry.apply(operationId, { type: "exclusion-unavailable", code: "GIT_FAILED" });
     }
-    if (!entered.ok) return notEntered(operationId, entered);
+    if (!entered.ok) return notEntered(registry, operationId, entered);
     const marker = entered;
     const rec = recording(o.runner);
     const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-    const run = {
-      lock: null as IndexLock | null,
-      candidate: null as Candidate | null,
-      // The Git-resolved form (`besideIndex`).
-      candidatePath: null as string | null,
-      // `publish()` started and did not return.
-      publishing: false,
-      // `publish()` returned `published`.
-      published: false,
-      // Data-model §7 `lingeringDescendants`: the count of the last execution process before reconciliation.
-      executionLast: 0,
-      listing: null as PolicyFacts["listing"] | null,
-    };
+    const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, published: false, executionLast: 0, listing: null };
     const foreign: string[] = [];
     // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
     const releaseOwned = async (processesEnded: boolean) => {
@@ -573,61 +663,29 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
         ending = signal.aborted ? CANCELED : stepFailed();
       }
 
-      const deadline = isStop(ending) && ending.stop === "deadline";
-      const canceled = enterReconciling(registry, operationId, deadline, run.executionLast);
-      // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
-      // Only an exit reply of these reads is a fresh process-end fact for the owned candidate.
-      rec.reset();
-      const observed = await observeState({ ...ctx, signal: new AbortController().signal }, path, bindsWorking);
-
-      const refusal = "code" in ending ? ending : null;
-      foreign.push(...(refusal?.foreign ?? []));
-      await releaseOwned(rec.last === 0);
-
-      const failedRead = [observed.head, observed.index, observed.operationState, observed.working].find((f) => f !== null && !("value" in f) && !("changed" in f)) as Failure | Stop | undefined;
-      if (failedRead !== undefined) {
-        // Contract §8: a failed observation gives `unknown`. The marker and the retained digests stay.
-        const code = "code" in failedRead ? failedRead.code : "DEADLINE";
-        const event = "code" in failedRead ? { type: "reconciliation-read-failed" as const, code } : { type: "reconciliation-read-deadline" as const };
-        registry.apply(operationId, event, extra(), diagnosticCause(code, refusal, undefined));
-        return;
-      }
-      const head = (observed.head as { value: Head }).value;
-      const digest = (observed.index as { value: IndexFacts }).value.digest;
-      const operationState = (observed.operationState as { value: OperationState }).value;
-      const working = observed.working;
-      const effectsWith = (index: boolean) => ({
-        head: !Bun.deepEquals(head, binding.head, true),
-        index,
-        workingFiles: binding.working !== null && (working === null || "changed" in working || !sameVersion((working as { value: WorkingVersion }).value, binding.working)),
-        operationState: operationState !== binding.operationState,
+      await reconcilePublication({
+        registry,
+        runner: o.runner,
+        retained,
+        operationId,
+        markerId: marker.markerId,
+        rec,
+        ctx,
+        path,
+        binding,
+        run,
+        ending,
+        unexpected,
+        foreign,
+        releaseOwned,
+        // Contract §8: the bound working version, else no working-file effect.
+        working: async (c) => {
+          if (binding.working === null) return { value: false };
+          const read = await workingOf(c.workspace, path);
+          if ("changed" in read) return { value: true };
+          return "value" in read ? { value: !sameVersion(read.value, binding.working) } : read;
+        },
       });
-      // Contract §9: the canonical index digest decides publication. A returned publication with another digest is published with an index effect.
-      const viaDigest = run.candidate !== null && digest === run.candidate.digest;
-      const changed = digest !== binding.index.rawIndexDigest;
-      const cause = diagnosticCause(null, refusal, registry.get(operationId)!.cause);
-      if (viaDigest || run.published) {
-        const effects = effectsWith(!viaDigest);
-        if (Object.values(effects).some(Boolean)) registry.apply(operationId, { type: "differing-effects" }, { effects, ...extra() }, cause);
-        else registry.apply(operationId, { type: "intended-effects-confirmed" }, extra(), cause);
-      } else if (run.publishing && changed) {
-        // `publish()` threw, and the index matches neither retained digest. Contract §9 "publish without a typed result" gives `unknown`.
-        registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
-        return;
-      } else if (changed && (deadline || unexpected || (STEP_CAUSES as readonly unknown[]).includes(refusal?.cause))) {
-        // Contract §8: an execution failure with observed changes is failed-with-effects. A checkpoint code never is. Contract §9: a deadline keeps its reason.
-        registry.apply(operationId, { type: "failed-with-effects" }, { effects: effectsWith(true), ...extra() }, cause);
-      } else if (canceled) {
-        registry.apply(operationId, { type: "no-effects", observed: "canceled" }, extra(), cause);
-      } else {
-        const { code, cause: _cause, foreign: _foreign, ...fields }: Partial<Refusal> = refusal ?? {};
-        const result = { ...fields, ...extra() };
-        const reason = code === "OUTPUT_LIMIT" ? fields.reason : undefined;
-        registry.apply(operationId, { type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) }, Object.keys(result).length > 0 ? result : undefined, cause);
-      }
-      // Contract §6: `resolved` follows a known outcome.
-      o.runner.resolved(marker.markerId);
-      retained.delete(operationId);
     } catch {
       // A broken step leaves the outcome unknown. The marker stays (contract §8). Without a fresh process-end fact, the candidate stays foreign.
       await releaseOwned(false);

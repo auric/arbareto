@@ -203,6 +203,49 @@ export interface ComparisonReaderOptions {
   onDrop?: (comparisonId: string) => void;
 }
 
+// The contract §4 whole-file remedy of an entry. Null for a WSL root without a route, or without a selected Git path.
+export type WholeFileRemedy = { text: string; command: string | null };
+export function wholeFileRemedy(t: Pick<ComparisonTarget, "entry" | "workspace" | "installation"> & { headUnborn: boolean }, path: Uint8Array): WholeFileRemedy | null {
+  const e = t.entry;
+  const w = t.workspace;
+  const kind = e.category !== "staged" ? "add" : t.headUnborn ? "rm-cached" : "restore-staged";
+  const source = kind === "add" && e.sourcePathBytes !== undefined ? Buffer.from(e.sourcePathBytes, "base64") : null;
+  let values: RemedyValue[];
+  let built: RemedyCommand;
+  if (w.wsl !== undefined) {
+    // Contract §11 "Paths and file access": the route gives the Linux form of the UNC worktree root.
+    const route = routeWslPath(w.worktreeRoot, { listed: [w.wsl.distro], registry: [{ name: w.wsl.distro, guid: w.wsl.guid, version: 2 }] });
+    if (route.kind !== "wsl") return null;
+    const { wslExecutable, distro } = w.wsl;
+    values = [
+      { kind: "wslExecutable", text: wslExecutable, form: "windows" },
+      { kind: "distroName", text: distro },
+      { kind: "gitPath", text: w.wsl.path, form: "linux" },
+      { kind: "worktreeRoot", text: route.linuxPath, form: "linux" },
+      ...(source === null ? [] : [{ kind: "path" as const, text: source, form: "linux" as const }]),
+      { kind: "path", text: path, form: "linux" },
+    ];
+    built = buildWslRemedy(kind, { wslExecutable, distro, gitPath: w.wsl.path, worktreeRoot: route.linuxPath, path, ...(source === null ? {} : { sourcePath: source }) });
+  } else {
+    if (t.installation.selectedPath === null) return null;
+    const tail = kind === "add" ? `add -- ${source === null ? "" : "{source} "}{path}` : kind === "rm-cached" ? "rm --cached -- {path}" : "restore --staged -- {path}";
+    const named: Record<string, RemedyValue> = {
+      git: { kind: "gitPath", text: t.installation.selectedPath, form: "windows" },
+      root: { kind: "worktreeRoot", text: w.worktreeRoot, form: "windows" },
+      ...(source === null ? {} : { source: { kind: "path", text: source } }),
+      path: { kind: "path", text: path },
+    };
+    values = Object.values(named);
+    built = buildRemedyCommand(`& {git} --literal-pathspecs -C {root} ${tail}`, named);
+  }
+  if (built.command !== null) return { text: REMEDY_TEXT, command: built.command };
+  // Contract §4 "Quoting rule" and §11 "Remedy commands": the state shows the refused value as plain text without a command.
+  const text = (v: RemedyValue) => (typeof v.text === "string" ? v.text : (decode(v.text) ?? ""));
+  const refusedValue = (v: RemedyValue) => buildRemedyCommand("{v}", { v }).command === null || (w.wsl !== undefined && v.kind !== "wslExecutable" && text(v).includes("\\"));
+  const shown = values.find((v) => v.kind === built.refused && refusedValue(v)) ?? values.find(refusedValue);
+  return { text: `PowerShell cannot pass this value safely, so Arbareto offers no command: ${shown === undefined ? "" : text(shown)}`, command: null };
+}
+
 export function createComparisonReader({ runner, trust, onDrop }: ComparisonReaderOptions) {
   // Contract §5 "Retained comparison data": insertion order is age order. An evicted comparison gives UNKNOWN_TARGET to every later request that names it.
   const retained = new Map<string, RetainedComparison>();
@@ -261,46 +304,9 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
   }
 
   // The contract §4 remedy of a refused file action, or null.
-  function remedyOf(t: ComparisonTarget, path: Uint8Array, decision: FileActionDecision): { text: string; command: string | null } | null {
+  function remedyOf(t: ComparisonTarget, path: Uint8Array, decision: FileActionDecision): WholeFileRemedy | null {
     if (decision.direction !== null || decision.code !== "UNSUPPORTED_COMPARISON" || !REMEDY_REASONS.has(decision.reason)) return null;
-    const e = t.entry;
-    const w = t.workspace;
-    const kind = e.category !== "staged" ? "add" : t.snapshot.head.state === "unborn" ? "rm-cached" : "restore-staged";
-    const source = kind === "add" && e.sourcePathBytes !== undefined ? Buffer.from(e.sourcePathBytes, "base64") : null;
-    let values: RemedyValue[];
-    let built: RemedyCommand;
-    if (w.wsl !== undefined) {
-      // Contract §11 "Paths and file access": the route gives the Linux form of the UNC worktree root.
-      const route = routeWslPath(w.worktreeRoot, { listed: [w.wsl.distro], registry: [{ name: w.wsl.distro, guid: w.wsl.guid, version: 2 }] });
-      if (route.kind !== "wsl") return null;
-      const { wslExecutable, distro } = w.wsl;
-      values = [
-        { kind: "wslExecutable", text: wslExecutable, form: "windows" },
-        { kind: "distroName", text: distro },
-        { kind: "gitPath", text: w.wsl.path, form: "linux" },
-        { kind: "worktreeRoot", text: route.linuxPath, form: "linux" },
-        ...(source === null ? [] : [{ kind: "path" as const, text: source, form: "linux" as const }]),
-        { kind: "path", text: path, form: "linux" },
-      ];
-      built = buildWslRemedy(kind, { wslExecutable, distro, gitPath: w.wsl.path, worktreeRoot: route.linuxPath, path, ...(source === null ? {} : { sourcePath: source }) });
-    } else {
-      if (t.installation.selectedPath === null) return null;
-      const tail = kind === "add" ? `add -- ${source === null ? "" : "{source} "}{path}` : kind === "rm-cached" ? "rm --cached -- {path}" : "restore --staged -- {path}";
-      const named: Record<string, RemedyValue> = {
-        git: { kind: "gitPath", text: t.installation.selectedPath, form: "windows" },
-        root: { kind: "worktreeRoot", text: w.worktreeRoot, form: "windows" },
-        ...(source === null ? {} : { source: { kind: "path", text: source } }),
-        path: { kind: "path", text: path },
-      };
-      values = Object.values(named);
-      built = buildRemedyCommand(`& {git} --literal-pathspecs -C {root} ${tail}`, named);
-    }
-    if (built.command !== null) return { text: REMEDY_TEXT, command: built.command };
-    // Contract §4 "Quoting rule" and §11 "Remedy commands": the state shows the refused value as plain text without a command.
-    const text = (v: RemedyValue) => (typeof v.text === "string" ? v.text : (decode(v.text) ?? ""));
-    const refusedValue = (v: RemedyValue) => buildRemedyCommand("{v}", { v }).command === null || (w.wsl !== undefined && v.kind !== "wslExecutable" && text(v).includes("\\"));
-    const shown = values.find((v) => v.kind === built.refused && refusedValue(v)) ?? values.find(refusedValue);
-    return { text: `PowerShell cannot pass this value safely, so Arbareto offers no command: ${shown === undefined ? "" : text(shown)}`, command: null };
+    return wholeFileRemedy({ entry: t.entry, workspace: t.workspace, installation: t.installation, headUnborn: t.snapshot.head.state === "unborn" }, path);
   }
 
   async function compare(t: ComparisonTarget): Promise<ComparisonOutcome> {

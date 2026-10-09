@@ -48,6 +48,9 @@ export interface CommitBinding {
   head: Head;
   disclosure: string;
   trust: TrustApproval;
+  operationState: OperationState;
+  // Contract §7: the commit gate of the reviewed listing.
+  approvalRequired: boolean;
 }
 
 interface Issued {

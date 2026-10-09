@@ -132,7 +132,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
-  const reviews = createCommitReviewer({ runner, trust, approvals });
+  const reviews = createCommitReviewer({ runner, trust, approvals, now: approvalClock });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
   const exclusion = createExclusion({ started: (frame) => runner.started(frame), ended: () => {}, closeJob: () => {} });
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });

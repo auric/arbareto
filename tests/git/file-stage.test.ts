@@ -9,12 +9,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF02, buildF04, buildF04Stage, buildF06, buildF07, buildF16StageInput, buildF17, buildFileAccepted, F04_BLOB_PROOFS, put, type Built, type F04StageVariant, type F04Variant } from "./fixtures";
-import { indexEntries, rawIndexDigest, type IndexEntry } from "./git-oracle";
-import { approve, candidateFiles, compare, copyRepo, git, gitDirOf, gitPath, gitText, outcome, repoOf, repoState, subcommand, SUCCEEDED, todoCase, valuesOf, withService, type Comparison, type Direction } from "./hunk-harness";
-import type { Capability, ChangeEntry, Envelope, Service, ServiceResponse } from "./service-harness";
+import { indexEntries, rawIndexDigest } from "./git-oracle";
+import { approve, candidateFiles, compare, copyRepo, git, gitDirOf, gitPath, gitText, outcome, repoOf, repoState, subcommand, SUCCEEDED, TIMEOUT_MS, valuesOf, withService, type Comparison, type Direction } from "./hunk-harness";
+import { caseTest, type Capability, type ChangeEntry, type Envelope, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T196";
-const NEEDS = "(needs T200/T115)";
 const SHELL: Capability[] = ["shell-double"];
 const RACY_RUNS = 20;
 // The F04 policy, racy, and F16 cases build many fixtures or hash 512 MiB files.
@@ -133,7 +132,7 @@ async function acceptedSteps(service: Service, name: string, repo: string, steps
 }
 
 describe("accepted entries (contract §4 \"File staging\")", () => {
-  todoCase(TASK, `T194 accepted entries: a modified and an untracked binary file, a deleted file, and a mode change stage as git add; a staged rename, a staged copy, and a staged modification unstage as git restore --staged; the runner sees only update-index on an owned candidate and the proofs without -w ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `T194 accepted entries: a modified and an untracked binary file, a deleted file, and a mode change stage as git add; a staged rename, a staged copy, and a staged modification unstage as git restore --staged; the runner sees only update-index on an owned candidate and the proofs without -w`, SHELL, () =>
     withService({ name: "t196-accepted" }, async (service) => {
       const built = buildFileAccepted(gitPath(), "t196-accepted");
       const repo = repoOf(built);
@@ -148,9 +147,10 @@ describe("accepted entries (contract §4 \"File staging\")", () => {
         restoreStep("copy-src.txt"),
       ]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `the staged rename restores the source HEAD entry and removes the destination ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `the staged rename restores the source HEAD entry and removes the destination`, SHELL, () =>
     withService({ name: "t196-rename" }, async (service) => {
       const repo = repoOf(buildFileAccepted(gitPath(), "t196-rename"));
       const head = (path: string) => gitText(repo, ["ls-tree", "HEAD", "--", path]).trim();
@@ -159,9 +159,10 @@ describe("accepted entries (contract §4 \"File staging\")", () => {
       const entry = (path: string) => indexEntries(gitPath(), repo).filter((e) => e.path === path).map((e) => `${e.mode} blob ${e.oid}\t${e.path}`);
       expect({ source: entry("rename-src.txt"), destination: entry("rename-dst.txt") }).toEqual({ source: [head("rename-src.txt")], destination: [] });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F06: an untracked replacement stages; a staged addition and a staged deletion unstage, and a deleted file stages as git add ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F06: an untracked replacement stages; a staged addition and a staged deletion unstage, and a deleted file stages as git add`, SHELL, async () => {
     const first = repoOf(buildF06(gitPath(), "t196-f06-untracked"));
     const second = repoOf(buildF06(gitPath(), "t196-f06"));
     await underTest();
@@ -169,9 +170,9 @@ describe("accepted entries (contract §4 \"File staging\")", () => {
     await withService({ name: "t196-f06" }, (service) =>
       acceptedSteps(service, "t196-f06", second, [addStep("untracked.txt", "untracked"), restoreStep("added.txt"), addStep("deleted.txt", "unstaged", true), restoreStep("replaced.txt")]).then(() => {}),
     );
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `F02: whole-file steps of a path with staged and unstaged hunks equal git add and git restore --staged, and they need no trust approval because F02 lists no repository-controlled integration ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F02: whole-file steps of a path with staged and unstaged hunks equal git add and git restore --staged, and they need no trust approval because F02 lists no repository-controlled integration`, SHELL, () =>
     withService({ name: "t196-f02" }, async (service) => {
       const repo = repoOf(buildF02(gitPath(), "t196-f02"));
       await underTest();
@@ -180,22 +181,24 @@ describe("accepted entries (contract §4 \"File staging\")", () => {
       expect((await service.readTrust(repositoryId)).result?.approvalRequired).toEqual({ reads: false, commit: false });
       expect(service.trustStore.records).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F01 unborn: Unstage file equals git rm --cached, and an untracked empty file stages ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F01 unborn: Unstage file equals git rm --cached, and an untracked empty file stages`, SHELL, () =>
     withService({ name: "t196-f01" }, async (service) => {
       const repo = repoOf(buildF01(gitPath(), "t196-f01", "unborn-added"));
       const rmCached = (path: string): Step => ({ path, category: "staged", direction: "unstage", oracle: ["--literal-pathspecs", "rm", "--cached", "-q", "--", path] });
       await underTest();
       await acceptedSteps(service, "t196-f01", repo, [rmCached("first.txt"), rmCached("empty.txt"), addStep("untracked-empty.txt", "untracked")]);
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("line endings and blob proofs (contract §4 \"Blob proof\", research.md R3 probe 7)", () => {
   // `safecrlf` refuses an LF file under `core.autocrlf=true`, as `git add` does. T197 covers that variant.
   const POLICIES: F04Variant[] = ["autocrlf-false", "autocrlf-true", "autocrlf-input", "eol-crlf", "attributes"];
-  todoCase(TASK, `F04: each line-ending policy stages each LF, CRLF, and mixed file as git add does; report the proof that held for research.md R3 ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F04: each line-ending policy stages each LF, CRLF, and mixed file as git add does; report the proof that held for research.md R3`, SHELL, async () => {
     await underTest();
     const repos = POLICIES.map((variant) => ({ variant, built: buildF04(gitPath(), `t196-f04-${variant}`, variant) }));
     for (const { variant, built } of repos) {
@@ -211,7 +214,7 @@ describe("line endings and blob proofs (contract §4 \"Blob proof\", research.md
   const ACCEPTED: F04StageVariant[] = ["index-crlf", "mixed-over-lf", "ident"];
   for (const variant of ACCEPTED) {
     const expected = F04_BLOB_PROOFS[variant].a ? "A" : "B";
-    todoCase(TASK, `F04 ${variant}: f.txt stages as git add does through proof ${expected}; report the pair for research.md R3 ${NEEDS}`, SHELL, () =>
+    caseTest(TASK, `F04 ${variant}: f.txt stages as git add does through proof ${expected}; report the pair for research.md R3`, SHELL, () =>
       withService({ name: `t196-proof-${variant}` }, async (service) => {
         const repo = repoOf(buildF04Stage(gitPath(), `t196-proof-${variant}`, variant));
         await underTest();
@@ -220,12 +223,13 @@ describe("line endings and blob proofs (contract §4 \"Blob proof\", research.md
         console.log(`OBSERVATION ${TASK}: F04 stage-${variant} f.txt proof ${proof} (research R3 probe 7 expects ${expected})`);
         expect({ variant, proof }).toEqual({ variant, proof: expected });
       }),
+      TIMEOUT_MS,
     );
   }
 });
 
 describe("candidate time and isolation (contract §4 \"Candidate time\")", () => {
-  todoCase(TASK, `F02 racy: in ${RACY_RUNS} runs Stage file stages the new same-size bytes, and the candidate time never exceeds the canonical index time ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F02 racy: in ${RACY_RUNS} runs Stage file stages the new same-size bytes, and the candidate time never exceeds the canonical index time`, SHELL, async () => {
     await underTest();
     const runs = Array.from({ length: RACY_RUNS }, (_, run) => {
       const name = `t196-racy-${run}`;
@@ -251,7 +255,7 @@ describe("candidate time and isolation (contract §4 \"Candidate time\")", () =>
     }
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F07: Stage file in one linked worktree leaves the raw index bytes of the other worktree unchanged ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F07: Stage file in one linked worktree leaves the raw index bytes of the other worktree unchanged`, SHELL, () =>
     withService({ name: "t196-f07" }, async (service) => {
       const built = buildF07(gitPath(), "t196-f07");
       const a = join(built.root, "wt-a");
@@ -266,31 +270,31 @@ describe("candidate time and isolation (contract §4 \"Candidate time\")", () =>
       expect(indexEntries(gitPath(), a).find((e) => e.path === "shared.txt")?.oid).toBe(expected);
       expect({ index: rawIndexDigest(gitPath(), b), entries: indexEntries(gitPath(), b) }).toEqual(other);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F17: Unstage file restores the HEAD entry whose blob the clone lacks, and the uploadpack canary never runs ${NEEDS}`, SHELL, () =>
+  // Contract §4 "Comparison limits": an OBJECT_MISSING comparison carries no `comparisonId`, and the service keeps no comparison.
+  caseTest(TASK, `F17: the unstage comparison is limited with OBJECT_MISSING, carries the file-action decision unstage and no comparisonId, so no applyFile targets it, and the uploadpack canary never runs`, SHELL, () =>
     withService({ name: "t196-f17" }, async (service) => {
       const built = buildF17(gitPath(), "t196-f17", "partial-reset-soft");
       const clone = repoOf(built, "clone");
       const canary = join(built.root, built.facts.canaries.uploadpack!);
       // `ls-tree` reads trees only. The blob:none clone holds every tree.
       const [meta] = gitText(clone, ["--no-lazy-fetch", "ls-tree", "-z", "HEAD", "--", "data.txt"]).split("\t");
-      const [mode, , oid] = meta!.split(" ");
+      const [, , oid] = meta!.split(" ");
       expect((built.facts.notes.missingBlobs as string[]).includes(oid!)).toBe(true);
-      const expected: IndexEntry[] = indexEntries(gitPath(), clone).map((e) => (e.path === "data.txt" ? { ...e, mode: mode!, oid: oid! } : e));
-      const files = repoState(clone).files;
+      const before = repoState(clone);
       await underTest();
       const { repositoryId } = await service.register(clone);
       await approve(service, repositoryId);
       const c = await compare(service, repositoryId, "data.txt", "staged");
-      // Contract §9 "limited": a missing object keeps the bounded data, so the comparison still names its file action.
-      expect({ comparisonId: typeof c.comparisonId, fileAction: valuesOf(c.response.result, "fileAction") }).toEqual({ comparisonId: "string", fileAction: ["unstage"] });
-      expect(outcome(await applyFile(service, repositoryId, c, "unstage"))).toEqual(SUCCEEDED);
-      expect({ entries: indexEntries(gitPath(), clone), files: repoState(clone).files, canary: existsSync(canary) }).toEqual({ entries: expected, files, canary: false });
+      expect({ ...outcome(c.response), comparisonId: valuesOf(c.response.result, "comparisonId"), fileAction: valuesOf(c.response.result, "fileAction") }).toEqual({ state: "limited", code: "OBJECT_MISSING", comparisonId: [], fileAction: ["unstage"] });
+      expect({ rawIndex: repoState(clone).rawIndex, files: repoState(clone).files, canary: existsSync(canary) }).toEqual({ rawIndex: before.rawIndex, files: before.files, canary: false });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F16: the 536,870,912-byte untracked file stages as git add does; report its Git step time for research.md R3 ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F16: the 536,870,912-byte untracked file stages as git add does; report its Git step time for research.md R3`, SHELL, () =>
     withService({ name: "t196-f16" }, async (service) => {
       await underTest();
       const built: Built = buildF16StageInput(gitPath(), "t196-f16");

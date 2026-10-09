@@ -210,6 +210,8 @@ export function createCommitReviewer({ runner, trust, approvals, now = () => per
         head: s.head,
         disclosure: listing.fingerprint,
         trust: { state: view.state, trustId: view.trustId ?? null },
+        operationState: s.operationState,
+        approvalRequired: listing.approvalRequired.commit,
       },
     });
     prune();

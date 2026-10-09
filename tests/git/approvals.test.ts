@@ -97,7 +97,7 @@ describe("approvals (T108)", () => {
   test("an invalidated approval or review gives UNKNOWN_TARGET; another repository keeps its approval", () => {
     const store = createApprovals(clock().now);
     const [invalidated, other] = [hunk(), hunk()];
-    const commit: Approval = { kind: "commit", repositoryId: invalidated.repositoryId, snapshotId: id(), generation: 1, reviewToken: id(), binding: { stagedScope: HEX("7"), reviewedIndex: comparisonBinding().index, head: comparisonBinding().head, disclosure: HEX("8"), trust: { state: "approved", trustId: id() } } };
+    const commit: Approval = { kind: "commit", repositoryId: invalidated.repositoryId, snapshotId: id(), generation: 1, reviewToken: id(), binding: { stagedScope: HEX("7"), reviewedIndex: comparisonBinding().index, head: comparisonBinding().head, disclosure: HEX("8"), trust: { state: "approved", trustId: id() }, operationState: "normal", approvalRequired: true } };
     for (const a of [invalidated, other, commit]) store.issue(a);
     store.invalidate((a) => a.repositoryId === invalidated.repositoryId);
     expect(store.accept(invalidated)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });

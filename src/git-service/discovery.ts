@@ -71,8 +71,8 @@ export interface DiscoveryTarget {
 
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-// Contract §9 "Commit failure output": a ring buffer that keeps the last 16 KiB of raw stderr bytes.
-function createTailCollector() {
+// Contract §9 "Commit failure output": a ring buffer that keeps the last 16 KiB of raw stderr bytes. `progress` adds the §12 "Output tail" change.
+export function createTailCollector(mode: "progress" | "plain") {
   let kept = new Uint8Array(0);
   let bytes = 0;
   return {
@@ -90,7 +90,7 @@ function createTailCollector() {
     get limited() {
       return bytes > kept.length;
     },
-    outputTail: (): string => buildSubmoduleOutputTail(kept, bytes > kept.length),
+    outputTail: (): string => buildSubmoduleOutputTail(kept, bytes > kept.length, mode),
   };
 }
 
@@ -157,7 +157,7 @@ export async function discoverRepository(runner: GitRunner, target: DiscoveryTar
   const profiles = discoveryProfiles();
   const [flagsArgs, symbolicArgs, headArgs] = [profiles[0]!, profiles[7]!, profiles[8]!];
 
-  const tail = createTailCollector();
+  const tail = createTailCollector("progress");
   const flags = await query(runner, target, flagsArgs, signal, tail);
   if (isRefusal(flags)) return fail(flags);
   if (flags.exitCode !== 0) return fail({ ...unavailable(target.directory), outputTail: tail.outputTail() });

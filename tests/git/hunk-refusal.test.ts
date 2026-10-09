@@ -119,6 +119,39 @@ describe("checkpoints (contract §4, §9)", () => {
     }
   }
 
+  // Contract §4: every detected mismatch prevents publication. An external index equal to the verified candidate before `publish()` is no publication.
+  caseTest(TASK, `F09: an index change to the candidate bytes before the second checkpoint gives failed STALE_SELECTION, not succeeded`, SHELL, () => {
+    const name = "t096-second-candidate-bytes";
+    return withObserver(name, async (service, at5) => {
+      const repo = repoOf(buildChanged(gitPath(), name, "F09"));
+      await underTest("hunk-publish");
+      const { repositoryId } = await service.register(repo);
+      const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+      const baseline = { state: repoState(repo) };
+      let armed = false;
+      let wrote = false;
+      at5.run = () => void (armed = true);
+      // The first `check-attr` after step 5 belongs to the step 11 checkpoint. The candidate is complete then.
+      // An independent writer copies the owned candidate over the canonical index and ignores the lock.
+      const release = service.runner.holdStart((call) => {
+        if (!armed || !call.arguments.includes("check-attr")) return false;
+        armed = false;
+        const owned = candidateFiles(repo).filter((f) => !f.endsWith(".lock"));
+        expect(owned.length).toBe(1);
+        writeFileSync(gitPathOf(repo, "index"), readFileSync(join(gitDirOf(repo), owned[0]!)));
+        baseline.state = repoState(repo);
+        wrote = true;
+        return false;
+      });
+      try {
+        const response = await refused(service, repo, () => applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage"), baseline);
+        expect({ ...outcome(response), wrote }).toEqual({ state: "failed", code: "STALE_SELECTION", wrote: true });
+      } finally {
+        release();
+      }
+    });
+  }, TIMEOUT_MS);
+
   caseTest(TASK, `F09: a readWorkspace between the change and applyHunk gives REPOSITORY_CHANGED at acceptance, and no Git process starts`, SHELL, () =>
     withService({ name: "t096-generation" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t096-generation", "F09"));
@@ -211,7 +244,8 @@ describe("repository state (contract §9)", () => {
 });
 
 describe("hunk profiles (contract §4 \"Hunk eligibility and publication\")", () => {
-  type Profile = { name: string; reason: string; build: (built: Built, repo: string) => void; env?: (built: Built) => Record<string, string>; hookLog?: boolean; variant?: F10Variant };
+  type Profile = { name: string; reason: string; build: (built: Built, repo: string) => void; env?: (built: Built) => Record<string, string>; hookLog?: boolean; monitorLog?: boolean; variant?: F10Variant };
+  const monitorLog = (built: Built) => join(built.root, "canaries", "t096-fsmonitor.log");
   const hookCanary = (built: Built) => {
     const log = join(built.root, "canaries", "t096-post-index-change.log");
     const script = put(built.root, "canaries/t096-post-index-change.sh", `#!/bin/sh\necho "post-index-change $*" >> '${log.replaceAll("\\", "/")}'\n`);
@@ -235,12 +269,17 @@ describe("hunk profiles (contract §4 \"Hunk eligibility and publication\")", ()
         git(repo, ["config", "--local", "hook.t096.enabled", "false"]);
       },
     },
-    { name: "monitor-command", reason: "executable-monitor", build: (b, repo) => void git(repo, ["config", "--local", "core.fsmonitor", `'${put(b.root, "canaries/t096-fsmonitor.sh", "#!/bin/sh\nexit 1\n").replaceAll("\\", "/")}'`]) },
+    {
+      name: "monitor-command",
+      reason: "executable-monitor",
+      monitorLog: true,
+      build: (b, repo) => void git(repo, ["config", "--local", "core.fsmonitor", `'${put(b.root, "canaries/t096-fsmonitor.sh", `#!/bin/sh\necho "fsmonitor $*" >> '${monitorLog(b).replaceAll("\\", "/")}'\nexit 1\n`).replaceAll("\\", "/")}'`]),
+    },
     { name: "monitor-builtin", reason: "unqualified-monitor", build: (_b, repo) => void git(repo, ["config", "--local", "core.fsmonitor", "true"]) },
   ];
 
   for (const profile of PROFILES) {
-    caseTest(TASK, `profile ${profile.name} gives UNSUPPORTED_HUNK_PROFILE with reason ${profile.reason}${profile.hookLog ? ", and the hook canary never runs" : ""}${profile.reason === "split-index" ? ", and no sharedindex file appears" : ""}`, SHELL, async () => {
+    caseTest(TASK, `profile ${profile.name} gives UNSUPPORTED_HUNK_PROFILE with reason ${profile.reason}${profile.hookLog ? ", and the hook canary never runs" : ""}${profile.monitorLog ? ", and the monitor canary never runs during applyHunk" : ""}${profile.reason === "split-index" ? ", and no sharedindex file appears" : ""}`, SHELL, async () => {
       const name = `t096-profile-${profile.name}`;
       const built = profile.variant === undefined ? buildF02(gitPath(), name) : buildF10(gitPath(), name, profile.variant);
       const repo = repoOf(built);
@@ -254,8 +293,22 @@ describe("hunk profiles (contract §4 \"Hunk eligibility and publication\")", ()
           const { repositoryId } = await service.register(repo);
           await approve(service, repositoryId);
           const c = await selectHunks(service, repositoryId, path, "unstaged");
-          const response = await refused(service, repo, () => applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage"));
-          expect({ profile: profile.name, code: code(response), reason: response.result?.reason }).toEqual({ profile: profile.name, code: "UNSUPPORTED_HUNK_PROFILE", reason: profile.reason });
+          // The reads and the `repoState` oracle can run the monitor. Only a run during applyHunk counts.
+          const monitorText = () => (existsSync(monitorLog(built)) ? readFileSync(monitorLog(built), "utf8") : null);
+          const baseline = { state: repoState(repo) };
+          const before = monitorText();
+          let during = before;
+          const response = await refused(
+            service,
+            repo,
+            async () => {
+              const r = await applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage");
+              during = monitorText();
+              return r;
+            },
+            baseline,
+          );
+          expect({ profile: profile.name, code: code(response), reason: response.result?.reason, monitor: during }).toEqual({ profile: profile.name, code: "UNSUPPORTED_HUNK_PROFILE", reason: profile.reason, monitor: before });
         });
         expect(sharedIndexFiles(repo)).toEqual(shared);
         if (profile.hookLog) expect(existsSync(join(built.root, "canaries", "t096-post-index-change.log"))).toBe(false);

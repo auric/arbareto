@@ -272,6 +272,14 @@ describe("output tail builder (contract §9 'Commit failure output', §12 'Outpu
     expect(tail("error: a\r\nerror: b\r\n")).toBe("error: a\nerror: b\n");
   });
 
+  test("plain mode (§9) turns a lone CR into LF; progress mode (§12) collapses it", () => {
+    const bytes = new TextEncoder().encode("one\rtwo\r\nthree\n");
+    expect(buildSubmoduleOutputTail(bytes, false, "plain")).toBe("one\ntwo\nthree\n");
+    expect(buildSubmoduleOutputTail(bytes, false, "progress")).toBe("two\nthree\n");
+    expect(buildSubmoduleOutputTail(new TextEncoder().encode("a\rb\n"), false, "plain").split("\n").filter((line) => line !== "")).toEqual(["a", "b"]);
+    expect(buildSubmoduleOutputTail(new TextEncoder().encode("a\rb\n"), false).split("\n").filter((line) => line !== "")).toEqual(["b"]);
+  });
+
   test("decodes UTF-8 with U+FFFD and removes escape sequences and controls except TAB and LF", () => {
     expect(tail(new Uint8Array([0x61, 0xff, 0x62, 0x0a]))).toBe("a�b\n");
     expect(tail("\u001b[31mred\u001b[0m\tok\u0007\u007f\u0085\u009b\n")).toBe("red\tok\n");

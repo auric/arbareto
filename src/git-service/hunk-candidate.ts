@@ -23,7 +23,7 @@ const LF = 0x0a;
 const CANDIDATE_STEP_NS = 100n;
 const NS_PER_MS = 1_000_000n;
 
-export type CandidateStep = "read-tree" | "apply" | "blob" | "hash";
+export type CandidateStep = "read-tree" | "apply" | "blob" | "hash" | "update-index" | "check";
 
 export type CandidateFailure =
   // UNSUPPORTED_HUNK_PROFILE (contract §4 "Split index").
@@ -140,16 +140,19 @@ function headerMode(header: Uint8Array, kind: "new" | "deleted"): string | null 
   return null;
 }
 
-export async function prepareCandidate(t: CandidateTarget): Promise<CandidateOutcome> {
+// The target of an owned candidate, without the hunk inputs.
+export type CandidateBase = Omit<CandidateTarget, "comparison" | "hunk">;
+
+// The owned candidate file and its steps. Each step throws a stop that `settle` maps to a `CandidateFailure`.
+export function ownedCandidate(t: CandidateBase) {
   const w = t.workspace;
   const path = join(dirname(w.indexPath), `${CANDIDATE_PREFIX}${crypto.randomUUID()}`);
   const transaction = { transactionId: crypto.randomUUID(), indexFile: path };
   let created = false;
 
   // One `mutation` Git step with the §5 Git process deadline.
-  async function step(name: CandidateStep, args: string[], stdout: Collector, input: Uint8Array, candidate: boolean): Promise<void> {
+  async function step(name: CandidateStep, args: string[], stdout: Collector, input: Uint8Array, candidate: boolean, stderr: Collector = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM })): Promise<void> {
     if (t.signal.aborted) throw new Stop({ reason: "canceled" });
-    const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
     let exit;
     try {
       exit = await t.runner.run({
@@ -260,8 +263,31 @@ export async function prepareCandidate(t: CandidateTarget): Promise<CandidateOut
     return { bytes: read.bytes, mtimeNs: read.mtimeNs };
   }
 
-  try {
-    if (t.signal.aborted) throw new Stop({ reason: "canceled" });
+  const fail = (failure: CandidateFailure): never => {
+    throw new Stop(failure);
+  };
+
+  // `body` returns the verified candidate bytes and their time.
+  async function settle(body: () => Promise<{ bytes: Uint8Array; mtimeNs: bigint }>): Promise<CandidateOutcome> {
+    try {
+      if (t.signal.aborted) throw new Stop({ reason: "canceled" });
+      const { bytes, mtimeNs } = await body();
+      return { ok: true, candidate: { path, bytes, digest: sha256(bytes), mtimeNs } };
+    } catch (error) {
+      if (error instanceof Stop) return { ok: false, path: created ? path : null, failure: error.failure };
+      // The caller removes an owned candidate, so a path never gets lost.
+      if (created) return { ok: false, path, failure: { reason: "unavailable", errno: (error as NodeJS.ErrnoException).code ?? "unknown" } };
+      throw error;
+    }
+  }
+
+  return { path, transaction, step, blob, copy, parse, readCandidate, fail, settle };
+}
+
+export function prepareCandidate(t: CandidateTarget): Promise<CandidateOutcome> {
+  const { step, blob, copy, parse, readCandidate, settle } = ownedCandidate(t);
+  const w = t.workspace;
+  return settle(async () => {
     const { entry, scope } = t.comparison;
     const selected = new Uint8Array(Buffer.from(entry.pathBytes, "base64"));
     const patch = parsePatch(t.comparison.patch, selected);
@@ -312,11 +338,6 @@ export async function prepareCandidate(t: CandidateTarget): Promise<CandidateOut
     const want = expected === null ? [] : [{ path: selected, mode: expected.mode, oid: oid!, stage: 0, assumeUnchanged: false, skipWorktree: false, intentToAdd: false }];
     if (!Bun.deepEquals(entries.filter(isSelected), want, true)) throw new Stop({ reason: "verification", detail: "selected-entry" });
     if (!Bun.deepEquals(entries.filter((e) => !isSelected(e)), canonicalEntries.filter((e) => !isSelected(e)), true)) throw new Stop({ reason: "verification", detail: "unrelated-entries" });
-    return { ok: true, candidate: { path, bytes, digest: sha256(bytes), mtimeNs } };
-  } catch (error) {
-    if (error instanceof Stop) return { ok: false, path: created ? path : null, failure: error.failure };
-    // The caller removes an owned candidate, so a path never gets lost.
-    if (created) return { ok: false, path, failure: { reason: "unavailable", errno: (error as NodeJS.ErrnoException).code ?? "unknown" } };
-    throw error;
-  }
+    return { bytes, mtimeNs };
+  });
 }

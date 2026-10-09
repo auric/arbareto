@@ -13,6 +13,7 @@ import { COMPARED_RAW_VERSION_BYTES, MUTATION_RAW_INDEX_BYTES, WHOLE_FILE_STAGE_
 import { Count, Fingerprint, Identifier } from "../contracts/operations";
 import { IndexFormatError, splitIndexLink, type ObjectFormat } from "./eligibility";
 import type { GitInstallation } from "./git-installation";
+import { noFileId } from "./index-lock";
 
 export type { ObjectFormat } from "./eligibility";
 
@@ -93,12 +94,17 @@ type FileIdentity = Pick<BigIntStats, "dev" | "ino">;
 
 // Opens a regular file without following a final link. O_NONBLOCK keeps a file replaced by a FIFO from blocking the open.
 // Bun on Windows defines neither flag, so the open follows a final reparse point. `expected` then detects a swapped path.
+// `no-identity`: a sentinel `ino` on either side makes the compare prove nothing (contract §6). It never retries.
 async function openRegular(path: string | Buffer, expected?: FileIdentity) {
   const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   const stat = await handle.stat({ bigint: true });
   if (!stat.isFile()) {
     await handle.close();
     return null;
+  }
+  if (expected !== undefined && noFileId(stat.ino, expected.ino)) {
+    await handle.close();
+    return "no-identity" as const;
   }
   if (expected !== undefined && (stat.dev !== expected.dev || stat.ino !== expected.ino)) {
     await handle.close();
@@ -113,7 +119,7 @@ async function boundedDigest(
   bound: number,
   trailerBytes = 0,
   expected?: FileIdentity,
-): Promise<{ digest: string; size: number; trailer: Uint8Array } | null | "absent" | "swapped"> {
+): Promise<{ digest: string; size: number; trailer: Uint8Array } | null | "absent" | "swapped" | "no-identity"> {
   const opened = await openRegular(path, expected).catch((error: NodeJS.ErrnoException) => {
     // O_NOFOLLOW gives ELOOP for a final symbolic link. `expected` comes from an `lstat` that found a regular file.
     if (error.code === "ELOOP" && expected !== undefined) return "swapped" as const;
@@ -121,7 +127,7 @@ async function boundedDigest(
     throw error;
   });
   if (opened === "absent" || opened === null) return "absent";
-  if (opened === "swapped") return opened;
+  if (opened === "swapped" || opened === "no-identity") return opened;
   const { handle, stat } = opened;
   try {
     if (stat.size > BigInt(bound)) return null;
@@ -169,7 +175,7 @@ export async function indexFingerprint(input: IndexFingerprintInput): Promise<Ch
       } catch {
         return failed("REPOSITORY_UNAVAILABLE");
       }
-      if (shared === "absent" || shared === "swapped") return failed("REPOSITORY_UNAVAILABLE");
+      if (shared === "absent" || shared === "swapped" || shared === "no-identity") return failed("REPOSITORY_UNAVAILABLE");
       if (shared === null) return limited("MUTATION_RAW_INDEX_BYTES");
       // read-cache.c `read_index_from`: Git refuses a shared file whose trailing hash differs from the link hash.
       if (Buffer.from(shared.trailer).toString("hex") !== link) return failed("MALFORMED_GIT_OUTPUT");
@@ -289,6 +295,7 @@ export interface ReadWorkingVersionOptions {
 
 // An atomic save replaces the file between the `lstat` and the open, so one swap gets one retry.
 // REPOSITORY_CHANGED reports a second swap. `readWorkspace` maps it by contract §8 "Changing working file".
+// UNSUPPORTED_HUNK_PROFILE reports a sentinel file ID, the contract §6 reason `file-id`.
 export async function readWorkingVersion(
   worktreeRoot: string,
   path: Uint8Array,
@@ -352,6 +359,7 @@ async function readOnce(
   }
   if (read === "absent") return absent;
   if (read === "swapped") return read;
+  if (read === "no-identity") return failed("UNSUPPORTED_HUNK_PROFILE");
   if (read === null) return limited(bound);
   return { ok: true, value: { path, exists: true, type: "file", mode, size: read.size, rawDigest: read.digest, normalized } };
 }

@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import {
   ChooseGitResult,
+  Comparison,
   decodeRequest,
   EnvironmentResult,
   NativeFirstEnvelope,
@@ -24,6 +25,7 @@ import { OPERATIONS, SHELL_ONLY } from "../../src/contracts/operations";
 import { getEnvironment } from "../../src/git-service/environment";
 import { createSessionLog } from "../../src/git-service/log";
 import { createOperationRegistry } from "../../src/git-service/operations";
+import { SUPPORT_REASONS } from "../../src/git-service/support";
 
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
 printOrigin("../../src/contracts/channel.ts", import.meta.dir);
@@ -120,6 +122,10 @@ describe("result, progress, and response schemas", () => {
     for (const bad of [{ ...event, command: "git fetch" }, { ...event, state: "succeeded" }, { ...event, counters: { index: -1 } }, { ...event, counters: { index: 1.5 } }]) {
       expect(ProgressEvent.safeParse(bad).success).toBe(false);
     }
+  });
+
+  test("the readComparison support values are supported and the T103 support reasons", () => {
+    expect(Comparison.shape.support.unwrap().options).toEqual(["supported", ...SUPPORT_REASONS]);
   });
 
   test("a response is terminal and carries a contract §9 code", () => {

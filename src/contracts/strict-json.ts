@@ -16,6 +16,8 @@ const ESCAPES: Record<number, string> = { 0x22: '"', 0x5c: "\\", 0x2f: "/", 0x62
 // The keys of each decoded object whose number literal has a fraction or an exponent. `1.0` and `1` decode to the same value.
 const fractionOrExponent = new WeakMap<object, Set<string>>();
 
+export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
 // True only when `holder` came from `decodeStrictJson` and the literal of `key` has a fraction or an exponent.
 export function hasFractionOrExponent(holder: object, key: string): boolean {
   return fractionOrExponent.get(holder)?.has(key) ?? false;

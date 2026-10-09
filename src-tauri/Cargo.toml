@@ -21,6 +21,8 @@ serde = "1.0.228"
 serde_json = "1.0.145"
 regress = "0.12.0"
 time = { version = "0.3.55", features = ["formatting", "macros"] }
+base64 = "0.23"
+uuid = "1.26"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39.1"

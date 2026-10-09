@@ -70,7 +70,7 @@ export function relativeUrl(remoteUrl: string, url: string, platform: GitPlatfor
   if (remote.length === 0) throw new SubmoduleUrlError("invalid empty remote_url");
   if (sep(remote[remote.length - 1])) remote = remote.subarray(0, remote.length - 1);
   const isRelative = isLocalNotSsh(remote, platform) && !isAbsolute(remote, platform);
-  if (isRelative && !dotSlash(remote, 1, sep) && !dotSlash(remote, 2, sep)) remote = concat(encoder.encode("./"), remote);
+  if (isRelative && !dotSlash(remote, 1, sep) && !dotSlash(remote, 2, sep)) remote = Buffer.concat([encoder.encode("./"), remote]);
   let colonsep = false;
   for (;;) {
     if (dotSlash(u, 2, sep)) {
@@ -87,20 +87,10 @@ export function relativeUrl(remoteUrl: string, url: string, platform: GitPlatfor
     } else if (dotSlash(u, 1, sep)) u = u.subarray(2);
     else break;
   }
-  let out = concat(remote, encoder.encode(colonsep ? ":" : "/"), u);
+  let out = Buffer.concat([remote, encoder.encode(colonsep ? ":" : "/"), u]);
   if (u[u.length - 1] === SLASH) out = out.subarray(0, out.length - 1);
   if (dotSlash(out, 1, sep)) out = out.subarray(2);
   return decoder.decode(out);
-}
-
-function concat(...parts: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.length;
-  }
-  return out;
 }
 
 // The facts of one repository that Git's remote choice reads.

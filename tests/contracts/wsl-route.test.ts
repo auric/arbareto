@@ -104,6 +104,13 @@ describe("WSL route (T204, contract §11 Route)", () => {
     expect(routeWslPath(unc("wsl$", "UBUNTU", "r"), facts)).toEqual({ kind: "refused", code: "WSL_UNAVAILABLE", reason: "distro-missing", distro: "UBUNTU" });
   });
 
+  // WSL `s_ValidateDistroName` admits only `[a-zA-Z0-9._-]`. The Rust shell `linux_path` folds only ASCII letters.
+  test("a distro match folds only ASCII letters, so U+212A KELVIN SIGN matches no k", () => {
+    const facts: WslDistroFacts = { listed: ["kali"], registry: [{ name: "kali", guid: GUID, version: 2 }] };
+    expect(routeWslPath(unc("wsl$", "KALI", "r"), facts)).toMatchObject({ kind: "wsl", distro: "kali" });
+    expect(routeWslPath(unc("wsl$", "Kali", "r"), facts)).toEqual({ kind: "refused", code: "WSL_UNAVAILABLE", reason: "distro-missing", distro: "Kali" });
+  });
+
   test("no match, or a key without Version 2, gives WSL_UNAVAILABLE with its reason", () => {
     expect(routeWslPath(unc("wsl.localhost", "Fedora", "r"), FACTS)).toEqual({ kind: "refused", code: "WSL_UNAVAILABLE", reason: "distro-missing", distro: "Fedora" });
     const keyless: WslDistroFacts = { listed: ["Ubuntu"], registry: [] };

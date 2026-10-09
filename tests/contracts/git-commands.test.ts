@@ -65,6 +65,7 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["gitmodulesListArgs", () => commands.gitmodulesListArgs()],
   ["gitmodulesIndexArgs", () => commands.gitmodulesIndexArgs(SHA1, "sha1")],
   ["gitmodulesHeadArgs", () => commands.gitmodulesHeadArgs()],
+  ["modulesPathArgs", () => commands.modulesPathArgs()],
   ["gitlinkPatchArgs", () => commands.gitlinkPatchArgs(["sub"])],
 ];
 
@@ -419,6 +420,7 @@ test("the T227 superproject submodule reads are exact", () => {
   expect(commands.gitmodulesIndexArgs(SHA256, "sha256")).toEqual([...R, "config", "--blob", SHA256, "--null", "--list"]);
   for (const oid of [":.gitmodules", "HEAD:.gitmodules", SHA256, "", SHA1.toUpperCase()]) expect(() => commands.gitmodulesIndexArgs(oid, "sha1")).toThrow(TypeError);
   expect(commands.gitmodulesHeadArgs()).toEqual([...R, "config", "--blob", "HEAD:.gitmodules", "--null", "--list"]);
+  expect(commands.modulesPathArgs()).toEqual([...R, "rev-parse", "--path-format=absolute", "--git-path", "modules"]);
   expect(commands.gitlinkPatchArgs(["sub", "-rf"])).toEqual([...R, "diff-files", "-p", "--ignore-submodules=dirty", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--", "sub", "-rf"]);
   expect(commands.activeSetArgs(["sub*", ":(glob)lib/**"])).toEqual(["--no-lazy-fetch", "--no-optional-locks", "ls-files", "-z", "--stage", "--", "sub*", ":(glob)lib/**"]);
   expect(commands.activeSetArgs(["x"], "C:/repo/sub")).toEqual(["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub", "ls-files", "-z", "--stage", "--", "x"]);

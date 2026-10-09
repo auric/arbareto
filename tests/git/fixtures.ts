@@ -312,7 +312,8 @@ export function buildF03(git: string, name: string): Built {
     bunWrote = false;
   }
   normalizeIndex(r);
-  const invalidKey = invalid.toString("utf8");
+  // Data-model §5 shows the invalid byte as `\xNN`.
+  const invalidKey = "bad-\\xff.txt";
   // A case-sensitive file system holds only `collide/Name.txt`, so Git reports `collide/name.txt` as deleted.
   const caseInsensitive = caseInsensitiveFs();
   // Git without `core.longpaths` cannot open the long file where the native rules hold a path limit. Elsewhere Git lists it as untracked.
@@ -1842,8 +1843,8 @@ export function buildF28(git: string, name: string, variant: F28Variant): Built 
       indexInfo(w.sup, [["160000", w.solo.tips.main!, 0, invalid]]);
       commit(w.sup, "invalid path");
       facts.notes.invalidPath = invalid.toString("hex");
-      // No folder exists for this path, so `diff-files` reports the gitlink as deleted. The listing decodes the byte as U+FFFD.
-      unstagedExtra = [invalid.toString("utf8")];
+      // No folder exists for this path, so `diff-files` reports the gitlink as deleted. Data-model §5 shows the invalid byte as `\xNN`.
+      unstagedExtra = ["bad-\\xff-sub"];
       break;
     }
     case "prune":

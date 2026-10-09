@@ -1,0 +1,5 @@
+{
+  "schema": "read-comparison-result",
+  "expected": "valid",
+  "text": "{\"comparisonId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"snapshotId\":\"0f0f0f0f-0000-4000-8000-000000000002\",\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000003\",\"scope\":\"empty-to-untracked\",\"completeness\":{\"state\":\"complete\"},\"patch\":\"\",\"hunks\":[],\"support\":\"filter\",\"fileAction\":\"filter\",\"remedy\":{\"text\":\"This command stages or unstages the whole file with your Git settings. Run it in a terminal.\",\"command\":\"& 'C:\\\\Git\\\\cmd\\\\git.exe' --literal-pathspecs -C 'C:\\\\repo' add -- 'a.txt'\"}}"
+}

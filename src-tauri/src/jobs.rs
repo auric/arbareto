@@ -810,6 +810,7 @@ impl Drop for Supervisor {
 pub(crate) mod tests {
     use super::*;
     use crate::bootstrap::Identity;
+    use crate::settings::hex;
 
     use std::ffi::OsString;
     use std::io::{Read, Write};
@@ -1118,10 +1119,6 @@ pub(crate) mod tests {
     fn read_go_line() {
         let mut line = String::new();
         let _ = std::io::stdin().read_line(&mut line);
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     fn conout_opens() -> bool {

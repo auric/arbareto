@@ -53,6 +53,13 @@ export interface CommitBinding {
   approvalRequired: boolean;
 }
 
+// Data-model §6 "Submodule review": `review` digests the review reads, the plan, and the refusals. `programs` digests the submodule program list.
+export interface SubmoduleBinding {
+  review: string;
+  programs: string;
+  trust: TrustApproval;
+}
+
 interface Issued {
   repositoryId: string;
   snapshotId: string;
@@ -61,13 +68,15 @@ interface Issued {
 export type HunkApproval = Issued & { kind: "hunk"; comparisonId: string; hunkId: string; direction: Direction; binding: HunkBinding };
 export type FileApproval = Issued & { kind: "file"; comparisonId: string; entryId: string; direction: Direction; binding: FileBinding };
 export type CommitReview = Issued & { kind: "commit"; reviewToken: string; binding: CommitBinding };
-export type Approval = HunkApproval | FileApproval | CommitReview;
+export type SubmoduleReview = Issued & { kind: "submodule"; reviewToken: string; binding: SubmoduleBinding };
+export type Approval = HunkApproval | FileApproval | CommitReview | SubmoduleReview;
 
 // Contract §2: the repeat key of each approval.
 export type ApprovalKey =
   | Pick<HunkApproval, "kind" | "comparisonId" | "hunkId" | "direction">
   | Pick<FileApproval, "kind" | "comparisonId" | "direction">
-  | Pick<CommitReview, "kind" | "reviewToken">;
+  | Pick<CommitReview, "kind" | "reviewToken">
+  | Pick<SubmoduleReview, "kind" | "reviewToken">;
 
 // A state change advances the generation, so the caller refuses it with REPOSITORY_CHANGED before acceptance (contract §9).
 export type Acceptance =
@@ -77,7 +86,7 @@ export type Acceptance =
   | { ok: false; consumed: string };
 
 const keyOf = (k: ApprovalKey) =>
-  k.kind === "hunk" ? `hunk/${k.comparisonId}/${k.hunkId}/${k.direction}` : k.kind === "file" ? `file/${k.comparisonId}/${k.direction}` : `commit/${k.reviewToken}`;
+  k.kind === "hunk" ? `hunk/${k.comparisonId}/${k.hunkId}/${k.direction}` : k.kind === "file" ? `file/${k.comparisonId}/${k.direction}` : `${k.kind}/${k.reviewToken}`;
 
 type Entry = { approval: Approval; issuedAt: number; consumed: string | null };
 
@@ -119,11 +128,11 @@ export function createApprovals(now: () => number = () => performance.now()) {
 
     // Contract §5: comparison eviction forgets its approvals. An expired approval stays until then, so it answers APPROVAL_EXPIRED.
     forget(comparisonId: string): void {
-      for (const [key, e] of entries) if (e.consumed === null && e.approval.kind !== "commit" && e.approval.comparisonId === comparisonId) entries.delete(key);
+      for (const [key, e] of entries) if (e.consumed === null && "comparisonId" in e.approval && e.approval.comparisonId === comparisonId) entries.delete(key);
     },
 
     // The binding fields whose values differ. Raw bytes compare byte by byte.
-    staleFields<B extends HunkBinding | FileBinding | CommitBinding>(bound: B, current: B): string[] {
+    staleFields<B extends HunkBinding | FileBinding | CommitBinding | SubmoduleBinding>(bound: B, current: B): string[] {
       return Object.keys(bound).filter((k) => !Bun.deepEquals(bound[k as keyof B], current[k as keyof B], true));
     },
   };

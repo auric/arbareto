@@ -2590,6 +2590,12 @@ describe("listing internals (contract §7)", () => {
     expect(parseMaybeBool("1k")).toBe(1);
   });
 
+  // Git `parse.c` compares the boolean words and the units with `strcasecmp`, which folds only ASCII letters.
+  test("a unit or a word folds only ASCII letters, so U+212A KELVIN SIGN is no unit", () => {
+    for (const value of ["1K", "0K", "2K"]) expect({ value, parsed: parseMaybeBool(value) }).toEqual({ value, parsed: -1 });
+    for (const [value, parsed] of [["1K", 1], ["0k", 0], ["0M", 0], ["1G", 1], ["TRUE", 1], ["Off", 0], ["yEs", 1], ["NO", 0]] as const) expect({ value, parsed: parseMaybeBool(value) }).toEqual({ value, parsed });
+  });
+
   test("a refused config listing call still waits for the hooks path call, so no listing process outlives the listing", async () => {
     let releaseHooks = () => {};
     const hooksHeld = new Promise<void>((resolve) => (releaseHooks = resolve));

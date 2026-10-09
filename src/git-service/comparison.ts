@@ -522,7 +522,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         completeness,
         // Contract §5: the canonical patch travels as base64 of its raw bytes.
         patch: b64(kept),
-        hunks: hunks.map(({ hunkId, ordinal, oldStart, oldCount, newStart, newCount }) => ({ hunkId, ordinal, oldStart, oldCount, newStart, newCount })),
+        hunks: hunks.map(({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest }) => ({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest })),
         support: decision === null ? null : decision.supported ? "supported" : (decision as { reason: string }).reason,
         fileAction: actionValue(fileAction),
         remedy: remedyOf(t, path, fileAction),

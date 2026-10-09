@@ -1,0 +1,5 @@
+{
+  "schema": "read-comparison-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"completeness\":{\"state\":\"failed\",\"code\":\"GIT_FAILED\"}}"
+}

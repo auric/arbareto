@@ -7,10 +7,10 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND, COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO,
     COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE,
     COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT,
-    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO, GetAvailableCoreWebView2BrowserVersionString,
-    ICoreWebView2, ICoreWebView2_11, ICoreWebView2AcceleratorKeyPressedEventArgs,
-    ICoreWebView2AcceleratorKeyPressedEventArgs2, ICoreWebView2ContextMenuRequestedEventArgs,
-    ICoreWebView2Controller, ICoreWebView2Settings3,
+    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO, CompareBrowserVersions,
+    GetAvailableCoreWebView2BrowserVersionString, ICoreWebView2, ICoreWebView2_11,
+    ICoreWebView2AcceleratorKeyPressedEventArgs, ICoreWebView2AcceleratorKeyPressedEventArgs2,
+    ICoreWebView2ContextMenuRequestedEventArgs, ICoreWebView2Controller, ICoreWebView2Settings3,
 };
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, ContextMenuRequestedEventHandler, take_pwstr,
@@ -24,30 +24,23 @@ pub const MINIMUM: &str = "154.0.4258.37";
 /// The handshake carries at most 64 ASCII bytes of version text (contract §5).
 const VERSION_BYTES: usize = 64;
 
-/// Compares the four numeric parts of `version` with `MINIMUM`.
+/// Compares `version` with `MINIMUM` through `CompareBrowserVersions`, which ignores a preview channel name.
 /// `None` is a missing runtime and gives `WEBVIEW_UNAVAILABLE`. A lower or unparseable version gives `WEBVIEW_UNSUPPORTED`.
 pub fn admission(version: Option<&str>) -> Result<(), &'static str> {
     let version = version.ok_or("WEBVIEW_UNAVAILABLE")?;
-    match (parts(version), parts(MINIMUM)) {
-        (Some(found), Some(minimum)) if found >= minimum => Ok(()),
+    // A wide string ends at its first NUL, so text after a NUL never reaches the comparison.
+    if version.len() > VERSION_BYTES || !version.bytes().all(|b| b.is_ascii() && b != 0) {
+        return Err("WEBVIEW_UNSUPPORTED");
+    }
+    let mut order = 0;
+    // SAFETY: both strings are live for the call, and `order` is a live local.
+    let compared = unsafe {
+        CompareBrowserVersions(&HSTRING::from(version), &HSTRING::from(MINIMUM), &mut order)
+    };
+    match compared {
+        Ok(()) if order >= 0 => Ok(()),
         _ => Err("WEBVIEW_UNSUPPORTED"),
     }
-}
-
-/// Four dot-separated parts of decimal digits. `u32::from_str` also accepts a sign, so each byte is checked first.
-fn parts(version: &str) -> Option<[u32; 4]> {
-    if version.len() > VERSION_BYTES {
-        return None;
-    }
-    let mut split = version.split('.');
-    let mut parts = [0; 4];
-    for part in &mut parts {
-        let digits = split
-            .next()
-            .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))?;
-        *part = digits.parse().ok()?;
-    }
-    split.next().is_none().then_some(parts)
 }
 
 /// The installed runtime version, read before any webview exists. `None` is a missing runtime.
@@ -268,6 +261,8 @@ fn filter_menu(args: &ICoreWebView2ContextMenuRequestedEventArgs) -> windows::co
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::E_INVALIDARG;
+    use windows::core::w;
 
     // Virtual-key codes from Microsoft Learn "Virtual-Key Codes" (winuser.h).
     const VK_LEFT: u32 = 0x25;
@@ -325,19 +320,38 @@ mod tests {
 
     #[test]
     fn unparseable_text_is_unsupported() {
+        let mut order = 0;
+        // SAFETY: both strings are live for the call, and `order` is a live local.
+        let compared =
+            unsafe { CompareBrowserVersions(w!("abc"), w!("154.0.4258.37"), &mut order) };
+        assert_eq!(compared.map_err(|e| e.code()), Err(E_INVALIDARG));
+        let long = format!("155.0.0.0 {}", "x".repeat(VERSION_BYTES));
         for version in [
             "",
-            "154.0.4258",
-            "154.0.4258.37.1",
-            "154.0..37",
             "v154.0.4258.37",
-            "154.+0.4258.37",
-            "154.0.4258.x",
+            "abc",
+            &long,
+            "155.0.0.0 bêta",
+            "155.0.0.0\0x",
         ] {
             assert_eq!(
                 admission(Some(version)),
                 Err("WEBVIEW_UNSUPPORTED"),
                 "{version:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preview_channel_at_or_above_the_minimum_is_admitted() {
+        for version in ["154.0.4258.37 beta", "155.0.0.0 dev", "155.0.0.0 canary"] {
+            assert_eq!(admission(Some(version)), Ok(()), "{version}");
+        }
+        for version in ["154.0.4258.36 canary", "153.0.0.0 beta"] {
+            assert_eq!(
+                admission(Some(version)),
+                Err("WEBVIEW_UNSUPPORTED"),
+                "{version}"
             );
         }
     }
@@ -383,7 +397,16 @@ mod tests {
     #[test]
     fn the_host_runtime_reports_a_parseable_version() {
         let version = installed_version().expect("an installed WebView2 Runtime");
-        assert!(parts(&version).is_some(), "{version:?}");
+        let mut order = 0;
+        // SAFETY: both strings are live for the call, and `order` is a live local.
+        let compared = unsafe {
+            CompareBrowserVersions(
+                &HSTRING::from(&version),
+                &HSTRING::from(MINIMUM),
+                &mut order,
+            )
+        };
+        assert_eq!(compared, Ok(()), "{version:?}");
     }
 
     const ALL_ITEMS: [&str; 10] = [

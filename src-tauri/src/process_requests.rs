@@ -14,6 +14,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value, json};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::IO::CancelSynchronousIo;
@@ -2675,7 +2677,9 @@ fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<R
 
 /// A base64 chunk with 1 to `max` decoded bytes.
 fn chunk(text: &str, max: usize) -> Result<Vec<u8>, Code> {
-    decode_base64(text)
+    STANDARD
+        .decode(text)
+        .ok()
         .filter(|bytes| (1..=max).contains(&bytes.len()))
         .ok_or(INVALID)
 }
@@ -2722,52 +2726,9 @@ pub(crate) fn is_identifier(id: &str) -> bool {
         })
 }
 
-const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
 /// Standard base64 with padding (contract §6 "Channel frames").
 pub(crate) fn encode_base64(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for group in bytes.chunks(3) {
-        let n = group
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
-        for i in 0..4 {
-            out.push(if i <= group.len() {
-                BASE64[(n >> (18 - 6 * i) & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-    }
-    out
-}
-
-/// Decodes only the canonical padded form. Other text gives `None`.
-fn decode_base64(text: &str) -> Option<Vec<u8>> {
-    let bytes = text.as_bytes();
-    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
-        return None;
-    }
-    let groups = bytes.len() / 4;
-    let mut out = Vec::with_capacity(groups * 3);
-    for (index, group) in bytes.chunks(4).enumerate() {
-        let padding = group.iter().rev().take_while(|&&b| b == b'=').count();
-        if padding > 2 || (padding > 0 && index + 1 < groups) {
-            return None;
-        }
-        let mut n = 0u32;
-        for &b in &group[..4 - padding] {
-            n = n << 6 | BASE64.iter().position(|&a| a == b)? as u32;
-        }
-        n <<= 6 * padding as u32;
-        let decoded = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-        if decoded[3 - padding..].iter().any(|&b| b != 0) {
-            return None;
-        }
-        out.extend_from_slice(&decoded[..3 - padding]);
-    }
-    Some(out)
+    STANDARD.encode(bytes)
 }
 
 /// The contract §1 strict decoder, as `src/contracts/strict-json.ts` applies it: no duplicate key, at most 16 nested levels, no trailing data, and only safe integers.
@@ -3016,11 +2977,12 @@ mod strict_tests {
             "a lone surrogate gives no string"
         );
         for bytes in [&b"a"[..], b"ab", b"abc", b"abcd"] {
-            assert_eq!(decode_base64(&encode_base64(bytes)).as_deref(), Some(bytes));
+            assert_eq!(chunk(&encode_base64(bytes), 4).as_deref(), Ok(bytes));
         }
         for refused in ["", "YQ", "YR==", "Y===", "YQ==YQ==", "****"] {
-            assert_eq!(decode_base64(refused), None, "{refused:?}");
+            assert_eq!(chunk(refused, 4), Err(INVALID), "{refused:?}");
         }
+        assert_eq!(chunk("YWJj", 2), Err(INVALID), "more than max bytes");
     }
 
     #[test]

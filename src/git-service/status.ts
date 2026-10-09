@@ -63,7 +63,7 @@ import {
 import { createStatusParser, displayPath, type BranchHeaders, type StatusRecord } from "./status-parser";
 import { gitmodulesSource } from "./submodule-review";
 import { isComponent, parseMaybeBool, readProgramFiles, requestFacts, type ChangeFiles, type ConfigEntry, type ListingOutcome, type ProgramFile, type FactEntry, type Trust, type TrustListing } from "./trust";
-import { statFiles, type TupleFile } from "./watch";
+import { statFiles, statWorkingFile, type TupleFile } from "./watch";
 
 // Contract §7 "Missing objects".
 export const OBJECT_MISSING_REMEDY =
@@ -121,6 +121,8 @@ interface LastRead {
   files: TupleFile[];
   programs: ProgramFile[];
   facts: string;
+  // The facts of the bound working files by their latin1 key, each from before the read of its version.
+  working: Map<string, string>;
   hints: number;
   listing: TrustListing;
   policy: string;
@@ -329,6 +331,14 @@ async function tupleFacts(
   const facts = await readProgramFiles(runner, operationId, w, programs, signal);
   if (facts === null || !Array.isArray(facts)) return facts;
   return { stats, programs: new Map(programs.map((entry, i) => [entryKey(entry), facts[i]!])) };
+}
+
+// Contract §8 "Change check": the working files of the `workingVersions` bindings, by their latin1 key. Null: a fact is unknown.
+// The path joins the bytes as `readWorkingVersion` does.
+async function workingFacts(w: Workspace, paths: readonly Uint8Array[]): Promise<Map<string, string> | null> {
+  const root = Buffer.from(w.worktreeRoot, "utf8");
+  const facts = await Promise.all(paths.map((path) => statWorkingFile(Buffer.concat([root, Buffer.from("/"), path]))));
+  return facts.includes(null) ? null : new Map(paths.map((path, i) => [latin1(path), facts[i]!]));
 }
 
 const tupleText = (files: readonly TupleFile[], programs: readonly ProgramFile[], facts: TupleFacts) =>
@@ -631,6 +641,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     const prior = tupled ? tupleFiles(w, st, assumed, known?.configPaths ?? []) : null;
     const priorPrograms = known?.programFiles ?? [];
     const before = prior === null ? null : await tupleFacts(runner, t.operationId, w, prior, priorPrograms, t.signal);
+    const working = tupled ? await workingFacts(w, [...st.bound.values()]) : null;
     // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read records nothing.
     if (t.signal.aborted) return end({ result: "canceled" });
     if (before !== null && "stop" in before) return end({ result: before.stop });
@@ -650,8 +661,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     const { configPaths, programFiles } = lst.changeFiles;
     const files = before !== null && lst.changeFiles.complete ? tupleFiles(w, st, assumed, configPaths) : null;
     const tuple =
-      before !== null && files !== null && files.every((f) => before.stats.has(f.path)) && programFiles.every((entry) => before.programs.has(entryKey(entry)))
-        ? { files, programs: programFiles, facts: tupleText(files, programFiles, before) }
+      before !== null && working !== null && files !== null && files.every((f) => before.stats.has(f.path)) && programFiles.every((entry) => before.programs.has(entryKey(entry)))
+        ? { files, programs: programFiles, facts: tupleText(files, programFiles, before), working }
         : null;
     // Contract §7: the read gate decides before any status, diff, or history read.
     const gate = trust.gate(w, lst, t.installation, "reads");
@@ -919,10 +930,13 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       // Contract §11 "Change polling": a WSL workspace has no watcher and uses no stat tuple, so each of its reads runs in full.
       if (t.check === "changes" && !t.refresh && kept !== null && kept.hints === st.hints && !st.unwatched && !st.unavailable && t.workspace.wsl === undefined) {
         const facts = await tupleFacts(runner, t.operationId, t.workspace, kept.files, kept.programs, t.signal);
+        const bound = [...st.bound.keys()];
+        const working = await workingFacts(t.workspace, [...st.bound.values()]);
         if (t.signal.aborted) return { result: "canceled" };
         // Contract §5 "Deadline outcomes": a walk deadline ends the read as a Git step deadline does, never with a full read.
         if (facts !== null && "stop" in facts) return { result: facts.stop };
-        const same = facts !== null && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
+        const sameWorking = working !== null && st.bound.size === bound.length && bound.every((key) => kept.working.get(key) === working.get(key));
+        const same = facts !== null && sameWorking && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
         if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st) } };
       }
       if (t.refresh) st.refreshing++;
@@ -970,11 +984,23 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     },
 
     // Data-model §4 `workingVersions`: later reads of this generation compare the bound path too. False: no snapshot of `generation` exists.
-    bind(repositoryId: string, generation: number, version: WorkingVersion): boolean {
+    // `fact` is the contract §8 tuple fact of the path from before the read of `version`. Null: the fact is unknown.
+    bind(repositoryId: string, generation: number, version: WorkingVersion, fact: string | null = null): boolean {
       if (!snapshots.bind(repositoryId, generation, version)) return false;
-      stateOfWorkspace(repositoryId).bound.set(latin1(version.path), version.path);
+      const st = stateOfWorkspace(repositoryId);
+      const key = latin1(version.path);
+      st.bound.set(key, version.path);
+      // A kept fact other than `fact` shows a change near the comparison. The next poll then runs in full.
+      if (st.kept !== null) {
+        const kept = st.kept.working.get(key);
+        if (fact === null || (kept !== undefined && kept !== fact)) st.kept = null;
+        else st.kept.working.set(key, fact);
+      }
       return true;
     },
+
+    // Contract §8 "Change check": the tuple fact of one working file. A comparison takes it before it reads the file. Null: the fact is unknown.
+    workingFact: async (w: Workspace, path: Uint8Array): Promise<string | null> => (await workingFacts(w, [path]))?.get(latin1(path)) ?? null,
 
     // Data-model §2 `operationState` from the marker facts. `unmerged`: the index holds an entry above stage 0.
     async operationState(t: ProcessTarget, unmerged: boolean): Promise<OperationState | { refused: ErrorCode } | "canceled" | "deadline"> {

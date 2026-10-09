@@ -390,17 +390,23 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     }
     // Data-model §6: the hunk approvals of a succeeded comparison, issued before its response. A WSL comparison issues none until T214.
     // A working-file comparison issues only after its working version joins the read observation (data-model §4 `workingVersions`).
-    const issue = (o: ReadResult): ReadResult => {
+    // `fact`: the contract §8 "Change check" fact of the entry path, taken before the comparison reads the working file.
+    const path = new Uint8Array(Buffer.from(found.entry.pathBytes, "base64"));
+    const issue = (o: ReadResult, fact: string | null): ReadResult => {
       const id = o.result === "succeeded" ? (o.value as { comparisonId?: unknown } | undefined)?.comparisonId : undefined;
       const c = typeof id === "string" && workspace.wsl === undefined ? comparisons.get(id) : undefined;
       if (c === undefined || c.hunks.length === 0 || workspace.generation !== c.generation) return o;
-      const bound = c.scope === "head-to-index" || (c.workingVersion !== null && reader.bind(request.repositoryId, c.generation, c.workingVersion));
+      const v = c.workingVersion;
+      const bound = c.scope === "head-to-index" || (v !== null && reader.bind(request.repositoryId, c.generation, v, Buffer.compare(v.path, path) === 0 ? fact : null));
       if (bound) for (const approval of hunkApprovals(c, found.snapshot, workspace)) approvals.issue(approval);
       return o;
     };
     scheduleRead(
       request,
-      (t) => comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }).then(issue),
+      async (t) => {
+        const fact = workspace.wsl === undefined ? await reader.workingFact(workspace, path) : null;
+        return issue(await comparisons.readComparison({ ...t, installation, workspace, snapshot: found.snapshot, entry: found.entry }), fact);
+      },
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
       "readComparison",

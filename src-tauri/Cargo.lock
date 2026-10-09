@@ -58,6 +58,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "time",
  "typify",
  "webview2-com",
  "windows",

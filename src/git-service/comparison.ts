@@ -35,6 +35,7 @@ import {
 } from "./commands";
 import { parseNumstat, parsePatch, type NumstatResult, type PatchHunk, type PatchResult } from "./diff-parser";
 import { createCollector, RunnerRefusal, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
+import { noFileId } from "./index-lock";
 import { contextOf, isMissing, objectCheckInput, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
 import { readWorkingVersion, type ChangeSnapshot, type Checked, type Completeness, type LimitName, type ReadInstallation, type WorkingVersion } from "./snapshot";
@@ -105,6 +106,8 @@ class Stop {
   constructor(readonly outcome: ComparisonOutcome) {}
 }
 const fail = (code: ErrorCode) => new Stop({ result: "failed", code });
+// Contract §6: a working-file read with a sentinel file ID ends `failed` with UNSUPPORTED_HUNK_PROFILE. That code has no other cause here.
+const noIdentity = (c: Completeness) => c.state === "failed" && c.code === "UNSUPPORTED_HUNK_PROFILE";
 
 // The status record of the entry (git-status(1) "Porcelain Format Version 2"), for `decideSupport`.
 function statusRecord(e: ChangeEntry, path: Uint8Array): StatusRecord {
@@ -130,8 +133,9 @@ function rawRecord(e: ChangeEntry, path: Uint8Array): Uint8Array {
 // The file identity that `lstat` reports. A bigint keeps the full 64-bit value.
 const sameFile = (a: { dev: bigint; ino: bigint }, b: { dev: bigint; ino: bigint }) => a.dev === b.dev && a.ino === b.ino;
 
-// The on-disk name of `name` in `dir`: the exact name, or the entry with the identity of `target`. Null: no entry matches.
-async function diskName(dir: string, name: string, target: { dev: bigint; ino: bigint }): Promise<string | null> {
+// The on-disk name of `name` in `dir`: the exact name, or the entry with the identity of `target`. Null: no entry matches, or a sentinel ID proves nothing.
+// Exported for tests only.
+export async function diskName(dir: string, name: string, target: { dev: bigint; ino: bigint }): Promise<string | null> {
   // NTFS `$UpCase` maps each UTF-16 unit to one unit, so a name that the volume matches has the same unit count.
   const candidates: string[] = [];
   for await (const d of await opendir(dir)) {
@@ -140,6 +144,7 @@ async function diskName(dir: string, name: string, target: { dev: bigint; ino: b
   }
   for (const candidate of candidates) {
     const st = await lstat(NATIVE.path.join(dir, candidate), { bigint: true });
+    if (noFileId(st.ino, target.ino)) return null;
     if (sameFile(st, target)) return candidate;
   }
   return null;
@@ -167,7 +172,8 @@ async function localFacts(root: string, parts: string[], others: readonly Uint8A
       const split = text?.split("/");
       if (split === undefined || split.length !== parts.length || split.some((p, i) => p.length !== parts[i]!.length)) continue;
       try {
-        if (sameFile(await lstat(NATIVE.path.join(root, ...split), { bigint: true }), st!)) return { type: "unreadable" };
+        const other = await lstat(NATIVE.path.join(root, ...split), { bigint: true });
+        if (noFileId(other.ino, st!.ino) || sameFile(other, st!)) return { type: "unreadable" };
       } catch (error) {
         if (!isMissing(error)) return { type: "unreadable" };
       }
@@ -368,6 +374,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
             const others = scope === "empty-to-untracked" ? [] : t.snapshot.indexEntries.filter((x) => x.stage === 0 && !Buffer.from(x.path).equals(path)).map((x) => x.path);
             working = await localFacts(w.worktreeRoot, parts, others);
             if (scope !== "head-to-index") firstVersion = await readWorkingVersion(w.worktreeRoot, path, "COMPARED_RAW_VERSION_BYTES", null);
+            if (firstVersion !== null && !firstVersion.ok && noIdentity(firstVersion.completeness)) throw fail("UNSUPPORTED_HUNK_PROFILE");
           }
         };
         const attrs = async () => {
@@ -487,6 +494,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
       if (firstVersion?.ok) {
         const second = await readWorkingVersion(w.worktreeRoot, path, "COMPARED_RAW_VERSION_BYTES", null);
         if (t.signal.aborted) return { result: "canceled" };
+        if (!second.ok && noIdentity(second.completeness)) throw fail("UNSUPPORTED_HUNK_PROFILE");
         if (second.ok) {
           if (!Bun.deepEquals(firstVersion.value, second.value)) throw fail("REPOSITORY_CHANGED");
           workingVersion = second.value;

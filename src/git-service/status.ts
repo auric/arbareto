@@ -784,6 +784,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       const read = await readWorkingVersion(w.worktreeRoot, path, "COMPARED_RAW_VERSION_BYTES", null, workingVersion);
       if (read.ok) versions.push(read.value);
       else if (read.completeness.state === "failed" && read.completeness.code === "REPOSITORY_CHANGED") changed = true;
+      // Contract §6: a sentinel file ID makes the file unreadable. The observation then holds no version of it, so a token that binds it becomes invalid.
+      else if (read.completeness.state === "failed" && read.completeness.code === "UNSUPPORTED_HUNK_PROFILE") continue;
       else if (read.completeness.state === "failed") return refusal(read.completeness.code);
       else if (read.completeness.state === "limited" && read.completeness.code === "OUTPUT_LIMIT") workingLimit ??= read.completeness.reason;
     }

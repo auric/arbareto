@@ -50,6 +50,7 @@
     "tests/git/discovery.test.ts",
     "tests/git/eligibility.test.ts",
     "tests/git/exclusion.test.ts",
+    "tests/git/file-id-sentinel.test.ts",
     "tests/git/file-publish.test.ts",
     "tests/git/file-refusal.test.ts",
     "tests/git/fixture-root.test.ts",

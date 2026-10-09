@@ -5,6 +5,7 @@
 
 import { constants, stat, statSync, watch, type BigIntStats, type FSWatcher } from "node:fs";
 import { lstat as lstatPath, open, stat as statPath } from "node:fs/promises";
+import { noFileId } from "./index-lock";
 import { isMissing } from "./read-steps";
 
 // Plan.md "Freshness and reconciliation": the hint debounce. `limits.ts` holds only contract §5 bounds, which name `limited` reasons.
@@ -67,7 +68,7 @@ function watchDirectory(directory: string, changed: () => void, lost: () => void
       stat(directory, { bigint: true }, (error, now) => {
         checking = false;
         if (stopped) return;
-        if (error !== null || now.dev !== identity.dev || now.ino !== identity.ino) return lose();
+        if (error !== null || noFileId(now.ino, identity.ino) || now.dev !== identity.dev || now.ino !== identity.ino) return lose();
         // T088 decision E9: the stat can miss a change that came while it ran.
         if (recheck) {
           recheck = false;
@@ -100,8 +101,12 @@ function watchDirectory(directory: string, changed: () => void, lost: () => void
   };
   try {
     identity = statSync(directory, { bigint: true });
-    watcher = arm();
+    // Contract §6: with a sentinel ID, no identity check can prove the directory.
+    if (!noFileId(identity.ino)) watcher = arm();
   } catch {
+    watcher = undefined;
+  }
+  if (watcher === undefined) {
     lost();
     return () => {};
   }

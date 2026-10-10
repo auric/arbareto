@@ -33,7 +33,7 @@ Native settings keep one approved WSL Git for each distro GUID, beside the Windo
 
 Native settings retain the last explicitly opened repository and window bounds. Native storage also holds recovery markers (contract §6) and trust approval records (contract §7 "Trust approval store"). A marker holds no message, patch, configuration, environment value, or credential. A trust record holds no configuration value, command text, or credential. Revalidate that repository before restoring its workspace. Unknown or invalid native settings use documented defaults. This slice has no settings migration.
 
-Application-owned webview storage retains theme, density, and pane proportions as bounded scalar preferences. Invalid values use documented defaults. No mode preference exists, because a repository always opens in History (spec FR-034). The same storage keeps one stored draft per worktree (§2 "Stored draft"). Keep drafts and per-mode selection/scroll hints in renderer memory. They survive a service restart, because the page does not reload (contract §2). Hunk approvals, file approvals, and commit review tokens belong to the service session, and a service restart invalidates them. Trust approvals persist in native storage (§3). UI preferences never grant Git permissions.
+Application-owned webview storage retains theme, density, and pane proportions as bounded scalar preferences. Invalid values use documented defaults. No panel preference exists, because a repository always opens with no selected row (spec FR-034). The same storage keeps one stored draft per worktree (§2 "Stored draft"). Keep drafts and per-panel selection/scroll hints in renderer memory. They survive a service restart, because the page does not reload (contract §2). Hunk approvals, file approvals, and commit review tokens belong to the service session, and a service restart invalidates them. Trust approvals persist in native storage (§3). UI preferences never grant Git permissions.
 
 Native-owned bootstrap contexts permit bounded probing before permanent IDs exist. Git registration follows a successful executable probe. Repository registration follows successful Git discovery. See the protocol's registration bootstrap.
 
@@ -102,6 +102,19 @@ The renderer owns this record in application-owned webview storage (plan.md "Sto
 
 Each write is one atomic `readwrite` transaction with the durability hint `strict`, so a record is whole or absent. No log, diagnostic, trace, or telemetry holds a message. Clear message deletes the record. The record never grants a Git permission, and a service restart leaves it unchanged.
 
+### Recent repository entry
+
+The shell owns these entries in its native settings (contract §3 "Recent repositories", spec FR-055).
+
+| Field | Meaning and validation |
+| --- | --- |
+| `worktreeRoot` | The Git-resolved worktree root from the registration result, and for WSL its UNC identity path. It is display text and the path of the next `repositoryDiscovery` context. It is no identity. |
+| `worktreeKey` | The contract §3 worktree key. One entry per key, so both WSL prefixes of one folder keep one entry. |
+| `openedAt` | UTC time of the last successful open, from the shell clock. It orders the list, newest first. |
+| `entryId` | Opaque §2 identifier that the shell issues for the renderer. It is not stored, and it grants no access by itself. |
+
+The list holds at most 20 entries (contract §5). The shell sends `location`, and the renderer never derives it from a path. An entry stores no branch, no status, and no trust state.
+
 ## 3. Trust approval
 
 | Field | Meaning and validation |
@@ -159,7 +172,7 @@ Index validation covers the whole index, not only the displayed path. Incomplete
 | Repository/generation | Registered workspace and the request `repositoryGeneration`; never an arbitrary renderer revision. The page does not wait for a status snapshot (contract §3 `readHistory`). |
 | Captured checkout | Full HEAD OID and symbolic target, including detached or unborn state. |
 | Scope | `current-checkout`; at most 100 reachable commit rows. |
-| Commit row | Full OID, ordered effective parent OIDs, subject, author, date, and the commit's `encoding` header value or none. `shallow` is true when the shallow file lists the commit, so Git hides its parents. `invalidUtf8` is true when the subject, author name, or author email bytes of the commit object are not valid UTF-8. |
+| Commit row | Full OID, ordered effective parent OIDs, subject, author, date, and the commit's `encoding` header value or none. `shallow` is true when the shallow file lists the commit, so Git hides its parents. `invalidUtf8` is true when the subject, author name, or author email bytes of the commit object are not valid UTF-8. The row also carries `committer` {name, email}, `committerDate`, `body`, and `bodyCut` (contract §3 "HistoryPage result", §5 "History message body"). `invalidUtf8` then also covers the committer and the body. |
 | Row order | Git child-before-parent date order; no renderer sorting by author timestamps. |
 | Boundaries | Explicit outside-page and shallow/unavailable ancestry, with parent IDs where known. |
 | Completeness | Complete, limited, or failed data with a specific cause; unknown parents never become roots. |
@@ -168,7 +181,21 @@ Resolve shallow metadata through Git and include its bounded fingerprint in read
 
 Renderer state owns `selectedOid`, scroll anchor, and derived lane geometry. At most 24 lanes and 4,096 segments can render. Layout overflow retains rows and parent text; it does not change Git eligibility or data completeness.
 
-Graph positions are not Git identities or mutation approvals. Current HEAD/branch labels reflect the captured checkout only. They sit at the start of the subject cell, not in the graph cell. No graph action changes a reference or fetches missing history.
+Graph positions are not Git identities or mutation approvals. Current HEAD/branch labels reflect the captured checkout only. Other reference chips come from a paired reference list ("Reference list" below). All labels sit at the start of the subject cell, not in the graph cell. No graph action changes a reference or fetches missing history. The Working directory and Index rows sit above the commit rows and take no lane.
+
+### Reference list
+
+The result of one `readRefs` read (contract §3 "References result", spec FR-057).
+
+| Field | Meaning and validation |
+| --- | --- |
+| Repository/generation | Registered workspace and the request `repositoryGeneration`. |
+| Reference entry | `kind` (`branch`, `remote`, or `tag`), `name` without the kind prefix, `invalidUtf8`, `objectId`, `objectType`, `peeledId`, `peeledType`, `symref`, `upstream`, `upstreamPresent`, and `commitId`. Git sorts the entries by full reference name. |
+| `commitId` | The commit that the entry marks: `objectId` for a commit, `peeledId` for a tag that Git peels to a commit, else `null`. Only an entry with a `commitId` and no `symref` gets a chip. |
+| `current` | Name and `objectId` of the branch that `%(HEAD)` marks, or `null`. |
+| Completeness | `complete`, or a refusal without entries: `OUTPUT_LIMIT` above the contract §5 bounds, `MALFORMED_GIT_OUTPUT`, or `GIT_FAILED`. |
+
+The renderer shows chips of a list only with a history page that observed the same HEAD (contract §3 "Pairing with the history page"). A list never holds ahead or behind counts, and it grants no action on a reference.
 
 ## 5. Change entry and file comparison
 
@@ -200,7 +227,7 @@ The service retains the authoritative hunk data. The renderer receives display d
 | --- | --- |
 | Hunk approval | Repository, snapshot, comparison, hunk, direction, exact content bindings, and one-use token. |
 | File approval | Repository, snapshot, comparison, entry, direction, and one-use token. It binds the index entry and the HEAD entry of each changed path. For `stage`, it also binds the existence, type, size, and raw SHA-256 of the whole working file. `unstage` binds no working bytes (contract §4 "File staging"). |
-| Commit review | Repository, snapshot, complete staged scope, retained reviewed index, HEAD target/OID, operation state, execution-policy disclosure, trust, and review token. |
+| Commit review | Repository, snapshot, complete staged scope, retained reviewed index, HEAD target/OID, operation state, execution-policy disclosure, trust, and review token. The renderer requests it when Commit starts. No dialog shows it. |
 | Commit request | Review token, message, and explicit confirmation of the complete staged scope. The service issues the operation identifier in its accepted response. |
 | Submodule review | Repository, snapshot, superproject HEAD, index gitlinks, `.gitmodules` digest, and relevant configuration. The plan rows (§9), each submodule HEAD and `.git` entry, each `modules/<name>` state, and the reachability of each target. It also binds the folder state of each `reuse` row and the refusals. The submodule program list digest, trust, and one-use token. The update checks these values again after an approved run confirmation (contract §12 "Update protocol"). |
 
@@ -210,11 +237,11 @@ Reject duplicate submissions while an operation is active. Never retry a mutatio
 
 Commit messages remain in renderer memory after failed, changed, or uncertain outcomes. Track the submitted worktree, draft revision, and message beside the request/operation IDs in renderer memory. These fields do not extend the public commit payload.
 
-Reconciled intended success clears only the matching, unchanged submitted draft. Preserve all later edits, including completion while History is visible. Never clear another worktree's draft. Explicit user clearing remains available.
+Reconciled intended success clears only the matching, unchanged submitted draft. Preserve all later edits, including completion while the commit details are docked. Never clear another worktree's draft. Explicit user clearing remains available.
 
 Reject blank messages, NUL characters, unsupported encodings, and messages above the protocol limit. IME composition blocks submission.
 
-Unsupported diff content can remain in a commit review. Its path, type, and staged identity must remain visible and complete.
+Unsupported diff content can remain in a commit. Its path, type, and staged identity must remain visible and complete.
 
 A hunk or file approval requires initial and pre-publication validation. The canonical lock protects cooperating index writers, not independent working-file or reference changes.
 

@@ -6,7 +6,7 @@
 // Inside a submodule, the review starts only the `submodule*Args` reads of `commands.ts`.
 
 import { lstat, readdir } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, posix, resolve } from "node:path";
 import type { FileFact } from "../contracts/channel";
 import type { ErrorCode } from "../contracts/errors";
 import {
@@ -20,7 +20,16 @@ import {
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
-import { buildRefusalRemedy, redactUrlUserInfo, type SubmoduleAction, type SubmodulePlanRow, type SubmoduleProgram, type SubmoduleRefusalReason } from "../contracts/submodules";
+import {
+  buildRefusalRemedy,
+  redactUrlUserInfo,
+  type SubmoduleAction,
+  type SubmodulePlanRow,
+  type SubmoduleProgram,
+  type SubmoduleRefusalReason,
+  type SubmoduleWslTarget,
+} from "../contracts/submodules";
+import { routeWslPath, wslIdentityPath } from "../contracts/wsl-route";
 import type { Approvals, SubmoduleBinding } from "./approvals";
 import {
   activeSetArgs,
@@ -54,7 +63,7 @@ import { isMissing, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, Completeness, Head, IndexEntry, ReadInstallation } from "./snapshot";
 import { displayPath } from "./status-parser";
-import { defaultRemote, resolveGitmodulesUrl, SubmoduleUrlError } from "./submodule-remote";
+import { defaultRemote, resolveGitmodulesUrl, SubmoduleUrlError, type GitPlatform } from "./submodule-remote";
 import {
   isComponent,
   keyParts,
@@ -94,6 +103,46 @@ export async function gitmodulesSource<S>(
   const head = await headHas();
   if (head === true) return gitmodulesHeadArgs();
   return head === false ? null : head;
+}
+
+// Contract §11 "Paths and file access": the path forms of one workspace. A Windows workspace uses its native paths everywhere.
+// A WSL workspace gives Git and the remedy commands Linux paths. Its folder metadata goes through the UNC form.
+export interface PathForms {
+  // The worktree root as `rev-parse --show-toplevel` prints it.
+  gitRoot: string;
+  // The worktree root in the form of Git arguments and remedy commands.
+  root: string;
+  join(base: string, ...parts: string[]): string;
+  resolve(base: string, path: string): string;
+  // The key of one folder. Linux names keep their letter case.
+  key(path: string): string;
+  // The UNC form of a Linux path. Null: the path has no UNC form (contract §11 "Route").
+  native(path: string): string | null;
+  platform: GitPlatform;
+  // The Git path of the remedy commands.
+  gitPath: string | null;
+  wsl: SubmoduleWslTarget | undefined;
+}
+
+export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installation: Pick<ReadInstallation, "selectedPath">): PathForms {
+  if (w.wsl === undefined) {
+    const key = (path: string) => NATIVE.fold(resolve(path));
+    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, key, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined };
+  }
+  const { distro, guid, wslExecutable, path } = w.wsl;
+  const route = routeWslPath(w.worktreeRoot, { listed: [distro], registry: [{ name: distro, guid, version: 2 }] });
+  if (route.kind !== "wsl") throw new TypeError("a WSL workspace needs a Linux worktree root");
+  return {
+    gitRoot: route.linuxPath,
+    root: route.linuxPath,
+    join: (base, ...parts) => posix.join(base, ...parts),
+    resolve: (base, linux) => posix.resolve(base, linux),
+    key: (linux) => posix.normalize(linux),
+    native: (linux) => wslIdentityPath(distro, linux),
+    platform: "posix",
+    gitPath: path,
+    wsl: { wslExecutable, distro },
+  };
 }
 
 // ---- Texts (contract §12 "Refusals" and "Plan") ----
@@ -363,7 +412,7 @@ interface Level {
   active?: ReadonlySet<string> | null;
 }
 
-// One plan row with its read facts. `worktree` and `parentWorktree` are native paths for reads and remedies.
+// One plan row with its read facts. `worktree` and `parentWorktree` are `PathForms.root` paths for reads and remedies.
 // `gitWorktree` and `parentGitWorktree` are the same folders in Git's `rev-parse --show-toplevel` form for step commands.
 export interface ObservedRow {
   row: SubmodulePlanRow;
@@ -466,6 +515,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
   function observe(t: ObserveTarget, rowIds?: ReadonlyMap<string, string>) {
     const { workspace: w, installation } = t;
     const objectFormat = w.objectFormat;
+    const forms = pathForms(w, installation);
 
     // The values that the token binds besides the plan, in read order.
     const observed: unknown[] = [];
@@ -525,7 +575,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const hooksText = hooksRead.code === 0 ? oneLine(hooksRead.out) : null;
       if (hooksText === null) throw failed("GIT_FAILED");
       // Git prints the hooks path relative to the folder where it ran: the `-C` folder, or the worktree root for a kept Git directory.
-      const hooks = resolve("worktree" in location ? location.worktree : w.worktreeRoot, hooksText);
+      const hooks = forms.resolve("worktree" in location ? location.worktree : forms.gitRoot, hooksText);
       const config = await git(submoduleConfigListArgs(location), { max: TRUST_INPUT_BYTES });
       if (config.limited) throw failed("OUTPUT_LIMIT");
       if (config.code !== 0) throw failed("GIT_FAILED");
@@ -596,38 +646,48 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       throw failed("MALFORMED_GIT_OUTPUT");
     };
 
+    // The UNC form of a folder for metadata only. A folder without one fails its read.
+    const nativeOf = (folder: string): string => {
+      const at = forms.native(folder);
+      if (at === null) throw failed("REPOSITORY_UNAVAILABLE", folder);
+      return at;
+    };
     // Contract §12 "Review reads": the folder check reads entry types and names only.
     const folderEmpty = async (folder: string): Promise<boolean> => {
+      const at = nativeOf(folder);
       let stat;
       try {
-        stat = await lstat(folder);
+        stat = await lstat(at);
       } catch (error) {
         if (isMissing(error)) return true;
-        throw failed("REPOSITORY_UNAVAILABLE", folder);
+        throw failed("REPOSITORY_UNAVAILABLE", at);
       }
       if (!stat.isDirectory()) return false;
       try {
-        return (await readdir(folder)).length === 0;
+        return (await readdir(at)).length === 0;
       } catch {
-        throw failed("REPOSITORY_UNAVAILABLE", folder);
+        throw failed("REPOSITORY_UNAVAILABLE", at);
       }
     };
     // Git `clone_submodule` tests `<parent Git directory>/modules/<name>` with `file_exists`.
     const keptExists = async (path: string): Promise<boolean> => {
+      const at = nativeOf(path);
       try {
-        await lstat(path);
+        await lstat(at);
         return true;
       } catch (error) {
         if (isMissing(error)) return false;
-        throw failed("REPOSITORY_UNAVAILABLE", path);
+        throw failed("REPOSITORY_UNAVAILABLE", at);
       }
     };
 
-    const gitPath = installation.selectedPath;
-    // The worktree root in the native form of the remedy commands.
-    const root = resolve(w.worktreeRoot);
-    // A folder below the worktree root in Git's form. `worktreeRoot` is the `rev-parse --show-toplevel` text, which ends with `/` only at a file system root.
-    const gitForm = (components: readonly string[]) => (w.worktreeRoot.endsWith("/") ? w.worktreeRoot : `${w.worktreeRoot}/`) + components.join("/");
+    const gitPath = forms.gitPath;
+    const wsl = forms.wsl;
+    // The worktree root in the form of the remedy commands, and in the native form of a refusal path.
+    const root = forms.root;
+    const rootPath = resolve(w.worktreeRoot);
+    // A folder below the worktree root in Git's form. `gitRoot` is the `rev-parse --show-toplevel` text, which ends with `/` only at a file system root.
+    const gitForm = (components: readonly string[]) => (forms.gitRoot.endsWith("/") ? forms.gitRoot : `${forms.gitRoot}/`) + components.join("/");
     // `rows` and `refusals` hold every `top` and `level` read of this observation.
     const rows: ObservedRow[] = [];
     const refusals: { refusal: SubmoduleRefusal; late: boolean; rowId: string | null }[] = [];
@@ -652,17 +712,17 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const refuseLimit = () => {
       if (limited) return;
       limited = true;
-      const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "limit", gitPath, parentWorktree: root });
-      refuse("limit", root, REFUSAL_TEXTS.limit, remedy);
+      const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "limit", gitPath, parentWorktree: root, wsl });
+      refuse("limit", rootPath, REFUSAL_TEXTS.limit, remedy);
     };
     const refuseGitdir = (path: string, parentWorktree: string, localPath?: Uint8Array, nested = false) => {
-      const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "gitdir-config", gitPath, parentWorktree, nested, ...(localPath === undefined ? {} : { path: localPath }) });
+      const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "gitdir-config", gitPath, parentWorktree, nested, wsl, ...(localPath === undefined ? {} : { path: localPath }) });
       refuse("gitdir-config", path, REFUSAL_TEXTS.gitdirConfig, remedy);
     };
     const refuseUnsaved = (path: string, repo: Repo, target: string | null, row?: SubmodulePlanRow) => {
       if (repo.head === null || repo.refHeld !== false || repo.head === target) return;
       const location = "worktree" in repo.location ? { submoduleWorktree: repo.location.worktree } : { gitDirectory: repo.location.gitDir };
-      const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "unsaved-commits", source: "review", gitPath, commit: repo.head, ...location });
+      const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "unsaved-commits", source: "review", gitPath, commit: repo.head, wsl, ...location });
       refuse("unsaved-commits", path, REFUSAL_TEXTS.unsavedCommits(path, repo.head), remedy, row);
     };
     // Every folder of the kept-directory walk and every row count toward the §5 bound once. A level read sees plan rows again.
@@ -756,7 +816,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         let fallbackUrl: ObservedRow["fallbackUrl"] = { url: null };
         if (gitmodulesUrl !== null) {
           try {
-            fallbackUrl = { url: resolveGitmodulesUrl(gitmodulesUrl, { listing: lv.config, headRef: lv.headRef }, lv.gitWorktree, "windows") };
+            fallbackUrl = { url: resolveGitmodulesUrl(gitmodulesUrl, { listing: lv.config, headRef: lv.headRef }, lv.gitWorktree, forms.platform) };
           } catch (error) {
             if (!(error instanceof SubmoduleUrlError)) throw error;
             fallbackUrl = null;
@@ -778,7 +838,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           notes: [],
           refusal: null,
         };
-        const worktree = components === null ? lv.worktree : join(w.worktreeRoot, ...components);
+        const worktree = components === null ? lv.worktree : forms.join(root, ...components);
         const gitWorktree = components === null ? lv.gitWorktree : gitForm(components);
         const pending: ObservedRow = {
           row,
@@ -809,7 +869,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         }
         if (lv.parentPath !== null && parentSetsActive) row.notes.push(NOTES.nestedActive(lv.parentPath));
 
-        const updateRemedy = () => (gitPath === null ? null : buildRefusalRemedy({ reason: "update-mode", gitPath, parentWorktree: lv.worktree, path: link.path, nested: lv.depth > 0 }));
+        const updateRemedy = () => (gitPath === null ? null : buildRefusalRemedy({ reason: "update-mode", gitPath, parentWorktree: lv.worktree, path: link.path, nested: lv.depth > 0, wsl }));
         let modeRefused = false;
         const refuseMode = (value: string) => {
           modeRefused = true;
@@ -846,7 +906,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         }
 
         if (!initialized[i]) {
-          const kept = join(lv.modules, ...nameText.split("/"));
+          const kept = forms.join(lv.modules, ...nameText.split("/"));
           pending.kept = kept;
           if (mode === "none") {
             row.action = "skip";
@@ -924,7 +984,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       gitWorktree: parent.gitWorktree,
       components: componentsOf(parent.pathBytes)!,
       prefix: parent.pathBytes,
-      modules: join(repo.gitDir, "modules"),
+      modules: forms.join(repo.gitDir, "modules"),
       config: repo.entries,
       headRef: repo.headRef,
       depth: parent.row.depth + 1,
@@ -1022,7 +1082,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         else if (written !== undefined) {
           try {
             const text = utf8.decode(Buffer.from(written, "latin1"));
-            urlsByPath.set(key, resolveGitmodulesUrl(text, { listing: lv.config, headRef: lv.headRef }, lv.gitWorktree, "windows"));
+            urlsByPath.set(key, resolveGitmodulesUrl(text, { listing: lv.config, headRef: lv.headRef }, lv.gitWorktree, forms.platform));
           } catch (error) {
             if (!(error instanceof SubmoduleUrlError) && !(error instanceof TypeError)) throw error;
           }
@@ -1032,23 +1092,26 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const urlsByPath = new Map<string, string>();
 
     // ---- Kept Git directories (contract §12 "Review reads") ----
-    const fold = (path: string) => NATIVE.fold(resolve(path));
+    const fold = forms.key;
     const knownOf = (list: readonly ObservedRow[]) => new Set(list.flatMap((p) => (p.repo === null ? [] : [fold(p.repo.gitDir)])));
     // `descend`: the walk also enters the `modules` folder of each kept Git directory.
     const keptBelow = async (folders: readonly string[], descend: boolean): Promise<string[]> => {
       const keptDirs: string[] = [];
       const visited = new Set<string>();
       const walk = async (folder: string): Promise<void> => {
+        const at = nativeOf(folder);
         let names;
         try {
-          names = await readdir(folder, { withFileTypes: true });
+          names = await readdir(at, { withFileTypes: true });
         } catch (error) {
           if (isMissing(error)) return;
-          throw failed("REPOSITORY_UNAVAILABLE", folder);
+          throw failed("REPOSITORY_UNAVAILABLE", at);
         }
         for (const entry of names.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
           if (!entry.isDirectory()) continue;
-          const child = join(folder, entry.name);
+          const child = forms.join(folder, entry.name);
+          // A UNC name with a character of U+F000 to U+F0FF stands for another Linux name (contract §11 "Route").
+          if (forms.native(child) === null) throw failed("REPOSITORY_UNAVAILABLE", at);
           if (visited.has(fold(child))) continue;
           visited.add(fold(child));
           if (!count(`dir ${fold(child)}`)) return;
@@ -1056,7 +1119,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           observed.push({ walk: child, accepted: r.code === 0 });
           if (r.code === 0) {
             keptDirs.push(child);
-            if (descend) await walk(join(child, "modules"));
+            if (descend) await walk(forms.join(child, "modules"));
           } else await walk(child);
           if (limited) return;
         }
@@ -1076,8 +1139,10 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         if (known.has(fold(repo.gitDir))) continue;
         known.add(fold(repo.gitDir));
         rowless.push(repo);
-        refuseUnsaved(dir, repo, null);
-        if (setsGitdir(repo.entries)) refuseGitdir(dir, root);
+        // Contract §11 "Paths and file access": a refusal path names a Git-resolved directory in its native form.
+        const path = nativeOf(dir);
+        refuseUnsaved(path, repo, null);
+        if (setsGitdir(repo.entries)) refuseGitdir(path, root);
       }
       return rowless;
     };
@@ -1114,7 +1179,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       writes: boolean,
       unknownNested: boolean,
     ): Promise<{ owner: string; fingerprint: string; entries: ProgramEntry[] }> => {
-      const listed = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: w }, environment, repo.entries, repo.hooks, { root: root ?? w.worktreeRoot, gitDirectory: repo.gitDir });
+      const listed = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: w }, environment, repo.entries, repo.hooks, { root: root ?? forms.gitRoot, gitDirectory: repo.gitDir });
       if (!listed.ok) throw new Halt("stop" in listed ? { stop: listed.stop } : { code: listed.code });
       const listing = listed.listing;
       const superRelative = relativeValues(superListing, OUTER_SCOPES);
@@ -1128,7 +1193,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       };
       const unchecked = (values: ReturnType<typeof relativeValues>, base: string | null, copy = "") => {
         for (const v of values) {
-          const program = base === null ? v.program : resolve(base, v.program);
+          const program = base === null ? v.program : forms.resolve(base, v.program);
           add({ key: v.key, scope: v.entry.scope, origin: redactUrlUserInfo(v.entry.origin), program: shown(v.entry, program), digest: "unchecked" }, [
             copy,
             v.key,
@@ -1148,7 +1213,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       }
       for (const [i, integration] of listing.integrations.entries()) {
         if (!integration.repositoryControlled || relativeEntrySet.has(integration.entry)) continue;
-        const program = integration.program.kind === "path" ? resolve(root ?? w.worktreeRoot, integration.program.text) : integration.program.kind === "bare" ? integration.program.name : "";
+        const program = integration.program.kind === "path" ? forms.resolve(root ?? forms.gitRoot, integration.program.text) : integration.program.kind === "bare" ? integration.program.name : "";
         const entry = integration.entry;
         add({ key: integration.key, scope: entry.scope, origin: redactUrlUserInfo(entry.origin), program: shown(entry, program), digest: stateValue(listing.files.integrations[i] ?? null) }, [
           "integration",
@@ -1208,7 +1273,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       return attempt(async () => {
         const superListing = await superTrust();
         programInputs.push(superListing.fingerprint);
-        if (setsGitdir(superListing.entries)) refuseGitdir(root, root);
+        if (setsGitdir(superListing.entries)) refuseGitdir(rootPath, root);
         const gitlinks = input.indexEntries.filter((e) => e.stage === 0 && e.mode === "160000");
         const head = input.head;
         observed.push({ head: [head.state, "target" in head ? head.target : null, "oid" in head ? head.oid : null], gitlinks: gitlinks.map((e) => [Buffer.from(e.path).toString("base64"), e.oid]) });
@@ -1248,7 +1313,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         if (modules === null) throw failed("GIT_FAILED");
         const topLevel: Level = {
           worktree: root,
-          gitWorktree: w.worktreeRoot,
+          gitWorktree: forms.gitRoot,
           components: [],
           prefix: new Uint8Array(),
           modules,
@@ -1260,7 +1325,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           active,
         };
         await readRows(topLevel, gitlinks.map((e) => ({ path: e.path, oid: e.oid })), superModules, true);
-        const kept = await keptBelow([modules, ...rows.flatMap((p) => (p.repo === null ? [] : [join(p.repo.gitDir, "modules")]))], true);
+        const kept = await keptBelow([modules, ...rows.flatMap((p) => (p.repo === null ? [] : [forms.join(p.repo.gitDir, "modules")]))], true);
         const rowless = await rowlessOf(kept, knownOf(rows));
         const programs = await programsOfAll(superListing, rows, rowless, true);
         return { rows: [...rows], refusals: ordered(0), rowless, programs, config: superListing.entries, activeRefused: false, ...attachment(0) };
@@ -1316,7 +1381,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         }
         if (tree !== null) await readRows(childLevel(parent, { ...config, headRef }, active), tree.gitlinks, tree.modules, false);
         const list = rows.slice(firstRow);
-        const rowless = await rowlessOf(await keptBelow([join(config.gitDir, "modules")], false), knownOf(list));
+        const rowless = await rowlessOf(await keptBelow([forms.join(config.gitDir, "modules")], false), knownOf(list));
         const programs = await programsOfAll(superListing, list, rowless, false);
         return { rows: list, refusals: ordered(firstRefusal), rowless, programs, config: config.entries, activeRefused, ...attachment(firstRefusal) };
       });

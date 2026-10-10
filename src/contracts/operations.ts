@@ -11,6 +11,9 @@ export const OPERATION_NAMES = [
   "chooseGit",
   "chooseRepository",
   "restoreWorkspace",
+  "listRecentRepositories",
+  "openRecentRepository",
+  "removeRecentRepository",
   "readWorkspace",
   "readEntries",
   "readHistory",
@@ -45,7 +48,8 @@ export const MUTATIONS: readonly OperationName[] = MUTATION_NAMES;
 export const MutationKind = z.enum(MUTATION_NAMES);
 
 // Contract §3: the shell answers these natively and never forwards them to the service.
-export const SHELL_ONLY: readonly OperationName[] = ["requestClose", "currentSession"];
+// The shell forwards `openRecentRepository` as `restoreWorkspace`, so the service never gets that name.
+export const SHELL_ONLY: readonly OperationName[] = ["requestClose", "currentSession", "listRecentRepositories", "openRecentRepository", "removeRecentRepository"];
 
 // Contract §2: UUID-shaped ASCII identifiers.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

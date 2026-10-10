@@ -270,6 +270,7 @@ export interface RegistrationResult {
   repositoryId: string;
   generation: number;
   worktreeKey: string;
+  worktreeRoot: string;
 }
 
 export interface ChangeEntry {

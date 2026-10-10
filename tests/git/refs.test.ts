@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { REF_RESULT_BYTES } from "../../src/contracts/envelope";
 import * as LIMITS from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
@@ -394,7 +395,7 @@ describe("record checks and bounds (contract §3 \"Record checks\", §5)", () =>
 
   caseTest(
     TASK,
-    `an encoded result above ${LIMITS.REF_RESULT_BYTES} bytes gives limited with reason REF_LISTING_BYTES and no records`,
+    `an encoded result above ${REF_RESULT_BYTES} bytes gives limited with reason REF_LISTING_BYTES and no records`,
     ["shell-double"],
     () =>
       withService("t356-result-bytes", async (service) => {
@@ -406,7 +407,7 @@ describe("record checks and bounds (contract §3 \"Record checks\", §5)", () =>
         const text = Array.from({ length: count }, (_, i) => `refs/tags/${name}${String(i).padStart(5, "0")}\0${oid}\0commit\0\0\0\0\0 \n`).join("");
         const bytes = Buffer.from(text, "latin1");
         expect(bytes.length).toBeLessThanOrEqual(LIMITS.REF_LISTING_BYTES);
-        expect(count * 440 * 3).toBeGreaterThan(LIMITS.REF_RESULT_BYTES);
+        expect(count * 440 * 3).toBeGreaterThan(REF_RESULT_BYTES);
         service.runner.inject.stdout = (call) => (isForEachRef(call) ? bytes : undefined);
         const response = await readRefs(service, repositoryId, generation);
         service.runner.inject.stdout = undefined;
@@ -420,7 +421,7 @@ describe("record checks and bounds (contract §3 \"Record checks\", §5)", () =>
   );
 
   test("the limit copies use the contract §5 bounds", () => {
-    expect({ records: LIMITS.REF_LISTING_RECORDS, bytes: LIMITS.REF_LISTING_BYTES, result: LIMITS.REF_RESULT_BYTES }).toEqual({ records: 10_000, bytes: 4 * 1024 * 1024, result: 8 * 1024 * 1024 });
+    expect({ records: LIMITS.REF_LISTING_RECORDS, bytes: LIMITS.REF_LISTING_BYTES, result: REF_RESULT_BYTES }).toEqual({ records: 10_000, bytes: 4 * 1024 * 1024, result: 8 * 1024 * 1024 });
     expect(F33_LIMIT_TAGS).toBeGreaterThan(LIMITS.REF_LISTING_RECORDS);
     expect(F33_BYTE_TAGS).toBeLessThan(LIMITS.REF_LISTING_RECORDS);
   });

@@ -172,6 +172,138 @@
         },
         "operation": {
           "type": "string",
+          "const": "listRecentRepositories"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false,
+          "title": "ListRecentRepositoriesPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ListRecentRepositoriesRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "openRecentRepository"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "entryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "entryId"
+          ],
+          "additionalProperties": false,
+          "title": "OpenRecentRepositoryPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "OpenRecentRepositoryRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "removeRecentRepository"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "entryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "entryId"
+          ],
+          "additionalProperties": false,
+          "title": "RemoveRecentRepositoryPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "RemoveRecentRepositoryRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
           "const": "readWorkspace"
         },
         "repositoryId": {

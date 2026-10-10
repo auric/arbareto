@@ -25,6 +25,8 @@ mod lifecycle;
 mod platform;
 #[cfg(windows)]
 mod process_requests;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod profile;
 #[cfg(windows)]
 mod schema;
 #[cfg(windows)]
@@ -41,6 +43,8 @@ mod webview;
 mod wsl;
 
 #[cfg(windows)]
+use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::sync::{Arc, Mutex};
 
 #[cfg(windows)]
@@ -50,6 +54,8 @@ use tauri::{App, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use crate::dialogs::{Dialogs, Native};
 #[cfg(windows)]
 use crate::ipc::{Ipc, MAIN_WINDOW, NativeFirst};
+#[cfg(windows)]
+use crate::profile::Folders;
 #[cfg(windows)]
 use crate::service::{Facts, Service, Stores};
 #[cfg(windows)]
@@ -70,6 +76,9 @@ pub fn run() {
 
 #[cfg(windows)]
 pub fn run() {
+    // The check runs before Tauri starts, so a refusal writes no file.
+    let root = profile::root(std::env::var_os(profile::VARIABLE))
+        .unwrap_or_else(|refusal| profile::refuse(&refusal));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -77,6 +86,9 @@ pub fn run() {
             ipc::choose_git,
             ipc::choose_repository,
             ipc::restore_workspace,
+            ipc::list_recent_repositories,
+            ipc::open_recent_repository,
+            ipc::remove_recent_repository,
             ipc::read_workspace,
             ipc::read_entries,
             ipc::read_history,
@@ -97,7 +109,7 @@ pub fn run() {
             ipc::current_session,
             ipc::dismiss_recovery_marker,
         ])
-        .setup(|app| start(app))
+        .setup(move |app| start(app, root.as_deref()))
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event
                 && window.label() == MAIN_WINDOW
@@ -126,8 +138,17 @@ pub fn run() {
 
 /// The cold-start order of plan.md "Cold-start critical path".
 #[cfg(windows)]
-fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
-    let service = Service::start(app.handle()).ok();
+fn start(app: &mut App, root: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    let folders = match root {
+        Some(root) => Folders::under(root),
+        None => Folders {
+            config: app.path().app_config_dir()?,
+            data: app.path().app_data_dir()?,
+            launch: None,
+            webview: None,
+        },
+    };
+    let service = Service::start(app.handle(), folders.launch).ok();
     let facts = platform::read();
     let Ok(webview2_version) = webview::check() else {
         // `check` showed the message. No window opens.
@@ -137,8 +158,12 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         app.handle().exit(1);
         return Ok(());
     };
-    let config = app.path().app_config_dir()?;
-    let data = app.path().app_data_dir()?;
+    let Folders {
+        config,
+        data,
+        webview,
+        ..
+    } = folders;
     // Without the folder, `settings::load` gives the defaults, and a later save fails.
     let _ = std::fs::create_dir_all(&config);
     let settings_path = config.join(SETTINGS_FILE);
@@ -157,6 +182,7 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 settings: Mutex::new(settings),
                 markers: Arc::new(Markers::open(&data.join("recovery"))),
                 trust: Arc::new(Trust::open(&data.join("trust"))),
+                current: Mutex::new(None),
             },
         ),
         None => Err(lifecycle::Event::StartFailed),
@@ -174,7 +200,7 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let ipc = Arc::clone(&app.state::<Arc<Ipc>>());
     app.manage(text_scale::watch(ipc, app.handle().clone()));
 
-    let window = main_window(app, stored_bounds)?;
+    let window = main_window(app, stored_bounds, webview)?;
     let shown = window.clone();
     let handle = app.handle().clone();
     window.with_webview(move |webview| {
@@ -205,10 +231,14 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
 /// The hidden main window with clamped bounds (plan.md "Chosen layout, sizes, and DPI"). The capability grants only this label.
 #[cfg(windows)]
-fn main_window(app: &App, stored: Option<Bounds>) -> tauri::Result<WebviewWindow> {
+fn main_window(
+    app: &App,
+    stored: Option<Bounds>,
+    webview: Option<PathBuf>,
+) -> tauri::Result<WebviewWindow> {
     let (minimum_width, minimum_height) = settings::MINIMUM_SIZE;
     let mut builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
-        .title("Arbareto")
+        .title(service::window_title(None))
         .visible(false)
         .zoom_hotkeys_enabled(false)
         .min_inner_size(minimum_width.into(), minimum_height.into());
@@ -217,6 +247,9 @@ fn main_window(app: &App, stored: Option<Bounds>) -> tauri::Result<WebviewWindow
         builder = builder
             .position(bounds.x.into(), bounds.y.into())
             .inner_size(bounds.width.into(), bounds.height.into());
+    }
+    if let Some(webview) = webview {
+        builder = builder.data_directory(webview);
     }
     builder.build()
 }

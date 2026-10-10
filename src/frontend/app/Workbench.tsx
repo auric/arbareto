@@ -407,12 +407,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   useEffect(() => {
     const handle = createShortcutHandler();
     const onKey = (event: KeyboardEvent) => {
-      const { requests, menuOpen, modalOpen, repository } = live.current;
-      const action = handle(event, { messageField: null, comparisonPane: null, modalOpen, menuOpen: menuOpen !== null, reviewValid: false });
+      const { requests, menuOpen, modalOpen } = live.current;
+      const action = handle(event, { messageField: null, comparisonPane: null, modalOpen, menuOpen: menuOpen !== null, commitEnabled: false });
       if (!action) return;
       if (action.type === "focusMenuBar") menubar.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
       else if (action.type === "refresh") requests.refresh();
-      else if (action.type === "selectMode" && repository) requests.setMode(action.mode);
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKey);

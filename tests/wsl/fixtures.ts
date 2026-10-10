@@ -371,7 +371,7 @@ export function buildF26(host: WslHost, windowsGit: string): F26 {
 
 // ---- F31: the F27, F29, and F30 submodule layouts in the distro (plan.md fixture matrix) ----
 
-export type F31Variant = "base" | "tty" | "linger" | "sleep" | "uploadpack" | "prune" | "big-clone" | "silent-fetch";
+export type F31Variant = "base" | "tty" | "linger" | "sleep" | "read" | "uploadpack" | "prune" | "big-clone" | "silent-fetch";
 // Contract §12 "Network policy": tests enable local transport only in the owned global file.
 const FILE_ALLOW = '[protocol "file"]\n\tallow = always\n';
 export const F31_BIG_BYTES = 300_000_000;
@@ -389,8 +389,8 @@ export interface F31 {
 }
 
 // `<root>/<name>.git` remotes with `leaf`, `mid` (with `leaf` nested), and `solo`, and a superproject clone at `<root>/super`.
-// "base": `mid` and `solo` are uninitialized. "tty", "linger", and "sleep": `solo` is one commit behind with its commit present, and its `post-checkout` hook
-// reads `/dev/tty`, starts a lingering child, or sleeps 60 seconds without output. "uploadpack": `solo` needs a fetch, and `remote.origin.uploadpack` names a canary
+// "base": `mid` and `solo` are uninitialized. "tty", "linger", "sleep", and "read": `solo` is one commit behind with its commit present, and its `post-checkout` hook
+// reads `/dev/tty`, starts a lingering child, sleeps 60 seconds without output, or blocks in a read of a FIFO that gets no data. "uploadpack": `solo` needs a fetch, and `remote.origin.uploadpack` names a canary
 // that records `GIT_PROTOCOL_FROM_USER`. "prune": only `refs/remotes/origin/feat` holds the `solo` HEAD, the remote deletes `feat`, and `fetch.prune` is true (research.md R14 S15).
 // "big-clone": an uninitialized `big` whose recorded commit adds a 300 MB random file. "silent-fetch": `big` is populated at its first commit.
 export function buildF31(host: WslHost, variant: F31Variant): F31 {
@@ -417,7 +417,7 @@ export function buildF31(host: WslHost, variant: F31Variant): F31 {
   const mid = remote("mid");
   const midTip = publish(mid, "mid 1", { "mid.txt": "mid 1\n", ".gitmodules": gitmodules([["leaf", "../leaf.git"]]) }, { leaf: leafTip });
   const solo = remote("solo");
-  const behind = variant === "tty" || variant === "linger" || variant === "sleep";
+  const behind = variant === "tty" || variant === "linger" || variant === "sleep" || variant === "read";
   const s1 = publish(solo, "solo 1", { "solo.txt": "solo 1\n" });
   let feat: string | null = null;
   if (variant === "prune") {
@@ -488,6 +488,8 @@ export function buildF31(host: WslHost, variant: F31Variant): F31 {
     hook(`setsid '${script}' >/dev/null 2>&1 &\nexit 0\n`);
   }
   if (variant === "sleep") hook(`: > '${canary}'\nexec sleep 60\n`);
+  // The hook holds both FIFO ends, so its read gets neither data nor end-of-file.
+  if (variant === "read") hook(`mkfifo -- '${root}/read.fifo'\nexec 3<>'${root}/read.fifo'\n: > '${canary}'\nread answer <&3\n`);
   if (variant === "uploadpack") {
     const program = `${root}/uploadpack.sh`;
     writeLinux(host, program, `#!/bin/sh\nprintf '%s\\n' "\${GIT_PROTOCOL_FROM_USER-unset}" > '${canary}'\nexec '${host.probe.paths.git}' upload-pack "$@"\n`, "755");

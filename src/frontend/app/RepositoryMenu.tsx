@@ -45,7 +45,10 @@ export type RepositoryMenuProps = {
   wslGit?: { path: string; version: string } | null;
   /** The current trust ID of the workspace (contract §3 `readTrust`). Without it, Revoke trust is unavailable. */
   trustId: string | null;
+  /** Open folder… (Ctrl+O): runs `chooseRepository`. */
   onOpenRepository(): void;
+  /** Recent repositories (Ctrl+R): opens the switcher. The item stays disabled without it. */
+  onOpenRecent?(): void;
   onSelectGit(): void;
   onReviewTrust(): void;
   revokeTrust(trustId: string): Promise<BridgeResponse>;
@@ -54,7 +57,7 @@ export type RepositoryMenuProps = {
 };
 
 /** The repository menu of the header menu bar. Render it inside `Menubar`. */
-export function RepositoryMenu({ environment, path, head, distro = null, wslGit = null, trustId, onOpenRepository, onSelectGit, onReviewTrust, revokeTrust, onOpenChange, finalFocus }: RepositoryMenuProps) {
+export function RepositoryMenu({ environment, path, head, distro = null, wslGit = null, trustId, onOpenRepository, onOpenRecent, onSelectGit, onReviewTrust, revokeTrust, onOpenChange, finalFocus }: RepositoryMenuProps) {
   const [revoked, setRevoked] = useState<ReactNode>(null);
   const [revoking, setRevoking] = useState(false);
   const gitPath = environment?.selectedPath;
@@ -71,12 +74,18 @@ export function RepositoryMenu({ environment, path, head, distro = null, wslGit 
     <MenubarMenu onOpenChange={onOpenChange}>
       <MenubarTrigger>Repository</MenubarTrigger>
       <MenubarContent finalFocus={finalFocus}>
+        {/* plan.md "Compact token system": the menu starts with these two items and shows their keys as text. */}
+        <MenubarGroup>
+          <MenubarItem onClick={onOpenRepository}>Open folder… (Ctrl+O)</MenubarItem>
+          <MenubarItem disabled={onOpenRecent === undefined} onClick={onOpenRecent}>
+            Recent repositories (Ctrl+R)
+          </MenubarItem>
+        </MenubarGroup>
+        <MenubarSeparator />
         <MenubarGroup>
           <MenubarLabel className="break-all whitespace-normal">{path ?? "No repository"}</MenubarLabel>
           {head === null ? null : <MenubarLabel className="break-all whitespace-normal">HEAD: {head}</MenubarLabel>}
         </MenubarGroup>
-        <MenubarSeparator />
-        <MenubarItem onClick={onOpenRepository}>Open repository</MenubarItem>
         <MenubarSeparator />
         {distro === null ? null : (
           // plan.md "Required visible states", WSL location: the label above the distro Git path and version.

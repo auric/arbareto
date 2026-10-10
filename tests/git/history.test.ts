@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { HISTORY_BODY_BYTES } from "../../src/contracts/envelope";
 import * as LIMITS from "../../src/contracts/limits";
 import { batchCommandArgs, configListArgs, headOidArgs, headTargetArgs, hooksPathArgs, revListArgs, shallowPathArgs } from "../../src/git-service/commands";
 import { probeGit } from "../../src/git-service/git-installation";
@@ -126,8 +127,8 @@ function oracleCommitter(repo: string, commits: { oid: string; encoding: string 
 // Contract §5 "History message body": the decoded text ends at the last whole UTF-8 character within the bound.
 function oracleBody(raw: Buffer): { body: string; bodyCut: boolean } {
   const text = Buffer.from(new TextDecoder("utf-8", { ignoreBOM: true }).decode(raw), "utf8");
-  if (text.length <= LIMITS.HISTORY_BODY_BYTES) return { body: text.toString("utf8"), bodyCut: false };
-  let end = LIMITS.HISTORY_BODY_BYTES;
+  if (text.length <= HISTORY_BODY_BYTES) return { body: text.toString("utf8"), bodyCut: false };
+  let end = HISTORY_BODY_BYTES;
   while ((text[end]! & 0xc0) === 0x80) end--;
   return { body: text.subarray(0, end).toString("utf8"), bodyCut: true };
 }
@@ -359,7 +360,7 @@ describe("committer and message body (contract §3 \"HistoryPage result\", §5 \
   }
 
   test("the contract §5 body bound is 16 KiB", () => {
-    expect(LIMITS.HISTORY_BODY_BYTES).toBe(16 * 1024);
+    expect(HISTORY_BODY_BYTES).toBe(16 * 1024);
   });
 
   caseTest(
@@ -407,8 +408,8 @@ describe("committer and message body (contract §3 \"HistoryPage result\", §5 \
         const row = response.result!.rows[0]!;
         expect(row.oid).toBe(oid);
         const bytes = Buffer.byteLength(row.body);
-        expect(bytes).toBeLessThanOrEqual(LIMITS.HISTORY_BODY_BYTES);
-        expect(bytes).toBe(LIMITS.HISTORY_BODY_BYTES - (LIMITS.HISTORY_BODY_BYTES % 3));
+        expect(bytes).toBeLessThanOrEqual(HISTORY_BODY_BYTES);
+        expect(bytes).toBe(HISTORY_BODY_BYTES - (HISTORY_BODY_BYTES % 3));
         expect(body.startsWith(row.body)).toBe(true);
         expect(row.bodyCut).toBe(true);
         expect(row.invalidUtf8).toBe(false);

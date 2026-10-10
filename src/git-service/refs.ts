@@ -3,9 +3,9 @@
 
 // Contract §3 `readRefs` and "References result", §5 "Reference listing" and "Reference result", and §7 "Shared listing" and "Held history steps".
 
-import type { RefsRefusal, RefsResult } from "../contracts/envelope";
+import { REF_RESULT_BYTES, type RefsRefusal, type RefsResult } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { REF_LISTING_BYTES, REF_LISTING_RECORDS, REF_RESULT_BYTES } from "../contracts/limits";
+import { REF_LISTING_BYTES, REF_LISTING_RECORDS } from "../contracts/limits";
 import { refsArgs } from "./commands";
 import { createCollector, type GitRunner } from "./git-runner";
 import { sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";

@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { WarningIcon } from "../app/NoticeBand";
 import { CopyButton } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
 import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
-import type { Mode } from "../keyboard/shortcuts";
+import type { Panel } from "../keyboard/shortcuts";
 import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
 import { cn } from "../lib/utils";
 
-// plan.md "Status area", "Status and fallback texts", "Required visible states" (Succeeded, Busy, Cancel requested, Canceled, Completed with effects, State unknown), "Keyboard and focus" (Status area row), and the Confirm row of "Task flow and command placement".
+// plan.md "Status area", "Status and fallback texts", "Required visible states" (Succeeded, Busy, Cancel requested, Canceled, Completed with effects, State unknown), "Keyboard and focus" (Status area row), and the Commit outcome row of "Task flow and command placement".
 
 export type StatusOperation = {
   /** A new value starts a new operation: the area and its content clear. */
@@ -38,7 +38,10 @@ export type OperationStatusProps = {
   head: Head | null;
   /** The workspace holds a current trust ID (contract §9 "Lingering count"). */
   trusted: boolean;
-  mode: Mode;
+  /** The docked panel (plan.md "Dock region"). */
+  panel: Panel;
+  /** The docked commit panel element. Commit sits inside it. */
+  commitPanel?: RefObject<HTMLElement | null>;
   modalOpen: boolean;
   /** The Space refusal of the second live element. Null clears it. */
   refusal: string | null;
@@ -122,11 +125,11 @@ export function lingeringSentence(count: number, trusted: boolean): string {
   return `${runs} Closing Arbareto ends them.${trusted ? " Revoke trust also ends them." : ""}`;
 }
 
-/** The Confirm row: where focus goes at a commit outcome. */
-export function outcomeFocus(mode: Mode, modalOpen: boolean, cancelFocused: boolean): "message-field" | "area-heading" | "stay" {
+/** plan.md Commit outcome row: where focus goes at a commit outcome. `from` is the focus when the outcome arrives. */
+export function outcomeFocus(panel: Panel, modalOpen: boolean, from: "cancel" | "panel" | "other"): "message-field" | "area-heading" | "stay" {
   if (modalOpen) return "stay";
-  if (mode === "changes") return "message-field";
-  return cancelFocused ? "area-heading" : "stay";
+  if (panel === "commit") return from === "other" ? "stay" : "message-field";
+  return from === "cancel" ? "area-heading" : "stay";
 }
 
 /** plan.md "Header layout": the last folder name of the worktree root. A WSL root ends in the same name. */
@@ -181,7 +184,7 @@ function readStallRemedy(response: BridgeResponse): StallRemedy | null {
 type Area = { requestId: string; open: boolean; forStall: boolean };
 type Stall = { requestId: string; remedy: StallRemedy | null; ending: boolean };
 
-export function OperationStatus({ bridge, operation: op, worktreeRoot, head, trusted, mode, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, areaMaxHeight, ref }: OperationStatusProps) {
+export function OperationStatus({ bridge, operation: op, worktreeRoot, head, trusted, panel, commitPanel, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, areaMaxHeight, ref }: OperationStatusProps) {
   const [area, setArea] = useState<Area | null>(null);
   const [stall, setStall] = useState<Stall | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -200,7 +203,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   const focusHeading = useRef(false);
   const handled = useRef<string | null>(null);
   const seen = useRef<string | null>(null);
-  const cancelHadFocus = useRef(false);
+  const focusFrom = useRef<"cancel" | "panel" | "other">("other");
   const wasStalled = useRef(false);
   const canceled = useRef<string | null>(null);
 
@@ -235,7 +238,8 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   // The outcome removes Cancel before any effect runs, so the focus on Cancel is read before that commit.
   if (response !== null && seen.current !== requestId && typeof document !== "undefined") {
     seen.current = requestId;
-    cancelHadFocus.current = cancelRef.current !== null && document.activeElement === cancelRef.current;
+    const active = document.activeElement;
+    focusFrom.current = cancelRef.current !== null && active === cancelRef.current ? "cancel" : commitPanel?.current?.contains(active) === true ? "panel" : "other";
   }
 
   function openArea(forStall: boolean) {
@@ -275,9 +279,11 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   useLayoutEffect(() => {
     if (op === null || response === null || handled.current === requestId) return;
     handled.current = requestId;
-    const target = op.kind === "commit" ? outcomeFocus(mode, modalOpen, cancelHadFocus.current) : "stay";
+    const commit = op.kind === "commit";
+    const target = commit ? outcomeFocus(panel, modalOpen, focusFrom.current) : "stay";
     const count = outcome.lingeringDescendants ?? 0;
-    const opens = target === "area-heading" || (op.kind === "commit" && OPENING_COMMIT_STATES.includes(response.state)) || count > 0 || op.kind === "updateSubmodules";
+    // plan.md "Status area", Opening: every commit outcome opens the area while the commit details are docked.
+    const opens = (commit && (panel === "details" || OPENING_COMMIT_STATES.includes(response.state))) || count > 0 || op.kind === "updateSubmodules";
     if (heading !== undefined && opens) openArea(false);
     if (target === "message-field") onFocusMessageField();
     else if (target === "area-heading" && heading !== undefined) focusHeading.current = true;

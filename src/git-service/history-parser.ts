@@ -3,7 +3,8 @@
 
 // Contract §3 "HistoryPage result" and §5 history bounds. Pure parsers of untrusted Git output.
 
-import { HISTORY_BODY_BYTES, HISTORY_COMMIT_OBJECT_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_PARENTS_PER_PAGE, HISTORY_STREAM_BYTES, HISTORY_STREAM_ROWS } from "../contracts/limits";
+import { HISTORY_BODY_BYTES } from "../contracts/envelope";
+import { HISTORY_COMMIT_OBJECT_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_PARENTS_PER_PAGE, HISTORY_STREAM_BYTES, HISTORY_STREAM_ROWS } from "../contracts/limits";
 import type { ObjectFormat } from "./commands";
 import type { Completeness, LimitName } from "./snapshot";
 

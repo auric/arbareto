@@ -35,12 +35,9 @@ export const SHALLOW_METADATA_BYTES = 4 * MIB;
 export const HISTORY_COMMIT_OBJECT_BYTES = 256 * KIB;
 // The encoded result of each `readHistory` response.
 export const HISTORY_PAGE_BYTES = 8 * MIB;
-// The UTF-8 bytes of each history row body (contract §3 "HistoryPage result").
-export const HISTORY_BODY_BYTES = 16 * KIB;
-// Contract §5 "Reference listing": the `readRefs` Git output. "Reference result": the encoded result of each `readRefs` response.
+// Contract §5 "Reference listing": the `readRefs` Git output.
 export const REF_LISTING_RECORDS = 10_000;
 export const REF_LISTING_BYTES = 4 * MIB;
-export const REF_RESULT_BYTES = 8 * MIB;
 export const GRAPH_LANES = 24;
 export const GRAPH_PATH_SEGMENTS = 4096;
 export const TRUST_INPUT_BYTES = 4 * MIB;

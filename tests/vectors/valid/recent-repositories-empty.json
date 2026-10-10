@@ -1,0 +1,5 @@
+{
+  "schema": "recent-repositories-result",
+  "expected": "valid",
+  "text": "{\"entries\":[]}"
+}

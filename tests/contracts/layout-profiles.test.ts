@@ -8,6 +8,7 @@ import {
   chooseProfile,
   clampPanes,
   dialogSize,
+  dockBounds,
   headerRows,
   historyFit,
   layoutFloor,
@@ -15,6 +16,7 @@ import {
   overflowScroll,
   paneBounds,
   rememberedPanes,
+  sidebarBounds,
   splitterStep,
   statusAreaHeight,
   workAreaHeight,
@@ -35,15 +37,15 @@ describe("profile choice", () => {
   });
 
   test("wide needs width 1120 and the wide floor; narrow needs width 960 to 1119 and the narrow floor", () => {
-    expect(chooseProfile({ width: 1120, height: 644 }, TEXT_100, "compact")).toBe("wide");
-    expect(chooseProfile({ width: 1120, height: 643 }, TEXT_100, "compact")).toBe("constrained");
-    expect(chooseProfile({ width: 1120, height: 700 }, TEXT_100, "comfortable")).toBe("wide");
-    expect(chooseProfile({ width: 1120, height: 699 }, TEXT_100, "comfortable")).toBe("constrained");
+    expect(chooseProfile({ width: 1120, height: 710 }, TEXT_100, "compact")).toBe("wide");
+    expect(chooseProfile({ width: 1120, height: 709 }, TEXT_100, "compact")).toBe("constrained");
+    expect(chooseProfile({ width: 1120, height: 778 }, TEXT_100, "comfortable")).toBe("wide");
+    expect(chooseProfile({ width: 1120, height: 777 }, TEXT_100, "comfortable")).toBe("constrained");
     expect(chooseProfile({ width: 1119, height: 800 }, TEXT_100, "compact")).toBe("narrow");
-    expect(chooseProfile({ width: 960, height: 734 }, TEXT_100, "compact")).toBe("narrow");
-    expect(chooseProfile({ width: 960, height: 733 }, TEXT_100, "compact")).toBe("constrained");
-    expect(chooseProfile({ width: 960, height: 806 }, TEXT_100, "comfortable")).toBe("narrow");
-    expect(chooseProfile({ width: 960, height: 805 }, TEXT_100, "comfortable")).toBe("constrained");
+    expect(chooseProfile({ width: 960, height: 800 }, TEXT_100, "compact")).toBe("narrow");
+    expect(chooseProfile({ width: 960, height: 799 }, TEXT_100, "compact")).toBe("constrained");
+    expect(chooseProfile({ width: 960, height: 884 }, TEXT_100, "comfortable")).toBe("narrow");
+    expect(chooseProfile({ width: 960, height: 883 }, TEXT_100, "comfortable")).toBe("constrained");
     expect(chooseProfile({ width: 959, height: 2000 }, TEXT_100, "compact")).toBe("constrained");
     expect(chooseProfile({ width: 720, height: 480 }, TEXT_100, "compact")).toBe("constrained");
   });
@@ -54,7 +56,7 @@ describe("profile choice", () => {
       expect(chooseProfile({ width: 1280, height: 800 }, TEXT_225, density)).toBe("constrained");
       expect(chooseProfile({ width: 960, height: 640 }, TEXT_100, density)).toBe("constrained");
       expect(chooseProfile({ width: 1120, height: 640 }, TEXT_100, density)).toBe("constrained");
-      expect(chooseProfile({ width: 1120, height: 700 }, TEXT_100, density)).toBe("wide");
+      expect(chooseProfile({ width: 1120, height: 700 }, TEXT_100, density)).toBe("constrained");
     }
   });
 
@@ -62,8 +64,8 @@ describe("profile choice", () => {
     const content = { bandRows: 2, statusArea: 400, path: `C:\\${"long folder name\\".repeat(20)}repo`, distro: "x".repeat(30) };
     for (const client of [
       { width: 1280, height: 800 },
-      { width: 960, height: 734 },
-      { width: 1120, height: 644 },
+      { width: 960, height: 800 },
+      { width: 1120, height: 710 },
       { width: 720, height: 480 },
     ]) {
       for (const density of DENSITIES) {
@@ -83,22 +85,22 @@ describe("height budget", () => {
   });
 
   test("the floors at 100% text with one header row", () => {
-    expect(layoutFloor("wide", TEXT_100, "compact", 1)).toBe(644);
-    expect(layoutFloor("wide", TEXT_100, "comfortable", 1)).toBe(700);
-    expect(layoutFloor("narrow", TEXT_100, "compact", 1)).toBe(734);
-    expect(layoutFloor("narrow", TEXT_100, "comfortable", 1)).toBe(806);
+    expect(layoutFloor("wide", TEXT_100, "compact", 1)).toBe(710);
+    expect(layoutFloor("wide", TEXT_100, "comfortable", 1)).toBe(778);
+    expect(layoutFloor("narrow", TEXT_100, "compact", 1)).toBe(800);
+    expect(layoutFloor("narrow", TEXT_100, "comfortable", 1)).toBe(884);
   });
 
   test("the floors at 225% text with two header rows", () => {
-    expect(layoutFloor("wide", TEXT_225, "compact", 2)).toBeCloseTo(972, 6);
-    expect(layoutFloor("wide", TEXT_225, "comfortable", 2)).toBeCloseTo(1100, 6);
-    expect(layoutFloor("narrow", TEXT_225, "compact", 2)).toBeCloseTo(1134, 6);
-    expect(layoutFloor("narrow", TEXT_225, "comfortable", 2)).toBeCloseTo(1250, 6);
+    expect(layoutFloor("wide", TEXT_225, "compact", 2)).toBeCloseTo(1129.5, 6);
+    expect(layoutFloor("wide", TEXT_225, "comfortable", 2)).toBeCloseTo(1281, 6);
+    expect(layoutFloor("narrow", TEXT_225, "compact", 2)).toBeCloseTo(1245, 6);
+    expect(layoutFloor("narrow", TEXT_225, "comfortable", 2)).toBeCloseTo(1378, 6);
   });
 
   test("each extra header row adds one grown header row to a floor", () => {
-    expect(layoutFloor("wide", TEXT_225, "compact", 1)).toBeCloseTo(909.5, 6);
-    expect(layoutFloor("wide", TEXT_225, "comfortable", 1)).toBeCloseTo(1031, 6);
+    expect(layoutFloor("wide", TEXT_225, "compact", 1)).toBeCloseTo(1067, 6);
+    expect(layoutFloor("wide", TEXT_225, "comfortable", 1)).toBeCloseTo(1212, 6);
     for (const profile of ["wide", "narrow"] as const) {
       for (const density of DENSITIES) {
         for (const scale of [TEXT_100, 1.5, TEXT_225]) {
@@ -112,18 +114,20 @@ describe("height budget", () => {
 
   test("every row of the plan.md client size table gives its profile and viewport", () => {
     const rows: [number, number, number, Density, string, number][] = [
-      [1280, 800, TEXT_100, "compact", "wide", 696],
-      [1280, 800, TEXT_100, "comfortable", "wide", 684],
-      [1280, 800, TEXT_225, "compact", "constrained", 566],
-      [1280, 800, TEXT_225, "comfortable", "constrained", 540],
-      [960, 640, TEXT_100, "compact", "constrained", 536],
-      [960, 640, TEXT_100, "comfortable", "constrained", 524],
-      [960, 640, TEXT_225, "compact", "constrained", 406],
-      [960, 640, TEXT_225, "comfortable", "constrained", 380],
-      [720, 480, TEXT_100, "compact", "constrained", 336],
-      [720, 480, TEXT_100, "comfortable", "constrained", 320],
-      [720, 480, TEXT_225, "compact", "constrained", 246],
-      [720, 480, TEXT_225, "comfortable", "constrained", 220],
+      [1280, 800, TEXT_100, "compact", "wide", 728],
+      [1280, 800, TEXT_100, "comfortable", "wide", 720],
+      [1280, 800, TEXT_225, "compact", "constrained", 620.5],
+      [1280, 800, TEXT_225, "comfortable", "constrained", 601],
+      [1120, 700, TEXT_100, "compact", "constrained", 628],
+      [1120, 700, TEXT_100, "comfortable", "constrained", 620],
+      [960, 640, TEXT_100, "compact", "constrained", 568],
+      [960, 640, TEXT_100, "comfortable", "constrained", 560],
+      [960, 640, TEXT_225, "compact", "constrained", 460.5],
+      [960, 640, TEXT_225, "comfortable", "constrained", 441],
+      [720, 480, TEXT_100, "compact", "constrained", 368],
+      [720, 480, TEXT_100, "comfortable", "constrained", 356],
+      [720, 480, TEXT_225, "compact", "constrained", 300.5],
+      [720, 480, TEXT_225, "comfortable", "constrained", 281],
     ];
     for (const [width, height, scale, density, profile, viewport] of rows) {
       expect(chooseProfile({ width, height }, scale, density)).toBe(profile as never);
@@ -133,11 +137,12 @@ describe("height budget", () => {
 });
 
 describe("density metrics and section minima", () => {
-  test("fixed rows: header 40/44, mode bar, hunk toolbar, status bar, and pane headings 32/36", () => {
+  test("fixed rows: header 40/44; stage bar, hunk toolbar, status bar, and pane headings 32/36; no mode bar", () => {
     for (const density of DENSITIES) {
       const m = metrics(density, TEXT_100);
+      expect("modeBar" in m).toBe(false);
       expect(m.header).toBe(both(40, 44)(density));
-      for (const height of [m.modeBar, m.hunkToolbar, m.statusBar, m.paneHeading, m.bandRow, m.areaHeading]) expect(height).toBe(both(32, 36)(density));
+      for (const height of [m.stageBar, m.hunkToolbar, m.statusBar, m.paneHeading, m.bandRow, m.areaHeading]) expect(height).toBe(both(32, 36)(density));
       expect(m.row).toBe(both(26, 34)(density));
       expect(m.button).toBe(both(28, 36)(density));
       expect(m.rowButton).toBe(both(24, 28)(density));
@@ -149,7 +154,7 @@ describe("density metrics and section minima", () => {
       for (const scale of [TEXT_100, TEXT_225]) {
         const m = metrics(density, scale);
         expect(m.header - m.button).toBeGreaterThanOrEqual(8);
-        for (const height of [m.modeBar, m.hunkToolbar, m.statusBar, m.paneHeading, m.bandRow, m.areaHeading]) expect(height - m.rowButton).toBeGreaterThanOrEqual(8);
+        for (const height of [m.stageBar, m.hunkToolbar, m.statusBar, m.paneHeading, m.bandRow, m.areaHeading]) expect(height - m.rowButton).toBeGreaterThanOrEqual(8);
       }
     }
   });
@@ -161,37 +166,44 @@ describe("density metrics and section minima", () => {
       expect(m.helpLine).toBe(both(18, 20)(density));
       expect(m.workingChangesMin).toBe(both(102, 118)(density));
       expect(m.stagedMin).toBe(both(58, 70)(density));
-      expect(m.wideLaneMin).toBe(both(168, 196)(density));
+      expect(m.wideLaneMin).toBe(both(192, 224)(density));
       expect(m.statusAreaMin).toBe(both(84, 104)(density));
       expect(m.trayMin).toBe(both(144, 160)(density));
       expect(m.trayDefault).toBe(both(168, 192)(density));
       expect(m.wideComparisonMin).toBe(240);
       expect(m.narrowComparisonMin).toBe(220);
       expect(m.constrainedRegionMin).toBe(220);
-      expect(m.historyListMin).toBe(240);
+      expect(m.historyListMin).toBe(both(58, 70)(density));
+      expect(m.commitDetailsMin).toBe(both(58, 70)(density));
       expect(m.constrainedListMin).toBe(220);
       expect(m.reducedPaneMin).toBe(both(58, 70)(density));
       expect(m.splitter).toBe(8);
     }
   });
 
+  test("the icon keeps 16 DIPs at every text size and density", () => {
+    for (const density of DENSITIES) for (const scale of [TEXT_100, 1.5, TEXT_225]) expect(metrics(density, scale).icon).toBe(16);
+  });
+
   test("text size grows each text-holding height by (factor - 1) x its 18/20 DIP line height", () => {
     const compact = metrics("compact", TEXT_225);
     expect(compact.header).toBeCloseTo(62.5, 6);
-    expect(compact.modeBar).toBeCloseTo(54.5, 6);
+    expect(compact.stageBar).toBeCloseTo(54.5, 6);
+    expect(compact.historyListMin).toBeCloseTo(103, 6);
     expect(compact.workingChangesMin).toBeCloseTo(192, 6);
     expect(compact.stagedMin).toBeCloseTo(103, 6);
-    expect(compact.wideLaneMin).toBeCloseTo(303, 6);
+    expect(compact.wideLaneMin).toBeCloseTo(349.5, 6);
     expect(compact.statusAreaMin).toBeCloseTo(151.5, 6);
     expect(compact.trayMin).toBeCloseTo(166.5, 6);
     expect(compact.wideComparisonMin).toBeCloseTo(285, 6);
     expect(compact.narrowComparisonMin).toBeCloseTo(265, 6);
     const comfortable = metrics("comfortable", TEXT_225);
     expect(comfortable.header).toBeCloseTo(69, 6);
-    expect(comfortable.modeBar).toBeCloseTo(61, 6);
+    expect(comfortable.stageBar).toBeCloseTo(61, 6);
+    expect(comfortable.historyListMin).toBeCloseTo(120, 6);
     expect(comfortable.workingChangesMin).toBeCloseTo(218, 6);
     expect(comfortable.stagedMin).toBeCloseTo(120, 6);
-    expect(comfortable.wideLaneMin).toBeCloseTo(346, 6);
+    expect(comfortable.wideLaneMin).toBeCloseTo(399, 6);
     expect(comfortable.statusAreaMin).toBeCloseTo(179, 6);
     expect(comfortable.trayMin).toBeCloseTo(185, 6);
     expect(comfortable.narrowComparisonMin).toBeCloseTo(270, 6);
@@ -228,10 +240,66 @@ describe("pane bounds", () => {
   });
 });
 
+describe("references sidebar width", () => {
+  test("the width is 180 to 420 DIPs and 240 by default", () => {
+    expect(sidebarBounds("wide", 1280)).toEqual({ min: 180, max: 420, default: 240 });
+    expect(sidebarBounds("narrow", 960)).toEqual({ min: 180, max: 420, default: 240 });
+  });
+
+  test("the wide rest keeps 768 DIPs beside the sidebar splitter, so at 1120 DIPs the sidebar stops at 344", () => {
+    expect(sidebarBounds("wide", 1120).max).toBe(344);
+    expect(sidebarBounds("wide", 1150).max).toBe(374);
+    for (const width of [1120, 1150, 1280, 1920]) expect(width - sidebarBounds("wide", width).max - 8).toBeGreaterThanOrEqual(768);
+  });
+
+  test("the narrow rest keeps the 520 DIP diff minimum", () => {
+    for (const width of [960, 1000, 1119]) expect(width - sidebarBounds("narrow", width).max - 8).toBeGreaterThanOrEqual(520);
+  });
+});
+
+describe("dock region", () => {
+  const input = (density: Density, available: number, width = 1280) => ({ width, available, density, textScale: TEXT_100 });
+
+  test("the commit panel defaults to the area minus the history heading, three history rows, and the splitter", () => {
+    expect(dockBounds("commit", input("compact", 728)).default).toBe(728 - 32 - 3 * 26 - 8);
+    expect(dockBounds("commit", input("comfortable", 720)).default).toBe(720 - 36 - 3 * 34 - 8);
+  });
+
+  test("the commit details default to 40% of the area", () => {
+    expect(dockBounds("details", input("compact", 728)).default).toBeCloseTo(0.4 * 728, 6);
+    expect(dockBounds("details", input("comfortable", 720)).default).toBeCloseTo(0.4 * 720, 6);
+  });
+
+  test("each panel keeps its minimum, and the history list keeps its minimum above the splitter", () => {
+    for (const density of DENSITIES) {
+      const m = metrics(density, TEXT_100);
+      const available = both(728, 720)(density);
+      const commit = dockBounds("commit", input(density, available));
+      expect(commit.min).toBe(m.paneHeading + Math.max(m.wideComparisonMin, m.wideLaneMin) + m.splitter + m.trayMin);
+      expect(commit.max).toBe(available - m.splitter - m.historyListMin);
+      const narrow = dockBounds("commit", input(density, available, 960));
+      expect(narrow.min).toBe(m.paneHeading + m.workingChangesMin + m.splitter + m.narrowComparisonMin + m.splitter + m.trayMin);
+      const details = dockBounds("details", input(density, available));
+      expect(details.min).toBe(m.commitDetailsMin);
+      expect(details.max).toBe(available - m.splitter - m.historyListMin);
+    }
+  });
+});
+
 describe("clamping", () => {
-  test("at 960x806 comfortable with both reserves in use, the band and tray clamp leaves 220 DIPs for the comparison", () => {
-    const result = clampPanes({ client: { width: 960, height: 806 }, textScale: TEXT_100, density: "comfortable", bandRows: 2, statusArea: 104, fileBand: 128, tray: 192 });
-    expect(result).toEqual({ fileBand: 118, tray: 160, comparison: 220 });
+  test("at 960x884 comfortable with both reserves in use, the list gives 68, the file band 10, and the tray 32", () => {
+    const result = clampPanes({ client: { width: 960, height: 884 }, textScale: TEXT_100, density: "comfortable", bandRows: 2, statusArea: 104, fileBand: 128, tray: 192 });
+    expect(result).toEqual({ list: 70, dock: 550, fileBand: 118, tray: 160, comparison: 220 });
+  });
+
+  test("in the wide profile, the history list shrinks first, then the tray", () => {
+    const result = clampPanes({ client: { width: 1120, height: 710 }, textScale: TEXT_100, density: "compact", bandRows: 2, statusArea: 84, fileBand: 128, tray: 168 });
+    expect(result).toEqual({ list: 58, dock: 424, tray: 144, comparison: 240 });
+  });
+
+  test("a remembered dock height that leaves room keeps its value", () => {
+    const result = clampPanes({ client: { width: 1280, height: 800 }, textScale: TEXT_100, density: "compact", bandRows: 0, statusArea: 0, fileBand: 128, tray: 168, dock: 500 });
+    expect(result).toEqual({ list: 220, dock: 500, tray: 168, comparison: 292 });
   });
 
   test("at each wide and narrow floor in both densities, all minima and both reserves fit", () => {
@@ -247,14 +315,17 @@ describe("clamping", () => {
           expect(chooseProfile({ width, height }, scale, density)).toBe(profile);
           const result = clampPanes({ client: { width, height }, textScale: scale, density, bandRows: 2, statusArea: m.statusAreaMin, fileBand: 128, tray: m.trayDefault });
           expect(result.tray).toBeGreaterThanOrEqual(m.trayMin - 1e-6);
-          const fixed = rows * m.header + m.modeBar + m.statusBar + 2 * m.bandRow + m.statusAreaMin;
+          const fixed = rows * m.header + m.statusBar + 2 * m.bandRow + m.statusAreaMin;
+          const list = result.list ?? 0;
+          expect(list).toBeGreaterThanOrEqual(m.historyListMin - 1e-6);
+          expect(fixed + list + m.splitter + (result.dock ?? 0)).toBeCloseTo(height, 6);
           if (profile === "wide") {
             expect(result.comparison).toBeGreaterThanOrEqual(Math.max(m.wideComparisonMin, m.wideLaneMin) - 1e-6);
-            expect(fixed + m.splitter + result.tray + result.comparison).toBeCloseTo(height, 6);
+            expect(fixed + list + m.splitter + m.paneHeading + result.comparison + m.splitter + result.tray).toBeCloseTo(height, 6);
           } else {
             expect(result.fileBand).toBeGreaterThanOrEqual(m.workingChangesMin - 1e-6);
             expect(result.comparison).toBeGreaterThanOrEqual(m.narrowComparisonMin - 1e-6);
-            expect(fixed + 2 * m.splitter + (result.fileBand ?? 0) + result.tray + result.comparison).toBeCloseTo(height, 6);
+            expect(fixed + list + m.splitter + m.paneHeading + (result.fileBand ?? 0) + 2 * m.splitter + result.comparison + result.tray).toBeCloseTo(height, 6);
           }
         }
       }
@@ -262,21 +333,30 @@ describe("clamping", () => {
   });
 });
 
-// plan.md "Constrained sizes": the panes keep their minima, then shrink toward the reduced pane minimum. The work area scrolls only when the reduced minima do not fit.
+// plan.md "Constrained sizes": the collapsed references heading row, the history list at the reduced pane minimum, and the commit panel heading take their height first.
+// The other panes keep their minima, then shrink toward the reduced pane minimum. The work area scrolls only when the reduced minima do not fit.
 describe("constrained sizes", () => {
   const input = (width: number, height: number, textScale: number, density: Density, bandRows = 0) => ({ client: { width, height }, textScale, density, bandRows, statusArea: 0 });
 
-  test("Changes: the file band and the tray keep their minima, and the comparison takes the rest; remembered sizes do not apply", () => {
+  test("the collapsed references section is one heading row of 32/36 DIPs, grown by the text-size rule", () => {
+    expect(metrics("compact", TEXT_100).referencesCollapsed).toBe(32);
+    expect(metrics("comfortable", TEXT_100).referencesCollapsed).toBe(36);
+    expect(metrics("compact", TEXT_225).referencesCollapsed).toBeCloseTo(54.5, 6);
+  });
+
+  test("commit panel: the file band and the tray keep their minima, and the comparison takes the rest; remembered sizes do not apply", () => {
     for (const [width, height, scale, density, bandRows, expected] of [
-      [960, 640, TEXT_100, "compact", 0, { fileBand: 102, tray: 144, comparison: 290, scrolls: false }],
-      [960, 640, TEXT_100, "comfortable", 0, { fileBand: 118, tray: 160, comparison: 246, scrolls: false }],
-      [960, 640, TEXT_100, "compact", 2, { fileBand: 102, tray: 144, comparison: 226, scrolls: false }],
+      // plan.md example: 568 DIPs hold 32 + 58 + 32 + 82 + 220 + 144.
+      [960, 640, TEXT_100, "compact", 0, { fileBand: 82, tray: 144, comparison: 220, scrolls: false }],
+      [960, 640, TEXT_100, "comfortable", 0, { fileBand: 70, tray: 128, comparison: 220, scrolls: false }],
+      [960, 640, TEXT_100, "compact", 2, { fileBand: 58, tray: 104, comparison: 220, scrolls: false }],
       // The file band shrinks first, then the tray, then the comparison.
-      [1280, 800, TEXT_225, "compact", 0, { fileBand: 134.5, tray: 166.5, comparison: 265, scrolls: false }],
-      [720, 480, TEXT_100, "compact", 0, { fileBand: 58, tray: 58, comparison: 220, scrolls: false }],
-      [720, 480, TEXT_100, "comfortable", 0, { fileBand: 70, tray: 70, comparison: 180, scrolls: false }],
-      [720, 480, TEXT_100, "compact", 2, { fileBand: 58, tray: 58, comparison: 156, scrolls: false }],
-      // Three reduced minima exceed the 246 and 220 DIP work areas.
+      [1280, 800, TEXT_225, "compact", 0, { fileBand: 103, tray: 103, comparison: 202.5, scrolls: false }],
+      // plan.md example: 368 DIPs hold 32 + 58 + 32 + 58 + 130 + 58.
+      [720, 480, TEXT_100, "compact", 0, { fileBand: 58, tray: 58, comparison: 130, scrolls: false }],
+      [720, 480, TEXT_100, "comfortable", 0, { fileBand: 70, tray: 70, comparison: 74, scrolls: false }],
+      [720, 480, TEXT_100, "compact", 2, { fileBand: 58, tray: 58, comparison: 66, scrolls: false }],
+      // plan.md: the reduced minima need 521 and 602 DIPs, more than the 300.5 and 281 DIP work areas.
       [720, 480, TEXT_225, "compact", 0, { fileBand: 103, tray: 103, comparison: 103, scrolls: true }],
       [720, 480, TEXT_225, "comfortable", 0, { fileBand: 120, tray: 120, comparison: 120, scrolls: true }],
     ] as const) {
@@ -291,7 +371,7 @@ describe("constrained sizes", () => {
     }
   });
 
-  test("History: the inspector keeps the reduced pane minimum, and the list keeps 220 DIPs, then shrinks to one row", () => {
+  test("commit details: the details keep the reduced pane minimum, and the list keeps 220 DIPs, then shrinks to one row", () => {
     for (const [width, height, scale, density, bandRows, expected] of [
       [720, 480, TEXT_100, "compact", 0, { listMin: 220, scrolls: false }],
       [720, 480, TEXT_100, "compact", 2, { listMin: 182, scrolls: false }],
@@ -304,10 +384,10 @@ describe("constrained sizes", () => {
     }
   });
 
-  test("the wide and narrow profiles never scroll the work area, and the History list keeps 240 DIPs", () => {
+  test("the wide and narrow profiles never scroll the work area, and the history list keeps one row below its heading", () => {
     for (const density of DENSITIES) {
       expect(clampPanes({ ...input(1280, 800, TEXT_100, density, 2), statusArea: metrics(density, TEXT_100).statusAreaMin, fileBand: 128, tray: 192 }).scrolls).toBeFalsy();
-      expect(historyFit(input(1280, 800, TEXT_100, density, 2))).toEqual({ listMin: 240, scrolls: false });
+      expect(historyFit(input(1280, 800, TEXT_100, density, 2))).toEqual({ listMin: metrics(density, TEXT_100).row, scrolls: false });
     }
   });
 });
@@ -372,9 +452,9 @@ describe("overflow", () => {
 
 describe("status area height", () => {
   const huge = 10_000;
-  test("at 1280x800 wide without a band, the maximum is 280 compact and 276 comfortable", () => {
-    expect(statusAreaHeight({ content: huge, client: { width: 1280, height: 800 }, textScale: TEXT_100, density: "compact", bandRows: 0 })).toBeCloseTo(280, 6);
-    expect(statusAreaHeight({ content: huge, client: { width: 1280, height: 800 }, textScale: TEXT_100, density: "comfortable", bandRows: 0 })).toBeCloseTo(276, 6);
+  test("at 1280x800 wide without a band, the maximum is 238 compact and 198 comfortable", () => {
+    expect(statusAreaHeight({ content: huge, client: { width: 1280, height: 800 }, textScale: TEXT_100, density: "compact", bandRows: 0 })).toBeCloseTo(238, 6);
+    expect(statusAreaHeight({ content: huge, client: { width: 1280, height: 800 }, textScale: TEXT_100, density: "comfortable", bandRows: 0 })).toBeCloseTo(198, 6);
   });
 
   test("the content height clamps up to the 84/104 DIP minimum", () => {

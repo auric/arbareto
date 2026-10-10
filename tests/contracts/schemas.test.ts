@@ -72,11 +72,21 @@ const commit = (message: string) => ({
 });
 
 describe("envelope schemas", () => {
-  test("the renderer envelope is a union of the 22 operations, and the service envelope of 20", () => {
+  test("the renderer envelope is a union of the 25 operations, and the service envelope of 20", () => {
     const names = (schema: { options: readonly { shape: { operation: { value: string } } }[] }) => schema.options.map((o) => o.shape.operation.value);
     expect(names(RendererEnvelope)).toEqual([...OPERATIONS]);
     expect(names(ServiceEnvelope)).toEqual(OPERATIONS.filter((name) => !(SHELL_ONLY as readonly string[]).includes(name)));
-    expect(names(NativeFirstEnvelope).toSorted()).toEqual(["chooseGit", "chooseRepository", "dismissRecoveryMarker", "restoreWorkspace"]);
+    expect(names(NativeFirstEnvelope).toSorted()).toEqual([
+      "chooseGit",
+      "chooseRepository",
+      "dismissRecoveryMarker",
+      "listRecentRepositories",
+      "openRecentRepository",
+      "removeRecentRepository",
+      "restoreWorkspace",
+    ]);
+    // Contract §3 "Recent repositories": the shell answers the list and the removal, and forwards an open as `restoreWorkspace`.
+    expect(SHELL_ONLY).toEqual(expect.arrayContaining(["listRecentRepositories", "openRecentRepository", "removeRecentRepository"]));
   });
 
   test("validateRequest gives PROTOCOL_VERSION, then UNKNOWN_OPERATION, then INVALID_REQUEST", () => {

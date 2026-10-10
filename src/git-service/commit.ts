@@ -47,6 +47,7 @@ import { contextOf } from "./read-steps";
 import { reconcileCommit } from "./reconcile";
 import type { Workspace } from "./registration";
 import { policyFingerprint, type ReadInstallation } from "./snapshot";
+import { trackStall } from "./stall";
 import type { WorkspaceReader } from "./status";
 import { keyParts, type ConfigEntry, type Trust } from "./trust";
 import type { WslGit } from "./wsl";
@@ -54,6 +55,8 @@ import { processEnd, wslLock, type UnknownLock, type WslIndexFacts, type WslLock
 
 // Contract §9: the remedy text of HOOK_FAILED and of a commit GIT_FAILED after handoff.
 export const HOOK_REMEDY_TEXT = "This command runs the pre-commit hook in a terminal and does not commit. Other hooks show their output only here. Arbareto keeps your message.";
+// Contract §6 "Activity and stall notice": the stall text of the hook command.
+export const COMMIT_STALL_TEXT = "This command runs only the pre-commit hook and does not commit. It cannot repeat a prompt from another hook or from signing.";
 // Contract §9 "Other locks".
 export const OTHER_LOCKS_TEXT = "Git could not take a lock. Another Git process, or a process that Git or a hook started, can hold it. Use Refresh after that process ends.";
 // Contract §4 "Quoting rule": the text of a refused value.
@@ -350,6 +353,10 @@ export function createCommitter(o: CommitterOptions) {
 
       // Contract §9 "Commit failure output": only stderr bytes before the exit reply enter the tail.
       const tail = createTailCollector("plain");
+      const stall = trackStall(registry, operationId, () => registry.progress(operationId, "commit-handoff"), () => {
+        const hook = w.wsl !== undefined ? wslCommitRemedy({ worktreeRoot: w.worktreeRoot, wsl: w.wsl }, null, false) : installation.selectedPath === null ? null : commitRemedy(installation.selectedPath, w.worktreeRoot, null, false);
+        return hook?.command ? { command: hook.command, text: COMMIT_STALL_TEXT } : { text: COMMIT_STALL_TEXT };
+      });
       let exit: GitExit | null = null;
       try {
         exit = await rec.run({
@@ -362,10 +369,12 @@ export function createCommitter(o: CommitterOptions) {
           stdout: createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }),
           stderr: tail,
           signal,
+          onActivity: stall.onActivity,
         });
       } catch {
         // A refusal after the start request leaves open whether Git ran.
       }
+      stall.end();
       const trustId = () => o.trust.currentTrustId(w) !== undefined;
       // Contract §9: only a GIT_FAILED carries the hook command. "Other locks" follows an observed lock.
       const remedy = (count: number | null, otherLocks: boolean, gitFailed: boolean) => {

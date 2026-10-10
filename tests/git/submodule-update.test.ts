@@ -13,7 +13,7 @@ import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
-import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, todoCase, until, valuesOf } from "./hunk-harness";
+import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf } from "./hunk-harness";
 import { caseTest, once, withFsCalls, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
 import {
   callsSince,
@@ -1237,7 +1237,7 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
 });
 
 describe("lifecycle (contract §12 \"Environment and console\", §6, §2)", () => {
-  todoCase(TASK, `stall: while the double reports stalled for the solo clone step, getOperation returns that step's command in stallRemedy, and no progress event holds it (needs T256)`, SHELL, () => {
+  updateCase(`stall: while the double reports stalled for the solo clone step, getOperation returns that step's command in stallRemedy, and no progress event holds it`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-stall", "base");
     const sup = superOf(b);
     return withFixture(b, "t223-stall", async (service) => {

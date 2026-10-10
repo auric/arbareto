@@ -7,6 +7,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -21,6 +22,7 @@ use crate::ipc::{
     FrameSink, Ipc, MAIN_WINDOW, NativeFirst, Prepared, ToRenderer, renderer_message,
 };
 use crate::jobs::{Job, Supervisor};
+use crate::lifecycle::{self, Action, Event, Host};
 use crate::process_requests::{
     CHUNK_BYTES, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
     decode_strict, is_identifier, wait,
@@ -70,6 +72,13 @@ pub struct Service {
     contexts: Arc<Contexts>,
     dialogs: Arc<Dialogs>,
     stores: OnceLock<Stores>,
+    facts: OnceLock<Facts>,
+    launch_directory: PathBuf,
+    environment: Vec<(OsString, OsString)>,
+    /// The frame reader and the exit watch of the last launch. A new launch joins them first.
+    threads: Mutex<Vec<JoinHandle<()>>>,
+    /// True from a completed handshake to the next service exit. Guarded together with `exits`.
+    connected: Mutex<bool>,
     /// The running mutations of `requestClose` (contract §6 "Recovery markers").
     running: Arc<Running>,
     stdin: Arc<Mutex<Option<File>>>,
@@ -120,6 +129,11 @@ impl Service {
             contexts,
             dialogs: Arc::new(Dialogs::new(app.clone())),
             stores: OnceLock::new(),
+            facts: OnceLock::new(),
+            launch_directory,
+            environment,
+            threads: Mutex::default(),
+            connected: Mutex::new(false),
             running: Arc::default(),
             stdin,
             job: Mutex::new(None),
@@ -175,29 +189,36 @@ impl Service {
                 save_startup_git(stores, git);
             }
         }));
-        service.launch(&launch_directory, &environment);
+        service.launch();
         Ok(service)
     }
 
-    fn launch(self: &Arc<Self>, launch_directory: &Path, environment: &[(OsString, OsString)]) {
+    /// Starts one service process. False is a failed start.
+    /// It runs on no thread of the last launch, because it joins them.
+    fn launch(self: &Arc<Self>) -> bool {
+        // A late exit cleanup of the last process would clear the pipes and the Job of the new one.
+        let threads = std::mem::take(&mut *lock(&self.threads));
+        for thread in threads {
+            let _ = thread.join();
+        }
         let Ok(program) = std::env::current_exe().map(|exe| exe.with_file_name(SIDECAR)) else {
-            return;
+            return false;
         };
         let Ok(job) = Job::create() else {
-            return;
+            return false;
         };
         let Ok(spawned) = spawn(
             &SpawnRequest {
                 program: &program,
                 arguments: &[],
-                environment,
-                current_dir: launch_directory,
+                environment: &self.environment,
+                current_dir: &self.launch_directory,
                 wsl: false,
                 input: Input::Stream,
             },
             job.handle(),
         ) else {
-            return;
+            return false;
         };
         let process = Owned(spawned.process);
         *lock(&self.job) = Some(job);
@@ -213,29 +234,89 @@ impl Service {
         *lock(&self.handshake) = Some(reply);
         let me = Arc::clone(self);
         let stdout = spawned.stdout;
-        std::thread::spawn(move || me.read(stdout, &handshake));
+        let reader = std::thread::spawn(move || me.read(stdout, &handshake));
         let me = Arc::clone(self);
-        std::thread::spawn(move || me.watch(process));
+        let watch = std::thread::spawn(move || me.watch(process));
+        lock(&self.threads).extend([reader, watch]);
+        true
     }
 
-    /// Sends the startup handshake and waits for its reply. False means that no service session runs (contract §2).
-    pub fn connect(&self, facts: &Facts, stores: Stores) -> bool {
-        let stores = self.stores.get_or_init(|| stores);
-        let Some(reply) = lock(&self.handshake).take() else {
-            return false;
+    /// Sends the startup handshake and waits for its reply. An error means that no service session runs (contract §2).
+    pub fn connect(&self, facts: Facts, stores: Stores) -> Result<(), Event> {
+        self.facts.get_or_init(|| facts);
+        self.stores.get_or_init(|| stores);
+        self.open_session(false)
+    }
+
+    fn open_session(&self, restarted: bool) -> Result<(), Event> {
+        let (Some(facts), Some(stores)) = (self.facts.get(), self.stores.get()) else {
+            return Err(Event::StartFailed);
         };
-        write(&self.stdin, &handshake_frame(facts, stores, &self.contexts));
-        match reply.recv_timeout(HANDSHAKE_WAIT) {
-            Ok(Some(session_id)) => {
+        let Some(reply) = lock(&self.handshake).take() else {
+            return Err(Event::StartFailed);
+        };
+        let exits = self.exits.load(Ordering::SeqCst);
+        write(
+            &self.stdin,
+            &handshake_frame(facts, stores, &self.contexts, restarted),
+        );
+        if let Ok(Some(session_id)) = reply.recv_timeout(HANDSHAKE_WAIT) {
+            let mut connected = lock(&self.connected);
+            // An exit after the reply already ran its cleanup, so this session never runs.
+            if self.exits.load(Ordering::SeqCst) == exits {
+                *connected = true;
                 self.ipc.set_session(Some(session_id));
-                true
-            }
-            // A failed handshake ends the service. A missing reply ends it here.
-            _ => {
-                drop(lock(&self.job).take());
-                false
+                return Ok(());
             }
         }
+        // A failed handshake ends the service. A missing reply ends it here.
+        drop(lock(&self.job).take());
+        Err(Event::HandshakeFailed)
+    }
+
+    /// Shows one lifecycle dialog and runs the action of its result.
+    /// Lifecycle dialogs use their own `Dialogs`, so a service exit never cancels them.
+    fn act(self: &Arc<Self>, dialog: lifecycle::Dialog) {
+        let pressed = Dialogs::new(self.app.clone()).confirm(&lifecycle::confirmation(dialog));
+        match lifecycle::action(dialog, pressed) {
+            Action::RestartService => {
+                lifecycle::restart_service(self);
+            }
+            Action::ReloadWindow => {
+                if let Some(window) = self.app.get_webview_window(MAIN_WINDOW) {
+                    let _ = window.reload();
+                }
+            }
+            Action::RestartArbareto => {
+                self.end(close::Request::Window, true);
+            }
+            Action::CloseArbareto => {
+                self.end(close::Request::Window, false);
+            }
+        }
+    }
+
+    /// Application close under the close rules (plan.md "Close during mutation").
+    /// `relaunch` starts the application again after the close.
+    fn end(&self, request: close::Request, relaunch: bool) -> Decision {
+        let decision = close::decide(request, &self.running, &*self.dialogs);
+        match decision {
+            Decision::Close => {
+                self.close();
+                if relaunch {
+                    self.app.request_restart();
+                } else {
+                    self.app.exit(0);
+                }
+            }
+            Decision::StayOpen => {
+                if let Some(window) = self.app.get_webview_window(MAIN_WINDOW) {
+                    let _ = window.set_focus();
+                }
+            }
+            Decision::Stay => {}
+        }
+        decision
     }
 
     /// Reads the service frames until end-of-file.
@@ -435,7 +516,7 @@ impl Service {
     }
 
     /// Waits for the service exit. The shell never restarts the service by itself.
-    fn watch(&self, process: Owned) {
+    fn watch(self: &Arc<Self>, process: Owned) {
         while !wait(process.0, Duration::from_secs(3600)) {}
         drop(process);
         lock(&self.stdin).take();
@@ -443,10 +524,15 @@ impl Service {
         if self.closing.load(Ordering::SeqCst) {
             return;
         }
+        // Without a completed handshake, the `connect` caller shows the dialog.
+        let connected = {
+            let mut connected = lock(&self.connected);
+            self.exits.fetch_add(1, Ordering::SeqCst);
+            std::mem::take(&mut *connected)
+        };
         self.requests.service_exited();
         // The operation Jobs closed, so no mutation counts as running (contract §6 "Recovery markers").
         self.running.service_exited();
-        self.exits.fetch_add(1, Ordering::SeqCst);
         self.dialogs.cancel_open();
         self.contexts.restart("");
         self.ipc.set_session(None);
@@ -469,6 +555,9 @@ impl Service {
             "service-stopped",
             json!({ "markers": markers }),
         );
+        if connected {
+            lifecycle::handle(self, Event::ServiceExited);
+        }
     }
 
     /// Application close: the operation Jobs, then the lingering Jobs, then the service Job (contract §6 "Lingering Jobs").
@@ -493,6 +582,30 @@ impl Owner for Service {
     }
 }
 
+impl Host for Arc<Service> {
+    /// The dialog blocks, so it runs on its own thread.
+    fn show(&self, dialog: lifecycle::Dialog) {
+        let me = Arc::clone(self);
+        std::thread::spawn(move || me.act(dialog));
+    }
+
+    fn log(&self, entry: &str) {
+        eprintln!("{entry}");
+    }
+
+    fn start_service(&self) -> bool {
+        self.launch()
+    }
+
+    fn handshake(&self, restarted: bool) -> bool {
+        self.open_session(restarted).is_ok()
+    }
+
+    fn send_service_session(&self) {
+        let _ = self.app.emit_to(MAIN_WINDOW, "service-session", ());
+    }
+}
+
 impl NativeFirst for Service {
     fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, &'static str> {
         let stores = self.stores.get().ok_or(UNAVAILABLE)?;
@@ -514,29 +627,16 @@ impl NativeFirst for Service {
     }
 
     fn request_close(&self, request: close::Request) -> Decision {
-        let decision = close::decide(request, &self.running, &*self.dialogs);
-        match decision {
-            Decision::Close => {
-                self.close();
-                self.app.exit(0);
-            }
-            Decision::StayOpen => {
-                if let Some(window) = self.app.get_webview_window(MAIN_WINDOW) {
-                    let _ = window.set_focus();
-                }
-            }
-            Decision::Stay => {}
-        }
-        decision
+        self.end(request, false)
     }
 }
 
 /// The startup handshake (contract §6 "Startup handshake"). Each handshake rescans the markers and the records.
-fn handshake_frame(facts: &Facts, stores: &Stores, contexts: &Contexts) -> String {
+fn handshake_frame(facts: &Facts, stores: &Stores, contexts: &Contexts, restarted: bool) -> String {
     let scan = stores.markers.scan();
     let mut handshake = json!({
         "version": 1,
-        "restarted": false,
+        "restarted": restarted,
         "platformScope": facts.platform_scope,
         "osBuild": facts.os_build,
         "webView2Version": facts.webview2_version,
@@ -1253,9 +1353,13 @@ mod tests {
             os_build: 26200,
             webview2_version: "154.0.4258.53".to_string(),
         };
-        let frame: Value =
-            serde_json::from_str(&handshake_frame(&facts, &shell.stores, &shell.contexts))
-                .expect("JSON");
+        let frame: Value = serde_json::from_str(&handshake_frame(
+            &facts,
+            &shell.stores,
+            &shell.contexts,
+            false,
+        ))
+        .expect("JSON");
         let handshake = &frame["handshake"];
         let mut keys: Vec<&str> = handshake
             .as_object()
@@ -1297,13 +1401,59 @@ mod tests {
             os_build: 26200,
             webview2_version: "154.0.4258.53".to_string(),
         };
-        let frame: Value =
-            serde_json::from_str(&handshake_frame(&facts, &shell.stores, &shell.contexts))
-                .expect("JSON");
+        for restarted in [false, true] {
+            let frame: Value = serde_json::from_str(&handshake_frame(
+                &facts,
+                &shell.stores,
+                &shell.contexts,
+                restarted,
+            ))
+            .expect("JSON");
+            assert_eq!(
+                crate::schema::handshake(&frame["handshake"]).map(drop),
+                Ok(())
+            );
+            assert_eq!(frame["handshake"]["restarted"], json!(restarted));
+        }
+    }
+
+    #[test]
+    fn the_restarted_handshake_carries_the_markers_and_a_new_saved_git_context() {
+        let shell = Shell::new();
+        std::fs::write(shell.folder("recovery").join("broken.json"), "{").expect("write");
+        let git = shell.fixture.path("git.exe");
+        std::fs::write(&git, "").expect("git file");
+        lock(&shell.stores.settings).git = Some(SavedGit {
+            selected_path: git.clone(),
+            executable_path: git,
+            version: "2.55.0.windows.1".to_string(),
+            digest: "0".repeat(64),
+        });
+        let facts = Facts {
+            platform_scope: "qualification-target",
+            os_build: 26200,
+            webview2_version: "154.0.4258.53".to_string(),
+        };
+        let frame = |restarted| -> Value {
+            serde_json::from_str(&handshake_frame(
+                &facts,
+                &shell.stores,
+                &shell.contexts,
+                restarted,
+            ))
+            .expect("JSON")
+        };
+        let first = frame(false);
+        let restarted = frame(true)["handshake"].clone();
+        assert_eq!(restarted["restarted"], json!(true));
         assert_eq!(
-            crate::schema::handshake(&frame["handshake"]).map(drop),
-            Ok(())
+            restarted["damagedMarkers"].as_array().map(Vec::len),
+            Some(1)
         );
+        let first_id = first["handshake"]["savedGit"]["bootstrapId"].as_str();
+        let restarted_id = restarted["savedGit"]["bootstrapId"].as_str();
+        assert!(restarted_id.is_some_and(is_identifier), "{restarted}");
+        assert_ne!(first_id, restarted_id, "a new startup context");
     }
 
     #[test]

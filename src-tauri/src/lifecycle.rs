@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "T142 implements the lifecycle actions")
-)]
-#![cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "the T142 stubs read no input until T142 implements them"
-    )
-)]
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+    COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+    COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED,
+};
 
-use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PROCESS_FAILED_KIND;
+use crate::dialogs::{Button, Confirmation};
+
+/// Custom button IDs stay clear of the common button IDs 1 to 11.
+const ACTION: i32 = 100;
+const CLOSE: i32 = 101;
 
 /// One shell lifecycle event (T142).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,8 +37,19 @@ pub enum Dialog {
     BrowserExited,
 }
 
-/// The native steps of the lifecycle actions. T142 implements them in the shell.
+/// The button that the user activated in a lifecycle dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    RestartService,
+    ReloadWindow,
+    RestartArbareto,
+    CloseArbareto,
+}
+
+/// The native steps of the lifecycle actions.
+/// No step closes a lingering Job, so Restart service keeps them all (contract §6 "Lingering Jobs").
 pub trait Host {
+    /// Shows the dialog and runs the action of its result. It never blocks the caller.
     fn show(&self, dialog: Dialog);
     /// One log entry. It never holds user data.
     fn log(&self, entry: &str);
@@ -50,17 +59,75 @@ pub trait Host {
     fn handshake(&self, restarted: bool) -> bool;
     /// The `service-session` event to the main window (contract §2).
     fn send_service_session(&self);
-    fn close_lingering_jobs(&self);
 }
 
-/// Maps one event to its action. No event restarts anything by itself.
-pub fn handle(_host: &dyn Host, _event: Event) {
-    todo!("T142")
+/// Maps one event to its action. No event restarts anything by itself (FR-023, research.md R7).
+pub fn handle(host: &dyn Host, event: Event) {
+    match event {
+        Event::ServiceExited | Event::StartFailed | Event::HandshakeFailed => {
+            host.show(Dialog::ServiceStopped);
+        }
+        Event::ProcessFailed(COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED) => {
+            host.show(Dialog::RendererExited);
+        }
+        Event::ProcessFailed(COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED) => {
+            host.show(Dialog::BrowserExited);
+        }
+        Event::ProcessFailed(COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED) => {
+            host.log("WebView2 ProcessFailed: UnknownProcessExited");
+        }
+        Event::ProcessFailed(_) => {}
+    }
 }
 
-/// Restart service. False when the start or the handshake fails.
-pub fn restart_service(_host: &dyn Host) -> bool {
-    todo!("T142")
+/// Restart service. A failed start or handshake shows the Git service stopped dialog again.
+/// Every lingering Job stays (contract §6 "Lingering Jobs").
+pub fn restart_service(host: &dyn Host) -> bool {
+    if !host.start_service() {
+        handle(host, Event::StartFailed);
+        return false;
+    }
+    if !host.handshake(true) {
+        handle(host, Event::HandshakeFailed);
+        return false;
+    }
+    host.send_service_session();
+    true
+}
+
+/// The native confirmation of one lifecycle dialog. The action button is the default.
+pub fn confirmation(dialog: Dialog) -> Confirmation {
+    let (text, action) = match dialog {
+        Dialog::ServiceStopped => ("Git service stopped.", "Restart service"),
+        Dialog::RendererExited => ("The window stopped.", "Reload window"),
+        Dialog::BrowserExited => ("The window browser process stopped.", "Restart Arbareto"),
+    };
+    Confirmation {
+        text: text.to_string(),
+        buttons: vec![
+            Button {
+                id: ACTION,
+                label: action,
+            },
+            Button {
+                id: CLOSE,
+                label: "Close Arbareto",
+            },
+        ],
+        default_button: ACTION,
+        accept_button: ACTION,
+    }
+}
+
+/// Only the action button gives its action. Every other result is Close Arbareto, as in T063:
+/// Close Arbareto, Escape, Alt+F4, the close button, and a call failure.
+pub fn action(dialog: Dialog, pressed: Option<i32>) -> Action {
+    match (pressed, dialog) {
+        (Some(ACTION), Dialog::ServiceStopped) => Action::RestartService,
+        (Some(ACTION), Dialog::RendererExited) => Action::ReloadWindow,
+        (Some(ACTION), Dialog::BrowserExited) => Action::RestartArbareto,
+        _ => Action::CloseArbareto,
+    }
 }
 
 #[cfg(test)]
@@ -81,6 +148,7 @@ mod tests {
         COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED,
         COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED,
     };
+    use windows::Win32::UI::WindowsAndMessaging::IDCANCEL;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Call {
@@ -89,7 +157,6 @@ mod tests {
         Start,
         Handshake(bool),
         Session,
-        CloseLingering,
     }
 
     struct Recorder {
@@ -130,9 +197,6 @@ mod tests {
         fn send_service_session(&self) {
             self.calls.borrow_mut().push(Call::Session);
         }
-        fn close_lingering_jobs(&self) {
-            self.calls.borrow_mut().push(Call::CloseLingering);
-        }
     }
 
     fn handled(event: Event) -> Vec<Call> {
@@ -152,6 +216,12 @@ mod tests {
         COREWEBVIEW2_PROCESS_FAILED_KIND_PPAPI_BROKER_PROCESS_EXITED,
     ];
 
+    const DIALOGS: [Dialog; 3] = [
+        Dialog::ServiceStopped,
+        Dialog::RendererExited,
+        Dialog::BrowserExited,
+    ];
+
     #[test]
     fn restart_service_sends_service_session_only_after_the_restarted_handshake() {
         let host = Recorder::new(true, true);
@@ -167,12 +237,20 @@ mod tests {
     fn a_failed_restart_start_or_handshake_sends_no_service_session() {
         let host = Recorder::new(false, true);
         assert!(!restart_service(&host));
-        assert!(!host.calls().contains(&Call::Session));
-        assert!(!host.calls().contains(&Call::CloseLingering));
+        assert_eq!(
+            host.calls(),
+            [Call::Start, Call::Show(Dialog::ServiceStopped)]
+        );
         let host = Recorder::new(true, false);
         assert!(!restart_service(&host));
-        assert!(!host.calls().contains(&Call::Session));
-        assert!(!host.calls().contains(&Call::CloseLingering));
+        assert_eq!(
+            host.calls(),
+            [
+                Call::Start,
+                Call::Handshake(true),
+                Call::Show(Dialog::ServiceStopped)
+            ]
+        );
     }
 
     #[test]
@@ -224,6 +302,75 @@ mod tests {
     fn the_other_process_kinds_cause_no_action() {
         for kind in NO_ACTION {
             assert_eq!(handled(Event::ProcessFailed(kind)), [], "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn each_dialog_offers_its_action_and_close_arbareto() {
+        for (dialog, label) in [
+            (Dialog::ServiceStopped, "Restart service"),
+            (Dialog::RendererExited, "Reload window"),
+            (Dialog::BrowserExited, "Restart Arbareto"),
+        ] {
+            let confirmation = confirmation(dialog);
+            let labels: Vec<&str> = confirmation.buttons.iter().map(|b| b.label).collect();
+            assert_eq!(labels, [label, "Close Arbareto"], "{dialog:?}");
+            assert!(
+                confirmation.buttons.iter().all(|b| b.id != IDCANCEL.0),
+                "Escape activates no button"
+            );
+        }
+        assert_eq!(
+            confirmation(Dialog::ServiceStopped).text,
+            "Git service stopped."
+        );
+    }
+
+    #[test]
+    fn only_the_action_button_gives_its_action() {
+        for (dialog, expected) in [
+            (Dialog::ServiceStopped, Action::RestartService),
+            (Dialog::RendererExited, Action::ReloadWindow),
+            (Dialog::BrowserExited, Action::RestartArbareto),
+        ] {
+            let confirmation = confirmation(dialog);
+            assert_eq!(action(dialog, Some(confirmation.buttons[0].id)), expected);
+            assert_eq!(
+                action(dialog, Some(confirmation.default_button)),
+                expected,
+                "Enter on the default"
+            );
+        }
+    }
+
+    #[test]
+    fn the_close_arbareto_button_closes() {
+        for dialog in DIALOGS {
+            let close = confirmation(dialog).buttons[1].id;
+            assert_eq!(
+                action(dialog, Some(close)),
+                Action::CloseArbareto,
+                "{dialog:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_alt_f4_and_the_close_button_close() {
+        // All three return `IDCANCEL` (TDF_ALLOW_DIALOG_CANCELLATION).
+        for dialog in DIALOGS {
+            assert_eq!(
+                action(dialog, Some(IDCANCEL.0)),
+                Action::CloseArbareto,
+                "{dialog:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_dialog_call_closes() {
+        for dialog in DIALOGS {
+            assert_eq!(action(dialog, None), Action::CloseArbareto, "{dialog:?}");
         }
     }
 }

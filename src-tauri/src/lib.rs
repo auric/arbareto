@@ -140,7 +140,7 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     let connected = match &service {
         Some(service) => service.connect(
-            &Facts {
+            Facts {
                 platform_scope: platform::scope(facts).as_str(),
                 os_build: facts.build,
                 webview2_version,
@@ -152,12 +152,12 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 trust: Arc::new(Trust::open(&data.join("trust"))),
             },
         ),
-        None => false,
+        None => Err(lifecycle::Event::StartFailed),
     };
-    match service {
+    match &service {
         Some(service) => {
             app.manage(Arc::clone(&service.ipc));
-            app.manage(service);
+            app.manage(Arc::clone(service));
         }
         // `currentSession` then gives SERVICE_UNAVAILABLE (contract §2).
         None => {
@@ -169,16 +169,26 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let shown = window.clone();
     let handle = app.handle().clone();
     window.with_webview(move |webview| {
-        if let Err(error) = webview::attach(&webview.controller()) {
+        let failed = handle.clone();
+        let on_process_failed = move |kind| {
+            if let Some(service) = failed.try_state::<Arc<Service>>() {
+                lifecycle::handle(&*service, lifecycle::Event::ProcessFailed(kind));
+            }
+        };
+        if let Err(error) = webview::attach(&webview.controller(), on_process_failed) {
             eprintln!("WebView2 handlers: {error}");
         }
         let _ = shown.show();
-        if !connected {
-            // T142 routes this case through `lifecycle.rs` and adds Restart service.
-            std::thread::spawn(move || {
-                Dialogs::new(handle.clone()).confirm(&dialogs::service_stopped());
-                handle.exit(0);
-            });
+        match (connected, service) {
+            (Ok(()), _) => {}
+            (Err(event), Some(service)) => lifecycle::handle(&service, event),
+            // Without a `Service`, no restart can run.
+            (Err(_), None) => {
+                std::thread::spawn(move || {
+                    Dialogs::new(handle.clone()).confirm(&dialogs::service_stopped());
+                    handle.exit(0);
+                });
+            }
         }
     })?;
     Ok(())

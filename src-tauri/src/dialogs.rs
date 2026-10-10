@@ -43,7 +43,7 @@ pub struct Button {
     pub label: &'static str,
 }
 
-/// One native confirmation. Cancel is the default button. Only `accept_button` accepts.
+/// One native confirmation. Only `accept_button` accepts. The lifecycle dialogs default to their action button.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Confirmation {
     pub text: String,
@@ -370,7 +370,7 @@ pub fn confirm_run(
     native.confirm(&confirmation) == Some(confirmation.accept_button)
 }
 
-/// The startup failure dialog. T142 adds Restart service.
+/// The startup failure dialog without a `Service`. No restart can run then.
 pub fn service_stopped() -> Confirmation {
     Confirmation {
         text: "Git service stopped.".to_string(),

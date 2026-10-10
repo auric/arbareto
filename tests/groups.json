@@ -108,6 +108,7 @@
     "tests/git/submodule-review.test.ts",
     "tests/git/submodule-update.test.ts",
     "tests/git/trust.test.ts",
+    "tests/git/wsl-files.test.ts",
     "tests/wsl/file-facts.test.ts",
     "tests/wsl/identity-order.test.ts",
     "tests/wsl/index-gate.test.ts",

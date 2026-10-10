@@ -92,13 +92,17 @@ const REMOVED = [/^GIT_CONFIG_PARAMETERS$/i, /^GIT_CONFIG_COUNT$/i, /^GIT_CONFIG
 const LOCATION = new Set(gitEnvironment.policies.probe.remove.map((name) => name.toUpperCase()));
 const REDIRECTED = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"];
 
+// Windows variable names ignore case, so the filters compare without case.
+export function removedByT043(name: string): boolean {
+  return REMOVED.some((r) => r.test(name)) || LOCATION.has(name.toUpperCase());
+}
+
 type Env = Record<string, string | undefined>;
 
-// Windows variable names ignore case, so the filters compare without case.
 function ownedEnv(base: Env, extra: Env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
-    if (value === undefined || REMOVED.some((r) => r.test(key)) || LOCATION.has(key.toUpperCase()) || REDIRECTED.includes(key.toUpperCase())) continue;
+    if (value === undefined || removedByT043(key) || REDIRECTED.includes(key.toUpperCase())) continue;
     env[key] = value;
   }
   Object.assign(env, {

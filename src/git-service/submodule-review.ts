@@ -29,6 +29,7 @@ import {
   gitmodulesIndexArgs,
   gitmodulesListArgs,
   isObjectId,
+  isOneLevelRefName,
   modulesPathArgs,
   objectCheckArgs,
   submoduleConfigListArgs,
@@ -540,7 +541,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       let headRef: string | null = null;
       if (symbolic.code === 0) {
         headRef = oneLine(symbolic.out);
-        if (headRef === null) throw failed("MALFORMED_GIT_OUTPUT");
+        if (headRef === null || !isOneLevelRefName(headRef)) throw failed("MALFORMED_GIT_OUTPUT");
       } else if (symbolic.code !== 1 && (symbolic.code !== 128 || headRead.code === 0)) throw failed("GIT_FAILED");
       if (headRead.code === 0) {
         const head = oneLine(headRead.out);

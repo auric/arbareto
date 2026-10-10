@@ -138,10 +138,16 @@ export function pseudorefExistsArgs(name: "CHERRY_PICK_HEAD" | "REVERT_HEAD"): s
 const REF_NAME_REFUSED_CHARACTERS = /[\x00-\x20\x7f~^:?*[\\]/;
 
 export function isRefName(name: string): boolean {
+  return typeof name === "string" && name.startsWith("refs/") && isOneLevelRefName(name);
+}
+
+// git-check-ref-format(1) `--allow-onelevel`: the same rules, without the `refs/` prefix. Git refuses the name `@`. The service also refuses a leading `-`.
+export function isOneLevelRefName(name: string): boolean {
   return (
     typeof name === "string" &&
     name.isWellFormed() &&
-    name.startsWith("refs/") &&
+    name !== "@" &&
+    !name.startsWith("-") &&
     !name.endsWith("/") &&
     !name.endsWith(".") &&
     !name.includes("..") &&
@@ -390,8 +396,9 @@ export function submoduleRefFormatArgs(location: SubmoduleLocation, name: string
 }
 
 // Contract §12 "Update protocol", read failures: only the exit status decides. git-show-ref(1) `--exists`: 0 present, 2 missing, 1 another lookup error.
+// A HEAD target can be one level, such as `master` (refs.c `refs_resolve_ref_unsafe`). `--exists` reads that exact name.
 export function submoduleRefExistsArgs(location: SubmoduleLocation, name: string): string[] {
-  if (!isRefName(name)) throw new TypeError("ref name refused");
+  if (!isOneLevelRefName(name)) throw new TypeError("ref name refused");
   return submoduleRead(location, "show-ref", "--exists", name);
 }
 

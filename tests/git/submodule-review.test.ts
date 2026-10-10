@@ -23,6 +23,7 @@ import {
   copySuper,
   fixtureGit,
   gitLocation,
+  globalEnv,
   isReviewRead,
   moduleDirOf,
   NOTES,
@@ -374,6 +375,23 @@ describe("refusals (contract §12 \"Refusals\")", () => {
       return withFixture(b, name, async (service) => {
         const { r } = await reviewed(service, b);
         expect({ code: r.response.code, refusals: r.refusals.map(shape) }).toEqual(code === undefined ? { code: undefined, refusals: [{ path: "solo", reason: "clone-interrupted", text: TEXTS.cloneInterrupted("solo"), command: null }] } : { code, refusals: [] });
+      });
+    });
+  }
+
+  // Git resolves a one-level HEAD target as a ref name (refs.c `refs_resolve_ref_unsafe`, REFNAME_ALLOW_ONELEVEL). Only `reftable` stores `HEAD -> master`: setup.c `validate_headref` refuses a `ref: master` HEAD file.
+  for (const present of [false, true]) {
+    reviewCase(`F28 detached-unsaved: a reftable HEAD -> master ${present ? "gives the commit of master" : "without master refuses clone-interrupted"}`, () => {
+      const name = `t222-onelevel-${present ? "present" : "missing"}`;
+      const b = buildF28(gitPath(), name, "detached-unsaved");
+      const solo = join(superOf(b), "solo");
+      fixtureGit(b, solo, ["refs", "migrate", "--ref-format=reftable"]);
+      ownedGit(gitPath(), FIXTURE_ROOT, solo, ["update-ref", "--no-deref", "--stdin"], { env: globalEnv(b), input: Buffer.from("symref-update HEAD master\n") });
+      if (present) fixtureGit(b, solo, ["update-ref", "master", unsaved(b)]);
+      expect(fixtureGit(b, solo, ["symbolic-ref", "-q", "HEAD"])).toBe("master\n");
+      return withFixture(b, name, async (service) => {
+        const { r } = await reviewed(service, b);
+        expect({ code: r.response.code, head: r.rows.find((row) => row.path === "solo")?.head, reasons: r.refusals.map((x) => x.reason) }).toEqual(present ? { code: undefined, head: unsaved(b), reasons: ["unsaved-commits"] } : { code: undefined, head: null, reasons: ["clone-interrupted"] });
       });
     });
   }

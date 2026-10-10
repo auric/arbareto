@@ -17,7 +17,7 @@ import {
   commitTreeArgs,
   indexEntryArgs,
   isObjectId,
-  isRefName,
+  isOneLevelRefName,
   submoduleConfigListArgs,
   submoduleGitDirArgs,
   submoduleHeadOidArgs,
@@ -497,7 +497,7 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
           const symbolic = await git(submoduleHeadTargetArgs(at));
           if (symbolic.code === 0) {
             const ref = lineOf(symbolic.out);
-            if (ref === null || !isRefName(ref)) return { code: "MALFORMED_GIT_OUTPUT" };
+            if (ref === null || !isOneLevelRefName(ref)) return { code: "MALFORMED_GIT_OUTPUT" };
             const exists = await git(submoduleRefExistsArgs(at, ref));
             if (exists.code !== 2) return { code: "GIT_FAILED" };
           } else {

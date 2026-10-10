@@ -1354,13 +1354,18 @@ pub fn wsl_files_reply(output: Option<Output>, request: &FilesRequest) -> Vec<Fi
 
 // ---- The mutation anchor ----
 
-/// `<count> <I/O sum>`, both decimal (contract §11 "Process ownership").
-pub fn parse_anchor_line(line: &str) -> Option<(u32, u64)> {
-    let (count, io) = line.split_once(' ')?;
-    if !is_decimal(count) || !is_decimal(io) {
+/// `<count> <CPU-time sum>`, both decimal. A `-` sum is unknown (contract §11 "Process ownership").
+pub fn parse_anchor_line(line: &str) -> Option<(u32, Option<u64>)> {
+    let (count, sum) = line.split_once(' ')?;
+    if !is_decimal(count) {
         return None;
     }
-    Some((count.parse().ok()?, io.parse().ok()?))
+    let sum = match sum {
+        "-" => None,
+        sum if is_decimal(sum) => Some(sum.parse().ok()?),
+        _ => return None,
+    };
+    Some((count.parse().ok()?, sum))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1369,7 +1374,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// An anchor line holds two decimal numbers: at most 31 bytes. A longer line is malformed, and the reader keeps no more.
+/// An anchor line holds a decimal count and a decimal sum or `-`: at most 31 bytes. A longer line is malformed, and the reader keeps no more.
 const ANCHOR_LINE_BYTES: usize = 64;
 
 /// The answer state of an anchor. It keeps only the last line, so a lingering anchor uses fixed memory.
@@ -1377,7 +1382,7 @@ const ANCHOR_LINE_BYTES: usize = 64;
 struct Answers {
     /// The count of answer lines. `exchange` waits for a change.
     lines: u64,
-    last: Option<(u32, u64)>,
+    last: Option<(u32, Option<u64>)>,
     /// The stdout of the anchor reached end-of-file.
     closed: bool,
     /// Test hook: the largest capacity of the line buffer.
@@ -1460,7 +1465,7 @@ impl Anchor {
     }
 
     /// Writes one line and waits for its answer.
-    pub fn exchange(&self) -> Option<(u32, u64)> {
+    pub fn exchange(&self) -> Option<(u32, Option<u64>)> {
         let _one = lock(&self.exchange);
         let (state, changed) = &*self.answers;
         let before = lock(state).lines;
@@ -1478,7 +1483,7 @@ impl Anchor {
         }
     }
 
-    pub fn last(&self) -> Option<(u32, u64)> {
+    pub fn last(&self) -> Option<(u32, Option<u64>)> {
         lock(&self.answers.0).last
     }
 
@@ -1542,9 +1547,9 @@ impl Mutation {
             .map_or(0, |(count, _)| count)
     }
 
-    /// One anchor line while a tracked process runs. The answer gives the I/O sum (contract §6 "Activity and stall notice").
+    /// One anchor line while a tracked process runs. The answer gives the CPU-time sum. `None` is an unknown sample (contract §6).
     pub fn activity_sum(&self) -> Option<u64> {
-        self.anchor.as_ref()?.exchange().map(|(_, io)| io)
+        self.anchor.as_ref()?.exchange()?.1
     }
 
     /// The lingering count of a WSL Job is the last anchor count.
@@ -1552,7 +1557,7 @@ impl Mutation {
         self.last().map_or(0, |(count, _)| count)
     }
 
-    pub fn last(&self) -> Option<(u32, u64)> {
+    pub fn last(&self) -> Option<(u32, Option<u64>)> {
         self.anchor.as_ref().and_then(|anchor| anchor.last())
     }
 
@@ -2580,21 +2585,22 @@ mod tests {
             "--signal=SIGKILL",
             "HUP",
             "cgroup.procs",
-            "/proc/$pid/io",
-            "rchar:",
-            "wchar:",
+            "cpu.stat",
+            "usage_usec",
             "sleep 1",
         ] {
             assert!(anchor.contains(needle), "{needle}");
         }
-        assert_eq!(parse_anchor_line("3 35440"), Some((3, 35440)));
-        assert_eq!(parse_anchor_line("0 0"), Some((0, 0)));
+        assert_eq!(parse_anchor_line("3 35440"), Some((3, Some(35440))));
+        assert_eq!(parse_anchor_line("0 0"), Some((0, Some(0))));
+        assert_eq!(parse_anchor_line("2 -"), Some((2, None)), "an unknown sum");
         assert_eq!(
             parse_anchor_line("1 18446744073709551615"),
-            Some((1, u64::MAX))
+            Some((1, Some(u64::MAX)))
         );
         for line in [
-            "", "3", "3 ", "a b", "3 4 5", "-1 2", "1 -2", " 1 2", "1  2",
+            "", "3", "3 ", "a b", "3 4 5", "-1 2", "1 -2", " 1 2", "1  2", "- 2", "- -", "1 --",
+            "1 - ", "1 2-",
         ] {
             assert_eq!(parse_anchor_line(line), None, "{line:?}");
         }
@@ -2623,7 +2629,8 @@ mod tests {
     /// Then it waits until that file exists, for at most 60 seconds.
     /// With a third argument `long`, it lingers with one `LONG_LINE` line in place of those lines.
     /// With a third argument `banner`, it prints `banner text` and a 300 ms pause before its answer to the second stdin line.
-    /// With a third argument `constant`, each answer holds the I/O sum 500. A second argument `-` means no release file.
+    /// With a third argument `constant`, each answer holds the sum 500. With `unknown`, each answer holds the sum `-`.
+    /// A second argument `-` means no release file.
     #[test]
     #[ignore = "child process entry for re-executed tests"]
     fn anchor_child_entry() {
@@ -2651,12 +2658,12 @@ mod tests {
                 let _ = out.flush();
                 std::thread::sleep(Duration::from_millis(300));
             }
-            let io = if mode == Some("constant") {
-                500
-            } else {
-                lines * 100
+            let sum = match mode {
+                Some("constant") => "500".to_string(),
+                Some("unknown") => "-".to_string(),
+                _ => (lines * 100).to_string(),
             };
-            let _ = writeln!(out, "{lines} {io}");
+            let _ = writeln!(out, "{lines} {sum}");
             let _ = out.flush();
         }
         std::fs::write(file, lines.to_string()).expect("write line count");
@@ -2698,7 +2705,7 @@ mod tests {
     // ---- T225, T228: activity of a WSL Job (contract §6 "Activity and stall notice") ----
 
     /// A WSL Job takes its activity sum only from the anchor. A Job child changes the Job `IO_COUNTERS` every 100 ms.
-    /// With a constant anchor sum, the tracker still stalls. With a changing anchor sum, it never stalls.
+    /// With a constant anchor sum, the tracker still stalls. With a changing or an unknown anchor sum, it never stalls.
     /// The anchor gets one line each second while the process is tracked.
     #[test]
     fn a_wsl_job_takes_its_activity_only_from_one_anchor_line_each_second() {
@@ -2707,7 +2714,7 @@ mod tests {
 
         let fixture = Fixture::new();
         let directory = std::env::temp_dir();
-        for (mode, stalls) in [("constant", true), ("count", false)] {
+        for (mode, stalls) in [("constant", true), ("count", false), ("unknown", false)] {
             let supervisor = Supervisor::start().expect("supervisor");
             supervisor.open(OPERATION).expect("open");
             let lines_file = fixture.path(&format!("lines-{mode}"));
@@ -2926,7 +2933,7 @@ mod tests {
         mutation.ended();
         // The stream keeps its order, so the last lingering line arrives after every other line.
         assert!(
-            eventually(WAIT, || mutation.last() == Some((3, LINGER_LINES))),
+            eventually(WAIT, || mutation.last() == Some((3, Some(LINGER_LINES)))),
             "the anchor printed {LINGER_LINES} lines after ended: {:?}",
             mutation.last()
         );
@@ -2957,7 +2964,7 @@ mod tests {
         }
         mutation.ended();
         assert!(
-            eventually(WAIT, || mutation.last() == Some((3, 777))),
+            eventually(WAIT, || mutation.last() == Some((3, Some(777)))),
             "the line after the long line is read: {:?}",
             mutation.last()
         );
@@ -2992,7 +2999,11 @@ mod tests {
         let start = Instant::now();
         let answer = anchor.exchange();
         let elapsed = start.elapsed();
-        assert_eq!(answer, Some((2, 200)), "the answer after the banner line");
+        assert_eq!(
+            answer,
+            Some((2, Some(200))),
+            "the answer after the banner line"
+        );
         assert!(
             elapsed < Duration::from_secs(2),
             "the answer ends the exchange: {elapsed:?}"

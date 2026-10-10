@@ -39,7 +39,7 @@ import type { Head, IndexEntry, OperationState } from "./snapshot";
 import { parseIndexListing } from "./status";
 import { pathForms, REFUSAL_TEXTS } from "./submodule-review";
 import { keyParts, parseConfigListing, requestFacts, type ConfigEntry } from "./trust";
-import type { WslIndexFacts } from "./wsl-files";
+import { processEnd, type WslIndexFacts } from "./wsl-files";
 
 const NUL = 0x00;
 const TAB = 0x09;
@@ -522,19 +522,20 @@ const SUBMODULE_FOREIGN_CAP = 5 + 2 * SUBMODULE_REVIEW_SUBMODULES;
 
 // Contract §8 "Observed locks" with the submodule locks: the superproject `config.lock`, then `index.lock` and `HEAD.lock` of each plan Git directory.
 export async function submoduleLocks(ctx: ObserveContext, head: Head | null, gitDirs: readonly string[]): Promise<string[] | Failure | Stop> {
-  const locks = await observedLocks(ctx, head);
-  if (!Array.isArray(locks)) return locks;
   const w = ctx.workspace;
   const forms = pathForms(w, ctx.installation);
-  // Contract §8 "Observed locks": a WSL lock path takes its UNC form. Linux Git prints Linux paths, so a name without a UNC form is malformed here.
+  // Contract §8 "Observed locks": a WSL lock path takes its UNC form.
+  // Contract §11 "Paths and file access": a path without an exact UNC form is an unavailable observation.
   const paths = [`${w.commonDirectory}${w.wsl === undefined ? "/" : "\\"}config.lock`];
   for (const dir of new Set(gitDirs)) {
     for (const name of ["index.lock", "HEAD.lock"]) {
       const path = forms.native(`${dir}/${name}`);
-      if (path === null) return { code: "MALFORMED_GIT_OUTPUT" };
+      if (path === null) return { code: "UNSUPPORTED_REPOSITORY" };
       paths.push(path);
     }
   }
+  const locks = await observedLocks(ctx, head);
+  if (!Array.isArray(locks)) return locks;
   const found = await Promise.all(paths.map((path) => lstat(path).then(() => true, (error: unknown) => (isMissing(error) ? false : null))));
   if (found.includes(null)) return { code: "GIT_FAILED" };
   return [...locks, ...paths.filter((_, i) => found[i])].slice(0, SUBMODULE_FOREIGN_CAP);
@@ -573,6 +574,11 @@ export async function reconcileUpdate(r: UpdateReconciliation): Promise<void> {
   registry.progress(operationId, "reconciliation");
   // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
   const q: ObserveContext = { ...r.ctx, signal: new AbortController().signal };
+  // Contract §12 "WSL repositories": a closed Job is no process-end fact, so Linux Git can still write. Nothing decides before the fact.
+  if (q.workspace.wsl !== undefined && (r.canceled || deadline !== null) && (await processEnd(q)) === "noFact") {
+    registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, { ...(deadline === null ? {} : { reason: deadline }), lingeringDescendants: registry.get(operationId)!.lingeringDescendants ?? 0 }, "GIT_FAILED");
+    return;
+  }
   const read = await observeUpdateRows(q, r.update.rows.map((row) => row.read));
   const stop = deadline !== null ? "deadline" : r.canceled ? "canceled" : null;
   const classified =

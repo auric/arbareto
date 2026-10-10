@@ -302,7 +302,7 @@ const SYSTEM_CLOCK: Clock = { now: () => performance.now(), sleep: (ms) => Bun.s
 
 // Contract §4 "Process end": `fact` when an `exit` reply carries `activeDescendants` 0. The runs repeat once per second, and the
 // §5 Git process deadline bounds them together. `noFact`: the deadline passed, or the runner refused the run (for example after `closeJob`).
-export async function processEnd(ctx: WslContext, clock: Clock = SYSTEM_CLOCK): Promise<"fact" | "noFact"> {
+export async function processEnd(ctx: Pick<WslContext, "operationId" | "workspace"> & { runner: Pick<GitRunner, "run"> }, clock: Clock = SYSTEM_CLOCK): Promise<"fact" | "noFact"> {
   const start = clock.now();
   for (;;) {
     const began = clock.now();

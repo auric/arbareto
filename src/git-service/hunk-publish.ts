@@ -493,9 +493,12 @@ export async function observedLocks(ctx: ObserveContext, head: Head | null): Pro
       } catch {
         return malformed;
       }
-      // Linux Git prints a Linux path. A name without a UNC form is malformed here.
+      // Linux Git prints an absolute Linux path.
+      if (line.includes("\n") || (w.wsl !== undefined && !line.startsWith("/"))) return malformed;
       const ref = w.wsl === undefined ? line : wslIdentityPath(w.wsl.distro, line);
-      if (ref === null || line.includes("\n") || !isChannelPath(ref)) return malformed;
+      // Contract §11 "Paths and file access": a ref path without an exact UNC form is an unavailable observation.
+      if (ref === null) return { code: "UNSUPPORTED_REPOSITORY" };
+      if (!isChannelPath(ref)) return malformed;
       paths.push(`${ref}.lock`);
     }
   }

@@ -383,7 +383,8 @@ export type SubmoduleLocation = { worktree: string } | { gitDir: string };
 
 function submoduleRead(location: SubmoduleLocation, ...args: string[]): string[] {
   if (location === null || typeof location !== "object" || Object.keys(location).length !== 1) throw new TypeError("submodule location refused");
-  const at = "worktree" in location ? inSubmodule(location.worktree) : [`--git-dir=${pathItem(location.gitDir)}`, `--work-tree=${location.gitDir}`];
+  const gitDir = "gitDir" in location ? pathItem(location.gitDir) : "";
+  const at = "worktree" in location ? inSubmodule(location.worktree) : [`--git-dir=${gitDir}`, `--work-tree=${gitDir}`];
   return [NO_LAZY_FETCH, "--no-optional-locks", ...at, ...args];
 }
 

@@ -138,7 +138,7 @@ describe("WSL registration seams (T207)", () => {
 
   // T212 review S4: Linux Git reads `PATH` when it runs, so the bare-name rule takes the `PATH` of the latest probe.
   test("a reused session Git takes the PATH of the latest probe and asks for no confirmation", async () => {
-    const session = { gitInstallationId: crypto.randomUUID(), distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin", wslExecutable: "C:\\Windows\\System32\\wsl.exe" };
+    const session = { gitInstallationId: crypto.randomUUID(), distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin", wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid" };
     const { gitInstallationId: _id, ...probed } = { ...session, pathEnv: "/home/u/bin:/usr/bin" };
     const runner = { register: () => Promise.reject(new Error("no confirmation")) } as unknown as GitRunner;
     const approved = await approveWslGit(runner, { operationId: crypto.randomUUID(), bootstrapId: crypto.randomUUID() }, probed, session, undefined);
@@ -147,7 +147,7 @@ describe("WSL registration seams (T207)", () => {
 
   // Contract §6 "Walks" (T314): a `register` deadline reply gives DEADLINE.
   test("a register deadline reply gives DEADLINE", async () => {
-    const probed = { distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin", wslExecutable: "C:\\Windows\\System32\\wsl.exe" };
+    const probed = { distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin", wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid" };
     const runner = { register: async () => ({ stop: "deadline" }) } as unknown as GitRunner;
     const approved = await approveWslGit(runner, { operationId: crypto.randomUUID(), bootstrapId: crypto.randomUUID() }, probed, undefined, undefined);
     expect(approved).toEqual({ ok: false, code: "DEADLINE" });

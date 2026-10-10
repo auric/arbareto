@@ -58,7 +58,7 @@ import {
   type SubmoduleLocation,
 } from "./commands";
 import { unquote } from "./diff-parser";
-import { commandLineUnits, createCollector, type GitRunner, type WalkStop } from "./git-runner";
+import { commandLineUnits, createCollector, wslCommandLineUnits, type GitRunner, type WalkStop, type WslLaunch } from "./git-runner";
 import { isMissing, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, Completeness, Head, IndexEntry, ReadInstallation } from "./snapshot";
@@ -122,14 +122,16 @@ export interface PathForms {
   // The Git path of the remedy commands.
   gitPath: string | null;
   wsl: SubmoduleWslTarget | undefined;
+  // Contract §6 "Process fields": the measured `wsl.exe` command line of a WSL Git.
+  launch: WslLaunch | undefined;
 }
 
 export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installation: Pick<ReadInstallation, "selectedPath">): PathForms {
   if (w.wsl === undefined) {
     const key = (path: string) => NATIVE.fold(resolve(path));
-    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, key, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined };
+    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, key, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined, launch: undefined };
   }
-  const { distro, guid, wslExecutable, path } = w.wsl;
+  const { distro, guid, wslExecutable, path, systemdRun, systemctl, setsid } = w.wsl;
   const route = routeWslPath(w.worktreeRoot, { listed: [distro], registry: [{ name: distro, guid, version: 2 }] });
   if (route.kind !== "wsl") throw new TypeError("a WSL workspace needs a Linux worktree root");
   return {
@@ -142,7 +144,19 @@ export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installati
     platform: "posix",
     gitPath: path,
     wsl: { wslExecutable, distro },
+    launch: { wslExecutable, distro, git: path, systemdRun, systemctl, setsid },
   };
+}
+
+// Contract §12 "Review reads": the `diff-files` path batches. Each batch fits the §6 command-line bound under `units`.
+export function gitlinkBatches(texts: readonly string[], units: (args: string[]) => number): string[][] {
+  const batches: string[][] = [];
+  for (const text of texts) {
+    const last = batches.at(-1);
+    if (last !== undefined && units(gitlinkPatchArgs([...last, text])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(text);
+    else batches.push([text]);
+  }
+  return batches;
 }
 
 // ---- Texts (contract §12 "Refusals" and "Plan") ----
@@ -155,6 +169,7 @@ export const REFUSAL_TEXTS = {
   folderNotEmpty: (path: string) => `Submodule ${path} has no Git link, but its folder is not empty. Git would overwrite those files. Move the folder out of the repository, then use Refresh.`,
   noUrl: (path: string) => `The .gitmodules file has no entry for submodule ${path}. Git cannot update it.`,
   path: (path: string) => `Arbareto cannot pass the path of submodule ${path} to Git literally.`,
+  uncPath: (path: string) => `Arbareto cannot read the folder of submodule ${path} through Windows, because a name in it holds a character that Windows names cannot hold. Update it in a terminal.`,
   activeValue: (path: string, name: string) => `Submodule ${path} has a submodule.${name}.active value that is not true or false. Fix it in a terminal, then use Refresh.`,
   remoteName: (path: string, name: string) => `Submodule ${path} has a remote named ${name}, which Git can read as an option. Rename that remote in a terminal, then use Refresh.`,
   gitdirConfig: "This repository sets custom locations for submodule Git folders. Arbareto reads only the default location. Update the submodules in a terminal.",
@@ -740,13 +755,9 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const heads = new Map<string, string>();
       const wanted = new Set(paths.map(latin1));
       const texts = paths.map((p) => utf8.decode(p));
-      const batches: string[][] = [];
-      for (const text of texts) {
-        const last = batches.at(-1);
-        if (last !== undefined && commandLineUnits(installation.selectedPath ?? "", gitlinkPatchArgs([...last, text])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(text);
-        else batches.push([text]);
-      }
-      for (const batch of batches) {
+      const launch = forms.launch;
+      const units = launch === undefined ? (args: string[]) => commandLineUnits(installation.selectedPath ?? "", args) : (args: string[]) => wslCommandLineUnits(launch, t.operationId, "read", "", forms.gitRoot, args);
+      for (const batch of gitlinkBatches(texts, units)) {
         const r = await git(gitlinkPatchArgs(batch), { max: STATUS_LISTING_BYTES });
         if (r.limited) throw failed("OUTPUT_LIMIT");
         if (r.code !== 0) throw failed("GIT_FAILED");
@@ -861,6 +872,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         rows.push(pending);
         if (components === null || nameText === null && name !== null) {
           refuse("path", display, REFUSAL_TEXTS.path(display), null, row);
+          continue;
+        }
+        // Contract §11 "Paths and file access": the folder reads need an exact UNC form of the worktree and of the kept Git directory.
+        if (forms.native(worktree) === null || (nameText !== null && forms.native(forms.join(lv.modules, ...nameText.split("/"))) === null)) {
+          refuse("path", display, REFUSAL_TEXTS.uncPath(display), null, row);
           continue;
         }
         if (nameText === null || url === null) {
@@ -1098,8 +1114,15 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const keptBelow = async (folders: readonly string[], descend: boolean): Promise<string[]> => {
       const keptDirs: string[] = [];
       const visited = new Set<string>();
+      // Contract §11 "Paths and file access": a walk folder without an exact UNC form is a `path` refusal, and the walk skips it.
+      const uncOf = (folder: string): string | null => {
+        const at = forms.native(folder);
+        if (at === null) refuse("path", folder, REFUSAL_TEXTS.uncPath(folder), null);
+        return at;
+      };
       const walk = async (folder: string): Promise<void> => {
-        const at = nativeOf(folder);
+        const at = uncOf(folder);
+        if (at === null) return;
         let names;
         try {
           names = await readdir(at, { withFileTypes: true });
@@ -1110,9 +1133,12 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         for (const entry of names.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
           if (!entry.isDirectory()) continue;
           const child = forms.join(folder, entry.name);
-          // A UNC name with a character of U+F000 to U+F0FF stands for another Linux name (contract §11 "Route").
-          if (forms.native(child) === null) throw failed("REPOSITORY_UNAVAILABLE", at);
           if (visited.has(fold(child))) continue;
+          // A UNC name with a character of U+F000 to U+F0FF stands for another Linux name (contract §11 "Route").
+          if (uncOf(child) === null) {
+            visited.add(fold(child));
+            continue;
+          }
           visited.add(fold(child));
           if (!count(`dir ${fold(child)}`)) return;
           const r = await git(submoduleGitDirArgs({ gitDir: child }));

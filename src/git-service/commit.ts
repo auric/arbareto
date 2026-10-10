@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T112: `commit`, research R4 steps 1 to 7, contract §2, §4 "Commit validation and handoff", §5, §6, §8, and §9. The Windows path.
+// T112 and T113: `commit`, research R4 steps 1 to 7, contract §2, §4 "Commit validation and handoff", §5, §6, §8, and §9. The Windows path.
 // No step writes the index. The commit process is Git's own `commit`. A WSL commit gets SERVICE_UNAVAILABLE until T214.
 
 import type { Response, ServiceRequest } from "../contracts/envelope";
@@ -9,6 +9,7 @@ import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
 import { buildRemedyCommand } from "../contracts/remedy-command";
 import type { Acceptance, ApprovalKey, Approvals, CommitBinding, CommitReview } from "./approvals";
+import { readTip, type ReflogRecord } from "./attribution";
 import { authorIdentArgs, commitArgs, committerIdentArgs } from "./commands";
 import type { CommitReviewer, RetainedReview } from "./commit-review";
 import { createTailCollector } from "./discovery";
@@ -27,6 +28,7 @@ import {
   recording,
   REVOKE_TEXT,
   settled,
+  type Fact,
   type Failure,
   type ObserveContext,
   type PolicyObservation,
@@ -37,6 +39,7 @@ import {
 import { createIndexLock, type IndexLock } from "./index-lock";
 import type { OperationRegistry } from "./operations";
 import { contextOf } from "./read-steps";
+import { reconcileCommit } from "./reconcile";
 import type { Workspace } from "./registration";
 import { policyFingerprint, type ReadInstallation } from "./snapshot";
 import type { WorkspaceReader } from "./status";
@@ -44,6 +47,8 @@ import { keyParts, type ConfigEntry, type Trust } from "./trust";
 
 // Contract §9: the remedy text of HOOK_FAILED and of a commit GIT_FAILED after handoff.
 export const HOOK_REMEDY_TEXT = "This command runs the pre-commit hook in a terminal and does not commit. Other hooks show their output only here. Arbareto keeps your message.";
+// Contract §9 "Other locks".
+export const OTHER_LOCKS_TEXT = "Git could not take a lock. Another Git process, or a process that Git or a hook started, can hold it. Use Refresh after that process ends.";
 // Contract §4 "Quoting rule": the text of a refused value.
 const REFUSED_TEXT = "PowerShell cannot pass this value safely, so Arbareto offers no command: ";
 
@@ -60,12 +65,13 @@ const refusalOf = (f: Failure): Refusal => (f.reason === "UNEXPECTED_DIAGNOSTIC_
 
 // Contract §9 and research R4: the remedy of HOOK_FAILED and of a GIT_FAILED after handoff (T113).
 // The command runs the traditional and configured pre-commit hooks and creates no commit. A refused value gives its text without a command.
-export function commitRemedy(gitPath: string, worktreeRoot: string, count: number | null, trustId: boolean): { text: string; command: string | null } {
+// `otherLocks`: the outcome names a foreign lock, so the "Other locks" text follows.
+export function commitRemedy(gitPath: string, worktreeRoot: string, count: number | null, trustId: boolean, otherLocks = false): { text: string; command: string | null } {
   const built = buildRemedyCommand("& {git} --no-lazy-fetch -C {root} hook run --ignore-missing pre-commit", {
     git: { kind: "gitPath", text: gitPath, form: "windows" },
     root: { kind: "worktreeRoot", text: worktreeRoot, form: "windows" },
   });
-  const extra = lingering(count, trustId);
+  const extra = `${otherLocks ? ` ${OTHER_LOCKS_TEXT}` : ""}${lingering(count, trustId)}`;
   if (built.command !== null) return { text: `${HOOK_REMEDY_TEXT}${extra}`, command: built.command };
   return { text: `${REFUSED_TEXT}${built.refused === "gitPath" ? gitPath : worktreeRoot}${extra}`, command: null };
 }
@@ -112,13 +118,15 @@ export function admitCommit(
 
 // Contract §9 commit preflight order before the identity check. The first match wins. A stop wins over every refusal, and a deadline over a cancel.
 // `reviewedPolicy`: the policy fingerprint of the reviewed listing and trust. A difference covers every configuration entry.
+// `tip`: the attribution tip read (contract §8 "Attribution window").
 export function preflightRefusal(
   b: Pick<CommitBinding, "reviewedIndex" | "head" | "operationState">,
   reviewedPolicy: string,
   policy: PolicyObservation,
   state: StateObservation,
+  tip: Fact<ReflogRecord | null>,
 ): Refusal | Stop | null {
-  const stops = [policy, state.head, state.index, state.operationState].filter(isStop);
+  const stops = [policy, state.head, state.index, state.operationState, tip].filter(isStop);
   if (stops.length > 0) return stops.some((s) => s.stop === "deadline") ? DEADLINE : CANCELED;
   if (!("listing" in policy)) return refusalOf(policy as Failure);
   if (policy.gate !== null) return { code: policy.gate };
@@ -127,6 +135,8 @@ export function preflightRefusal(
   if (!("value" in state.index)) return refusalOf(state.index as Failure);
   if (!("value" in state.operationState)) return refusalOf(state.operationState as Failure);
   if (!("value" in state.head)) return refusalOf(state.head as Failure);
+  // Contract §9: every tip failure gives GIT_FAILED, except an OUTPUT_LIMIT bound.
+  if (!("value" in tip)) return (tip as Failure).code === "OUTPUT_LIMIT" ? refusalOf(tip as Failure) : { code: "GIT_FAILED" };
   const observed = state.operationState.value;
   if (state.index.value.digest !== b.reviewedIndex.rawIndexDigest || !Bun.deepEquals(state.head.value, b.head, true) || observed === "unknown" || observed !== b.operationState) return STALE;
   return utf8Commits(policy.listing.entries) ? null : { code: "COMMIT_ENCODING_UNSUPPORTED" };
@@ -170,6 +180,8 @@ export interface RetainedCommit {
   repositoryId: string;
   review: RetainedReview;
   binding: CommitBinding;
+  // The preflight attribution tip. Null before the preflight passes, and when Git printed no record.
+  tip: ReflogRecord | null;
 }
 
 export interface CommitterOptions {
@@ -199,6 +211,7 @@ export function createCommitter(o: CommitterOptions) {
     if (!entered.ok) return notEntered(registry, operationId, entered);
     const marker = entered;
     const binding = a.approval.binding;
+    const kept: RetainedCommit = { repositoryId: w.repositoryId, review: a.review, binding, tip: null };
     const rec = recording(o.runner);
     const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
     let held: IndexLock | null = null;
@@ -231,10 +244,11 @@ export function createCommitter(o: CommitterOptions) {
       }
 
       registry.progress(operationId, "preflight");
-      const [policy, state] = await Promise.all([observePolicy(ctx, null, "commit"), observeState(ctx, EMPTY, false)]);
+      const [policy, state, tip] = await Promise.all([observePolicy(ctx, null, "commit"), observeState(ctx, EMPTY, false), readTip(ctx, binding.head)]);
       const reviewed = policyFingerprint({ attributes: EMPTY, trust: binding.trust, configurationFingerprint: binding.disclosure, git: installation });
-      const refused = preflightRefusal(binding, reviewed, policy, state) ?? (await identityRefusal(ctx));
+      const refused = preflightRefusal(binding, reviewed, policy, state, tip) ?? (await identityRefusal(ctx));
       if (refused !== null) return refused;
+      kept.tip = (tip as { value: ReflogRecord | null }).value;
       if (signal.aborted) return CANCELED;
       // Research R4 step 4: the token is consumed only after validation.
       if (!approvals.consume(key, operationId)) {
@@ -270,7 +284,7 @@ export function createCommitter(o: CommitterOptions) {
     try {
       registry.apply(operationId, { type: "marker-recorded" });
       owners.set(operationId, request.repositoryId);
-      retained.set(operationId, { repositoryId: w.repositoryId, review: a.review, binding });
+      retained.set(operationId, kept);
       let ending: Refusal | Stop | null;
       try {
         ending = await steps();
@@ -297,9 +311,13 @@ export function createCommitter(o: CommitterOptions) {
       } catch {
         // A refusal after the start request leaves open whether Git ran.
       }
-      enterReconciling(registry, operationId, exit?.deadline !== undefined, exit?.activeDescendants ?? 0);
-      // Until T113: a commit that reached the Git process ends unknown. The marker and the retained review stay.
-      registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, { outputTail: tail.outputTail() }, "GIT_FAILED");
+      const trustId = () => o.trust.currentTrustId(w) !== undefined;
+      // Contract §9: only a GIT_FAILED carries the hook command. "Other locks" follows an observed lock.
+      const remedy = (count: number | null, otherLocks: boolean, gitFailed: boolean) => {
+        if (gitFailed) return installation.selectedPath === null ? null : commitRemedy(installation.selectedPath, w.worktreeRoot, count, trustId(), otherLocks);
+        return otherLocks ? { text: `${OTHER_LOCKS_TEXT}${lingering(count, trustId())}` } : null;
+      };
+      await reconcileCommit({ registry, runner: o.runner, retained, operationId, markerId: marker.markerId, ctx, review: a.review, binding, tip: kept.tip, exit, outputTail: tail.outputTail(), foreign, remedy });
     } catch {
       // A broken step leaves the outcome unknown. The marker stays (contract §8).
       await release();

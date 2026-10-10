@@ -5,9 +5,10 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Acceptance, Approval, CommitBinding, CommitReview } from "../../src/git-service/approvals";
-import { admitCommit, commitRemedy, HOOK_REMEDY_TEXT, preflightRefusal, utf8Commits } from "../../src/git-service/commit";
+import type { ReflogRecord } from "../../src/git-service/attribution";
+import { admitCommit, commitRemedy, HOOK_REMEDY_TEXT, OTHER_LOCKS_TEXT, preflightRefusal, utf8Commits } from "../../src/git-service/commit";
 import type { RetainedReview } from "../../src/git-service/commit-review";
-import { lingeringSentence, REVOKE_TEXT, type PolicyObservation, type StateObservation } from "../../src/git-service/hunk-publish";
+import { lingeringSentence, REVOKE_TEXT, type Fact, type PolicyObservation, type StateObservation } from "../../src/git-service/hunk-publish";
 import type { OperationState } from "../../src/git-service/snapshot";
 import type { ConfigEntry } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
@@ -109,7 +110,7 @@ describe("preflightRefusal (contract §9 commit preflight order)", () => {
     working: null,
     ...fields,
   });
-  const decide = (p: PolicyObservation, s: StateObservation, b: CommitBinding = BINDING) => preflightRefusal(b, POLICY, p, s);
+  const decide = (p: PolicyObservation, s: StateObservation, b: CommitBinding = BINDING, tip: Fact<ReflogRecord | null> = { value: null }) => preflightRefusal(b, POLICY, p, s, tip);
   const STALE = { code: "STALE_REVIEW" as const };
   const otherIndex = { index: { value: { raw: new Uint8Array(), digest: HEX("9"), unmerged: false } } };
   const latin1 = { listing: listing([entry("i18n.commitencoding", "latin1")]) };
@@ -140,6 +141,16 @@ describe("preflightRefusal (contract §9 commit preflight order)", () => {
     ["an unsupported i18n.commitEncoding", policy(latin1), state(), { code: "COMMIT_ENCODING_UNSUPPORTED" }],
   ] as const)("%s", (_name, p, s, expected) => {
     expect(decide(p as PolicyObservation, s as StateObservation) as unknown).toEqual(expected);
+  });
+
+  // Contract §9: the tip read decides after the failed HEAD read and before the state compare.
+  test.each([
+    ["a tip read deadline wins over every refusal", state({ ...otherIndex }), { stop: "deadline" }, { stop: "deadline" }],
+    ["a failed HEAD read comes before a failed tip read", state({ head: { code: "MALFORMED_GIT_OUTPUT" } }), { code: "GIT_FAILED" }, { code: "MALFORMED_GIT_OUTPUT" }],
+    ["a malformed tip gives GIT_FAILED before a changed index", state(otherIndex), { code: "MALFORMED_GIT_OUTPUT" }, { code: "GIT_FAILED" }],
+    ["a tip above 4 MiB gives its bound", state(), { code: "OUTPUT_LIMIT", reason: "ATTRIBUTION_EVIDENCE_BYTES" }, { code: "OUTPUT_LIMIT", reason: "ATTRIBUTION_EVIDENCE_BYTES" }],
+  ] as const)("%s", (_name, s, tip, expected) => {
+    expect(decide(policy(), s as StateObservation, BINDING, tip as Fact<ReflogRecord | null>) as unknown).toEqual(expected);
   });
 
   test("a reviewed unknown state never passes", () => {
@@ -177,6 +188,10 @@ describe("commitRemedy (contract §4 \"Quoting rule\", §9)", () => {
     [2, true, `${HOOK_REMEDY_TEXT} ${lingeringSentence(2)} ${REVOKE_TEXT}`],
   ] as const)("lingering count %p with trust ID %p", (count, trustId, text) => {
     expect(commitRemedy(GIT, "D:\\repo", count, trustId).text).toBe(text);
+  });
+
+  test("an observed foreign lock adds the Other locks text before the lingering sentences", () => {
+    expect(commitRemedy(GIT, "D:\\repo", 1, true, true).text).toBe(`${HOOK_REMEDY_TEXT} ${OTHER_LOCKS_TEXT} ${lingeringSentence(1)} ${REVOKE_TEXT}`);
   });
 
   test("a refused value keeps the lingering sentence", () => {

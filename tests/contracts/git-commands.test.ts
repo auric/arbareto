@@ -60,6 +60,8 @@ const READ_BUILDERS: [string, () => string[]][] = [
   ["lineEndingArgs", () => commands.lineEndingArgs()],
   ["emptyTreeArgs", () => commands.emptyTreeArgs()],
   ["commitTreeArgs", () => commands.commitTreeArgs(SHA1, "sha1")],
+  ["reflogArgs", () => commands.reflogArgs()],
+  ["reflogArgs(1)", () => commands.reflogArgs(1)],
   ["blobFilterProofArgs", () => commands.blobFilterProofArgs("a.txt", SHA1, "sha1")],
   ["blobHashProofArgs", () => commands.blobHashProofArgs("a.txt")],
   ["gitmodulesListArgs", () => commands.gitmodulesListArgs()],

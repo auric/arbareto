@@ -5,7 +5,7 @@
 
 import { describe, expect } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { COMMIT_MESSAGE_BYTES, COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES } from "../../src/contracts/limits";
 import { fixtureDir, fixtureEnv, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildChanged, buildF01, buildF07, buildF11, buildF12, buildF14, buildF17, F11_HOOK_TOKEN, put, run, type Repo } from "./fixtures";
@@ -45,7 +45,6 @@ import {
   shQuote,
   subcommand,
   SUCCEEDED,
-  todoCase,
   treeOf,
   underTest,
   until,
@@ -88,18 +87,18 @@ function rejectingRepo(dir: string): void {
   putHook(dir, "pre-commit", "echo t098-rejected >&2\nexit 1\n");
 }
 
-// Approves trust, reviews, and commits. The commit must end HOOK_FAILED.
+// Approves trust, reviews, and commits. Decision G2: no exact fact tells a hook failure from a signing failure, so the commit ends GIT_FAILED (contract §9).
 async function hookFailure(service: Service, repo: string) {
   const { repositoryId } = await service.register(repo);
   await approve(service, repositoryId);
   const r = await reviewOk(service, repositoryId);
   const response = await commit(service, repositoryId, r, "t098 message\n");
-  expect(outcome(response)).toEqual(FAILED("HOOK_FAILED"));
+  expect(outcome(response)).toEqual(FAILED("GIT_FAILED"));
   return { response, root: r.read.identity.worktreeRoot };
 }
 
 describe("commit creation (contract §4 \"Commit validation and handoff\")", () => {
-  todoCase(TASK, `F12: a stable commit creates exactly one commit with the reviewed tree, the reviewed HEAD as parent, the reviewed branch, and the message after the configured cleanup; unrelated unstaged bytes stay, and no approval is needed ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F12: a stable commit creates exactly one commit with the reviewed tree, the reviewed HEAD as parent, the reviewed branch, and the message after the configured cleanup; unrelated unstaged bytes stay, and no approval is needed ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-stable" }, async (service) => {
       const repo = repoOf(buildF12(gitPath(), "t098-stable", "gc-auto"));
       git(repo, ["config", "commit.cleanup", "strip"]);
@@ -129,9 +128,10 @@ describe("commit creation (contract §4 \"Commit validation and handoff\")", () 
       expect(workingFileDigests(repo)).toEqual(files);
       expect(service.trustStore.records).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F07: a commit in one linked worktree moves only its branch; the raw index, the working files, and HEAD of the other worktree stay equal ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F07: a commit in one linked worktree moves only its branch; the raw index, the working files, and HEAD of the other worktree stay equal ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-f07" }, async (service) => {
       const built = buildF07(gitPath(), "t098-f07");
       const a = join(built.root, "wt-a");
@@ -154,9 +154,10 @@ describe("commit creation (contract §4 \"Commit validation and handoff\")", () 
         headOid: other.head.headOid,
       });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F01: the first commit in an unborn repository succeeds as a root commit of the reviewed index ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F01: the first commit in an unborn repository succeeds as a root commit of the reviewed index ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-f01" }, async (service) => {
       const repo = repoOf(buildF01(gitPath(), "t098-f01", "unborn-added"));
       const reviewedTree = indexTree(repo);
@@ -168,9 +169,10 @@ describe("commit creation (contract §4 \"Commit validation and handoff\")", () 
       expect(commitFacts(repo).parents).toEqual([]);
       expect(treeOf(repo, "HEAD")).toEqual(reviewedTree);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `the only commit invocation is --no-lazy-fetch commit --quiet --file=- with the message on stdin, and no path, --all, --amend, --no-verify, or signing override ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `the only commit invocation is --no-lazy-fetch commit --quiet --file=- with the message on stdin, and no path, --all, --amend, --no-verify, or signing override ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-argv" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-argv", "F09"));
       await underTest("commit");
@@ -181,9 +183,10 @@ describe("commit creation (contract §4 \"Commit validation and handoff\")", () 
       expect(calls.map((c) => c.arguments)).toEqual([COMMIT_ARGUMENTS]);
       expect(Buffer.from(calls[0]!.input ?? new Uint8Array()).toString("utf8")).toBe(MESSAGE);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F09: a commit without a background child records lingeringDescendants 0 ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F09: a commit without a background child records lingeringDescendants 0 ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-no-linger" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-no-linger", "F09"));
       await underTest("commit");
@@ -192,6 +195,7 @@ describe("commit creation (contract §4 \"Commit validation and handoff\")", () 
       expect(outcome(response)).toEqual(SUCCEEDED);
       expect(one<number>(response.result, "lingeringDescendants")).toBe(0);
     }),
+    TIMEOUT_MS,
   );
 });
 
@@ -242,7 +246,7 @@ describe("refusals (contract §3, §9)", () => {
     "above 64 KiB": "x".repeat(COMMIT_MESSAGE_BYTES + 1),
     "above 64 KiB in UTF-8 bytes": "é".repeat(COMMIT_MESSAGE_BYTES / 2 + 1),
   };
-  todoCase(TASK, `a blank message, a NUL character, and a message above 64 KiB give INVALID_REQUEST, and no Git process starts ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `a blank message, a NUL character, and a message above 64 KiB give INVALID_REQUEST, and no Git process starts ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-messages" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-messages", "F09"));
       const head = refState(gitPath(), repo);
@@ -255,10 +259,11 @@ describe("refusals (contract §3, §9)", () => {
       }
       expect(refState(gitPath(), repo)).toEqual(head);
     }),
+    TIMEOUT_MS,
   );
 
   // Contract §3: the review of an empty staged scope succeeds without a token. Without an issued token, a commit names a well-formed ID that the session did not issue (§2).
-  todoCase(TASK, `an empty staged scope gives a succeeded review without a reviewToken; a commit without a valid token gives UNKNOWN_TARGET, and no commit process starts ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `an empty staged scope gives a succeeded review without a reviewToken; a commit without a valid token gives UNKNOWN_TARGET, and no commit process starts ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-empty" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-empty", "F09"));
       git(repo, ["reset", "-q"]);
@@ -274,9 +279,10 @@ describe("refusals (contract §3, §9)", () => {
       expect(commitCalls(service)).toEqual([]);
       expect(refState(gitPath(), repo)).toEqual(head);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `missing identity (owned global configuration with user.useConfigOnly=true and no name) gives failed with GIT_FAILED and the Git output tail, and no commit process starts ${COMMIT}`, SHELL, async () => {
+  caseTest(TASK, `missing identity (owned global configuration with user.useConfigOnly=true and no name) gives failed with GIT_FAILED and the Git output tail, and no commit process starts ${COMMIT}`, SHELL, async () => {
     const name = "t098-identity";
     const config = join(fixtureDir(name), "no-identity.gitconfig");
     writeFileSync(config, "[user]\n\tuseConfigOnly = true\n[init]\n\tdefaultBranch = main\n");
@@ -291,10 +297,10 @@ describe("refusals (contract §3, §9)", () => {
       expect(commitCalls(service)).toEqual([]);
       expect(refState(gitPath(), repo)).toEqual(head);
     });
-  });
+  }, TIMEOUT_MS);
 
-  // research.md R4 "T091 trace2 probe": `child_start` and `child_exit` identify a failing signer, so the expected code is SIGNING_FAILED.
-  todoCase(TASK, `a failing signing program after trust approval gives SIGNING_FAILED, and HEAD stays ${COMMIT}`, SHELL, () =>
+  // Decision G2: without trace2, no exact fact tells a signing failure from a hook failure, so the code is GIT_FAILED (contract §9).
+  caseTest(TASK, `a failing signing program after trust approval gives GIT_FAILED, and HEAD stays ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-signing" }, async (service) => {
       const built = buildChanged(gitPath(), "t098-signing", "F09");
       const repo = repoOf(built);
@@ -306,12 +312,13 @@ describe("refusals (contract §3, §9)", () => {
       const { repositoryId } = await service.register(repo);
       await approve(service, repositoryId);
       const r = await reviewOk(service, repositoryId);
-      expect(outcome(await commit(service, repositoryId, r, "signed\n"))).toEqual(FAILED("SIGNING_FAILED"));
+      expect(outcome(await commit(service, repositoryId, r, "signed\n"))).toEqual(FAILED("GIT_FAILED"));
       expect(refState(gitPath(), repo)).toEqual(head);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F11: a rejecting pre-commit hook gives HOOK_FAILED with the outputTail and the contract §9 hook command; the command names the selected Git and the worktree root and holds no message text ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F11: a rejecting pre-commit hook gives GIT_FAILED (decision G2) with the outputTail and the contract §9 hook command; the command names the selected Git and the worktree root and holds no message text ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-hook-failed" }, async (service) => {
       const repo = repoOf(buildF11(gitPath(), "t098-hook-failed", "rejecting"));
       const before = repoState(repo);
@@ -322,16 +329,19 @@ describe("refusals (contract §3, §9)", () => {
       const r = await reviewOk(service, repositoryId);
       const message = "t098-message-marker\n";
       const response = await commit(service, repositoryId, r, message);
-      expect(outcome(response)).toEqual(FAILED("HOOK_FAILED"));
+      expect(outcome(response)).toEqual(FAILED("GIT_FAILED"));
       expect(typeof one<string>(response.result, "outputTail")).toBe("string");
       expect(remedies(response)).toEqual([{ text: HOOK_REMEDY_TEXT, command: hookRemedy(r.read.identity.worktreeRoot) }]);
       expect(remedies(response)[0]!.command!.includes("t098-message-marker")).toBe(false);
-      expect({ rawIndex: repoState(repo).rawIndex, head: refState(gitPath(), repo) }).toEqual({ rawIndex: before.rawIndex, head });
+      // Git writes its index with the cache tree before `pre-commit` runs (builtin/commit.c `prepare_index`), so only the logical entries stay.
+      expect({ entries: repoState(repo).entries, head: refState(gitPath(), repo) }).toEqual({ entries: before.entries, head });
     }),
+    TIMEOUT_MS,
   );
 
   // Git commits the index lock before it runs `pre-commit` (research.md R4 "index lock release"), so the hook's index write stays.
-  todoCase(TASK, `a pre-commit hook that stages another file and then rejects gives failed-with-effects, and the index keeps the hook's entry ${COMMIT}`, SHELL, () =>
+  // Decision G4: a commit binds no working file, so `workingFiles` is false (contract §8).
+  caseTest(TASK, `a pre-commit hook that stages another file and then rejects gives failed-with-effects with index effects only, and the index keeps the hook's entry ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-hook-effects" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-hook-effects", "F09"));
       putHook(repo, "pre-commit", "echo hooked >> hooked.txt\ngit add -- hooked.txt\nexit 1\n");
@@ -342,13 +352,14 @@ describe("refusals (contract §3, §9)", () => {
       const r = await reviewOk(service, repositoryId);
       const response = await commit(service, repositoryId, r, "effects\n");
       expect(outcome(response)).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
-      expect(one<object>(response.result, "effects")).toEqual({ head: false, index: true, workingFiles: true, operationState: false });
+      expect(one<object>(response.result, "effects")).toEqual({ head: false, index: true, workingFiles: false, operationState: false });
       expect(repoState(repo).entries.some((e) => e.path === "hooked.txt")).toBe(true);
       expect(refState(gitPath(), repo)).toEqual(head);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `i18n.commitEncoding=latin1 gives COMMIT_ENCODING_UNSUPPORTED, and no commit process starts ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `i18n.commitEncoding=latin1 gives COMMIT_ENCODING_UNSUPPORTED, and no commit process starts ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-latin1" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-latin1", "F09"));
       git(repo, ["config", "i18n.commitEncoding", "latin1"]);
@@ -359,10 +370,11 @@ describe("refusals (contract §3, §9)", () => {
       expect(commitCalls(service)).toEqual([]);
       expect(refState(gitPath(), repo)).toEqual(head);
     }),
+    TIMEOUT_MS,
   );
 
   for (const value of [null, "utf-8", "UTF8"]) {
-    todoCase(TASK, `i18n.commitEncoding ${value ?? "unset"} passes ${COMMIT}`, SHELL, () => {
+    caseTest(TASK, `i18n.commitEncoding ${value ?? "unset"} passes ${COMMIT}`, SHELL, () => {
       const name = `t098-encoding-${(value ?? "unset").toLowerCase()}`;
       return withService({ name }, async (service) => {
         const repo = repoOf(buildChanged(gitPath(), name, "F09"));
@@ -371,10 +383,10 @@ describe("refusals (contract §3, §9)", () => {
         const { repositoryId, r } = await reviewed(service, repo);
         expect(outcome(await commit(service, repositoryId, r, "encoding\n"))).toEqual(SUCCEEDED);
       });
-    });
+    }, TIMEOUT_MS);
   }
 
-  todoCase(TASK, `an existing index.lock gives LOCKED with its path and the contract §9 remedy, and the lock stays untouched ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `an existing index.lock gives LOCKED with its path and the contract §9 remedy, and the lock stays untouched ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-locked" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-locked", "F09"));
       await underTest("commit");
@@ -382,13 +394,16 @@ describe("refusals (contract §3, §9)", () => {
       const lock = gitPathOf(repo, "index.lock");
       writeFileSync(lock, "foreign lock\n");
       const response = (await commit(service, repositoryId, r, "locked\n")) as ServiceResponse<{ path?: string; remedy?: Remedy }>;
-      expect({ code: response.code, path: response.result?.path, text: response.result?.remedy?.text }).toEqual({ code: "LOCKED", path: lock, text: LOCKED_REMEDY });
+      // The service names the lock in the form of Git's absolute `--git-path` output, which uses `/` on Windows. `resolve` gives one form for both.
+      const path = response.result?.path === undefined ? undefined : resolve(response.result.path);
+      expect({ code: response.code, path, text: response.result?.remedy?.text }).toEqual({ code: "LOCKED", path: lock, text: LOCKED_REMEDY });
       expect(readFileSync(lock, "utf8")).toBe("foreign lock\n");
       expect(commitCalls(service)).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `a second commit in another linked worktree of the same common directory, while a commit runs, gives BUSY ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `a second commit in another linked worktree of the same common directory, while a commit runs, gives BUSY ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-busy" }, async (service) => {
       const built = buildF07(gitPath(), "t098-busy");
       await underTest("commit");
@@ -405,11 +420,12 @@ describe("refusals (contract §3, §9)", () => {
       expect(outcome(await first)).toEqual(SUCCEEDED);
       expect(commitCalls(service).length).toBe(1);
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("trust (contract §7 \"Mutation trust\")", () => {
-  todoCase(TASK, `F11: a repository pre-commit hook with denied trust gives TRUST_REQUIRED, and no Git process starts ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F11: a repository pre-commit hook with denied trust gives TRUST_REQUIRED, and no Git process starts ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-trust-required" }, async (service) => {
       const built = buildF11(gitPath(), "t098-trust-required", "traditional");
       await underTest("commit");
@@ -419,9 +435,11 @@ describe("trust (contract §7 \"Mutation trust\")", () => {
       expect(runsSince(service, from)).toBe(0);
       expect(Object.values(built.facts.canaries).filter((log) => existsSync(join(built.root, log)))).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F11: after approval, a one-byte edit of the hook file gives TRUST_CHANGED, and no Git process starts ${COMMIT}`, SHELL, () =>
+  // Decision G3: the preflight runs Git reads before the gate decides, so the change ends the commit failed, and no commit process starts.
+  caseTest(TASK, `F11: after approval, a one-byte edit of the hook file gives failed with TRUST_CHANGED, and no commit process starts ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-trust-changed" }, async (service) => {
       const repo = repoOf(buildF11(gitPath(), "t098-trust-changed", "traditional"));
       await underTest("commit");
@@ -430,13 +448,13 @@ describe("trust (contract §7 \"Mutation trust\")", () => {
       const r = await reviewOk(service, repositoryId);
       const hook = gitPathOf(repo, "hooks/pre-commit");
       writeFileSync(hook, `${readFileSync(hook, "utf8")}#`);
-      const from = service.runner.calls.length;
-      expect((await commit(service, repositoryId, r, "trust\n")).code).toBe("TRUST_CHANGED");
-      expect(runsSince(service, from)).toBe(0);
+      expect(outcome(await commit(service, repositoryId, r, "trust\n"))).toEqual(FAILED("TRUST_CHANGED"));
+      expect(commitCalls(service)).toEqual([]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F12 SSH signing with denied trust gives TRUST_REQUIRED, and its gpg.ssh.defaultKeyCommand canary never runs ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F12 SSH signing with denied trust gives TRUST_REQUIRED, and its gpg.ssh.defaultKeyCommand canary never runs ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-ssh" }, async (service) => {
       const built = buildF12(gitPath(), "t098-ssh", "ssh-signing");
       await underTest("commit");
@@ -444,9 +462,10 @@ describe("trust (contract §7 \"Mutation trust\")", () => {
       expect((await commit(service, repositoryId, r, "ssh\n")).code).toBe("TRUST_REQUIRED");
       expect(existsSync(join(built.root, built.facts.canaries["ssh-default-key"]!))).toBe(false);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F17: the uploadpack canary never runs before or after approval; pre-commit sees GIT_NO_LAZY_FETCH=1; with a HEAD blob missing, --quiet skips the summary, the three hooks run, and the outcome is succeeded with the reviewed tree, parent, and branch ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F17: the uploadpack canary never runs before or after approval; pre-commit sees GIT_NO_LAZY_FETCH=1; with a HEAD blob missing, --quiet skips the summary, the three hooks run, and the outcome is succeeded with the reviewed tree, parent, and branch ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-f17" }, async (service) => {
       const built = buildF17(gitPath(), "t098-f17", "partial-reset-soft");
       const repo = join(built.root, "clone");
@@ -467,11 +486,12 @@ describe("trust (contract §7 \"Mutation trust\")", () => {
       expect({ canary: existsSync(canary), hooks: readFileSync(log, "utf8"), env: readFileSync(env, "utf8") }).toEqual({ canary: false, hooks: "pre-commit\ncommit-msg\npost-commit\n", env: "1\n" });
       expect({ target: refState(gitPath(), repo).headTarget, parents: commitFacts(repo).parents, tree: treeOf(repo, "HEAD") }).toEqual({ target: "refs/heads/main", parents: [before.headOid!], tree: reviewedTree });
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("frames and replay (contract §2, §6 \"Recovery markers\")", () => {
-  todoCase(TASK, `the mutation frames arrive as started, ended, then resolved; started precedes the lock creation, and no Git process starts before its reply ${COMMIT}`, SHELL, async () => {
+  caseTest(TASK, `the mutation frames arrive as started, ended, then resolved; started precedes the lock creation, and no Git process starts before its reply ${COMMIT}`, SHELL, async () => {
     const name = "t098-frames";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const lock = gitPathOf(repo, "index.lock");
@@ -488,9 +508,9 @@ describe("frames and replay (contract §2, §6 \"Recovery markers\")", () => {
       expect(mutationFrames(service, response.operationId!)).toEqual(["started", "ended", "resolved"]);
       expect(seen).toEqual([{ lock: false, runs: 0 }]);
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `a second commit with the consumed review token gets succeeded with the first operationId and its getOperation result, and starts no Git process ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `a second commit with the consumed review token gets succeeded with the first operationId and its getOperation result, and starts no Git process ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-replay" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-replay", "F09"));
       await underTest("commit");
@@ -503,9 +523,10 @@ describe("frames and replay (contract §2, §6 \"Recovery markers\")", () => {
       expect(second.result).toEqual((await service.getOperation(first.operationId!)).result);
       expect(commitCalls(service).length).toBe(1);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `a repeated requestId gives INVALID_REQUEST and starts no Git process ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `a repeated requestId gives INVALID_REQUEST and starts no Git process ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-request-id" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t098-request-id", "F09"));
       await underTest("commit");
@@ -519,12 +540,13 @@ describe("frames and replay (contract §2, §6 \"Recovery markers\")", () => {
       const second = service.responses.filter((s) => s.requestId === requestId)[1]!;
       expect({ ...outcome(second), runs: runsSince(service, from) }).toEqual({ state: "rejected", code: "INVALID_REQUEST", runs: 0 });
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("remedy command (contract §4 \"Quoting rule\", §9)", () => {
   // `hook run` runs the configured hooks, then the hook-folder hook (Git `hook.c`). The remedy never commits.
-  todoCase(TASK, `F11: the HOOK_FAILED command runs through PowerShell -NoProfile -Command, exits nonzero, prints both hook outputs, and creates no commit, also after the hook passes ${COMMIT}`, [...SHELL, "powershell"], () =>
+  caseTest(TASK, `F11: the GIT_FAILED hook command runs through PowerShell -NoProfile -Command, exits nonzero, prints both hook outputs, and creates no commit, also after the hook passes ${COMMIT}`, [...SHELL, "powershell"], () =>
     withService({ name: "t098-remedy-run" }, async (service) => {
       const repo = repoOf(buildF11(gitPath(), "t098-remedy-run", "rejecting"));
       git(repo, ["config", "hook.t098.command", "echo t098-configured-output"]);
@@ -544,13 +566,14 @@ describe("remedy command (contract §4 \"Quoting rule\", §9)", () => {
       expect(runIt().exitCode).toBe(0);
       expect(state()).toEqual(before);
     }),
+    TIMEOUT_MS,
   );
 
   const QUOTES = ["'", "‘", "’", "‚", "‛"] as const;
   const MARKER = "arbareto-t098-marker";
   const hostile = (i: number) => join(fixtureDir(`t098-quote-${i}`), `w${QUOTES[i]}; ni ${MARKER} #`);
 
-  todoCase(TASK, `each HOOK_FAILED command doubles all five PowerShell quote characters of the worktree root ${COMMIT}`, SHELL, async () => {
+  caseTest(TASK, `each GIT_FAILED hook command doubles all five PowerShell quote characters of the worktree root ${COMMIT}`, SHELL, async () => {
     QUOTES.forEach((_, i) => rejectingRepo(hostile(i)));
     await underTest("commit");
     for (const [i, q] of QUOTES.entries()) {
@@ -560,10 +583,10 @@ describe("remedy command (contract §4 \"Quoting rule\", §9)", () => {
         expect(hookRemedy(root).includes(psQuote(root))).toBe(true);
       });
     }
-  });
+  }, TIMEOUT_MS);
 
   for (const [shell, capability] of [["pwsh", "pwsh"], ["powershell", "windows-powershell"]] as const) {
-    todoCase(TASK, `each quoted HOOK_FAILED command runs in ${shell} without the marker payload ${COMMIT}`, [...SHELL, capability], async () => {
+    caseTest(TASK, `each quoted GIT_FAILED hook command runs in ${shell} without the marker payload ${COMMIT}`, [...SHELL, capability], async () => {
       const dirs = QUOTES.map((q, i) => ({ q, dir: join(fixtureDir(`t098-${shell}-${i}`), basename(hostile(i))) }));
       for (const { dir } of dirs) rejectingRepo(dir);
       await underTest("commit");
@@ -578,10 +601,10 @@ describe("remedy command (contract §4 \"Quoting rule\", §9)", () => {
         expect({ shell, q, markers }).toEqual({ shell, q, markers: [] });
         rmSync(cwd, { recursive: true, force: true });
       }
-    });
+    }, TIMEOUT_MS);
   }
 
-  todoCase(TASK, `a worktree root with U+201C gives no command, and the remedy shows the root as text ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `a worktree root with U+201C gives no command, and the remedy shows the root as text ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-u201c" }, async (service) => {
       const dir = join(fixtureDir("t098-u201c"), "w“x");
       rejectingRepo(dir);
@@ -590,6 +613,7 @@ describe("remedy command (contract §4 \"Quoting rule\", §9)", () => {
       const [remedy] = remedies(response);
       expect({ command: remedy!.command, shown: remedy!.text.includes(root) }).toEqual({ command: null, shown: true });
     }),
+    TIMEOUT_MS,
   );
 });
 
@@ -614,7 +638,7 @@ describe("output tail (contract §9 \"Commit failure output\")", () => {
     return { bytes: Buffer.from(lines.join(""), "utf8"), plain };
   }
 
-  todoCase(TASK, `a rejecting hook with 200 lines and 64 KiB on stdout and stderr gives an outputTail of the last lines within 16 KiB and 100 lines, with the marker and <redacted>, without control sequences, TOKEN, or the first partial line; no log, diagnostic, or progress event holds the marker ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `a rejecting hook with 200 lines and 64 KiB on stdout and stderr gives an outputTail of the last lines within 16 KiB and 100 lines, with the marker and <redacted>, without control sequences, TOKEN, or the first partial line; no log, diagnostic, or progress event holds the marker ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-tail" }, async (service) => {
       const built = buildChanged(gitPath(), "t098-tail", "F09");
       const repo = repoOf(built);
@@ -628,7 +652,7 @@ describe("output tail (contract §9 \"Commit failure output\")", () => {
       await approve(service, repositoryId);
       const r = await reviewOk(service, repositoryId);
       const response = await commit(service, repositoryId, r, "tail\n");
-      expect(outcome(response)).toEqual(FAILED("HOOK_FAILED"));
+      expect(outcome(response)).toEqual(FAILED("GIT_FAILED"));
       const tail = one<string>(response.result, "outputTail");
       const lines = tail.split("\n").filter((line) => line !== "");
       expect({
@@ -644,11 +668,12 @@ describe("output tail (contract §9 \"Commit failure output\")", () => {
       const elsewhere = JSON.stringify({ log: service.log(), progress: service.progress, diagnostic: valuesOf(response.result, "diagnostic"), others: service.responses.filter((s) => s !== response) });
       expect(elsewhere.includes(MARKER)).toBe(false);
     }),
+    TIMEOUT_MS,
   );
 });
 
 describe("lingering jobs (contract §6 \"Lingering Jobs\", \"Completion signal\")", () => {
-  todoCase(TASK, `F14 lingering: the post-commit child still runs after the commit, a following readWorkspace succeeds, and the outcome records lingeringDescendants 1 ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F14 lingering: the post-commit child still runs after the commit, a following readWorkspace succeeds, and the outcome records lingeringDescendants 1 ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-lingering" }, async (service) => {
       const repo = repoOf(buildF14(gitPath(), "t098-lingering", "lingering"));
       await underTest("commit");
@@ -661,9 +686,10 @@ describe("lingering jobs (contract §6 \"Lingering Jobs\", \"Completion signal\"
       await readOk(service, repositoryId);
       expect(service.runner.liveRecorded()).toBe(1);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F14 lingering: a child that writes to the inherited stdout and stderr 3 seconds after Git exits delays no outcome beyond 2 seconds, and no response holds the late text ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F14 lingering: a child that writes to the inherited stdout and stderr 3 seconds after Git exits delays no outcome beyond 2 seconds, and no response holds the late text ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-late-output" }, async (service) => {
       const repo = repoOf(buildF14(gitPath(), "t098-late-output", "lingering"));
       const LATE = "arbareto-t098-late-output";
@@ -681,9 +707,10 @@ describe("lingering jobs (contract §6 \"Lingering Jobs\", \"Completion signal\"
       await Bun.sleep(4000);
       expect(JSON.stringify({ responses: service.responses, progress: service.progress, log: service.log() }).includes(LATE)).toBe(false);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F14 lock: while the child holds index.lock, the next mutation gives LOCKED with the lock path, the remedy, and the lingering sentence with count 1; the lock bytes stay (needs T110/T112/T113/T115)`, SHELL, () =>
+  caseTest(TASK, `F14 lock: while the child holds index.lock, the next mutation gives LOCKED with the lock path, the remedy, and the lingering sentence with count 1; the lock bytes stay ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-f14-lock" }, async (service) => {
       const built = buildF14(gitPath(), "t098-f14-lock", "lock");
       const repo = repoOf(built);
@@ -698,7 +725,8 @@ describe("lingering jobs (contract §6 \"Lingering Jobs\", \"Completion signal\"
       const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
       const response = (await applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage")) as ServiceResponse<{ path?: string; remedy?: Remedy }>;
       const text = response.result?.remedy?.text ?? "";
-      expect({ code: response.code, path: response.result?.path, locked: text.includes(LOCKED_REMEDY), lingering: text.includes(lingeringSentence(1)), revoke: text.includes(REVOKE_SENTENCE) }).toEqual({
+      const path = response.result?.path === undefined ? undefined : resolve(response.result.path);
+      expect({ code: response.code, path, locked: text.includes(LOCKED_REMEDY), lingering: text.includes(lingeringSentence(1)), revoke: text.includes(REVOKE_SENTENCE) }).toEqual({
         code: "LOCKED",
         path: lock,
         locked: true,
@@ -707,9 +735,10 @@ describe("lingering jobs (contract §6 \"Lingering Jobs\", \"Completion signal\"
       });
       expect(readFileSync(lock)).toEqual(bytes);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F14 ref lock: while the child holds the current branch ref lock, the next commit gives GIT_FAILED, HEAD stays, the outcome names the lock as foreign, and the remedy holds the Other locks text, the lingering count, and the hook command ${COMMIT}`, SHELL, () =>
+  caseTest(TASK, `F14 ref lock: while the child holds the current branch ref lock, the next commit gives GIT_FAILED, HEAD stays, the outcome names the lock as foreign, and the remedy holds the Other locks text, the lingering count, and the hook command ${COMMIT}`, SHELL, () =>
     withService({ name: "t098-ref-lock" }, async (service) => {
       const built = buildF14(gitPath(), "t098-ref-lock", "lock");
       const repo = repoOf(built);
@@ -728,7 +757,7 @@ describe("lingering jobs (contract §6 \"Lingering Jobs\", \"Completion signal\"
       const response = await commit(service, repositoryId, r, "second\n");
       expect(outcome(response)).toEqual(FAILED("GIT_FAILED"));
       expect(refState(gitPath(), repo).headOid).toBe(head.headOid);
-      expect(valuesOf(response.result, "foreign").flat()).toContain(lock);
+      expect(valuesOf(response.result, "foreign").flat().map((p) => resolve(p as string))).toContain(lock);
       const found = remedies(response);
       expect({
         otherLocks: found.some((f) => f.text.includes(OTHER_LOCKS_TEXT) && f.text.includes(lingeringSentence(1))),
@@ -736,5 +765,6 @@ describe("lingering jobs (contract §6 \"Lingering Jobs\", \"Completion signal\"
       }).toEqual({ otherLocks: true, command: true });
       expect(existsSync(lock)).toBe(true);
     }),
+    TIMEOUT_MS,
   );
 });

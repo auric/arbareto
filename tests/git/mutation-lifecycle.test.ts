@@ -7,7 +7,7 @@ import { describe, expect } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FIXTURE_ROOT, fixtureDir, useFixtureRoot } from "./fixture-root";
-import { buildChanged, buildF07, buildF12, buildF14, buildF20, put, type Built } from "./fixtures";
+import { buildChanged, buildF07, buildF12, buildF14, buildF20, inflateHeadReflog, put, type Built } from "./fixtures";
 import { rawIndexDigest, refState } from "./git-oracle";
 import {
   afterCommitCall,
@@ -578,7 +578,7 @@ describe("deadlines (contract §5 \"Deadline outcomes\")", () => {
 });
 
 describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
-  // The F14 hook child of `lingering` with a barrier before the hook exits, in a repository whose reflog holds more than 4 MiB (F20 `reflog-bytes`).
+  // The F14 hook child of `lingering` with a barrier before the hook exits, in F20 `reflog-bytes`. The case adds more than 4 MiB of HEAD log inside the attribution window.
   function lingeringBigReflog(name: string): { built: Built; repo: string; gate: ReturnType<typeof barrier> } {
     const f14 = buildF14(gitPath(), name, "lingering");
     const built = buildF20(gitPath(), `${name}-f20`, "reflog-bytes");
@@ -590,12 +590,14 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
 
   todoCase(TASK, `a commit that leaves the F14 child running ends unknown through attribution evidence above 4 MiB, and its recovery refresh succeeds while the child still runs ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-linger-unknown" }, async (service) => {
-      const { repo, gate } = lingeringBigReflog("t100-linger-unknown");
+      const { built, repo, gate } = lingeringBigReflog("t100-linger-unknown");
       await underTest("recovery");
       const { repositoryId, r } = await approvedReview(service, repo);
       const pending = commit(service, repositoryId, r, "linger unknown\n");
       await gate.reached();
-      git(repo, ["commit", "-q", "--no-verify", "--allow-empty", "-m", "competing"]);
+      // `--no-verify` still runs `post-commit` (git-commit(1)), so the competing commit gets a hook folder without hooks.
+      git(repo, ["-c", `core.hooksPath=${join(built.root, "no-hooks")}`, "commit", "-q", "--no-verify", "--allow-empty", "-m", "competing"]);
+      inflateHeadReflog(repo, "reflog-bytes", "files");
       gate.release();
       const response = await pending;
       expect(outcome(response)).toEqual({ state: "unknown", code: "STATE_UNKNOWN" });

@@ -72,6 +72,8 @@ describe("WSL reads (T208)", () => {
       const w = await register(s, f21.paths[1]!);
       const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
       expect(status).toMatchObject({ state: "succeeded" });
+      // T339 (a) and (c): the location names the listed distro and the approved distro Git of the confirmation.
+      expect(status.result?.location).toEqual({ kind: "wsl", distro: host.distro, git: { path: host.probe.paths.git, version: host.gitVersion } });
       const text = JSON.stringify(status.result);
       const own = distroGit(f21.repo, ["status", "--porcelain=v2", "--untracked-files=all"]);
       for (const line of sortedLines(own)) expect(text).toContain(line.split(" ").at(-1)!);

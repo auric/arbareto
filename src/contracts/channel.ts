@@ -29,7 +29,7 @@ import {
   WSL_DISTRO_START_MS,
 } from "./limits";
 import { NATIVE } from "./native-path";
-import { ChannelPath, Count, Fingerprint, Identifier, MutationKind, Text } from "./operations";
+import { ChannelPath, Count, Direction, DistroName, Fingerprint, Identifier, MutationKind, Text } from "./operations";
 
 // Contract §6 "Startup handshake" and "Channel frames". Each union branch has a title, because typify names its types from titles.
 
@@ -315,11 +315,9 @@ export const ReleaseCall = z.union([
 
 // ---- WSL `process` frames (contract §6 "Channel frames", §11) ----
 
-// Contract §11 "Distro checks": a name that `wsl.exe --list --quiet` prints holds no control character.
-export const DistroName = z.string().min(1).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/);
 const Guid = WslIdentity.shape.distroGuid;
 // An absolute Linux path from the distro.
-const LinuxPath = z.string().regex(/^\/[^\u0000]*$/).refine((value) => value.isWellFormed());
+export const LinuxPath = z.string().regex(/^\/[^\u0000]*$/).refine((value) => value.isWellFormed());
 // Contract §11 "Git per distro": `<file-system ID>:<inode>:<size>:<modification time>` of the Git file.
 const GitFileIdentity = z.string().regex(/^[0-9a-f]+:[0-9]+:[0-9]+:[0-9]+$/);
 
@@ -564,17 +562,21 @@ export const ProcessReply = z.xor([
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
 
-export const StartedCall = z.strictObject({
+const startedFields = {
   operationId: Identifier,
   repositoryId: Identifier,
   kind: MutationKind,
+  direction: Direction.optional(),
   worktreeRoot: ChannelPath,
   commonDirectory: ChannelPath,
-});
+};
+// Contract §6 "Mutation frames": a hunk or file action carries its direction, and no other kind carries one.
+const directionRule = (frame: { kind: string; direction?: string }) => (frame.kind === "applyHunk" || frame.kind === "applyFile") === (frame.direction !== undefined);
+export const StartedCall = z.strictObject(startedFields).refine(directionRule);
 export type MutationStarted = z.infer<typeof StartedCall>;
 
 export const MutationRequest = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("started"), ...call, ...StartedCall.shape }).meta({ title: "Started" }),
+  z.strictObject({ type: z.literal("started"), ...call, ...startedFields }).refine(directionRule).meta({ title: "Started" }),
   z.strictObject({ type: z.literal("ended"), operationId: Identifier, endProcesses: z.boolean() }).meta({ title: "Ended" }),
   z.strictObject({ type: z.literal("resolved"), markerId: Identifier }).meta({ title: "Resolved" }),
 ]);

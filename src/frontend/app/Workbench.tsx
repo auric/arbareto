@@ -4,7 +4,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode } from "react";
 import type { Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
-import type { BridgeResponse, createBridge } from "../bridge";
+import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList } from "../changes/ChangesPane";
 import { ComparisonView as Comparison, resultOf, showsDiff } from "../changes/ComparisonView";
 import { Button } from "../components/ui/button";
@@ -31,7 +31,7 @@ import { DEFAULT_PREFERENCES, readPreferences, writePreferences, type Preference
 import { SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
 import { blockingText, NoticeBand, WarningIcon } from "./NoticeBand";
 import { RepositoryMenu } from "./RepositoryMenu";
-import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused } from "./RepositoryStates";
+import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 
 // plan.md "Two feasible layouts" (layout A), "Chosen layout, sizes, and DPI", "Keyboard and focus", and "Required visible states".
@@ -59,6 +59,8 @@ export type WorkbenchProps = {
   environment?: Environment | null;
   /** The `restoreWorkspace` response of the page start (contract §2). */
   restored?: Promise<BridgeResponse>;
+  /** Gives each progress event of that restore to `listener`, starting with the latest one. */
+  restoreProgress?(listener: OnProgress): void;
   /** Adds 1 after each `service-session` event (contract §2). */
   session?: number;
   onSelectGit?(): void;
@@ -237,13 +239,25 @@ export function HistoryViewMount({ state, requests, density, profile, textScale 
 // Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
 const isTrustReport = (value: unknown): value is TrustReport => typeof value === "object" && value !== null && typeof (value as { fingerprint?: unknown }).fingerprint === "string";
 
-export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, session = 0, onSelectGit = () => {}, onEnvironment, textScale = 1 }: WorkbenchProps) {
+export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit = () => {}, onEnvironment, textScale = 1 }: WorkbenchProps) {
   // plan.md "Required visible states", Recovery statement: the statement stays until the next `refresh: true` read or another repository.
   const [recovery, setRecovery] = useState<{ repositoryId: string; statement: RecoveryStatement } | null>(null);
+  // Contract §11 "Distro start": a registration or restore in phase `wsl-starting`, until its response. No event marks the probe end.
+  const [starting, setStarting] = useState<{ distro: string; operationId: string } | null>(null);
+  // The operation that the WslStarting Cancel canceled.
+  const canceledStart = useRef<string | null>(null);
+  const onStart: OnProgress = (event) => {
+    if (event.phase === "wsl-starting" && event.distro !== undefined) setStarting({ distro: event.distro, operationId: event.operationId });
+  };
+  const endStart = (response: BridgeResponse) => {
+    setStarting((current) => (current !== null && current.operationId === response.operationId ? null : current));
+    if (response.state === "canceled" && response.operationId !== undefined && response.operationId === canceledStart.current) setNotice(WSL_START_CANCELED_TEXT);
+    return response;
+  };
   const [requests] = useState(() =>
     createRequests({
       bridge: {
-        restoreWorkspace: () => bridge.restoreWorkspace(),
+        restoreWorkspace: () => bridge.restoreWorkspace(onStart).then(endStart),
         readEntries: (target, payload) => bridge.readEntries(target, payload),
         readHistory: (target) => bridge.readHistory(target),
         readComparison: (target, payload) => bridge.readComparison(target, payload),
@@ -306,12 +320,14 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     } else setRefusal(response);
   }
 
+  useEffect(() => restoreProgress?.(onStart), [restoreProgress]);
   useEffect(() => {
     if (restored === undefined) return;
     let current = true;
     void restored.then((response) => {
       if (!current) return;
       setRestoring(false);
+      endStart(response);
       // A repository that the user opened during the restore wins.
       if (requests.state().repository === null) registered(response);
     });
@@ -404,9 +420,16 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   }, []);
 
   async function openRepository() {
-    registered(await bridge.chooseRepository());
+    registered(endStart(await bridge.chooseRepository(onStart)));
     opener.current?.focus();
   }
+
+  // plan.md "Required visible states", Starting WSL distro: Cancel returns focus to Open repository.
+  const cancelStart = (payload: { operationId: string }) => {
+    canceledStart.current = payload.operationId;
+    opener.current?.focus();
+    return bridge.cancel(payload);
+  };
 
   async function reviewTrust() {
     if (repositoryId === null) return;
@@ -433,6 +456,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const workspace = state.workspace;
   const path = workspace?.identity.worktreeRoot ?? null;
   const distro = wslDistro(workspace);
+  const wslGit = workspace?.location.kind === "wsl" ? workspace.location.git : null;
   const head = workspace ? headText(workspace.head) : null;
   const rows = headerRowCount(client.width, textScale);
   const pane: WorkbenchPaneProps = { state, requests, density: preferences.density, profile, textScale, menuOpen: menuOpen !== null, modalOpen, onStatus: setPaneStatus };
@@ -486,7 +510,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     />
   );
 
-  const statusText = state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : notice;
+  // plan.md "Status area": the status bar text is the live region, so a start shows there too.
+  const statusText = starting !== null ? wslStartingText(starting.distro) : state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : notice;
 
   return (
     <CopyFailed value={() => setNotice(COPY_FAILED_TEXT)}>
@@ -520,6 +545,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 path={path}
                 head={head}
                 distro={distro}
+                wslGit={wslGit}
                 trustId={trust?.report.trustId ?? null}
                 onOpenRepository={() => void openRepository()}
                 onSelectGit={onSelectGit}
@@ -654,7 +680,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             </>
           )}
           {/* plan.md "Status area": T138 fills this slot. */}
-          <div data-slot="status-area" />
+          <div data-slot="status-area">{starting === null ? null : <WslStarting name={starting.distro} operationId={starting.operationId} cancel={cancelStart} />}</div>
         </main>
 
         <footer className="flex items-center gap-2 border-t border-divider px-2" style={{ minHeight: "var(--h-status-bar)" }}>

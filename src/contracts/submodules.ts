@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { Base64 } from "./channel";
 import { COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES } from "./limits";
-import { Count, Fingerprint, Identifier, OutputTail, Phase, ProgressEvent, Text } from "./operations";
+import { Count, Fingerprint, Identifier, OutputTail, Phase, ProgressFields, Text } from "./operations";
 import { buildRemedyCommand, type RemedyValue } from "./remedy-command";
 
 export const SUBMODULE_ACTIONS = ["clone", "reuse", "checkout", "fetch-checkout", "none", "skip"] as const;
@@ -113,7 +113,7 @@ export type SubmoduleRowResult = z.infer<typeof SubmoduleRowResult>;
 
 // Data-model §9 "Progress" and contract §12 "Progress": a contract §2 progress event. No Git text.
 // `rowIndex` is the `<i>` of "(<i> of <n>)" and names the row in the ordered row list. An absent `percent` means none.
-export const SubmoduleProgress = ProgressEvent.extend({
+export const SubmoduleProgress = ProgressFields.extend({
   phase: Phase.extract(SUBMODULE_PROGRESS_PHASES),
   counters: z.strictObject({ rowIndex: Count, rowCount: Count, percent: Count.max(100).optional() }),
   stalled: z.boolean(),

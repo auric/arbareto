@@ -88,8 +88,15 @@ export const PHASES = [
 export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;
 
+// Contract §11 "Distro checks": a name that `wsl.exe --list --quiet` prints holds no control character.
+export const DistroName = z.string().min(1).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/);
+
+// Contract §3 `applyHunk` and `applyFile`.
+export const Direction = z.enum(["stage", "unstage"]);
+
 // Contract §2: exactly these fields. A progress event holds no command, configuration, environment, patch content, Git text, or credential.
-export const ProgressEvent = z.strictObject({
+// The fields without `distro`. Only phase `wsl-starting` carries `distro`.
+export const ProgressFields = z.strictObject({
   requestId: Identifier,
   operationId: Identifier,
   state: z.enum(["accepted", "running", "cancel-requested", "reconciling"]),
@@ -97,6 +104,8 @@ export const ProgressEvent = z.strictObject({
   counters: z.record(z.string(), Count),
   stalled: z.boolean().optional(),
 });
+// Contract §11 "Distro start": `distro` is the listed name of the starting distro.
+export const ProgressEvent = ProgressFields.extend({ distro: DistroName.optional() }).refine((e) => (e.phase === "wsl-starting") === (e.distro !== undefined));
 export type ProgressEvent = z.infer<typeof ProgressEvent>;
 
 // Contract §9 "Commit failure output": an output tail stays within 16 KiB and 100 lines.

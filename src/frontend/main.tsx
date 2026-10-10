@@ -4,7 +4,7 @@
 import { Suspense, use, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { ChangesPaneMount, ComparisonViewMount, HistoryViewMount, Workbench } from "./app/Workbench";
-import { createBridge, type BridgeResponse } from "./bridge";
+import { createBridge, type BridgeResponse, type OnProgress, type ProgressEvent } from "./bridge";
 import { BootView, bootActions, markBootView, type Environment } from "./boot/BootView";
 import { createTextScale } from "./layout/text-scale";
 import "./index.css";
@@ -25,9 +25,24 @@ const firstLoad = load();
 // Contract §3 `getEnvironment`: a `gitCode` blocks Git work until Select Git succeeds.
 const passed = (response: BridgeResponse) => response.state === "succeeded" && (response.result as Environment).gitCode === undefined;
 
+// The restore starts before the workbench mounts, so its latest progress event waits for the listener.
+function restore() {
+  let latest: ProgressEvent | null = null;
+  let listener: OnProgress | null = null;
+  const restored = bridge.restoreWorkspace((event) => {
+    latest = event;
+    listener?.(event);
+  });
+  const restoreProgress = (next: OnProgress) => {
+    listener = next;
+    if (latest !== null) next(latest);
+  };
+  return { restored, restoreProgress };
+}
+
 function App() {
   const [view, setView] = useState(firstLoad);
-  const [ready, setReady] = useState<{ environment: Environment; restored: Promise<BridgeResponse> } | null>(null);
+  const [ready, setReady] = useState<({ environment: Environment } & ReturnType<typeof restore>) | null>(null);
   const [session, setSession] = useState(0);
   const scale = useSyncExternalStore(textScale.subscribe, textScale.current);
   const reload = () => setView(load());
@@ -59,6 +74,7 @@ function App() {
         bridge={bridge}
         environment={ready.environment}
         restored={ready.restored}
+        restoreProgress={ready.restoreProgress}
         session={session}
         onSelectGit={selectGit}
         onEnvironment={onEnvironment}
@@ -71,7 +87,7 @@ function App() {
   }
   return (
     <Suspense fallback={<BootView state="loading" />}>
-      <Boot view={view} reload={reload} onPass={(environment) => setReady({ environment, restored: bridge.restoreWorkspace() })} />
+      <Boot view={view} reload={reload} onPass={(environment) => setReady({ environment, ...restore() })} />
     </Suspense>
   );
 }

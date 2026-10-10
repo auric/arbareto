@@ -24,7 +24,7 @@ function shell(reply: (frame: MutationStarted) => Promise<Reply> | Reply) {
     frames,
     runner: {
       async started(frame: MutationStarted) {
-        frames.push(`started ${frame.operationId} ${frame.kind} ${frame.worktreeRoot} ${frame.commonDirectory}`);
+        frames.push(`started ${frame.operationId} ${frame.kind}${frame.direction === undefined ? "" : ` ${frame.direction}`} ${frame.worktreeRoot} ${frame.commonDirectory}`);
         return reply(frame);
       },
       ended(operationId: string, endProcesses: boolean) {
@@ -38,7 +38,12 @@ function shell(reply: (frame: MutationStarted) => Promise<Reply> | Reply) {
 }
 
 const workspace = (repositoryId: string, commonIdentity = COMMON) => ({ repositoryId, worktreeRoot: `C:\\r\\${repositoryId}`, commonDirectory: "C:\\r\\common\\.git", commonIdentity });
-const entry = (repositoryId = crypto.randomUUID(), commonIdentity = COMMON) => ({ operationId: crypto.randomUUID(), kind: "applyHunk" as const, workspace: workspace(repositoryId, commonIdentity) });
+const entry = (repositoryId = crypto.randomUUID(), commonIdentity = COMMON) => ({
+  operationId: crypto.randomUUID(),
+  kind: "applyHunk" as const,
+  direction: "stage" as const,
+  workspace: workspace(repositoryId, commonIdentity),
+});
 
 describe("exclusion (T106)", () => {
   test("the started frame carries the Git-resolved paths, and the marker ID enters the mutation", async () => {
@@ -47,12 +52,26 @@ describe("exclusion (T106)", () => {
     const e = entry();
     const entered = await exclusion.enter(e);
     expect(entered).toMatchObject({ ok: true, markerId: "mmmmmmmm-0000-4000-8000-000000000000" });
-    expect(frames).toEqual([`started ${e.operationId} applyHunk ${e.workspace.worktreeRoot} ${e.workspace.commonDirectory}`]);
+    expect(frames).toEqual([`started ${e.operationId} applyHunk stage ${e.workspace.worktreeRoot} ${e.workspace.commonDirectory}`]);
     expect(exclusion.holds(e.workspace.repositoryId)).toBe(true);
     if (!entered.ok) throw new Error("not entered");
     entered.end(false);
     expect(frames.at(-1)).toBe(`ended ${e.operationId} false`);
     expect(exclusion.holds(e.workspace.repositoryId)).toBe(false);
+  });
+
+  // T339 (d): contract §6 "Mutation frames". The shell names the running mutation in its close prompt from these fields.
+  test("the started frame carries the direction of a hunk or file action, and a commit carries none", async () => {
+    const { runner, frames } = shell(() => ({ markerId: crypto.randomUUID() }));
+    const exclusion = createExclusion(runner);
+    const unstage = { ...entry(), kind: "applyFile" as const, direction: "unstage" as const };
+    const commit = { operationId: crypto.randomUUID(), kind: "commit" as const, workspace: workspace(crypto.randomUUID(), OTHER) };
+    expect((await exclusion.enter(unstage)).ok).toBe(true);
+    expect((await exclusion.enter(commit)).ok).toBe(true);
+    expect(frames).toEqual([
+      `started ${unstage.operationId} applyFile unstage ${unstage.workspace.worktreeRoot} ${unstage.workspace.commonDirectory}`,
+      `started ${commit.operationId} commit ${commit.workspace.worktreeRoot} ${commit.workspace.commonDirectory}`,
+    ]);
   });
 
   test("an overlapping mutation on the same commonIdentity gets BUSY, sends no frame, and queues nothing", async () => {

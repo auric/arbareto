@@ -120,12 +120,13 @@ export function RepositoryRefused({ code, result, onOpenRepository }: { code: Er
 }
 
 export const WSL_START_CANCELED_TEXT = "WSL start canceled. The distro can keep starting.";
+export const wslStartingText = (name: string) => `Starting WSL distro ${name}…`;
 
 /** Phase `wsl-starting` of a registration or restore (contract §11 "Distro start"). The text is static: no spinner, animation, or percentage. */
 export function WslStarting({ name, operationId, cancel }: { name: string; operationId: string; cancel(payload: { operationId: string }): Promise<BridgeResponse> }) {
   return (
     <div className="flex flex-wrap items-center gap-2 p-2">
-      <span>Starting WSL distro {name}…</span>
+      <span>{wslStartingText(name)}</span>
       <Button variant="outline" size="sm" onClick={() => void cancel({ operationId })}>
         Cancel
       </Button>

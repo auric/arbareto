@@ -9,7 +9,7 @@ use windows::Win32::UI::WindowsAndMessaging::IDCANCEL;
 
 use crate::dialogs::{Button, Confirmation, Native};
 use crate::process_requests::is_identifier;
-use crate::schema::mutation_request::StartedKind;
+use crate::schema::mutation_request::{StartedDirection, StartedKind};
 
 /// Escape, Alt+F4, the close button, and Enter on the default return `IDCANCEL`, so Stay open carries that ID.
 const STAY_OPEN: i32 = IDCANCEL.0;
@@ -77,20 +77,58 @@ pub enum Decision {
     Close,
 }
 
+/// One running mutation by its plan.md "Status and fallback texts" mutation name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Mutation {
+    HunkStaging,
+    HunkUnstaging,
+    FileStaging,
+    FileUnstaging,
+    Commit,
+    UpdateSubmodules,
+}
+
+impl Mutation {
+    /// The mutation of a `started` frame. `None`: a hunk or file action without a direction, or another kind with one (contract §6 "Mutation frames").
+    pub fn of(kind: StartedKind, direction: Option<StartedDirection>) -> Option<Mutation> {
+        use StartedDirection::{Stage, Unstage};
+        Some(match (kind, direction) {
+            (StartedKind::ApplyHunk, Some(Stage)) => Mutation::HunkStaging,
+            (StartedKind::ApplyHunk, Some(Unstage)) => Mutation::HunkUnstaging,
+            (StartedKind::ApplyFile, Some(Stage)) => Mutation::FileStaging,
+            (StartedKind::ApplyFile, Some(Unstage)) => Mutation::FileUnstaging,
+            (StartedKind::Commit, None) => Mutation::Commit,
+            (StartedKind::UpdateSubmodules, None) => Mutation::UpdateSubmodules,
+            _ => return None,
+        })
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Mutation::HunkStaging => "Hunk staging",
+            Mutation::HunkUnstaging => "Hunk unstaging",
+            Mutation::FileStaging => "File staging",
+            Mutation::FileUnstaging => "File unstaging",
+            Mutation::Commit => "Commit",
+            Mutation::UpdateSubmodules => "Update submodules",
+        }
+    }
+}
+
 /// The mutations from their `started` reply with a marker ID to `ended` (contract §6 "Recovery markers").
 /// Lingering Jobs never enter it.
 #[derive(Default)]
-pub struct Running(Mutex<HashMap<String, StartedKind>>);
+pub struct Running(Mutex<HashMap<String, Mutation>>);
 
 impl Running {
-    fn lock(&self) -> MutexGuard<'_, HashMap<String, StartedKind>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, Mutation>> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn started(&self, operation_id: &str, kind: StartedKind) {
-        self.lock().insert(operation_id.to_string(), kind);
+    pub fn started(&self, operation_id: &str, mutation: Mutation) {
+        self.lock().insert(operation_id.to_string(), mutation);
     }
 
     pub fn ended(&self, operation_id: &str) {
@@ -102,18 +140,18 @@ impl Running {
         self.lock().clear();
     }
 
-    /// The kinds of the running mutations, sorted and without repeats.
-    pub fn kinds(&self) -> Vec<StartedKind> {
-        let mut kinds: Vec<StartedKind> = self.lock().values().copied().collect();
-        kinds.sort();
-        kinds.dedup();
-        kinds
+    /// The running mutations, sorted and without repeats.
+    pub fn mutations(&self) -> Vec<Mutation> {
+        let mut mutations: Vec<Mutation> = self.lock().values().copied().collect();
+        mutations.sort();
+        mutations.dedup();
+        mutations
     }
 }
 
 /// The native close prompt for the running mutations (plan.md "Close during mutation").
-pub fn prompt(kinds: &[StartedKind]) -> Confirmation {
-    let names: Vec<&str> = kinds.iter().map(|kind| name(*kind)).collect();
+pub fn prompt(mutations: &[Mutation]) -> Confirmation {
+    let names: Vec<&str> = mutations.iter().map(|mutation| mutation.name()).collect();
     let (names, verb, object) = match names.as_slice() {
         [one] => (one.to_string(), "is", "it"),
         [first @ .., last] => (format!("{} and {last}", first.join(", ")), "are", "them"),
@@ -138,26 +176,16 @@ pub fn prompt(kinds: &[StartedKind]) -> Confirmation {
     }
 }
 
-/// The operation names of contract §3 mutations. The `started` frame carries no hunk or file direction.
-fn name(kind: StartedKind) -> &'static str {
-    match kind {
-        StartedKind::ApplyHunk => "Hunk staging",
-        StartedKind::ApplyFile => "File staging",
-        StartedKind::Commit => "Commit",
-        StartedKind::UpdateSubmodules => "Update submodules",
-    }
-}
-
 /// Decides one close request. Only the Interrupt and close button ID closes during a running mutation.
 pub fn decide(request: Request, running: &Running, native: &dyn Native) -> Decision {
     if request == Request::Stay {
         return Decision::Stay;
     }
-    let kinds = running.kinds();
-    if kinds.is_empty() {
+    let mutations = running.mutations();
+    if mutations.is_empty() {
         return Decision::Close;
     }
-    if native.confirm(&prompt(&kinds)) == Some(INTERRUPT) {
+    if native.confirm(&prompt(&mutations)) == Some(INTERRUPT) {
         Decision::Close
     } else {
         Decision::StayOpen
@@ -217,10 +245,10 @@ mod tests {
         Fake::pressing(&[])
     }
 
-    fn running(kinds: &[(&str, StartedKind)]) -> Running {
+    fn running(mutations: &[(&str, Mutation)]) -> Running {
         let running = Running::default();
-        for &(operation_id, kind) in kinds {
-            running.started(operation_id, kind);
+        for &(operation_id, mutation) in mutations {
+            running.started(operation_id, mutation);
         }
         running
     }
@@ -301,7 +329,7 @@ mod tests {
     fn stay_never_prompts_with_or_without_a_running_mutation() {
         for running in [
             Running::default(),
-            running(&[(OPERATION, StartedKind::Commit)]),
+            running(&[(OPERATION, Mutation::Commit)]),
         ] {
             let native = no_prompt();
             assert_eq!(decide(Request::Stay, &running, &native), Decision::Stay);
@@ -325,7 +353,7 @@ mod tests {
     #[test]
     fn during_a_mutation_only_the_interrupt_button_closes() {
         for request in CLOSING {
-            let running = running(&[(OPERATION, StartedKind::Commit)]);
+            let running = running(&[(OPERATION, Mutation::Commit)]);
             let native = Fake::pressing(&[Press::Label(INTERRUPT)]);
             assert_eq!(
                 decide(request, &running, &native),
@@ -340,7 +368,7 @@ mod tests {
     fn during_a_mutation_every_other_prompt_result_stays_open() {
         for request in CLOSING {
             for press in STAYS {
-                let running = running(&[(OPERATION, StartedKind::UpdateSubmodules)]);
+                let running = running(&[(OPERATION, Mutation::UpdateSubmodules)]);
                 let native = Fake::pressing(&[press]);
                 assert_eq!(
                     decide(request, &running, &native),
@@ -354,7 +382,7 @@ mod tests {
 
     #[test]
     fn the_prompt_defaults_to_stay_open_and_escape_gives_stay_open() {
-        let prompt = prompt(&[StartedKind::Commit]);
+        let prompt = prompt(&[Mutation::Commit]);
         let labels: Vec<&str> = prompt.buttons.iter().map(|button| button.label).collect();
         assert_eq!(labels, [INTERRUPT, STAY_OPEN]);
         let stay_open = prompt.buttons[1].id;
@@ -367,44 +395,85 @@ mod tests {
         assert_ne!(prompt.accept_button, IDCANCEL.0);
     }
 
+    /// plan.md "Status and fallback texts": the mutation names.
     #[test]
-    fn the_prompt_names_the_operation_and_the_rollback_limit() {
-        for (kind, name) in [
-            (StartedKind::Commit, "Commit"),
-            (StartedKind::ApplyHunk, "Hunk staging"),
-            (StartedKind::ApplyFile, "File staging"),
-            (StartedKind::UpdateSubmodules, "Update submodules"),
+    fn the_prompt_names_the_operation_and_its_direction_and_the_rollback_limit() {
+        use StartedDirection::{Stage, Unstage};
+        for (kind, direction, name) in [
+            (StartedKind::Commit, None, "Commit"),
+            (StartedKind::ApplyHunk, Some(Stage), "Hunk staging"),
+            (StartedKind::ApplyHunk, Some(Unstage), "Hunk unstaging"),
+            (StartedKind::ApplyFile, Some(Stage), "File staging"),
+            (StartedKind::ApplyFile, Some(Unstage), "File unstaging"),
+            (StartedKind::UpdateSubmodules, None, "Update submodules"),
         ] {
-            let text = prompt(&[kind]).text;
-            assert!(text.starts_with(&format!("{name} is running.")), "{text}");
-            assert!(text.contains("cannot guarantee a rollback"), "{text}");
+            let mutation = Mutation::of(kind, direction).expect("a valid pair");
+            let text = prompt(&[mutation]).text;
+            assert_eq!(
+                text,
+                format!(
+                    "{name} is running. Arbareto cannot guarantee a rollback if you interrupt it. The repository can keep a part of the change."
+                )
+            );
         }
-        let both = prompt(&[StartedKind::Commit, StartedKind::UpdateSubmodules]).text;
-        assert!(
-            both.starts_with("Commit and Update submodules are running."),
-            "{both}"
+        let both = prompt(&[Mutation::Commit, Mutation::UpdateSubmodules]).text;
+        assert_eq!(
+            both,
+            "Commit and Update submodules are running. Arbareto cannot guarantee a rollback if you interrupt them. The repository can keep a part of the change."
         );
     }
 
+    /// Contract §6 "Mutation frames": only a hunk or file action carries a direction.
     #[test]
-    fn the_running_kinds_are_sorted_without_repeats() {
+    fn a_kind_and_a_direction_that_do_not_match_name_no_mutation() {
+        use StartedDirection::{Stage, Unstage};
+        for (kind, direction) in [
+            (StartedKind::ApplyHunk, None),
+            (StartedKind::ApplyFile, None),
+            (StartedKind::Commit, Some(Stage)),
+            (StartedKind::UpdateSubmodules, Some(Unstage)),
+        ] {
+            assert_eq!(
+                Mutation::of(kind, direction),
+                None,
+                "{kind:?} {direction:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_running_mutations_are_sorted_without_repeats() {
         let running = running(&[
-            (OPERATION, StartedKind::UpdateSubmodules),
-            (OTHER, StartedKind::Commit),
-            ("0f0f0f0f-0000-4000-8000-000000000003", StartedKind::Commit),
+            (OPERATION, Mutation::UpdateSubmodules),
+            (OTHER, Mutation::HunkUnstaging),
+            (
+                "0f0f0f0f-0000-4000-8000-000000000003",
+                Mutation::HunkUnstaging,
+            ),
+            (
+                "0f0f0f0f-0000-4000-8000-000000000004",
+                Mutation::HunkStaging,
+            ),
         ]);
         assert_eq!(
-            running.kinds(),
-            [StartedKind::Commit, StartedKind::UpdateSubmodules]
+            running.mutations(),
+            [
+                Mutation::HunkStaging,
+                Mutation::HunkUnstaging,
+                Mutation::UpdateSubmodules
+            ]
         );
         running.ended(OPERATION);
-        assert_eq!(running.kinds(), [StartedKind::Commit]);
+        assert_eq!(
+            running.mutations(),
+            [Mutation::HunkStaging, Mutation::HunkUnstaging]
+        );
     }
 
     #[test]
     fn with_only_lingering_jobs_close_if_idle_closes_every_job_without_the_prompt() {
         // A Job that outlives `ended` lingers. The mutation still ended.
-        let running = running(&[(OPERATION, StartedKind::Commit)]);
+        let running = running(&[(OPERATION, Mutation::Commit)]);
         running.ended(OPERATION);
         let native = no_prompt();
         assert_eq!(
@@ -444,7 +513,7 @@ mod tests {
             &identity,
         );
         assert!(matches!(reply, StartedReply::Marker { .. }), "{reply:?}");
-        let running = running(&[(OPERATION, StartedKind::Commit)]);
+        let running = running(&[(OPERATION, Mutation::Commit)]);
 
         // The shell closes the operation Jobs at the exit. Then the registry forgets the mutation.
         markers.service_exited();

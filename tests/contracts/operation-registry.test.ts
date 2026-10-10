@@ -118,8 +118,20 @@ describe("operation registry", () => {
     const { ops } = registry();
     const { operationId } = ops.start("updateSubmodules", crypto.randomUUID());
     ops.apply(operationId, { type: "marker-recorded" });
-    for (const phase of ["wsl-starting", "fetch", "update"]) expect(() => ops.progress(operationId, phase as never)).not.toThrow();
+    for (const phase of ["fetch", "update"]) expect(() => ops.progress(operationId, phase as never)).not.toThrow();
     for (const phase of ["submodule-fetch", "submodule-update", "running"]) expect(() => ops.progress(operationId, phase as never)).toThrow();
+  });
+
+  // T339 (b): contract §11 "Distro start".
+  test("phase wsl-starting carries the distro name, and no other phase carries one", () => {
+    const { ops, progress } = registry();
+    const requestId = crypto.randomUUID();
+    const { operationId } = ops.start("chooseRepository", requestId);
+    ops.apply(operationId, { type: "valid-read" });
+    expect(() => ops.progress(operationId, "wsl-starting")).toThrow();
+    expect(() => ops.progress(operationId, "preflight", {}, "Ubuntu-26.04")).toThrow();
+    ops.progress(operationId, "wsl-starting", {}, "Ubuntu-26.04");
+    expect(progress().at(-1)).toEqual({ requestId, operationId, state: "running", phase: "wsl-starting", counters: {}, distro: "Ubuntu-26.04" });
   });
 
   test("a progress event has only the contract §2 fields, and only commit and updateSubmodules carry stalled", () => {

@@ -127,6 +127,16 @@ describe("result, progress, and response schemas", () => {
     }
   });
 
+  // T339 (b): contract §2 and §11 "Distro start".
+  test("only phase wsl-starting carries distro, a listed distro name", () => {
+    const event = { requestId: id(), operationId: id(), state: "running", phase: "wsl-starting", counters: {}, distro: "Ubuntu-26.04" };
+    expect(ProgressEvent.safeParse(event).success).toBe(true);
+    const { distro: _distro, ...without } = event;
+    for (const bad of [without, { ...event, phase: "fetch" }, { ...without, phase: undefined, distro: "Ubuntu" }, { ...event, distro: "" }, { ...event, distro: "Ubuntu\n" }]) {
+      expect(ProgressEvent.safeParse(bad).success).toBe(false);
+    }
+  });
+
   test("the readComparison support values are supported and the T103 support reasons", () => {
     expect(Comparison.shape.support.unwrap().options).toEqual(["supported", ...SUPPORT_REASONS]);
   });
@@ -189,6 +199,20 @@ describe("channel schemas", () => {
     expect(MutationRequest.safeParse(started).success).toBe(true);
     expect(MutationRequest.safeParse({ ...started, kind: "readWorkspace" }).success).toBe(false);
     expect(MutationRequest.safeParse({ type: "ended", operationId: id(), endProcesses: false }).success).toBe(true);
+  });
+
+  // T339 (d): contract §6 "Mutation frames".
+  test("a started frame of a hunk or file action carries its direction, and no other kind carries one", () => {
+    const started = { type: "started", callId: id(), operationId: id(), repositoryId: id(), worktreeRoot: REPO, commonDirectory: GIT_DIR };
+    for (const kind of ["applyHunk", "applyFile"]) {
+      for (const direction of ["stage", "unstage"]) expect(MutationRequest.safeParse({ ...started, kind, direction }).success).toBe(true);
+      expect(MutationRequest.safeParse({ ...started, kind }).success).toBe(false);
+      expect(MutationRequest.safeParse({ ...started, kind, direction: "both" }).success).toBe(false);
+    }
+    for (const kind of ["commit", "updateSubmodules"]) {
+      expect(MutationRequest.safeParse({ ...started, kind }).success).toBe(true);
+      expect(MutationRequest.safeParse({ ...started, kind, direction: "stage" }).success).toBe(false);
+    }
   });
 });
 

@@ -399,6 +399,65 @@
             }
           ]
         },
+        "location": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "native"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false,
+              "title": "NativeLocation"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "wsl"
+                },
+                "distro": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                },
+                "git": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "pattern": "^\\/[^\\u0000]*$"
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "kind",
+                "distro",
+                "git"
+              ],
+              "additionalProperties": false,
+              "title": "WslLocation"
+            }
+          ],
+          "title": "WorkspaceLocation"
+        },
         "submoduleNotice": {
           "type": "object",
           "properties": {
@@ -795,6 +854,7 @@
         "recoveryState",
         "completeness",
         "hunkEligibility",
+        "location",
         "submoduleNotice",
         "entryCount",
         "entries",

@@ -292,6 +292,7 @@ export interface WorkspaceResult {
   recoveryState: string;
   completeness: Completeness;
   hunkEligibility: { eligible: true } | { eligible: false; reason: "sparse-index" | "split-index" | "index-change-hook" | "executable-monitor" | "unqualified-monitor" };
+  location: { kind: "native" } | { kind: "wsl"; distro: string; git: { path: string; version: string } };
   // Contract §3: all pages of the snapshot. `entries` holds the first page.
   entryCount: number;
   entries: ChangeEntry[];

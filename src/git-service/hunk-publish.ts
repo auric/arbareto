@@ -772,7 +772,7 @@ async function publish<A extends Admission>(o: HunkPublisherOptions & Publicatio
   const path = new Uint8Array(Buffer.from(binding.entry.pathBytes, "base64"));
   let entered: Entered | NotEntered;
   try {
-    entered = await o.exclusion.enter({ operationId, kind: request.operation, workspace: w });
+    entered = await o.exclusion.enter({ operationId, kind: request.operation, direction: request.payload.direction, workspace: w });
   } catch {
     return void registry.apply(operationId, { type: "exclusion-unavailable", code: "GIT_FAILED" });
   }

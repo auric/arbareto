@@ -99,6 +99,8 @@ function snapshot(generation: number, root: string, entries: ChangeEntry[]): Wor
     recoveryState: "ready",
     completeness: { state: "complete" },
     hunkEligibility: { eligible: true },
+    // Data-model §2 `location`: the WSL fixture root is in distro Ubuntu-24.04.
+    location: root === WSL_ROOT ? { kind: "wsl", distro: "Ubuntu-24.04", git: { path: "/usr/bin/git", version: "2.55.0" } } : { kind: "native" },
     submoduleNotice: { count: 0, paths: [], filter: "applied" },
     entryCount: entries.length,
     entries,

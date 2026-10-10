@@ -434,18 +434,16 @@ describe("the WSL wslFiles Perl text (T325)", () => {
         expect(publish(lock)).toEqual([{ kind: "notOwned" }]);
         expect(stat(host, "%i %s", lockPath)).toBe(`${replaced.inode} 64`);
         expect(stat(host, "%i", index)).toBe(before);
-        // A deleted lock that another writer creates again. ext4 gives the free inode again, so dev and inode match.
-        // The new lock holds 64 bytes of Git index data, not the token.
-        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
-        inDistro(host.distro, ["/usr/bin/perl", "-e", 'use Fcntl; sysopen(my $f, $ARGV[0], O_WRONLY|O_CREAT|O_EXCL, 0666) or die; print $f "DIRC", "\\0" x 60', "--", lockPath]);
+        // Another writer rewrites the lock in place. Device, inode, and size match. The content is 64 bytes of Git index data, not the token.
+        inDistro(host.distro, ["/usr/bin/perl", "-e", 'use Fcntl; sysopen(my $f, $ARGV[0], O_WRONLY|O_TRUNC) or die; print $f "DIRC", "\\0" x 60', "--", lockPath]);
         expect(stat(host, "%d %i %s", lockPath)).toBe(`${replaced.device} ${replaced.inode} 64`);
         expect(publish(replaced)).toEqual([{ kind: "notOwned" }]);
         expect(stat(host, "%i %s", lockPath)).toBe(`${replaced.inode} 64`);
         expect(content(host, lockPath).startsWith("DIRC")).toBe(true);
         expect(stat(host, "%i", index)).toBe(before);
-        // The same after `touch`: a size-0 lock with the reused inode.
-        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
-        inDistro(host.distro, ["/usr/bin/touch", "--", lockPath]);
+        // The same lock truncated to size 0 in place: device and inode match, the size does not.
+        inDistro(host.distro, ["/usr/bin/truncate", "-c", "-s", "0", "--", lockPath]);
+        expect(stat(host, "%d %i %s", lockPath)).toBe(`${replaced.device} ${replaced.inode} 0`);
         expect(publish(replaced)).toEqual([{ kind: "notOwned" }]);
         expect(stat(host, "%s", lockPath)).toBe("0");
         expect(stat(host, "%i", index)).toBe(before);
@@ -524,10 +522,9 @@ describe("the WSL wslFiles Perl text (T325)", () => {
         const unreplied = lockOf(host);
         expect(remove({ token: unreplied.token })).toEqual([{ kind: "removed" }]);
         expect(exists(host, lockPath)).toBe(false);
-        // A deleted lock that another writer creates again with the same inode and 64 bytes of Git index data stays.
+        // Another writer rewrites the lock in place. Device, inode, and size match. The content is 64 bytes of Git index data, not the token. The lock stays.
         const first = lockOf(host);
-        inDistro(host.distro, ["/usr/bin/rm", "--", lockPath]);
-        inDistro(host.distro, ["/usr/bin/perl", "-e", 'use Fcntl; sysopen(my $f, $ARGV[0], O_WRONLY|O_CREAT|O_EXCL, 0666) or die; print $f "DIRC", "\\0" x 60', "--", lockPath]);
+        inDistro(host.distro, ["/usr/bin/perl", "-e", 'use Fcntl; sysopen(my $f, $ARGV[0], O_WRONLY|O_TRUNC) or die; print $f "DIRC", "\\0" x 60', "--", lockPath]);
         expect(stat(host, "%d %i %s", lockPath)).toBe(`${first.device} ${first.inode} 64`);
         expect(remove(lockForm(first))).toEqual([{ kind: "notOwned" }]);
         expect(content(host, lockPath).startsWith("DIRC")).toBe(true);

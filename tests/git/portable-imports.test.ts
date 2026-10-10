@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 
 const CHILD_TIMEOUT_MS = 60_000;
@@ -54,16 +54,33 @@ const BANNED: [string, RegExp][] = [
 ];
 // The renderer runs in WebView2, which has no `process`. Any other runtime import can load `native-path.ts`.
 const SPECIFIER = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["']([^"'\n]+)["']/g;
-const FRONTEND_PACKAGES = /^(?:@tauri-apps\/|react(?:-dom)?(?:\/|$))/;
-const leavesFrontend = (file: string, specifier: string) =>
-  specifier.startsWith(".") ? !posix.join(posix.dirname(file), specifier).startsWith("frontend/") : !FRONTEND_PACKAGES.test(specifier);
+// The renderer packages of research.md R9 (T003, T123). A package cannot load a `src/` module.
+const FRONTEND_PACKAGES =
+  /^(?:@tauri-apps\/|(?:react|react-dom|@base-ui\/react|@pierre\/diffs|shiki|@shikijs\/transformers|@tanstack\/react-virtual|cn|class-variance-authority|@hugeicons\/react|@hugeicons\/core-free-icons)(?:\/|$))/;
+const transpile = (file: string, source: string) =>
+  new Bun.Transpiler({ loader: file.endsWith(".tsx") ? "tsx" : "ts" }).transformSync(source);
+// A contracts module with no runtime import and no `process` cannot load `native-path.ts` or fail in WebView2.
+const isLeafContract = (target: string) => {
+  if (!/^contracts\/[^/]+$/.test(target)) return false;
+  const path = join(SRC, `${target.replace(/\.ts$/, "")}.ts`);
+  if (!existsSync(path)) return false;
+  const output = transpile(path, readFileSync(path, "utf8"));
+  return [...output.matchAll(SPECIFIER)].length === 0 && !/\bprocess\b/.test(output);
+};
+// `tsconfig.json` `paths` and the Vite `alias` map `@/` to `src/frontend/`.
+const leavesFrontend = (file: string, specifier: string) => {
+  const target = specifier.startsWith("@/") ? posix.join("frontend", specifier.slice(2))
+    : specifier.startsWith(".") ? posix.join(posix.dirname(file), specifier) : undefined;
+  if (target === undefined) return !FRONTEND_PACKAGES.test(specifier);
+  return !target.startsWith("frontend/") && !isLeafContract(target);
+};
 // Contract §7 "Program file digests" (T309): the trust listing reads hook and program files only through `fileFacts`.
 const FS_FREE_FILES = ["git-service/trust.ts"];
 const FS_MODULES = ["node:fs", "node:fs/promises", "fs", "fs/promises"];
 
 // `file` is the path below `src/` with slashes.
 function scanHits(file: string, source: string): string[] {
-  const output = new Bun.Transpiler({ loader: file.endsWith(".tsx") ? "tsx" : "ts" }).transformSync(source);
+  const output = transpile(file, source);
   const hits: string[] = [];
   for (const [name, pattern] of PLATFORM_FILES.includes(file) ? [] : BANNED) {
     const count = output.match(pattern)?.length ?? 0;
@@ -97,6 +114,10 @@ test.each([
   ["frontend/bridge.ts", 'import { checkContext } from "../git-service/git-runner";\ncheckContext;'],
   ["frontend/boot/BootView.tsx", 'import { z } from "zod";\nz;'],
   ["frontend/main.tsx", 'void import("../git-service/main");'],
+  ["frontend/main.tsx", 'import { x } from "@/../git-service/main";\nx;'],
+  ["frontend/history/lanes.ts", 'import { ChannelPath } from "../../contracts/operations";\nChannelPath;'],
+  ["frontend/history/lanes.ts", 'import { NATIVE } from "../../contracts/native-path";\nNATIVE;'],
+  ["frontend/lib/path.ts", "export const drive = /^[A-Za-z]:/;"],
   ["git-service/x.ts", "export const drive = /^[a-zA-Z]:[\\\\/]/;"],
   ["git-service/x.ts", "export const drive = /^[A-Z]:/i;"],
   ["git-service/x.ts", "export const drive = /^[a-z]:/i;"],
@@ -120,14 +141,16 @@ test.each([
 });
 
 // Control fixture: type-only imports and the permitted runtime imports give no hit.
-test("the scan permits type-only imports, the Tauri API, React, and frontend modules in the frontend", () => {
+test("the scan permits type-only imports, the renderer packages, frontend modules, and leaf contracts in the frontend", () => {
   const source = [
     'import type { Environment } from "../../contracts/envelope";',
     'import { invoke } from "@tauri-apps/api/core";',
     'import { useState } from "react";',
     'import { createRoot } from "react-dom/client";',
     'import { request } from "../bridge";',
-    "export const used: [unknown, unknown, unknown, unknown] = [invoke, useState, createRoot, request];",
+    'import { Button } from "@/components/ui/button";',
+    'import { GRAPH_LANES } from "../../contracts/limits";',
+    "export const used = [invoke, useState, createRoot, request, Button, GRAPH_LANES];",
     "export type Shown = Environment;",
   ].join("\n");
   expect(scanHits("frontend/boot/BootView.tsx", source)).toEqual([]);

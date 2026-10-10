@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import type { HistoryPage, HistoryRow } from "../../contracts/envelope";
+import type { HistoryRow } from "../../contracts/envelope";
 import { GRAPH_LANES, GRAPH_PATH_SEGMENTS } from "../../contracts/limits";
 
 // plan.md "History graph design" and data-model.md "History page": one ancestry cell per row from its input and output lanes.
@@ -12,8 +12,6 @@ export const BOUNDARY_TEXT: Record<BoundaryKind, string> = {
   shallow: "Shallow history boundary",
   root: "Root commit",
 };
-// plan.md "History graph design": the text of a row without parents that is neither a root nor the one shallow row.
-export const UNRESOLVED_TEXT = "Arbareto cannot tell whether this commit is a root or a shallow boundary.";
 
 // The plan.md lane roles in color index order.
 export const LANE_ROLES = ["teal", "sky", "violet", "magenta"] as const;
@@ -38,8 +36,6 @@ export interface Cell {
   segments: Segment[];
   // Parent text for the accessible name and the inspector. A layout limit keeps it.
   marks: Mark[];
-  // A row without parents on a page with shallow boundaries, when the page cannot tell a root from a shallow commit.
-  unresolved: boolean;
 }
 
 export interface Layout {
@@ -51,16 +47,12 @@ export interface Layout {
 const mark = (kind: BoundaryKind, parent: string | null): Mark => ({ kind, text: BOUNDARY_TEXT[kind], parent });
 
 /** Lays out the rows in service order. The same page gives the same layout. */
-export function layoutHistory(page: { rows: readonly Pick<HistoryRow, "oid" | "parents">[]; boundaries: HistoryPage["boundaries"] }): Layout {
+export function layoutHistory(page: { rows: readonly Pick<HistoryRow, "oid" | "parents" | "shallow">[] }): Layout {
   const { rows } = page;
   const loaded = new Set(rows.map((r) => r.oid));
   // The last child row of each outside-page parent draws its one open continuation.
   const lastChild = new Map<string, number>();
   rows.forEach((row, at) => row.parents.forEach((p) => loaded.has(p) || lastChild.set(p, at)));
-  // Contract §3 rows carry no shallow flag. `boundaries.shallow` holds the hidden parents of the shallow rows, and a shallow row has no effective parent.
-  // So with no hidden parent, a row without parents is a root. With one row without parents, that row holds the hidden parents.
-  const parentless = rows.filter((r) => r.parents.length === 0).length;
-  const end: BoundaryKind | null = page.boundaries.shallow.length === 0 ? "root" : parentless === 1 ? "shallow" : null;
 
   let lanes: (Lane | null)[] = [];
   let width = 0;
@@ -100,9 +92,9 @@ export function layoutHistory(page: { rows: readonly Pick<HistoryRow, "oid" | "p
       const shape = outside && lastChild.get(parent) === at ? "continuation" : "line";
       segments.push({ shape, from: { lane: node, at: "node" }, to: { lane, at: "bottom" }, color: work[lane]!.color });
     });
-    if (row.parents.length === 0 && end !== null) {
-      marks.push(mark(end, null));
-      if (end === "shallow") segments.push({ shape: "stub", lane: node, color });
+    if (row.parents.length === 0) {
+      marks.push(mark(row.shallow ? "shallow" : "root", null));
+      if (row.shallow) segments.push({ shape: "stub", lane: node, color });
     }
     // Lanes of outside-page parents end at their continuation.
     work.forEach((lane, i) => {
@@ -114,7 +106,7 @@ export function layoutHistory(page: { rows: readonly Pick<HistoryRow, "oid" | "p
     width = Math.max(width, input.length, node + 1, ...reach);
     count += segments.length;
     lanes = work;
-    return { oid: row.oid, node, color, merge: row.parents.length > 1, input, output: work, segments, marks, unresolved: row.parents.length === 0 && end === null };
+    return { oid: row.oid, node, color, merge: row.parents.length > 1, input, output: work, segments, marks };
   });
 
   const reached = width > GRAPH_LANES ? "lanes" : count > GRAPH_PATH_SEGMENTS ? "segments" : null;

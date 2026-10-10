@@ -9,7 +9,7 @@ import { Button } from "../components/ui/button";
 import { metrics, type Density, type Profile } from "../layout/profiles";
 import { shrinkInOrder, type Part } from "../lib/fit";
 import { AncestryCell, LANE_SPACING } from "./AncestryCell";
-import { BOUNDARY_TEXT, layoutHistory, UNRESOLVED_TEXT, type Cell, type Layout } from "./lanes";
+import { BOUNDARY_TEXT, layoutHistory, type Cell, type Layout } from "./lanes";
 
 // plan.md "History graph design", "Long text", "Keyboard and focus" (Roles, File/history list), "Compact token system" (selection marker, badges), and "Required visible states".
 
@@ -33,6 +33,7 @@ const isoText = (seconds: number) => new Date(seconds * 1000).toISOString().repl
 export const LOCAL_DATE = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 const encodingText = (encoding: string) => `Declared encoding: ${encoding}`;
 const ENCODING_NOTE = "Arbareto shows the subject and the author as UTF-8 without conversion. Bytes that are not valid UTF-8 show as replacement characters.";
+const INVALID_UTF8_TEXT = "Some bytes of this commit are not valid UTF-8 and show as replacement characters.";
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 type Counted = { category: ChangeEntry["category"] };
@@ -154,7 +155,7 @@ function checkoutText(head: Head): string {
   return head.state === "detached" ? "Detached HEAD" : branchName(head.target);
 }
 
-/** The full row text: HEAD labels, subject, short ID, author, date, parent count, ordered parents, boundary labels, and the declared encoding. */
+/** The full row text: HEAD labels, subject, short ID, author, date, parent count, ordered parents, boundary labels, the declared encoding, and the invalid UTF-8 text. */
 export function rowName(row: HistoryRow, cell: Cell, head: Head, dateFormat: Intl.DateTimeFormat = LOCAL_DATE): string {
   const parts: string[] = [];
   if (head.state !== "unborn" && row.oid === head.oid) parts.push(head.state === "branch" ? `HEAD, branch ${branchName(head.target)}` : "HEAD, detached");
@@ -165,8 +166,8 @@ export function rowName(row: HistoryRow, cell: Cell, head: Head, dateFormat: Int
     if (cell.marks.some((m) => m.parent === parent)) parts.push(BOUNDARY_TEXT.outside);
   }
   for (const mark of cell.marks) if (mark.parent === null) parts.push(mark.text);
-  if (cell.unresolved) parts.push(UNRESOLVED_TEXT);
   if (row.encoding !== null) parts.push(encodingText(row.encoding));
+  if (row.invalidUtf8) parts.push(INVALID_UTF8_TEXT);
   return parts.join(", ");
 }
 
@@ -359,11 +360,12 @@ function Inspector({ row, cell, loaded, onParent, dateFormat }: InspectorProps) 
               .map((m) => (
                 <li key={m.kind}>{m.text}</li>
               ))}
-            {cell.unresolved ? <li>{UNRESOLVED_TEXT}</li> : null}
           </ol>
         </dd>
       </dl>
-      {row.encoding === null ? null : <p>{`${encodingText(row.encoding)}. ${ENCODING_NOTE}`}</p>}
+      {row.encoding === null && !row.invalidUtf8 ? null : (
+        <p>{row.encoding === null ? INVALID_UTF8_TEXT : `${encodingText(row.encoding)}. ${ENCODING_NOTE}${row.invalidUtf8 ? ` ${INVALID_UTF8_TEXT}` : ""}`}</p>
+      )}
       <p className="text-muted-text">{NO_FILES}</p>
     </div>
   );

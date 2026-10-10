@@ -116,7 +116,7 @@ function page(generation: number, head: string): HistoryPage {
     scope: "current-checkout",
     head: { state: "branch", target: "refs/heads/main", oid: head },
     shallowFingerprint: null,
-    rows: [{ oid: head, parents: [], subject: "First", author: { name: "A", email: "a@example.com" }, date: 1_700_000_000, encoding: null }],
+    rows: [{ oid: head, parents: [], subject: "First", author: { name: "A", email: "a@example.com" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false }],
     boundaries: { page: [], shallow: [] },
     completeness: { state: "complete" },
   };

@@ -168,6 +168,7 @@ describe("lanes from F19 pages (plan.md \"History graph design\")", () => {
       const ends = new Map<string, Set<string>>();
       for (const variant of ["long", "shallow", "roots"] as const) {
         const page = await f19(variant);
+        if (variant !== "long") expect(page.rows.some((r) => r.shallow)).toBe(variant === "shallow");
         const layout = layoutHistory(page);
         const continuations = layout.cells.flatMap((c) => c.segments.filter((s) => s.shape === "continuation"));
         expect(continuations).toHaveLength(page.boundaries.page.length);
@@ -180,8 +181,7 @@ describe("lanes from F19 pages (plan.md \"History graph design\")", () => {
           const row = page.rows[at]!;
           const shapes = new Set(cell.segments.filter((s) => s.shape === "stub" || (s.from.at === "node" && s.to.at === "bottom")).map((s) => s.shape));
           if (row.parents.length > 0) return;
-          expect(cell.unresolved).toBe(false);
-          const kind = page.boundaries.shallow.length > 0 ? "shallow" : "root";
+          const kind = row.shallow ? "shallow" : "root";
           expect(cell.marks).toEqual([{ kind, text: BOUNDARY_TEXT[kind], parent: null }]);
           expect([...shapes]).toEqual(kind === "shallow" ? ["stub"] : []);
           ends.set(kind, shapes);
@@ -221,9 +221,9 @@ describe("lanes from F19 pages (plan.md \"History graph design\")", () => {
     // Not a service result: 222 rows exceed HISTORY_STREAM_ROWS. The tip opens 21 lanes that stay open over a 200-commit chain.
     const oid = (n: number) => n.toString(16).padStart(40, "0");
     const side = Array.from({ length: 20 }, (_, i) => 1000 + i);
-    const rows = [{ oid: oid(1), parents: [oid(2), ...side.map(oid)] }];
-    for (let n = 2; n <= 201; n++) rows.push({ oid: oid(n), parents: n === 201 ? [] : [oid(n + 1)] });
-    for (const n of side) rows.push({ oid: oid(n), parents: [] });
+    const rows = [{ oid: oid(1), parents: [oid(2), ...side.map(oid)], shallow: false }];
+    for (let n = 2; n <= 201; n++) rows.push({ oid: oid(n), parents: n === 201 ? [] : [oid(n + 1)], shallow: false });
+    for (const n of side) rows.push({ oid: oid(n), parents: [], shallow: false });
     const page = { rows, boundaries: { page: [], shallow: [] } } as unknown as HistoryResult;
     const layout = layoutHistory(page);
     expect(layout.limit).toEqual({ code: "GRAPH_LAYOUT_LIMITED", reached: "segments" });
@@ -310,9 +310,9 @@ describe("ancestry cell (T135)", () => {
     renderToStaticMarkup(createElement(AncestryCell, { cell: layout.cells[at]!, lanes: layout.lanes, spacing, rowHeight, selected }));
   const attr = (html: string, name: string) => new RegExp(`<svg[^>]*\\s${name}="([^"]*)"`).exec(html)?.[1];
   const oid = (n: number) => n.toString(16).padStart(40, "0");
-  const row = (n: number, parents: number[]) => ({ oid: oid(n), parents: parents.map(oid) });
+  const row = (n: number, parents: number[]) => ({ oid: oid(n), parents: parents.map(oid), shallow: false });
   // Contract values only: one merge whose second parent lies outside the page, then a root.
-  const layout = layoutHistory({ rows: [row(1, [2, 9]), row(2, [])], boundaries: { page: [oid(9)], shallow: [] } });
+  const layout = layoutHistory({ rows: [row(1, [2, 9]), row(2, [])] });
 
   test("the column width is the lane count times the spacing plus the side padding, capped at 24 lanes", () => {
     expect(SIDE_PADDING).toBe(12);

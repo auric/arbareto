@@ -68,7 +68,7 @@ const PAGE: HistoryPage = {
   scope: "current-checkout",
   head: { state: "branch", target: "refs/heads/main", oid: HEAD },
   shallowFingerprint: null,
-  rows: [{ oid: HEAD, parents: [], subject: "First", author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null }],
+  rows: [{ oid: HEAD, parents: [], subject: "First", author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false }],
   boundaries: { page: [], shallow: [] },
   completeness: { state: "complete" },
 };
@@ -366,7 +366,7 @@ describe("comparison mount", () => {
 });
 
 describe("history selection", () => {
-  const row = (oid: string) => ({ oid, parents: [], subject: `Commit ${oid.slice(0, 4)}`, author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null });
+  const row = (oid: string) => ({ oid, parents: [], subject: `Commit ${oid.slice(0, 4)}`, author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false });
   const [first, second] = ["1".repeat(40), "2".repeat(40)];
   const pageOf = (...oids: string[]): HistoryPage => ({ ...PAGE, head: { state: "branch", target: "refs/heads/main", oid: oids[0]! }, rows: oids.map(row) });
   const selected = (host: HTMLElement) => host.querySelector('[role="option"][aria-selected="true"]')?.textContent ?? null;

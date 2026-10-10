@@ -34,7 +34,7 @@ const options = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>('[
 
 const oid = (n: number) => n.toString(16).padStart(4, "0").repeat(10);
 const short = (n: number) => oid(n).slice(0, 12);
-const row = (n: number, parents: number[], subject = `Change ${n}`): HistoryRow => ({ oid: oid(n), parents: parents.map(oid), subject, author: { name: "Ada", email: "ada@example.invalid" }, date: 1577836800 + n, encoding: null });
+const row = (n: number, parents: number[], subject = `Change ${n}`): HistoryRow => ({ oid: oid(n), parents: parents.map(oid), subject, author: { name: "Ada", email: "ada@example.invalid" }, date: 1577836800 + n, encoding: null, shallow: false, invalidUtf8: false });
 const page = (rows: HistoryRow[], head: HistoryPage["head"] = { state: "branch", target: "refs/heads/main", oid: rows[0]!.oid }, boundaries = { page: [] as string[], shallow: [] as string[] }): HistoryPage => ({
   generation: 1,
   scope: "current-checkout",
@@ -113,22 +113,14 @@ describe("History view", () => {
     expect(options(host)).toHaveLength(0);
   });
 
-  // plan.md "History graph design": the third case of a row without parents.
-  const UNRESOLVED = "Arbareto cannot tell whether this commit is a root or a shallow boundary.";
-
-  test("with shallow boundaries and two rows without parents, each such row names the unresolved text in its name and its inspector", async () => {
-    const shallow = page([row(2, []), row(1, [])], undefined, { page: [], shallow: [oid(9)] });
-    const host = await show(<HistoryView {...props} page={shallow} selectedOid={oid(1)} />);
-    for (const option of options(host)) expect(option.getAttribute("aria-label")!.endsWith(UNRESOLVED)).toBe(true);
-    expect(text(host.querySelector("section")!)).toContain(UNRESOLVED);
-    expect(text(host)).not.toContain("Root commit");
-    expect(text(host)).not.toContain("Shallow history boundary");
-  });
-
-  test("a root or a shallow row never shows the unresolved text", async () => {
-    const host = await show(<HistoryView {...props} page={MERGE} selectedOid={oid(1)} />);
-    expect(text(host)).not.toContain(UNRESOLVED);
-    expect(options(host).some((o) => o.getAttribute("aria-label")!.includes(UNRESOLVED))).toBe(false);
+  test("only the shallow field sets the end of a row without parents: false gives Root commit, true gives Shallow history boundary", async () => {
+    const mixed = page([row(2, []), { ...row(1, []), shallow: true }], undefined, { page: [], shallow: [oid(9)] });
+    const host = await show(<HistoryView {...props} page={mixed} selectedOid={oid(1)} />);
+    const [root, shallow] = options(host).map((o) => o.getAttribute("aria-label")!);
+    expect(root!.endsWith("Root commit")).toBe(true);
+    expect(shallow!.endsWith("Shallow history boundary")).toBe(true);
+    expect(text(host.querySelector("section")!)).toContain("Shallow history boundary");
+    expect(text(host)).not.toContain("cannot tell");
   });
 
   test("a non-null encoding ends the row name with the declared encoding, and the inspector shows the full sentence", async () => {
@@ -140,9 +132,28 @@ describe("History view", () => {
     );
   });
 
-  test("only the encoding field sets the label: a subject with replacement characters and a null encoding shows none", async () => {
+  const INVALID = "Some bytes of this commit are not valid UTF-8 and show as replacement characters.";
+
+  test("invalidUtf8 with a null encoding ends the row name with the invalid-bytes sentence, and the inspector shows it", async () => {
+    const host = await show(<HistoryView {...props} page={page([{ ...row(1, [], "Caf�"), invalidUtf8: true }])} selectedOid={oid(1)} />);
+    expect(options(host)[0]!.getAttribute("aria-label")!.endsWith(INVALID)).toBe(true);
+    expect(text(host.querySelector("section")!)).toContain(INVALID);
+    expect(text(host)).not.toContain("Declared encoding");
+  });
+
+  test("invalidUtf8 with an encoding adds the invalid-bytes sentence after the declared encoding", async () => {
+    const both = page([{ ...row(1, []), encoding: "ISO-8859-1", invalidUtf8: true }]);
+    const host = await show(<HistoryView {...props} page={both} selectedOid={oid(1)} />);
+    expect(options(host)[0]!.getAttribute("aria-label")!.endsWith(`Declared encoding: ISO-8859-1, ${INVALID}`)).toBe(true);
+    expect(text(host.querySelector("section")!)).toContain(
+      `Declared encoding: ISO-8859-1. Arbareto shows the subject and the author as UTF-8 without conversion. Bytes that are not valid UTF-8 show as replacement characters. ${INVALID}`,
+    );
+  });
+
+  test("only the encoding and invalidUtf8 fields set the label: a subject with replacement characters, a null encoding, and invalidUtf8 false shows none", async () => {
     const host = await show(<HistoryView {...props} page={page([row(1, [], "Caf�")])} selectedOid={oid(1)} />);
     expect(text(host)).not.toContain("Declared encoding");
+    expect(text(host)).not.toContain(INVALID);
   });
 
   test("rows and the inspector show the author time through the injected formatter, and the inspector adds the ISO 8601 UTC time", async () => {

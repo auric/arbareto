@@ -1,0 +1,9 @@
+{
+  "schema": "open-recent-repository-result",
+  "expected": "INVALID_REQUEST",
+  "platform": "windows",
+  "repair": {
+    "remedy.command": null
+  },
+  "text": "{\"reason\":\"absent\",\"path\":\"C:\\\\repo\",\"text\":\"Arbareto cannot find this folder: C:\\\\repo.\",\"remedy\":{\"text\":\"Remove it from the list, or open the folder from its new place.\",\"command\":\"git status\"}}"
+}

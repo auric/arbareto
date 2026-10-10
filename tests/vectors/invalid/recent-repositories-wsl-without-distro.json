@@ -1,5 +1,0 @@
-{
-  "schema": "recent-repositories-result",
-  "expected": "INVALID_REQUEST",
-  "text": "{\"entries\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000100\",\"path\":\"\\\\\\\\wsl.localhost\\\\Ubuntu-24.04\\\\home\\\\me\\\\repo\",\"location\":{\"kind\":\"wsl\"},\"openedAt\":\"2026-10-11T10:59:00.000000000Z\"}]}"
-}

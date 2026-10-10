@@ -5,7 +5,7 @@
 
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { createHash } from "node:crypto";
-import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_TOTAL_BYTES } from "../../src/contracts/limits";
 import type { FileFact, FileFactsRequest } from "../../src/git-service/git-runner";
@@ -128,8 +128,8 @@ export function readIdentity(path: string, fileIdOverride?: Uint8Array): FileIde
   return { volumeSerial: stat.dev.toString(16).padStart(16, "0"), fileId: fileId.toHex() };
 }
 
-// proc(5) field 22: the start time in clock ticks after boot. A zombie or a missing process gives null.
-export function processCreationTime(pid: number): bigint | null {
+// proc(5) fields 4 and 22: the parent PID and the start time in clock ticks after boot. A zombie or a missing process gives null.
+function procStat(pid: number): { parent: number; created: bigint } | null {
   linux();
   // `kill` signals a process group or every process for a PID below 1.
   if (!Number.isSafeInteger(pid) || pid < 1) return null;
@@ -144,7 +144,11 @@ export function processCreationTime(pid: number): bigint | null {
   const last = line.lastIndexOf(")");
   if (last < 0) return null;
   const fields = line.slice(last + 2).split(" ");
-  return fields[0] === "Z" || fields[0] === "X" ? null : BigInt(fields[19]!);
+  return fields[0] === "Z" || fields[0] === "X" ? null : { parent: Number(fields[1]), created: BigInt(fields[19]!) };
+}
+
+export function processCreationTime(pid: number): bigint | null {
+  return procStat(pid)?.created ?? null;
 }
 
 // Ends the process only when its start time still matches.
@@ -160,6 +164,33 @@ export function terminateRecorded(pid: number, created: bigint): boolean {
   const deadline = performance.now() + TERMINATE_WAIT_MS;
   while (processCreationTime(pid) === created && performance.now() < deadline) Bun.sleepSync(TERMINATE_POLL_MS);
   return true;
+}
+
+export interface ProcessTree {
+  // Ends every process of the tree and waits a bounded time for their exits.
+  end(): void;
+  close(): void;
+}
+
+// The shell Job of contract §6, as a walk of the live descendants. Linux moves an orphan to its reaper, so a parent PID is never stale.
+// ponytail: an orphan of an ended root, and a child created during the walk, escape. A cgroup per run closes both.
+export function ownTree(pid: number): ProcessTree {
+  const created = processCreationTime(pid);
+  return {
+    end() {
+      if (created === null || processCreationTime(pid) !== created) return;
+      const children = new Map<number, { pid: number; created: bigint }[]>();
+      for (const name of readdirSync("/proc")) {
+        if (!/^\d+$/.test(name)) continue;
+        const stat = procStat(Number(name));
+        if (stat) children.set(stat.parent, [...(children.get(stat.parent) ?? []), { pid: Number(name), created: stat.created }]);
+      }
+      const tree = [{ pid, created }];
+      for (let i = 0; i < tree.length; i++) tree.push(...(children.get(tree[i]!.pid) ?? []));
+      for (const p of tree) terminateRecorded(p.pid, p.created);
+    },
+    close() {},
+  };
 }
 
 // The record name is `<pid>-<start time>`. `bun-runner.ts` counts these records as the live descendants of an operation.

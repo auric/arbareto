@@ -362,6 +362,7 @@ test("the T104 mutation arrays are exact, and the ls-tree read takes one full co
   expect(commands.authorIdentArgs()).toEqual([N, "var", "GIT_AUTHOR_IDENT"]);
   expect(commands.committerIdentArgs()).toEqual([N, "var", "GIT_COMMITTER_IDENT"]);
   expect(commands.commitArgs()).toEqual([N, "commit", "--quiet", "--file=-"]);
+  expect(commands.processEndArgs()).toEqual([N, "version"]);
   expect(commands.commitTreeArgs(SHA1, "sha1")).toEqual([...R, "ls-tree", "-r", "-z", SHA1]);
   expect(commands.commitTreeArgs(SHA256, "sha256")).toEqual([...R, "ls-tree", "-r", "-z", SHA256]);
   for (const oid of ["HEAD", "--full-tree", SHA256, ""]) expect(() => commands.commitTreeArgs(oid, "sha1")).toThrow(TypeError);

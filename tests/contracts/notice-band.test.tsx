@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { act, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ChangeEntry } from "../../src/contracts/envelope";
+import type { ChangeEntry, RecoveryStatement, WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { NoticeBand } from "../../src/frontend/app/NoticeBand";
@@ -11,9 +12,15 @@ import { NoticeBand } from "../../src/frontend/app/NoticeBand";
 printOrigin("../../src/frontend/app/NoticeBand.tsx", import.meta.dir);
 
 printOrigin("../../src/frontend/history/HistoryView.tsx", import.meta.dir);
-// `HistoryView.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
+printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
+// Pierre and its worker need the Vite build (T160).
+mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children: ReactNode }) => <>{children}</> }));
+mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre data-slot="patch-double">{patch}</pre> }));
+// `HistoryView.tsx` and `Workbench.tsx` load Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
 registerDom();
 const { ScopeLine, fitScopeLine } = await import("../../src/frontend/history/HistoryView");
+const { createRoot } = await import("react-dom/client");
+const { ChangesPaneMount, ComparisonViewMount, HistoryViewMount, Workbench } = await import("../../src/frontend/app/Workbench");
 
 // plan.md "Notice band", "Long text", and "History graph design" (scope line).
 const SECOND = "Arbareto blocks changes until you finish it outside Arbareto and select Refresh (F5).";
@@ -76,6 +83,168 @@ describe("notice band", () => {
       const firstRow = Math.min(...["A merge is in progress", "submodule row double"].map((t) => html.indexOf(t)).filter((i) => i >= 0));
       expect(heading.index).toBeLessThan(firstRow);
     }
+  });
+});
+
+// plan.md "Required visible states", Recovery statement.
+const OID = "0123456789abcdef0123456789abcdef01234567";
+const NONE = "The earlier session ended, and Arbareto found nothing to reconcile.";
+const FOREIGN = "Another Git process or a crash can have left these files. Remove them only after all Git tools stop, including other Arbareto windows.";
+const LOCKS = ["C:\\repo\\.git\\index.lock", "C:\\repo\\.git\\arbareto-candidate-1"];
+const recoveryText = (recovery: RecoveryStatement) => plain(band({ operationState: "normal", conflicted: 0, recovery }));
+
+describe("recovery row", () => {
+  for (const [name, recovery, sentence] of [
+    ["outcome none", { outcome: "none" }, NONE],
+    ["attribution identified", { outcome: "unknown", attribution: { result: "identified", commitOid: OID } }, "The interrupted commit exists as 0123456789ab."],
+    ["attribution none", { outcome: "unknown", attribution: { result: "none" } }, "The interrupted operation made no commit."],
+    [
+      "attribution unknown, ambiguous",
+      { outcome: "unknown", attribution: { result: "unknown", reason: "ambiguous" } },
+      "Arbareto cannot tell if the interrupted operation made a commit, because the branch history does not identify one commit.",
+    ],
+    [
+      "attribution unknown, evidence-limit",
+      { outcome: "unknown", attribution: { result: "unknown", reason: "evidence-limit" } },
+      "Arbareto cannot tell if the interrupted operation made a commit, because the branch history holds more records than Arbareto checks.",
+    ],
+    [
+      "attribution unknown, no-retained-request",
+      { outcome: "unknown", attribution: { result: "unknown", reason: "no-retained-request" } },
+      "Arbareto cannot tell what the interrupted operation changed, because this Git service session has no record of its request.",
+    ],
+    ["indexMatch published", { outcome: "unknown", indexMatch: "published" }, "The interrupted hunk or file action reached the index."],
+    ["indexMatch not-published", { outcome: "unknown", indexMatch: "not-published" }, "The interrupted hunk or file action did not reach the index."],
+    ["indexMatch neither", { outcome: "unknown", indexMatch: "neither" }, "The index matches neither the state before nor the state after the interrupted hunk or file action."],
+  ] as [string, RecoveryStatement, string][]) {
+    test(`${name} reads "${sentence}"`, () => {
+      const text = recoveryText(recovery);
+      expect(count(text, sentence)).toBe(1);
+    });
+  }
+
+  test("outcome unknown gives no sentence, and the sentences follow the field order", () => {
+    const text = recoveryText({ outcome: "unknown", attribution: { result: "none" }, indexMatch: "published", foreign: [LOCKS[0]!] });
+    const parts = ["The interrupted operation made no commit.", "The interrupted hunk or file action reached the index.", FOREIGN, LOCKS[0]!];
+    expect(parts.map((p) => text.indexOf(p))).toEqual(parts.map((p) => text.indexOf(p)).toSorted((a, b) => a - b));
+    expect(parts.every((p) => text.includes(p))).toBe(true);
+    expect(text).not.toContain(NONE);
+  });
+
+  test("foreign shows its sentence and each path on its own line in the code font", () => {
+    const html = band({ operationState: "normal", conflicted: 0, recovery: { outcome: "unknown", foreign: LOCKS } });
+    expect(count(plain(html), FOREIGN)).toBe(1);
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    const codes = [...host.querySelectorAll("code")];
+    expect(codes.map((c) => c.textContent)).toEqual(LOCKS);
+    for (const code of codes) expect(code.getAttribute("class")?.split(/\s+/)).toContain("block");
+    expect(plain(html)).not.toContain("more file");
+  });
+
+  test("foreignTotal ends the list with and <n> more files, and a count of 1 takes the singular", () => {
+    const end = (foreignTotal: number) => recoveryText({ outcome: "unknown", foreign: LOCKS, foreignTotal });
+    expect(end(9)).toEndWith(`${LOCKS[1]} and 7 more files`);
+    expect(end(3)).toEndWith(`${LOCKS[1]} and 1 more file`);
+  });
+
+  test("the row shows the Warning icon, has no control, and follows the submodule row; it alone renders the band", () => {
+    const html = band({ operationState: "merging", conflicted: 0, submoduleRow: SUBMODULE_ROW, recovery: { outcome: "none" } });
+    const row = html.indexOf(NONE);
+    expect(row).toBeGreaterThan(html.indexOf("submodule row double"));
+    expect(html.slice(html.indexOf("submodule row double"), row)).toContain("<svg");
+    expect(band({ operationState: "normal", conflicted: 0, recovery: { outcome: "none" } })).not.toContain("<button");
+    expect(plain(band({ operationState: "normal", conflicted: 0, recovery: { outcome: "none" } }))).toContain("Notices");
+  });
+});
+
+describe("recovery row lifetime in the workbench", () => {
+  type Call = { operation: string; args: unknown[]; resolve(response: unknown): void };
+  const unmounts: (() => Promise<void>)[] = [];
+  afterEach(async () => {
+    for (const unmount of unmounts.splice(0)) await unmount();
+    localStorage.clear();
+  });
+  const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 50))));
+  const succeeded = (result: unknown) => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", repositoryGeneration: 1, result });
+  const registration = () => ({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "a".repeat(64) });
+  const snapshot = (fields: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot => ({
+    generation: 1,
+    snapshotId: crypto.randomUUID(),
+    identity: { worktreeRoot: "C:\\repo", gitDirectory: "C:\\repo\\.git", commonDirectory: "C:\\repo\\.git", indexPath: "C:\\repo\\.git\\index", objectFormat: "sha1", refFormat: "files" },
+    head: { state: "branch", target: "refs/heads/main", oid: OID },
+    operationState: "normal",
+    recoveryState: "ready",
+    completeness: { state: "complete" },
+    hunkEligibility: { eligible: true },
+    submoduleNotice: { count: 0, paths: [], filter: "applied" },
+    entryCount: 0,
+    entries: [],
+    cursor: null,
+    ...fields,
+  });
+  const shown = () => (document.body.textContent ?? "").includes(NONE);
+
+  async function mount() {
+    const calls: Call[] = [];
+    const bridge = new Proxy({}, { get: (_, name) => (...args: unknown[]) => new Promise((resolve) => calls.push({ operation: String(name), args, resolve })) });
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <Workbench bridge={bridge as never} environment={null} restored={Promise.resolve(succeeded(registration())) as never} ChangesPane={ChangesPaneMount} ComparisonView={ComparisonViewMount} HistoryView={HistoryViewMount} />,
+      ),
+    );
+    unmounts.push(async () => {
+      await act(async () => root.unmount());
+      host.remove();
+    });
+    await settle();
+    const resolved = new Set<Call>();
+    // Resolves the one pending read whose payload has this `refresh` value.
+    const resolveRead = async (refresh: boolean, result: WorkspaceSnapshot) => {
+      const pending = calls.filter((c) => c.operation === "readWorkspace" && !resolved.has(c) && (c.args[1] as { refresh: boolean }).refresh === refresh);
+      expect(pending).toHaveLength(1);
+      resolved.add(pending[0]!);
+      await act(async () => pending[0]!.resolve(succeeded(result)));
+      await settle();
+    };
+    const click = async (label: string) => {
+      const target = [...document.querySelectorAll("button")].find((b) => b.textContent === label)!;
+      await act(async () => target.click());
+      await settle();
+    };
+    return { calls, resolveRead, click };
+  }
+
+  test("a refresh: true read with recovery shows the row; a refresh: false read keeps it; the next refresh: true read removes it", async () => {
+    const view = await mount();
+    await view.resolveRead(false, snapshot());
+    expect(shown()).toBe(false);
+    await view.click("Refresh (F5)");
+    await view.resolveRead(true, snapshot({ recovery: { outcome: "none" } }));
+    expect(shown()).toBe(true);
+    await act(async () => void (window.dispatchEvent(new Event("blur")), window.dispatchEvent(new Event("focus"))));
+    await settle();
+    await view.resolveRead(false, snapshot());
+    expect(shown()).toBe(true);
+    await view.click("Refresh (F5)");
+    await view.resolveRead(true, snapshot());
+    expect(shown()).toBe(false);
+  });
+
+  test("another repository removes the row", async () => {
+    const view = await mount();
+    await view.resolveRead(false, snapshot());
+    await view.click("Refresh (F5)");
+    await view.resolveRead(true, snapshot({ recovery: { outcome: "none" } }));
+    expect(shown()).toBe(true);
+    await view.click("Open repository");
+    const choose = view.calls.filter((c) => c.operation === "chooseRepository").at(-1)!;
+    await act(async () => choose.resolve(succeeded({ ...registration(), worktreeKey: "b".repeat(64) })));
+    await settle();
+    await view.resolveRead(false, snapshot());
+    expect(shown()).toBe(false);
   });
 });
 

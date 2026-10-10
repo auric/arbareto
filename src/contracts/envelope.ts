@@ -376,7 +376,9 @@ export const ChangeEntry = z
 export const HunkEligibility = z
   .union([
     z.strictObject({ eligible: z.literal(true) }).meta({ title: "Eligible" }),
-    z.strictObject({ eligible: z.literal(false), reason: z.enum(["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor"]) }).meta({ title: "Ineligible" }),
+    z
+      .strictObject({ eligible: z.literal(false), reason: z.enum(["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"]) })
+      .meta({ title: "Ineligible" }),
   ])
   .nullable();
 
@@ -572,5 +574,5 @@ export const OperationResult = z.strictObject({
   rowId: Identifier.optional(),
 });
 
-// Contract §3 `currentSession`.
-export const SessionResult = z.strictObject({ sessionId: Identifier });
+// Contract §3 `currentSession`: plan.md "Windows text size" gives the factor range.
+export const SessionResult = z.strictObject({ sessionId: Identifier, textScale: z.number().min(1).max(2.25) });

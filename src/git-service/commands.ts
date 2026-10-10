@@ -275,6 +275,11 @@ export function commitArgs(): string[] {
   return [NO_LAZY_FETCH, "commit", "--quiet", "--file=-"];
 }
 
+// Contract §4 "Process end": the `mutation` run that carries the anchor count. `version` reads and writes no repository file.
+export function processEndArgs(): string[] {
+  return [NO_LAZY_FETCH, "version"];
+}
+
 // T199, contract §4 "File staging" step 5. `stage` writes the literal path bytes on stdin. `unstage` writes the HEAD mode and object ID of each path, and mode 0 removes a path.
 export function updateIndexAddArgs(): string[] {
   return [NO_LAZY_FETCH, "update-index", "--add", "--remove", "-z", "--stdin"];

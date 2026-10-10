@@ -5,7 +5,7 @@
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
 // T206 adds the contract §11 WSL process requests. T212 takes their types from the zod frames of `src/contracts/channel.ts`.
 
-import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
@@ -72,7 +72,7 @@ import type { InboundPipe } from "./win32";
 
 // The host module of the double. The generic harness loads it only through this path (tests/git/portable-imports.test.ts).
 export const HOST_SCRIPT = join(import.meta.dir, process.platform === "win32" ? "win32.ts" : "linux.ts");
-const { closePipe, createInboundPipe, peekPipe, processCreationTime, readFileFacts, readIdentity, readPipe, terminateRecorded } = require(HOST_SCRIPT) as typeof import("./win32");
+const { closePipe, createInboundPipe, ownTree, peekPipe, processCreationTime, readFileFacts, readIdentity, readPipe, terminateRecorded } = require(HOST_SCRIPT) as typeof import("./win32");
 
 printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
 printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
@@ -361,10 +361,14 @@ export function createBunRunner(options: BunRunnerOptions) {
   const issued = new Set<string>();
   const inactive = new Set<string>();
   const running = new Map<string, Set<Subprocess>>();
+  // The Job emulation of each spawned process outside WSL. `dispose` also ends the trees of ended roots.
+  const trees = new Map<Subprocess, ReturnType<typeof ownTree>>();
   const records = new Map<string, ProcessRecord>();
   const tags = new Map<string, string>();
   const markers = new Map<string, MutationStarted>();
   const frames: Record<string, unknown>[] = [];
+  // Each run `cancel` frame, in order. They stay out of `frames`, which holds the other shell frames.
+  const cancels: { operationId: string; callsBefore: number }[] = [];
   const calls: RecordedCall[] = [];
   const identityCalls: { at: number; operationId: string; paths: string[]; replies: unknown[] }[] = [];
   // Each answered `fileFacts` request, with its entries and the file data bytes that the walk read for each entry. A refused request is not recorded.
@@ -412,7 +416,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // A matching call reports `stalled` through `onActivity` before it starts (contract §6 "Activity and stall notice").
     stall: null as CallMatch | null,
     // Shorter activity limits than the request (contract §6 "Activity and stall notice", §12 "Deadlines and Cancel").
-    // The double holds no Job. Only a forwarded output byte, or a changed anchor I/O sum of a WSL call, is activity.
+    // Only a forwarded output byte, or a changed anchor I/O sum of a WSL call, is activity.
     limits: {} as { inactivityMs?: number; ceilingMs?: number; stallMs?: number },
   };
   // Each WSL identity reply with its UNC path, in order.
@@ -434,6 +438,8 @@ export function createBunRunner(options: BunRunnerOptions) {
   const touches = new Map<GitCall, () => void>();
   let spawned = 0;
   let disposed = false;
+  // Set when `dispose` starts. A call that a start barrier held then starts no process.
+  let closing = false;
 
   const identityOfWindows = (path: string): IdentityReply => inject.identities.get(path) ?? readIdentity(path, inject.fileIds.get(path));
 
@@ -545,10 +551,13 @@ export function createBunRunner(options: BunRunnerOptions) {
     const decoder = new TextDecoder();
     let buffered = "";
     const waiting: ((line: [number, number] | null) => void)[] = [];
+    // After the anchor stdout ends, no answer can come.
+    let ended = false;
     const anchor: WslAnchor = {
       proc,
       last: null,
       ask: () => {
+        if (ended) return Promise.resolve(null);
         const answer = new Promise<[number, number] | null>((resolve) => waiting.push(resolve));
         proc.stdin.write("\n");
         void proc.stdin.flush();
@@ -569,6 +578,7 @@ export function createBunRunner(options: BunRunnerOptions) {
           waiting.shift()?.(anchor.last);
         }
       }
+      ended = true;
       for (const resolve of waiting.splice(0)) resolve(null);
     })();
     wslAnchors.set(operationId, anchor);
@@ -711,7 +721,11 @@ export function createBunRunner(options: BunRunnerOptions) {
   // Starts one process after the start barriers and drains it as the shell does.
   async function execute(call: GitCall, argv: string[], cwd: string, env: Record<string, string>, recorded?: RecordedCall): Promise<GitExit> {
     for (let held = holding(startBarriers, call); held; held = holding(startBarriers, call)) await held.promise;
+    if (closing) throw unknownTarget();
     call.signal.throwIfAborted();
+    // Contract §6 "Channel frames": the service sends the run `cancel` at the abort. `callsBefore` orders it against the recorded calls.
+    const cancel = () => cancels.push({ operationId: call.operationId, callsBefore: calls.length });
+    call.signal.addEventListener("abort", cancel, { once: true });
     // Abort, a kill, and closeJob stop the call. A stopped call leaves the stdout barrier.
     const stopped = gate();
     let halted = false;
@@ -742,6 +756,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       return { exitCode: halted ? null : 0, activeDescendants: 0 };
     } finally {
       call.signal.removeEventListener("abort", halt);
+      call.signal.removeEventListener("abort", cancel);
       own.delete(halt);
     }
   }
@@ -769,6 +784,16 @@ export function createBunRunner(options: BunRunnerOptions) {
       pipes.forEach(closePipe);
       throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED");
     }
+    // A WSL call keeps its own end path: a killed `wsl.exe` ends its scopes (contract §11).
+    let tree: ReturnType<typeof ownTree> | undefined;
+    try {
+      tree = argv[0] === WSL_EXE ? undefined : ownTree(proc.pid);
+    } catch (error) {
+      proc.kill();
+      pipes.forEach(closePipe);
+      throw error;
+    }
+    if (tree) trees.set(proc, tree);
     spawned++;
     const own = running.get(call.operationId) ?? new Set();
     running.set(call.operationId, own.add(proc));
@@ -780,11 +805,12 @@ export function createBunRunner(options: BunRunnerOptions) {
 
     let killed = false;
     let expired: GitExit["deadline"];
-    // The double ends only the spawned process.
+    // Contract §6 and §11: the shell closes the Job at a run `cancel`, a deadline, and a limit, with every descendant.
     const kill = () => {
       halt();
       if (killed) return;
       killed = true;
+      tree?.end();
       proc.kill();
     };
     const expire = (reason: NonNullable<GitExit["deadline"]>) => {
@@ -1071,7 +1097,10 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!isIdentifier(operationId)) throw new RunnerRefusal("INVALID_REQUEST", "closeJob");
       frames.push({ type: "closeJob", operationId });
       // A killed `wsl.exe` gives its command `SIGHUP`, and the wrapper and anchor traps end the scopes (contract §11).
-      for (const proc of running.get(operationId) ?? []) proc.kill();
+      for (const proc of running.get(operationId) ?? []) {
+        trees.get(proc)?.end();
+        proc.kill();
+      }
       for (const halt of halts.get(operationId) ?? []) halt();
       wslAnchors.delete(operationId);
       end((r) => r.operationId === operationId);
@@ -1245,6 +1274,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!seam) exit = await execute(asCall, [WSL_EXE, ...wslHead(call.distro), WSL_TEXTS.probe, "sh", parts.linux], launchDirectory, wslEnvironment());
       else {
         for (let held = holding(startBarriers, asCall); held; held = holding(startBarriers, asCall)) await held.promise;
+        if (closing) throw unknownTarget();
         call.signal.throwIfAborted();
         if (seam.stdout) stdout.push(new TextEncoder().encode(seam.stdout));
         if (seam.stderr) call.stderr.push(new TextEncoder().encode(seam.stderr));
@@ -1266,6 +1296,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     indexedFileFacts,
     inject,
     frames,
+    cancels,
     markers,
     trustStore,
     recordsDirectory,
@@ -1315,12 +1346,21 @@ export function createBunRunner(options: BunRunnerOptions) {
     pauseStdout(match?: CallMatch): () => void {
       return hold(stdoutBarriers, match);
     },
-    // Ends every recorded live process by PID and every running process, then waits a bounded time for the drains.
+    // Ends every recorded live process by PID and every running process, then waits a bounded time for their exits and the drains.
+    // A killed anchor `wsl.exe` can leave a `wslhost.exe` that keeps the launch folder open. So each anchor first ends at count 0.
     async dispose(): Promise<void> {
+      closing = true;
       end(() => true);
-      for (const set of running.values()) for (const proc of set) proc.kill();
-      wslAnchors.clear();
       for (const operationId of wslUnits.keys()) endWslScopes(operationId);
+      const anchors = [...wslAnchors.values()];
+      for (const anchor of anchors) anchor.close();
+      await Promise.race([Promise.all(anchors.map((anchor) => anchor.proc.exited)), Bun.sleep(DISPOSE_WAIT_MS)]);
+      // A child that outlives its ended root, such as a hook `sleep`, keeps its folder open. Windows then refuses the fixture removal.
+      for (const tree of trees.values()) tree.end();
+      const procs = [...running.values()].flatMap((set) => [...set]);
+      for (const proc of procs) proc.kill();
+      await Promise.race([Promise.all(procs.map((proc) => proc.exited)), Bun.sleep(DISPOSE_WAIT_MS)]);
+      wslAnchors.clear();
       for (const barriers of [startBarriers, stdoutBarriers]) {
         barriers.every?.open();
         barriers.every = null;
@@ -1329,6 +1369,18 @@ export function createBunRunner(options: BunRunnerOptions) {
       await Promise.race([Promise.all([...drains]), Bun.sleep(DISPOSE_WAIT_MS)]);
       disposed = true;
       await Promise.race([Promise.all([...drains]), Bun.sleep(DISPOSE_WAIT_MS)]);
+      for (const tree of trees.values()) tree.close();
+      trees.clear();
+      // A child `wsl.exe` of an ended `wsl.exe` keeps the launch folder open for a short time. Windows refuses a folder rename while a process holds the folder.
+      for (const until = performance.now() + DISPOSE_WAIT_MS; performance.now() < until; await Bun.sleep(50)) {
+        try {
+          renameSync(launchDirectory, `${launchDirectory}-free`);
+        } catch {
+          continue;
+        }
+        renameSync(`${launchDirectory}-free`, launchDirectory);
+        break;
+      }
     },
   };
 }

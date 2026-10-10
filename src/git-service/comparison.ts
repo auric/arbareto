@@ -34,6 +34,7 @@ import {
   untrackedPatchArgs,
 } from "./commands";
 import { parseNumstat, parsePatch, type NumstatResult, type PatchHunk, type PatchResult } from "./diff-parser";
+import { holdsSharedRepository } from "./eligibility";
 import { createCollector, RunnerRefusal, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
 import { noFileId } from "./index-lock";
 import { contextOf, isMissing, objectCheckInput, runRead, type ReadStep } from "./read-steps";
@@ -67,8 +68,12 @@ export interface RetainedComparison {
   // The `check-attr` values of the path that the support decision used.
   attributes: Readonly<Record<string, string>>;
   // The compared working version, read before and after the diff. Null for `head-to-index`, a WSL workspace, or a failed read.
-  // A `head-to-index` comparison binds no working version and gets hunk approvals. Another null gets none.
+  // A `head-to-index` comparison binds no working version and gets hunk approvals. Another null gets none outside WSL.
   workingVersion: WorkingVersion | null;
+  // Contract §4 "WSL index publication": a WSL listing of this comparison holds `core.sharedRepository`. Acceptance refuses then.
+  sharedRepository: boolean;
+  // The contract §4 remedy of a refused file action, which `applyFile` returns with the refusal.
+  remedy: WholeFileRemedy | null;
 }
 
 export interface ComparisonTarget {
@@ -505,6 +510,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
       const hunks = supported && patch.ok ? patch.patch.hunks.map((h) => ({ ...h, hunkId: crypto.randomUUID() })) : [];
       const kept = patch.ok ? rawPatch : new Uint8Array();
       const completeness: Completeness = !patch.ok && patch.completeness.state === "limited" ? patch.completeness : eolLimit !== null ? { state: "limited", code: "OUTPUT_LIMIT", reason: eolLimit } : { state: "complete" };
+      const remedy = remedyOf(t, path, fileAction);
       const comparison: RetainedComparison = {
         comparisonId: crypto.randomUUID(),
         repositoryId: w.repositoryId,
@@ -519,6 +525,8 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         working: binding,
         attributes,
         workingVersion,
+        sharedRepository: w.wsl !== undefined && holdsSharedRepository(lst.entries),
+        remedy,
       };
       if (t.signal.aborted) return { result: "canceled" };
       retain(comparison);
@@ -533,7 +541,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         hunks: hunks.map(({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest }) => ({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest })),
         support: decision === null ? null : decision.supported ? "supported" : (decision as { reason: string }).reason,
         fileAction: actionValue(fileAction),
-        remedy: remedyOf(t, path, fileAction),
+        remedy,
       };
       if (completeness.state === "limited") return { result: "limited", code: completeness.code, value };
       return { result: "succeeded", value };

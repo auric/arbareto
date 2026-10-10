@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode } from "react";
-import type { Environment, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
+import type { Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { ChangesPane as ChangesList } from "../changes/ChangesPane";
@@ -64,6 +64,8 @@ export type WorkbenchProps = {
   onSelectGit?(): void;
   /** Each `getEnvironment` response that the workbench reads again. */
   onEnvironment?(response: BridgeResponse): void;
+  /** The Windows text scale factor (plan.md "Windows text size"). */
+  textScale?: number;
 };
 
 // The places of the T145 to T147, T202, T235, and T236 controls until T148 mounts them.
@@ -85,9 +87,6 @@ const DENSITIES: { value: Density; label: string }[] = [
   { value: "comfortable", label: "Comfortable" },
   { value: "compact", label: "Compact" },
 ];
-// The Windows text scale reaches the page through `currentSession` and the `text-scale` event (contract §2). Neither is wired here yet.
-const TEXT_SCALE = 1;
-
 function storedPreferences(): Preferences {
   return typeof localStorage === "undefined" ? DEFAULT_PREFERENCES : readPreferences(localStorage);
 }
@@ -107,9 +106,9 @@ function useClientSize(): Size {
 }
 
 /** The plan.md header rows. A size without a plan.md value takes two rows, as the constrained profile does. */
-function headerRowCount(width: number): number {
+function headerRowCount(width: number, textScale: number): number {
   try {
-    return headerRows(width, TEXT_SCALE);
+    return headerRows(width, textScale);
   } catch (error) {
     if (error instanceof UnmeasuredLayoutError) return 2;
     throw error;
@@ -220,8 +219,26 @@ export function HistoryViewMount({ state, requests, density, profile, textScale 
 // Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
 const isTrustReport = (value: unknown): value is TrustReport => typeof value === "object" && value !== null && typeof (value as { fingerprint?: unknown }).fingerprint === "string";
 
-export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, session = 0, onSelectGit = () => {}, onEnvironment }: WorkbenchProps) {
-  const [requests] = useState(() => createRequests({ bridge }));
+export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, session = 0, onSelectGit = () => {}, onEnvironment, textScale = 1 }: WorkbenchProps) {
+  // plan.md "Required visible states", Recovery statement: the statement stays until the next `refresh: true` read or another repository.
+  const [recovery, setRecovery] = useState<{ repositoryId: string; statement: RecoveryStatement } | null>(null);
+  const [requests] = useState(() =>
+    createRequests({
+      bridge: {
+        restoreWorkspace: () => bridge.restoreWorkspace(),
+        readEntries: (target, payload) => bridge.readEntries(target, payload),
+        readHistory: (target) => bridge.readHistory(target),
+        readComparison: (target, payload) => bridge.readComparison(target, payload),
+        // Contract §3: only a `refresh: true` read carries `recovery`.
+        readWorkspace: (target, payload) =>
+          bridge.readWorkspace(target, payload).then((response) => {
+            const statement = (response.result as Partial<WorkspaceSnapshot> | undefined)?.recovery;
+            if (payload.refresh) setRecovery(statement === undefined ? null : { repositoryId: target.repositoryId, statement });
+            return response;
+          }),
+      },
+    }),
+  );
   // The latest environment: the given one, or a later read after a dismissal or a `service-session` event.
   const [environment, setEnvironment] = useState(given);
   useEffect(() => setEnvironment(given), [given]);
@@ -235,8 +252,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const state = useSyncExternalStore(requests.subscribe, requests.state, requests.state);
   const [preferences, setPreferences] = useState(storedPreferences);
   const client = useClientSize();
-  const profile: Profile = chooseProfile(client, TEXT_SCALE, preferences.density);
-  const m = metrics(preferences.density, TEXT_SCALE);
+  const profile: Profile = chooseProfile(client, textScale, preferences.density);
+  const m = metrics(preferences.density, textScale);
   // The shared bottom region height lives for the session only. Preferences store only `panes.fileLane`.
   const [bottom, setBottom] = useState<number | null>(null);
   const [fileBand, setFileBand] = useState<number | null>(null);
@@ -265,6 +282,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (response.state === "succeeded" && isRegistration(response.result)) {
       setRefusal(null);
       setSaveFailed(false);
+      setRecovery(null);
       requests.open(response.result);
     } else setRefusal(response);
   }
@@ -396,8 +414,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const workspace = state.workspace;
   const path = workspace?.identity.worktreeRoot ?? null;
   const head = workspace ? headText(workspace.head) : null;
-  const rows = headerRowCount(client.width);
-  const pane: WorkbenchPaneProps = { state, requests, density: preferences.density, profile, textScale: TEXT_SCALE, menuOpen: menuOpen !== null, modalOpen, onStatus: setPaneStatus };
+  const rows = headerRowCount(client.width, textScale);
+  const pane: WorkbenchPaneProps = { state, requests, density: preferences.density, profile, textScale, menuOpen: menuOpen !== null, modalOpen, onStatus: setPaneStatus };
   // plan.md "Notice band": the blocking row, then the submodule row.
   const conflicted = workspace === null ? 0 : state.entries.reduce((n, e) => n + (e.category === "conflicted" ? 1 : 0), 0);
   const blockingRow = workspace !== null && blockingText(workspace.operationState, conflicted) !== null;
@@ -406,11 +424,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
   // Sizes in DIPs. The work area scrolls when the sections reach their minima (plan.md "Overflow").
   // `workAreaHeight` needs a plan.md header row count, which only the wide and narrow profiles guarantee.
-  const available = profile === "constrained" ? client.height : workAreaHeight(client, TEXT_SCALE, preferences.density);
-  const tray = paneBounds("tray", { width: client.width, available, density: preferences.density, textScale: TEXT_SCALE });
-  const band = paneBounds("fileBand", { width: client.width, available, density: preferences.density, textScale: TEXT_SCALE });
+  const available = profile === "constrained" ? client.height : workAreaHeight(client, textScale, preferences.density);
+  const tray = paneBounds("tray", { width: client.width, available, density: preferences.density, textScale });
+  const band = paneBounds("fileBand", { width: client.width, available, density: preferences.density, textScale });
   // The status area is an empty slot until T138, so it takes no rows here.
-  const clamped = clampPanes({ client, textScale: TEXT_SCALE, density: preferences.density, bandRows, statusArea: 0, fileBand: fileBand ?? band.default, tray: bottom ?? tray.default });
+  const clamped = clampPanes({ client, textScale, density: preferences.density, bandRows, statusArea: 0, fileBand: fileBand ?? band.default, tray: bottom ?? tray.default });
   const trayHeight = clamped.tray;
   const bandHeight = clamped.fileBand ?? band.default;
   // A drag shows the live lane width and saves it once, on pointer up.
@@ -552,6 +570,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               <NoticeBand
                 operationState={workspace.operationState}
                 conflicted={conflicted}
+                recovery={recovery !== null && recovery.repositoryId === state.repository?.repositoryId ? recovery.statement : undefined}
                 submoduleRow={
                   submodules > 0 ? (
                     <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>

@@ -219,9 +219,16 @@ describe("operation outcome (contract §12 \"Reconciliation and outcome\", first
   });
 
   // research.md R14 S38: an unmapped entry with a refused `update` value fails every `submodule` step before a write.
+  // Contract §12 "Refusals": the started clone step still sets `connected`, which is an effect.
+  const failed = { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, remedy: CLONE_REMEDY } };
+  const register = row({ rowId: ID2, path: "mid", planned: "unchanged", oldCommit: null, observed: seen(null), phase: failed });
+  test("a failed clone step and a failed register step without a key give failed-with-effects", async () => {
+    const { event } = await classify({ rows: [row({ planned: "cloned", oldCommit: null, baseline: {}, observed: seen(null, {}), phase: { ...failed, connected: true } }), register], stop: null });
+    expect(event).toEqual({ type: "failed-with-effects" });
+  });
+
   test("failed rows without an effect give failed with GIT_FAILED", async () => {
-    const failed = { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, remedy: CLONE_REMEDY } };
-    const { event } = await classify({ rows: [row({ planned: "cloned", oldCommit: null, baseline: {}, observed: seen(null, {}), phase: failed }), row({ rowId: ID2, path: "mid", planned: "unchanged", oldCommit: null, observed: seen(null), phase: failed })], stop: null });
+    const { event } = await classify({ rows: [register], stop: null });
     expect(event).toEqual({ type: "no-effects", observed: "failed", code: "GIT_FAILED" });
   });
 

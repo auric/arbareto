@@ -750,8 +750,9 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
   });
 
   // research.md R14 S38: Git dies on such an entry before a write. The review refuses only rows, so the run fails.
+  // Contract §12 "Refusals": the started clone step sets `connected`, which is an effect.
   for (const value of ["!true", "foo"]) {
-    caseTest("T230", `F27 update-none with an unmapped .gitmodules entry whose update is ${value}: the review passes, the clone and register rows fail, no submodule.* key appears, and the outcome is failed with GIT_FAILED`, SHELL, () => {
+    caseTest("T230", `F27 update-none with an unmapped .gitmodules entry whose update is ${value}: the review passes, the clone and register rows fail, no submodule.* key appears, and the started clone step makes the outcome failed-with-effects`, SHELL, () => {
       const name = `t230-unmapped-update-${value === "foo" ? "foo" : "command"}`;
       const b = buildF27(gitPath(), name, "update-none");
       const sup = superOf(b);
@@ -771,11 +772,11 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
         ]);
         await update();
         const response = await updateSubmodules(service, repositoryId, r);
-        expect({ outcome: outcome(response), rows: resultsOf(response).map((x) => [x.path, x.state, x.registered]).sort(), keys: keys() }).toEqual({
-          outcome: { state: "failed", code: "GIT_FAILED" },
+        expect({ outcome: outcome(response), rows: resultsOf(response).map((x) => [x.path, x.state, x.connected, x.registered]).sort(), keys: keys() }).toEqual({
+          outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" },
           rows: [
-            ["mid", "failed", false],
-            ["solo", "failed", false],
+            ["mid", "failed", true, false],
+            ["solo", "failed", false, false],
           ],
           keys: "",
         });

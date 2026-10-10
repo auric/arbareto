@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T114: the `unknown` gate and the recovery refresh, contract §5, §6 "Recovery markers", §8, and §9. The Windows path.
-// Recovery removes no file. A WSL workspace gets no recovery read and no foreign scan until T214 (contract §11).
+// T114 and T214: the `unknown` gate and the recovery refresh, contract §5, §6 "Recovery markers", §8, §9, and §11.
+// Recovery removes no file.
 
 import { opendir } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -12,7 +12,7 @@ import { TERMINAL_STATES } from "../contracts/errors";
 import { attribute, readWindow, type Window } from "./attribution";
 import type { RetainedCommit } from "./commit";
 import type { MutationEntry } from "./exclusion";
-import type { GitRunner } from "./git-runner";
+import type { GitRunner, WslRunner } from "./git-runner";
 import { besideIndex, indexOf, observedLocks, type Fact, type Failure, type ObserveContext, type RetainedPublication, type Stop } from "./hunk-publish";
 import { sameIdentity, type PhysicalIdentity } from "./identity";
 import type { DiagnosticCause } from "./log";
@@ -22,6 +22,7 @@ import type { Workspace } from "./registration";
 import type { Head, ReadInstallation } from "./snapshot";
 import type { ReadOutcome, WorkspaceReader } from "./status";
 import type { Trust } from "./trust";
+import { wslIndexDigest } from "./wsl-files";
 
 // Contract §8: the fixed prefix of every candidate file.
 const CANDIDATE_PREFIX = "arbareto-candidate-";
@@ -45,7 +46,7 @@ export interface RecoveryTarget {
 }
 
 export interface RecoveryOptions {
-  runner: GitRunner;
+  runner: GitRunner & Pick<WslRunner, "wslFiles">;
   registry: Pick<OperationRegistry, "get">;
   trust: Trust;
   reader: Pick<WorkspaceReader, "operationState" | "recoveryState">;
@@ -67,11 +68,26 @@ export function createRecovery({ runner, registry, trust, reader, publications, 
   const unknown = (w: Blockable): boolean => restart.has(w.repositoryId) || [...pending.values()].some((p) => sameIdentity(p.commonIdentity, w.commonIdentity));
 
   // Contract §8 "Recovery statement": the match of the canonical index with the retained digests. No attribution step runs.
-  async function indexMatch(w: Workspace, kept: RetainedPublication): Promise<RecoveryStatement | Failure | Stop> {
-    const index = await indexOf(w);
+  // A WSL index gives only its `indexDigest` result (contract §8), so recovery reads no index bytes through UNC.
+  async function indexMatch(ctx: ObserveContext, kept: RetainedPublication): Promise<RecoveryStatement | Failure | Stop> {
+    const index = await canonicalDigest(ctx);
     if (!("value" in index)) return index;
-    const digest = index.value.digest;
+    const digest = index.value;
     return { outcome: "unknown", indexMatch: kept.candidate !== null && digest === kept.candidate ? "published" : digest === kept.before ? "not-published" : "neither" };
+  }
+
+  async function canonicalDigest(ctx: ObserveContext): Promise<Fact<string | null>> {
+    const w = ctx.workspace;
+    if (w.wsl === undefined) {
+      const index = await indexOf(w);
+      return "value" in index ? { value: index.value.digest } : index;
+    }
+    const read = await wslIndexDigest({ runner, operationId: ctx.operationId, signal: ctx.signal, workspace: w });
+    if (!("value" in read)) return read;
+    const part = read.value.index;
+    if (part.kind === "error") return { code: "GIT_FAILED" };
+    if (part.kind === "bound") return { code: "OUTPUT_LIMIT", reason: "MUTATION_RAW_INDEX_BYTES" };
+    return { value: part.kind === "digest" ? part.sha256 : null };
   }
 
   // Contract §8 "Attribution window": one attempt from the retained preflight tip. `h1` is the HEAD of the complete snapshot.
@@ -122,18 +138,17 @@ export function createRecovery({ runner, registry, trust, reader, publications, 
 
   async function statement(ctx: ObserveContext, markers: Pending[], head: Head): Promise<RecoveryStatement | Failure | Stop> {
     const w = ctx.workspace;
-    if (w.wsl !== undefined) return NO_REQUEST;
     // Contract §8: a retained request belongs to the worktree identity of its mutation.
     const own = markers.map((p) => p.own).find((o) => o !== undefined && o.worktreeIdentity.every((identity, i) => sameIdentity(identity, w.worktreeIdentity[i]!)));
     const publication = own && publications.get(own.operationId);
     const commit = own && commits.get(own.operationId);
     const update = own && updates.get(own.operationId);
-    if (publication) return indexMatch(w, publication);
-    if (commit) return attribution(ctx, commit, head);
-    if (update) return rowStates(ctx, update);
+    const stated = publication ? await indexMatch(ctx, publication) : commit ? await attribution(ctx, commit, head) : update ? await rowStates(ctx, update) : NO_REQUEST;
+    // Contract §8: a WSL lock or candidate without a process-end fact has unknown ownership, so every WSL statement names it.
+    if (!("outcome" in stated) || (stated !== NO_REQUEST && w.wsl === undefined)) return stated;
     const found = await foreignFiles(ctx, head);
     if (!("files" in found)) return found;
-    return { ...NO_REQUEST, ...(found.files.length > 0 ? { foreign: found.files } : {}), ...(found.total > found.files.length ? { foreignTotal: found.total } : {}) };
+    return { ...stated, ...(found.files.length > 0 ? { foreign: found.files } : {}), ...(found.total > found.files.length ? { foreignTotal: found.total } : {}) };
   }
 
   // Contract §8: recovery after a `readWorkspace` with `refresh: true`. Only a complete snapshot and successful recovery reads release the block.

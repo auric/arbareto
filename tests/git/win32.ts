@@ -25,6 +25,10 @@ const open = () =>
     WaitForSingleObject: { args: [P, u32], returns: u32 },
     SetFileTime: { args: [P, P, P, P], returns: i32 },
     GetLastError: { args: [], returns: u32 },
+    CreateJobObjectW: { args: [P, P], returns: P },
+    AssignProcessToJobObject: { args: [P, P], returns: i32 },
+    TerminateJobObject: { args: [P, u32], returns: i32 },
+    QueryInformationJobObject: { args: [P, i32, P, u32, P], returns: i32 },
   }).symbols;
 let symbols: ReturnType<typeof open> | undefined;
 
@@ -45,6 +49,7 @@ const FILE_FLAG_BACKUP_SEMANTICS = 0x0200_0000;
 const FILE_ID_INFO_CLASS = 18;
 const FILE_ID_INFO_BYTES = 24;
 const PROCESS_TERMINATE = 0x1;
+const PROCESS_SET_QUOTA = 0x100;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const SYNCHRONIZE = 0x0010_0000;
 const WAIT_TIMEOUT = 0x102;
@@ -159,6 +164,50 @@ export function terminateRecorded(pid: number, created: bigint): boolean {
   } finally {
     kernel32().CloseHandle(handle);
   }
+}
+
+// Microsoft Learn `JOBOBJECTINFOCLASS` and `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`: `ActiveProcesses` is at byte 40 of 48.
+const JOB_ACCOUNTING_CLASS = 1;
+const JOB_ACCOUNTING_BYTES = 48;
+const JOB_ACTIVE_OFFSET = 40;
+const JOB_POLL_MS = 10;
+
+export interface ProcessTree {
+  // Ends every process of the tree and waits a bounded time for their exits.
+  end(): void;
+  close(): void;
+}
+
+// The shell Job of contract §6 (src-tauri/src/jobs.rs). A process that the root creates joins the Job, also after the root ends.
+// No `KILL_ON_JOB_CLOSE`: a child that outlives its root lingers until `end`, as a lingering Job does.
+// ponytail: assignment follows the start, so a child created before it escapes. The shell assigns before the process runs; do the same when an escape shows.
+export function ownTree(pid: number): ProcessTree {
+  const job = kernel32().CreateJobObjectW(null, null);
+  if (!valid(job)) throw new Error(`CreateJobObjectW failed: ${kernel32().GetLastError()}`);
+  const handle = openProcess(pid, PROCESS_SET_QUOTA | PROCESS_TERMINATE);
+  const assigned = handle !== null && kernel32().AssignProcessToJobObject(job, handle) !== 0;
+  const error = kernel32().GetLastError();
+  // A root that already exited has no tree to own.
+  const exited = handle !== null && creationTime(handle) === null;
+  if (handle) kernel32().CloseHandle(handle);
+  if (!assigned && !exited) {
+    kernel32().CloseHandle(job);
+    throw new Error(`AssignProcessToJobObject failed for ${pid}: ${error}`);
+  }
+  const active = () => {
+    const info = new Uint8Array(JOB_ACCOUNTING_BYTES);
+    if (!kernel32().QueryInformationJobObject(job, JOB_ACCOUNTING_CLASS, ptr(info), JOB_ACCOUNTING_BYTES, null)) return 0;
+    return new DataView(info.buffer).getUint32(JOB_ACTIVE_OFFSET, true);
+  };
+  return {
+    end() {
+      if (!kernel32().TerminateJobObject(job, 1)) return;
+      for (const until = performance.now() + TERMINATE_WAIT_MS; active() > 0 && performance.now() < until; ) Bun.sleepSync(JOB_POLL_MS);
+    },
+    close() {
+      kernel32().CloseHandle(job);
+    },
+  };
 }
 
 const openNt = () =>

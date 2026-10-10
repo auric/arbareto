@@ -104,6 +104,8 @@ export interface WorkspaceReaderOptions {
   readRawIndex?: typeof readRawIndex;
   // Contract §8 (T114): true while recovery blocks the workspace.
   unknown?(w: Workspace): boolean;
+  // Data-model §2: true while a mutation of the same common identity is in registry state `reconciling`.
+  reconciling?(w: Workspace): boolean;
 }
 
 // Contract §5 "Status page": each page holds whole entries. `starts[i]` is the first entry of page i, and `cursors[i]` names page i from 1 on.
@@ -386,7 +388,7 @@ export function policyOf(trust: Trust, w: Workspace, listing: TrustListing, inst
   return policyFingerprint({ ...input, git: installation });
 }
 
-export function createWorkspaceReader({ runner, trust, workingVersion = {}, readRawIndex: readIndex = readRawIndex, unknown }: WorkspaceReaderOptions) {
+export function createWorkspaceReader({ runner, trust, workingVersion = {}, readRawIndex: readIndex = readRawIndex, unknown, reconciling }: WorkspaceReaderOptions) {
   const snapshots = createSnapshotStore<StatusSnapshot>();
   const states = new Map<string, WorkspaceState>();
   const stateOfWorkspace = (repositoryId: string): WorkspaceState => {
@@ -604,6 +606,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
   // Data-model §2: `unknown` takes precedence over every other value.
   function recoveryOf(st: WorkspaceState, w: Workspace): RecoveryState {
     if (unknown?.(w)) return "unknown";
+    if (reconciling?.(w)) return "reconciling";
     if (st.unavailable) return "unavailable";
     return st.refreshing > 0 ? "refreshing" : "ready";
   }
@@ -757,7 +760,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     let eligibility: HunkEligibility | null = null;
     if (raw !== "over") {
       try {
-        eligibility = hunkEligibility(reuse ? { link: lastParse.sharedIndex?.hash ?? null } : rawIndex, w.objectFormat, lst);
+        eligibility = hunkEligibility(reuse ? { link: lastParse.sharedIndex?.hash ?? null } : rawIndex, w.objectFormat, lst, w.wsl !== undefined);
       } catch (error) {
         if (error instanceof IndexFormatError) return refusal("MALFORMED_GIT_OUTPUT");
         throw error;

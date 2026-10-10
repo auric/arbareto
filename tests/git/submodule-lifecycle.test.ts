@@ -3,7 +3,7 @@
 
 // T224: long submodule steps with F30 (contract §5, §6 "Activity and stall notice", "Lingering Jobs", §8, §12 "Deadlines and Cancel", "Reconciliation and outcome").
 // `src/git-service/submodule-update.ts` comes with T230, its reconciliation and recovery parts too. T231 registers the operation in the session.
-// The double holds no Job. It ends only the Git process that it started, and it measures activity from output only (T225 runs the real Job cases).
+// The double ends the process tree of a run as the shell Job does. It measures activity from output only (T225 runs the real Job cases).
 
 import { describe, expect } from "bun:test";
 import { appendFileSync, existsSync, lstatSync, readdirSync, renameSync } from "node:fs";
@@ -41,7 +41,6 @@ import {
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
 const TASK = "T224";
-const NEEDS = "(needs T230/T231)";
 const SHELL: Capability[] = ["shell-double"];
 // The 300 MB builds and the clone of the large remote.
 const LONG_TIMEOUT_MS = 600_000;
@@ -81,7 +80,11 @@ function packTransport(b: Built): void {
 }
 
 const isStep = (path: string) => (c: { arguments: readonly string[] }) => c.arguments.includes(`:(literal)${path}`) && commandOf(c.arguments)[0] === "submodule";
-const closedJob = (service: Service, operationId: string) => service.runner.frames.some((f) => f.type === "closeJob" && f.operationId === operationId);
+// Contract §6 "Channel frames": a run Cancel sends the run `cancel`, which closes the Job. Then no update step starts.
+const canceledRun = (service: Service, operationId: string) => {
+  const frame = service.runner.cancels.find((f) => f.operationId === operationId);
+  return { cancel: frame !== undefined, later: frame ? updateSteps(service, frame.callsBefore).map((c) => c.arguments) : null };
+};
 const endedFrame = (service: Service, operationId: string) => service.runner.frames.find((f) => f.type === "ended" && f.operationId === operationId);
 // Contract §9: an `updateSubmodules` process deadline gives `DEADLINE` with reason `inactivity` or `ceiling`.
 const deadlineOf = (response: ServiceResponse) => ({ ...outcome(response), reasons: valuesOf(response.result, "reason").filter((r) => r === "inactivity" || r === "ceiling") });
@@ -104,7 +107,8 @@ function duringReconciling(service: Service, requestId: () => string | undefined
 }
 
 describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research.md R14 S9)", () => {
-  todoCase(TASK, `F30 clone: Cancel during the clone of the large remote closes the Job, the outcome arrives within 5 seconds, the row states clone-interrupted with its folder and move-out remedy, every S9 file remains, the next review refuses clone-interrupted, and after the move-out the next update reaches the recorded commit while the moved folder keeps every byte ${NEEDS}`, SHELL, async () => {
+  // A killed clone keeps HEAD at Git's placeholder `ref: refs/heads/.invalid`. `symbolic-ref -q HEAD` then exits 128, and reconciliation gives unknown.
+  todoCase(TASK, `F30 clone: Cancel during the clone of the large remote sends the run cancel and starts no later step, the outcome arrives within 5 seconds, the row states clone-interrupted with its folder and move-out remedy, every S9 file remains, the next review refuses clone-interrupted, and after the move-out the next update reaches the recorded commit while the moved folder keeps every byte (needs the reconciliation HEAD read of a killed clone)`, SHELL, async () => {
     await update();
     const name = "t224-clone-cancel";
     const b = buildF30(gitPath(), name, "clone");
@@ -121,7 +125,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
       await service.cancel(operationId);
       const response = await service.response(requestId);
       expect(service.responseAt.get(requestId)! - canceledAt).toBeLessThanOrEqual(RECONCILIATION_TARGET_MS);
-      expect(closedJob(service, operationId)).toBe(true);
+      expect(canceledRun(service, operationId)).toEqual({ cancel: true, later: [] });
       const row = resultOf(response, "big");
       expect({ state: row.state, folder: relative(join(sup, "big"), join(sup, row.folderPath ?? "")) === "", text: row.text, command: row.remedy?.command ?? null, connected: row.connected }).toEqual({
         state: "clone-interrupted",
@@ -181,7 +185,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
     }, LONG_TIMEOUT_MS);
   }
 
-  todoCase(TASK, `F30 silent-fetch: Cancel during the fetch step closes the Job; the row ends unchanged with fetched, and the outcome is failed-with-effects ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 silent-fetch: Cancel during the fetch step sends the run cancel and starts no later step; the row ends unchanged with fetched, and the outcome is failed-with-effects`, SHELL, async () => {
     await update();
     const name = "t224-fetch-cancel";
     const b = buildF30(gitPath(), name, "silent-fetch");
@@ -196,7 +200,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
       await until(() => tmpPacks(modules).length > 0, "tmp_pack file of the big fetch", 120_000);
       await service.cancel(operationId);
       const response = await service.response(requestId);
-      expect(closedJob(service, operationId)).toBe(true);
+      expect(canceledRun(service, operationId)).toEqual({ cancel: true, later: [] });
       const row = resultOf(response, "big");
       expect({ outcome: outcome(response), state: row.state, fetched: row.fetched, head: fixtureGit(b, join(sup, "big"), ["rev-parse", "HEAD"]).trim() }).toEqual({
         outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" },

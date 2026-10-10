@@ -18,7 +18,8 @@ type Payload<K extends OperationName> = RequestOf<K>["payload"];
 const encoder = new TextEncoder();
 
 // `onSessionChange` runs after a `service-session` event, when the bridge holds the new session.
-export function createBridge(onSessionChange?: () => void) {
+// `onTextScale` gets the payload of each `text-scale` event.
+export function createBridge(onSessionChange?: () => void, onTextScale?: (value: unknown) => void) {
   const pending = new Map<string, { resolve: (response: BridgeResponse) => void; onProgress?: OnProgress; operationId?: string }>();
 
   function send(operation: OperationName, envelope: Record<string, unknown>, onProgress?: OnProgress): Promise<BridgeResponse> {
@@ -67,6 +68,8 @@ export function createBridge(onSessionChange?: () => void) {
       waiting.operationId = event.operationId;
       waiting.onProgress?.(event);
     }),
+    // Contract §2: the Windows text scale factor after each `TextScaleFactorChanged` event.
+    listen<unknown>("text-scale", ({ payload }) => onTextScale?.(payload)),
   ];
   for (const subscription of subscriptions) subscription.catch(() => {});
   let session = readSession();
@@ -101,6 +104,7 @@ export function createBridge(onSessionChange?: () => void) {
     cancel: (payload: Payload<"cancel">, onProgress?: OnProgress) => call("cancel", {}, payload, onProgress),
     getOperation: (payload: Payload<"getOperation">, onProgress?: OnProgress) => call("getOperation", {}, payload, onProgress),
     requestClose: (payload: Payload<"requestClose">, onProgress?: OnProgress) => call("requestClose", {}, payload, onProgress),
+    // Contract §3: both `currentSession` results carry `textScale`.
     currentSession: (onProgress?: OnProgress) => send("currentSession", { payload: {} }, onProgress),
     dismissRecoveryMarker: (payload: Payload<"dismissRecoveryMarker">, onProgress?: OnProgress) => call("dismissRecoveryMarker", {}, payload, onProgress),
   };

@@ -548,6 +548,33 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   }
 
   wslCase(
+    `a lock with another inode at the candidate request and a candidate reply bound: the lock form of remove gives notOwned, and the other lock stays ${FILE}`,
+    NEEDS,
+    async (host) => {
+      await underTest("file-publish");
+      const { repo } = buildF21(host);
+      let lockInode = "";
+      const swap: Stop = async (request, forward) => {
+        if (request.mode !== "candidate") return forward();
+        lockInode = inode(host, lockPath(repo));
+        SWAPS["another inode"](repo);
+        return [{ kind: "bound" }];
+      };
+      const { s, files: log } = setup(host, swap);
+      const id = await register(s, repo);
+      const c = await compare(s, id, "multi.txt", "unstaged");
+      const response = await applyFile(s, id, c, "stage");
+      const operationId = response.operationId!;
+      const { identity, token } = lockOf(log, operationId);
+      expect(lockRemoves(log, operationId)).toEqual([{ lock: identity, token, reply: [{ kind: "notOwned" }] }]);
+      const lockAfter = exists(host, lockPath(repo)) ? inode(host, lockPath(repo)) : null;
+      expect({ kept: lockAfter !== null, sameLock: lockAfter === lockInode, content: lockAfter === null ? null : content(host, lockPath(repo)) }).toEqual({ kept: true, sameLock: false, content: token });
+      // Contract §8 "Observed locks": the other lock exists after the outcome, so the result names it.
+      expect({ ...outcome(response), reason: (response.result as { reason?: string } | undefined)?.reason, foreign: foreignOf(response) }).toEqual({ state: "failed", code: "OUTPUT_LIMIT", reason: "MUTATION_RAW_INDEX_BYTES", foreign: [uncLock(c.read)] });
+    },
+  );
+
+  wslCase(
     `a candidate changed before publish gives publish mismatch and STALE_SELECTION, nothing is published, and the lock form of remove gives removed ${FILE}`,
     NEEDS,
     async (host) => {
@@ -596,7 +623,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   );
 
   wslCase(
-    `a closeJob during publish gives unknown with the lock and the candidate in foreign and keeps the marker; a refresh then states indexMatch not-published, sends resolved, and removes nothing ${FILE}`,
+    `a closeJob during publish gives unknown with the lock and the candidate in foreign and keeps the marker; a refresh then states indexMatch not-published with the lock and the candidate in foreign, sends resolved, and removes nothing ${FILE}`,
     NEEDS,
     async (host) => {
       await underTest("file-publish", "recovery");
@@ -630,7 +657,11 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
       const kept = { lock: content(host, lockPath(repo)), leftovers: ownedLeftovers(repo).sort(), index: sha256(host, indexPath(repo)) };
       expect(kept).toEqual({ lock: token, leftovers: ["index.lock", name].sort(), index });
       const refreshed = await s.response(s.request("readWorkspace", { refresh: true, check: "full" }, { repositoryId: id }));
-      expect({ ...outcome(refreshed), recovery: (refreshed.result as { recovery?: unknown } | undefined)?.recovery, resolved: resolvedFrames() }).toEqual({ ...SUCCEEDED, recovery: { outcome: "unknown", indexMatch: "not-published" }, resolved: 1 });
+      expect({ ...outcome(refreshed), recovery: (refreshed.result as { recovery?: unknown } | undefined)?.recovery, resolved: resolvedFrames() }).toEqual({
+        ...SUCCEEDED,
+        recovery: { outcome: "unknown", indexMatch: "not-published", foreign: [uncLock(c.read), uncBeside(c.read, name)] },
+        resolved: 1,
+      });
       expect({ lock: content(host, lockPath(repo)), leftovers: ownedLeftovers(repo).sort(), index: sha256(host, indexPath(repo)) }).toEqual(kept);
     },
   );

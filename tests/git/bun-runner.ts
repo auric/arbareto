@@ -434,6 +434,8 @@ export function createBunRunner(options: BunRunnerOptions) {
   const touches = new Map<GitCall, () => void>();
   let spawned = 0;
   let disposed = false;
+  // Set when `dispose` starts. A call that a start barrier held then starts no process.
+  let closing = false;
 
   const identityOfWindows = (path: string): IdentityReply => inject.identities.get(path) ?? readIdentity(path, inject.fileIds.get(path));
 
@@ -715,6 +717,7 @@ export function createBunRunner(options: BunRunnerOptions) {
   // Starts one process after the start barriers and drains it as the shell does.
   async function execute(call: GitCall, argv: string[], cwd: string, env: Record<string, string>, recorded?: RecordedCall): Promise<GitExit> {
     for (let held = holding(startBarriers, call); held; held = holding(startBarriers, call)) await held.promise;
+    if (closing) throw unknownTarget();
     call.signal.throwIfAborted();
     // Abort, a kill, and closeJob stop the call. A stopped call leaves the stdout barrier.
     const stopped = gate();
@@ -1249,6 +1252,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!seam) exit = await execute(asCall, [WSL_EXE, ...wslHead(call.distro), WSL_TEXTS.probe, "sh", parts.linux], launchDirectory, wslEnvironment());
       else {
         for (let held = holding(startBarriers, asCall); held; held = holding(startBarriers, asCall)) await held.promise;
+        if (closing) throw unknownTarget();
         call.signal.throwIfAborted();
         if (seam.stdout) stdout.push(new TextEncoder().encode(seam.stdout));
         if (seam.stderr) call.stderr.push(new TextEncoder().encode(seam.stderr));
@@ -1322,6 +1326,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Ends every recorded live process by PID and every running process, then waits a bounded time for their exits and the drains.
     // A killed anchor `wsl.exe` can leave a `wslhost.exe` that keeps the launch folder open. So each anchor first ends at count 0.
     async dispose(): Promise<void> {
+      closing = true;
       end(() => true);
       for (const operationId of wslUnits.keys()) endWslScopes(operationId);
       const anchors = [...wslAnchors.values()];

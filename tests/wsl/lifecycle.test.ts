@@ -10,7 +10,7 @@ import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { psQuote } from "../git/hunk-harness";
 import { printOrigin } from "../origin";
-import { buildF25, distroGit, globalConfig, seamProbe, startSession, writeLinux, type WslRepo, type WslSession } from "./fixtures";
+import { buildF25, globalConfig, seamProbe, startSession, type WslRepo, type WslSession } from "./fixtures";
 import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_EXE, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 const CASE_TIMEOUT_MS = 240_000;
@@ -217,9 +217,6 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     NEEDS,
     async (host) => {
       const f25 = buildF25(host);
-      // `buildF25` reuses one folder for every case, so an earlier case can have committed the staged change.
-      writeLinux(host, `${f25.linger.dir}/a.txt`, `${crypto.randomUUID()}\n`);
-      distroGit(f25.linger, ["add", "--", "a.txt"]);
       const { runner, s } = setup(host);
       const p = await prepare(s, f25.linger);
       expect(await s.response(await commit(s, p))).toMatchObject({ state: "succeeded" });

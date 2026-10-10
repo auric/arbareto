@@ -94,9 +94,16 @@ pub struct Service {
 
 impl Service {
     /// Starts the service process. `connect` sends the startup handshake later (plan.md "Cold-start critical path").
-    pub fn start(app: &AppHandle) -> Result<Arc<Service>, Box<dyn std::error::Error>> {
+    /// `launch_directory` overrides the app local data folder (`ARBARETO_PROFILE_ROOT`).
+    pub fn start(
+        app: &AppHandle,
+        launch_directory: Option<PathBuf>,
+    ) -> Result<Arc<Service>, Box<dyn std::error::Error>> {
         // The application-owned launch directory, never a repository (contract §7).
-        let launch_directory = app.path().app_local_data_dir()?;
+        let launch_directory = match launch_directory {
+            Some(directory) => directory,
+            None => app.path().app_local_data_dir()?,
+        };
         std::fs::create_dir_all(&launch_directory)?;
         let environment = sanitize(std::env::vars_os().collect());
         let jobs = Supervisor::start()?;

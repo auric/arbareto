@@ -8,9 +8,10 @@ import { afterEach, describe, expect } from "bun:test";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
+import { psQuote } from "../git/hunk-harness";
 import { printOrigin } from "../origin";
-import { buildF25, globalConfig, seamProbe, startSession, type WslRepo, type WslSession } from "./fixtures";
-import { inDistro, listScopes, pgrep, uncPath, useWslFolder, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { buildF25, distroGit, globalConfig, seamProbe, startSession, writeLinux, type WslRepo, type WslSession } from "./fixtures";
+import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_EXE, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 const CASE_TIMEOUT_MS = 240_000;
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
@@ -149,12 +150,13 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
       const p = await prepare(s, f25.linger);
       let operationId = "";
       const anchorSeen: boolean[] = [];
-      runner.inject.afterWslExit = async (call) => {
-        operationId = call.operationId;
-        anchorSeen.push(pgrep(host, call.operationId).length > 0);
-      };
       let release = () => {};
+      // The review is a read operation without an anchor, so only the processes after the review response count.
       const requestId = await commit(s, p, () => {
+        runner.inject.afterWslExit = async (call) => {
+          operationId = call.operationId;
+          anchorSeen.push(pgrep(host, call.operationId).length > 0);
+        };
         release = runner.holdStart();
       });
       expect(await until(() => operationOf(s, requestId) !== undefined, 30_000)).toBe(true);
@@ -202,6 +204,9 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
       expect(Date.now() - started).toBeLessThan(10_000);
       expect(response).toMatchObject({ state: "failed", code: "GIT_FAILED" });
       expect(JSON.stringify(response.result)).toContain("reading the terminal");
+      // Contract §9 and §11 "Remedy commands": the WSL form of the hook remedy.
+      const hook = `& ${psQuote(WSL_EXE)} --distribution ${psQuote(host.distro)} --cd / --exec ${psQuote(host.probe.paths.git!)} --no-lazy-fetch -C ${psQuote(f25.tty.dir)} hook run --ignore-missing pre-commit`;
+      expect((response.result as { remedy?: { command?: string | null } } | undefined)?.remedy?.command).toBe(hook);
       expect(listScopes(host)).toEqual([]);
     },
     CASE_TIMEOUT_MS,
@@ -212,6 +217,9 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     NEEDS,
     async (host) => {
       const f25 = buildF25(host);
+      // `buildF25` reuses one folder for every case, so an earlier case can have committed the staged change.
+      writeLinux(host, `${f25.linger.dir}/a.txt`, `${crypto.randomUUID()}\n`);
+      distroGit(f25.linger, ["add", "--", "a.txt"]);
       const { runner, s } = setup(host);
       const p = await prepare(s, f25.linger);
       expect(await s.response(await commit(s, p))).toMatchObject({ state: "succeeded" });

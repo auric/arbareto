@@ -578,8 +578,6 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const workspace = workspaceOf(request.repositoryId);
       const installation = installationOf(workspace);
       if (installation === null) return reject(request.requestId, gitCode());
-      // T214 adds the WSL commit.
-      if (workspace.wsl !== undefined) return reject(request.requestId, "SERVICE_UNAVAILABLE");
       committer.commit(request, workspace, installation);
     },
     reviewSubmodules,

@@ -450,9 +450,9 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
         const publish = log.filter((f) => f.request.operationId === response.operationId && f.request.mode === "publish");
         expect(publish.map((f) => f.reply)).toEqual([[{ kind: "notOwned" }]]);
         expect({ sha: sha256(host, indexPath(repo)), inode: inode(host, indexPath(repo)) }).toEqual(index);
-        // `remove` with the `lock` reply checks the device and inode, so a copy at another inode stays. The original inode never returns.
+        // After `notOwned`, no owned lock exists, so no `remove` follows and the lock at the path stays. The original inode never returns.
         const lockAfter = exists(host, lockPath(repo)) ? inode(host, lockPath(repo)) : null;
-        expect({ swap, sameLock: lockAfter === lockInode }).toEqual({ swap, sameLock: swap !== "another inode" });
+        expect({ swap, kept: lockAfter !== null, sameLock: lockAfter === lockInode }).toEqual({ swap, kept: true, sameLock: swap !== "another inode" });
         expect({ swap, state: response.state, code: response.code, path: pathOf(response) }).toEqual({ swap, state: "failed", code: "STALE_SELECTION", path: uncLock(c.read) });
       },
     );

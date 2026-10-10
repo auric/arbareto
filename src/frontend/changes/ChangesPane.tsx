@@ -39,6 +39,8 @@ export type ChangesPaneProps = {
   toolbarSuccess?: { entryId: string } | null;
   /** True only when the snapshot is a complete observation with every page loaded. */
   complete?: boolean;
+  /** The Unstaged help line. The default states the T202 and T145 controls. */
+  helpLine?: string;
 };
 
 const WORKING: { category: Category; label: string }[] = [
@@ -70,7 +72,7 @@ function survivor(list: readonly ChangeEntry[], entryId: string, alive: Readonly
 }
 
 export function ChangesPane(props: ChangesPaneProps) {
-  const { entries, selection, fileActionRunning = false, operationRunning = false, toolbarSuccess = null, complete = false } = props;
+  const { entries, selection, fileActionRunning = false, operationRunning = false, toolbarSuccess = null, complete = false, helpLine = HELP_LINE } = props;
   const live = useRef(props);
   live.current = props;
   const groups = byCategory(entries);
@@ -197,6 +199,7 @@ export function ChangesPane(props: ChangesPaneProps) {
     label,
     entries: groups[category],
     selectedId: selection?.entryId ?? null,
+    helpLine,
     register: (handle: ListHandle | null) => void (handle ? (lists.current[category] = handle) : delete lists.current[category]),
     onEnter: (entry: ChangeEntry) => {
       if (live.current.selection?.entryId !== entry.entryId) live.current.onSelect(entry.entryId);
@@ -229,13 +232,14 @@ type CategoryListProps = {
   level: 2 | 3;
   entries: readonly ChangeEntry[];
   selectedId: string | null;
+  helpLine: string;
   register(handle: ListHandle | null): void;
   onEnter(entry: ChangeEntry): void;
   onSpace(entry: ChangeEntry, event: ReactKeyboardEvent): void;
 };
 
 /** One category: its heading with the count, and one WAI-ARIA listbox with one Tab stop and roving focus. */
-function CategoryList({ category, label, level, entries, selectedId, register, onEnter, onSpace }: CategoryListProps) {
+function CategoryList({ category, label, level, entries, selectedId, helpLine, register, onEnter, onSpace }: CategoryListProps) {
   const ids = { label: useId(), count: useId(), help: useId() };
   const heading = useRef<HTMLHeadingElement>(null);
   const listbox = useRef<HTMLDivElement>(null);
@@ -347,7 +351,7 @@ function CategoryList({ category, label, level, entries, selectedId, register, o
       </Heading>
       {category === "unstaged" ? (
         <p id={ids.help} className="shrink-0 truncate px-2 text-muted-text" style={{ height: "var(--h-help-line)", lineHeight: "var(--h-help-line)" }}>
-          {HELP_LINE}
+          {helpLine}
         </p>
       ) : null}
       {entries.length === 0 ? null : (

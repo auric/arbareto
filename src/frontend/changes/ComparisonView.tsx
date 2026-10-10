@@ -100,6 +100,8 @@ export type ComparisonViewProps = {
   /** The selected service hunk ID, or null. */
   selectedHunk: string | null;
   onRefresh(): void;
+  /** The No selection help line. */
+  helpLine?: string;
 };
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -148,8 +150,8 @@ function Body({ result, selectedHunk, onRefresh }: { result: ReadComparisonResul
 }
 
 /** The comparison pane of the selected entry. */
-export function ComparisonView({ entry, response, selectedHunk, onRefresh }: ComparisonViewProps) {
-  if (entry === null) return <NoSelection />;
+export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpLine }: ComparisonViewProps) {
+  if (entry === null) return <NoSelection helpLine={helpLine} />;
   // Contract §3: `succeeded` and `limited` carry a `ReadComparisonResult`. Other states carry no value.
   const result = response?.state === "succeeded" || response?.state === "limited" ? (response.result as ReadComparisonResult) : null;
   const scope = result !== null && "scope" in result ? SIDES[result.scope] : null;

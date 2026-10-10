@@ -2,8 +2,11 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { useEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent } from "react";
-import type { WorkspaceSnapshot } from "../../contracts/envelope";
-import type { BridgeResponse } from "../bridge";
+import type { Environment, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
+import type { ErrorCode } from "../../contracts/errors";
+import type { BridgeResponse, createBridge } from "../bridge";
+import { ChangesPane as ChangesList } from "../changes/ChangesPane";
+import { ComparisonView as Comparison } from "../changes/ComparisonView";
 import { Button } from "../components/ui/button";
 import {
   Menubar,
@@ -18,24 +21,59 @@ import {
   MenubarTrigger,
 } from "../components/ui/menubar";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { HistoryView as History } from "../history/HistoryView";
 import { createShortcutHandler, type Mode } from "../keyboard/shortcuts";
 import { chooseProfile, clampPanes, FILE_LANE, headerRows, metrics, paneBounds, UnmeasuredLayoutError, workAreaHeight, type Density, type Profile, type Size } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
 import { createRequests, isRegistration, type RequestBridge, type Requests, type RequestState } from "../state/requests";
 import { DEFAULT_PREFERENCES, readPreferences, writePreferences, type Preferences, type Theme } from "../state/preferences";
+import { SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
+import { blockingText, NoticeBand, WarningIcon } from "./NoticeBand";
+import { RepositoryMenu } from "./RepositoryMenu";
+import { ErrorState, LimitedOutput, Loading, RepositoryRefused } from "./RepositoryStates";
+import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 
 // plan.md "Two feasible layouts" (layout A), "Chosen layout, sizes, and DPI", "Keyboard and focus", and "Required visible states".
 
-export type WorkbenchBridge = RequestBridge & { chooseRepository(): Promise<BridgeResponse> };
+type Bridge = ReturnType<typeof createBridge>;
+export type WorkbenchBridge = RequestBridge & Pick<Bridge, "chooseRepository" | "readTrust" | "approveTrust" | "revokeTrust" | "getEnvironment" | "dismissRecoveryMarker">;
 /** The props that the workbench gives each injected view. */
-export type WorkbenchPaneProps = { state: RequestState; requests: Requests };
+export type WorkbenchPaneProps = {
+  state: RequestState;
+  requests: Requests;
+  density: Density;
+  profile: Profile;
+  textScale: number;
+  menuOpen: boolean;
+  modalOpen: boolean;
+  /** Feeds the second live element of the status bar. Null clears it. */
+  onStatus(text: string | null): void;
+};
 export type WorkbenchProps = {
   bridge: WorkbenchBridge;
   ChangesPane: ComponentType<WorkbenchPaneProps>;
   ComparisonView: ComponentType<WorkbenchPaneProps>;
   /** T144. Without it, History shows an unavailable state. */
   HistoryView?: ComponentType<WorkbenchPaneProps>;
+  /** The `getEnvironment` result of the passed boot checks. */
+  environment?: Environment | null;
+  /** The `restoreWorkspace` response of the page start (contract §2). */
+  restored?: Promise<BridgeResponse>;
+  /** Adds 1 after each `service-session` event (contract §2). */
+  session?: number;
+  onSelectGit?(): void;
+  /** Each `getEnvironment` response that the workbench reads again. */
+  onEnvironment?(response: BridgeResponse): void;
 };
+
+// The places of the T145 to T147, T202, T235, and T236 controls until T148 mounts them.
+export const LATER = {
+  commit: "Commit is available after batch 3.",
+  staging: "Hunk and file staging are available after batch 3.",
+  submodules: "Update submodules is available after batch 3.",
+};
+// The interim help line: Enter works, and Space shows the staging sentence.
+export const INTERIM_HELP_LINE = `Enter shows a file. ${LATER.staging}`;
 
 const SCOPE_LINE = "This test build covers opening repositories, status, diffs, hunk and file staging, local commits, submodule updates, and one history page.";
 const THEMES: { value: Theme; label: string }[] = [
@@ -108,8 +146,78 @@ function lastComponent(path: string): string {
   return index < 0 ? path : path.slice(index);
 }
 
-export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: WorkbenchProps) {
+// plan.md "Measurements and budgets": a ready frame needs a complete read with `recoveryState` `ready`.
+const completeRead = (workspace: WorkspaceSnapshot | null) => workspace !== null && workspace.completeness.state === "complete" && workspace.recoveryState === "ready";
+const responseCode = (response: BridgeResponse) => (response.code ?? response.state) as ErrorCode;
+const refuseFileAction = async () => ({ state: "refused" as const, text: LATER.staging });
+
+/** The T133 changes pane on the T132 request state. File staging stays refused until T148 mounts T202. */
+export function ChangesPaneMount({ state, requests, menuOpen, modalOpen, onStatus }: WorkbenchPaneProps) {
+  const workspace = state.workspace;
+  const failure = state.readFailure === null ? null : <ErrorState code={responseCode(state.readFailure)} result={state.readFailure.result} onRefresh={requests.refresh} />;
+  if (workspace === null) return failure ?? <Loading hasContent={false} refreshing={false} />;
+  const selection = state.selection === null ? null : { entryId: state.selection.entryId, comparisonId: state.capability?.comparisonId ?? null };
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {failure}
+      <LimitedOutput completeness={workspace.completeness} />
+      <ChangesList
+        entries={state.entries}
+        selection={selection}
+        onSelect={requests.selectEntry}
+        onFileAction={refuseFileAction}
+        onStatus={onStatus}
+        menuOpen={menuOpen}
+        modalOpen={modalOpen}
+        complete={workspace.completeness.state === "complete"}
+        helpLine={INTERIM_HELP_LINE}
+      />
+    </div>
+  );
+}
+
+/** The T134 comparison view of the selected entry. The hunk controls stay unavailable until T148 mounts T145. */
+export function ComparisonViewMount({ state, requests }: WorkbenchPaneProps) {
+  const selected = state.selection?.entryId;
+  const entry = selected === undefined ? null : (state.entries.find((e) => e.entryId === selected) ?? null);
+  const response = entry !== null && state.comparison?.entryId === entry.entryId ? state.comparison : null;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {entry === null ? null : <p className="px-2 text-muted-text">{LATER.staging}</p>}
+      <div className="min-h-0 flex-1">
+        <Comparison entry={entry} response={response} selectedHunk={state.selectedHunk} onRefresh={requests.refresh} helpLine={INTERIM_HELP_LINE} />
+      </div>
+    </div>
+  );
+}
+
+/** The T144 History list and inspector. The commit selection is view state, and a repository open clears it. */
+export function HistoryViewMount({ state, requests, density, profile, textScale }: WorkbenchPaneProps) {
+  const [selectedOid, setSelectedOid] = useState<string | null>(null);
+  if (state.history === null) {
+    if (selectedOid !== null) setSelectedOid(null);
+    if (state.historyFailure !== null) return <ErrorState code={responseCode(state.historyFailure)} result={state.historyFailure.result} onRefresh={requests.refresh} />;
+    return <Loading hasContent={false} refreshing={false} />;
+  }
+  const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
+  return <History page={state.history} entries={entries} selectedOid={selectedOid} onSelect={setSelectedOid} density={density} profile={profile} textScale={textScale} />;
+}
+
+// Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
+const isTrustReport = (value: unknown): value is TrustReport => typeof value === "object" && value !== null && typeof (value as { fingerprint?: unknown }).fingerprint === "string";
+
+export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, session = 0, onSelectGit = () => {}, onEnvironment }: WorkbenchProps) {
   const [requests] = useState(() => createRequests({ bridge }));
+  // The latest environment: the given one, or a later read after a dismissal or a `service-session` event.
+  const [environment, setEnvironment] = useState(given);
+  useEffect(() => setEnvironment(given), [given]);
+  async function readEnvironment() {
+    const response = await bridge.getEnvironment();
+    if (response.state === "succeeded") setEnvironment(response.result as Environment);
+    onEnvironment?.(response);
+  }
+  // Contract §6 "Dismissal": the outcome stays unknown, and the next environment read shows the remaining markers.
+  const dismissMarker = (markerId: string) => void bridge.dismissRecoveryMarker({ markerId }).then(readEnvironment);
   const state = useSyncExternalStore(requests.subscribe, requests.state, requests.state);
   const [preferences, setPreferences] = useState(storedPreferences);
   const client = useClientSize();
@@ -119,14 +227,71 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
   const [bottom, setBottom] = useState<number | null>(null);
   const [fileBand, setFileBand] = useState<number | null>(null);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
-  const [openFailed, setOpenFailed] = useState(false);
+  // A refused `chooseRepository` or `restoreWorkspace`. The workspace stays unchanged.
+  const [refusal, setRefusal] = useState<BridgeResponse | null>(null);
+  const [restoring, setRestoring] = useState(restored !== undefined);
+  const [trust, setTrust] = useState<{ report: TrustReport; open: boolean } | null>(null);
+  const [trustRead, setTrustRead] = useState(0);
+  const [trustNotice, setTrustNotice] = useState<string | null>(null);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const [paneStatus, setPaneStatus] = useState<string | null>(null);
+  const modalOpen = trust?.open === true;
   const opener = useRef<HTMLButtonElement>(null);
   const menubar = useRef<HTMLDivElement>(null);
   const beforeMenu = useRef<HTMLElement | null>(null);
-  const live = useRef({ requests, menuOpen, repository: state.repository });
-  live.current = { requests, menuOpen, repository: state.repository };
+  const live = useRef({ requests, menuOpen, modalOpen, repository: state.repository });
+  live.current = { requests, menuOpen, modalOpen, repository: state.repository };
 
   useEffect(() => () => requests.dispose(), [requests]);
+
+  function registered(response: BridgeResponse) {
+    // Contract §3: a canceled dialog, or no stored last repository, keeps the workspace.
+    if (response.state === "canceled") return;
+    if (response.state === "succeeded" && isRegistration(response.result)) {
+      setRefusal(null);
+      setSaveFailed(false);
+      requests.open(response.result);
+    } else setRefusal(response);
+  }
+
+  useEffect(() => {
+    if (restored === undefined) return;
+    let current = true;
+    void restored.then((response) => {
+      if (!current) return;
+      setRestoring(false);
+      // A repository that the user opened during the restore wins.
+      if (requests.state().repository === null) registered(response);
+    });
+    return () => void (current = false);
+  }, [restored, requests]);
+
+  // Contract §2: after each `service-session` event, the page runs `restoreWorkspace` again.
+  const firstSession = useRef(session);
+  useEffect(() => {
+    if (session === firstSession.current) return;
+    requests.serviceSession();
+    void readEnvironment();
+  }, [session, requests]);
+
+  // plan.md "Required visible states", Trust required/changed: the dialog shows before the first status read when reads need approval.
+  // Only the first trust read of a registration opens the dialog by itself.
+  const repositoryId = state.repository?.repositoryId ?? null;
+  const trustShown = useRef<string | null>(null);
+  useEffect(() => {
+    setTrust(null);
+    setTrustNotice(null);
+    if (repositoryId === null) return;
+    let current = true;
+    void bridge.readTrust({ repositoryId }).then((response) => {
+      if (!current || response.state !== "succeeded" || !isTrustReport(response.result)) return;
+      const report = response.result;
+      const first = trustShown.current !== repositoryId;
+      trustShown.current = repositoryId;
+      setTrust({ report, open: first && report.approvalRequired.reads && report.state !== "approved" });
+    });
+    return () => void (current = false);
+  }, [bridge, repositoryId, trustRead]);
 
   // index.css: an absent `data-theme` means System, and an absent `data-density` means Compact.
   useEffect(() => {
@@ -143,9 +308,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
   };
 
   // plan.md "Measurements and budgets": one mark in the next frame after each ready state commits.
+  // The History-ready state needs the counts of a complete read. A selected commit does not block the mark, because a History refresh keeps the selection.
   const marked = useRef({ history: 0, changes: 0 });
-  const historyReady = state.mode === "history" && state.history !== null;
-  const changesReady = state.mode === "changes" && state.workspace !== null;
+  const readReady = completeRead(state.workspace) && !state.refreshing;
+  const historyReady = state.mode === "history" && state.history !== null && readReady;
+  const changesReady = state.mode === "changes" && readReady;
   useEffect(() => {
     if (!historyReady || marked.current.history === state.historyEpoch) return;
     const epoch = state.historyEpoch;
@@ -169,8 +336,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
   useEffect(() => {
     const handle = createShortcutHandler();
     const onKey = (event: KeyboardEvent) => {
-      const { requests, menuOpen, repository } = live.current;
-      const action = handle(event, { messageField: null, comparisonPane: null, modalOpen: false, menuOpen: menuOpen !== null, reviewValid: false });
+      const { requests, menuOpen, modalOpen, repository } = live.current;
+      const action = handle(event, { messageField: null, comparisonPane: null, modalOpen, menuOpen: menuOpen !== null, reviewValid: false });
       if (!action) return;
       if (action.type === "focusMenuBar") menubar.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
       else if (action.type === "refresh") requests.refresh();
@@ -185,13 +352,22 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
   }, []);
 
   async function openRepository() {
-    const response = await bridge.chooseRepository();
-    // Contract §3: a canceled dialog keeps the workspace.
-    if (response.state === "succeeded" && isRegistration(response.result)) {
-      setOpenFailed(false);
-      requests.open(response.result);
-    } else if (response.state !== "canceled") setOpenFailed(true);
+    registered(await bridge.chooseRepository());
     opener.current?.focus();
+  }
+
+  async function reviewTrust() {
+    if (repositoryId === null) return;
+    const response = await bridge.readTrust({ repositoryId });
+    if (response.state === "succeeded" && isTrustReport(response.result)) setTrust({ report: response.result, open: true });
+    else setTrustNotice(`Trust review did not complete: ${responseCode(response)}.`);
+  }
+
+  // The menu shows the outcome text. A new trust read gives the new trust state and trust ID.
+  async function revokeTrust(trustId: string) {
+    const response = await bridge.revokeTrust({ repositoryId: repositoryId! }, { trustId });
+    setTrustRead((n) => n + 1);
+    return response;
   }
 
   // Focus returns to the control that had it before the menu bar (plan.md "Keyboard and focus", Menu bar row).
@@ -206,15 +382,20 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
   const path = workspace?.identity.worktreeRoot ?? null;
   const head = workspace ? headText(workspace.head) : null;
   const rows = headerRowCount(client.width);
-  const pane = { state, requests };
+  const pane: WorkbenchPaneProps = { state, requests, density: preferences.density, profile, textScale: TEXT_SCALE, menuOpen: menuOpen !== null, modalOpen, onStatus: setPaneStatus };
+  // plan.md "Notice band": the blocking row, then the submodule row.
+  const conflicted = workspace === null ? 0 : state.entries.reduce((n, e) => n + (e.category === "conflicted" ? 1 : 0), 0);
+  const blockingRow = workspace !== null && blockingText(workspace.operationState, conflicted) !== null;
+  const submodules = workspace?.submoduleNotice.count ?? 0;
+  const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0);
 
   // Sizes in DIPs. The work area scrolls when the sections reach their minima (plan.md "Overflow").
   // `workAreaHeight` needs a plan.md header row count, which only the wide and narrow profiles guarantee.
   const available = profile === "constrained" ? client.height : workAreaHeight(client, TEXT_SCALE, preferences.density);
   const tray = paneBounds("tray", { width: client.width, available, density: preferences.density, textScale: TEXT_SCALE });
   const band = paneBounds("fileBand", { width: client.width, available, density: preferences.density, textScale: TEXT_SCALE });
-  // The notice band and the status area are empty slots until T137 and T138, so they take no rows here.
-  const clamped = clampPanes({ client, textScale: TEXT_SCALE, density: preferences.density, bandRows: 0, statusArea: 0, fileBand: fileBand ?? band.default, tray: bottom ?? tray.default });
+  // The status area is an empty slot until T138, so it takes no rows here.
+  const clamped = clampPanes({ client, textScale: TEXT_SCALE, density: preferences.density, bandRows, statusArea: 0, fileBand: fileBand ?? band.default, tray: bottom ?? tray.default });
   const trayHeight = clamped.tray;
   const bandHeight = clamped.fileBand ?? band.default;
   const lane = preferences.panes.fileLane;
@@ -236,10 +417,6 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
             gridTemplateRows: `auto 0 ${m.constrainedRegionMin}px 0 ${trayHeight}px`,
             gridTemplateAreas: '"lane" "laneSplit" "comparison" "traySplit" "tray"',
           };
-  const historyGrid: CSSProperties = {
-    gridTemplateColumns: "minmax(0, 1fr)",
-    gridTemplateRows: profile === "constrained" ? `${m.constrainedRegionMin}px 0 ${trayHeight}px` : `minmax(${m.historyListMin}px, 1fr) ${m.splitter}px ${trayHeight}px`,
-  };
   const resizable = profile !== "constrained";
   const traySplitter = (
     <Splitter
@@ -254,17 +431,22 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
     />
   );
 
-  const statusText = state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : openFailed ? "The repository did not open." : "";
+  const statusText = state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : (trustNotice ?? "");
 
   return (
     <div data-profile={profile} className="flex h-dvh flex-col bg-canvas text-text">
+      {environment !== null && hasMarkers(environment) ? (
+        <div data-slot="recovery-markers" className="max-h-[40dvh] shrink-0 overflow-y-auto border-b border-divider p-2">
+          <RecoveryMarkers environment={environment} onDismissMarker={dismissMarker} />
+        </div>
+      ) : null}
       <header className="flex flex-wrap items-center gap-x-3 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
         <Button ref={opener} variant="outline" style={{ order: 1 }} onClick={() => void openRepository()}>
           Open repository
         </Button>
         <div className="flex min-w-[160px] flex-1 items-center gap-2" style={{ order: rows === 1 ? 2 : 6, flexBasis: rows === 1 ? undefined : "100%", minHeight: "var(--h-header)" }}>
           {path === null ? (
-            <span className="text-muted-text">{state.repository ? "Loading…" : "No repository"}</span>
+            <span className="text-muted-text">{state.repository || restoring ? "Loading…" : "No repository"}</span>
           ) : (
             <>
               <MiddleEllipsis text={path} tail={lastComponent(path)} className="min-w-[160px] shrink-[4]" />
@@ -275,17 +457,18 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
         </div>
         <div ref={menubar} style={{ order: 3 }} onFocus={onMenubarFocus}>
           <Menubar className="h-auto border-0 p-0">
-            <MenubarMenu onOpenChange={onMenuOpen("repository")}>
-              <MenubarTrigger>Repository</MenubarTrigger>
-              <MenubarContent finalFocus={finalFocus}>
-                <MenubarGroup>
-                  <MenubarLabel className="break-all whitespace-normal">{path ?? "No repository"}</MenubarLabel>
-                  {head === null ? null : <MenubarLabel className="break-all whitespace-normal">HEAD: {head}</MenubarLabel>}
-                </MenubarGroup>
-                <MenubarSeparator />
-                <MenubarItem onClick={() => void openRepository()}>Open repository</MenubarItem>
-              </MenubarContent>
-            </MenubarMenu>
+            <RepositoryMenu
+              environment={environment}
+              path={path}
+              head={head}
+              trustId={trust?.report.trustId ?? null}
+              onOpenRepository={() => void openRepository()}
+              onSelectGit={onSelectGit}
+              onReviewTrust={() => void reviewTrust()}
+              revokeTrust={revokeTrust}
+              onOpenChange={onMenuOpen("repository")}
+              finalFocus={finalFocus}
+            />
             <MenubarMenu onOpenChange={onMenuOpen("view")}>
               <MenubarTrigger>View</MenubarTrigger>
               <MenubarContent finalFocus={finalFocus}>
@@ -345,15 +528,37 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
       </Tabs>
 
       <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        {/* plan.md "Notice band": T137 fills this slot. */}
-        <div data-slot="notice-band" />
+        <div data-slot="notice-band">
+          {workspace === null ? null : (
+            <NoticeBand
+              operationState={workspace.operationState}
+              conflicted={conflicted}
+              submoduleRow={
+                submodules > 0 ? (
+                  <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
+                    <WarningIcon />
+                    <span>
+                      Some submodules are not initialized or not at their recorded commit. Count: {submodules}. {LATER.submodules}
+                    </span>
+                  </p>
+                ) : undefined
+              }
+            />
+          )}
+        </div>
+        {refusal === null ? null : <RepositoryRefused code={responseCode(refusal)} result={refusal.result as RegistrationResult | undefined} onOpenRepository={() => void openRepository()} />}
+        {saveFailed ? <SaveFailedNotice /> : null}
         {state.repository === null ? (
-          <section className="flex flex-col items-start gap-2 p-4">
-            <Button variant="outline" onClick={() => void openRepository()}>
-              Open repository
-            </Button>
-            <p className="text-muted-text">{SCOPE_LINE}</p>
-          </section>
+          restoring ? (
+            <Loading hasContent={false} refreshing={false} />
+          ) : (
+            <section className="flex flex-col items-start gap-2 p-4">
+              <Button variant="outline" onClick={() => void openRepository()}>
+                Open repository
+              </Button>
+              <p className="text-muted-text">{SCOPE_LINE}</p>
+            </section>
+          )
         ) : (
           <>
             <section aria-label="Changes" hidden={state.mode !== "changes"} className="grid flex-1" style={grid}>
@@ -374,15 +579,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
               </div>
               <div className="[grid-area:traySplit]">{traySplitter}</div>
               <div className="min-h-0 overflow-auto border-t border-divider p-2 text-muted-text" style={{ gridArea: "tray" }}>
-                Commit is not available in this build.
+                {LATER.commit}
               </div>
             </section>
-            <section aria-label="History" hidden={state.mode !== "history"} className="grid flex-1" style={historyGrid}>
-              <div className="min-h-0 overflow-auto">
-                {HistoryView ? <HistoryView {...pane} /> : <p className="p-2 text-muted-text">{state.history === null ? "Loading…" : "History is not available in this build."}</p>}
-              </div>
-              <div>{traySplitter}</div>
-              <div className="min-h-0 overflow-auto border-t border-divider p-2 text-muted-text">Select a commit to see its details</div>
+            {/* HistoryView owns the list and the inspector. */}
+            <section aria-label="History" hidden={state.mode !== "history"} className="flex min-h-0 flex-1 flex-col">
+              {HistoryView ? <HistoryView {...pane} /> : <p className="p-2 text-muted-text">{state.history === null ? "Loading…" : "History is not available in this build."}</p>}
             </section>
           </>
         )}
@@ -394,7 +596,28 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView }: 
         <span role="status" className="min-w-0 flex-1 truncate">
           {statusText}
         </span>
+        <span role="status" className="min-w-0 flex-1 truncate">
+          {paneStatus}
+        </span>
       </footer>
+      {trust === null || state.repository === null ? null : (
+        <TrustDialog
+          open={trust.open}
+          report={trust.report}
+          repositoryId={state.repository.repositoryId}
+          bridge={bridge}
+          client={client}
+          finalFocus={() => opener.current}
+          onCancel={() => setTrust({ ...trust, open: false })}
+          onApproved={(result) => {
+            setTrust({ ...trust, open: false });
+            setSaveFailed(result.saveFailed);
+            requests.trustApproved();
+            setTrustRead((n) => n + 1);
+          }}
+          onFailed={(response) => setTrustNotice(`Trust approval did not complete: ${responseCode(response)}.`)}
+        />
+      )}
     </div>
   );
 }

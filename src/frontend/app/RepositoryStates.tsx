@@ -99,11 +99,11 @@ export function Loading({ hasContent, refreshing }: { hasContent: boolean; refre
 }
 
 /** The comparison pane without a selected entry. */
-export function NoSelection() {
+export function NoSelection({ helpLine = HELP_LINE }: { helpLine?: string }) {
   return (
     <div className="flex flex-col gap-2 p-4">
       <p>Select a file to view its changes</p>
-      <p className="text-muted-text">{HELP_LINE}</p>
+      <p className="text-muted-text">{helpLine}</p>
     </div>
   );
 }

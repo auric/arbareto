@@ -524,7 +524,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const hooksRead = await git(submoduleHooksPathArgs(location));
       const hooksText = hooksRead.code === 0 ? oneLine(hooksRead.out) : null;
       if (hooksText === null) throw failed("GIT_FAILED");
-      // Git prints the hooks path relative to the folder where it ran: the `-C` folder, or the worktree root with `--git-dir`.
+      // Git prints the hooks path relative to the folder where it ran: the `-C` folder, or the worktree root for a kept Git directory.
       const hooks = resolve("worktree" in location ? location.worktree : w.worktreeRoot, hooksText);
       const config = await git(submoduleConfigListArgs(location), { max: TRUST_INPUT_BYTES });
       if (config.limited) throw failed("OUTPUT_LIMIT");
@@ -655,8 +655,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "limit", gitPath, parentWorktree: root });
       refuse("limit", root, REFUSAL_TEXTS.limit, remedy);
     };
-    const refuseGitdir = (path: string, parentWorktree: string, localPath?: Uint8Array) => {
-      const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "gitdir-config", gitPath, parentWorktree, ...(localPath === undefined ? {} : { path: localPath }) });
+    const refuseGitdir = (path: string, parentWorktree: string, localPath?: Uint8Array, nested = false) => {
+      const remedy = gitPath === null ? null : buildRefusalRemedy({ reason: "gitdir-config", gitPath, parentWorktree, nested, ...(localPath === undefined ? {} : { path: localPath }) });
       refuse("gitdir-config", path, REFUSAL_TEXTS.gitdirConfig, remedy);
     };
     const refuseUnsaved = (path: string, repo: Repo, target: string | null, row?: SubmodulePlanRow) => {
@@ -809,7 +809,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         }
         if (lv.parentPath !== null && parentSetsActive) row.notes.push(NOTES.nestedActive(lv.parentPath));
 
-        const updateRemedy = () => (gitPath === null ? null : buildRefusalRemedy({ reason: "update-mode", gitPath, parentWorktree: lv.worktree, path: link.path }));
+        const updateRemedy = () => (gitPath === null ? null : buildRefusalRemedy({ reason: "update-mode", gitPath, parentWorktree: lv.worktree, path: link.path, nested: lv.depth > 0 }));
         let modeRefused = false;
         const refuseMode = (value: string) => {
           modeRefused = true;
@@ -900,7 +900,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
 
       // Depth first, as Git's own update visits the rows (probe S19).
       for (const [pending, repo] of nested) {
-        if (setsGitdir(repo.entries)) refuseGitdir(pending.row.path, pending.parentWorktree, pending.localPath);
+        if (setsGitdir(repo.entries)) refuseGitdir(pending.row.path, pending.parentWorktree, pending.localPath, pending.row.depth > 0);
         if (pending.row.action === "skip") continue;
         const target = pending.row.target;
         const local = target !== null && (await present(repo.location, target));
@@ -1300,7 +1300,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         const { head, headRef } = await readHead(location);
         const firstRow = rows.length;
         const firstRefusal = refusals.length;
-        if (setsGitdir(config.entries)) refuseGitdir(parent.row.path, parent.parentWorktree, parent.localPath);
+        if (setsGitdir(config.entries)) refuseGitdir(parent.row.path, parent.parentWorktree, parent.localPath, parent.row.depth > 0);
         const tree = head === null ? null : await treeOf(location, head, (found) => (links = found));
         const pathspecs = pathspecsOf(config.entries);
         let active: Set<string> | null = null;

@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T223: `updateSubmodules` (contract §12 "Update protocol", "Trust", "Environment and console", "Reconciliation and outcome", "Remedies").
-// `src/git-service/submodule-update.ts` comes with T230. T231 registers the operation in the session.
+// `src/git-service/submodule-update.ts` comes with T230, which registers the operation in the session. T231 turns the cases into real tests.
 
 import { describe, expect } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import policyFile from "../../src/contracts/git-environment.json";
 import { SUBMODULE_PROGRESS_PHASES, SubmoduleProgress } from "../../src/contracts/submodules";
@@ -13,7 +13,7 @@ import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
-import { gitPath, mutationFrames, outcome, SUCCEEDED, TIMEOUT_MS, todoCase, until, valuesOf } from "./hunk-harness";
+import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, todoCase, until, valuesOf } from "./hunk-harness";
 import { caseTest, once, withFsCalls, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
 import {
   callsSince,
@@ -24,6 +24,7 @@ import {
   fetchRemedy,
   fixtureGit,
   gitLocation,
+  invalidGitFolder,
   miniGit,
   miniWorld,
   moduleDirOf,
@@ -55,8 +56,8 @@ import {
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
 const TASK = "T223";
-const NEEDS = "(needs T231)";
 const SHELL: Capability[] = ["shell-double"];
+const updateCase = (name: string, needs: readonly Capability[], fn: () => Promise<void>) => caseTest(TASK, name, needs, fn, TIMEOUT_MS);
 
 useFixtureRoot();
 
@@ -106,7 +107,7 @@ const keptOf = (b: Built, path: string) => resolve(b.root, (b.facts.notes.kept a
 describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () => {
   const VARIANTS: F27Variant[] = ["base", "behind-present", "behind-fetch", "deinit-kept", "update-none", "literal-paths", "kept-remote", "spaces", "unreachable-target", "headless-kept"];
   for (const variant of VARIANTS) {
-    todoCase(TASK, `F27 ${variant}: every submodule HEAD, .git/modules folder, and submodule.* key equals Git's own update --init --recursive, and the superproject raw index digest stays equal ${NEEDS}`, SHELL, () => {
+    updateCase(`F27 ${variant}: every submodule HEAD, .git/modules folder, and submodule.* key equals Git's own update --init --recursive, and the superproject raw index digest stays equal`, SHELL, () => {
       const name = `t223-oracle-${variant}`;
       const b = buildF27(gitPath(), name, variant);
       const sup = superOf(b);
@@ -124,7 +125,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     });
   }
 
-  todoCase(TASK, `F27 base: the runner sees the clone steps in depth-first index order, and the nested row runs after its parent clone ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 base: the runner sees the clone steps in depth-first index order, and the nested row runs after its parent clone`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-order", "base");
     const sup = superOf(b);
     return withFixture(b, "t223-order", async (service) => {
@@ -138,7 +139,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     });
   });
 
-  todoCase(TASK, `F27 behind-fetch: the fetch-checkout row runs the fetch, the check reads, and the checkout step without a fetch ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 behind-fetch: the fetch-checkout row runs the fetch, the check reads, and the checkout step without a fetch`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-fetch-checkout", "behind-fetch");
     const sup = superOf(b);
     return withFixture(b, "t223-fetch-checkout", async (service) => {
@@ -154,7 +155,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     });
   });
 
-  todoCase(TASK, `every update request names the network policy, whose environment sets GIT_PROTOCOL_FROM_USER=0 ${NEEDS}`, SHELL, () => {
+  updateCase(`every update request names the network policy, whose environment sets GIT_PROTOCOL_FROM_USER=0`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-network", "behind-fetch");
     return withFixture(b, "t223-network", async (service) => {
       const { from } = await updated(service, superOf(b));
@@ -165,7 +166,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     });
   });
 
-  todoCase(TASK, `F29 base: the first fetch of mid passes --no-recurse-submodules, and its output names no nested submodule (research.md R14 S25) ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 base: the first fetch of mid passes --no-recurse-submodules, and its output names no nested submodule (research.md R14 S25)`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-no-recursion", "base");
     const sup = superOf(b);
     return withFixture(b, "t223-no-recursion", async (service) => {
@@ -176,7 +177,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     });
   });
 
-  todoCase(TASK, `F27 unreachable-target: the row fetches before its checkout, as Git's own update does ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 unreachable-target: the row fetches before its checkout, as Git's own update does`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-unreachable", "unreachable-target");
     const sup = superOf(b);
     const oracle = oracleOf(b, "oracle-copy");
@@ -190,7 +191,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     });
   });
 
-  todoCase(TASK, `F27 kept-remote: the row runs the connect step, the first fetch, remote get-url, and the fallback fetch -- good <target>, then the checkout ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 kept-remote: the row runs the connect step, the first fetch, remote get-url, and the fallback fetch -- good <target>, then the checkout`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-kept-remote", "kept-remote");
     const sup = superOf(b);
     const target = subsOf(b).solo!.recorded;
@@ -205,7 +206,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     });
   });
 
-  todoCase(TASK, `F27 kept-remote: the first fetch from the missing origin fails, the fallback fetch reaches the target, the row states moved, and the outcome is succeeded ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 kept-remote: the first fetch from the missing origin fails, the fallback fetch reaches the target, the row states moved, and the outcome is succeeded`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-first-fetch", "kept-remote");
     const sup = superOf(b);
     return withFixture(b, "t223-first-fetch", async (service) => {
@@ -223,25 +224,28 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     });
   });
 
-  todoCase(TASK, `F27 literal-paths: the sub[1] row leaves sub1 unchanged ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 literal-paths: the sub[1] row leaves sub1 unchanged`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-literal", "literal-paths");
     const sup = superOf(b);
+    const target = subsOf(b)["sub[1]"]!.recorded;
     return withFixture(b, "t223-literal", async (service) => {
       await update();
       const { repositoryId, r } = await reviewedOk(service, sup);
-      // Holds the `sub1` clone step. By then the `sub[1]` row has ended.
-      const release = service.runner.holdStart((c) => c.arguments.includes(":(literal)sub1"));
+      // Index order puts `sub1` before `sub[1]`. Holds the `sub[1]` clone step and moves `sub1`, which a plain `sub[1]` pathspec checks out again (probe S8).
+      const release = service.runner.holdStart((c) => c.arguments.includes(":(literal)sub[1]"));
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => service.runner.calls.some((c) => c.arguments.includes(":(literal)sub1")), "sub1 clone step");
-      expect({ sub1: existsSync(join(sup, "sub1", ".git")), "sub[1]": headOf(b, join(sup, "sub[1]")) }).toEqual({ sub1: false, "sub[1]": subsOf(b)["sub[1]"]!.recorded });
+      await until(() => service.runner.calls.some((c) => c.arguments.includes(":(literal)sub[1]")), "sub[1] clone step");
+      expect(headOf(b, join(sup, "sub1"))).toBe(subsOf(b).sub1!.recorded);
+      fixtureGit(b, join(sup, "sub1"), ["checkout", "-q", "--detach", target]);
       release();
       const response = await service.response(requestId);
-      expect({ "sub[1]": resultOf(response, "sub[1]").newCommit, sub1: resultOf(response, "sub1").newCommit }).toEqual({ "sub[1]": subsOf(b)["sub[1]"]!.recorded, sub1: subsOf(b).sub1!.recorded });
+      expect({ "sub[1]": resultOf(response, "sub[1]").newCommit, sub1: headOf(b, join(sup, "sub1")) }).toEqual({ "sub[1]": target, sub1: target });
     });
   });
 
-  todoCase(TASK, `progress events carry the row index, the row count, and a percentage, and no Git text ${NEEDS}`, SHELL, () => {
-    const b = buildF27(gitPath(), "t223-progress", "base");
+  // A local clone copies objects without a pack transfer, so only a fetch step prints the `NN% (a/b)` counter (research.md R14 S20).
+  updateCase(`F27 behind-fetch: progress events carry the row index, the row count, and a percentage, and no Git text`, SHELL, () => {
+    const b = buildF27(gitPath(), "t223-progress", "behind-fetch");
     return withFixture(b, "t223-progress", async (service) => {
       await update();
       const { repositoryId, r } = await reviewedOk(service, superOf(b));
@@ -256,7 +260,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
 });
 
 describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
-  todoCase(TASK, `F27 base with a stored superproject approval: the update registers submodules, and the next readTrust still reports approved ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 base with a stored superproject approval: the update registers submodules, and the next readTrust still reports approved`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-stored-approval", "base");
     const sup = superOf(b);
     const program = put(b.root, "programs/diff.sh", "#!/bin/sh\nexit 0\n").replaceAll("\\", "/");
@@ -274,7 +278,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F29 base: confirmRun goes out before any update process; a declined reply ends canceled with CANCELED, no update process, and no canary run ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 base: confirmRun goes out before any update process; a declined reply ends canceled with CANCELED, no update process, and no canary run`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-declined", "base");
     return withFixture(b, "t223-declined", async (service) => {
       service.runner.inject.confirmRun = "declined";
@@ -285,7 +289,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F29 base: after approved, the canaries run, and confirmRun precedes the first update step ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 base: after approved, the canaries run, and confirmRun precedes the first update step`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-approved", "base");
     return withFixture(b, "t223-approved", async (service) => {
       const { from } = await updated(service, superOf(b));
@@ -303,7 +307,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     return file;
   }
 
-  todoCase(TASK, `after an approved confirmRun, a hook sees GIT_TERMINAL_PROMPT=0 and GIT_NO_LAZY_FETCH=1 ${NEEDS}`, SHELL, () => {
+  updateCase(`after an approved confirmRun, a hook sees GIT_TERMINAL_PROMPT=0 and GIT_NO_LAZY_FETCH=1`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-hook-env", "behind-present");
     const file = envHook(b);
     return withFixture(b, "t223-hook-env", async (service) => {
@@ -313,7 +317,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F29 kept-folder: confirmRun counts the kept-folder canaries; none runs before the approved reply, and they run after it ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 kept-folder: confirmRun counts the kept-folder canaries; none runs before the approved reply, and they run after it`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-kept-confirm", "kept-folder");
     return withFixture(b, "t223-kept-confirm", async (service) => {
       await update();
@@ -330,7 +334,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F29 relative-hooks: confirmRun goes out with the unchecked count, which includes the reuse row; a declined reply runs no canary ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 relative-hooks: confirmRun goes out with the unchecked count, which includes the reuse row; a declined reply runs no canary`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-relative-declined", "relative-hooks");
     return withFixture(b, "t223-relative-declined", async (service) => {
       service.runner.inject.confirmRun = "declined";
@@ -342,7 +346,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F29 relative-hooks: after approved, the target-tree canaries of all four rows run, as in Git's own update ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 relative-hooks: after approved, the target-tree canaries of all four rows run, as in Git's own update`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-relative-approved", "relative-hooks");
     return withFixture(b, "t223-relative-approved", async (service) => {
       await updated(service, superOf(b));
@@ -364,7 +368,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     return { response: await service.response(requestId), from, r, repositoryId, requestId };
   }
 
-  todoCase(TASK, `re-check: a submodule HEAD that moves while confirmRun is open ends failed with STALE_REVIEW; no update process starts, the mutation frames end with resolved, and the next mutation is not blocked ${NEEDS}`, SHELL, () => {
+  updateCase(`re-check: a submodule HEAD that moves while confirmRun is open ends failed with STALE_REVIEW; no update process starts, the mutation frames end with resolved, and the next mutation is not blocked`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-recheck-head", "behind-present");
     envHook(b);
     const sup = superOf(b);
@@ -372,7 +376,8 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
       b,
       "t223-recheck-head",
       async (service) => {
-        const { response, from, r, repositoryId } = await recheck(service, sup, () => void fixtureGit(b, join(sup, "solo"), ["checkout", "-q", "--detach", "HEAD~1"]));
+        // The `solo` HEAD is its root commit, so the case moves it to the recorded commit.
+        const { response, from, r, repositoryId } = await recheck(service, sup, () => void fixtureGit(b, join(sup, "solo"), ["checkout", "-q", "--detach", subsOf(b).solo!.recorded]));
         expect({ outcome: outcome(response), steps: updateSteps(service, from).length }).toEqual({ outcome: { state: "failed", code: "STALE_REVIEW" }, steps: 0 });
         expect(mutationFrames(service, response.operationId!).at(-1)).toBe("resolved");
         // A repeated request with the consumed token returns this operation.
@@ -386,7 +391,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     );
   });
 
-  todoCase(TASK, `re-check: a trust-relevant superproject change while confirmRun is open ends failed with TRUST_CHANGED, and no update process starts ${NEEDS}`, SHELL, () => {
+  updateCase(`re-check: a trust-relevant superproject change while confirmRun is open ends failed with TRUST_CHANGED, and no update process starts`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-recheck-trust", "behind-present");
     envHook(b);
     const sup = superOf(b);
@@ -403,7 +408,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     );
   });
 
-  todoCase(TASK, `re-check: without a change, the re-check passes, and the update runs ${NEEDS}`, SHELL, () => {
+  updateCase(`re-check: without a change, the re-check passes, and the update runs`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-recheck-none", "behind-present");
     envHook(b);
     return withFixture(b, "t223-recheck-none", async (service) => {
@@ -413,7 +418,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F29 nested-programs: the nested row ends refused with programs, and the added fsmonitor canary never runs ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 nested-programs: the nested row ends refused with programs, and the added fsmonitor canary never runs`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-nested-programs", "nested-programs");
     return withFixture(b, "t223-nested-programs", async (service) => {
       const { response } = await updated(service, superOf(b));
@@ -423,7 +428,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F29 row-programs: the second row ends refused with programs, and the changed hook never runs ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 row-programs: the second row ends refused with programs, and the changed hook never runs`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-row-programs", "row-programs");
     return withFixture(b, "t223-row-programs", async (service) => {
       const { response } = await updated(service, superOf(b));
@@ -433,7 +438,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F27 unreachable-target: a listed hook that changes during the first fetch ends the row refused with programs and fetched; no checkout starts, the hook never runs, and the outcome is completed-with-effects ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 unreachable-target: a listed hook that changes during the first fetch ends the row refused with programs and fetched; no checkout starts, the hook never runs, and the outcome is completed-with-effects`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-fetch-program", "unreachable-target");
     const sup = superOf(b);
     const ran = join(b.root, "hook-ran.txt");
@@ -460,14 +465,16 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     });
   });
 
-  todoCase(TASK, `F29 copy with submodule.active in mid: a changed fsmonitor canary before the nested active-set read refuses every row of that level with programs; no ls-files starts there, and the parent row keeps its state ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 copy with submodule.active in mid: a changed fsmonitor canary before the nested active-set read refuses every row of that level with programs; no ls-files starts there, and the parent row keeps its state`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-nested-active", "base");
     const sup = superOf(b);
     const midDir = join(b.root, (b.facts.notes.programs as Record<string, string>).mid!);
-    fixtureGit(b, b.root, ["config", "--file", join(midDir, "config"), "submodule.active", "leaf"]);
-    const monitor = join(b.root, b.facts.canaries["mid-fsmonitor"]!.replace(/\.log$/, ".sh"));
+    const config = join(midDir, "config");
+    fixtureGit(b, b.root, ["config", "--file", config, "submodule.active", "leaf"]);
+    // The canary file lies outside the superproject roots, so its program entry has the digest `unchecked` (contract §12 "Trust"). The case changes the configured value.
+    const monitor = fixtureGit(b, b.root, ["config", "--file", config, "--get", "core.fsmonitor"]).trimEnd();
     const checkpoint = (c: SubmoduleCheckpoint) => {
-      if (c.point === "nested-active-set" && c.path === "mid") writeFileSync(monitor, `${readFileSync(monitor, "utf8")}# changed\n`);
+      if (c.point === "nested-active-set" && c.path === "mid") fixtureGit(b, b.root, ["config", "--file", config, "core.fsmonitor", `${monitor} changed`]);
     };
     return withFixture(
       b,
@@ -486,7 +493,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
 describe("refusals before and during the run (contract §12 \"Refusals\", \"Update protocol\" step 5)", () => {
   // `updateSubmodules` refuses while a review refusal holds. The review still issues a token (implementer assumption).
   for (const variant of ["update-command", "remote-name"] as const) {
-    todoCase(TASK, `F28 ${variant}: updateSubmodules refuses with UNSUPPORTED_SUBMODULE, no update process starts, and the canary never runs ${NEEDS}`, SHELL, () => {
+    updateCase(`F28 ${variant}: updateSubmodules refuses with UNSUPPORTED_SUBMODULE, no update process starts, and the canary never runs`, SHELL, () => {
       const b = buildF28(gitPath(), `t223-refuse-${variant}`, variant);
       return withFixture(b, `t223-refuse-${variant}`, async (service) => {
         await update();
@@ -499,7 +506,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   }
 
-  todoCase(TASK, `F28 folder: updateSubmodules refuses with folder-not-empty, no process starts, and the modified and the untracked file keep their bytes ${NEEDS}`, SHELL, () => {
+  updateCase(`F28 folder: updateSubmodules refuses with folder-not-empty, no process starts, and the modified and the untracked file keep their bytes`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-folder", "folder");
     const folder = b.facts.notes.folder as { path: string; files: Record<string, string> };
     return withFixture(b, "t223-folder", async (service) => {
@@ -513,7 +520,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `F28 moved-folder: after the test moves the folder out, the update reaches the recorded commit, and the moved folder keeps every byte ${NEEDS}`, SHELL, () => {
+  updateCase(`F28 moved-folder: after the test moves the folder out, the update reaches the recorded commit, and the moved folder keeps every byte`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-moved-folder", "moved-folder");
     const sup = superOf(b);
     const moved = join(b.root, "moved-solo");
@@ -525,7 +532,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `F28 prune: the fetch removes the remote-tracking ref; the row ends refused with unsaved-commits and fetched, HEAD stays, no checkout starts, and the outcome is completed-with-effects ${NEEDS}`, SHELL, () => {
+  updateCase(`F28 prune: the fetch removes the remote-tracking ref; the row ends refused with unsaved-commits and fetched, HEAD stays, no checkout starts, and the outcome is completed-with-effects`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-prune", "prune");
     const sup = superOf(b);
     const prune = b.facts.notes.prune as { head: string; ref: string };
@@ -539,7 +546,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `F28 keep: without fetch.prune, the row moves to its recorded commit ${NEEDS}`, SHELL, () => {
+  updateCase(`F28 keep: without fetch.prune, the row moves to its recorded commit`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-keep", "keep");
     return withFixture(b, "t223-keep", async (service) => {
       const { response } = await updated(service, superOf(b));
@@ -552,7 +559,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     ["F27 deinit-kept reuse row", (n: string) => buildF27(gitPath(), n, "deinit-kept")],
     ["F28 moved-folder row without a kept HEAD", (n: string) => buildF28(gitPath(), n, "moved-folder")],
   ] as const) {
-    todoCase(TASK, `folder re-check, ${label}: a file added after the preflight ends the row refused with folder-not-empty; no process starts for it, the file keeps its bytes, and the other rows continue ${NEEDS}`, SHELL, () => {
+    updateCase(`folder re-check, ${label}: a file added after the preflight ends the row refused with folder-not-empty; no process starts for it, the file keeps its bytes, and the other rows continue`, SHELL, () => {
       const name = `t223-folder-recheck-${label.startsWith("F27") ? "kept" : "moved"}`;
       const b = build(name);
       const sup = superOf(b);
@@ -578,7 +585,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   }
 
-  todoCase(TASK, `F27 deinit-kept: the reuse row without a connect step runs its check reads with --git-dir and --work-tree of the kept folder, never in the superproject ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 deinit-kept: the reuse row without a connect step runs its check reads with --git-dir and --work-tree of the kept folder, never in the superproject`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-reuse-check", "deinit-kept");
     const kept = keptOf(b, "solo");
     return withFixture(b, "t223-reuse-check", async (service) => {
@@ -591,7 +598,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `F27 kept-remote: Cancel after the connect step leaves the row connected, and the outcome is failed-with-effects, not canceled ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 kept-remote: Cancel after the connect step leaves the row connected, and the outcome is failed-with-effects, not canceled`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-connect-cancel", "kept-remote");
     const sup = superOf(b);
     return withFixture(b, "t223-connect-cancel", async (service) => {
@@ -609,7 +616,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
   });
 
   for (const variant of ["gitdir-extension", "gitdir-outside", "gitdir-nested"] as const satisfies readonly F29Variant[]) {
-    todoCase(TASK, `F29 ${variant}: the update refuses with gitdir-config and its update command; no process starts, confirmRun never goes out, and no canary runs ${NEEDS}`, SHELL, () => {
+    updateCase(`F29 ${variant}: the update refuses with gitdir-config and its update command; no process starts, confirmRun never goes out, and no canary runs`, SHELL, () => {
       const b = buildF29(gitPath(), `t223-${variant}`, variant);
       const sup = superOf(b);
       const path = b.facts.notes.gitdirConfig as string | undefined;
@@ -626,7 +633,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   }
 
-  todoCase(TASK, `F29 base: the ext:: row fails, its canary never runs, and the row carries an outputTail and the clone remedy ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 base: the ext:: row fails, its canary never runs, and the row carries an outputTail and the clone remedy`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-ext", "base");
     const sup = superOf(b);
     return withFixture(b, "t223-ext", async (service) => {
@@ -637,15 +644,21 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `F29 base without protocol.file.allow: a file clone row and a fetching row fail, each with the stderr line of Git's own update in its outputTail (research.md R14 S21) ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 base without protocol.file.allow: a file clone row and a fetching row fail, each with the stderr line of Git's own update in its outputTail (research.md R14 S21)`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-no-file", "base");
     const sup = superOf(b);
     // Git's own update of each row in a copy, with the same owned global file.
     const copy = copySuper(b, "oracle-no-file");
-    const env = fixtureEnv({ GIT_CONFIG_GLOBAL: join(b.root, b.facts.notes.globalNoFile as string) });
-    const own = (path: string) => Bun.spawnSync([gitPath(), "-c", "core.fsmonitor=false", "submodule", "update", "--init", "--", path], { cwd: copy, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const noFile = { GIT_CONFIG_GLOBAL: join(b.root, b.facts.notes.globalNoFile as string) };
+    const own = (args: string[], cwd: string, env = {}) => Bun.spawnSync([gitPath(), "-c", "core.fsmonitor=false", ...args], { cwd, env: fixtureEnv({ ...noFile, ...env }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const lines = (text: string) => text.split(/\r?\n/).filter((l) => l !== "" && !l.includes(copy.replaceAll("\\", "/")) && !l.includes(copy));
-    const expected = { solo: lines(own("solo").stderr.toString()), mid: lines(own("mid").stderr.toString()) };
+    // The clone row runs Git's own `submodule update`. The fetching row runs its own fetch steps, so its tail holds the fallback fetch of Git's own update without the `submodule--helper` lines.
+    // git-submodule.sh sets `GIT_PROTOCOL_FROM_USER=0` for that fetch (contract §12 "Environment and console").
+    const expected = {
+      solo: lines(own(["submodule", "update", "--init", "--", "solo"], copy).stderr.toString()),
+      mid: lines(own(["fetch", "origin", subsOf(b).mid!.recorded], join(copy, "mid"), { GIT_PROTOCOL_FROM_USER: "0" }).stderr.toString()),
+    };
+    expect({ solo: expected.solo.length > 0, mid: expected.mid.length > 0 }).toEqual({ solo: true, mid: true });
     return withFixture(
       b,
       "t223-no-file",
@@ -662,7 +675,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     );
   });
 
-  todoCase(TASK, `F29 base: the hook URL token appears only as <redacted>, never in a log, a diagnostic, or a progress event ${NEEDS}`, SHELL, () => {
+  updateCase(`F29 base: the hook URL token appears only as <redacted>, never in a log, a diagnostic, or a progress event`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-hook-token", "base");
     return withFixture(b, "t223-hook-token", async (service) => {
       await updated(service, superOf(b));
@@ -675,7 +688,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `F28 blocked: the blocked row states failed with its HEAD and edit intact, the other row moves, every process runs, and the outcome is failed-with-effects ${NEEDS}`, SHELL, () => {
+  updateCase(`F28 blocked: the blocked row states failed with its HEAD and edit intact, the other row moves, every process runs, and the outcome is failed-with-effects`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-blocked", "blocked");
     const sup = superOf(b);
     const blocked = b.facts.notes.blocked as { path: string; edited: string; moves: string };
@@ -692,7 +705,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `F28 unregistered-block: the row ends failed with registered, and the outcome is failed-with-effects ${NEEDS}`, SHELL, () => {
+  updateCase(`F28 unregistered-block: the row ends failed with registered, and the outcome is failed-with-effects`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-registered", "unregistered-block");
     return withFixture(b, "t223-registered", async (service) => {
       const { response } = await updated(service, superOf(b));
@@ -701,13 +714,15 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `nested registered: a nested clone that registers and then fails carries registered against its level-read baseline ${NEEDS}`, SHELL, () => {
+  updateCase(`nested registered: a nested clone that registers and then fails carries registered against its level-read baseline`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-nested-registered", "base");
     const sup = superOf(b);
     // A new `mid` commit whose `.gitmodules` URL of `leaf` names a missing folder. The superproject records it.
     const midSrc = join(b.root, "src", "mid");
     fixtureGit(b, midSrc, ["config", "--file", ".gitmodules", "submodule.leaf.url", "../missing-leaf.git"]);
-    fixtureGit(b, midSrc, ["commit", "-q", "-a", "-m", "missing leaf"]);
+    // The source has no `leaf` folder, so `commit -a` would drop the `leaf` gitlink.
+    fixtureGit(b, midSrc, ["add", "--", ".gitmodules"]);
+    fixtureGit(b, midSrc, ["commit", "-q", "-m", "missing leaf"]);
     fixtureGit(b, midSrc, ["push", "-q", "origin", "HEAD:refs/heads/main"]);
     const mid = fixtureGit(b, midSrc, ["rev-parse", "HEAD"]).trim();
     ownedGit(gitPath(), FIXTURE_ROOT, sup, ["update-index", "-z", "--index-info"], { input: Buffer.from(`160000 ${mid} 0\tmid\0`) });
@@ -719,7 +734,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     });
   });
 
-  todoCase(TASK, `a run whose only row ends refused without a change gives completed-with-effects ${NEEDS}`, SHELL, () => {
+  updateCase(`a run whose only row ends refused without a change gives completed-with-effects`, SHELL, () => {
     const w = miniWorld("t223-only-refused", [{ name: "solo", path: "solo", url: "../solo.git", at: "second" }]);
     miniGit(w, w.sup.dir, ["submodule", "update", "--init", "-q", "--", "solo"]);
     miniGit(w, join(w.sup.dir, "solo"), ["checkout", "-q", "--detach", w.solo.first]);
@@ -793,7 +808,7 @@ function withMini(w: MiniWorld, name: string, body: (service: Service) => Promis
 
 describe("clone check, register step, and clone recursion (contract §12 \"Update protocol\" step 5)", () => {
   for (const withCommit of [true, false]) {
-    todoCase(TASK, `clone check: another Git process sets up the clone row before its clone step${withCommit ? " and commits on its HEAD; the row ends refused with unsaved-commits, the found-folder text, and no command" : "; the row ends refused with changed-after-review"}, no process starts for it, and the canary never runs ${NEEDS}`, SHELL, () => {
+    updateCase(`clone check: another Git process sets up the clone row before its clone step${withCommit ? " and commits on its HEAD; the row ends refused with unsaved-commits, the found-folder text, and no command" : "; the row ends refused with changed-after-review"}, no process starts for it, and the canary never runs`, SHELL, () => {
       const name = `t223-clone-check-${withCommit ? "commit" : "plain"}`;
       const b = buildF27(gitPath(), name, "base");
       const sup = superOf(b);
@@ -827,7 +842,7 @@ describe("clone check, register step, and clone recursion (contract §12 \"Updat
     });
   }
 
-  todoCase(TASK, `F27 update-none: the row runs submodule init -- :(literal)solo and no clone, and its submodule.* keys equal Git's own update ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 update-none: the row runs submodule init -- :(literal)solo and no clone, and its submodule.* keys equal Git's own update`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-register", "update-none");
     const sup = superOf(b);
     const oracle = oracleOf(b, "oracle-copy");
@@ -840,7 +855,7 @@ describe("clone check, register step, and clone recursion (contract §12 \"Updat
     });
   });
 
-  todoCase(TASK, `F27 update-none with submodule.active excluding the row: no process starts for it ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 update-none with submodule.active excluding the row: no process starts for it`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-register-inactive", "update-none");
     const sup = superOf(b);
     fixtureGit(b, sup, ["config", "submodule.active", "mid"]);
@@ -850,14 +865,23 @@ describe("clone check, register step, and clone recursion (contract §12 \"Updat
     });
   });
 
-  todoCase(TASK, `F27 headless-kept: the clone step passes -c fetch.recurseSubmodules=no, the nested kept canary never runs, and the result equals Git's own update ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 headless-kept: the clone step passes -c fetch.recurseSubmodules=no, the nested kept canary does not run before the steps of the nested row, and the result equals Git's own update`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-headless", "headless-kept");
     const sup = superOf(b);
     // Git's own update runs the nested hook (research.md R14 S27), so the oracle runs after the canary check.
     const pre = copySuper(b, "pre-update");
     return withFixture(b, "t223-headless", async (service) => {
-      const { from } = await updated(service, sup);
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, sup);
+      const from = service.runner.calls.length;
+      // The steps of the nested `leaf` row reuse its kept Git folder and run its hooks, as Git's own update does.
+      const leafStep = (c: { arguments: readonly string[] }) => c.arguments.includes(":(literal)leaf");
+      const release = service.runner.holdStart(once(leafStep));
+      const requestId = sendUpdate(service, repositoryId, r);
+      await until(() => callsSince(service, from).some(leafStep), "first leaf step");
       expect(ranCanaries(b)).toEqual([]);
+      release();
+      await service.response(requestId);
       const clone = updateSteps(service, from).find((c) => c.arguments.includes(":(literal)mid"))!;
       expect(clone.arguments.slice(0, 3)).toEqual(["--no-lazy-fetch", "-c", "fetch.recurseSubmodules=no"]);
       const oracle = oracleOf(b, "oracle-copy", pre);
@@ -873,12 +897,13 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
     service.runner.inject.exit = (call) => (armed.on && match(call.arguments) && ++seen === nth ? code : undefined);
   }
 
+  // Each variant sends the run confirmation. So the preflight and the step 3 re-check run each check read first, and the third call is the step 5 check.
   for (const [i, [read, variant, command, nth, failedRead]] of ([
-    ["for-each-ref", "behind-present", "for-each-ref --contains=HEAD --count=1 --format=%(refname)", 2, "check"],
+    ["for-each-ref", "behind-present", "for-each-ref --contains=HEAD --count=1 --format=%(refname)", 3, "check"],
     ["remote get-url", "kept-remote", "remote get-url --all -- good", 1, "remote-get-url"],
-    ["rev-parse --verify -q HEAD (exit 128)", "behind-present", "rev-parse --verify -q HEAD", 2, "check"],
+    ["rev-parse --verify -q HEAD (exit 128)", "behind-present", "rev-parse --verify -q HEAD", 3, "check"],
   ] as const).entries()) {
-    todoCase(TASK, `an injected non-zero exit of ${read} ends the row failed with the read name, and no later process starts for it ${NEEDS}`, SHELL, () => {
+    updateCase(`an injected non-zero exit of ${read} ends the row failed with the read name, and no later process starts for it`, SHELL, () => {
       const name = `t223-read-${i}`;
       const b = buildF27(gitPath(), name, variant);
       const sup = superOf(b);
@@ -890,14 +915,14 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
         const from = service.runner.calls.length;
         const response = await updateSubmodules(service, repositoryId, r);
         const row = resultOf(response, "solo");
-        expect({ state: row.state, failedRead: row.failedRead, remedy: row.remedy }).toEqual({ state: "failed", failedRead, remedy: undefined });
+        expect({ confirmRuns: confirmRuns(service).length, state: row.state, failedRead: row.failedRead, remedy: row.remedy }).toEqual({ confirmRuns: 1, state: "failed", failedRead, remedy: undefined });
         const failedAt = callsSince(service, from).findIndex((c) => c.exit?.exitCode === 128 && cmd(c) === command);
         expect(callsSince(service, from).slice(failedAt + 1).filter((c) => c.arguments.includes(":(literal)solo") || isAt(sup, "solo")(c)).filter((c) => commandOf(c.arguments)[0] !== "rev-parse" && commandOf(c.arguments)[0] !== "for-each-ref" && commandOf(c.arguments)[0] !== "config" && commandOf(c.arguments)[0] !== "symbolic-ref" && commandOf(c.arguments)[0] !== "show-ref").map(cmd)).toEqual([]);
       });
     });
   }
 
-  todoCase(TASK, `F27 deinit-kept: a test-injected error of the run-time folder read ends the reuse row failed with the read name folder ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 deinit-kept: a test-injected error of the run-time folder read ends the reuse row failed with the read name folder`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-read-folder", "deinit-kept");
     const sup = superOf(b);
     const folder = join(sup, "solo");
@@ -921,7 +946,7 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
     );
   });
 
-  todoCase(TASK, `F27 behind-present: an injected rev-list exit 128 makes the row fetch, as Git's is_tip_reachable does ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 behind-present: an injected rev-list exit 128 makes the row fetch, as Git's is_tip_reachable does`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-read-rev-list", "behind-present");
     const sup = superOf(b);
     return withFixture(b, "t223-read-rev-list", async (service) => {
@@ -935,7 +960,7 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
     });
   });
 
-  todoCase(TASK, `F27 base: a failed level read of mid ends its listed nested row failed; the parent row keeps its state, and the outcome is failed-with-effects ${NEEDS}`, SHELL, () => {
+  updateCase(`F27 base: a failed level read of mid ends its listed nested row failed; the parent row keeps its state, and the outcome is failed-with-effects`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-read-level", "base");
     const sup = superOf(b);
     return withFixture(b, "t223-read-level", async (service) => {
@@ -953,19 +978,111 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
   });
 });
 
+// Contract §12 "Review reads": `--git-dir=.git` follows `-C <submodule worktree>`. Without it, Git discovery from a `.git` folder that Git refuses finds the superproject.
+describe("submodule repository targets (contract §12 \"Review reads\", \"Update protocol\" step 5)", () => {
+  const superGitDir = (b: Built) => fixtureGit(b, superOf(b), ["rev-parse", "--absolute-git-dir"]);
+  const succeededIn = (service: Service, sup: string, from: number, path: string) => callsSince(service, from).filter((c) => isAt(sup, path)(c) && c.exit?.exitCode === 0).map(cmd);
+
+  caseTest("T231", `a .git folder whose HEAD is not valid, found by the clone check: no read in it succeeds, no step starts for the row, and the failed reconciliation read gives unknown`, SHELL, () => {
+    const b = buildF27(gitPath(), "t231-clone-check-git", "base");
+    const sup = superOf(b);
+    const checkpoint = (c: SubmoduleCheckpoint) => void (c.point === "clone-check" && c.path === "solo" && invalidGitFolder(join(sup, "solo")));
+    return withFixture(
+      b,
+      "t231-clone-check-git",
+      async (service) => {
+        const { response, from } = await updated(service, sup);
+        expect(fixtureGit(b, join(sup, "solo"), ["rev-parse", "--absolute-git-dir"])).toBe(superGitDir(b));
+        expect({
+          outcome: outcome(response),
+          reads: callsSince(service, from).some(isAt(sup, "solo")),
+          succeeded: succeededIn(service, sup, from, "solo"),
+          steps: updateSteps(service, from).filter((c) => c.arguments.includes(":(literal)solo")).length,
+        }).toEqual({ outcome: { state: "unknown", code: "STATE_UNKNOWN" }, reads: true, succeeded: [], steps: 0 });
+      },
+      { submoduleCheckpoint: checkpoint },
+    );
+  }, TIMEOUT_MS);
+
+  caseTest("T231", `a mid .git folder whose HEAD is not valid at its level read: no read in it succeeds, no step starts for the nested row, and the failed reconciliation read gives unknown`, SHELL, () => {
+    const b = buildF27(gitPath(), "t231-level-git", "base");
+    const sup = superOf(b);
+    return withFixture(b, "t231-level-git", async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, sup);
+      const from = service.runner.calls.length;
+      // The first call in `mid` is the level read after the clone step.
+      const inMid = isAt(sup, "mid");
+      const release = service.runner.holdStart(once(inMid));
+      const requestId = sendUpdate(service, repositoryId, r);
+      await until(() => callsSince(service, from).some(inMid), "mid level read");
+      rmSync(join(sup, "mid", ".git"));
+      invalidGitFolder(join(sup, "mid"));
+      expect(fixtureGit(b, join(sup, "mid"), ["rev-parse", "--absolute-git-dir"])).toBe(superGitDir(b));
+      release();
+      const response = await service.response(requestId);
+      expect({
+        outcome: outcome(response),
+        succeeded: succeededIn(service, sup, from, "mid"),
+        steps: updateSteps(service, from).filter((c) => c.arguments.includes(":(literal)leaf")).length,
+      }).toEqual({ outcome: { state: "unknown", code: "STATE_UNKNOWN" }, succeeded: [], steps: 0 });
+    });
+  }, TIMEOUT_MS);
+});
+
+// Contract §2 and §9: each handler validates its payload and its targets before any Git process starts.
+describe("admission (contract §2, §9)", () => {
+  caseTest("T231", `a bad payload, a snapshot or review of another workspace, and an old generation refuse reviewSubmodules and updateSubmodules, and no Git process starts`, SHELL, () => {
+    const b = buildF27(gitPath(), "t231-admission", "base");
+    const sup = superOf(b);
+    // Contract §6 "Registration reuse and release": only linked worktrees of one common directory stay registered together.
+    const other = join(b.root, "other");
+    fixtureGit(b, sup, ["worktree", "add", "-q", "--detach", other]);
+    return withFixture(b, "t231-admission", async (service) => {
+      await update();
+      const a = await reviewedOk(service, sup);
+      const o = await reviewedOk(service, other);
+      put(sup, "super.txt", "changed\n");
+      const now = await readOk(service, a.repositoryId);
+      expect(now.generation).toBeGreaterThan(a.r.read.generation);
+      const refused = async (operation: string, payload: object, generation: number) => {
+        const from = service.runner.calls.length;
+        const response = await service.request(operation, payload, { repositoryId: a.repositoryId, repositoryGeneration: generation });
+        return { ...outcome(response), runs: service.runner.calls.length - from };
+      };
+      const token = (r: SubmoduleReview) => ({ submoduleReviewToken: r.token, start: true });
+      const rejected = (code: string) => ({ state: "rejected", code, runs: 0 });
+      expect({
+        reviewPayload: await refused("reviewSubmodules", { snapshotId: now.snapshotId, start: true }, now.generation),
+        reviewOther: await refused("reviewSubmodules", { snapshotId: o.r.read.snapshotId }, now.generation),
+        reviewOld: await refused("reviewSubmodules", { snapshotId: a.r.read.snapshotId }, a.r.read.generation),
+        updatePayload: await refused("updateSubmodules", { ...token(a.r), start: false }, now.generation),
+        updateOther: await refused("updateSubmodules", token(o.r), now.generation),
+        updateOld: await refused("updateSubmodules", token(a.r), a.r.read.generation),
+      }).toEqual({
+        reviewPayload: rejected("INVALID_REQUEST"),
+        reviewOther: rejected("UNKNOWN_TARGET"),
+        reviewOld: rejected("REPOSITORY_CHANGED"),
+        updatePayload: rejected("INVALID_REQUEST"),
+        updateOther: rejected("UNKNOWN_TARGET"),
+        updateOld: rejected("REPOSITORY_CHANGED"),
+      });
+    });
+  }, TIMEOUT_MS);
+});
+
 describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
   const QUOTE = "it's";
   // Runs a remedy command in each PowerShell that the host has. The environment holds the owned global file.
-  function inPowerShell(w: MiniWorld, command: string): { shell: string; exitCode: number; stdout: string }[] {
-    return ["pwsh", "powershell"]
-      .filter((s) => Bun.which(s) !== null)
-      .map((shell) => {
-        const p = Bun.spawnSync([shell, "-NoProfile", "-NonInteractive", "-Command", command], { cwd: w.root, env: fixtureEnv(w.env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-        return { shell, exitCode: p.exitCode, stdout: p.stdout.toString() };
-      });
+  // Each run starts only when the loop asks for it, so the loop body resets the state before the next shell runs.
+  function* inPowerShell(w: MiniWorld, command: string): Generator<{ shell: string; exitCode: number; stdout: string }> {
+    for (const shell of ["pwsh", "powershell"].filter((s) => Bun.which(s) !== null)) {
+      const p = Bun.spawnSync([shell, "-NoProfile", "-NonInteractive", "-Command", command], { cwd: w.root, env: fixtureEnv(w.env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      yield { shell, exitCode: p.exitCode, stdout: p.stdout.toString() };
+    }
   }
 
-  todoCase(TASK, `a submodule path and a kept Git folder with a single quote: the unsaved-commits remedy stays literal in a PowerShell run ${NEEDS}`, [...SHELL, "powershell"], () => {
+  updateCase(`a submodule path and a kept Git folder with a single quote: the unsaved-commits remedy stays literal in a PowerShell run`, [...SHELL, "powershell"], () => {
     const w = miniWorld("t223-quote-unsaved", [
       { name: QUOTE, path: QUOTE, url: "../solo.git" },
       { name: `kept ${QUOTE}`, path: `kept ${QUOTE}`, url: "../solo.git" },
@@ -979,6 +1096,8 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
       return miniGit(w, join(sup, path), ["rev-parse", "HEAD"]).trim();
     };
     const worktreeCommit = unsaved(QUOTE);
+    // Git for Windows refuses `--git-dir=<gitfile>` with `\` separators when the gitfile holds a relative path, so the check names the Git folder that Git prints.
+    const worktreeGitDir = miniGit(w, join(sup, QUOTE), ["rev-parse", "--absolute-git-dir"]).trim();
     const keptCommit = unsaved(`kept ${QUOTE}`);
     const keptDir = resolve(sup, miniGit(w, sup, ["rev-parse", "--git-path", `modules/kept ${QUOTE}`]).trim());
     miniGit(w, sup, ["submodule", "deinit", "-q", "-f", "--", `kept ${QUOTE}`]);
@@ -989,7 +1108,7 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
       const commands = Object.fromEntries(r.refusals.filter((x) => x.reason === "unsaved-commits").map((x) => [x.path, x.remedy?.command ?? null]));
       expect(commands).toEqual({ [QUOTE]: saveCommand({ worktree: join(sup, QUOTE) }, worktreeCommit), [`kept ${QUOTE}`]: saveCommand({ gitDir: keptDir }, keptCommit) });
       for (const [path, oid, gitDir] of [
-        [QUOTE, worktreeCommit, join(sup, QUOTE, ".git")],
+        [QUOTE, worktreeCommit, worktreeGitDir],
         [`kept ${QUOTE}`, keptCommit, keptDir],
       ] as const) {
         for (const run of inPowerShell(w, commands[path]!)) {
@@ -1002,7 +1121,7 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
     });
   });
 
-  todoCase(TASK, `a failed row of a path with a single quote: its checkout remedy stays literal in a PowerShell run ${NEEDS}`, [...SHELL, "powershell"], () => {
+  updateCase(`a failed row of a path with a single quote: its checkout remedy stays literal in a PowerShell run`, [...SHELL, "powershell"], () => {
     const w = miniWorld("t223-quote-failed", [{ name: QUOTE, path: QUOTE, url: "../solo.git" }]);
     const sup = w.sup.dir;
     const sub = join(sup, QUOTE);
@@ -1021,7 +1140,7 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
     });
   });
 
-  todoCase(TASK, `a branch name with a single quote and one with U+0022: the detach note shows each branch name as plain text ${NEEDS}`, SHELL, () => {
+  updateCase(`a branch name with a single quote and one with U+0022: the detach note shows each branch name as plain text`, SHELL, () => {
     const branches = [`o'brien`, `a"b`];
     const w = miniWorld(
       "t223-quote-branch",
@@ -1072,7 +1191,7 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
     ["a fallback remote name x \\ from the submodule configuration", "x \\", "solo"],
     ["a submodule path with U+201C", "origin2", "sub“q"],
   ] as const) {
-    todoCase(TASK, `${label} gives no command; the row shows its text ${NEEDS}`, SHELL, () => {
+    updateCase(`${label} gives no command; the row shows its text`, SHELL, () => {
       const name = `t223-no-command-${label.length}`;
       const { w } = fallbackWorld(name, remote, path);
       return withMini(w, name, async (service) => {
@@ -1083,7 +1202,7 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
     });
   }
 
-  todoCase(TASK, `fetch remedy: without protocol.file.allow, the fetch remedy of a fetching file row fails in PowerShell as Git's own fetch does, and the session keeps its GIT_PROTOCOL_FROM_USER value ${NEEDS}`, [...SHELL, "powershell"], () => {
+  updateCase(`fetch remedy: without protocol.file.allow, the fetch remedy of a fetching file row fails in PowerShell as Git's own fetch does, and the session keeps its GIT_PROTOCOL_FROM_USER value`, [...SHELL, "powershell"], () => {
     const { w, target } = fallbackWorld("t223-fetch-remedy", "origin");
     const sub = join(w.sup.dir, "solo");
     // The remote names the real `solo.git` again. Only the protocol rule stops the fetch.
@@ -1138,7 +1257,7 @@ describe("lifecycle (contract §12 \"Environment and console\", §6, §2)", () =
     });
   });
 
-  todoCase(TASK, `a second mutation in the same common directory gives BUSY; the mutation frames arrive as started, ended, then resolved; a repeated request with the consumed token returns the first operation ${NEEDS}`, SHELL, () => {
+  updateCase(`a second mutation in the same common directory gives BUSY; the mutation frames arrive as started, ended, then resolved; a repeated request with the consumed token returns the first operation`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-busy", "base");
     const sup = superOf(b);
     return withFixture(b, "t223-busy", async (service) => {

@@ -352,10 +352,16 @@ export function gitlinkPatchArgs(paths: readonly string[]): string[] {
   return read("diff-files", "-p", "--ignore-submodules=dirty", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--", ...pathItems(paths));
 }
 
+// Contract §12 "Review reads": every Git process in a submodule worktree names `.git` as its Git directory, as Git's own update does (research R14 S19).
+// Without it, Git searches the parent folders when it refuses that `.git` folder, and reads the superproject. With it, Git exits 128 (probe of 2026-10-10).
+function inSubmodule(worktree: string): string[] {
+  return ["-C", pathItem(worktree), "--git-dir=.git"];
+}
+
 // Contract §12 "Plan": the `submodule.active` values are pathspecs for Git's own matcher (git-config(1)). `--literal-pathspecs` turns that matcher off (git(1)), so this read omits it.
 // A nested level runs it in the worktree of the parent submodule.
 export function activeSetArgs(pathspecs: readonly string[], parentWorktree?: string): string[] {
-  const at = parentWorktree === undefined ? [] : ["-C", pathItem(parentWorktree)];
+  const at = parentWorktree === undefined ? [] : inSubmodule(parentWorktree);
   return [NO_LAZY_FETCH, "--no-optional-locks", ...at, "ls-files", "-z", "--stage", "--", ...pathItems(pathspecs)];
 }
 
@@ -364,7 +370,7 @@ export type SubmoduleLocation = { worktree: string } | { gitDir: string };
 
 function submoduleRead(location: SubmoduleLocation, ...args: string[]): string[] {
   if (location === null || typeof location !== "object" || Object.keys(location).length !== 1) throw new TypeError("submodule location refused");
-  const at = "worktree" in location ? ["-C", pathItem(location.worktree)] : [`--git-dir=${pathItem(location.gitDir)}`, `--work-tree=${location.gitDir}`];
+  const at = "worktree" in location ? inSubmodule(location.worktree) : [`--git-dir=${pathItem(location.gitDir)}`, `--work-tree=${location.gitDir}`];
   return [NO_LAZY_FETCH, "--no-optional-locks", ...at, ...args];
 }
 
@@ -435,26 +441,28 @@ export function remoteUrlArgs(location: SubmoduleLocation, name: string): string
 }
 
 // Contract §12 "Update protocol" step 5: the update steps. `:(literal)` keeps the path literal (probe S8). No step passes `--recursive`.
+// `nested`: the parent worktree is a submodule worktree.
 const literalPathspec = (path: string): string => `:(literal)${pathItem(path)}`;
+const parentAt = (parentWorktree: string, nested: boolean): string[] => (nested ? inSubmodule(parentWorktree) : ["-C", pathItem(parentWorktree)]);
 
 // `-c fetch.recurseSubmodules=no` stops the on-demand fetch recursion inside the clone step (probe S27).
-export function submoduleCloneArgs(parentWorktree: string, path: string): string[] {
-  return [NO_LAZY_FETCH, "-c", "fetch.recurseSubmodules=no", "-C", pathItem(parentWorktree), "submodule", "update", "--init", "--progress", "--", literalPathspec(path)];
+export function submoduleCloneArgs(parentWorktree: string, path: string, nested = false): string[] {
+  return [NO_LAZY_FETCH, "-c", "fetch.recurseSubmodules=no", ...parentAt(parentWorktree, nested), "submodule", "update", "--init", "--progress", "--", literalPathspec(path)];
 }
 
 // The connect step and the checkout step use the same command.
-export function submoduleCheckoutArgs(parentWorktree: string, path: string): string[] {
-  return [NO_LAZY_FETCH, "-C", pathItem(parentWorktree), "submodule", "update", "--init", "--no-fetch", "--progress", "--", literalPathspec(path)];
+export function submoduleCheckoutArgs(parentWorktree: string, path: string, nested = false): string[] {
+  return [NO_LAZY_FETCH, ...parentAt(parentWorktree, nested), "submodule", "update", "--init", "--no-fetch", "--progress", "--", literalPathspec(path)];
 }
 
-export function submoduleRegisterArgs(parentWorktree: string, path: string): string[] {
-  return [NO_LAZY_FETCH, "-C", pathItem(parentWorktree), "submodule", "init", "--", literalPathspec(path)];
+export function submoduleRegisterArgs(parentWorktree: string, path: string, nested = false): string[] {
+  return [NO_LAZY_FETCH, ...parentAt(parentWorktree, nested), "submodule", "init", "--", literalPathspec(path)];
 }
 
 export function submoduleFetchArgs(worktree: string): string[] {
-  return [NO_LAZY_FETCH, "-C", pathItem(worktree), "fetch", "--progress", "--no-recurse-submodules"];
+  return [NO_LAZY_FETCH, ...inSubmodule(worktree), "fetch", "--progress", "--no-recurse-submodules"];
 }
 
 export function submoduleFallbackFetchArgs(worktree: string, remote: string, target: string, objectFormat: ObjectFormat): string[] {
-  return [NO_LAZY_FETCH, "-C", pathItem(worktree), "fetch", "--progress", "--no-recurse-submodules", "--", pathItem(remote), treeItem(target, objectFormat)];
+  return [NO_LAZY_FETCH, ...inSubmodule(worktree), "fetch", "--progress", "--no-recurse-submodules", "--", pathItem(remote), treeItem(target, objectFormat)];
 }

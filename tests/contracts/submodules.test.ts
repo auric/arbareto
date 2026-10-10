@@ -59,7 +59,7 @@ const UPDATE_TEXT =
   "This command runs Git's own recursive update without Arbareto's checks. Git can leave submodule commits without a ref. It can overwrite files in reused submodule folders and run a configured update command. Resolve every other refusal first.";
 
 const fetchScript = (git: string, sub: string, tail: string) =>
-  `& { $p = $env:GIT_PROTOCOL_FROM_USER; $env:GIT_PROTOCOL_FROM_USER = '0'; try { & '${git}' --no-lazy-fetch -C '${sub}' fetch --no-recurse-submodules${tail} } finally { $env:GIT_PROTOCOL_FROM_USER = $p } }`;
+  `& { $p = $env:GIT_PROTOCOL_FROM_USER; $env:GIT_PROTOCOL_FROM_USER = '0'; try { & '${git}' --no-lazy-fetch -C '${sub}' --git-dir=.git fetch --no-recurse-submodules${tail} } finally { $env:GIT_PROTOCOL_FROM_USER = $p } }`;
 
 const remedy = (request: SubmoduleRemedyRequest) => buildSubmoduleRemedy(request);
 
@@ -366,6 +366,15 @@ describe("Windows step remedies (contract §12 'Remedies', §4 quoting rule)", (
     expect(remedy({ step: "register", ...at })).toEqual({ command: `& '${GIT}' --no-lazy-fetch -C '${ROOT}' submodule init -- ':(literal)sub[1]'`, text: REGISTER_TEXT });
   });
 
+  test("a nested row runs each step in its parent submodule worktree with --git-dir=.git, as the service does", () => {
+    const at = { gitPath: GIT, parentWorktree: SUB, path: "nested", nested: true };
+    const checkout = `& '${GIT}' --no-lazy-fetch -C '${SUB}' --git-dir=.git submodule update --init --no-fetch -- ':(literal)nested'`;
+    expect(remedy({ step: "checkout", ...at })).toEqual({ command: checkout, text: CHECKOUT_TEXT });
+    expect(remedy({ step: "connect", ...at })).toEqual({ command: checkout, text: CHECKOUT_TEXT });
+    expect(remedy({ step: "clone", ...at }).command).toBe(`& '${GIT}' --no-lazy-fetch -C '${SUB}' --git-dir=.git submodule update --init -- ':(literal)nested'`);
+    expect(remedy({ step: "register", ...at }).command).toBe(`& '${GIT}' --no-lazy-fetch -C '${SUB}' --git-dir=.git submodule init -- ':(literal)nested'`);
+  });
+
   test("no step command passes --recursive or -c fetch.recurseSubmodules=no", () => {
     const requests: SubmoduleRemedyRequest[] = [
       { step: "fetch", gitPath: GIT, submoduleWorktree: SUB },
@@ -417,11 +426,14 @@ describe("refusal remedies (contract §12 'Refusals' and 'Remedies')", () => {
       command: `& '${GIT}' --no-lazy-fetch -C '${ROOT}' submodule update --init --recursive -- ':(literal)libs/sub'`,
       text: UPDATE_TEXT,
     });
+    expect(buildRefusalRemedy({ reason: "update-mode", gitPath: GIT, parentWorktree: SUB, path: "nested", nested: true })?.command).toBe(
+      `& '${GIT}' --no-lazy-fetch -C '${SUB}' --git-dir=.git submodule update --init --recursive -- ':(literal)nested'`,
+    );
   });
 
   test("a submodule gitdir-config names its path; a superproject gitdir-config and limit end before --", () => {
-    expect(buildRefusalRemedy({ reason: "gitdir-config", gitPath: GIT, parentWorktree: SUB, path: "nested" })).toEqual({
-      command: `& '${GIT}' --no-lazy-fetch -C '${SUB}' submodule update --init --recursive -- ':(literal)nested'`,
+    expect(buildRefusalRemedy({ reason: "gitdir-config", gitPath: GIT, parentWorktree: SUB, path: "nested", nested: true })).toEqual({
+      command: `& '${GIT}' --no-lazy-fetch -C '${SUB}' --git-dir=.git submodule update --init --recursive -- ':(literal)nested'`,
       text: UPDATE_TEXT,
     });
     const bare = { command: `& '${GIT}' --no-lazy-fetch -C '${ROOT}' submodule update --init --recursive`, text: UPDATE_TEXT };
@@ -431,9 +443,9 @@ describe("refusal remedies (contract §12 'Refusals' and 'Remedies')", () => {
 
   test("unsaved-commits gives the branch command with --no-lazy-fetch first and a 12-digit short ID", () => {
     const out = buildRefusalRemedy({ reason: "unsaved-commits", source: "review", gitPath: GIT, submoduleWorktree: SUB, commit: OLD });
-    expect(out).toMatchObject({ command: `& '${GIT}' --no-lazy-fetch -C '${SUB}' branch 'arbareto-saved-0123456789ab' '${OLD}'` });
+    expect(out).toMatchObject({ command: `& '${GIT}' --no-lazy-fetch -C '${SUB}' --git-dir=.git branch 'arbareto-saved-0123456789ab' '${OLD}'` });
     const run = buildRefusalRemedy({ reason: "unsaved-commits", source: "run", gitPath: GIT, submoduleWorktree: SUB, commit: OLD });
-    expect(run).toMatchObject({ command: `& '${GIT}' --no-lazy-fetch -C '${SUB}' branch 'arbareto-saved-0123456789ab' '${OLD}'` });
+    expect(run).toMatchObject({ command: `& '${GIT}' --no-lazy-fetch -C '${SUB}' --git-dir=.git branch 'arbareto-saved-0123456789ab' '${OLD}'` });
   });
 
   test("unsaved-commits in a kept Git directory uses --git-dir and --work-tree in place of -C", () => {
@@ -463,11 +475,11 @@ describe("refusal remedies (contract §12 'Refusals' and 'Remedies')", () => {
 describe("WSL remedies (contract §11 'Remedy commands', §12 'Remedies')", () => {
   test("fetch starts with /usr/bin/env GIT_PROTOCOL_FROM_USER=0 after --exec", () => {
     expect(remedy({ step: "fetch", gitPath: LGIT, submoduleWorktree: LSUB, wsl: WSL })).toEqual({
-      command: `${WSL_HEAD} /usr/bin/env GIT_PROTOCOL_FROM_USER=0 '${LGIT}' --no-lazy-fetch -C '${LSUB}' fetch --no-recurse-submodules`,
+      command: `${WSL_HEAD} /usr/bin/env GIT_PROTOCOL_FROM_USER=0 '${LGIT}' --no-lazy-fetch -C '${LSUB}' --git-dir=.git fetch --no-recurse-submodules`,
       text: FETCH_TEXT,
     });
     expect(remedy({ step: "fallback-fetch", gitPath: LGIT, submoduleWorktree: LSUB, remote: "origin", target: NEW, wsl: WSL })).toEqual({
-      command: `${WSL_HEAD} /usr/bin/env GIT_PROTOCOL_FROM_USER=0 '${LGIT}' --no-lazy-fetch -C '${LSUB}' fetch --no-recurse-submodules -- 'origin' '${NEW}'`,
+      command: `${WSL_HEAD} /usr/bin/env GIT_PROTOCOL_FROM_USER=0 '${LGIT}' --no-lazy-fetch -C '${LSUB}' --git-dir=.git fetch --no-recurse-submodules -- 'origin' '${NEW}'`,
       text: FETCH_TEXT,
     });
   });
@@ -485,12 +497,15 @@ describe("WSL remedies (contract §11 'Remedy commands', §12 'Remedies')", () =
       `${WSL_HEAD} '${LGIT}' --no-lazy-fetch -C '${LROOT}' submodule update --init --recursive`,
     );
     expect(buildRefusalRemedy({ reason: "unsaved-commits", source: "review", gitPath: LGIT, submoduleWorktree: LSUB, commit: OLD, wsl: WSL })).toMatchObject({
-      command: `${WSL_HEAD} '${LGIT}' --no-lazy-fetch -C '${LSUB}' branch 'arbareto-saved-0123456789ab' '${OLD}'`,
+      command: `${WSL_HEAD} '${LGIT}' --no-lazy-fetch -C '${LSUB}' --git-dir=.git branch 'arbareto-saved-0123456789ab' '${OLD}'`,
     });
+    expect(remedy({ step: "checkout", gitPath: LGIT, parentWorktree: LSUB, path: "nested", nested: true, wsl: WSL }).command).toBe(
+      `${WSL_HEAD} '${LGIT}' --no-lazy-fetch -C '${LSUB}' --git-dir=.git submodule update --init --no-fetch -- ':(literal)nested'`,
+    );
   });
 
   test("Linux paths keep a trailing slash", () => {
-    expect(remedy({ step: "fetch", gitPath: LGIT, submoduleWorktree: `${LSUB}/`, wsl: WSL }).command).toContain(`-C '${LSUB}/' fetch`);
+    expect(remedy({ step: "fetch", gitPath: LGIT, submoduleWorktree: `${LSUB}/`, wsl: WSL }).command).toContain(`-C '${LSUB}/' --git-dir=.git fetch`);
   });
 
   test("an approved distro Git path with = gives no WSL fetch command; other steps still build", () => {

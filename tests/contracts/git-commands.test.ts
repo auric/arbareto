@@ -386,9 +386,10 @@ test("the T199 file-staging arrays and blob proofs are exact", () => {
   }
 });
 
-// T227: contract §12 "Review reads". Each read inside a submodule starts with `--no-lazy-fetch --no-optional-locks` and then `-C <worktree>`, or `--git-dir=<dir> --work-tree=<dir>` for a kept Git directory.
+// T227: contract §12 "Review reads". Each read inside a submodule starts with `--no-lazy-fetch --no-optional-locks` and then `-C <worktree> --git-dir=.git`, or `--git-dir=<dir> --work-tree=<dir>` for a kept Git directory.
+// T231: `--git-dir=.git` stops Git discovery in the parent folders (contract §12 "Review reads").
 test("the T227 submodule review reads are exact for a worktree and for a kept Git directory", () => {
-  const W = ["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub"];
+  const W = ["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub", "--git-dir=.git"];
   const K = ["--no-lazy-fetch", "--no-optional-locks", "--git-dir=C:/repo/.git/modules/a/b", "--work-tree=C:/repo/.git/modules/a/b"];
   for (const [location, prefix] of [[{ worktree: "C:/repo/sub" }, W], [{ gitDir: "C:/repo/.git/modules/a/b" }, K]] as const) {
     expect(commands.submoduleHeadOidArgs(location)).toEqual([...prefix, "rev-parse", "--verify", "-q", "HEAD"]);
@@ -431,7 +432,7 @@ test("the T227 superproject submodule reads are exact", () => {
   expect(commands.modulesPathArgs()).toEqual([...R, "rev-parse", "--path-format=absolute", "--git-path", "modules"]);
   expect(commands.gitlinkPatchArgs(["sub", "-rf"])).toEqual([...R, "diff-files", "-p", "--ignore-submodules=dirty", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--", "sub", "-rf"]);
   expect(commands.activeSetArgs(["sub*", ":(glob)lib/**"])).toEqual(["--no-lazy-fetch", "--no-optional-locks", "ls-files", "-z", "--stage", "--", "sub*", ":(glob)lib/**"]);
-  expect(commands.activeSetArgs(["x"], "C:/repo/sub")).toEqual(["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub", "ls-files", "-z", "--stage", "--", "x"]);
+  expect(commands.activeSetArgs(["x"], "C:/repo/sub")).toEqual(["--no-lazy-fetch", "--no-optional-locks", "-C", "C:/repo/sub", "--git-dir=.git", "ls-files", "-z", "--stage", "--", "x"]);
   for (const build of [commands.gitlinkPatchArgs, commands.activeSetArgs]) expect(() => build([])).toThrow(TypeError);
   for (const parent of ["", "a\0b"]) expect(() => commands.activeSetArgs(["x"], parent)).toThrow(TypeError);
 });
@@ -442,8 +443,13 @@ test("the T227 submodule step arrays are exact", () => {
   expect(commands.submoduleCloneArgs("C:/repo", "lib/a[1]")).toEqual([N, "-c", "fetch.recurseSubmodules=no", "-C", "C:/repo", "submodule", "update", "--init", "--progress", "--", ":(literal)lib/a[1]"]);
   expect(commands.submoduleCheckoutArgs("C:/repo", "lib/a")).toEqual([N, "-C", "C:/repo", "submodule", "update", "--init", "--no-fetch", "--progress", "--", ":(literal)lib/a"]);
   expect(commands.submoduleRegisterArgs("C:/repo", "lib/a")).toEqual([N, "-C", "C:/repo", "submodule", "init", "--", ":(literal)lib/a"]);
-  expect(commands.submoduleFetchArgs("C:/repo/lib/a")).toEqual([N, "-C", "C:/repo/lib/a", "fetch", "--progress", "--no-recurse-submodules"]);
-  expect(commands.submoduleFallbackFetchArgs("C:/repo/lib/a", "origin", SHA256, "sha256")).toEqual([N, "-C", "C:/repo/lib/a", "fetch", "--progress", "--no-recurse-submodules", "--", "origin", SHA256]);
+  // T231: a nested row runs its steps in the worktree of its parent submodule (contract §12 "Update protocol" step 5).
+  const S = ["-C", "C:/repo/mid", "--git-dir=.git"];
+  expect(commands.submoduleCloneArgs("C:/repo/mid", "leaf", true)).toEqual([N, "-c", "fetch.recurseSubmodules=no", ...S, "submodule", "update", "--init", "--progress", "--", ":(literal)leaf"]);
+  expect(commands.submoduleCheckoutArgs("C:/repo/mid", "leaf", true)).toEqual([N, ...S, "submodule", "update", "--init", "--no-fetch", "--progress", "--", ":(literal)leaf"]);
+  expect(commands.submoduleRegisterArgs("C:/repo/mid", "leaf", true)).toEqual([N, ...S, "submodule", "init", "--", ":(literal)leaf"]);
+  expect(commands.submoduleFetchArgs("C:/repo/lib/a")).toEqual([N, "-C", "C:/repo/lib/a", "--git-dir=.git", "fetch", "--progress", "--no-recurse-submodules"]);
+  expect(commands.submoduleFallbackFetchArgs("C:/repo/lib/a", "origin", SHA256, "sha256")).toEqual([N, "-C", "C:/repo/lib/a", "--git-dir=.git", "fetch", "--progress", "--no-recurse-submodules", "--", "origin", SHA256]);
   for (const oid of ["HEAD", SHA256, "--all", ""]) expect(() => commands.submoduleFallbackFetchArgs("C:/repo/lib/a", "origin", oid, "sha1")).toThrow(TypeError);
   for (const dir of ["", "a\0b"]) {
     expect(() => commands.submoduleCloneArgs(dir, "a")).toThrow(TypeError);

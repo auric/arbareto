@@ -43,6 +43,12 @@ Git Extensions is a Windows Git GUI under GPL-3.0. Borrow behavior and layout id
 - `web-design-guidelines`: review of UI code and mockups.
 - `vercel-react-best-practices`: React code (client-side rules only).
 - `shadcn`: components. Run the generator only as `shadcn@4.21.0`, never `@latest`.
+- `animate`, `review-animations`, `animation-vocabulary` (Emil Kowalski, MIT): motion. Arbareto overrides:
+  - No motion on keyboard actions, list selection, arrow keys, scrolling, or a diff that appears on selection. These stay instant.
+  - Motion only for occasional state changes: popover, menu, and tooltip open; the dock swap; a notice band; a splitter that settles.
+  - CSS transitions, `@starting-style`, and Base UI `data-starting-style` / `data-ending-style` first. Add no motion library without a dependency review.
+  - Keep `prefers-reduced-motion` (gentler, not zero) and Windows forced colors working.
+  - Ignore the skills' pointers to `pick-ui-library`, Sonner, or Vaul. Components come from shadcn 4.21.0 and Base UI.
 - Project rules in CLAUDE.md: no heuristics; no mock data shown as real; every visible text comes from plan.md.
 
 ## 4. Delivery flow

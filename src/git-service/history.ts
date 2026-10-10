@@ -3,6 +3,7 @@
 
 // Contract §3 `readHistory` and "HistoryPage result", the §5 history bounds, and contract §7 "Shared listing", "Held history steps", and "Missing objects".
 
+import { isUtf8 } from "node:buffer";
 import type { HistoryPage, HistoryRefusal, HistoryRow } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import {
@@ -188,7 +189,7 @@ function subjectOf(message: Uint8Array): Uint8Array {
 
 // Git `ident.c` `split_ident_line`: the name ends before the first `<` without trailing white space, and the mail runs to the next `>`.
 // The date follows the last `>`, and a time zone must follow it. Null: Git finds no name, mail, or date, or the date is not a safe integer.
-function identOf(line: Uint8Array): { name: string; email: string; date: number } | null {
+function identOf(line: Uint8Array): { name: Uint8Array; email: Uint8Array; date: number } | null {
   const lt = line.indexOf(0x3c);
   if (lt === -1) return null;
   const gt = line.indexOf(0x3e, lt + 1);
@@ -206,21 +207,25 @@ function identOf(line: Uint8Array): { name: string; email: string; date: number 
   if (dateEnd === dateStart || (sign !== 0x2b && sign !== 0x2d) || zone >= line.length || !isDigit(line[zone]!)) return null;
   const date = Number(latin1(line.subarray(dateStart, dateEnd)));
   if (!Number.isSafeInteger(date)) return null;
-  return { name: lossy.decode(line.subarray(0, nameEnd)), email: lossy.decode(line.subarray(lt + 1, gt)), date };
+  return { name: line.subarray(0, nameEnd), email: line.subarray(lt + 1, gt), date };
 }
 
 // Contract §3 "HistoryPage result" row fields. The parents come from the traversal, never from the raw headers.
-function rowOf(oid: string, parents: readonly string[], object: CommitObject): HistoryRow | null {
+// `shallow`: the shallow file lists the commit. `invalidUtf8` checks the raw bytes, before the lossy decode.
+function rowOf(oid: string, parents: readonly string[], object: CommitObject, shallow: boolean): HistoryRow | null {
   const { author, message } = commitText(object.content);
   const ident = author === null ? null : identOf(author);
   if (ident === null) return null;
+  const subject = subjectOf(message);
   return {
     oid,
     parents: [...parents],
-    subject: lossy.decode(subjectOf(message)),
-    author: { name: ident.name, email: ident.email },
+    subject: lossy.decode(subject),
+    author: { name: lossy.decode(ident.name), email: lossy.decode(ident.email) },
     date: ident.date,
     encoding: object.encoding === null ? null : object.encoding.replace(CONTROLS, ""),
+    shallow,
+    invalidUtf8: !isUtf8(subject) || !isUtf8(ident.name) || !isUtf8(ident.email),
   };
 }
 
@@ -415,14 +420,17 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
     }
     // Contract §8 "Changing working file": a change during the second attempt ends the read `limited` with WORKTREE_CHANGING.
     if (held.shallowChanged && completeness.state === "complete") completeness = { state: "limited", code: "WORKTREE_CHANGING" };
+    // Git `commit.c` `parse_commit_buffer`: a commit that the shallow file lists has no effective parent.
+    // So with a shallow file above its bound, each kept row has a parent and is not shallow.
     const rows: HistoryRow[] = [];
     for (let i = 0; i < count; i++) {
-      const row = rowOf(traversal.rows[i]!.oid, traversal.rows[i]!.parents, objects.objects[i]!);
+      const { oid, parents } = traversal.rows[i]!;
+      const row = rowOf(oid, parents, objects.objects[i]!, shallow.kind === "file" && shallow.commits.has(oid));
       if (row === null) return refusal("MALFORMED_GIT_OUTPUT");
       rows.push(row);
     }
     // Contract §3: raw parent headers explain only the shallow boundaries.
-    const hidden = (i: number): readonly string[] => (shallow.kind === "file" && shallow.commits.has(rows[i]!.oid) ? objects.objects[i]!.parents : []);
+    const hidden = (i: number): readonly string[] => (rows[i]!.shallow ? objects.objects[i]!.parents : []);
     const boundaries = (kept: number) => {
       const inPage = new Set(rows.slice(0, kept).map((row) => row.oid));
       const page = new Set<string>();

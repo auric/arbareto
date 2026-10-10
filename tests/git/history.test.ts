@@ -51,7 +51,7 @@ async function history(service: Service, repo: string): Promise<ServiceResponse<
 }
 
 const repoOf = (built: Built, repo = "repo") => join(built.root, repo);
-const git = (repo: string, args: string[], input?: string) =>
+const git = (repo: string, args: string[], input?: string | Buffer) =>
   ownedGit(gitPath(), FIXTURE_ROOT, repo, ["--no-lazy-fetch", ...args], input === undefined ? {} : { input: Buffer.from(input) });
 
 type Row = HistoryResult["rows"][number];
@@ -83,15 +83,37 @@ function rawCommits(repo: string, oids: string[]): Buffer[] {
 }
 
 const decode = (bytes: Uint8Array) => new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+const fatal = new TextDecoder("utf-8", { fatal: true });
+// Latin-1 text holds one character per raw byte.
+const validUtf8 = (latin1: string) => {
+  try {
+    fatal.decode(Buffer.from(latin1, "latin1"));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// The commits that the shallow file of the repository lists. Empty without the file.
+function shallowFile(repo: string): Set<string> {
+  const path = join(repo, git(repo, ["rev-parse", "--git-path", "shallow"]).toString().trim());
+  return new Set(existsSync(path) ? readFileSync(path, "latin1").split("\n").filter((l) => l !== "") : []);
+}
 
 // Contract §3 "HistoryPage result" row fields from the raw object. Invalid UTF-8 decodes to U+FFFD. The subject is Git's first paragraph joined by spaces.
-function oracleRow(oid: string, parents: string[], raw: Buffer): Row {
+function oracleRow(oid: string, parents: string[], raw: Buffer, shallow: boolean): Row {
   const split = raw.indexOf("\n\n");
   const headers = raw.subarray(0, split).toString("latin1").split("\n");
+  const latin = (name: string) => headers.find((l) => l.startsWith(`${name} `))?.slice(name.length + 1) ?? null;
   const header = (name: string) => {
-    const line = headers.find((l) => l.startsWith(`${name} `));
-    return line === undefined ? null : decode(Buffer.from(line.slice(name.length + 1), "latin1"));
+    const line = latin(name);
+    return line === null ? null : decode(Buffer.from(line, "latin1"));
   };
+  const rawAuthor = latin("author")!;
+  const rawSubject = raw.subarray(split + 2).toString("latin1").split(/\n[ \t]*\n/)[0]!;
+  const rawName = rawAuthor.slice(0, rawAuthor.lastIndexOf("<"));
+  const rawEmail = rawAuthor.slice(rawAuthor.lastIndexOf("<") + 1, rawAuthor.lastIndexOf(">"));
+  const invalidUtf8 = ![rawSubject, rawName, rawEmail].every(validUtf8);
   const author = header("author")!;
   const email = author.slice(author.lastIndexOf("<") + 1, author.lastIndexOf(">"));
   const name = author.slice(0, author.lastIndexOf("<")).trimEnd();
@@ -99,13 +121,14 @@ function oracleRow(oid: string, parents: string[], raw: Buffer): Row {
   const encoding = header("encoding");
   const message = decode(raw.subarray(split + 2));
   const subject = message.split(/\n[ \t]*\n/)[0]!.split("\n").map((l) => l.trim()).join(" ").trim();
-  return { oid, parents, subject, author: { name, email }, date, encoding };
+  return { oid, parents, subject, author: { name, email }, date, encoding, shallow, invalidUtf8 };
 }
 
 function oracleRows(repo: string, tip: string): Row[] {
   const traversal = oracleTraversal(repo, tip);
   const raws = rawCommits(repo, traversal.map((r) => r.oid));
-  return traversal.map((r, i) => oracleRow(r.oid, r.parents, raws[i]!));
+  const shallow = shallowFile(repo);
+  return traversal.map((r, i) => oracleRow(r.oid, r.parents, raws[i]!, shallow.has(r.oid)));
 }
 
 const parentLines = (raw: Buffer) => raw.toString("latin1").slice(0, raw.indexOf("\n\n")).split("\n").filter((l) => l.startsWith("parent ")).map((l) => l.slice(7));
@@ -159,6 +182,11 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
             const boundaryRow = page.rows.find((r) => r.oid === shallowCommits[0]);
             expect(boundaryRow?.parents).toEqual([]);
           }
+          // T336: only a commit that the shallow file lists is shallow. A root is never shallow.
+          expect(page.rows.filter((r) => r.shallow).map((r) => r.oid)).toEqual(shallowCommits);
+          if (variant === "roots") expect(page.rows.filter((r) => r.parents.length === 0).length).toBe(2);
+          // T336: only the legacy commit holds bytes that are not valid UTF-8.
+          expect(page.rows.filter((r) => r.invalidUtf8).map((r) => r.oid)).toEqual(variant === "encoding" ? [tip] : []);
         }),
       TIMEOUT_MS,
     );
@@ -180,6 +208,48 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
           encoding: "ISO-8859-1",
         });
         for (const row of page.rows.slice(1)) expect(row.encoding).toBeNull();
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T336",
+    "F19 encoding: bytes that are not valid UTF-8 in the subject, author name, or author email without an encoding header give invalidUtf8",
+    ["shell-double"],
+    () =>
+      withService("t336-invalid-utf8", async (service) => {
+        const built = buildF19(gitPath(), "t336-invalid-utf8", "encoding");
+        const repo = repoOf(built);
+        const tip = built.facts.notes.tip as string;
+        const tree = git(repo, ["rev-parse", `${tip}^{tree}`]).toString("utf8").trim();
+        const ident = (name: string, email: string) => `${name} <${email}> 1767225604 +0000`;
+        // Each of the first three commits holds one ISO-8859-1 byte in one field. The last commit holds valid UTF-8 only. No commit has an encoding header.
+        const shapes: [string, string, string][] = [
+          ["Caf\xe9\n", FIXED_IDENTITY.name, FIXED_IDENTITY.email],
+          ["name\n", "Jos\xe9", FIXED_IDENTITY.email],
+          ["email\n", FIXED_IDENTITY.name, "jos\xe9@arbareto.invalid"],
+          ["Caf\xc3\xa9\n", "Jos\xc3\xa9", FIXED_IDENTITY.email],
+        ];
+        let parent = tip;
+        const oids: string[] = [];
+        for (const [message, name, email] of shapes) {
+          const raw = Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${ident(name, email)}\ncommitter ${ident(FIXED_IDENTITY.name, FIXED_IDENTITY.email)}\n\n${message}`, "latin1");
+          parent = git(repo, ["hash-object", "-t", "commit", "-w", "--stdin"], raw).toString("utf8").trim();
+          oids.unshift(parent);
+        }
+        git(repo, ["update-ref", "refs/heads/main", parent, tip]);
+        // Oracle: the stored objects hold the raw bytes and no encoding header.
+        const stored = rawCommits(repo, oids);
+        for (const object of stored) expect(object.includes(Buffer.from("\nencoding "))).toBe(false);
+        expect(stored[3]!.includes(Buffer.from([0x43, 0x61, 0x66, 0xe9, 0x0a]))).toBe(true);
+        const rows = (await history(service, repo)).result!.rows.slice(0, 4);
+        expect(rows.map((r) => ({ oid: r.oid, encoding: r.encoding, invalidUtf8: r.invalidUtf8 }))).toEqual([
+          { oid: oids[0]!, encoding: null, invalidUtf8: false },
+          { oid: oids[1]!, encoding: null, invalidUtf8: true },
+          { oid: oids[2]!, encoding: null, invalidUtf8: true },
+          { oid: oids[3]!, encoding: null, invalidUtf8: true },
+        ]);
+        expect(rows).toEqual(oracleRows(repo, parent).slice(0, 4));
       }),
     TIMEOUT_MS,
   );

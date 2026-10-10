@@ -67,7 +67,7 @@ describe("repository states", () => {
   test("No selection shows the hint and the full Unstaged help line", async () => {
     const host = await show(<states.NoSelection />);
     expect(text(host)).toContain("Select a file to view its changes");
-    expect(text(host)).toContain("Enter shows a file. Space stages or unstages it. The toolbar stages one hunk.");
+    expect(text(host)).toContain("Arrow keys show a file. Space stages or unstages it.");
   });
 
   test("Conflicted or unfinished operation names the state from the snapshot and offers only Refresh", async () => {

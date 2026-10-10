@@ -134,7 +134,7 @@
   --h-help-line-base: 18px;
   --h-reason-line-base: 18px;
   --h-header-base: 40px;
-  --h-mode-bar-base: 32px;
+  --h-stage-bar-base: 32px;
   --h-band-row-base: 32px;
   --h-hunk-toolbar-base: 32px;
   --h-status-bar-base: 32px;
@@ -164,7 +164,7 @@
   --h-help-line-base: 20px;
   --h-reason-line-base: 20px;
   --h-header-base: 44px;
-  --h-mode-bar-base: 36px;
+  --h-stage-bar-base: 36px;
   --h-band-row-base: 36px;
   --h-hunk-toolbar-base: 36px;
   --h-status-bar-base: 36px;
@@ -185,7 +185,7 @@
   --h-help-line: calc(var(--h-help-line-base) + var(--grow));
   --h-reason-line: calc(var(--h-reason-line-base) + var(--grow));
   --h-header: calc(var(--h-header-base) + var(--grow));
-  --h-mode-bar: calc(var(--h-mode-bar-base) + var(--grow));
+  --h-stage-bar: calc(var(--h-stage-bar-base) + var(--grow));
   --h-band-row: calc(var(--h-band-row-base) + var(--grow));
   --h-hunk-toolbar: calc(var(--h-hunk-toolbar-base) + var(--grow));
   --h-status-bar: calc(var(--h-status-bar-base) + var(--grow));
@@ -198,6 +198,7 @@
   --focus-offset: 2px;
   --hunk-bar-width: 3px;
   --marker-width: 2px;
+  --icon-size: 16px;
   --boundary-width: 2px;
   --boundary-dash: 3px;
   --boundary-stub: 6px;

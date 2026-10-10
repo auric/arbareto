@@ -14,7 +14,7 @@ const { createRoot } = await import("react-dom/client");
 const { ChangesPane } = await import("../../src/frontend/changes/ChangesPane");
 
 // plan.md "Task flow and command placement" (Stage or unstage), "Long text", and "Keyboard and focus" (Stage key row).
-const HELP = "Enter shows a file. Space stages or unstages it. The toolbar stages one hunk.";
+const HELP = "Arrow keys show a file. Space stages or unstages it.";
 
 const entry = (category: ChangeEntry["category"], path: string): ChangeEntry => ({
   entryId: crypto.randomUUID(),
@@ -51,6 +51,34 @@ describe("Unstaged help line", () => {
     const described = listboxes.filter((attrs) => (attr(attrs, "aria-describedby") ?? "").split(/\s+/).filter(Boolean).some((id) => textById(html, id).includes(HELP)));
     expect(described).toHaveLength(1);
     expect(nameOf(html, described[0]!)).toContain("Unstaged");
+  });
+});
+
+describe("stage bar slot", () => {
+  const STAGE_BAR = <button type="button">stage bar double</button>;
+  const renderWith = (sideBySide: boolean) =>
+    renderToStaticMarkup(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={never} stageBar={STAGE_BAR} sideBySide={sideBySide} />);
+
+  test("the slot sits between Working changes and Staged in the lane and in the file band", () => {
+    for (const sideBySide of [false, true]) {
+      const html = renderWith(sideBySide);
+      const order = [html.indexOf("Working changes"), html.indexOf(">Untracked<"), html.indexOf("stage bar double"), html.indexOf(">Staged<")];
+      expect(order.every((i) => i >= 0)).toBe(true);
+      expect(order).toEqual(order.toSorted((a, b) => a - b));
+    }
+  });
+
+  test("the slot holds one row-button row with the 32/36 DIP stage bar height", () => {
+    const html = renderWith(false);
+    // The opening tag of the element that directly holds the injected button.
+    const before = html.slice(0, html.indexOf('<button type="button">stage bar double'));
+    const parent = before.slice(before.lastIndexOf("<"));
+    expect(parent).toContain("--h-stage-bar");
+  });
+
+  test("without a stage bar, the pane shows no empty slot", () => {
+    const html = renderToStaticMarkup(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={never} />);
+    expect(html).not.toContain("--h-stage-bar");
   });
 });
 

@@ -1,25 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// plan.md "Keyboard and focus". No action commits, and no single-letter key or Space maps to an action.
+// plan.md "Keyboard and focus". Only Ctrl+Enter in the message field commits, and no single-letter key or Space maps to an action.
 
+/** The T355 workbench frame removes the two modes. `requests.ts` and `Workbench.tsx` still use this type until then. */
 export type Mode = "changes" | "history";
-export type Section = "header" | "modeTabs" | "noticeHeading" | "workingChanges" | "staged" | "comparison" | "composer" | "statusRegion" | "historyList" | "inspector";
+/** The docked panel below the history list (plan.md "Dock region"). */
+export type Panel = "commit" | "details";
+export type Section =
+  | "header"
+  | "noticeHeading"
+  | "references"
+  | "historyList"
+  | "workingChanges"
+  | "staged"
+  | "comparison"
+  | "composer"
+  | "commitDetails"
+  | "statusRegion";
 
 export type ShortcutAction =
-  | { type: "selectMode"; mode: Mode }
   | { type: "refresh" }
+  | { type: "openFolder" }
+  | { type: "openSwitcher" }
   | { type: "focusSection"; direction: "next" | "previous" }
   | { type: "focusMenuBar" }
   | { type: "selectHunk"; direction: "next" | "previous" }
-  | { type: "openReview" };
+  | { type: "commit" };
 
 export type ShortcutContext = {
   messageField: object | null;
   comparisonPane: object | null;
   modalOpen: boolean;
   menuOpen: boolean;
-  reviewValid: boolean;
+  commitEnabled: boolean;
 };
 
 export type ShortcutEvent = Pick<KeyboardEvent, "type" | "key" | "code" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "repeat" | "isComposing" | "getModifierState" | "preventDefault"> & {
@@ -78,11 +92,12 @@ export function createShortcutHandler() {
     if (blocked) return null;
     if (e.key === "F5" && m === NONE) return { type: "refresh" };
     if (e.key === "F6" && (m === NONE || m === SHIFT)) return { type: "focusSection", direction: m === SHIFT ? "previous" : "next" };
-    if (e.key === "Enter" && m === CTRL) return inMessage && context.reviewValid ? { type: "openReview" } : null;
+    if (e.key === "Enter" && m === CTRL) return inMessage && context.commitEnabled ? { type: "commit" } : null;
     if (editable) return null;
-    // `code` keeps the physical digit key on every layout (UI Events KeyboardEvent code).
-    if (m === CTRL && e.code === "Digit1") return { type: "selectMode", mode: "changes" };
-    if (m === CTRL && e.code === "Digit2") return { type: "selectMode", mode: "history" };
+    // `key` is the letter of the active layout (UI Events KeyboardEvent key). Caps Lock gives the capital without Shift.
+    const letter = m === CTRL ? e.key.toLowerCase() : null;
+    if (letter === "o") return { type: "openFolder" };
+    if (letter === "r") return { type: "openSwitcher" };
     if (m === ALT && (e.key === "ArrowUp" || e.key === "ArrowDown") && context.comparisonPane !== null && path.includes(context.comparisonPane)) {
       return { type: "selectHunk", direction: e.key === "ArrowUp" ? "previous" : "next" };
     }
@@ -97,20 +112,20 @@ export function createShortcutHandler() {
 }
 
 export type SectionState = {
-  mode: Mode;
+  panel: Panel;
   hidden: readonly Section[];
   bandRows: number;
   status: { text: boolean; toggle: boolean; cancel: boolean };
 };
 
-const ORDERS: Record<Mode, readonly Section[]> = {
-  changes: ["header", "modeTabs", "noticeHeading", "workingChanges", "staged", "comparison", "composer", "statusRegion"],
-  history: ["header", "modeTabs", "noticeHeading", "historyList", "inspector", "statusRegion"],
+const ORDERS: Record<Panel, readonly Section[]> = {
+  commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "statusRegion"],
+  details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "statusRegion"],
 };
 
 /** The F6 order. It is the same in every profile. */
-export function sectionOrder(mode: Mode): readonly Section[] {
-  return ORDERS[mode];
+export function sectionOrder(panel: Panel): readonly Section[] {
+  return ORDERS[panel];
 }
 
 function isStop(state: SectionState, section: Section): boolean {
@@ -122,7 +137,7 @@ function isStop(state: SectionState, section: Section): boolean {
 
 /** The next visible F6 stop after `current`, with wrap. Null when no section is a stop. */
 export function nextSection(state: SectionState, current: Section, direction: "next" | "previous"): Section | null {
-  const order = sectionOrder(state.mode);
+  const order = sectionOrder(state.panel);
   const step = direction === "next" ? 1 : -1;
   const index = order.indexOf(current);
   const start = index >= 0 ? index : direction === "next" ? -1 : order.length;

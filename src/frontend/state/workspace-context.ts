@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { ChangeEntry } from "../../contracts/envelope";
-import type { Mode, Section } from "../keyboard/shortcuts";
+import type { Panel, Section } from "../keyboard/shortcuts";
 
 // plan.md "Selection, scroll, and stored context". Entry IDs change with each read, so a selection keys on category and path bytes (data-model §5).
 
@@ -13,7 +13,7 @@ export type ViewContext = {
   snapshotId: string;
   category: Category | null;
   selections: Partial<Record<Category, string>>;
-  historyOid: string | null;
+  commitId: string | null;
   anchor: Anchor | null;
   focus: Section;
   hunk: HunkSelection | null;
@@ -21,20 +21,20 @@ export type ViewContext = {
 export type Draft = { text: string; caret: number };
 export type Current = { snapshotId: string; comparisonId: string | null };
 
-/** Keeps one view context per worktree and mode, and one draft per worktree, in renderer memory. */
+/** Keeps one view context per worktree and docked panel, and one draft per worktree, in renderer memory. */
 export function createWorkspaceContexts() {
   const contexts = new Map<string, ViewContext>();
   const drafts = new Map<string, Draft>();
   // A worktree key is 64 hex digits, so the separator never occurs in it.
-  const key = (worktreeKey: string, mode: Mode) => `${worktreeKey}/${mode}`;
+  const key = (worktreeKey: string, panel: Panel) => `${worktreeKey}/${panel}`;
 
   return {
-    save(worktreeKey: string, mode: Mode, context: ViewContext): void {
-      contexts.set(key(worktreeKey, mode), context);
+    save(worktreeKey: string, panel: Panel, context: ViewContext): void {
+      contexts.set(key(worktreeKey, panel), context);
     },
     /** Null when the context is missing or its snapshot is no longer current. The hunk returns only with its comparison. */
-    restore(worktreeKey: string, mode: Mode, current: Current): ViewContext | null {
-      const context = contexts.get(key(worktreeKey, mode));
+    restore(worktreeKey: string, panel: Panel, current: Current): ViewContext | null {
+      const context = contexts.get(key(worktreeKey, panel));
       if (!context || context.snapshotId !== current.snapshotId) return null;
       const hunk = context.hunk !== null && context.hunk.comparisonId === current.comparisonId ? context.hunk : null;
       return { ...context, hunk };

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent, type ReactNode } from "react";
 import type { ChangeEntry } from "../../contracts/envelope";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 
@@ -10,7 +10,7 @@ import { GIT_SEPARATORS, splitPath } from "../lib/path";
 
 type Category = ChangeEntry["category"];
 
-export const HELP_LINE = "Enter shows a file. Space stages or unstages it. The toolbar stages one hunk.";
+export const HELP_LINE = "Arrow keys show a file. Space stages or unstages it.";
 export const BUSY_REASON = "A file action is running. Wait for its result.";
 
 export type FileDirection = "stage" | "unstage";
@@ -40,10 +40,12 @@ export type ChangesPaneProps = {
   toolbarSuccess?: { entryId: string } | null;
   /** True only when the snapshot is a complete observation with every page loaded. */
   complete?: boolean;
-  /** The Unstaged help line. The default states the T202 and T145 controls. */
+  /** The Unstaged help line. */
   helpLine?: string;
   /** True in a file band: Working changes and Staged sit side by side (plan.md "Chosen layout, sizes, and DPI"). */
   sideBySide?: boolean;
+  /** The T202 file controls. The stage bar between Working changes and Staged holds them. */
+  stageBar?: ReactNode;
 };
 
 const WORKING: { category: Category; label: string }[] = [
@@ -75,7 +77,7 @@ function survivor(list: readonly ChangeEntry[], entryId: string, alive: Readonly
 }
 
 export function ChangesPane(props: ChangesPaneProps) {
-  const { entries, selection, fileActionRunning = false, operationRunning = false, toolbarSuccess = null, complete = false, helpLine = HELP_LINE, sideBySide = false } = props;
+  const { entries, selection, fileActionRunning = false, operationRunning = false, toolbarSuccess = null, complete = false, helpLine = HELP_LINE, sideBySide = false, stageBar } = props;
   const live = useRef(props);
   live.current = props;
   const groups = byCategory(entries);
@@ -226,6 +228,12 @@ export function ChangesPane(props: ChangesPaneProps) {
           <CategoryList key={w.category} {...listProps(w.category, w.label)} level={3} />
         ))}
       </section>
+      {stageBar === undefined ? null : (
+        // plan.md "Section minima": one row-button row. In a file band, the bar stands between the two lists.
+        <div className={`flex shrink-0 gap-2 border-divider px-2 ${sideBySide ? "flex-col justify-center border-l" : "items-center border-t"}`} style={{ minHeight: "var(--h-stage-bar)" }}>
+          {stageBar}
+        </div>
+      )}
       <section className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-divider ${sideBySide ? "border-l" : "border-t"}`}>
         <CategoryList {...listProps("staged", "Staged")} level={2} />
       </section>

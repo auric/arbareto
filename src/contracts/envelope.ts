@@ -582,5 +582,5 @@ export const OperationResult = z.strictObject({
   rowId: Identifier.optional(),
 });
 
-// Contract §3 `currentSession`.
-export const SessionResult = z.strictObject({ sessionId: Identifier });
+// Contract §3 `currentSession`: plan.md "Windows text size" gives the factor range.
+export const SessionResult = z.strictObject({ sessionId: Identifier, textScale: z.number().min(1).max(2.25) });

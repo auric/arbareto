@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { Suspense, use, useEffect, useLayoutEffect, useState } from "react";
+import { Suspense, use, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { ChangesPaneMount, ComparisonViewMount, HistoryViewMount, Workbench } from "./app/Workbench";
 import { createBridge, type BridgeResponse } from "./bridge";
 import { BootView, bootActions, markBootView, type Environment } from "./boot/BootView";
+import { createTextScale } from "./layout/text-scale";
 import "./index.css";
 
 let sessionChanged = () => {};
 // The capability grants no `unlisten`, so the bridge must exist once for the page life, outside React.
-const bridge = createBridge(() => sessionChanged());
+const textScale = createTextScale(document.documentElement);
+const bridge = createBridge(() => sessionChanged(), textScale.event);
 const load = () => ({
   environment: bridge.getEnvironment(),
-  hasSession: bridge.currentSession().then((response) => response.state === "succeeded"),
+  hasSession: bridge.currentSession().then((response) => {
+    textScale.session(response);
+    return response.state === "succeeded";
+  }),
 });
 const firstLoad = load();
 
@@ -24,6 +29,7 @@ function App() {
   const [view, setView] = useState(firstLoad);
   const [ready, setReady] = useState<{ environment: Environment; restored: Promise<BridgeResponse> } | null>(null);
   const [session, setSession] = useState(0);
+  const scale = useSyncExternalStore(textScale.subscribe, textScale.current);
   const reload = () => setView(load());
   useEffect(() => {
     sessionChanged = ready === null ? reload : () => setSession((n) => n + 1);
@@ -59,6 +65,7 @@ function App() {
         ChangesPane={ChangesPaneMount}
         ComparisonView={ComparisonViewMount}
         HistoryView={HistoryViewMount}
+        textScale={scale}
       />
     );
   }

@@ -113,7 +113,10 @@ describe("result, progress, and response schemas", () => {
     const registry = createOperationRegistry(() => {}, () => {}, createSessionLog(), runner);
     const { operationId } = registry.start("getOperation", id());
     expect(OperationResult.safeParse(registry.get(operationId)).success).toBe(true);
-    expect(SessionResult.safeParse({ sessionId: id() }).success).toBe(true);
+    for (const textScale of [1, 1.5, 2.25]) expect(SessionResult.safeParse({ sessionId: id(), textScale }).success).toBe(true);
+    for (const bad of [{ sessionId: id() }, { sessionId: id(), textScale: 0.99 }, { sessionId: id(), textScale: 2.2501 }, { sessionId: id(), textScale: "1.5" }, { sessionId: id(), textScale: 1, extra: 1 }]) {
+      expect(SessionResult.safeParse(bad).success).toBe(false);
+    }
   });
 
   test("a progress event holds exactly the contract §2 fields", () => {

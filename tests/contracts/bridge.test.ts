@@ -63,6 +63,7 @@ interface Options {
   // Replaces the result of an event subscription.
   listen?: (event: string) => Promise<unknown>;
   onSessionChange?: () => void;
+  onTextScale?: (value: unknown) => void;
 }
 
 // `mockIPC` answers each command. A spy on the mocked internals records the event subscriptions of the bridge.
@@ -104,7 +105,7 @@ function harness(options: Options = {}) {
     return mocked(command, args, invokeOptions);
   };
 
-  const bridge = createBridge(options.onSessionChange);
+  const bridge = createBridge(options.onSessionChange, options.onTextScale);
   return {
     bridge,
     calls,
@@ -274,14 +275,23 @@ describe("frontend bridge", () => {
     await h.bridge.getEnvironment();
     h.emit("service-session");
     await h.bridge.getEnvironment();
-    expect(h.listens.toSorted()).toEqual(["operation-progress", "service-session", "service-stopped"]);
+    expect(h.listens.toSorted()).toEqual(["operation-progress", "service-session", "service-stopped", "text-scale"]);
     expect(h.unlistens()).toBe(0);
+  });
+
+  test("each text-scale event reaches the onTextScale handler with its payload", async () => {
+    const values: unknown[] = [];
+    const h = harness({ onTextScale: (value) => values.push(value) });
+    await h.bridge.getEnvironment();
+    h.emit("text-scale", 1.5);
+    h.emit("text-scale", 2.25);
+    expect(values).toEqual([1.5, 2.25]);
   });
 
   test("the bridge subscribes to each shell event before the first currentSession call", async () => {
     const h = harness({ listen: () => new Promise(() => {}) });
-    expect(h.timeline.slice(0, 3).toSorted()).toEqual(["listen operation-progress", "listen service-session", "listen service-stopped"]);
-    expect(h.timeline.slice(3)).toEqual(["invoke current_session"]);
+    expect(h.timeline.slice(0, 4).toSorted()).toEqual(["listen operation-progress", "listen service-session", "listen service-stopped", "listen text-scale"]);
+    expect(h.timeline.slice(4)).toEqual(["invoke current_session"]);
     expect(((await h.bridge.getEnvironment()) as { state: string }).state).toBe("succeeded");
   });
 
@@ -293,7 +303,7 @@ describe("frontend bridge", () => {
       const h = harness({ listen: () => Promise.reject(new Error("listen denied")) });
       await settle();
       await settle();
-      expect(h.listens.toSorted()).toEqual(["operation-progress", "service-session", "service-stopped"]);
+      expect(h.listens.toSorted()).toEqual(["operation-progress", "service-session", "service-stopped", "text-scale"]);
       expect(h.calls.map((c) => c.command)).toEqual(["current_session"]);
       expect(((await h.bridge.getEnvironment()) as { state: string }).state).toBe("succeeded");
       await settle();

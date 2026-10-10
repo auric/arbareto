@@ -7,13 +7,15 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND, COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO,
     COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE,
     COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT,
-    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO, CompareBrowserVersions,
-    GetAvailableCoreWebView2BrowserVersionString, ICoreWebView2, ICoreWebView2_11,
-    ICoreWebView2AcceleratorKeyPressedEventArgs, ICoreWebView2AcceleratorKeyPressedEventArgs2,
-    ICoreWebView2ContextMenuRequestedEventArgs, ICoreWebView2Controller, ICoreWebView2Settings3,
+    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO, COREWEBVIEW2_PROCESS_FAILED_KIND,
+    CompareBrowserVersions, GetAvailableCoreWebView2BrowserVersionString, ICoreWebView2,
+    ICoreWebView2_11, ICoreWebView2AcceleratorKeyPressedEventArgs,
+    ICoreWebView2AcceleratorKeyPressedEventArgs2, ICoreWebView2ContextMenuRequestedEventArgs,
+    ICoreWebView2Controller, ICoreWebView2Settings3,
 };
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, ContextMenuRequestedEventHandler, take_pwstr,
+    AcceleratorKeyPressedEventHandler, ContextMenuRequestedEventHandler, ProcessFailedEventHandler,
+    take_pwstr,
 };
 use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 use windows::core::{BOOL, HSTRING, Interface, PCWSTR, PWSTR};
@@ -150,7 +152,20 @@ static ARGS2_CAST_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Runs inside the one `with_webview` call on the hidden main window, before the window shows (research.md R7).
 /// Keeps `AreDefaultContextMenusEnabled` true, because `ContextMenuRequested` fires only then.
-pub fn attach(controller: &ICoreWebView2Controller) -> windows::core::Result<()> {
+/// `on_process_failed` gets the `ProcessFailedKind` of each `ProcessFailed` event on the UI thread.
+pub fn attach(
+    controller: &ICoreWebView2Controller,
+    on_process_failed: impl Fn(COREWEBVIEW2_PROCESS_FAILED_KIND) + 'static,
+) -> windows::core::Result<()> {
+    let process_failed = ProcessFailedEventHandler::create(Box::new(move |_, args| {
+        if let Some(args) = args {
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+            // SAFETY: WebView2 calls the handler on the UI thread with live arguments.
+            unsafe { args.ProcessFailedKind(&mut kind) }?;
+            on_process_failed(kind);
+        }
+        Ok(())
+    }));
     let mut token = 0;
     // SAFETY: `with_webview` runs on the UI thread of the webview, and `controller` is live.
     unsafe {
@@ -159,6 +174,7 @@ pub fn attach(controller: &ICoreWebView2Controller) -> windows::core::Result<()>
             &mut token,
         )?;
         let webview = controller.CoreWebView2()?;
+        webview.add_ProcessFailed(&process_failed, &mut token)?;
         webview
             .cast::<ICoreWebView2_11>()?
             .add_ContextMenuRequested(

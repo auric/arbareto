@@ -7,12 +7,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::bootstrap::{Contexts, PhysicalIdentity};
+use crate::close::{self, Decision, Owner, Running};
 use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered, WslProposal};
 use crate::env_sanitize::sanitize;
 use crate::framing::{FrameError, read_frame, write_frame};
@@ -20,13 +22,15 @@ use crate::ipc::{
     FrameSink, Ipc, MAIN_WINDOW, NativeFirst, Prepared, ToRenderer, renderer_message,
 };
 use crate::jobs::{Job, Supervisor};
+use crate::lifecycle::{self, Action, Event, Host};
 use crate::process_requests::{
     CHUNK_BYTES, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
     decode_strict, is_identifier, wait,
 };
 use crate::schema::mutation_reply::RefusedCode as MutationCode;
+use crate::schema::mutation_request::MutationRequest;
 use crate::schema::trust_reply::ConfirmRunReplyResult;
-use crate::schema::{self, mutation_request::MutationRequest, reply, trust_request::TrustRequest};
+use crate::schema::{self, reply, trust_request::TrustRequest};
 use crate::settings::{
     self, Confirm, Damaged, Marker, Markers, SavedGit, Settings, Started, StartedReply, Trust,
 };
@@ -68,6 +72,15 @@ pub struct Service {
     contexts: Arc<Contexts>,
     dialogs: Arc<Dialogs>,
     stores: OnceLock<Stores>,
+    facts: OnceLock<Facts>,
+    launch_directory: PathBuf,
+    environment: Vec<(OsString, OsString)>,
+    /// The frame reader and the exit watch of the last launch. A new launch joins them first.
+    threads: Mutex<Vec<JoinHandle<()>>>,
+    /// True from a completed handshake to the next service exit. Guarded together with `exits`.
+    connected: Mutex<bool>,
+    /// The running mutations of `requestClose` (contract §6 "Recovery markers").
+    running: Arc<Running>,
     stdin: Arc<Mutex<Option<File>>>,
     job: Mutex<Option<Job>>,
     /// The handshake reply, until `connect` takes it. `None` after a failed launch.
@@ -116,6 +129,12 @@ impl Service {
             contexts,
             dialogs: Arc::new(Dialogs::new(app.clone())),
             stores: OnceLock::new(),
+            facts: OnceLock::new(),
+            launch_directory,
+            environment,
+            threads: Mutex::default(),
+            connected: Mutex::new(false),
+            running: Arc::default(),
             stdin,
             job: Mutex::new(None),
             handshake: Mutex::new(None),
@@ -170,29 +189,36 @@ impl Service {
                 save_startup_git(stores, git);
             }
         }));
-        service.launch(&launch_directory, &environment);
+        service.launch();
         Ok(service)
     }
 
-    fn launch(self: &Arc<Self>, launch_directory: &Path, environment: &[(OsString, OsString)]) {
+    /// Starts one service process. False is a failed start.
+    /// It runs on no thread of the last launch, because it joins them.
+    fn launch(self: &Arc<Self>) -> bool {
+        // A late exit cleanup of the last process would clear the pipes and the Job of the new one.
+        let threads = std::mem::take(&mut *lock(&self.threads));
+        for thread in threads {
+            let _ = thread.join();
+        }
         let Ok(program) = std::env::current_exe().map(|exe| exe.with_file_name(SIDECAR)) else {
-            return;
+            return false;
         };
         let Ok(job) = Job::create() else {
-            return;
+            return false;
         };
         let Ok(spawned) = spawn(
             &SpawnRequest {
                 program: &program,
                 arguments: &[],
-                environment,
-                current_dir: launch_directory,
+                environment: &self.environment,
+                current_dir: &self.launch_directory,
                 wsl: false,
                 input: Input::Stream,
             },
             job.handle(),
         ) else {
-            return;
+            return false;
         };
         let process = Owned(spawned.process);
         *lock(&self.job) = Some(job);
@@ -208,29 +234,89 @@ impl Service {
         *lock(&self.handshake) = Some(reply);
         let me = Arc::clone(self);
         let stdout = spawned.stdout;
-        std::thread::spawn(move || me.read(stdout, &handshake));
+        let reader = std::thread::spawn(move || me.read(stdout, &handshake));
         let me = Arc::clone(self);
-        std::thread::spawn(move || me.watch(process));
+        let watch = std::thread::spawn(move || me.watch(process));
+        lock(&self.threads).extend([reader, watch]);
+        true
     }
 
-    /// Sends the startup handshake and waits for its reply. False means that no service session runs (contract §2).
-    pub fn connect(&self, facts: &Facts, stores: Stores) -> bool {
-        let stores = self.stores.get_or_init(|| stores);
-        let Some(reply) = lock(&self.handshake).take() else {
-            return false;
+    /// Sends the startup handshake and waits for its reply. An error means that no service session runs (contract §2).
+    pub fn connect(&self, facts: Facts, stores: Stores) -> Result<(), Event> {
+        self.facts.get_or_init(|| facts);
+        self.stores.get_or_init(|| stores);
+        self.open_session(false)
+    }
+
+    fn open_session(&self, restarted: bool) -> Result<(), Event> {
+        let (Some(facts), Some(stores)) = (self.facts.get(), self.stores.get()) else {
+            return Err(Event::StartFailed);
         };
-        write(&self.stdin, &handshake_frame(facts, stores, &self.contexts));
-        match reply.recv_timeout(HANDSHAKE_WAIT) {
-            Ok(Some(session_id)) => {
+        let Some(reply) = lock(&self.handshake).take() else {
+            return Err(Event::StartFailed);
+        };
+        let exits = self.exits.load(Ordering::SeqCst);
+        write(
+            &self.stdin,
+            &handshake_frame(facts, stores, &self.contexts, restarted),
+        );
+        if let Ok(Some(session_id)) = reply.recv_timeout(HANDSHAKE_WAIT) {
+            let mut connected = lock(&self.connected);
+            // An exit after the reply already ran its cleanup, so this session never runs.
+            if self.exits.load(Ordering::SeqCst) == exits {
+                *connected = true;
                 self.ipc.set_session(Some(session_id));
-                true
-            }
-            // A failed handshake ends the service. A missing reply ends it here.
-            _ => {
-                drop(lock(&self.job).take());
-                false
+                return Ok(());
             }
         }
+        // A failed handshake ends the service. A missing reply ends it here.
+        drop(lock(&self.job).take());
+        Err(Event::HandshakeFailed)
+    }
+
+    /// Shows one lifecycle dialog and runs the action of its result.
+    /// Lifecycle dialogs use their own `Dialogs`, so a service exit never cancels them.
+    fn act(self: &Arc<Self>, dialog: lifecycle::Dialog) {
+        let pressed = Dialogs::new(self.app.clone()).confirm(&lifecycle::confirmation(dialog));
+        match lifecycle::action(dialog, pressed) {
+            Action::RestartService => {
+                lifecycle::restart_service(self);
+            }
+            Action::ReloadWindow => {
+                if let Some(window) = self.app.get_webview_window(MAIN_WINDOW) {
+                    let _ = window.reload();
+                }
+            }
+            Action::RestartArbareto => {
+                self.end(close::Request::Window, true);
+            }
+            Action::CloseArbareto => {
+                self.end(close::Request::Window, false);
+            }
+        }
+    }
+
+    /// Application close under the close rules (plan.md "Close during mutation").
+    /// `relaunch` starts the application again after the close.
+    fn end(&self, request: close::Request, relaunch: bool) -> Decision {
+        let decision = close::decide(request, &self.running, &*self.dialogs);
+        match decision {
+            Decision::Close => {
+                self.close();
+                if relaunch {
+                    self.app.request_restart();
+                } else {
+                    self.app.exit(0);
+                }
+            }
+            Decision::StayOpen => {
+                if let Some(window) = self.app.get_webview_window(MAIN_WINDOW) {
+                    let _ = window.set_focus();
+                }
+            }
+            Decision::Stay => {}
+        }
+        decision
     }
 
     /// Reads the service frames until end-of-file.
@@ -284,7 +370,7 @@ impl Service {
     /// The `mutation` frames of contract §6 "Channel frames".
     fn mutation(&self, frame: &Value) {
         if let (Some(stores), Some(request)) = (self.stores.get(), body(frame, "mutation"))
-            && let Some(reply) = mutation(&stores.markers, &self.requests, request)
+            && let Some(reply) = mutation(&stores.markers, &self.running, &self.requests, request)
         {
             self.send("mutation", reply);
         }
@@ -430,7 +516,7 @@ impl Service {
     }
 
     /// Waits for the service exit. The shell never restarts the service by itself.
-    fn watch(&self, process: Owned) {
+    fn watch(self: &Arc<Self>, process: Owned) {
         while !wait(process.0, Duration::from_secs(3600)) {}
         drop(process);
         lock(&self.stdin).take();
@@ -438,8 +524,15 @@ impl Service {
         if self.closing.load(Ordering::SeqCst) {
             return;
         }
+        // Without a completed handshake, the `connect` caller shows the dialog.
+        let connected = {
+            let mut connected = lock(&self.connected);
+            self.exits.fetch_add(1, Ordering::SeqCst);
+            std::mem::take(&mut *connected)
+        };
         self.requests.service_exited();
-        self.exits.fetch_add(1, Ordering::SeqCst);
+        // The operation Jobs closed, so no mutation counts as running (contract §6 "Recovery markers").
+        self.running.service_exited();
         self.dialogs.cancel_open();
         self.contexts.restart("");
         self.ipc.set_session(None);
@@ -462,14 +555,54 @@ impl Service {
             "service-stopped",
             json!({ "markers": markers }),
         );
+        if connected {
+            lifecycle::handle(self, Event::ServiceExited);
+        }
     }
 
     /// Application close: the operation Jobs, then the lingering Jobs, then the service Job (contract §6 "Lingering Jobs").
     pub fn close(&self) {
         self.closing.store(true, Ordering::SeqCst);
-        self.jobs.close_all();
-        drop(lock(&self.job).take());
+        close::shut_down(self);
         self.jobs.shutdown();
+    }
+}
+
+impl Owner for Service {
+    fn close_operation_jobs(&self) {
+        self.jobs.service_exited();
+    }
+
+    fn close_lingering_jobs(&self) {
+        self.jobs.close_all();
+    }
+
+    fn close_service_job(&self) {
+        drop(lock(&self.job).take());
+    }
+}
+
+impl Host for Arc<Service> {
+    /// The dialog blocks, so it runs on its own thread.
+    fn show(&self, dialog: lifecycle::Dialog) {
+        let me = Arc::clone(self);
+        std::thread::spawn(move || me.act(dialog));
+    }
+
+    fn log(&self, entry: &str) {
+        eprintln!("{entry}");
+    }
+
+    fn start_service(&self) -> bool {
+        self.launch()
+    }
+
+    fn handshake(&self, restarted: bool) -> bool {
+        self.open_session(restarted).is_ok()
+    }
+
+    fn send_service_session(&self) {
+        let _ = self.app.emit_to(MAIN_WINDOW, "service-session", ());
     }
 }
 
@@ -492,14 +625,18 @@ impl NativeFirst for Service {
             None => response,
         }
     }
+
+    fn request_close(&self, request: close::Request) -> Decision {
+        self.end(request, false)
+    }
 }
 
 /// The startup handshake (contract §6 "Startup handshake"). Each handshake rescans the markers and the records.
-fn handshake_frame(facts: &Facts, stores: &Stores, contexts: &Contexts) -> String {
+fn handshake_frame(facts: &Facts, stores: &Stores, contexts: &Contexts, restarted: bool) -> String {
     let scan = stores.markers.scan();
     let mut handshake = json!({
         "version": 1,
-        "restarted": false,
+        "restarted": restarted,
         "platformScope": facts.platform_scope,
         "osBuild": facts.os_build,
         "webView2Version": facts.webview2_version,
@@ -675,7 +812,12 @@ fn store_git(stores: &Stores, git: ConfirmedGit) {
 
 /// The `mutation` frames of contract §6 "Channel frames". Returns the reply. `ended` and `resolved` get none.
 /// The walk of `started` sends its reply later (contract §6 "Walks").
-fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value) -> Option<Value> {
+fn mutation(
+    markers: &Arc<Markers>,
+    running: &Arc<Running>,
+    requests: &ProcessRequests,
+    request: &Value,
+) -> Option<Value> {
     let call_id = call_id(request);
     let handled = schema::mutation_request(request).and_then(|request| match request {
         MutationRequest::Started {
@@ -689,7 +831,12 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
             let common = PathBuf::from(common_directory.as_str());
             // A service exit after the frame read changes the epoch, and the late finish then takes no mutex.
             let epoch = markers.epoch();
-            let (markers, call) = (Arc::clone(markers), call_id.to_string());
+            let (markers, running, call) = (
+                Arc::clone(markers),
+                Arc::clone(running),
+                call_id.to_string(),
+            );
+            let started_kind = kind;
             let (operation, kind) = (operation_id.to_string(), kind.to_string());
             let worktree = PathBuf::from(worktree_root.as_str());
             requests.frame_walk(
@@ -705,7 +852,12 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
                         worktree_root: &worktree,
                         common_directory: &common,
                     };
-                    self::started(&markers, requests, &started, &call, epoch, identity)
+                    let (reply, marked) =
+                        self::started(&markers, requests, &started, &call, epoch, identity);
+                    if marked {
+                        running.started(&operation, started_kind);
+                    }
+                    reply
                 },
             )?;
             Ok(None)
@@ -716,6 +868,7 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
         } => {
             requests.ended(&operation_id, end_processes)?;
             markers.ended(&operation_id);
+            running.ended(&operation_id);
             Ok(None)
         }
         MutationRequest::Resolved { marker_id } => {
@@ -761,6 +914,7 @@ fn revoke(
 }
 
 /// Replies only after the marker file is flushed, or with the failure class (contract §6 "Recovery markers").
+/// True when the reply carries a marker ID.
 fn started(
     markers: &Markers,
     requests: &ProcessRequests,
@@ -768,13 +922,16 @@ fn started(
     call_id: &str,
     epoch: u64,
     identity: Option<PhysicalIdentity>,
-) -> Value {
+) -> (Value, bool) {
     let reply = markers.started_with(started, epoch, &|_| identity.clone());
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
-    if let StartedReply::Marker { identity, .. } = &reply {
+    let marked = if let StartedReply::Marker { identity, .. } = &reply {
         requests.tag(started.operation_id, identity.clone());
-    }
-    reply.reply(call_id)
+        true
+    } else {
+        false
+    };
+    (reply.reply(call_id), marked)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -833,6 +990,8 @@ fn renderer_marker(marker: &Marker) -> Value {
 mod tests {
     use super::*;
 
+    use crate::schema::mutation_request::StartedKind;
+
     use crate::bootstrap::tests::Hold;
     use crate::dialogs::tests::{Fake, Press};
     use crate::jobs::tests::{Fixture, eventually};
@@ -853,6 +1012,7 @@ mod tests {
         contexts: Arc<Contexts>,
         requests: Arc<ProcessRequests>,
         jobs: Arc<Supervisor>,
+        running: Arc<Running>,
         sent: Sent,
         fixture: Fixture,
     }
@@ -900,6 +1060,7 @@ mod tests {
                 contexts,
                 requests,
                 jobs,
+                running: Arc::default(),
                 sent,
                 fixture,
             }
@@ -966,7 +1127,12 @@ mod tests {
         }
 
         fn mutation(&self, request: Value) -> Option<Value> {
-            mutation(&self.stores.markers, &self.requests, &request)
+            mutation(
+                &self.stores.markers,
+                &self.running,
+                &self.requests,
+                &request,
+            )
         }
 
         fn started(&self, operation: &str, worktree: &Path) -> Option<Value> {
@@ -1187,9 +1353,13 @@ mod tests {
             os_build: 26200,
             webview2_version: "154.0.4258.53".to_string(),
         };
-        let frame: Value =
-            serde_json::from_str(&handshake_frame(&facts, &shell.stores, &shell.contexts))
-                .expect("JSON");
+        let frame: Value = serde_json::from_str(&handshake_frame(
+            &facts,
+            &shell.stores,
+            &shell.contexts,
+            false,
+        ))
+        .expect("JSON");
         let handshake = &frame["handshake"];
         let mut keys: Vec<&str> = handshake
             .as_object()
@@ -1231,13 +1401,59 @@ mod tests {
             os_build: 26200,
             webview2_version: "154.0.4258.53".to_string(),
         };
-        let frame: Value =
-            serde_json::from_str(&handshake_frame(&facts, &shell.stores, &shell.contexts))
-                .expect("JSON");
+        for restarted in [false, true] {
+            let frame: Value = serde_json::from_str(&handshake_frame(
+                &facts,
+                &shell.stores,
+                &shell.contexts,
+                restarted,
+            ))
+            .expect("JSON");
+            assert_eq!(
+                crate::schema::handshake(&frame["handshake"]).map(drop),
+                Ok(())
+            );
+            assert_eq!(frame["handshake"]["restarted"], json!(restarted));
+        }
+    }
+
+    #[test]
+    fn the_restarted_handshake_carries_the_markers_and_a_new_saved_git_context() {
+        let shell = Shell::new();
+        std::fs::write(shell.folder("recovery").join("broken.json"), "{").expect("write");
+        let git = shell.fixture.path("git.exe");
+        std::fs::write(&git, "").expect("git file");
+        lock(&shell.stores.settings).git = Some(SavedGit {
+            selected_path: git.clone(),
+            executable_path: git,
+            version: "2.55.0.windows.1".to_string(),
+            digest: "0".repeat(64),
+        });
+        let facts = Facts {
+            platform_scope: "qualification-target",
+            os_build: 26200,
+            webview2_version: "154.0.4258.53".to_string(),
+        };
+        let frame = |restarted| -> Value {
+            serde_json::from_str(&handshake_frame(
+                &facts,
+                &shell.stores,
+                &shell.contexts,
+                restarted,
+            ))
+            .expect("JSON")
+        };
+        let first = frame(false);
+        let restarted = frame(true)["handshake"].clone();
+        assert_eq!(restarted["restarted"], json!(true));
         assert_eq!(
-            crate::schema::handshake(&frame["handshake"]).map(drop),
-            Ok(())
+            restarted["damagedMarkers"].as_array().map(Vec::len),
+            Some(1)
         );
+        let first_id = first["handshake"]["savedGit"]["bootstrapId"].as_str();
+        let restarted_id = restarted["savedGit"]["bootstrapId"].as_str();
+        assert!(restarted_id.is_some_and(is_identifier), "{restarted}");
+        assert_ne!(first_id, restarted_id, "a new startup context");
     }
 
     #[test]
@@ -1291,6 +1507,25 @@ mod tests {
             Err(crate::process_requests::Code::InvalidRequest),
             "no started mutation"
         );
+    }
+
+    #[test]
+    fn a_mutation_counts_as_running_from_its_marker_reply_to_ended() {
+        let shell = Shell::new();
+        assert!(shell.started(FIRST, &shell.fixture.path("gone")).is_some());
+        assert!(shell.running.kinds().is_empty(), "a failure reply");
+        let worktree = shell.folder("repo");
+        shell.folder("repo\\.git");
+        assert!(shell.started(SECOND, &worktree).expect("reply")["markerId"].is_string());
+        assert_eq!(shell.running.kinds(), [StartedKind::Commit]);
+        assert_eq!(
+            shell.started(THIRD, &worktree),
+            Some(json!({ "type": "started", "callId": CALL, "busy": true }))
+        );
+        assert_eq!(shell.ended(THIRD), None);
+        assert_eq!(shell.running.kinds(), [StartedKind::Commit], "a busy reply");
+        assert_eq!(shell.ended(SECOND), None);
+        assert!(shell.running.kinds().is_empty(), "ended");
     }
 
     #[test]

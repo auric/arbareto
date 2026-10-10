@@ -54,6 +54,7 @@
     "tests/contracts/submodule-remote.test.ts",
     "tests/contracts/submodules.test.ts",
     "tests/contracts/support.test.ts",
+    "tests/contracts/text-scale.test.ts",
     "tests/contracts/trust-dialog.test.tsx",
     "tests/contracts/vectors.test.ts",
     "tests/contracts/view-context.test.ts",

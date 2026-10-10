@@ -38,8 +38,8 @@ export type { Handshake } from "../contracts/channel";
 
 type Fields = Record<string, unknown>;
 
-// Contract §3 without the shell-only `requestClose` and `currentSession`.
-type ServiceOperation = Exclude<OperationName, "requestClose" | "currentSession">;
+// Contract §3 without the shell-only operations. The shell forwards `openRecentRepository` as `restoreWorkspace`.
+type ServiceOperation = Exclude<OperationName, "requestClose" | "currentSession" | "listRecentRepositories" | "openRecentRepository" | "removeRecentRepository">;
 type Handler<K extends ServiceOperation> = (request: Extract<ServiceRequest, { operation: K }>) => void;
 
 export interface SessionOptions {

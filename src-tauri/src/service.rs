@@ -19,13 +19,13 @@ use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered, WslPro
 use crate::env_sanitize::sanitize;
 use crate::framing::{FrameError, read_frame, write_frame};
 use crate::ipc::{
-    FrameSink, Ipc, MAIN_WINDOW, NativeFirst, Prepared, ToRenderer, renderer_message,
+    Ended, FrameSink, Ipc, MAIN_WINDOW, NativeFirst, Prepared, ToRenderer, renderer_message,
 };
 use crate::jobs::{Job, Supervisor};
 use crate::lifecycle::{self, Action, Event, Host};
 use crate::process_requests::{
     CHUNK_BYTES, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
-    decode_strict, is_identifier, wait,
+    decode_strict, is_identifier, path, wait,
 };
 use crate::schema::mutation_reply::RefusedCode as MutationCode;
 use crate::schema::mutation_request::MutationRequest;
@@ -626,23 +626,34 @@ impl Host for Arc<Service> {
 }
 
 impl NativeFirst for Service {
-    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, &'static str> {
+    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, Ended> {
         let stores = self.stores.get().ok_or(UNAVAILABLE)?;
         prepare(stores, &*self.dialogs, &self.contexts, operation, payload)
     }
 
+    fn answer(&self, operation: &str, payload: &Value) -> Result<Value, &'static str> {
+        answer(self.stores.get().ok_or(UNAVAILABLE)?, operation, payload)
+    }
+
     fn finish(&self, operation: &str, prepared: &Prepared, response: Value) -> Value {
-        match self.stores.get() {
-            Some(stores) => finish(
-                stores,
-                &*self.dialogs,
-                &self.requests,
-                operation,
-                prepared,
-                response,
-            ),
-            None => response,
+        let Some(stores) = self.stores.get() else {
+            return response;
+        };
+        let response = finish(
+            stores,
+            &*self.dialogs,
+            &self.requests,
+            operation,
+            prepared,
+            response,
+        );
+        // plan.md "Service and native shell": each successful registration names the window.
+        if let Some(root) = registered_root(operation, &response)
+            && let Some(window) = self.app.get_webview_window(MAIN_WINDOW)
+        {
+            let _ = window.set_title(&window_title(Some(&root)));
         }
+        response
     }
 
     fn request_close(&self, request: close::Request) -> Decision {
@@ -676,6 +687,42 @@ fn handshake_frame(facts: &Facts, stores: &Stores, contexts: &Contexts, restarte
     json!({ "kind": "handshake", "handshake": handshake }).to_string()
 }
 
+/// The window title: "<repository name> - Arbareto", and "Arbareto" without a workspace (plan.md "Service and native shell").
+/// The name is the last folder name of the worktree root. A WSL UNC root gives the same name without its prefix.
+pub fn window_title(worktree_root: Option<&Path>) -> String {
+    match worktree_root {
+        Some(root) => {
+            let name = root.file_name().unwrap_or(root.as_os_str());
+            format!("{} - Arbareto", name.to_string_lossy())
+        }
+        None => "Arbareto".to_string(),
+    }
+}
+
+/// The `worktreeRoot` of a `succeeded` registration (contract §3 "Recent repositories").
+fn registered_root(operation: &str, response: &Value) -> Option<PathBuf> {
+    let registers = matches!(
+        operation,
+        "chooseRepository" | "restoreWorkspace" | "openRecentRepository"
+    );
+    (registers && response["state"] == "succeeded")
+        .then(|| path(&response["result"]["worktreeRoot"]).ok())
+        .flatten()
+}
+
+/// The native answer of `listRecentRepositories` and `removeRecentRepository` (contract §3). No folder check and no process.
+fn answer(stores: &Stores, operation: &str, payload: &Value) -> Result<Value, &'static str> {
+    let mut settings = lock(&stores.settings);
+    if operation == "removeRecentRepository" {
+        let entry_id = payload["entryId"].as_str().ok_or(INVALID)?;
+        if !settings::forget_recent(&mut settings, entry_id) {
+            return Err("UNKNOWN_TARGET");
+        }
+        let _ = settings::save(&stores.settings_path, &settings);
+    }
+    Ok(settings::recent_list(&settings))
+}
+
 /// The native step before the forward (contract §3). `Ok(None)` is a canceled dialog.
 fn prepare(
     stores: &Stores,
@@ -683,7 +730,7 @@ fn prepare(
     contexts: &Contexts,
     operation: &str,
     payload: &Value,
-) -> Result<Option<Prepared>, &'static str> {
+) -> Result<Option<Prepared>, Ended> {
     let now = Instant::now();
     let chosen = match operation {
         "chooseGit" => {
@@ -701,7 +748,7 @@ fn prepare(
             let bootstrap_id = match stores.markers.get(marker_id) {
                 Some(marker) => dialogs::dismissal_context(&marker, contexts, now)?,
                 None if stores.markers.damaged(marker_id).is_some() => None,
-                None => return Err("UNKNOWN_TARGET"),
+                None => return Err("UNKNOWN_TARGET".into()),
             };
             let payload = match bootstrap_id {
                 Some(bootstrap_id) => json!({ "markerId": marker_id, "bootstrapId": bootstrap_id }),
@@ -712,11 +759,30 @@ fn prepare(
                 path: None,
             }));
         }
-        _ => return Err(UNAVAILABLE),
+        "openRecentRepository" => {
+            let entry_id = payload["entryId"].as_str().ok_or(INVALID)?;
+            let root =
+                settings::recent_root(&lock(&stores.settings), entry_id).ok_or("UNKNOWN_TARGET")?;
+            dialogs::open_recent(root, contexts, now)
+        }
+        _ => return Err(UNAVAILABLE.into()),
     };
     let (bootstrap_id, path) = match chosen {
         Chosen::Canceled => return Ok(None),
-        Chosen::Refused(code) => return Err(code),
+        Chosen::Refused(code) => return Err(code.into()),
+        // Contract §9: the absent refusal of a recent entry. It starts no Git process.
+        Chosen::Absent(root) => {
+            let path = root.to_string_lossy();
+            return Err(Ended::Failed(
+                "REPOSITORY_UNAVAILABLE",
+                json!({
+                    "reason": "absent",
+                    "path": path,
+                    "text": format!("Arbareto cannot find this folder: {path}."),
+                    "remedy": { "text": "Remove it from the list, or open the folder from its new place." },
+                }),
+            ));
+        }
         Chosen::Context { bootstrap_id, path } => (bootstrap_id, path),
     };
     let payload = if operation == "chooseGit" {
@@ -742,13 +808,14 @@ fn finish(
     if response["state"] != "succeeded" {
         return response;
     }
+    remember(stores, operation, &response);
     match operation {
         "chooseGit" => {
             save_git(stores, requests, &response["result"]);
             response
         }
         // Data-model §1: the settings keep the last explicitly opened repository, from the native context.
-        "chooseRepository" => {
+        "chooseRepository" | "openRecentRepository" => {
             if let Some(path) = &prepared.path {
                 let mut settings = lock(&stores.settings);
                 settings.last_repository = Some(path.clone());
@@ -789,6 +856,26 @@ fn finish(
         }
         _ => response,
     }
+}
+
+/// Stores the recent entry of a `succeeded` registration: the result root and key, and `openedAt` from the shell clock.
+/// A result without a valid key stores nothing.
+fn remember(stores: &Stores, operation: &str, response: &Value) {
+    let Some(root) = registered_root(operation, response) else {
+        return;
+    };
+    let Some(key) = response["result"]["worktreeKey"]
+        .as_str()
+        .filter(|key| settings::is_hex(key, 64))
+    else {
+        return;
+    };
+    let Ok(opened_at) = settings::utc_now() else {
+        return;
+    };
+    let mut settings = lock(&stores.settings);
+    settings::remember_recent(&mut settings, root, key.to_string(), opened_at);
+    let _ = settings::save(&stores.settings_path, &settings);
 }
 
 /// Persists the Git selection after the service success and Use this Git (data-model §1).
@@ -1123,7 +1210,7 @@ mod tests {
             native: &Fake,
             operation: &str,
             payload: Value,
-        ) -> Result<Option<Prepared>, &'static str> {
+        ) -> Result<Option<Prepared>, Ended> {
             prepare(&self.stores, native, &self.contexts, operation, &payload)
         }
 
@@ -1188,12 +1275,12 @@ mod tests {
         };
         assert_eq!(
             shell.prepare(&picked, "chooseRepository", json!({})),
-            Err("UNSUPPORTED_REPOSITORY")
+            Err(Ended::Rejected("UNSUPPORTED_REPOSITORY"))
         );
         lock(&shell.stores.settings).last_repository = Some(deleted);
         assert_eq!(
             shell.prepare(&Fake::default(), "restoreWorkspace", json!({})),
-            Err("UNSUPPORTED_REPOSITORY"),
+            Err(Ended::Rejected("UNSUPPORTED_REPOSITORY")),
             "a deleted last repository"
         );
         assert_eq!(
@@ -1322,6 +1409,259 @@ mod tests {
             Some(repository),
             "the settings file holds the path"
         );
+    }
+
+    // ---- Recent repositories (contract §3 "Recent repositories") ----
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn registered(root: &str, key: &str) -> Value {
+        json!({ "requestId": CALL, "state": "succeeded", "result": { "repositoryId": REPOSITORY, "generation": 0, "worktreeKey": key, "worktreeRoot": root } })
+    }
+
+    impl Shell {
+        fn recent(&self) -> Vec<(PathBuf, String)> {
+            lock(&self.stores.settings)
+                .recent
+                .iter()
+                .map(|entry| (entry.worktree_root.clone(), entry.worktree_key.clone()))
+                .collect()
+        }
+
+        fn entry_id(&self, at: usize) -> String {
+            lock(&self.stores.settings).recent[at].entry_id.clone()
+        }
+
+        fn remember(&self, root: &Path, key: &str) {
+            let mut settings = lock(&self.stores.settings);
+            settings::remember_recent(
+                &mut settings,
+                root.to_path_buf(),
+                key.to_string(),
+                "2026-10-11T10:00:00.000000000Z".to_string(),
+            );
+        }
+    }
+
+    #[test]
+    fn each_successful_registration_stores_the_result_root_and_key_and_a_failure_stores_nothing() {
+        let shell = Shell::new();
+        let repository = shell.folder("repo");
+        let picked = Fake {
+            folder: Some(repository.clone()),
+            ..Fake::default()
+        };
+        let prepared = shell
+            .prepare(&picked, "chooseRepository", json!({}))
+            .expect("prepare")
+            .expect("a context");
+        let failed =
+            json!({ "requestId": CALL, "state": "failed", "code": "REPOSITORY_UNAVAILABLE" });
+        shell.finish(&picked, "chooseRepository", &prepared, failed);
+        assert_eq!(shell.recent(), [], "a failed result stores nothing");
+        // The service result supplies the Git-resolved root, which can differ from the picked folder.
+        let resolved = "C:\\resolved\\repo";
+        let response = registered(resolved, KEY);
+        assert_eq!(
+            shell.finish(&picked, "chooseRepository", &prepared, response.clone()),
+            response
+        );
+        assert_eq!(shell.recent(), [(PathBuf::from(resolved), KEY.to_string())]);
+        let first = shell.entry_id(0);
+        let saved = settings::load(&shell.stores.settings_path);
+        assert_eq!(
+            saved
+                .recent
+                .iter()
+                .map(|e| (e.worktree_root.clone(), e.worktree_key.clone()))
+                .collect::<Vec<_>>(),
+            shell.recent(),
+            "the settings file holds the entry"
+        );
+        assert!(settings::utc_time(&saved.recent[0].opened_at).is_some());
+        // `restoreWorkspace` of the same worktree replaces the entry.
+        lock(&shell.stores.settings).last_repository = Some(repository.clone());
+        let restored = shell
+            .prepare(&Fake::default(), "restoreWorkspace", json!({}))
+            .expect("prepare")
+            .expect("a context");
+        shell.finish(
+            &Fake::default(),
+            "restoreWorkspace",
+            &restored,
+            registered(resolved, KEY),
+        );
+        assert_eq!(shell.recent(), [(PathBuf::from(resolved), KEY.to_string())]);
+        assert_ne!(shell.entry_id(0), first, "a replaced entry gets a new ID");
+    }
+
+    #[test]
+    fn an_open_forwards_a_discovery_context_of_the_stored_root_and_refreshes_its_entry() {
+        let shell = Shell::new();
+        let repository = shell.folder("repo");
+        shell.remember(&repository, KEY);
+        let entry_id = shell.entry_id(0);
+        let open = json!({ "entryId": entry_id });
+        let prepared = shell
+            .prepare(&Fake::default(), "openRecentRepository", open.clone())
+            .expect("prepare")
+            .expect("a context");
+        let bootstrap_id = prepared.payload["bootstrapId"]
+            .as_str()
+            .expect("bootstrapId")
+            .to_string();
+        assert_eq!(prepared.payload, json!({ "bootstrapId": bootstrap_id }));
+        assert_eq!(prepared.path, Some(repository.clone()));
+        let context = shell
+            .contexts
+            .get(&bootstrap_id, Instant::now())
+            .expect("live context");
+        assert_eq!(
+            (context.kind, context.path),
+            (
+                crate::bootstrap::ContextKind::RepositoryDiscovery,
+                repository.clone()
+            )
+        );
+        let root = repository.to_string_lossy().to_string();
+        shell.finish(
+            &Fake::default(),
+            "openRecentRepository",
+            &prepared,
+            registered(&root, KEY),
+        );
+        assert_eq!(shell.recent(), [(repository.clone(), KEY.to_string())]);
+        assert_eq!(
+            lock(&shell.stores.settings).last_repository,
+            Some(repository),
+            "an open from the list is an explicit open"
+        );
+        assert_eq!(
+            shell.prepare(&Fake::default(), "openRecentRepository", open),
+            Err(Ended::Rejected("UNKNOWN_TARGET")),
+            "the ID of the replaced entry"
+        );
+    }
+
+    #[test]
+    fn an_open_of_an_unknown_entry_or_a_not_found_windows_folder_forwards_nothing() {
+        let shell = Shell::new();
+        assert_eq!(
+            shell.prepare(
+                &Fake::default(),
+                "openRecentRepository",
+                json!({ "entryId": "0f0f0f0f-0000-4000-8000-0000000000ff" })
+            ),
+            Err(Ended::Rejected("UNKNOWN_TARGET"))
+        );
+        let gone = shell.fixture.path("gone");
+        shell.remember(&gone, KEY);
+        let path = gone.to_string_lossy().to_string();
+        assert_eq!(
+            shell.prepare(
+                &Fake::default(),
+                "openRecentRepository",
+                json!({ "entryId": shell.entry_id(0) })
+            ),
+            Err(Ended::Failed(
+                "REPOSITORY_UNAVAILABLE",
+                json!({
+                    "reason": "absent",
+                    "path": path,
+                    "text": format!("Arbareto cannot find this folder: {path}."),
+                    "remedy": { "text": "Remove it from the list, or open the folder from its new place." },
+                })
+            ))
+        );
+        assert_eq!(shell.recent().len(), 1, "a failed open keeps the entry");
+    }
+
+    /// No WSL process runs: the context of a WSL root reads no identity (gaps.md W1).
+    #[test]
+    fn an_open_of_a_wsl_entry_starts_no_process_at_context_creation() {
+        let shell = Shell::new();
+        let root = PathBuf::from(r"\\wsl.localhost\NoSuchDistro-T343\home\me\repo");
+        shell.remember(&root, KEY);
+        let prepared = shell
+            .prepare(
+                &Fake::default(),
+                "openRecentRepository",
+                json!({ "entryId": shell.entry_id(0) }),
+            )
+            .expect("prepare")
+            .expect("a context");
+        assert_eq!(prepared.path, Some(root));
+        assert!(
+            shell.sent.0.lock().expect("sent").is_empty(),
+            "no process frame"
+        );
+    }
+
+    #[test]
+    fn the_list_and_a_removal_answer_natively_and_a_removal_changes_no_repository_file() {
+        let shell = Shell::new();
+        let repository = shell.folder("repo");
+        std::fs::write(repository.join("file.txt"), "keep").expect("file");
+        shell.remember(&repository, KEY);
+        let list = answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list");
+        assert_eq!(list, settings::recent_list(&lock(&shell.stores.settings)));
+        assert_eq!(list["entries"].as_array().map(Vec::len), Some(1));
+        let unknown = json!({ "entryId": "0f0f0f0f-0000-4000-8000-0000000000ff" });
+        assert_eq!(
+            answer(&shell.stores, "removeRecentRepository", &unknown),
+            Err("UNKNOWN_TARGET")
+        );
+        let entry_id = shell.entry_id(0);
+        let removed = answer(
+            &shell.stores,
+            "removeRecentRepository",
+            &json!({ "entryId": entry_id }),
+        )
+        .expect("remove");
+        assert_eq!(removed, json!({ "entries": [] }));
+        assert_eq!(
+            std::fs::read_to_string(repository.join("file.txt")).expect("file"),
+            "keep"
+        );
+        assert_eq!(
+            std::fs::read_dir(&repository).expect("folder").count(),
+            1,
+            "the repository folder is unchanged"
+        );
+        assert_eq!(settings::load(&shell.stores.settings_path).recent, []);
+        assert_eq!(
+            answer(
+                &shell.stores,
+                "removeRecentRepository",
+                &json!({ "entryId": entry_id })
+            ),
+            Err("UNKNOWN_TARGET"),
+            "the ID of a removed entry"
+        );
+    }
+
+    #[test]
+    fn the_title_names_the_last_folder_of_the_worktree_root() {
+        assert_eq!(
+            window_title(Some(Path::new(r"C:\src\arbareto"))),
+            "arbareto - Arbareto"
+        );
+        // A Windows root in the form that Git prints.
+        assert_eq!(
+            window_title(Some(Path::new("C:/src/arbareto"))),
+            "arbareto - Arbareto"
+        );
+        assert_eq!(
+            window_title(Some(Path::new(
+                r"\\wsl.localhost\Ubuntu-24.04\home\me\repo"
+            ))),
+            "repo - Arbareto"
+        );
+        assert_eq!(
+            window_title(Some(Path::new(r"\\wsl$\Ubuntu\home\me\repo"))),
+            "repo - Arbareto"
+        );
+        assert_eq!(window_title(None), "Arbareto");
     }
 
     #[test]

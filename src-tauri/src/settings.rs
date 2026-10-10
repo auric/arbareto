@@ -3,13 +3,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
+use std::hash::{BuildHasher, RandomState};
 use std::io::{self, Read, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,6 +32,7 @@ use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingl
 use windows::core::HSTRING;
 
 use crate::bootstrap::{Identity, PhysicalIdentity};
+use crate::file_facts::is_wsl_path;
 use crate::process_requests::{VERSION_BYTES, is_identifier, path};
 use crate::schema::mutation_reply::StartedFailureFailure;
 use crate::schema::{self, reply};
@@ -47,6 +50,8 @@ pub struct Settings {
     pub window: Option<Bounds>,
     /// The approved Linux Git of each distro GUID, beside the Windows Git (contract §11 "Git per distro").
     pub wsl_gits: Vec<SavedWslGit>,
+    /// Newest `openedAt` first, at most `RECENT_ENTRIES` (contract §3 "Recent repositories").
+    pub recent: Vec<RecentEntry>,
 }
 
 /// One approved WSL Git. A later probe with another identity gives `GIT_CHANGED`.
@@ -74,6 +79,133 @@ pub fn remember_wsl_git(settings: &mut Settings, git: SavedWslGit) {
 )]
 pub fn saved_wsl_git<'a>(settings: &'a Settings, guid: &str) -> Option<&'a SavedWslGit> {
     settings.wsl_gits.iter().find(|saved| saved.guid == guid)
+}
+
+// ---- Recent repositories (contract §3 "Recent repositories", data-model §2) ----
+
+/// Contract §5 "Recent repositories".
+pub const RECENT_ENTRIES: usize = 20;
+
+/// One recent repository entry. The file never stores `entry_id`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentEntry {
+    pub entry_id: String,
+    /// The `worktreeRoot` of the registration result. It is no identity.
+    pub worktree_root: PathBuf,
+    pub worktree_key: String,
+    /// A contract UTC time from the shell clock.
+    pub opened_at: String,
+}
+
+/// An opaque contract §2 identifier: 128 keyed SipHash bits of an issue count. `RandomState` takes its keys from the OS random source.
+fn entry_id() -> String {
+    static KEYS: OnceLock<RandomState> = OnceLock::new();
+    static ISSUED: AtomicU64 = AtomicU64::new(0);
+    let issued = ISSUED.fetch_add(1, Ordering::Relaxed);
+    let keys = KEYS.get_or_init(RandomState::new);
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&keys.hash_one((issued, 0u8)).to_le_bytes());
+    bytes[8..].copy_from_slice(&keys.hash_one((issued, 1u8)).to_le_bytes());
+    uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .hyphenated()
+        .to_string()
+}
+
+/// Newest `openedAt` first. A repeated key keeps its newest entry. Above `RECENT_ENTRIES`, the oldest `openedAt` goes.
+fn order_recent(entries: &mut Vec<RecentEntry>) {
+    entries.sort_by(|a, b| utc_time(&b.opened_at).cmp(&utc_time(&a.opened_at)));
+    let mut seen = HashSet::new();
+    entries.retain(|entry| seen.insert(entry.worktree_key.clone()));
+    entries.truncate(RECENT_ENTRIES);
+}
+
+/// Stores one successful registration. The entry of the same `worktree_key` goes first, so the path text is no identity.
+pub fn remember_recent(
+    settings: &mut Settings,
+    worktree_root: PathBuf,
+    worktree_key: String,
+    opened_at: String,
+) {
+    settings
+        .recent
+        .retain(|entry| entry.worktree_key != worktree_key);
+    settings.recent.push(RecentEntry {
+        entry_id: entry_id(),
+        worktree_root,
+        worktree_key,
+        opened_at,
+    });
+    order_recent(&mut settings.recent);
+}
+
+/// Removes the entry of `entry_id`. False for an unknown, removed, or replaced ID.
+pub fn forget_recent(settings: &mut Settings, entry_id: &str) -> bool {
+    let before = settings.recent.len();
+    settings.recent.retain(|entry| entry.entry_id != entry_id);
+    settings.recent.len() != before
+}
+
+/// The stored root of `entry_id`.
+pub fn recent_root(settings: &Settings, entry_id: &str) -> Option<PathBuf> {
+    settings
+        .recent
+        .iter()
+        .find(|entry| entry.entry_id == entry_id)
+        .map(|entry| entry.worktree_root.clone())
+}
+
+/// The `listRecentRepositories` result. It reads no folder and starts no process.
+pub fn recent_list(settings: &Settings) -> Value {
+    let entries: Vec<Value> = settings
+        .recent
+        .iter()
+        .map(|entry| {
+            json!({
+                "entryId": entry.entry_id,
+                "path": entry.worktree_root.to_string_lossy(),
+                "location": location(&entry.worktree_root),
+                "openedAt": entry.opened_at,
+            })
+        })
+        .collect();
+    json!({ "entries": entries })
+}
+
+/// Contract §11 "Route": the segment after the WSL prefix names the distro. The stored root holds the listed spelling.
+fn location(path: &Path) -> Value {
+    if is_wsl_path(path)
+        && let Some(Component::Prefix(prefix)) = path.components().next()
+        && let Prefix::UNC(_, distro) = prefix.kind()
+    {
+        return json!({ "kind": "wsl", "distro": distro.to_string_lossy() });
+    }
+    json!({ "kind": "native" })
+}
+
+fn recent_entries(value: &Value) -> Vec<RecentEntry> {
+    let mut entries: Vec<RecentEntry> = value
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| {
+            Some(RecentEntry {
+                worktree_root: channel_path(entry.get("worktreeRoot")?)?,
+                worktree_key: entry["worktreeKey"]
+                    .as_str()
+                    .filter(|key| is_hex(key, 64))?
+                    .to_string(),
+                opened_at: entry["openedAt"]
+                    .as_str()
+                    .filter(|time| utc_time(time).is_some())?
+                    .to_string(),
+                entry_id: entry_id(),
+            })
+        })
+        .collect();
+    order_recent(&mut entries);
+    entries
 }
 
 fn is_version(text: &str) -> bool {
@@ -181,6 +313,10 @@ pub fn load(path: &Path) -> Settings {
         last_repository: file.get("lastRepository").and_then(channel_path),
         window: file.get("window").and_then(bounds),
         wsl_gits: file.get("wslGits").map(saved_wsl_gits).unwrap_or_default(),
+        recent: file
+            .get("recentRepositories")
+            .map(recent_entries)
+            .unwrap_or_default(),
     }
 }
 
@@ -257,6 +393,20 @@ fn save_with(path: &Path, settings: &Settings, fault: Fault) -> io::Result<()> {
             })
             .collect();
         file.insert("wslGits".to_string(), Value::Array(gits));
+    }
+    if !settings.recent.is_empty() {
+        let recent = settings
+            .recent
+            .iter()
+            .map(|entry| {
+                Ok(json!({
+                    "worktreeRoot": text(&entry.worktree_root)?,
+                    "worktreeKey": entry.worktree_key,
+                    "openedAt": entry.opened_at,
+                }))
+            })
+            .collect::<io::Result<Vec<Value>>>()?;
+        file.insert("recentRepositories".to_string(), Value::Array(recent));
     }
     write_file(
         path,
@@ -547,7 +697,7 @@ pub(crate) fn utc_time(text: &str) -> Option<(&str, u32)> {
 }
 
 /// The current UTC time in RFC 3339 form with nanoseconds.
-fn utc_now() -> io::Result<String> {
+pub(crate) fn utc_now() -> io::Result<String> {
     utc_from(SystemTime::now())
 }
 
@@ -1570,6 +1720,7 @@ mod tests {
                 height: 800,
             }),
             wsl_gits: Vec::new(),
+            recent: Vec::new(),
         }
     }
 
@@ -1857,6 +2008,169 @@ mod tests {
         assert!(result.is_err(), "a read-only file refuses the replacement");
         assert_eq!(std::fs::read(&path).expect("read"), bytes);
         assert_eq!(entries(&fixture.0), ["settings.json"]);
+    }
+
+    // ---- Recent repositories (contract §3 "Recent repositories") ----
+
+    fn key(n: usize) -> String {
+        format!("{n:064x}")
+    }
+
+    fn at(minute: usize) -> String {
+        format!("2026-10-11T10:{minute:02}:00.000000000Z")
+    }
+
+    fn recent_keys(settings: &Settings) -> Vec<String> {
+        settings
+            .recent
+            .iter()
+            .map(|entry| entry.worktree_key.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_registration_stores_the_root_the_key_and_the_time_and_a_load_issues_new_entry_ids() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        let mut settings = full_settings(&fixture);
+        remember_recent(&mut settings, fixture.path("repo"), key(1), at(1));
+        save(&path, &settings).expect("save");
+        let file: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        assert_eq!(
+            file["recentRepositories"],
+            json!([{ "worktreeRoot": fixture.path("repo"), "worktreeKey": key(1), "openedAt": at(1) }]),
+            "the file stores no entry ID"
+        );
+        let loaded = load(&path);
+        let [entry] = loaded.recent.as_slice() else {
+            panic!("one entry: {:?}", loaded.recent);
+        };
+        assert_eq!(
+            (&entry.worktree_root, &entry.worktree_key, &entry.opened_at),
+            (&fixture.path("repo"), &key(1), &at(1))
+        );
+        assert!(is_identifier(&entry.entry_id), "{}", entry.entry_id);
+        assert_ne!(entry.entry_id, settings.recent[0].entry_id);
+        assert_eq!(
+            loaded.last_repository, settings.last_repository,
+            "the last repository stays"
+        );
+    }
+
+    #[test]
+    fn one_worktree_key_keeps_one_entry_and_entry_21_removes_the_oldest() {
+        let mut settings = Settings::default();
+        for n in 0..20 {
+            remember_recent(
+                &mut settings,
+                PathBuf::from(format!("C:\\repo{n}")),
+                key(n),
+                at(n),
+            );
+        }
+        let oldest = settings.recent.last().expect("entry").entry_id.clone();
+        let replaced = settings.recent[14].entry_id.clone();
+        assert_eq!(settings.recent[14].worktree_key, key(5));
+        // The other WSL prefix of one folder gives the same key (contract §3 "Worktree key").
+        let wsl = PathBuf::from(r"\\wsl$\Ubuntu\home\me\repo5");
+        remember_recent(&mut settings, wsl.clone(), key(5), at(30));
+        assert_eq!(settings.recent.len(), 20, "a replacement adds no entry");
+        assert_eq!(
+            (
+                &settings.recent[0].worktree_root,
+                &settings.recent[0].worktree_key
+            ),
+            (&wsl, &key(5))
+        );
+        assert_eq!(
+            recent_keys(&settings)
+                .iter()
+                .filter(|k| **k == key(5))
+                .count(),
+            1
+        );
+        assert!(
+            !forget_recent(&mut settings, &replaced),
+            "the ID of a replaced entry is unknown"
+        );
+        remember_recent(&mut settings, PathBuf::from("C:\\repo20"), key(20), at(31));
+        assert_eq!(settings.recent.len(), 20);
+        assert!(
+            !recent_keys(&settings).contains(&key(0)),
+            "the oldest openedAt goes"
+        );
+        assert!(
+            !forget_recent(&mut settings, &oldest),
+            "the ID of a removed entry is unknown"
+        );
+        let times: Vec<&str> = settings
+            .recent
+            .iter()
+            .map(|e| e.opened_at.as_str())
+            .collect();
+        let mut newest_first = times.clone();
+        newest_first.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(times, newest_first);
+    }
+
+    #[test]
+    fn a_removal_takes_only_that_entry() {
+        let mut settings = Settings::default();
+        remember_recent(&mut settings, PathBuf::from("C:\\a"), key(1), at(1));
+        remember_recent(&mut settings, PathBuf::from("C:\\b"), key(2), at(2));
+        let unknown = "0f0f0f0f-0000-4000-8000-0000000000ff";
+        assert!(!forget_recent(&mut settings, unknown));
+        assert_eq!(recent_keys(&settings), [key(2), key(1)]);
+        let first = settings.recent[1].entry_id.clone();
+        assert!(forget_recent(&mut settings, &first));
+        assert_eq!(recent_keys(&settings), [key(2)]);
+    }
+
+    #[test]
+    fn the_list_holds_the_stored_root_and_its_route_location_newest_first() {
+        let mut settings = Settings::default();
+        let wsl = r"\\wsl.localhost\Ubuntu-24.04\home\me\repo";
+        remember_recent(&mut settings, PathBuf::from("C:\\src\\repo"), key(1), at(1));
+        remember_recent(&mut settings, PathBuf::from(wsl), key(2), at(2));
+        let ids: Vec<&str> = settings
+            .recent
+            .iter()
+            .map(|e| e.entry_id.as_str())
+            .collect();
+        assert_eq!(
+            recent_list(&settings),
+            json!({ "entries": [
+                { "entryId": ids[0], "path": wsl, "location": { "kind": "wsl", "distro": "Ubuntu-24.04" }, "openedAt": at(2) },
+                { "entryId": ids[1], "path": "C:\\src\\repo", "location": { "kind": "native" }, "openedAt": at(1) },
+            ] })
+        );
+        assert_eq!(recent_list(&Settings::default()), json!({ "entries": [] }));
+    }
+
+    #[test]
+    fn invalid_recent_entries_load_without_them_and_a_repeated_key_keeps_the_newest() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        let entry = |root: &str, key: String, opened_at: String| json!({ "worktreeRoot": root, "worktreeKey": key, "openedAt": opened_at });
+        let mut file = settings_json(&fixture);
+        file["recentRepositories"] = json!([
+            entry("C:\\old", key(1), at(1)),
+            entry("relative\\repo", key(2), at(2)),
+            entry("C:\\upper", key(3).to_uppercase().replace('0', "A"), at(3)),
+            entry("C:\\local", key(4), "2026-10-11T10:04:00+02:00".to_string()),
+            entry("C:\\new", key(1), at(5)),
+            json!("C:\\text"),
+        ]);
+        std::fs::write(&path, file.to_string()).expect("write");
+        let loaded = load(&path);
+        let roots: Vec<&Path> = loaded
+            .recent
+            .iter()
+            .map(|e| e.worktree_root.as_path())
+            .collect();
+        assert_eq!(roots, [Path::new("C:\\new")]);
+        assert_eq!(loaded.git, full_settings(&fixture).git);
     }
 
     // ---- Window bounds ----

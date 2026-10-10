@@ -1,0 +1,5 @@
+{
+  "schema": "open-recent-repository-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"reason\":\"absent\",\"path\":\"C:\\\\gone\\\\repo\",\"text\":\"Arbareto cannot find this folder: C:\\\\gone\\\\repo.\",\"remedy\":{\"text\":\"Remove it from the list, or open the folder from its new place.\",\"command\":\"git status\"}}"
+}

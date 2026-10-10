@@ -1,0 +1,5 @@
+{
+  "schema": "registration-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000010\",\"generation\":0,\"worktreeKey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"worktreeRoot\":\"repo\"}"
+}

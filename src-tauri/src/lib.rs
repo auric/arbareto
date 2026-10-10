@@ -86,6 +86,9 @@ pub fn run() {
             ipc::choose_git,
             ipc::choose_repository,
             ipc::restore_workspace,
+            ipc::list_recent_repositories,
+            ipc::open_recent_repository,
+            ipc::remove_recent_repository,
             ipc::read_workspace,
             ipc::read_entries,
             ipc::read_history,
@@ -233,7 +236,7 @@ fn main_window(
 ) -> tauri::Result<WebviewWindow> {
     let (minimum_width, minimum_height) = settings::MINIMUM_SIZE;
     let mut builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
-        .title("Arbareto")
+        .title(service::window_title(None))
         .visible(false)
         .zoom_hotkeys_enabled(false)
         .min_inner_size(minimum_width.into(), minimum_height.into());

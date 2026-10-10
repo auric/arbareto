@@ -17,12 +17,18 @@
         "worktreeKey": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
+        },
+        "worktreeRoot": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
         }
       },
       "required": [
         "repositoryId",
         "generation",
-        "worktreeKey"
+        "worktreeKey",
+        "worktreeRoot"
       ],
       "additionalProperties": false,
       "title": "Registered"

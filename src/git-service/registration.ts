@@ -70,7 +70,10 @@ export function worktreeKey(identity: PhysicalIdentity): string {
   return hasher.update(Buffer.from(identity.volumeSerial + identity.fileId, "hex")).digest("hex");
 }
 
-const registered = (w: Workspace): RegistrationOutcome => ({ ok: true, result: { repositoryId: w.repositoryId, generation: w.generation, worktreeKey: w.worktreeKey } });
+const registered = (w: Workspace): RegistrationOutcome => ({
+  ok: true,
+  result: { repositoryId: w.repositoryId, generation: w.generation, worktreeKey: w.worktreeKey, worktreeRoot: w.worktreeRoot },
+});
 
 // Contract §6 "Dismissal": an allowed dismissal goes on to the native confirmation.
 export type DismissalOutcome = { ok: true } | { ok: false; code: ErrorCode; result?: { remedy: { text: string } } };

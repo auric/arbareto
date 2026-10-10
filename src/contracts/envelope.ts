@@ -93,12 +93,19 @@ const ChooseGit = op("chooseGit", {}, empty());
 const ChooseRepository = op("chooseRepository", {}, empty());
 const RestoreWorkspace = op("restoreWorkspace", {}, empty());
 const DismissRecoveryMarker = op("dismissRecoveryMarker", {}, z.strictObject({ markerId: Identifier }));
+// Contract §3 "Recent repositories": the renderer sends back only an `entryId` that the shell issued.
+const ListRecentRepositories = op("listRecentRepositories", {}, empty());
+const OpenRecentRepository = op("openRecentRepository", {}, z.strictObject({ entryId: Identifier }));
+const RemoveRecentRepository = op("removeRecentRepository", {}, z.strictObject({ entryId: Identifier }));
 
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
   ChooseGit,
   ChooseRepository,
   RestoreWorkspace,
+  ListRecentRepositories,
+  OpenRecentRepository,
+  RemoveRecentRepository,
   ReadWorkspace,
   ReadEntries,
   ReadHistory,
@@ -122,7 +129,15 @@ export type RendererRequest = z.infer<typeof RendererEnvelope>;
 export type RequestOf<K extends OperationName> = Extract<RendererRequest, { operation: K }>;
 
 // Contract §1 step 6: the shell reads these renderer envelopes into its generated types.
-export const NativeFirstEnvelope = z.discriminatedUnion("operation", [ChooseGit, ChooseRepository, RestoreWorkspace, DismissRecoveryMarker]);
+export const NativeFirstEnvelope = z.discriminatedUnion("operation", [
+  ChooseGit,
+  ChooseRepository,
+  RestoreWorkspace,
+  DismissRecoveryMarker,
+  ListRecentRepositories,
+  OpenRecentRepository,
+  RemoveRecentRepository,
+]);
 
 // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
 export const ServiceEnvelope = z.discriminatedUnion("operation", [
@@ -232,7 +247,8 @@ export const ChooseGitResult = z.union([
 // Contract §3 `chooseRepository` and `restoreWorkspace`: both operations share this result. The response `code` names each refusal.
 // `path`, `remedy`, and `outputTail` follow contract §6 "Registration bootstrap". `limit` follows contract §9 `WORKSPACE_LIMIT`.
 export const RegistrationResult = z.union([
-  z.strictObject({ repositoryId: Identifier, generation: Generation, worktreeKey: Fingerprint }).meta({ title: "Registered" }),
+  // `worktreeRoot` is the Git-resolved worktree root, and for WSL its UNC identity path.
+  z.strictObject({ repositoryId: Identifier, generation: Generation, worktreeKey: Fingerprint, worktreeRoot: ChannelPath }).meta({ title: "Registered" }),
   z
     .strictObject({
       path: z.string().optional(),
@@ -257,6 +273,34 @@ export const RegistrationResult = z.union([
 export type RegistrationResult = z.infer<typeof RegistrationResult>;
 export const ChooseRepositoryResult = RegistrationResult;
 export const RestoreWorkspaceResult = RegistrationResult;
+
+// Contract §9: the shell refuses an `openRecentRepository` of a not-found Windows folder with `REPOSITORY_UNAVAILABLE`.
+export const RecentAbsent = z
+  .strictObject({ reason: z.literal("absent"), path: ChannelPath, text: z.string(), remedy: z.strictObject({ text: z.string() }) })
+  .meta({ title: "RecentAbsent" });
+// Contract §3 `openRecentRepository`: the result of `restoreWorkspace`, or the shell refusal above.
+export const OpenRecentRepositoryResult = z.union([RegistrationResult, RecentAbsent]).meta({ title: "OpenRecentRepositoryResult" });
+
+// Contract §5 "Recent repositories": the native settings hold at most 20 entries. It is no output bound, so `limits.ts` does not list it.
+const RECENT_REPOSITORIES = 20;
+// Contract §3 `listRecentRepositories` and `removeRecentRepository`: newest `openedAt` first. The shell checks no folder.
+// `location` comes from the contract §11 route rule of the stored path, never from a renderer guess.
+export const RecentRepositoriesResult = z.strictObject({
+  entries: z
+    .array(
+      z.strictObject({
+        entryId: Identifier,
+        path: ChannelPath,
+        location: z.discriminatedUnion("kind", [
+          z.strictObject({ kind: z.literal("native") }).meta({ title: "RecentNativeLocation" }),
+          z.strictObject({ kind: z.literal("wsl"), distro: DistroName }).meta({ title: "RecentWslLocation" }),
+        ]),
+        openedAt: UtcTime,
+      }),
+    )
+    .max(RECENT_REPOSITORIES),
+});
+export type RecentRepositoriesResult = z.infer<typeof RecentRepositoriesResult>;
 
 // Git `config.c` `config_scope_name`: the scopes that `config list --show-scope` prints.
 export const ConfigScope = z.enum(["system", "global", "local", "worktree", "command", "submodule", "unknown"]);

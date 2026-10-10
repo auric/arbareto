@@ -72,6 +72,10 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
     renderer: () => ({ markerId: id() }),
     service: () => ({ markerId: id(), bootstrapId: id() }),
   },
+  // Contract §3 "Recent repositories": the shell answers each one, or forwards an open as `restoreWorkspace`.
+  listRecentRepositories: { renderer: () => ({}) },
+  openRecentRepository: { renderer: () => ({ entryId: id() }) },
+  removeRecentRepository: { renderer: () => ({ entryId: id() }) },
 };
 
 const NAMES = Object.keys(PAYLOADS);
@@ -139,9 +143,9 @@ const sidesOf = (name: string) =>
   (["renderer", "service"] as const).filter((side) => PAYLOADS[name][side] !== undefined);
 
 describe("operation list", () => {
-  test("holds exactly the 22 contract §3 operations", () => {
+  test("holds exactly the 25 contract §3 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(22);
+    expect(OPERATIONS.length).toBe(25);
   });
 
   for (const name of NAMES) {

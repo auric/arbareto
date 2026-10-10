@@ -188,7 +188,7 @@ const UNMERGED_TAGS: ReadonlySet<string> = new Set(["M", "m"]);
 const INDEX_FIELDS = /^([0-7]{6}) ([0-9a-f]+) ([0-3])$/;
 
 // `ls-files -z --stage -v` records. Null for a record that breaks the git-ls-files(1) OUTPUT form.
-function parseIndexListing(bytes: Uint8Array, objectFormat: Workspace["objectFormat"]): Omit<IndexEntry, "intentToAdd">[] | null {
+export function parseIndexListing(bytes: Uint8Array, objectFormat: Workspace["objectFormat"]): Omit<IndexEntry, "intentToAdd">[] | null {
   const entries: Omit<IndexEntry, "intentToAdd">[] = [];
   for (const record of records(bytes)) {
     const tab = record.indexOf(TAB);

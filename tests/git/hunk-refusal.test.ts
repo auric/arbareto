@@ -206,6 +206,39 @@ describe("repository state (contract §9)", () => {
     TIMEOUT_MS,
   );
 
+  // Contract §8 "Observed locks": every outcome other than `succeeded` names each existing lock of the set.
+  caseTest("T113", `a foreign HEAD.lock and a working-file change before the first checkpoint give STALE_SELECTION; foreign names HEAD.lock, and its bytes stay`, SHELL, () =>
+    withService({ name: "t113-hunk-head-lock" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t113-hunk-head-lock", "F09"));
+      await underTest("hunk-publish");
+      const { repositoryId } = await service.register(repo);
+      const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+      const lock = gitPathOf(repo, "HEAD.lock");
+      writeFileSync(lock, "foreign lock\n");
+      put(repo, "multi.txt", `${readFileSync(join(repo, "multi.txt"), "utf8")}external line\n`);
+      const response = await refused(service, repo, () => applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage"));
+      const foreign = ((response.result as { foreign?: string[] } | undefined)?.foreign ?? []).map((p) => resolve(p));
+      expect({ code: code(response), named: foreign.includes(lock) }).toEqual({ code: "STALE_SELECTION", named: true });
+      expect(readFileSync(lock, "utf8")).toBe("foreign lock\n");
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T113", `a succeeded applyHunk with a foreign HEAD.lock names no foreign file`, SHELL, () =>
+    withService({ name: "t113-hunk-head-lock-ok" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t113-hunk-head-lock-ok", "F09"));
+      await underTest("hunk-publish");
+      const { repositoryId } = await service.register(repo);
+      const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+      const lock = gitPathOf(repo, "HEAD.lock");
+      writeFileSync(lock, "foreign lock\n");
+      const response = await applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage");
+      expect({ ...outcome(response), foreign: (response.result as { foreign?: string[] } | undefined)?.foreign }).toEqual({ ...SUCCEEDED, foreign: undefined });
+      expect(readFileSync(lock, "utf8")).toBe("foreign lock\n");
+    }),
+    TIMEOUT_MS,
+  );
+
   // `merge --quit` keeps the conflicted index and removes MERGE_HEAD (git-merge(1)), so only the conflict remains.
   caseTest(TASK, `conflicts give CONFLICTED`, SHELL, () =>
     withService({ name: "t096-conflicted" }, async (service) => {

@@ -17,7 +17,7 @@ import { besideIndex, indexOf, observedLocks, type Fact, type Failure, type Obse
 import { sameIdentity, type PhysicalIdentity } from "./identity";
 import type { DiagnosticCause } from "./log";
 import type { OperationRegistry } from "./operations";
-import { parentsOf } from "./reconcile";
+import { classifyUpdate, observeUpdateRows, parentsOf, type RetainedUpdate } from "./reconcile";
 import type { Workspace } from "./registration";
 import type { Head, ReadInstallation } from "./snapshot";
 import type { ReadOutcome, WorkspaceReader } from "./status";
@@ -52,9 +52,10 @@ export interface RecoveryOptions {
   reader: Pick<WorkspaceReader, "operationState" | "recoveryState">;
   publications: Pick<Map<string, RetainedPublication>, "get" | "delete">;
   commits: Pick<Map<string, RetainedCommit>, "get" | "delete">;
+  updates?: Pick<Map<string, RetainedUpdate>, "get" | "delete">;
 }
 
-export function createRecovery({ runner, registry, trust, reader, publications, commits }: RecoveryOptions) {
+export function createRecovery({ runner, registry, trust, reader, publications, commits, updates = new Map() }: RecoveryOptions) {
   const pending = new Map<string, Pending>();
   // Contract §8 "Service restart": the workspaces of a `restarted` session without a complete refresh yet.
   const restart = new Set<string>();
@@ -127,13 +128,22 @@ export function createRecovery({ runner, registry, trust, reader, publications, 
     return { files: [...locks, ...names.sort(byBytes).map((name) => besideIndex(ctx.workspace, name))], total: locks.length + count };
   }
 
+  // Contract §8 "Recovery statement": the state of each retained row from new review reads. No attribution step runs.
+  async function rowStates(ctx: ObserveContext, kept: RetainedUpdate): Promise<RecoveryStatement | Failure | Stop> {
+    const read = await observeUpdateRows(ctx, kept.rows.map((row) => row.read));
+    if (!("value" in read)) return read;
+    const rows = kept.rows.map(({ read: _, ...row }, i) => ({ ...row, observed: { value: read.value.observations[i]! } }));
+    return { outcome: "unknown", submoduleResults: classifyUpdate({ rows, stop: null }).rows };
+  }
+
   async function statement(ctx: ObserveContext, markers: Pending[], head: Head): Promise<RecoveryStatement | Failure | Stop> {
     const w = ctx.workspace;
     // Contract §8: a retained request belongs to the worktree identity of its mutation.
     const own = markers.map((p) => p.own).find((o) => o !== undefined && o.worktreeIdentity.every((identity, i) => sameIdentity(identity, w.worktreeIdentity[i]!)));
     const publication = own && publications.get(own.operationId);
     const commit = own && commits.get(own.operationId);
-    const stated = publication ? await indexMatch(ctx, publication) : commit ? await attribution(ctx, commit, head) : NO_REQUEST;
+    const update = own && updates.get(own.operationId);
+    const stated = publication ? await indexMatch(ctx, publication) : commit ? await attribution(ctx, commit, head) : update ? await rowStates(ctx, update) : NO_REQUEST;
     // Contract §8: a WSL lock or candidate without a process-end fact has unknown ownership, so every WSL statement names it.
     if (!("outcome" in stated) || (stated !== NO_REQUEST && w.wsl === undefined)) return stated;
     const found = await foreignFiles(ctx, head);
@@ -159,6 +169,7 @@ export function createRecovery({ runner, registry, trust, reader, publications, 
       if (p.own === undefined) continue;
       publications.delete(p.own.operationId);
       commits.delete(p.own.operationId);
+      updates.delete(p.own.operationId);
     }
     restart.delete(w.repositoryId);
     return { ...outcome, value: { ...outcome.value, recovery: stated, recoveryState: reader.recoveryState(w) } };

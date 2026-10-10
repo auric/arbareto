@@ -396,6 +396,9 @@ test("the T227 submodule review reads are exact for a worktree and for a kept Gi
     expect(commands.submoduleHooksPathArgs(location)).toEqual([...prefix, "rev-parse", "--git-path", "hooks"]);
     expect(commands.submoduleHeadTargetArgs(location)).toEqual([...prefix, "symbolic-ref", "-q", "HEAD"]);
     expect(commands.submoduleRefExistsArgs(location, "refs/heads/main")).toEqual([...prefix, "show-ref", "--exists", "refs/heads/main"]);
+    expect(commands.submoduleRefExistsArgs(location, "master")).toEqual([...prefix, "show-ref", "--exists", "master"]);
+    expect(commands.submoduleHeadTargetNoRecurseArgs(location)).toEqual([...prefix, "symbolic-ref", "--no-recurse", "-q", "HEAD"]);
+    expect(commands.submoduleRefFormatArgs(location, "refs/heads/.invalid")).toEqual([...prefix, "check-ref-format", "--allow-onelevel", "refs/heads/.invalid"]);
     expect(commands.submoduleConfigListArgs(location)).toEqual([...prefix, "config", "list", "--show-scope", "--show-origin", "-z"]);
     expect(commands.submoduleHeadRefArgs(location)).toEqual([...prefix, "for-each-ref", "--contains=HEAD", "--count=1", "--format=%(refname)"]);
     expect(commands.submoduleObjectCheckArgs(location)).toEqual([...prefix, "cat-file", "--batch-check"]);
@@ -409,7 +412,9 @@ test("the T227 submodule review reads are exact for a worktree and for a kept Gi
     expect(() => commands.submoduleTreeArgs({ worktree: "C:/repo/sub" }, oid, "sha1")).toThrow(TypeError);
     expect(() => commands.submoduleGitmodulesBlobArgs({ worktree: "C:/repo/sub" }, oid, "sha1")).toThrow(TypeError);
   }
-  for (const name of ["HEAD", "main", "--all", "refs/heads/", "refs/heads/a..b", ""]) expect(() => commands.submoduleRefExistsArgs({ worktree: "C:/repo/sub" }, name)).toThrow(TypeError);
+  // git-check-ref-format(1) `--allow-onelevel` refuses each name except `-x`; the service refuses a leading `-`.
+  for (const name of ["@", "-x", "--all", "a\0b", "refs/heads/", "refs/heads/a..b", "a//b", ".a", "a.lock", "a@{b", ""]) expect(() => commands.submoduleRefExistsArgs({ worktree: "C:/repo/sub" }, name)).toThrow(TypeError);
+  expect(() => commands.submoduleRefFormatArgs({ worktree: "C:/repo/sub" }, "refs/a\0b")).toThrow(TypeError);
   for (const location of [{ worktree: "" }, { gitDir: "" }, { worktree: "a\0b" }, {}, { worktree: "a", gitDir: "b" }]) {
     expect(() => commands.submoduleHeadOidArgs(location as never)).toThrow(TypeError);
   }
@@ -455,6 +460,8 @@ test("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` wi
     commands.submoduleGitDirArgs(location),
     commands.submoduleHooksPathArgs(location),
     commands.submoduleHeadTargetArgs(location),
+    commands.submoduleHeadTargetNoRecurseArgs(location),
+    commands.submoduleRefFormatArgs(location, "refs/heads/main"),
     commands.submoduleConfigListArgs(location),
     commands.submoduleHeadRefArgs(location),
     commands.submoduleObjectCheckArgs(location),

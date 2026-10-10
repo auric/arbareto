@@ -624,6 +624,146 @@
                 "neither"
               ]
             },
+            "submoduleResults": {
+              "maxItems": 256,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "rowId": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "path": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "cloned",
+                      "moved",
+                      "unchanged",
+                      "failed",
+                      "clone-interrupted",
+                      "changed-elsewhere",
+                      "refused"
+                    ]
+                  },
+                  "oldCommit": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "newCommit": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "fetched": {
+                    "type": "boolean"
+                  },
+                  "connected": {
+                    "type": "boolean"
+                  },
+                  "found": {
+                    "type": "boolean"
+                  },
+                  "registered": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "unsaved-commits",
+                      "update-mode",
+                      "clone-interrupted",
+                      "folder-not-empty",
+                      "no-url",
+                      "path",
+                      "active-value",
+                      "remote-name",
+                      "gitdir-config",
+                      "limit",
+                      "programs",
+                      "changed-after-review"
+                    ]
+                  },
+                  "text": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "remedy": {
+                    "type": "object",
+                    "properties": {
+                      "command": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[^\\u0000]*$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "text": {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      }
+                    },
+                    "required": [
+                      "command"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "outputTail": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "failedRead": {
+                    "type": "string",
+                    "enum": [
+                      "check",
+                      "remote-get-url",
+                      "folder",
+                      "clone-check",
+                      "level",
+                      "url"
+                    ]
+                  },
+                  "folderPath": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "required": [
+                  "rowId",
+                  "path",
+                  "state",
+                  "oldCommit",
+                  "newCommit",
+                  "fetched",
+                  "connected",
+                  "found",
+                  "registered"
+                ],
+                "additionalProperties": false
+              }
+            },
             "foreign": {
               "maxItems": 6,
               "type": "array",

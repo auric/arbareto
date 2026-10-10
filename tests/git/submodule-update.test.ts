@@ -8,13 +8,13 @@ import { describe, expect } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import policyFile from "../../src/contracts/git-environment.json";
-import { SubmoduleProgress } from "../../src/contracts/submodules";
+import { SUBMODULE_PROGRESS_PHASES, SubmoduleProgress } from "../../src/contracts/submodules";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
-import { gitPath, mutationFrames, outcome, SUCCEEDED, todoCase, until, valuesOf } from "./hunk-harness";
-import { once, withFsCalls, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
+import { gitPath, mutationFrames, outcome, SUCCEEDED, TIMEOUT_MS, todoCase, until, valuesOf } from "./hunk-harness";
+import { caseTest, once, withFsCalls, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
 import {
   callsSince,
   checkoutRemedy,
@@ -247,7 +247,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
       const { repositoryId, r } = await reviewedOk(service, superOf(b));
       const requestId = sendUpdate(service, repositoryId, r);
       await service.response(requestId);
-      const events = (service.progress as { requestId?: string }[]).filter((p) => p.requestId === requestId && "counters" in p);
+      const events = (service.progress as { requestId?: string; phase?: string }[]).filter((p) => p.requestId === requestId && (SUBMODULE_PROGRESS_PHASES as readonly (string | undefined)[]).includes(p.phase));
       expect(events.length).toBeGreaterThan(0);
       for (const event of events) expect(SubmoduleProgress.safeParse(event).success).toBe(true);
       expect(events.some((e) => valuesOf(e, "percent").length > 0)).toBe(true);
@@ -748,6 +748,41 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
       });
     });
   });
+
+  // research.md R14 S38: Git dies on such an entry before a write. The review refuses only rows, so the run fails.
+  // Contract §12 "Refusals": the started clone step sets `connected`, which is an effect.
+  for (const value of ["!true", "foo"]) {
+    caseTest("T230", `F27 update-none with an unmapped .gitmodules entry whose update is ${value}: the review passes, the clone and register rows fail, no submodule.* key appears, and the started clone step makes the outcome failed-with-effects`, SHELL, () => {
+      const name = `t230-unmapped-update-${value === "foo" ? "foo" : "command"}`;
+      const b = buildF27(gitPath(), name, "update-none");
+      const sup = superOf(b);
+      for (const [key, v] of [
+        ["path", "ghost"],
+        ["url", "../ghost.git"],
+        ["update", value],
+      ])
+        fixtureGit(b, sup, ["config", "--file", ".gitmodules", `submodule.ghost.${key}`, v!]);
+      const keys = () => fixtureGit(b, sup, ["config", "--local", "--get-regexp", "^submodule\\."], [0, 1]);
+      expect(keys()).toBe("");
+      return withFixture(b, name, async (service) => {
+        const { repositoryId, r } = await reviewedOk(service, sup);
+        expect(r.rows.map((x) => [x.path, x.action]).sort()).toEqual([
+          ["mid", "clone"],
+          ["solo", "skip"],
+        ]);
+        await update();
+        const response = await updateSubmodules(service, repositoryId, r);
+        expect({ outcome: outcome(response), rows: resultsOf(response).map((x) => [x.path, x.state, x.connected, x.registered]).sort(), keys: keys() }).toEqual({
+          outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" },
+          rows: [
+            ["mid", "failed", true, false],
+            ["solo", "failed", false, false],
+          ],
+          keys: "",
+        });
+      });
+    }, TIMEOUT_MS);
+  }
 });
 
 // One service with the owned global file of a mini world.
@@ -1083,7 +1118,7 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
 });
 
 describe("lifecycle (contract §12 \"Environment and console\", §6, §2)", () => {
-  todoCase(TASK, `stall: while the double reports stalled for the solo clone step, getOperation returns that step's command in stallRemedy, and no progress event holds it ${NEEDS}`, SHELL, () => {
+  todoCase(TASK, `stall: while the double reports stalled for the solo clone step, getOperation returns that step's command in stallRemedy, and no progress event holds it (needs T256)`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-stall", "base");
     const sup = superOf(b);
     return withFixture(b, "t223-stall", async (service) => {

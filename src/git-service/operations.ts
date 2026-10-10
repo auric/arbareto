@@ -93,7 +93,9 @@ export function createOperationRegistry(
     progress(operationId: string, phase: Phase, counters: Record<string, number> = {}): void {
       const e = entry(operationId);
       const state = e.view.state as ProgressEvent["state"];
-      const event = { requestId: e.requestId, operationId, state, phase, counters: { ...counters }, ...(e.view.stalled === undefined ? {} : { stalled: e.view.stalled }) };
+      // Data-model §9 "Progress": every `updateSubmodules` event carries the stall flag.
+      const stalled = e.view.operation === "updateSubmodules" ? (e.view.stalled ?? false) : e.view.stalled;
+      const event = { requestId: e.requestId, operationId, state, phase, counters: { ...counters }, ...(stalled === undefined ? {} : { stalled }) };
       // Contract §2: no progress event follows the terminal response.
       if (isTerminal(e.view.state) || !ProgressEvent.safeParse(event).success) throw new TypeError("progress event refused");
       e.view = { ...e.view, phase };

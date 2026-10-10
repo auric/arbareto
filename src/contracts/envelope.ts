@@ -7,9 +7,25 @@ import { ERROR_CODES, TERMINAL_STATES, WSL_UNAVAILABLE_REASONS, type ErrorCode }
 import { FILE_ACTION_REASONS } from "./file-action";
 import * as limits from "./limits";
 import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REGISTERED_WORKSPACES } from "./limits";
-import { ChannelPath, Count, Fingerprint, Identifier, isOperationName, MutationKind, OPERATION_NAMES, SHELL_ONLY, Text, type OperationName } from "./operations";
+import {
+  ChannelPath,
+  Count,
+  Fingerprint,
+  Identifier,
+  isOperationName,
+  MutationKind,
+  OPERATION_NAMES,
+  OutputTail,
+  Phase,
+  PHASES,
+  ProgressEvent,
+  SHELL_ONLY,
+  Text,
+  type OperationName,
+} from "./operations";
 import { ATTRIBUTION_REASONS, OPERATION_STATES } from "./outcome";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "./strict-json";
+import { SubmoduleRowResult } from "./submodules";
 
 const ErrorCodeSchema = z.enum(ERROR_CODES as [ErrorCode, ...ErrorCode[]]);
 
@@ -159,31 +175,7 @@ export function validateRequest(value: unknown, side: Side): Result<RendererRequ
   return parsed.success ? { ok: true, request: parsed.data } : { ok: false, code: "INVALID_REQUEST" };
 }
 
-// Data-model §7 `phase`.
-export const PHASES = [
-  "wsl-starting",
-  "preflight",
-  "candidate-verification",
-  "publication",
-  "commit-handoff",
-  "submodule-confirmation",
-  "fetch",
-  "update",
-  "reconciliation",
-] as const;
-export const Phase = z.enum(PHASES);
-export type Phase = z.infer<typeof Phase>;
-
-// Contract §2: exactly these fields. A progress event holds no command, configuration, environment, patch content, Git text, or credential.
-export const ProgressEvent = z.strictObject({
-  requestId: Identifier,
-  operationId: Identifier,
-  state: z.enum(["accepted", "running", "cancel-requested", "reconciling"]),
-  phase: Phase.optional(),
-  counters: z.record(z.string(), Count),
-  stalled: z.boolean().optional(),
-});
-export type ProgressEvent = z.infer<typeof ProgressEvent>;
+export { OutputTail, Phase, PHASES, ProgressEvent };
 
 // Contract §2: one terminal response for each request. A response without an issued operation has no `operationId`.
 // A response repeats the `repositoryGeneration` and `selectionId` of its validated envelope. A `readWorkspace` result generation replaces the first.
@@ -235,10 +227,6 @@ export const ChooseGitResult = z.union([
     .strictObject({ detectedVersion: z.string().optional(), reason: GitReason.optional(), path: z.string().optional(), minimumVersion: z.string() })
     .meta({ title: "ChooseGitFailed" }),
 ]);
-
-// Contract §9 "Commit failure output": an output tail stays within 16 KiB and 100 lines.
-const tailLines = (tail: string) => (tail === "" ? 0 : tail.split("\n").length - (tail.endsWith("\n") ? 1 : 0));
-export const OutputTail = Text.refine((tail) => new TextEncoder().encode(tail).length <= limits.COMMIT_OUTPUT_TAIL_BYTES && tailLines(tail) <= limits.COMMIT_OUTPUT_TAIL_LINES);
 
 // Contract §3 `chooseRepository` and `restoreWorkspace`: both operations share this result. The response `code` names each refusal.
 // `path`, `remedy`, and `outputTail` follow contract §6 "Registration bootstrap". `limit` follows contract §9 `WORKSPACE_LIMIT`.
@@ -413,6 +401,8 @@ export const RecoveryStatement = z
       ])
       .optional(),
     indexMatch: z.enum(["published", "not-published", "neither"]).optional(),
+    // Contract §8: the `updateSubmodules` row states of the retained plan.
+    submoduleResults: z.array(SubmoduleRowResult).max(limits.SUBMODULE_REVIEW_SUBMODULES).optional(),
     foreign: z.array(ChannelPath).max(RECOVERY_FOREIGN_CAP).optional(),
     foreignTotal: Count.optional(),
   })

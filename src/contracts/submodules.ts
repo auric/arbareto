@@ -5,9 +5,8 @@
 
 import { z } from "zod";
 import { Base64 } from "./channel";
-import { OutputTail, Phase, ProgressEvent } from "./envelope";
 import { COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES } from "./limits";
-import { Count, Fingerprint, Identifier, Text } from "./operations";
+import { Count, Fingerprint, Identifier, OutputTail, Phase, ProgressEvent, Text } from "./operations";
 import { buildRemedyCommand, type RemedyValue } from "./remedy-command";
 
 export const SUBMODULE_ACTIONS = ["clone", "reuse", "checkout", "fetch-checkout", "none", "skip"] as const;
@@ -39,7 +38,7 @@ export const SUBMODULE_PROGRESS_PHASES = ["fetch", "update"] as const;
 export type SubmoduleProgressPhase = (typeof SUBMODULE_PROGRESS_PHASES)[number];
 
 // Contract §12 "Update protocol" step 5 "Read failures" and step 6: the reads whose failure ends a row `failed`.
-export const SUBMODULE_FAILED_READS = ["check", "remote-get-url", "folder", "clone-check", "level"] as const;
+export const SUBMODULE_FAILED_READS = ["check", "remote-get-url", "folder", "clone-check", "level", "url"] as const;
 export type SubmoduleFailedRead = (typeof SUBMODULE_FAILED_READS)[number];
 
 const ObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);

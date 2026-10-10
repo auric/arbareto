@@ -4,11 +4,12 @@
 // T222: `reviewSubmodules` and the `submoduleNotice` of `readWorkspace` (contract §12 "Discovery notice", "Review reads", "Plan", "Refusals", "Trust").
 // `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T229 registers `reviewSubmodules`, and T231 registers `updateSubmodules`.
 
-import { describe, expect, setSystemTime } from "bun:test";
+import { describe, expect, spyOn } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES } from "../../src/contracts/limits";
 import { redactUrlUserInfo, type SubmoduleAction } from "../../src/contracts/submodules";
+import * as approvalsModule from "../../src/git-service/approvals";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
@@ -22,6 +23,7 @@ import {
   copySuper,
   fixtureGit,
   gitLocation,
+  globalEnv,
   isReviewRead,
   moduleDirOf,
   NOTES,
@@ -354,6 +356,42 @@ describe("refusals (contract §12 \"Refusals\")", () => {
         expect(ranCanaries(b)).toEqual([]);
         expect(r.refusals.map(shape)).toEqual([want]);
         expect(rowOf(r, want.path).refusal).toBe(want.reason as never);
+      });
+    });
+  }
+
+  // Contract §12 "Refusals" `clone-interrupted`: the HEAD read after `rev-parse --verify -q HEAD` fails. F28 interrupted writes `ref: refs/heads/main`, so `show-ref --exists` exits 2.
+  for (const [id, head, label, code] of [
+    ["placeholder", "ref: refs/heads/.invalid\n", "Git's clone placeholder target fails the ref-name rules, so the review refuses clone-interrupted", undefined],
+    ["loop", "ref: refs/heads/loop\n", "a symbolic-ref loop exits 128, and its valid no-recurse target gives GIT_FAILED", "GIT_FAILED"],
+    ["no-ref", "no ref\n", "a HEAD file that makes both symbolic-ref reads exit 128 gives GIT_FAILED", "GIT_FAILED"],
+  ] as const) {
+    reviewCase(`F28 interrupted: ${label}`, () => {
+      const name = `t222-interrupted-${id}`;
+      const b = buildF28(gitPath(), name, "interrupted");
+      const gitDir = resolve(b.root, (b.facts.notes.interrupted as { gitDir: string }).gitDir);
+      writeFileSync(join(gitDir, "HEAD"), head);
+      if (id === "loop") put(gitDir, "refs/heads/loop", "ref: refs/heads/loop\n");
+      return withFixture(b, name, async (service) => {
+        const { r } = await reviewed(service, b);
+        expect({ code: r.response.code, refusals: r.refusals.map(shape) }).toEqual(code === undefined ? { code: undefined, refusals: [{ path: "solo", reason: "clone-interrupted", text: TEXTS.cloneInterrupted("solo"), command: null }] } : { code, refusals: [] });
+      });
+    });
+  }
+
+  // Git resolves a one-level HEAD target as a ref name (refs.c `refs_resolve_ref_unsafe`, REFNAME_ALLOW_ONELEVEL). Only `reftable` stores `HEAD -> master`: setup.c `validate_headref` refuses a `ref: master` HEAD file.
+  for (const present of [false, true]) {
+    reviewCase(`F28 detached-unsaved: a reftable HEAD -> master ${present ? "gives the commit of master" : "without master refuses clone-interrupted"}`, () => {
+      const name = `t222-onelevel-${present ? "present" : "missing"}`;
+      const b = buildF28(gitPath(), name, "detached-unsaved");
+      const solo = join(superOf(b), "solo");
+      fixtureGit(b, solo, ["refs", "migrate", "--ref-format=reftable"]);
+      ownedGit(gitPath(), FIXTURE_ROOT, solo, ["update-ref", "--no-deref", "--stdin"], { env: globalEnv(b), input: Buffer.from("symref-update HEAD master\n") });
+      if (present) fixtureGit(b, solo, ["update-ref", "master", unsaved(b)]);
+      expect(fixtureGit(b, solo, ["symbolic-ref", "-q", "HEAD"])).toBe("master\n");
+      return withFixture(b, name, async (service) => {
+        const { r } = await reviewed(service, b);
+        expect({ code: r.response.code, head: r.rows.find((row) => row.path === "solo")?.head, reasons: r.refusals.map((x) => x.reason) }).toEqual(present ? { code: undefined, head: unsaved(b), reasons: ["unsaved-commits"] } : { code: undefined, head: null, reasons: ["clone-interrupted"] });
       });
     });
   }
@@ -727,6 +765,35 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
     },
   };
 
+  // Research R14 S39: a preflight reviews again, so an unchanged repository must give equal digests. The case records each issued binding.
+  reviewCase(`F27 base: two reviews give equal review and programs digests`, async () => {
+    const b = buildF27(gitPath(), "t222-token-stable", "base");
+    const bindings: approvalsModule.SubmoduleBinding[] = [];
+    const create = approvalsModule.createApprovals;
+    const spy = spyOn(approvalsModule, "createApprovals").mockImplementation((now) => {
+      const store = create(now);
+      const issue = store.issue;
+      store.issue = (approval) => {
+        if (approval.kind === "submodule") bindings.push(approval.binding);
+        return issue(approval);
+      };
+      return store;
+    });
+    try {
+      await withFixture(b, "t222-token-stable", async (service) => {
+        const { repositoryId, r } = await reviewed(service, b);
+        const again = await reviewSubmodules(service, repositoryId);
+        expect({ rows: r.rows.length, tokens: [typeof r.token, typeof again.token] }).toEqual({ rows: 2, tokens: ["string", "string"] });
+        expect(bindings.map((x) => ({ review: x.review, programs: x.programs }))).toEqual([
+          { review: bindings[0]!.review, programs: bindings[0]!.programs },
+          { review: bindings[0]!.review, programs: bindings[0]!.programs },
+        ]);
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   for (const [what, { variant, change }] of Object.entries(CHANGES)) {
     todoCase(TASK, `a change of ${what} after the review makes updateSubmodules give STALE_REVIEW, and no update step starts ${TOKEN}`, SHELL, () => {
       const name = `t222-token-${what.replaceAll(/[^a-z]+/g, "-")}`;
@@ -749,19 +816,22 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
 
   todoCase(TASK, `a token older than APPROVAL_LIFETIME_MS on an injected clock gives APPROVAL_EXPIRED, and no update step starts ${TOKEN}`, SHELL, () => {
     const b = buildF27(gitPath(), "t222-token-expired", "base");
-    return withFixture(b, "t222-token-expired", async (service) => {
-      const { repositoryId, r } = await reviewed(service, b);
-      expect(typeof r.token).toBe("string");
-      await underTestSubmodule("submodule-update");
-      const from = service.runner.calls.length;
-      // Bun `setSystemTime` moves `Date.now()` only. Timers and `performance.now()` keep running.
-      setSystemTime(new Date(Date.now() + APPROVAL_LIFETIME_MS + 1));
-      try {
+    // The approval lifetime runs on the monotonic service clock (T110 decision G5). The case moves that clock.
+    let elapsed = 0;
+    const approvalClock = () => performance.now() + elapsed;
+    return withFixture(
+      b,
+      "t222-token-expired",
+      async (service) => {
+        const { repositoryId, r } = await reviewed(service, b);
+        expect(typeof r.token).toBe("string");
+        await underTestSubmodule("submodule-update");
+        const from = service.runner.calls.length;
+        elapsed = APPROVAL_LIFETIME_MS + 1;
         const response = await updateSubmodules(service, repositoryId, r);
         expect({ code: response.code, steps: updateSteps(service, from).length }).toEqual({ code: "APPROVAL_EXPIRED", steps: 0 });
-      } finally {
-        setSystemTime();
-      }
-    });
+      },
+      { approvalClock },
+    );
   });
 });

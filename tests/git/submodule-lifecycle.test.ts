@@ -3,7 +3,7 @@
 
 // T224: long submodule steps with F30 (contract §5, §6 "Activity and stall notice", "Lingering Jobs", §8, §12 "Deadlines and Cancel", "Reconciliation and outcome").
 // `src/git-service/submodule-update.ts` comes with T230, its reconciliation and recovery parts too. T231 registers the operation in the session.
-// The double holds no Job. It ends only the Git process that it started, and it measures activity from output only (T225 runs the real Job cases).
+// The double ends the process tree of a run as the shell Job does. It measures activity from output only (T225 runs the real Job cases).
 
 import { describe, expect } from "bun:test";
 import { appendFileSync, existsSync, lstatSync, readdirSync, renameSync } from "node:fs";
@@ -15,7 +15,7 @@ import { buildF27, buildF30, type Built } from "./fixtures";
 import { fileSha256, workingFileDigests } from "./git-oracle";
 import { gitPath, mutationFrames, one, outcome, progressStates, SUCCEEDED, todoCase, until, valuesOf, withService } from "./hunk-harness";
 import { gitOpenssl, loopbackCertificate, startHttp401 } from "./http-401";
-import { openService, type Capability, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, openService, type Capability, type Service, type ServiceResponse } from "./service-harness";
 import {
   callsSince,
   cloneRemedy,
@@ -41,7 +41,6 @@ import {
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
 const TASK = "T224";
-const NEEDS = "(needs T230/T231)";
 const SHELL: Capability[] = ["shell-double"];
 // The 300 MB builds and the clone of the large remote.
 const LONG_TIMEOUT_MS = 600_000;
@@ -81,7 +80,11 @@ function packTransport(b: Built): void {
 }
 
 const isStep = (path: string) => (c: { arguments: readonly string[] }) => c.arguments.includes(`:(literal)${path}`) && commandOf(c.arguments)[0] === "submodule";
-const closedJob = (service: Service, operationId: string) => service.runner.frames.some((f) => f.type === "closeJob" && f.operationId === operationId);
+// Contract §6 "Channel frames": a run Cancel sends the run `cancel`, which closes the Job. Then no update step starts.
+const canceledRun = (service: Service, operationId: string) => {
+  const frame = service.runner.cancels.find((f) => f.operationId === operationId);
+  return { cancel: frame !== undefined, later: frame ? updateSteps(service, frame.callsBefore).map((c) => c.arguments) : null };
+};
 const endedFrame = (service: Service, operationId: string) => service.runner.frames.find((f) => f.type === "ended" && f.operationId === operationId);
 // Contract §9: an `updateSubmodules` process deadline gives `DEADLINE` with reason `inactivity` or `ceiling`.
 const deadlineOf = (response: ServiceResponse) => ({ ...outcome(response), reasons: valuesOf(response.result, "reason").filter((r) => r === "inactivity" || r === "ceiling") });
@@ -104,7 +107,7 @@ function duringReconciling(service: Service, requestId: () => string | undefined
 }
 
 describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research.md R14 S9)", () => {
-  todoCase(TASK, `F30 clone: Cancel during the clone of the large remote closes the Job, the outcome arrives within 5 seconds, the row states clone-interrupted with its folder and move-out remedy, every S9 file remains, the next review refuses clone-interrupted, and after the move-out the next update reaches the recorded commit while the moved folder keeps every byte ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 clone: Cancel during the clone of the large remote sends the run cancel and starts no later step, the outcome arrives within 5 seconds, the row states clone-interrupted with its folder and move-out remedy, every S9 file remains, the next review refuses clone-interrupted, and after the move-out the next update reaches the recorded commit while the moved folder keeps every byte`, SHELL, async () => {
     await update();
     const name = "t224-clone-cancel";
     const b = buildF30(gitPath(), name, "clone");
@@ -121,7 +124,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
       await service.cancel(operationId);
       const response = await service.response(requestId);
       expect(service.responseAt.get(requestId)! - canceledAt).toBeLessThanOrEqual(RECONCILIATION_TARGET_MS);
-      expect(closedJob(service, operationId)).toBe(true);
+      expect(canceledRun(service, operationId)).toEqual({ cancel: true, later: [] });
       const row = resultOf(response, "big");
       expect({ state: row.state, folder: relative(join(sup, "big"), join(sup, row.folderPath ?? "")) === "", text: row.text, command: row.remedy?.command ?? null, connected: row.connected }).toEqual({
         state: "clone-interrupted",
@@ -149,7 +152,8 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
       renameSync(join(sup, "big"), moved);
       const bytes = { ...workingFileDigests(moved), ".git": fileSha256(join(moved, ".git")) };
       const next = await reviewSubmodules(service, repositoryId);
-      expect(outcome(await updateSubmodules(service, repositoryId, next))).toEqual(SUCCEEDED);
+      // The update clones the 300 MB file, which takes longer than the default response wait.
+      expect(outcome(await service.response(sendUpdate(service, repositoryId, next), LONG_TIMEOUT_MS))).toEqual(SUCCEEDED);
       expect(fixtureGit(b, join(sup, "big"), ["rev-parse", "HEAD"]).trim()).toBe(recorded);
       expect({ ...workingFileDigests(moved), ".git": fileSha256(join(moved, ".git")) }).toEqual(bytes);
     });
@@ -159,7 +163,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
     ["inactivity", { inactivityMs: SHORT_MS }],
     ["ceiling", { ceilingMs: SHORT_MS }],
   ] as const) {
-    todoCase(TASK, `F30 silent-hook: a test-injected short ${limit} limit gives DEADLINE with reason ${limit}, no later process starts, and the outcome arrives within 5 seconds after the deadline fires (SC-017) ${NEEDS}`, SHELL, async () => {
+    caseTest(TASK, `F30 silent-hook: a test-injected short ${limit} limit gives DEADLINE with reason ${limit}, no later process starts, and the outcome arrives within 5 seconds after the deadline fires (SC-017)`, SHELL, async () => {
       await update();
       const name = `t224-${limit}`;
       const b = buildF30(gitPath(), name, "silent-hook");
@@ -181,7 +185,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
     }, LONG_TIMEOUT_MS);
   }
 
-  todoCase(TASK, `F30 silent-fetch: Cancel during the fetch step closes the Job; the row ends unchanged with fetched, and the outcome is failed-with-effects ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 silent-fetch: Cancel during the fetch step sends the run cancel and starts no later step; the row ends unchanged with fetched, and the outcome is failed-with-effects`, SHELL, async () => {
     await update();
     const name = "t224-fetch-cancel";
     const b = buildF30(gitPath(), name, "silent-fetch");
@@ -196,7 +200,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
       await until(() => tmpPacks(modules).length > 0, "tmp_pack file of the big fetch", 120_000);
       await service.cancel(operationId);
       const response = await service.response(requestId);
-      expect(closedJob(service, operationId)).toBe(true);
+      expect(canceledRun(service, operationId)).toEqual({ cancel: true, later: [] });
       const row = resultOf(response, "big");
       expect({ outcome: outcome(response), state: row.state, fetched: row.fetched, head: fixtureGit(b, join(sup, "big"), ["rev-parse", "HEAD"]).trim() }).toEqual({
         outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" },
@@ -207,7 +211,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
     });
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F30 silent-fetch: each update request carries the 300-second inactivity limit, the 4-hour ceiling, and the 15-second stall threshold, and a double-reported inactivity exit gives DEADLINE with reason inactivity ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 silent-fetch: each update request carries the 300-second inactivity limit, the 4-hour ceiling, and the 15-second stall threshold, and a double-reported inactivity exit gives DEADLINE with reason inactivity`, SHELL, async () => {
     await update();
     const name = "t224-silent-fetch";
     const b = buildF30(gitPath(), name, "silent-fetch");
@@ -228,7 +232,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
 });
 
 describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §12 \"Reconciliation and outcome\")", () => {
-  todoCase(TASK, `F30 child-hook: Cancel during reconciling lets reconciliation finish, lingeringDescendants is 0, ended sets endProcesses, and the background child ends ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 child-hook: Cancel during reconciling lets reconciliation finish, lingeringDescendants is 0, ended sets endProcesses, and the background child ends`, SHELL, async () => {
     await update();
     const name = "t224-cancel-reconciling";
     const b = buildF30(gitPath(), name, "child-hook");
@@ -252,7 +256,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
     });
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F30 child-hook: without Cancel the child lingers, lingeringDescendants counts it, and Revoke trust ends it ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 child-hook: without Cancel the child lingers, lingeringDescendants counts it, and Revoke trust ends it`, SHELL, async () => {
     await update();
     const name = "t224-lingering";
     const b = buildF30(gitPath(), name, "child-hook");
@@ -269,7 +273,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
     });
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F27 base: a reconciliation read past its deadline gives unknown and keeps the marker, and the recovery refresh states each row ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F27 base: a reconciliation read past its deadline gives unknown and keeps the marker, and the recovery refresh states each row`, SHELL, async () => {
     await update();
     const name = "t224-reconcile-deadline";
     const b = buildF27(gitPath(), name, "base");
@@ -283,12 +287,13 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
       expect([...service.runner.markers.values()].map((m) => m.operationId)).toEqual([response.operationId!]);
       const refreshed = await service.readWorkspace(repositoryId, { refresh: true, check: "full" });
       expect(outcome(refreshed)).toEqual(SUCCEEDED);
-      expect(resultsOf(refreshed).map((row) => row.path).sort()).toEqual(r.rows.map((row) => row.path).sort());
+      // The run adds the found row `mid/leaf` after the `mid` clone (data-model §9 `submoduleResults`).
+      expect(resultsOf(refreshed).map((row) => row.path).sort()).toEqual([...r.rows.map((row) => row.path), "mid/leaf"].sort());
       await until(() => mutationFrames(service, response.operationId!).includes("resolved"), "resolved frame");
     });
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F27 base: after a handshake with restarted true, updateSubmodules gives STATE_UNKNOWN until a refresh true read ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F27 base: after a handshake with restarted true, updateSubmodules gives STATE_UNKNOWN until a refresh true read`, SHELL, async () => {
     await update();
     const name = "t224-restart";
     const b = buildF27(gitPath(), name, "base");
@@ -315,7 +320,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   for (const mode of ["http", "https"] as const) {
     for (const user of [false, true]) {
       const needs: Capability[] = mode === "https" ? [...SHELL, "openssl"] : SHELL;
-      todoCase(TASK, `loopback 401 ${mode}${user ? " with u@" : ""}: the update fails within 10 seconds, the server counted a request, and the row carries a redacted outputTail and the clone remedy ${NEEDS}`, needs, async () => {
+      caseTest(TASK, `loopback 401 ${mode}${user ? " with u@" : ""}: the update fails within 10 seconds, the server counted a request, and the row carries registered, a redacted outputTail, and the clone remedy, and the outcome is failed-with-effects`, needs, async () => {
         await update();
         const name = `t224-401-${mode}${user ? "-user" : ""}`;
         const tls = mode === "https" ? loopbackCertificate(gitOpenssl(gitPath())!, fixtureDir(`${name}-tls`)) : undefined;
@@ -332,7 +337,14 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
             expect(service.responseAt.get(requestId)! - sentAt).toBeLessThanOrEqual(LOOPBACK_MS);
             expect(server.requests()).toBeGreaterThanOrEqual(1);
             const row = resultOf(response, "web");
-            expect({ state: row.state, tail: typeof row.outputTail, remedy: row.remedy }).toEqual({ state: "failed", tail: "string", remedy: { command: cloneRemedy(w.sup.dir, "web"), text: STEP_TEXT.clone } });
+            // research.md R14 S37 case C: the failed clone step registers the row, so the outcome has an effect.
+            expect({ outcome: outcome(response), state: row.state, registered: row.registered, tail: typeof row.outputTail, remedy: row.remedy }).toEqual({
+              outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" },
+              state: "failed",
+              registered: true,
+              tail: "string",
+              remedy: { command: cloneRemedy(w.sup.dir, "web"), text: STEP_TEXT.clone },
+            });
             if (user) expect({ redacted: row.outputTail!.includes("<redacted>"), user: row.outputTail!.includes("u@127.0.0.1") }).toEqual({ redacted: true, user: false });
           });
         } finally {
@@ -343,7 +355,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   }
 
   // `ARBARETO_TEST_SSH_URL` names a test SSH server whose host key the account does not know.
-  todoCase(TASK, `SSH unknown host key: the update fails without a wait, and the row carries the SSH output in its tail ${NEEDS}`, [...SHELL, "ssh-server"], async () => {
+  caseTest(TASK, `SSH unknown host key: the update fails without a wait, and the row carries the SSH output in its tail`, [...SHELL, "ssh-server"], async () => {
     await update();
     const name = "t224-ssh-host";
     const w = miniWorld(name, [{ name: "ssh", path: "ssh", url: process.env.ARBARETO_TEST_SSH_URL! }]);
@@ -362,7 +374,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   // Windows OpenSSH reads `~/.ssh` from the account profile, not from `HOME` or `USERPROFILE`, so a `core.sshCommand` without arguments cannot name a fixture key.
   // That case needs the key as the default identity of the account. The test never writes `~/.ssh`.
   for (const withArguments of [false, true]) {
-    todoCase(TASK, `SSH passphrase key through a core.sshCommand ${withArguments ? "with arguments: the double reports stalled, getOperation returns the fetch command in stallRemedy, no progress event carries it, and the step ends at a test-injected 5-second inactivity limit" : "without arguments: the update fails without a wait"} ${NEEDS}`, [...SHELL, "openssh", "ssh-server", "ssh-key"], async () => {
+    (withArguments ? todoCase : caseTest)(TASK, `SSH passphrase key through a core.sshCommand ${withArguments ? "with arguments: the double reports stalled, getOperation returns the fetch command in stallRemedy, no progress event carries it, and the step ends at a test-injected 5-second inactivity limit (needs T256)" : "without arguments: the update fails without a wait"}`, [...SHELL, "openssh", "ssh-server", "ssh-key"], async () => {
       await update();
       const name = `t224-ssh-key-${withArguments ? "args" : "plain"}`;
       const ssh = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "OpenSSH", "ssh.exe").replaceAll("\\", "/");

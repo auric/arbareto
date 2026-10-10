@@ -212,6 +212,7 @@
                     "GIT_PROCESS_DEADLINE_MS",
                     "GRAPH_LANES",
                     "GRAPH_PATH_SEGMENTS",
+                    "HISTORY_BODY_BYTES",
                     "HISTORY_COMMIT_OBJECT_BYTES",
                     "HISTORY_PAGE_BYTES",
                     "HISTORY_PARENTS_PER_COMMIT",
@@ -236,6 +237,9 @@
                     "RECORDED_REQUEST_IDS",
                     "RECOVERY_MARKERS_PER_HANDSHAKE",
                     "RECOVERY_MARKER_BYTES",
+                    "REF_LISTING_BYTES",
+                    "REF_LISTING_RECORDS",
+                    "REF_RESULT_BYTES",
                     "REGISTERED_DEADLINE_CAP_MS",
                     "REGISTERED_WORKSPACES",
                     "REGISTER_VERSION_BYTES",
@@ -843,6 +847,13 @@
           ],
           "additionalProperties": false,
           "title": "RecoveryStatement"
+        },
+        "readKind": {
+          "type": "string",
+          "enum": [
+            "full",
+            "retained"
+          ]
         }
       },
       "required": [
@@ -858,7 +869,8 @@
         "submoduleNotice",
         "entryCount",
         "entries",
-        "cursor"
+        "cursor",
+        "readKind"
       ],
       "additionalProperties": false,
       "title": "WorkspaceSnapshot"
@@ -926,6 +938,7 @@
                     "GIT_PROCESS_DEADLINE_MS",
                     "GRAPH_LANES",
                     "GRAPH_PATH_SEGMENTS",
+                    "HISTORY_BODY_BYTES",
                     "HISTORY_COMMIT_OBJECT_BYTES",
                     "HISTORY_PAGE_BYTES",
                     "HISTORY_PARENTS_PER_COMMIT",
@@ -950,6 +963,9 @@
                     "RECORDED_REQUEST_IDS",
                     "RECOVERY_MARKERS_PER_HANDSHAKE",
                     "RECOVERY_MARKER_BYTES",
+                    "REF_LISTING_BYTES",
+                    "REF_LISTING_RECORDS",
+                    "REF_RESULT_BYTES",
                     "REGISTERED_DEADLINE_CAP_MS",
                     "REGISTERED_WORKSPACES",
                     "REGISTER_VERSION_BYTES",

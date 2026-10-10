@@ -149,6 +149,34 @@
               },
               "invalidUtf8": {
                 "type": "boolean"
+              },
+              "committer": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "email"
+                ],
+                "additionalProperties": false
+              },
+              "committerDate": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 16384
+              },
+              "bodyCut": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -159,7 +187,11 @@
               "date",
               "encoding",
               "shallow",
-              "invalidUtf8"
+              "invalidUtf8",
+              "committer",
+              "committerDate",
+              "body",
+              "bodyCut"
             ],
             "additionalProperties": false,
             "title": "HistoryRow"
@@ -249,6 +281,7 @@
                     "GIT_PROCESS_DEADLINE_MS",
                     "GRAPH_LANES",
                     "GRAPH_PATH_SEGMENTS",
+                    "HISTORY_BODY_BYTES",
                     "HISTORY_COMMIT_OBJECT_BYTES",
                     "HISTORY_PAGE_BYTES",
                     "HISTORY_PARENTS_PER_COMMIT",
@@ -273,6 +306,9 @@
                     "RECORDED_REQUEST_IDS",
                     "RECOVERY_MARKERS_PER_HANDSHAKE",
                     "RECOVERY_MARKER_BYTES",
+                    "REF_LISTING_BYTES",
+                    "REF_LISTING_RECORDS",
+                    "REF_RESULT_BYTES",
                     "REGISTERED_DEADLINE_CAP_MS",
                     "REGISTERED_WORKSPACES",
                     "REGISTER_VERSION_BYTES",
@@ -474,6 +510,7 @@
                     "GIT_PROCESS_DEADLINE_MS",
                     "GRAPH_LANES",
                     "GRAPH_PATH_SEGMENTS",
+                    "HISTORY_BODY_BYTES",
                     "HISTORY_COMMIT_OBJECT_BYTES",
                     "HISTORY_PAGE_BYTES",
                     "HISTORY_PARENTS_PER_COMMIT",
@@ -498,6 +535,9 @@
                     "RECORDED_REQUEST_IDS",
                     "RECOVERY_MARKERS_PER_HANDSHAKE",
                     "RECOVERY_MARKER_BYTES",
+                    "REF_LISTING_BYTES",
+                    "REF_LISTING_RECORDS",
+                    "REF_RESULT_BYTES",
                     "REGISTERED_DEADLINE_CAP_MS",
                     "REGISTERED_WORKSPACES",
                     "REGISTER_VERSION_BYTES",

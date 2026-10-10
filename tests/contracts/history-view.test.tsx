@@ -34,7 +34,7 @@ const options = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>('[
 
 const oid = (n: number) => n.toString(16).padStart(4, "0").repeat(10);
 const short = (n: number) => oid(n).slice(0, 12);
-const row = (n: number, parents: number[], subject = `Change ${n}`): HistoryRow => ({ oid: oid(n), parents: parents.map(oid), subject, author: { name: "Ada", email: "ada@example.invalid" }, date: 1577836800 + n, encoding: null, shallow: false, invalidUtf8: false });
+const row = (n: number, parents: number[], subject = `Change ${n}`): HistoryRow => ({ oid: oid(n), parents: parents.map(oid), subject, author: { name: "Ada", email: "ada@example.invalid" }, date: 1577836800 + n, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "Ada", email: "ada@example.invalid" }, committerDate: 1577836800 + n, body: "", bodyCut: false });
 const page = (rows: HistoryRow[], head: HistoryPage["head"] = { state: "branch", target: "refs/heads/main", oid: rows[0]!.oid }, boundaries = { page: [] as string[], shallow: [] as string[] }): HistoryPage => ({
   generation: 1,
   scope: "current-checkout",

@@ -108,6 +108,7 @@
     "tests/git/index-lock.test.ts",
     "tests/git/numstat.test.ts",
     "tests/git/portable-imports.test.ts",
+    "tests/git/refs.test.ts",
     "tests/git/service-harness.test.ts",
     "tests/git/snapshot.test.ts",
     "tests/git/stall.test.ts",

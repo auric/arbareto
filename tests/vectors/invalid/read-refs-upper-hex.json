@@ -1,0 +1,5 @@
+{
+  "schema": "read-refs-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"generation\":3,\"refs\":[{\"kind\":\"branch\",\"name\":\"main\",\"invalidUtf8\":false,\"objectId\":\"0123456789ABCDEF0123456789ABCDEF01234567\",\"objectType\":\"commit\",\"peeledId\":null,\"peeledType\":null,\"symref\":null,\"upstream\":\"refs/remotes/origin/main\",\"upstreamPresent\":true,\"commitId\":\"0123456789ABCDEF0123456789ABCDEF01234567\"}],\"current\":{\"name\":\"main\",\"objectId\":\"0123456789abcdef0123456789abcdef01234567\"},\"completeness\":{\"state\":\"complete\"}}"
+}

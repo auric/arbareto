@@ -93,6 +93,7 @@ function snapshot(generation: number, root: string, entries: ChangeEntry[]): Wor
   return {
     generation,
     snapshotId: crypto.randomUUID(),
+    readKind: "full",
     identity: { worktreeRoot: root, gitDirectory: `${root}\\.git`, commonDirectory: `${root}\\.git`, indexPath: `${root}\\.git\\index`, objectFormat: "sha1", refFormat: "files" },
     head: { state: "branch", target: "refs/heads/main", oid: HEAD },
     operationState: "normal",
@@ -113,7 +114,7 @@ const PAGE: HistoryPage = {
   scope: "current-checkout",
   head: { state: "branch", target: "refs/heads/main", oid: HEAD },
   shallowFingerprint: null,
-  rows: [{ oid: HEAD, parents: [], subject: "First", author: { name: "A", email: "a@example.com" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false }],
+  rows: [{ oid: HEAD, parents: [], subject: "First", author: { name: "A", email: "a@example.com" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.com" }, committerDate: 1_700_000_000, body: "", bodyCut: false }],
   boundaries: { page: [], shallow: [] },
   completeness: { state: "complete" },
 };

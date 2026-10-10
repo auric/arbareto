@@ -88,6 +88,20 @@ describe("read builders (contract §7)", () => {
     expect(configListArgs()).toEqual([...R, "config", "list", "--show-scope", "--show-origin", "-z"]);
   });
 
+  // Contract §3 "References result": the one fixed array. It takes no pathspec, so it has no `--literal-pathspecs`.
+  test("refsArgs is exactly the contract for-each-ref array", () => {
+    expect(commands.refsArgs()).toEqual([
+      "--no-lazy-fetch",
+      "--no-optional-locks",
+      "for-each-ref",
+      "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)",
+      "refs/heads",
+      "refs/remotes",
+      "refs/tags",
+    ]);
+    expect(commands.refsArgs()).not.toBe(commands.refsArgs());
+  });
+
   test("hooksPathArgs and shallowPathArgs are the exact rev-parse --git-path arrays", () => {
     expect(hooksPathArgs()).toEqual([...R, "rev-parse", "--git-path", "hooks"]);
     expect(shallowPathArgs()).toEqual([...R, "rev-parse", "--git-path", "shallow"]);

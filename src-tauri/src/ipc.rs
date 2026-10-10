@@ -20,7 +20,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 22] = [
+pub const OPERATIONS: [&str; 23] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -28,6 +28,7 @@ pub const OPERATIONS: [&str; 22] = [
     "readWorkspace",
     "readEntries",
     "readHistory",
+    "readRefs",
     "readComparison",
     "readTrust",
     "approveTrust",
@@ -469,6 +470,15 @@ pub async fn read_history(
     request: Request<'_>,
 ) -> Result<Value, &'static str> {
     call(webview, &ipc, "readHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_refs(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readRefs", request.body().clone()).await
 }
 
 #[tauri::command]

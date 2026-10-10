@@ -36,6 +36,7 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
     service: () => ({ snapshotId: id(), cursor: id() }),
   },
   readHistory: { renderer: () => ({}), service: () => ({}) },
+  readRefs: { renderer: () => ({}), service: () => ({}) },
   readComparison: {
     renderer: () => ({ snapshotId: id(), entryId: id() }),
     service: () => ({ snapshotId: id(), entryId: id() }),
@@ -79,6 +80,7 @@ const NAMES = Object.keys(PAYLOADS);
 const GENERATION_REQUIRED = [
   "readEntries",
   "readHistory",
+  "readRefs",
   "readComparison",
   "applyHunk",
   "applyFile",
@@ -94,6 +96,7 @@ const REPOSITORY_BOUND = [
   "readWorkspace",
   "readEntries",
   "readHistory",
+  "readRefs",
   "readComparison",
   "readTrust",
   "approveTrust",
@@ -139,9 +142,9 @@ const sidesOf = (name: string) =>
   (["renderer", "service"] as const).filter((side) => PAYLOADS[name][side] !== undefined);
 
 describe("operation list", () => {
-  test("holds exactly the 22 contract §3 operations", () => {
+  test("holds exactly the 23 contract §3 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(22);
+    expect(OPERATIONS.length).toBe(23);
   });
 
   for (const name of NAMES) {
@@ -372,8 +375,10 @@ describe("unknown and forbidden fields", () => {
     ["env", { GIT_DIR: "C:\\x" }],
     ["command", "git status"],
     ["pid", 4],
+    ["pattern", "refs/heads/*"],
+    ["format", "%(refname)"],
   ])("payload field %s gives INVALID_REQUEST", (field, value) => {
-    for (const name of ["readComparison", "applyHunk", "applyFile", "commit", "readHistory"]) {
+    for (const name of ["readComparison", "applyHunk", "applyFile", "commit", "readHistory", "readRefs"]) {
       const request = envelope(name);
       expectCode({ ...request, payload: { ...(request.payload as Json), [field]: value } }, "INVALID_REQUEST");
     }

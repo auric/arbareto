@@ -11,6 +11,7 @@
     "allow-read-workspace",
     "allow-read-entries",
     "allow-read-history",
+    "allow-read-refs",
     "allow-read-comparison",
     "allow-read-trust",
     "allow-approve-trust",

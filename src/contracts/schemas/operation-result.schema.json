@@ -17,6 +17,7 @@
         "readWorkspace",
         "readEntries",
         "readHistory",
+        "readRefs",
         "readComparison",
         "readTrust",
         "approveTrust",

@@ -4,6 +4,8 @@
 #[cfg(windows)]
 mod bootstrap;
 #[cfg(windows)]
+mod close;
+#[cfg(windows)]
 mod dialogs;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod env_sanitize;
@@ -17,6 +19,8 @@ mod git_env;
 mod ipc;
 #[cfg(windows)]
 mod jobs;
+#[cfg(windows)]
+mod lifecycle;
 #[cfg(windows)]
 mod platform;
 #[cfg(windows)]
@@ -43,7 +47,7 @@ use tauri::{App, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 #[cfg(windows)]
 use crate::dialogs::{Dialogs, Native};
 #[cfg(windows)]
-use crate::ipc::{Ipc, MAIN_WINDOW};
+use crate::ipc::{Ipc, MAIN_WINDOW, NativeFirst};
 #[cfg(windows)]
 use crate::service::{Facts, Service, Stores};
 #[cfg(windows)]
@@ -91,6 +95,17 @@ pub fn run() {
             ipc::dismiss_recovery_marker,
         ])
         .setup(|app| start(app))
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == MAIN_WINDOW
+                && let Some(service) = window.try_state::<Arc<Service>>()
+            {
+                api.prevent_close();
+                let service = Arc::clone(&service);
+                // The close prompt blocks, so it never runs on the main thread.
+                std::thread::spawn(move || service.request_close(close::Request::Window));
+            }
+        })
         .build(tauri::generate_context!())
         .expect("failed to build the Tauri application")
         .run(|app, event| {

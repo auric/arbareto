@@ -10,6 +10,7 @@ use tauri::async_runtime::{Receiver, Sender, channel};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{State, Webview};
 
+use crate::close::{self, Decision};
 use crate::framing::{PUBLIC_REQUEST_BYTES, public_request_body};
 use crate::process_requests::{decode_strict, is_identifier};
 use crate::schema;
@@ -43,7 +44,7 @@ pub const OPERATIONS: [&str; 22] = [
     "dismissRecoveryMarker",
 ];
 
-/// Contract §3: the shell runs these first. Until T140 replaces its stub, `requestClose` gives `SERVICE_UNAVAILABLE`.
+/// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
 const NATIVE_FIRST: [&str; 5] = [
     "requestClose",
     "chooseGit",
@@ -97,6 +98,8 @@ pub trait NativeFirst: Send + Sync {
     fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, &'static str>;
     /// Runs after the service response of a forwarded request. It returns the response for the renderer.
     fn finish(&self, operation: &str, prepared: &Prepared, response: Value) -> Value;
+    /// Decides `requestClose` without a service session. A close decision ends the application.
+    fn request_close(&self, request: close::Request) -> Decision;
 }
 
 /// A forwarded request waits here for the service response with its `requestId`.
@@ -244,7 +247,24 @@ impl Ipc {
         let mut envelope = Value::Null;
         if native_first {
             if operation == "requestClose" {
-                return reject("SERVICE_UNAVAILABLE");
+                let parsed = decode_strict(text)
+                    .ok_or(INVALID)
+                    .and_then(|strict| close::Request::parse(&strict));
+                let request = match parsed {
+                    Ok(request) => request,
+                    Err(code) => return reject(code),
+                };
+                let Some(native) = self.native() else {
+                    return reject("SERVICE_UNAVAILABLE");
+                };
+                return Submitted::Answer(match native.request_close(request) {
+                    Decision::StayOpen => {
+                        json!({ "requestId": request_id, "state": "canceled", "code": "CANCELED" })
+                    }
+                    Decision::Stay | Decision::Close => {
+                        json!({ "requestId": request_id, "state": "succeeded" })
+                    }
+                });
             }
             let Some(strict) = decode_strict(text) else {
                 return reject(INVALID);
@@ -617,10 +637,11 @@ mod tests {
 
     type Prepare = Box<dyn Fn() -> Result<Option<Prepared>, &'static str> + Send + Sync>;
 
-    /// Counts each native step. `prepare` answers as the test sets it.
+    /// Counts each native step. `prepare` answers as the test sets it. Each close request gets Stay open.
     struct FakeNative {
         prepare: Prepare,
         prepares: Mutex<usize>,
+        closes: Mutex<Vec<close::Request>>,
     }
 
     impl NativeFirst for FakeNative {
@@ -632,6 +653,11 @@ mod tests {
         fn finish(&self, _: &str, _: &Prepared, response: Value) -> Value {
             response
         }
+
+        fn request_close(&self, request: close::Request) -> Decision {
+            self.closes.lock().expect("closes").push(request);
+            Decision::StayOpen
+        }
     }
 
     /// An `Ipc` with a running session and the fake native steps. The caller keeps the returned native alive.
@@ -641,6 +667,7 @@ mod tests {
         let native = Arc::new(FakeNative {
             prepare,
             prepares: Mutex::new(0),
+            closes: Mutex::new(Vec::new()),
         });
         let weak: Weak<FakeNative> = Arc::downgrade(&native);
         ipc.set_native(weak);
@@ -900,6 +927,40 @@ mod tests {
         assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
         assert!(frames.lock().expect("frames").is_empty());
         assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn request_close_is_decided_natively_without_a_session_and_never_forwarded() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        ipc.set_session(None);
+        assert_eq!(
+            send(
+                &ipc,
+                &request("requestClose", json!({ "choice": "closeIfIdle" }))
+            ),
+            Outcome::Answer(
+                json!({ "requestId": REQUEST_ID, "state": "canceled", "code": "CANCELED" })
+            )
+        );
+        assert_eq!(
+            *native.closes.lock().expect("closes"),
+            [close::Request::CloseIfIdle]
+        );
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    #[test]
+    fn a_request_close_payload_outside_the_contract_is_refused_before_any_decision() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        for payload in [json!({}), json!({ "choice": "close" })] {
+            assert_eq!(
+                send(&ipc, &request("requestClose", payload)),
+                rejected("INVALID_REQUEST")
+            );
+        }
+        assert!(native.closes.lock().expect("closes").is_empty());
+        assert!(frames.lock().expect("frames").is_empty());
     }
 
     #[test]

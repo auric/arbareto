@@ -13,6 +13,7 @@ use serde_json::{Map, Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::bootstrap::{Contexts, PhysicalIdentity};
+use crate::close::{self, Decision, Owner, Running};
 use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered, WslProposal};
 use crate::env_sanitize::sanitize;
 use crate::framing::{FrameError, read_frame, write_frame};
@@ -25,8 +26,9 @@ use crate::process_requests::{
     decode_strict, is_identifier, wait,
 };
 use crate::schema::mutation_reply::RefusedCode as MutationCode;
+use crate::schema::mutation_request::MutationRequest;
 use crate::schema::trust_reply::ConfirmRunReplyResult;
-use crate::schema::{self, mutation_request::MutationRequest, reply, trust_request::TrustRequest};
+use crate::schema::{self, reply, trust_request::TrustRequest};
 use crate::settings::{
     self, Confirm, Damaged, Marker, Markers, SavedGit, Settings, Started, StartedReply, Trust,
 };
@@ -68,6 +70,8 @@ pub struct Service {
     contexts: Arc<Contexts>,
     dialogs: Arc<Dialogs>,
     stores: OnceLock<Stores>,
+    /// The running mutations of `requestClose` (contract §6 "Recovery markers").
+    running: Arc<Running>,
     stdin: Arc<Mutex<Option<File>>>,
     job: Mutex<Option<Job>>,
     /// The handshake reply, until `connect` takes it. `None` after a failed launch.
@@ -116,6 +120,7 @@ impl Service {
             contexts,
             dialogs: Arc::new(Dialogs::new(app.clone())),
             stores: OnceLock::new(),
+            running: Arc::default(),
             stdin,
             job: Mutex::new(None),
             handshake: Mutex::new(None),
@@ -284,7 +289,7 @@ impl Service {
     /// The `mutation` frames of contract §6 "Channel frames".
     fn mutation(&self, frame: &Value) {
         if let (Some(stores), Some(request)) = (self.stores.get(), body(frame, "mutation"))
-            && let Some(reply) = mutation(&stores.markers, &self.requests, request)
+            && let Some(reply) = mutation(&stores.markers, &self.running, &self.requests, request)
         {
             self.send("mutation", reply);
         }
@@ -439,6 +444,8 @@ impl Service {
             return;
         }
         self.requests.service_exited();
+        // The operation Jobs closed, so no mutation counts as running (contract §6 "Recovery markers").
+        self.running.service_exited();
         self.exits.fetch_add(1, Ordering::SeqCst);
         self.dialogs.cancel_open();
         self.contexts.restart("");
@@ -467,9 +474,22 @@ impl Service {
     /// Application close: the operation Jobs, then the lingering Jobs, then the service Job (contract §6 "Lingering Jobs").
     pub fn close(&self) {
         self.closing.store(true, Ordering::SeqCst);
-        self.jobs.close_all();
-        drop(lock(&self.job).take());
+        close::shut_down(self);
         self.jobs.shutdown();
+    }
+}
+
+impl Owner for Service {
+    fn close_operation_jobs(&self) {
+        self.jobs.service_exited();
+    }
+
+    fn close_lingering_jobs(&self) {
+        self.jobs.close_all();
+    }
+
+    fn close_service_job(&self) {
+        drop(lock(&self.job).take());
     }
 }
 
@@ -491,6 +511,23 @@ impl NativeFirst for Service {
             ),
             None => response,
         }
+    }
+
+    fn request_close(&self, request: close::Request) -> Decision {
+        let decision = close::decide(request, &self.running, &*self.dialogs);
+        match decision {
+            Decision::Close => {
+                self.close();
+                self.app.exit(0);
+            }
+            Decision::StayOpen => {
+                if let Some(window) = self.app.get_webview_window(MAIN_WINDOW) {
+                    let _ = window.set_focus();
+                }
+            }
+            Decision::Stay => {}
+        }
+        decision
     }
 }
 
@@ -675,7 +712,12 @@ fn store_git(stores: &Stores, git: ConfirmedGit) {
 
 /// The `mutation` frames of contract §6 "Channel frames". Returns the reply. `ended` and `resolved` get none.
 /// The walk of `started` sends its reply later (contract §6 "Walks").
-fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value) -> Option<Value> {
+fn mutation(
+    markers: &Arc<Markers>,
+    running: &Arc<Running>,
+    requests: &ProcessRequests,
+    request: &Value,
+) -> Option<Value> {
     let call_id = call_id(request);
     let handled = schema::mutation_request(request).and_then(|request| match request {
         MutationRequest::Started {
@@ -689,7 +731,12 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
             let common = PathBuf::from(common_directory.as_str());
             // A service exit after the frame read changes the epoch, and the late finish then takes no mutex.
             let epoch = markers.epoch();
-            let (markers, call) = (Arc::clone(markers), call_id.to_string());
+            let (markers, running, call) = (
+                Arc::clone(markers),
+                Arc::clone(running),
+                call_id.to_string(),
+            );
+            let started_kind = kind;
             let (operation, kind) = (operation_id.to_string(), kind.to_string());
             let worktree = PathBuf::from(worktree_root.as_str());
             requests.frame_walk(
@@ -705,7 +752,12 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
                         worktree_root: &worktree,
                         common_directory: &common,
                     };
-                    self::started(&markers, requests, &started, &call, epoch, identity)
+                    let (reply, marked) =
+                        self::started(&markers, requests, &started, &call, epoch, identity);
+                    if marked {
+                        running.started(&operation, started_kind);
+                    }
+                    reply
                 },
             )?;
             Ok(None)
@@ -716,6 +768,7 @@ fn mutation(markers: &Arc<Markers>, requests: &ProcessRequests, request: &Value)
         } => {
             requests.ended(&operation_id, end_processes)?;
             markers.ended(&operation_id);
+            running.ended(&operation_id);
             Ok(None)
         }
         MutationRequest::Resolved { marker_id } => {
@@ -761,6 +814,7 @@ fn revoke(
 }
 
 /// Replies only after the marker file is flushed, or with the failure class (contract §6 "Recovery markers").
+/// True when the reply carries a marker ID.
 fn started(
     markers: &Markers,
     requests: &ProcessRequests,
@@ -768,13 +822,16 @@ fn started(
     call_id: &str,
     epoch: u64,
     identity: Option<PhysicalIdentity>,
-) -> Value {
+) -> (Value, bool) {
     let reply = markers.started_with(started, epoch, &|_| identity.clone());
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
-    if let StartedReply::Marker { identity, .. } = &reply {
+    let marked = if let StartedReply::Marker { identity, .. } = &reply {
         requests.tag(started.operation_id, identity.clone());
-    }
-    reply.reply(call_id)
+        true
+    } else {
+        false
+    };
+    (reply.reply(call_id), marked)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -833,6 +890,8 @@ fn renderer_marker(marker: &Marker) -> Value {
 mod tests {
     use super::*;
 
+    use crate::schema::mutation_request::StartedKind;
+
     use crate::bootstrap::tests::Hold;
     use crate::dialogs::tests::{Fake, Press};
     use crate::jobs::tests::{Fixture, eventually};
@@ -853,6 +912,7 @@ mod tests {
         contexts: Arc<Contexts>,
         requests: Arc<ProcessRequests>,
         jobs: Arc<Supervisor>,
+        running: Arc<Running>,
         sent: Sent,
         fixture: Fixture,
     }
@@ -900,6 +960,7 @@ mod tests {
                 contexts,
                 requests,
                 jobs,
+                running: Arc::default(),
                 sent,
                 fixture,
             }
@@ -966,7 +1027,12 @@ mod tests {
         }
 
         fn mutation(&self, request: Value) -> Option<Value> {
-            mutation(&self.stores.markers, &self.requests, &request)
+            mutation(
+                &self.stores.markers,
+                &self.running,
+                &self.requests,
+                &request,
+            )
         }
 
         fn started(&self, operation: &str, worktree: &Path) -> Option<Value> {
@@ -1291,6 +1357,25 @@ mod tests {
             Err(crate::process_requests::Code::InvalidRequest),
             "no started mutation"
         );
+    }
+
+    #[test]
+    fn a_mutation_counts_as_running_from_its_marker_reply_to_ended() {
+        let shell = Shell::new();
+        assert!(shell.started(FIRST, &shell.fixture.path("gone")).is_some());
+        assert!(shell.running.kinds().is_empty(), "a failure reply");
+        let worktree = shell.folder("repo");
+        shell.folder("repo\\.git");
+        assert!(shell.started(SECOND, &worktree).expect("reply")["markerId"].is_string());
+        assert_eq!(shell.running.kinds(), [StartedKind::Commit]);
+        assert_eq!(
+            shell.started(THIRD, &worktree),
+            Some(json!({ "type": "started", "callId": CALL, "busy": true }))
+        );
+        assert_eq!(shell.ended(THIRD), None);
+        assert_eq!(shell.running.kinds(), [StartedKind::Commit], "a busy reply");
+        assert_eq!(shell.ended(SECOND), None);
+        assert!(shell.running.kinds().is_empty(), "ended");
     }
 
     #[test]

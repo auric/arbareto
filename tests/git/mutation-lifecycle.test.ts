@@ -199,6 +199,28 @@ describe("cancellation and reconciliation (contract §8)", () => {
     TIMEOUT_MS,
   );
 
+  caseTest(TASK, `a read while a commit of the same common identity is reconciling reports recoveryState reconciling, and ready after the outcome`, SHELL, () =>
+    withService({ name: "t100-read-reconciling" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t100-read-reconciling", "F09"));
+      await underTest("recovery");
+      const { repositoryId, r } = await approvedReview(service, repo);
+      const after = afterCommitCall();
+      let held = false;
+      const release = service.runner.holdStart((call) => (after(call) ? (held = true) : false));
+      const { requestId } = await startCommit(service, repositoryId, r, "read reconciling\n");
+      try {
+        await until(() => held, "held reconciliation read", 60_000);
+        expect(progressStates(service, requestId)).toContain("reconciling");
+        expect((await readOk(service, repositoryId)).recoveryState).toBe("reconciling");
+      } finally {
+        release();
+      }
+      expect(outcome(await service.response(requestId))).toEqual(SUCCEEDED);
+      expect((await readOk(service, repositoryId)).recoveryState).toBe("ready");
+    }),
+    TIMEOUT_MS,
+  );
+
   caseTest(TASK, `interrupt and close during reconciling sends no terminal response, the marker stays, and the next handshake makes that workspace unknown`, SHELL, async () => {
     const name = "t100-interrupt-close";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));

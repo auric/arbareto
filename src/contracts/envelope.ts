@@ -388,7 +388,9 @@ export const ChangeEntry = z
 export const HunkEligibility = z
   .union([
     z.strictObject({ eligible: z.literal(true) }).meta({ title: "Eligible" }),
-    z.strictObject({ eligible: z.literal(false), reason: z.enum(["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor"]) }).meta({ title: "Ineligible" }),
+    z
+      .strictObject({ eligible: z.literal(false), reason: z.enum(["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"]) })
+      .meta({ title: "Ineligible" }),
   ])
   .nullable();
 

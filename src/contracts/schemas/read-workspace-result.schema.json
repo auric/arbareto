@@ -380,7 +380,8 @@
                         "split-index",
                         "index-change-hook",
                         "executable-monitor",
-                        "unqualified-monitor"
+                        "unqualified-monitor",
+                        "shared-repository"
                       ]
                     }
                   },

@@ -145,7 +145,7 @@ export interface F25 {
 
 // F25: hooks that start a plain, a `nohup`, and a `setsid` child; a slow hook; a `pre-commit` hook that reads `/dev/tty`.
 export function buildF25(host: WslHost): F25 {
-  const base = `${host.folder}/f25`;
+  const base = `${host.folder}/f25-${crypto.randomUUID().slice(0, 8)}`;
   const script = `${base}/linger.sh`;
   // `exec` replaces the script command line and drops its arguments, so only the `sleep` arguments carry the pattern, as in F31.
   const pattern = `sleep 300 0.${crypto.getRandomValues(new Uint32Array(1))[0]}`;

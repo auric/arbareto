@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T200: `applyFile`, contract §4 "File staging" steps 1 to 9 and "Blob proof", §2, §5, §8, and §9. The Windows path.
-// Only `publish()` of the owned index lock writes the canonical index. A WSL comparison gets no file approval (T214 adds the WSL path).
+// T200: `applyFile`, contract §4 "File staging" steps 1 to 9 and "Blob proof", §2, §5, §8, and §9.
+// Only `publish()` of the owned index lock writes the canonical index.
+// T214: a WSL repository takes the working digests and both blob proofs inside the distro (contract §6 "WSL file work").
 
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
@@ -21,8 +22,10 @@ import { ownedCandidate } from "./hunk-candidate";
 import {
   besideIndex,
   candidateRefusal,
+  canonicalIndex,
   checkpointRefusal,
   comparisonBinding,
+  differs,
   directionOf,
   isStop,
   missingObject,
@@ -30,27 +33,28 @@ import {
   observeState,
   refusalOf,
   settled,
+  SHARED_REPOSITORY,
   startPublication,
   stepOf,
-  workingOf,
+  wholeWorking,
   type Fact,
   type HunkPublisherOptions,
-  type ObserveContext,
   type PublicationSession,
   type PublicationStores,
+  type PublishContext,
   type Refusal,
   type Stop,
 } from "./hunk-publish";
 import { latin1, objectCheckInput, objectCheckOutcome } from "./read-steps";
 import type { Workspace } from "./registration";
-import type { ChangeSnapshot, ReadInstallation, WorkingVersion } from "./snapshot";
+import type { ChangeSnapshot, ReadInstallation } from "./snapshot";
+import { wslProofA, wslProofB } from "./wsl-files";
 
 // Contract §4 "Blob proof": the `remedy.text` of reason `blob-proof`.
 export const BLOB_PROOF_TEXT = "Arbareto cannot prove the staged content of this file. The file can have changed during staging, or Git's conversion can depend on the index. Use the command in a terminal.";
 
 const STALE: Refusal = { code: "STALE_SELECTION" };
 const CANCELED: Stop = { stop: "canceled" };
-const WHOLE = "WHOLE_FILE_STAGE_INPUT_BYTES";
 const NUL = Uint8Array.of(0);
 // The flags of an entry that `update-index` writes.
 const CLEAN = { stage: 0, assumeUnchanged: false, skipWorktree: false, intentToAdd: false };
@@ -124,15 +128,6 @@ export function digestSink(size: number): Collector & { digest(): string } {
   };
 }
 
-// True: the whole working file differs from the binding. A null binding means an absent file (a tracked deletion).
-function differs(bound: FileBinding["working"], read: Fact<WorkingVersion> | { changed: true }): Fact<boolean> {
-  if ("changed" in read) return { value: true };
-  if (!("value" in read)) return read;
-  const v = read.value;
-  const same = bound === null ? !v.exists : v.exists && v.type === "file" && v.size === bound.size && v.rawDigest === bound.sha256;
-  return { value: !same };
-}
-
 const refusalOrStop = (f: Exclude<Fact<unknown>, { value: unknown }>): Refusal | Stop => (isStop(f) ? f : refusalOf(f));
 
 // The verified bytes of the working file: exactly `bound.size` bytes with `bound.sha256`. Null for any other file state.
@@ -165,21 +160,30 @@ async function verifiedBytes(file: string, bound: WholeFile): Promise<Uint8Array
 }
 
 // Contract §4 "Blob proof": proof A, then proof B only after proof A fails. Without a proof, a new digest decides. Null: a proof held.
-async function blobProof(ctx: ObserveContext, path: Uint8Array, oid: string, bound: WholeFile, remedy: WholeFileRemedy | null): Promise<Refusal | Stop | null> {
+async function blobProof(ctx: PublishContext, path: Uint8Array, oid: string, bound: WholeFile, remedy: WholeFileRemedy | null): Promise<Refusal | Stop | null> {
   const text = utf8.decode(path);
   const w = ctx.workspace;
-  const sink = digestSink(bound.size);
-  const a = await stepOf(ctx, blobFilterProofArgs(text, oid, w.objectFormat), sink);
-  if (!("exit" in a)) return refusalOrStop(a);
-  if (a.exit.exitCode === 0 && !sink.limited && sink.bytes === bound.size && sink.digest() === bound.sha256) return null;
-  const bytes = await verifiedBytes(join(w.worktreeRoot, ...text.split("/")), bound);
-  if (bytes !== null) {
-    const out = createCollector({ maxBytes: 128 });
-    const b = await stepOf(ctx, blobHashProofArgs(text), out, bytes);
-    if (!("exit" in b)) return refusalOrStop(b);
-    if (b.exit.exitCode === 0 && !out.limited && latin1(out.take()) === `${oid}\n`) return null;
+  if (w.wsl !== undefined) {
+    // Contract §6 "WSL file work": both proofs run inside the distro, so no working-file or blob byte crosses.
+    for (const proof of [wslProofA, wslProofB]) {
+      const held = await proof(ctx, text.split("/"), oid, bound);
+      if (!("value" in held)) return refusalOrStop(held);
+      if (held.value) return null;
+    }
+  } else {
+    const sink = digestSink(bound.size);
+    const a = await stepOf(ctx, blobFilterProofArgs(text, oid, w.objectFormat), sink);
+    if (!("exit" in a)) return refusalOrStop(a);
+    if (a.exit.exitCode === 0 && !sink.limited && sink.bytes === bound.size && sink.digest() === bound.sha256) return null;
+    const bytes = await verifiedBytes(join(w.worktreeRoot, ...text.split("/")), bound);
+    if (bytes !== null) {
+      const out = createCollector({ maxBytes: 128 });
+      const b = await stepOf(ctx, blobHashProofArgs(text), out, bytes);
+      if (!("exit" in b)) return refusalOrStop(b);
+      if (b.exit.exitCode === 0 && !out.limited && latin1(out.take()) === `${oid}\n`) return null;
+    }
   }
-  const again = differs(bound, await settled(ctx.signal, workingOf(w, path, WHOLE)));
+  const again = differs(bound, await settled(ctx.signal, wholeWorking(ctx, path)));
   if (!("value" in again)) return refusalOrStop(again);
   if (again.value) return STALE;
   // Contract §4 "Limitation remedies": a refused value keeps its own text and offers no command.
@@ -201,10 +205,11 @@ export function createFilePublisher(o: FilePublisherOptions) {
     if (request.repositoryGeneration !== w.generation) return { code: "REPOSITORY_CHANGED" };
     const c = o.comparisons.get(comparisonId);
     if (c === undefined || c.repositoryId !== request.repositoryId || c.snapshotId !== snapshotId) return { code: "UNKNOWN_TARGET" };
-    // A refused entry has no approval, so the refusal decides before `accept`.
+    // A refused entry has no approval, so the refusal decides before `accept`. It carries the contract §4 "Limitation remedies" remedy of the entry.
     const action = c.fileAction;
-    if (action.direction === null) return action.code === "UNSUPPORTED_COMPARISON" ? { code: action.code, result: { reason: action.reason } } : { code: action.code };
+    if (action.direction === null) return action.code === "UNSUPPORTED_COMPARISON" ? { code: action.code, result: { reason: action.reason, ...(c.remedy === null ? {} : { remedy: c.remedy }) } } : { code: action.code };
     if (direction !== directionOf(c)) return { code: "INVALID_REQUEST" };
+    if (c.sharedRepository) return SHARED_REPOSITORY;
     const accepted = o.approvals.accept(key);
     if (!accepted.ok) return { code: "code" in accepted ? accepted.code : "UNKNOWN_TARGET" };
     const approval = accepted.approval;
@@ -227,9 +232,9 @@ export function createFilePublisher(o: FilePublisherOptions) {
     const checkpoint = async (): Promise<Refusal | Stop | null> => {
       const policy = await observePolicy(ctx, path);
       if ("listing" in policy) run.listing = policy.listing;
-      const refused = checkpointRefusal({ ...binding, working: null }, policy, await observeState(ctx, path, false), w.objectFormat);
+      const refused = checkpointRefusal({ ...binding, working: null }, policy, await observeState(ctx, path, false, canonicalIndex(ctx, binding.index)), w.objectFormat, w.wsl !== undefined);
       if (refused !== null || !stage) return refused;
-      const read = differs(binding.working, await settled(signal, workingOf(w, path, WHOLE)));
+      const read = differs(binding.working, await settled(signal, wholeWorking(ctx, path)));
       if (!("value" in read)) return refusalOrStop(read);
       return read.value ? STALE : null;
     };
@@ -294,8 +299,8 @@ export function createFilePublisher(o: FilePublisherOptions) {
   }
 
   // Contract §4 "Blob proof": after publication, a new digest of the working file decides the working-file effect. `unstage` reads no working file.
-  async function working({ approval: { binding }, action }: Admitted, ctx: ObserveContext, path: Uint8Array): Promise<Fact<boolean>> {
-    return action.direction === "stage" ? differs(binding.working, await workingOf(ctx.workspace, path, WHOLE)) : { value: false };
+  async function working({ approval: { binding }, action }: Admitted, ctx: PublishContext, path: Uint8Array): Promise<Fact<boolean>> {
+    return action.direction === "stage" ? differs(binding.working, await wholeWorking(ctx, path)) : { value: false };
   }
 
   function applyFile(request: ApplyFileRequest, w: Workspace, installation: ReadInstallation): void {

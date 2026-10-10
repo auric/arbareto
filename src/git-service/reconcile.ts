@@ -36,6 +36,7 @@ import type { OperationRegistry } from "./operations";
 import { isMissing, latin1 } from "./read-steps";
 import type { Head, IndexEntry, OperationState } from "./snapshot";
 import { parseIndexListing } from "./status";
+import { REFUSAL_TEXTS } from "./submodule-review";
 import { keyParts, parseConfigListing, requestFacts, type ConfigEntry } from "./trust";
 
 const NUL = 0x00;
@@ -91,7 +92,7 @@ function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): TreeEntry[] |
 }
 
 // Contract §5 "Status or index listing" bounds this read. Every record ends with NUL.
-async function listingOf<T>(ctx: ObserveContext, args: string[], parse: (bytes: Uint8Array) => T | null): Promise<Fact<T>> {
+export async function listingOf<T>(ctx: ObserveContext, args: string[], parse: (bytes: Uint8Array) => T | null): Promise<Fact<T>> {
   const out = createCollector({ maxBytes: STATUS_LISTING_BYTES, maxRecords: STATUS_LISTING_RECORDS, separator: NUL });
   const step = await stepOf(ctx, args, out);
   if (!("exit" in step)) return step;
@@ -318,9 +319,6 @@ export interface UpdateFacts {
   stop: "canceled" | "deadline" | null;
 }
 
-// The same text as the review `clone-interrupted` refusal (contract §12 "Refusals").
-const cloneInterruptedText = (path: string) => `Git stopped while it cloned submodule ${path}. Move the folder ${path} out of the repository after all Git tools stop. Then use Update submodules again.`;
-
 export function rowKeys(entries: readonly ConfigEntry[], name: string): RowKeys {
   const keys: Record<string, string[]> = {};
   for (const e of entries) {
@@ -349,7 +347,7 @@ function rowOf(r: UpdateRowFacts, o: RowObservation): { result: SubmoduleRowResu
     result = { ...base, state: "failed", outputTail: step.outputTail, remedy: step.remedy };
     failing = true;
   } else if (o.gitEntry && !o.refs) {
-    result = { ...base, state: "clone-interrupted", folderPath: r.path, text: cloneInterruptedText(r.path) };
+    result = { ...base, state: "clone-interrupted", folderPath: r.path, text: REFUSAL_TEXTS.cloneInterrupted(r.path) };
   } else {
     const h = o.head;
     const atTarget = h !== null && h === r.target;
@@ -383,8 +381,8 @@ export function classifyUpdate(facts: UpdateFacts): { event: OperationEvent; row
 
 // The facts that the reconciliation read of one row needs.
 export interface UpdateRowRead {
-  // The path components of the row below the superproject worktree.
-  components: string[];
+  // The path components of the row below the superproject worktree. Null: Git cannot take the path literally, so no read names it.
+  components: string[] | null;
   name: string;
   // The kept Git directory of a `reuse` row. While the row has no `.git` entry, HEAD comes from it.
   kept: string | null;
@@ -428,18 +426,21 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
   // Contract §3: trust gating follows the read rule of §7, before any Git process inside a submodule.
   const gate = ctx.trust.gate(w, listed.listing, ctx.installation, "reads");
   if (gate !== null) return { code: gate };
-  const all = [...new Set(reads.flatMap((r) => (r.parent === null ? [r] : [r, r.parent])))];
+  const all = [...new Set(reads.flatMap((r) => (r.parent === null ? [r] : [r, r.parent])))].filter((r): r is UpdateRowRead & { components: string[] } => r.components !== null);
   const facts = await requestFacts(ctx.runner, ctx.operationId, w, false, all.map((r) => ({ root: "worktreeRoot" as const, path: [...r.components, ".git"] })), ctx.signal);
   if (!Array.isArray(facts)) return "stop" in facts ? facts : { code: facts.code };
   if (facts.some((f) => f.kind === "error")) return { code: "REPOSITORY_UNAVAILABLE" };
   // A link before the last component means that no entry exists at the path.
-  const entries = new Map(
-    all.map((r, i) => {
+  const entries = new Map<UpdateRowRead, string[]>(
+    all.flatMap((r, i) => {
       const f = facts[i]!;
-      return [r, f.kind !== "absent" && (f.kind !== "link" || f.component === r.components.length + 1)];
+      return f.kind !== "absent" && (f.kind !== "link" || f.component === r.components.length + 1) ? [[r, r.components]] : [];
     }),
   );
-  const locationOf = (r: UpdateRowRead): SubmoduleLocation | null => (entries.get(r) ? { worktree: join(w.worktreeRoot, ...r.components) } : r.kept === null ? null : { gitDir: r.kept });
+  const locationOf = (r: UpdateRowRead): SubmoduleLocation | null => {
+    const components = entries.get(r);
+    return components !== undefined ? { worktree: join(w.worktreeRoot, ...components) } : r.kept === null ? null : { gitDir: r.kept };
+  };
 
   const git = async (args: string[], maxBytes = DIAGNOSTIC_RETAINED_BYTES_PER_STREAM) => {
     const out = createCollector({ maxBytes });
@@ -494,7 +495,7 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
         }
         gitDirs.push(await line(submoduleGitDirArgs(at)));
       }
-      observations.push({ head, gitEntry: entries.get(r)!, refs, keys: rowKeys(await configOf(r.parent), r.name) });
+      observations.push({ head, gitEntry: entries.has(r), refs, keys: rowKeys(await configOf(r.parent), r.name) });
     }
     return { value: { observations, gitDirs } };
   } catch (error) {
@@ -532,6 +533,8 @@ export interface UpdateReconciliation {
   deadline: string | null;
   // The active descendants of the last step exit.
   lingeringDescendants: number;
+  // Contract §9: a step passed the §5 diagnostic bound, so the session log names OUTPUT_LIMIT as the cause.
+  diagnosticLimit?: boolean;
   foreign: string[];
   // Contract §9: the operation remedy of a failed outcome. Null: no remedy.
   remedy: (lingering: number | null, otherLocks: boolean) => { text: string } | null;
@@ -575,8 +578,11 @@ export async function reconcileUpdate(r: UpdateReconciliation): Promise<void> {
   }
 
   const view = registry.get(operationId)!;
-  const cause = event.type === "reconciliation-read-failed" ? event.code : event.type === "reconciliation-read-deadline" ? "DEADLINE" : diagnosticCause(null, null, view.cause);
-  registry.apply(operationId, event, { ...result, lingeringDescendants: view.lingeringDescendants ?? 0, ...(foreign.length > 0 ? { foreign } : {}) }, cause);
+  const cause =
+    event.type === "reconciliation-read-failed" ? event.code : event.type === "reconciliation-read-deadline" ? "DEADLINE" : diagnosticCause(null, r.diagnosticLimit ? { cause: "OUTPUT_LIMIT" } : null, view.cause);
+  // Contract §9: the outcome of an update deadline carries its reason.
+  const reason = deadline === null ? {} : { reason: deadline };
+  registry.apply(operationId, event, { ...result, ...reason, lingeringDescendants: view.lingeringDescendants ?? 0, ...(foreign.length > 0 ? { foreign } : {}) }, cause);
   if (!known()) return;
   // Contract §6: `resolved` follows a known outcome. An `unknown` outcome keeps the marker and the retained data (contract §5).
   r.runner.resolved(r.markerId);

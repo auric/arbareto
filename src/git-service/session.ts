@@ -27,6 +27,7 @@ import { createRecovery } from "./recovery";
 import { createRegistrations, dismissMarker, type DismissalOutcome, type RegistrationOutcome, type Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
 import { createSubmoduleReviewer } from "./submodule-review";
+import { createSubmoduleUpdater, type SubmoduleUpdaterOptions } from "./submodule-update";
 import { createWorkspaceReader, type ReadOutcome, type WorkspaceReaderOptions } from "./status";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
@@ -61,6 +62,9 @@ export interface SessionOptions {
   hunkCheckpoint?: HunkPublisherOptions["hunkCheckpoint"];
   // Test seam only. Production uses the monotonic `performance.now()` for the contract §5 approval lifetime.
   approvalClock?: () => number;
+  // Test seam only. Production never sets it. The service awaits it before each folder check and clone check of an update row,
+  // and before the program re-check of a nested active-set read.
+  submoduleCheckpoint?: SubmoduleUpdaterOptions["submoduleCheckpoint"];
 }
 
 // The outcome forms of the reads that `read-scheduler.ts` runs. `cause` goes only into the session log entry (contract §8).
@@ -69,7 +73,7 @@ type ReadResult =
   | { result: "canceled" }
   | { result: "deadline" };
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -147,7 +151,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 and §8: both publishers keep their retained digests and approval owners in one store, because recovery (T114) reads it.
   const files = createFilePublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   const committer = createCommitter({ runner, trust, reader, reviews, approvals, registry, exclusion, respond });
-  const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained });
+  const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
+  const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
   const registrations = createRegistrations({
@@ -574,7 +579,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       committer.commit(request, workspace, installation);
     },
     reviewSubmodules,
-    updateSubmodules: undefined,
+    updateSubmodules: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      updater.updateSubmodules(request, workspace, installation, git?.ok ? git.installation.version : null);
+    },
     cancel: (request) =>
       operationTarget(request, () => {
         const view = registry.cancel(request.payload.operationId);

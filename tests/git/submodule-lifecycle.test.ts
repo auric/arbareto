@@ -15,7 +15,7 @@ import { buildF27, buildF30, type Built } from "./fixtures";
 import { fileSha256, workingFileDigests } from "./git-oracle";
 import { gitPath, mutationFrames, one, outcome, progressStates, SUCCEEDED, todoCase, until, valuesOf, withService } from "./hunk-harness";
 import { gitOpenssl, loopbackCertificate, startHttp401 } from "./http-401";
-import { openService, type Capability, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, openService, type Capability, type Service, type ServiceResponse } from "./service-harness";
 import {
   callsSince,
   cloneRemedy,
@@ -159,7 +159,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
     ["inactivity", { inactivityMs: SHORT_MS }],
     ["ceiling", { ceilingMs: SHORT_MS }],
   ] as const) {
-    todoCase(TASK, `F30 silent-hook: a test-injected short ${limit} limit gives DEADLINE with reason ${limit}, no later process starts, and the outcome arrives within 5 seconds after the deadline fires (SC-017) ${NEEDS}`, SHELL, async () => {
+    caseTest(TASK, `F30 silent-hook: a test-injected short ${limit} limit gives DEADLINE with reason ${limit}, no later process starts, and the outcome arrives within 5 seconds after the deadline fires (SC-017)`, SHELL, async () => {
       await update();
       const name = `t224-${limit}`;
       const b = buildF30(gitPath(), name, "silent-hook");
@@ -207,7 +207,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
     });
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F30 silent-fetch: each update request carries the 300-second inactivity limit, the 4-hour ceiling, and the 15-second stall threshold, and a double-reported inactivity exit gives DEADLINE with reason inactivity ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 silent-fetch: each update request carries the 300-second inactivity limit, the 4-hour ceiling, and the 15-second stall threshold, and a double-reported inactivity exit gives DEADLINE with reason inactivity`, SHELL, async () => {
     await update();
     const name = "t224-silent-fetch";
     const b = buildF30(gitPath(), name, "silent-fetch");
@@ -228,7 +228,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
 });
 
 describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §12 \"Reconciliation and outcome\")", () => {
-  todoCase(TASK, `F30 child-hook: Cancel during reconciling lets reconciliation finish, lingeringDescendants is 0, ended sets endProcesses, and the background child ends ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 child-hook: Cancel during reconciling lets reconciliation finish, lingeringDescendants is 0, ended sets endProcesses, and the background child ends`, SHELL, async () => {
     await update();
     const name = "t224-cancel-reconciling";
     const b = buildF30(gitPath(), name, "child-hook");
@@ -252,7 +252,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
     });
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F30 child-hook: without Cancel the child lingers, lingeringDescendants counts it, and Revoke trust ends it ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F30 child-hook: without Cancel the child lingers, lingeringDescendants counts it, and Revoke trust ends it`, SHELL, async () => {
     await update();
     const name = "t224-lingering";
     const b = buildF30(gitPath(), name, "child-hook");
@@ -269,7 +269,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
     });
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F27 base: a reconciliation read past its deadline gives unknown and keeps the marker, and the recovery refresh states each row ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F27 base: a reconciliation read past its deadline gives unknown and keeps the marker, and the recovery refresh states each row`, SHELL, async () => {
     await update();
     const name = "t224-reconcile-deadline";
     const b = buildF27(gitPath(), name, "base");
@@ -289,7 +289,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
     });
   }, LONG_TIMEOUT_MS);
 
-  todoCase(TASK, `F27 base: after a handshake with restarted true, updateSubmodules gives STATE_UNKNOWN until a refresh true read ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `F27 base: after a handshake with restarted true, updateSubmodules gives STATE_UNKNOWN until a refresh true read`, SHELL, async () => {
     await update();
     const name = "t224-restart";
     const b = buildF27(gitPath(), name, "base");
@@ -316,7 +316,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   for (const mode of ["http", "https"] as const) {
     for (const user of [false, true]) {
       const needs: Capability[] = mode === "https" ? [...SHELL, "openssl"] : SHELL;
-      todoCase(TASK, `loopback 401 ${mode}${user ? " with u@" : ""}: the update fails within 10 seconds, the server counted a request, and the row carries registered, a redacted outputTail, and the clone remedy, and the outcome is failed-with-effects ${NEEDS}`, needs, async () => {
+      caseTest(TASK, `loopback 401 ${mode}${user ? " with u@" : ""}: the update fails within 10 seconds, the server counted a request, and the row carries registered, a redacted outputTail, and the clone remedy, and the outcome is failed-with-effects`, needs, async () => {
         await update();
         const name = `t224-401-${mode}${user ? "-user" : ""}`;
         const tls = mode === "https" ? loopbackCertificate(gitOpenssl(gitPath())!, fixtureDir(`${name}-tls`)) : undefined;
@@ -351,7 +351,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   }
 
   // `ARBARETO_TEST_SSH_URL` names a test SSH server whose host key the account does not know.
-  todoCase(TASK, `SSH unknown host key: the update fails without a wait, and the row carries the SSH output in its tail ${NEEDS}`, [...SHELL, "ssh-server"], async () => {
+  caseTest(TASK, `SSH unknown host key: the update fails without a wait, and the row carries the SSH output in its tail`, [...SHELL, "ssh-server"], async () => {
     await update();
     const name = "t224-ssh-host";
     const w = miniWorld(name, [{ name: "ssh", path: "ssh", url: process.env.ARBARETO_TEST_SSH_URL! }]);
@@ -370,7 +370,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   // Windows OpenSSH reads `~/.ssh` from the account profile, not from `HOME` or `USERPROFILE`, so a `core.sshCommand` without arguments cannot name a fixture key.
   // That case needs the key as the default identity of the account. The test never writes `~/.ssh`.
   for (const withArguments of [false, true]) {
-    todoCase(TASK, `SSH passphrase key through a core.sshCommand ${withArguments ? "with arguments: the double reports stalled, getOperation returns the fetch command in stallRemedy, no progress event carries it, and the step ends at a test-injected 5-second inactivity limit" : "without arguments: the update fails without a wait"} ${withArguments ? "(needs T256)" : NEEDS}`, [...SHELL, "openssh", "ssh-server", "ssh-key"], async () => {
+    (withArguments ? todoCase : caseTest)(TASK, `SSH passphrase key through a core.sshCommand ${withArguments ? "with arguments: the double reports stalled, getOperation returns the fetch command in stallRemedy, no progress event carries it, and the step ends at a test-injected 5-second inactivity limit (needs T256)" : "without arguments: the update fails without a wait"}`, [...SHELL, "openssh", "ssh-server", "ssh-key"], async () => {
       await update();
       const name = `t224-ssh-key-${withArguments ? "args" : "plain"}`;
       const ssh = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "OpenSSH", "ssh.exe").replaceAll("\\", "/");

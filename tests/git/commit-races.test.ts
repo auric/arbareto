@@ -43,9 +43,7 @@ import type { Built } from "./fixtures";
 import { caseTest, type Capability, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 const TASK = "T099";
-const BEFORE = "(needs T112/T115)";
-const AFTER = "(needs T112/T113/T115)";
-const RECOVERY = "(needs T112/T113/T114/T115)";
+const RECOVERY = "(needs T114/T115)";
 const SHELL: Capability[] = ["shell-double"];
 
 useFixtureRoot();
@@ -114,7 +112,7 @@ async function stageHunk(service: Service, repositoryId: string): Promise<Servic
 
 describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
   for (const change of Object.keys(CHANGES) as (keyof typeof CHANGES)[]) {
-    caseTest(TASK, `F09: a ${change} change before handoff, with no read between the change and commit, gives STALE_REVIEW, and no commit process starts ${BEFORE}`, SHELL, () => {
+    caseTest(TASK, `F09: a ${change} change before handoff, with no read between the change and commit, gives STALE_REVIEW, and no commit process starts`, SHELL, () => {
       const name = `t099-${change.replaceAll(" ", "-").toLowerCase()}`;
       return withService({ name }, async (service) => {
         const repo = repoOf(buildChanged(gitPath(), name, "F09"));
@@ -130,7 +128,7 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
     }, TIMEOUT_MS);
   }
 
-  caseTest(TASK, `F09: a readWorkspace between the change and commit gives REPOSITORY_CHANGED at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
+  caseTest(TASK, `F09: a readWorkspace between the change and commit gives REPOSITORY_CHANGED at acceptance, and no Git process starts`, SHELL, () =>
     withService({ name: "t099-generation" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t099-generation", "F09"));
       const prepared = prepare(repo, "t099-generation");
@@ -147,7 +145,7 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
   );
 
   // Contract §9: the code of a review token that is no longer valid.
-  caseTest(TASK, `a review token older than 60 seconds on an injected clock gives APPROVAL_EXPIRED at acceptance, and no Git process starts ${BEFORE}`, SHELL, () => {
+  caseTest(TASK, `a review token older than 60 seconds on an injected clock gives APPROVAL_EXPIRED at acceptance, and no Git process starts`, SHELL, () => {
     // The approval lifetime runs on the monotonic service clock (T110 decision G5). The case moves that clock.
     let elapsed = 0;
     const approvalClock = () => performance.now() + elapsed;
@@ -164,7 +162,7 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
   }, TIMEOUT_MS);
 
   // Contract §8: a `refresh: true` read invalidates the token. An equal observation keeps the generation, so acceptance sees a released ID (§2).
-  caseTest(TASK, `a review token that a refresh: true readWorkspace invalidated without a change gives UNKNOWN_TARGET at acceptance, and no Git process starts ${BEFORE}`, SHELL, () =>
+  caseTest(TASK, `a review token that a refresh: true readWorkspace invalidated without a change gives UNKNOWN_TARGET at acceptance, and no Git process starts`, SHELL, () =>
     withService({ name: "t099-refreshed" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t099-refreshed", "F09"));
       await underTest("commit");
@@ -180,7 +178,7 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
   );
 
   // Contract §8: a `refresh: false` read with an unchanged fingerprint keeps the token. The later change reaches the commit preflight.
-  caseTest(TASK, `a review token that a refresh: false read kept gives STALE_REVIEW after an index change, and no commit process starts ${BEFORE}`, SHELL, () =>
+  caseTest(TASK, `a review token that a refresh: false read kept gives STALE_REVIEW after an index change, and no commit process starts`, SHELL, () =>
     withService({ name: "t099-kept-stale" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t099-kept-stale", "F09"));
       const prepared = prepare(repo, "t099-kept-stale");
@@ -248,7 +246,7 @@ describe("changes before handoff (contract §9 STALE_REVIEW)", () => {
 });
 
 describe("changes after handoff (contract §4, §8)", () => {
-  caseTest(TASK, `F11: an approved pre-commit hook that stages another file gives completed-with-effects with the created OID and no retry ${AFTER}`, SHELL, () =>
+  caseTest(TASK, `F11: an approved pre-commit hook that stages another file gives completed-with-effects with the created OID and no retry`, SHELL, () =>
     withService({ name: "t099-f11-changing" }, async (service) => {
       const built = buildF11(gitPath(), "t099-f11-changing", "changing");
       const repo = repoOf(built);
@@ -272,7 +270,7 @@ describe("changes after handoff (contract §4, §8)", () => {
     checkout: CHANGES["same-OID branch"],
   };
   for (const change of Object.keys(LATE) as (keyof typeof LATE)[]) {
-    caseTest(TASK, `F20: an ${change} change after handoff, through a hook barrier, gives the observed result or unknown, never succeeded ${AFTER}`, SHELL, () => {
+    caseTest(TASK, `F20: an ${change} change after handoff, through a hook barrier, gives the observed result or unknown, never succeeded`, SHELL, () => {
       const name = `t099-late-${change}`;
       return withService({ name }, async (service) => {
         const built = buildF20(gitPath(), name, "base");
@@ -296,8 +294,8 @@ describe("changes after handoff (contract §4, §8)", () => {
 
   // T113 adds the reftable variants (research R4 "T113 probes").
   const LIMITS: Record<Exclude<F20Variant, "base">, string> = { "reflog-bytes": "4 MiB", "reflog-records": "10,000 reference and reflog records" };
-  for (const [task, refFormat, on, marker, suffix] of [[TASK, "files", "", ` ${AFTER}`, ""], ["T113", "reftable", " reftable", "", "-reftable"]] as const) {
-    caseTest(task, `F20${on}: a competing commit by another Git process gives unknown, and the service never attributes the current HEAD to the request${marker}`, SHELL, () =>
+  for (const [task, refFormat, on, suffix] of [[TASK, "files", "", ""], ["T113", "reftable", " reftable", "-reftable"]] as const) {
+    caseTest(task, `F20${on}: a competing commit by another Git process gives unknown, and the service never attributes the current HEAD to the request`, SHELL, () =>
       withService({ name: `t099-competing${suffix}` }, async (service) => {
         const built = f20(`t099-competing${suffix}`, "base", refFormat);
         if (built === null) return;
@@ -309,7 +307,7 @@ describe("changes after handoff (contract §4, §8)", () => {
     );
 
     for (const [variant, bound] of Object.entries(LIMITS) as [Exclude<F20Variant, "base">, string][]) {
-      caseTest(task, `F20${on} ${variant}: attribution evidence above ${bound} gives unknown with reason evidence-limit${marker}`, SHELL, () => {
+      caseTest(task, `F20${on} ${variant}: attribution evidence above ${bound} gives unknown with reason evidence-limit`, SHELL, () => {
         const name = `t099-${variant}${suffix}`;
         return withService({ name }, async (service) => {
           const built = f20(name, variant, refFormat);

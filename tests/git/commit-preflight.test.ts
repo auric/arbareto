@@ -143,11 +143,12 @@ describe("preflightRefusal (contract §9 commit preflight order)", () => {
     expect(decide(p as PolicyObservation, s as StateObservation) as unknown).toEqual(expected);
   });
 
-  // Contract §9: the tip read decides after the failed HEAD read and before the state compare.
+  // Contract §9: the tip read decides after the state compare.
   test.each([
     ["a tip read deadline wins over every refusal", state({ ...otherIndex }), { stop: "deadline" }, { stop: "deadline" }],
     ["a failed HEAD read comes before a failed tip read", state({ head: { code: "MALFORMED_GIT_OUTPUT" } }), { code: "GIT_FAILED" }, { code: "MALFORMED_GIT_OUTPUT" }],
-    ["a malformed tip gives GIT_FAILED before a changed index", state(otherIndex), { code: "MALFORMED_GIT_OUTPUT" }, { code: "GIT_FAILED" }],
+    ["a changed index comes before a failed tip read", state(otherIndex), { code: "GIT_FAILED" }, STALE],
+    ["a malformed tip gives GIT_FAILED", state(), { code: "MALFORMED_GIT_OUTPUT" }, { code: "GIT_FAILED" }],
     ["a tip above 4 MiB gives its bound", state(), { code: "OUTPUT_LIMIT", reason: "ATTRIBUTION_EVIDENCE_BYTES" }, { code: "OUTPUT_LIMIT", reason: "ATTRIBUTION_EVIDENCE_BYTES" }],
   ] as const)("%s", (_name, s, tip, expected) => {
     expect(decide(policy(), s as StateObservation, BINDING, tip as Fact<ReflogRecord | null>) as unknown).toEqual(expected);

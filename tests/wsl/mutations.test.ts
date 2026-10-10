@@ -24,7 +24,7 @@ const CASE_TIMEOUT_MS = 240_000;
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
 const HUNK = "(needs T214/T115)";
 const FILE = "(needs T214/T115)";
-const COMMIT = "(needs T112/T214/T115)";
+const COMMIT = "(needs T214/T115)";
 const BOTH = "(needs T214/T115)";
 // Contract §4 "Limitation remedies".
 const REMEDY_TEXT = "This command stages or unstages the whole file with your Git settings. Run it in a terminal.";

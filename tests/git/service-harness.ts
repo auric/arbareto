@@ -310,7 +310,7 @@ export interface HistoryResult {
   scope: "current-checkout";
   head: Head;
   shallowFingerprint: string | null;
-  rows: { oid: string; parents: string[]; subject: string; author: { name: string; email: string }; date: number; encoding: string | null }[];
+  rows: { oid: string; parents: string[]; subject: string; author: { name: string; email: string }; date: number; encoding: string | null; shallow: boolean; invalidUtf8: boolean }[];
   boundaries: { page: string[]; shallow: string[] };
   completeness: Completeness;
 }

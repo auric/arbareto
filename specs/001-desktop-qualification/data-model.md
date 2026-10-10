@@ -158,7 +158,7 @@ Index validation covers the whole index, not only the displayed path. Incomplete
 | Repository/generation | Registered workspace and the request `repositoryGeneration`; never an arbitrary renderer revision. The page does not wait for a status snapshot (contract §3 `readHistory`). |
 | Captured checkout | Full HEAD OID and symbolic target, including detached or unborn state. |
 | Scope | `current-checkout`; at most 100 reachable commit rows. |
-| Commit row | Full OID, ordered effective parent OIDs, subject, author, date, and the commit's `encoding` header value or none. |
+| Commit row | Full OID, ordered effective parent OIDs, subject, author, date, and the commit's `encoding` header value or none. `shallow` is true when the shallow file lists the commit, so Git hides its parents. `invalidUtf8` is true when the subject, author name, or author email bytes of the commit object are not valid UTF-8. |
 | Row order | Git child-before-parent date order; no renderer sorting by author timestamps. |
 | Boundaries | Explicit outside-page and shallow/unavailable ancestry, with parent IDs where known. |
 | Completeness | Complete, limited, or failed data with a specific cause; unknown parents never become roots. |

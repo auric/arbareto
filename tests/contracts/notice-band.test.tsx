@@ -2,26 +2,18 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChangeEntry } from "../../src/contracts/envelope";
+import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { NoticeBand } from "../../src/frontend/app/NoticeBand";
 
 printOrigin("../../src/frontend/app/NoticeBand.tsx", import.meta.dir);
 
-// T144 is not built. A template path keeps `tsc` from resolving the module before it exists.
-const NEEDS = "(needs T144)";
-type Fit = { checkout: number; commits: number; limit: number };
-type HistoryModule = {
-  ScopeLine: (props: { checkout: string; entries: { category: ChangeEntry["category"] }[] | null; limit?: string }) => ReactNode;
-  fitScopeLine: (parts: Record<string, unknown>) => Fit;
-};
-async function historyView(): Promise<HistoryModule> {
-  const module = "HistoryView";
-  printOrigin(`../../src/frontend/history/${module}.tsx`, import.meta.dir);
-  return (await import(`../../src/frontend/history/${module}.tsx`)) as HistoryModule;
-}
+printOrigin("../../src/frontend/history/HistoryView.tsx", import.meta.dir);
+// `HistoryView.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
+registerDom();
+const { ScopeLine, fitScopeLine } = await import("../../src/frontend/history/HistoryView");
 
 // plan.md "Notice band", "Long text", and "History graph design" (scope line).
 const SECOND = "Arbareto blocks changes until you finish it outside Arbareto and select Refresh (F5).";
@@ -93,35 +85,30 @@ const entries = (counts: Partial<Record<ChangeEntry["category"], number>>) =>
 describe("History scope line", () => {
   const checkout = "main";
 
-  test.todo(`conflicts come first with the Warning icon, and working changes count Unstaged and Untracked entries ${NEEDS}`, async () => {
-    const { ScopeLine } = await historyView();
+  test(`conflicts come first with the Warning icon, and working changes count Unstaged and Untracked entries`, () => {
     const html = renderToStaticMarkup(<ScopeLine checkout={checkout} entries={entries({ conflicted: 2, unstaged: 12, untracked: 7, staged: 11 })} />);
     expect(plain(html)).toContain("2 conflicted, 19 working changes, 11 staged");
     expect(html).toContain("<svg");
   });
 
-  test.todo(`without conflicts, the line has no conflicted prefix and no icon ${NEEDS}`, async () => {
-    const { ScopeLine } = await historyView();
+  test(`without conflicts, the line has no conflicted prefix and no icon`, () => {
     const html = renderToStaticMarkup(<ScopeLine checkout={checkout} entries={entries({ unstaged: 12, untracked: 7, staged: 11 })} />);
     expect(plain(html)).toContain("19 working changes, 11 staged");
     expect(plain(html)).not.toContain("conflicted");
     expect(html).not.toContain("<svg");
   });
 
-  test.todo(`a count of 1 takes the singular noun ${NEEDS}`, async () => {
-    const { ScopeLine } = await historyView();
+  test(`a count of 1 takes the singular noun`, () => {
     expect(plain(renderToStaticMarkup(<ScopeLine checkout={checkout} entries={entries({ untracked: 1, staged: 1 })} />))).toContain("1 working change, 1 staged");
   });
 
-  test.todo(`before a complete read, the line shows the Loading placeholder ${NEEDS}`, async () => {
-    const { ScopeLine } = await historyView();
+  test(`before a complete read, the line shows the Loading placeholder`, () => {
     const text = plain(renderToStaticMarkup(<ScopeLine checkout={checkout} entries={null} />));
     expect(text).toContain("Loading…");
     expect(text).not.toContain("working change");
   });
 
-  test.todo(`the accessible name holds the full checkout name, the scope, both counts, and the limit text ${NEEDS}`, async () => {
-    const { ScopeLine } = await historyView();
+  test(`the accessible name holds the full checkout name, the scope, both counts, and the limit text`, () => {
     const name = "feature/" + "x".repeat(52);
     expect(name).toHaveLength(60);
     const limit = "Graph layout limited: more than 24 lanes";
@@ -132,8 +119,7 @@ describe("History scope line", () => {
     expect(html).toContain("<svg");
   });
 
-  test.todo(`the fit function shrinks the checkout name, then Up to 100 commits, then the limit text, and never the fixed parts ${NEEDS}`, async () => {
-    const { fitScopeLine } = await historyView();
+  test(`the fit function shrinks the checkout name, then Up to 100 commits, then the limit text, and never the fixed parts`, () => {
     const parts = { fixed: 200, checkout: { full: 300, min: 30 }, commits: { full: 120, min: 20 }, limit: { full: 250, min: 20 } };
     expect(fitScopeLine({ ...parts, width: 900 })).toEqual({ checkout: 300, commits: 120, limit: 250 });
     expect(fitScopeLine({ ...parts, width: 700 })).toEqual({ checkout: 130, commits: 120, limit: 250 });

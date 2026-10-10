@@ -45,7 +45,7 @@ function comparison(count: number, support = "supported") {
     scope: "index-to-worktree" as const,
     completeness: { state: "complete" as const },
     patch: Buffer.from("diff --git a/x b/x\n").toString("base64"),
-    hunks: Array.from({ length: count }, (_, i) => ({ hunkId: crypto.randomUUID(), ordinal: i + 1, oldStart: 10 * i + 1, oldCount: 1, newStart: 10 * i + 1, newCount: 2, digest: String(i).repeat(64) })),
+    hunks: Array.from({ length: count }, (_, i) => ({ hunkId: crypto.randomUUID(), ordinal: i, oldStart: 10 * i + 1, oldCount: 1, newStart: 10 * i + 1, newCount: 2, digest: String(i).repeat(64) })),
     support,
     fileAction: "stage",
     remedy: null,

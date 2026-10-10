@@ -1,5 +1,8 @@
 {
   "schema": "registration-result",
   "expected": "INVALID_REQUEST",
+  "repair": {
+    "limit": 8
+  },
   "text": "{\"limit\":9}"
 }

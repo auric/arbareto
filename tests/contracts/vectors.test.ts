@@ -20,10 +20,28 @@ interface Vector {
   text: string;
   expected: string;
   platform?: string;
+  // Dot paths to values that fix only the named fault. `null` deletes the key or the array item.
+  repair?: Record<string, unknown>;
 }
 
 const PLATFORMS = ["windows", "posix"];
 const HOST_PLATFORM = process.platform === "win32" ? "windows" : "posix";
+
+// Every invalid vector of these schemas carries `repair`. The repaired text must pass, so a second fault cannot mask the named one.
+const FAULT_SCHEMAS = ["registration-result", "open-recent-repository-result", "recent-repositories-result"];
+
+function repaired(value: unknown, repair: Record<string, unknown>): unknown {
+  const copy = structuredClone(value) as Record<string, unknown>;
+  for (const [path, replacement] of Object.entries(repair)) {
+    const keys = path.split(".");
+    const last = keys.pop()!;
+    const parent = keys.reduce<Record<string, unknown>>((node, key) => node[key] as Record<string, unknown>, copy);
+    if (replacement !== null) parent[last] = replacement;
+    else if (Array.isArray(parent)) parent.splice(Number(last), 1);
+    else delete parent[last];
+  }
+  return copy;
+}
 
 const ROOT = join(import.meta.dir, "..", "vectors");
 const vectors = (["valid", "invalid"] as const).flatMap((kind) =>
@@ -68,4 +86,14 @@ describe("golden vectors", () => {
     expect(check(vector)).toBe(vector.expected);
   });
   test.skip.each(rows(false))("%s (other platform)", () => {});
+
+  const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));
+  test("each invalid vector of a fault schema carries its repair", () => {
+    expect(faulted.filter(({ vector }) => vector.repair === undefined).map(({ name }) => name)).toEqual([]);
+  });
+  const faultRows = (on: boolean) => faulted.filter((v) => runs(v.vector) === on).map((v) => [`invalid/${v.name}`, v.vector] as const);
+  test.each(faultRows(true))("%s passes after the repair of its named fault", (_name, vector) => {
+    const exported = EXPORTED[vector.schema as keyof typeof EXPORTED];
+    expect(exported.safeParse(repaired(JSON.parse(vector.text), vector.repair ?? {})).success).toBe(true);
+  });
 });

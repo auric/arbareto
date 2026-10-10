@@ -1,0 +1,9 @@
+{
+  "schema": "recent-repositories-result",
+  "expected": "INVALID_REQUEST",
+  "platform": "posix",
+  "repair": {
+    "entries.0.location.distro": "Ubuntu-24.04"
+  },
+  "text": "{\"entries\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000100\",\"path\":\"/repo\",\"location\":{\"kind\":\"wsl\"},\"openedAt\":\"2026-10-11T10:59:00.000000000Z\"}]}"
+}

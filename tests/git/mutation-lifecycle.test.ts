@@ -53,8 +53,8 @@ import {
 import { openService, type Capability, type HunkCheckpoint, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T100";
-const NEEDS = "(needs T110/T112/T113/T114/T115)";
-const HUNK = "(needs T110/T114/T115)";
+const NEEDS = "(needs T112/T113/T114/T115)";
+const HUNK = "(needs T114/T115)";
 const SHELL: Capability[] = ["shell-double"];
 // Contract §6 "Lingering Jobs" and §8: the child ends within 5 seconds.
 const END_MS = 5_000;

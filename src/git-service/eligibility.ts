@@ -189,10 +189,10 @@ export type HunkEligibility = { eligible: true } | { eligible: false; reason: Hu
 const INDEX_CHANGE_EVENT = "post-index-change";
 
 // The last entry of a key gives its value (Git `config.c` `git_configset_get_value`). Undefined when no scope sets the key.
-// Git prints the section and the variable in lowercase. These keys have no subsection, so the whole key compares in lowercase.
+// Git prints the section and the variable in lowercase, and these keys have no subsection.
 function effective(entries: readonly ConfigEntry[], key: string): ConfigEntry | undefined {
   let found: ConfigEntry | undefined;
-  for (const entry of entries) if (entry.key.toLowerCase() === key) found = entry;
+  for (const entry of entries) if (entry.key === key) found = entry;
   return found;
 }
 

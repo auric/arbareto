@@ -565,7 +565,7 @@ describe("partial clone (contract §7 \"Missing objects\")", () => {
     TIMEOUT_MS,
   );
 
-  test.todo("F17 partial clone: readComparison never runs the remote.origin.uploadpack canary, before or after approval (needs T105/T115)", async () => {
+  caseTest(TASK, "F17 partial clone: readComparison never runs the remote.origin.uploadpack canary, before or after approval", ["shell-double"], async () => {
     for (const variant of ["partial-reset-soft", "partial-read-tree"] as const) {
       const built = buildF17(gitPath(), `t071-${variant}-comparison`, variant);
       const service = await openService({ git: gitPath(), name: `t071-${variant}-comparison` });
@@ -583,9 +583,9 @@ describe("partial clone (contract §7 \"Missing objects\")", () => {
         await service.dispose();
       }
     }
-  });
+  }, TIMEOUT_MS);
 
-  test.todo("F17 partial-read-tree: an unstaged comparison whose index blob is missing gives OBJECT_MISSING and no hunk, although ls-files --eol exits 0 with i/none (needs T105/T115)", async () => {
+  caseTest(TASK, "F17 partial-read-tree: an unstaged comparison whose index blob is missing gives OBJECT_MISSING and no hunk, although ls-files --eol exits 0 with i/none", ["shell-double"], async () => {
     const built = buildF17(gitPath(), "t071-missing-index-blob", "partial-read-tree");
     const clone = repoOf(built, "clone");
     // Oracle: `ls-files --eol` exits 0 and reports `i/none` for the missing index blob (contract §4).
@@ -602,11 +602,11 @@ describe("partial clone (contract §7 \"Missing objects\")", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("untracked reads (contract §4)", () => {
-  test.todo("F17: with local diff.external and diff.<driver>.textconv canaries on an untracked file, readComparison runs neither canary (needs T105/T115)", async () => {
+  caseTest(TASK, "F17: with local diff.external and diff.<driver>.textconv canaries on an untracked file, readComparison runs neither canary", ["shell-double"], async () => {
     const built = buildF17(gitPath(), "t071-untracked-diff", "trust");
     const service = await openService({ git: gitPath(), name: "t071-untracked-diff" });
     try {
@@ -620,9 +620,9 @@ describe("untracked reads (contract §4)", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 
-  test.todo("F17: an untracked file with a local filter attribute gives reason filter, and its clean canary never runs, also after approval (needs T105/T115)", async () => {
+  caseTest(TASK, "F17: an untracked file with a local filter attribute gives reason filter, and its clean canary never runs, also after approval", ["shell-double"], async () => {
     const built = buildF17(gitPath(), "t071-untracked-filter", "trust");
     const service = await openService({ git: gitPath(), name: "t071-untracked-filter" });
     try {
@@ -632,12 +632,12 @@ describe("untracked reads (contract §4)", () => {
       const read = (await service.readWorkspace(repositoryId)).result!;
       const entry = read.entries.find((e) => e.path === "untracked.dat" && e.category === "untracked")!;
       const comparison = await service.request("readComparison", { snapshotId: read.snapshotId, entryId: entry.entryId }, { repositoryId, repositoryGeneration: read.generation, selectionId: crypto.randomUUID() });
-      expect(valuesOf(comparison.result, "reason")).toContain("filter");
+      expect(valuesOf(comparison.result, "support")).toEqual(["filter"]);
       expect(existsSync(join(built.root, built.facts.canaries.clean!))).toBe(false);
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("readTrust listing (contract §7)", () => {
@@ -897,7 +897,7 @@ describe("trust state (data-model §3)", () => {
     TIMEOUT_MS,
   );
 
-  test.todo("a configuration change after approval invalidates a dependent hunk approval: applyHunk gives TRUST_CHANGED (needs T105/T115)", async () => {
+  caseTest(TASK, "a configuration change after approval invalidates a dependent hunk approval: applyHunk gives TRUST_CHANGED", ["shell-double"], async () => {
     const built = buildF17(gitPath(), "t071-hunk-invalidated", "trust");
     const repo = repoOf(built);
     put(repo, "README.md", "# changed\n");
@@ -916,7 +916,7 @@ describe("trust state (data-model §3)", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 
   caseTest(
     TASK,
@@ -966,7 +966,7 @@ describe("trust state (data-model §3)", () => {
     TIMEOUT_MS,
   );
 
-  test.todo("without required approval, a changed fingerprint gives TRUST_CHANGED at a hunk checkpoint, and it clears after the next readWorkspace and a new selection (needs T105/T115)", async () => {
+  caseTest(TASK, "without required approval, a changed fingerprint gives TRUST_CHANGED at a hunk checkpoint, and it clears after the next readWorkspace and a new selection", ["shell-double"], async () => {
     const built = buildF02(gitPath(), "t071-not-required-hunk");
     const repo = repoOf(built);
     config(repo, "diff.external", outsideProgram(built, "diff-external-a").command);
@@ -990,7 +990,7 @@ describe("trust state (data-model §3)", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("trust approval store (contract §7 \"Trust approval store\")", () => {
@@ -1893,7 +1893,7 @@ describe("stale record (contract §7 \"Mutation trust\")", () => {
     TIMEOUT_MS,
   );
 
-  test.todo("stale record: after the next readWorkspace and a new selection, applyHunk runs without TRUST_CHANGED (needs T105/T115)", async () => {
+  caseTest(TASK, "stale record: after the next readWorkspace and a new selection, applyHunk runs without TRUST_CHANGED", ["shell-double"], async () => {
     const built = buildF17(gitPath(), "t071-stale-hunk", "trust");
     const repo = repoOf(built);
     put(repo, "README.md", "# changed\n");
@@ -1912,7 +1912,7 @@ describe("stale record (contract §7 \"Mutation trust\")", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 });
 
 // T080 cases. A configured hook result also names the friendly name, the scope of its command entry, and the classification.

@@ -100,7 +100,7 @@ describe("foreign identifiers (contract §2)", () => {
   );
 
   // Contract §3 `readComparison`: "Current snapshot ID and issued entry ID". Data-model §4 and §5 name the fields `snapshotId` and `entryId`.
-  test.todo("a snapshot ID or entry ID from another workspace gives UNKNOWN_TARGET and starts no Git process (needs T105/T115)", async () => {
+  caseTest(TASK, "a snapshot ID or entry ID from another workspace gives UNKNOWN_TARGET and starts no Git process", ["shell-double"], async () => {
     const git = gitPath();
     const service = await openService({ git, name: "t072-snapshot-workspace" });
     try {
@@ -117,9 +117,9 @@ describe("foreign identifiers (contract §2)", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 
-  test.todo("a snapshot ID or entry ID from another session gives UNKNOWN_TARGET and starts no Git process (needs T105/T115)", async () => {
+  caseTest(TASK, "a snapshot ID or entry ID from another session gives UNKNOWN_TARGET and starts no Git process", ["shell-double"], async () => {
     const git = gitPath();
     const repo = join(buildF02(git, "t072-snapshot-session").root, "repo");
     let service = await openService({ git, name: "t072-snapshot-session" });
@@ -135,7 +135,7 @@ describe("foreign identifiers (contract §2)", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("generations (contract §2, §9)", () => {
@@ -163,7 +163,7 @@ describe("generations (contract §2, §9)", () => {
     TIMEOUT_MS,
   );
 
-  test.todo("readComparison without repositoryGeneration gives INVALID_REQUEST and starts no Git process (needs T105/T115)", async () => {
+  caseTest(TASK, "readComparison without repositoryGeneration gives INVALID_REQUEST and starts no Git process", ["shell-double"], async () => {
     const git = gitPath();
     const service = await openService({ git, name: "t072-comparison-missing" });
     try {
@@ -177,7 +177,7 @@ describe("generations (contract §2, §9)", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 
   caseTest(
     TASK,
@@ -215,7 +215,7 @@ describe("generations (contract §2, §9)", () => {
     TIMEOUT_MS,
   );
 
-  test.todo("a readComparison with an old repositoryGeneration gives REPOSITORY_CHANGED and starts no Git process (needs T105/T115)", async () => {
+  caseTest(TASK, "a readComparison with an old repositoryGeneration gives REPOSITORY_CHANGED and starts no Git process", ["shell-double"], async () => {
     const git = gitPath();
     const service = await openService({ git, name: "t072-comparison-stale" });
     try {
@@ -232,7 +232,7 @@ describe("generations (contract §2, §9)", () => {
     } finally {
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 
   caseTest(
     TASK,

@@ -90,10 +90,11 @@ export async function dismissWslMarker(
   try {
     const reply = await runner.wslDistros({ operationId, bootstrapId });
     if ("listed" in reply) {
-      // Contract §11 "Route": a match that ignores letter case also names a listed distro.
+      // Contract §11 "Route": a match that ignores ASCII letter case also names a listed distro.
+      // ECMA-262 Canonicalize without the `u` flag never folds a non-ASCII character to ASCII.
       const path = routeWslPath(reply.path, { listed: reply.listed, registry: reply.keys });
-      const segment = path.kind === "refused" && path.reason === "distro-missing" ? path.distro.toLowerCase() : null;
-      if (segment !== null && !reply.listed.some((name) => name.toLowerCase() === segment)) return { ok: true };
+      const segment = path.kind === "refused" && path.reason === "distro-missing" ? new RegExp(`^${RegExp.escape(path.distro)}$`, "i") : null;
+      if (segment !== null && !reply.listed.some((name) => segment.test(name))) return { ok: true };
     }
     const route = routeRegistration(reply);
     if ("ok" in route || route.kind === "windows") return dismissalRefused;

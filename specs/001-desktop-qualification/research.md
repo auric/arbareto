@@ -2367,6 +2367,7 @@ The probes ran on 2026-09-30 on the host above. They used only session scratch f
 - `dpkg -S` showed that util-linux 2.39.3 provides both `/usr/bin/findmnt` and `/usr/bin/setsid`.
 - A user scope listed only the `cpu`, `memory`, and `pids` controllers, and it had no `io.stat` file. `/proc/<pid>/io` of a scope process was readable.
 - A shell ran `dd` for 50 MiB. After it reaped `dd`, its own `rchar` had grown by 52,460,986 bytes.
+- Re-probe, 2026-10-10: kernel `6.18.40.1-microsoft-standard-WSL2` in `Ubuntu-26.04` has `# CONFIG_TASKSTATS is not set` and no `/proc/<pid>/io`. WSL2-Linux-Kernel commit 7e83488 (2026-07-30) removed the option. A `systemd-run --user --scope` unit had a readable `cpu.stat`. Its `usage_usec` grew while a process ran and stayed unchanged while it slept. So the anchor uses the CPU-time sum of the scope `cpu.stat` files (contract §11 "Process ownership").
 
 **P7. File-system ID source (2026-10-01).**
 
@@ -2931,10 +2932,10 @@ The probes S36 to S40 ran on 2026-10-10 for T230. They used Git `2.56.0.windows.
 - Closed item, 2026-10-01, by a user decision: the S15 rule refused a common state. The update now fetches first, checks HEAD and every ref again, and checks out with `--no-fetch` (S20). Contract §12 "Update protocol", FR-047, FR-049, F28, T222, T223, and T230 carry it.
 - Unverified: the stall notice in the packaged shell, and the WSL wrapper value `GIT_PROTOCOL_FROM_USER=0`. Also the fallback remote rule for a relative `.gitmodules` URL (T253, T232).
 - Design limit: a `reuse` row can skip the fetch of Git's own update. This happens when its kept Git directory holds the target without a ref. Its connect step checks out at once. A skipped fetch cannot remove a ref.
-- Unverified: the Job I/O signal in the packaged shell, and the WSL I/O sum during a real fetch (T225, T232).
+- Unverified: the Job I/O signal in the packaged shell, and the WSL CPU-time sum during a real fetch (T225, T232).
 - Closed item, 2026-10-01: the first fetch of a row recursed into nested submodules on demand (S25). Both fetch steps now pass `--no-recurse-submodules`. Contract §12, plan.md, T223, and T227 carry it.
 - Closed item, H1, 2026-10-01: the fetch inside a clone step recursed into a nested kept Git directory (S27). Every clone step now passes `-c fetch.recurseSubmodules=no`. Recorded difference: hooks see that value through `GIT_CONFIG_PARAMETERS`, so a hook's own fetch does not recurse.
-- Closed item, H1, 2026-10-01: a WSL Job ignores its `IO_COUNTERS`, because the anchor exchange changes them (S29). Unverified: the anchor I/O sum during a real WSL fetch (T225, T232).
+- Closed item, H1, 2026-10-01: a WSL Job ignores its `IO_COUNTERS`, because the anchor exchange changes them (S29). Unverified: the anchor CPU-time sum during a real WSL fetch (T225, T232).
 - Unverified, H1: PowerShell versions other than 7.6.6 and 5.1.26100.9444 (S28). The quoting rule refuses U+201C to U+201E and control characters by the stricter reading. S28 kept them literal.
 - Unverified, verification remediation: PowerShell versions other than 7.6.6 and 5.1.26100.9444 for trailing `\` (S34). Also a UNC share root as a command path, and `\` through `wsl.exe`. The rule refuses a trailing `\` without white space by the stricter reading, and S34 kept it literal.
 - T261, 2026-10-03: pwsh 7.6.6 and Windows PowerShell 5.1.26100.9444 each passed 66 parser checks and 68 argument checks, with Git 2.55.0.windows.3. The T065 run printed the same results.

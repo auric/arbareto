@@ -299,7 +299,7 @@ describeGit("bun runner", (git) => {
 
   test("the marker store keeps the started paths and the frame order, and a test can inject a failed write", async () => {
     const operationId = id();
-    const frame = { operationId, repositoryId: id(), kind: "applyFile", worktreeRoot: repo, commonDirectory } as const;
+    const frame = { operationId, repositoryId: id(), kind: "applyFile", direction: "stage", worktreeRoot: repo, commonDirectory } as const;
     const { markerId } = (await runner.started(frame)) as { markerId: string };
     expect(runner.markers.get(markerId)).toEqual(frame);
     runner.ended(operationId, false);

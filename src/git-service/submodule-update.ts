@@ -297,7 +297,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     const paths = new Set<string>();
     for (const e of read.programs) {
       const path = forms.native("rowId" in e.program ? worktreeOf.get(e.program.rowId)! : e.program.gitDirectory);
-      if (path === null) return { code: "REPOSITORY_UNAVAILABLE" };
+      // The review and the preflight refuse such a row or Git directory with reason `path` (contract §11 "Paths and file access").
+      if (path === null) return { code: "UNSUPPORTED_SUBMODULE" };
       paths.add(path);
     }
     let reply;
@@ -415,15 +416,15 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       if (fact.kind === "error") throw new RowEnd({ failedRead });
       return fact.kind !== "absent" && (fact.kind !== "link" || fact.component === path.length);
     };
-    // The UNC form of a folder for metadata only. A folder without one fails its read.
-    const nativeOf = (folder: string, failedRead: SubmoduleFailedRead) => {
+    // The UNC form of a folder for metadata only. Contract §11 "Paths and file access": a folder without an exact one ends the row `refused` with `path`.
+    const nativeOf = (folder: string, row: string) => {
       const at = forms.native(folder);
-      if (at === null) throw new RowEnd({ failedRead });
+      if (at === null) throw refusal("path", REFUSAL_TEXTS.uncPath(row));
       return at;
     };
     // Git `clone_submodule` tests `<parent Git directory>/modules/<name>` with `file_exists`. A read error is no absent path.
-    const exists = async (path: string, failedRead: SubmoduleFailedRead) => {
-      const at = nativeOf(path, failedRead);
+    const exists = async (path: string, failedRead: SubmoduleFailedRead, row: string) => {
+      const at = nativeOf(path, row);
       try {
         await lstat(at);
         return true;
@@ -511,7 +512,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     // Contract §12 step 5 "Folder check": entry types and names only, and no process. `gitOnly`: after a connect step, only the `.git` entry may exist.
     const folderCheck = async (r: RunRow, gitOnly: boolean) => {
       await checkpoint("folder-check", r.p.row.path);
-      const folder = nativeOf(r.p.worktree, "folder");
+      const folder = nativeOf(r.p.worktree, r.p.row.path);
       let stat;
       try {
         stat = await lstat(folder);
@@ -537,7 +538,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       await checkpoint("clone-check", p.row.path);
       const kept = keptOf(p);
       const entry = await gitEntry(p, "clone-check");
-      const keptFound = !entry && (await exists(kept, "clone-check"));
+      const keptFound = !entry && (await exists(kept, "clone-check", p.row.path));
       if (!entry && p.row.action === "clone" && !keptFound) return;
       const found: SubmoduleLocation | null = entry ? { worktree: p.worktree } : keptFound ? { gitDir: kept } : null;
       const head = found === null ? null : need(await observer.head(found), "clone-check").head;

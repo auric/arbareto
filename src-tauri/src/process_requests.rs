@@ -4854,6 +4854,25 @@ pub(crate) mod tests {
         assert!(harness.exit(&other, Duration::from_millis(10)).is_none());
     }
 
+    /// Contract §12 "WSL repositories": the process-end run after a Cancel or a deadline needs a new Job for the same operation.
+    #[test]
+    fn a_run_after_a_run_cancel_starts_in_a_new_job_of_the_same_operation() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        let canceled = harness.run(&operation, &workspace, &["sleep", "60000"]);
+        harness.output_line(&canceled, "stdout", "PID");
+        harness.send(json!({ "type": "cancel", "callId": canceled }));
+        let exit = harness.exit(&canceled, WAIT).expect("exit").1;
+        assert_eq!(exit["exitCode"], Value::Null, "the Job close ended it");
+        let next = harness.run(&operation, &workspace, &["sleep", "10"]);
+        let exit = harness.exit(&next, WAIT).expect("exit of the next run").1;
+        assert_eq!(
+            (exit["exitCode"].clone(), exit["activeDescendants"].clone()),
+            (json!(0), json!(0))
+        );
+    }
+
     #[test]
     fn the_exit_reply_carries_active_descendants_and_no_process_detail() {
         let harness = Harness::child();

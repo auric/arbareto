@@ -46,6 +46,8 @@ import {
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operations";
+import wslProcess from "../contracts/wsl-process.json";
+import { wslUnitName } from "../contracts/wsl-route";
 import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
 
 export { isChannelPath } from "../contracts/operations";
@@ -205,6 +207,27 @@ export function commandLineUnits(program: string, args: readonly string[]): numb
     if (quote) units += /\\*$/.exec(arg)![0].length;
   }
   return units;
+}
+
+// Contract §11 "Process launch": the `wsl.exe` program and the approved paths of a WSL Git.
+export interface WslLaunch {
+  wslExecutable: string;
+  distro: string;
+  git: string;
+  systemdRun: string;
+  systemctl: string;
+  setsid: string;
+}
+
+// The shell keeps `<n>` as a `u32` (src-tauri/src/process_requests.rs `next_unit`), so this is its widest form.
+const WIDEST_UNIT = 4_294_967_295;
+const WRAPPER = wslProcess.wrapper.join("\n");
+
+// Contract §6 "Process fields": the units of the `wsl.exe` command line that the shell builds (src-tauri/src/wsl.rs `git_command` and `wrapped`).
+// `args` start with `--no-lazy-fetch`. The shell puts `-C <directory>` right after it.
+export function wslCommandLineUnits(launch: WslLaunch, operationId: string, mode: string, index: string, directory: string, args: readonly string[]): number {
+  const head = ["--distribution", launch.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", wslUnitName(operationId, WIDEST_UNIT), mode, index];
+  return commandLineUnits(launch.wslExecutable, [...head, launch.systemdRun, launch.systemctl, launch.setsid, launch.git, "--no-lazy-fetch", "-C", directory, ...args.slice(1)]);
 }
 
 // Contract §6 "Process fields" and §7 "Missing objects". A refused call starts no process.

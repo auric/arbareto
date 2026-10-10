@@ -371,7 +371,7 @@ export function buildF26(host: WslHost, windowsGit: string): F26 {
 
 // ---- F31: the F27, F29, and F30 submodule layouts in the distro (plan.md fixture matrix) ----
 
-export type F31Variant = "base" | "tty" | "linger" | "sleep" | "read" | "uploadpack" | "prune" | "big-clone" | "silent-fetch";
+export type F31Variant = "base" | "tty" | "linger" | "sleep" | "read" | "uploadpack" | "prune" | "big-clone" | "silent-fetch" | "unc";
 // Contract §12 "Network policy": tests enable local transport only in the owned global file.
 const FILE_ALLOW = '[protocol "file"]\n\tallow = always\n';
 export const F31_BIG_BYTES = 300_000_000;
@@ -393,6 +393,7 @@ export interface F31 {
 // reads `/dev/tty`, starts a lingering child, sleeps 60 seconds without output, or blocks in a read of a FIFO that gets no data. "uploadpack": `solo` needs a fetch, and `remote.origin.uploadpack` names a canary
 // that records `GIT_PROTOCOL_FROM_USER`. "prune": only `refs/remotes/origin/feat` holds the `solo` HEAD, the remote deletes `feat`, and `fetch.prune` is true (research.md R14 S15).
 // "big-clone": an uninitialized `big` whose recorded commit adds a 300 MB random file. "silent-fetch": `big` is populated at its first commit.
+// "unc": "base" with a staged gitlink `bad|link` and a folder `.git/modules/kept|dir`. Neither name has a UNC form.
 export function buildF31(host: WslHost, variant: F31Variant): F31 {
   const root = `${host.folder}/f31-${variant}-${crypto.randomUUID().slice(0, 8)}`;
   inDistro(host.distro, ["/usr/bin/mkdir", "-p", "--", root]);
@@ -475,6 +476,12 @@ export function buildF31(host: WslHost, variant: F31Variant): F31 {
     const b2 = commit(big.src, "big 2");
     distroGit(big.src, ["push", "-q", big.url, "HEAD:refs/heads/main"], { timeoutMs: 120_000 });
     record("big", b2);
+  }
+
+  if (variant === "unc") {
+    // `|` is valid in a Linux name and a Git path, but a Windows name cannot hold it (contract §11 "Paths and file access").
+    distroGit(sup, ["update-index", "--add", "--cacheinfo", `160000,${recorded.mid},bad|link`]);
+    inDistro(host.distro, ["/usr/bin/mkdir", "-p", "--", `${sup.dir}/.git/modules/kept|dir`]);
   }
 
   const canary = `${root}/canary.txt`;

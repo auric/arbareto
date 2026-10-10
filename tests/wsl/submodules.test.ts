@@ -5,6 +5,7 @@
 // T233 routes `submodule-review.ts` and `submodule-update.ts` through contract §11. The oracle is the distro Git in a disposable copy.
 
 import { afterEach, describe, expect } from "bun:test";
+import { readdirSync } from "node:fs";
 import { STALL_NOTICE_MS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
@@ -23,7 +24,7 @@ const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "se
 const CASE_TIMEOUT_MS = 600_000;
 // Contract §11 "Process ownership": no Linux process of the operation remains 1 second after the Job close.
 const AFTER_CLOSE_MS = 1_000;
-// plan.md F31: the sleeping hook shows the stall notice within 20 seconds through the anchor I/O sum.
+// plan.md F31: the sleeping hook shows the stall notice within 20 seconds through the anchor CPU-time sum.
 const STALL_BOUND_MS = 20_000;
 // T232: a silent fetch of the F31 blob completes under a test-injected 2-second inactivity limit.
 const SHORT_INACTIVITY_MS = 2_000;
@@ -131,7 +132,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     expect(pgrep(host, f.pattern)).toEqual([]);
   });
 
-  wslCase("F31 silent-fetch: the fetch of the 300 MB blob completes under a test-injected 2-second inactivity limit, because the anchor I/O sum changes", async (host) => {
+  wslCase("F31 silent-fetch: the fetch of the 300 MB blob completes under a test-injected 2-second inactivity limit, because the anchor CPU-time sum changes", async (host) => {
     await underTest();
     const f = buildF31(host, "silent-fetch");
     const { runner, s } = setup(host);
@@ -197,7 +198,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     expect(values).toContain(`${modules}/solo`);
   });
 
-  wslCase("F31 sleep: the sleeping hook sends stalled within 20 seconds through the anchor I/O sum, getOperation returns the WSL checkout command in stallRemedy, no progress event holds it, and Cancel ends it", async (host) => {
+  wslCase("F31 sleep: the sleeping hook sends stalled within 20 seconds through the anchor CPU-time sum, getOperation returns the WSL checkout command in stallRemedy, no progress event holds it, and Cancel ends it", async (host) => {
     await underTest();
     const f = buildF31(host, "sleep");
     const { runner, s } = setup(host);
@@ -244,6 +245,32 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     expect(pgrep(host, operationOf(s, requestId)!)).toEqual([]);
   });
 
+  // Contract §11 "Paths and file access": a name without a UNC form is a `path` refusal, never REPOSITORY_UNAVAILABLE.
+  wslCase("F31 unc: a gitlink path and a kept-directory walk folder without a UNC form give UNSUPPORTED_SUBMODULE reason path", async (host) => {
+    await underTest();
+    const f = buildF31(host, "unc");
+    const { s } = setup(host);
+    const registered = await s.response(s.chooseRepository(uncPath(f.sup.host, f.sup.dir)));
+    const { repositoryId } = registered.result as { repositoryId: string };
+    const trust = await s.response(s.request("readTrust", {}, { repositoryId }));
+    await s.response(s.request("approveTrust", { fingerprint: (trust.result as { fingerprint: string }).fingerprint, approve: true }, { repositoryId, repositoryGeneration: (registered.result as { generation: number }).generation }));
+    const read = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }));
+    const snapshot = read.result as { snapshotId: string; generation: number };
+    const review = await s.response(s.request("reviewSubmodules", { snapshotId: snapshot.snapshotId }, { repositoryId, repositoryGeneration: snapshot.generation }));
+    const refusals = objectsWith<{ reason: string; path: string }>(review.result, ["reason", "path", "text"]).map((r) => ({ reason: r.reason, path: r.path }));
+    // The oracle of the walk folder name is the Windows listing of the UNC folder.
+    const listed = readdirSync(uncPath(host, `${f.sup.dir}/.git/modules`)).filter((name) => name.startsWith("kept"));
+    expect(listed.length).toBe(1);
+    expect({ state: review.state, code: review.code, refusals }).toEqual({
+      state: "succeeded",
+      code: undefined,
+      refusals: [
+        { reason: "path", path: "bad|link" },
+        { reason: "path", path: `${f.sup.dir}/.git/modules/${listed[0]}` },
+      ],
+    });
+  });
+
   for (const ending of ["cancel", "close"] as const) {
     wslCase(`F31 big-clone: after ${ending === "cancel" ? "Cancel" : "a simulated close"} during the clone, pgrep finds no process of the operation, and no arbareto-* scope remains`, async (host) => {
       await underTest();
@@ -258,8 +285,12 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
         await Bun.sleep(200);
       }
       if (ending === "cancel") {
+        const from = runner.calls.length;
         s.request("cancel", { operationId: operationOf(s, requestId) });
         await s.response(requestId);
+        // Contract §12 "WSL repositories": the process-end run follows the Cancel, and the shell accepts it in a new Job.
+        const ends = runner.calls.slice(from).filter((c) => c.environmentPolicy === "mutation" && c.arguments.join(" ") === "--no-lazy-fetch version");
+        expect(ends.map((c) => ({ refused: c.refused ?? null, exitCode: c.exit?.exitCode ?? null }))[0]).toEqual({ refused: null, exitCode: 0 });
       } else runner.failService();
       await Bun.sleep(AFTER_CLOSE_MS);
       expect(pgrep(host, operationOf(s, requestId)!)).toEqual([]);

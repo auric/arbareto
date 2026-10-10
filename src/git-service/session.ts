@@ -590,7 +590,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const workspace = workspaceOf(request.repositoryId);
       const installation = installationOf(workspace);
       if (installation === null) return reject(request.requestId, gitCode());
-      updater.updateSubmodules(request, workspace, installation, git?.ok ? git.installation.version : null);
+      // Contract §12 "Update protocol" step 5: the probed version of the Git that runs the update selects the fallback remote rule.
+      updater.updateSubmodules(request, workspace, installation, workspace.wsl !== undefined ? workspace.wsl.version : git?.ok ? git.installation.version : null);
     },
     cancel: (request) =>
       operationTarget(request, () => {

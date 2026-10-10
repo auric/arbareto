@@ -5,7 +5,6 @@
 // It never retries, resets, amends, or undoes. A commit binds no working file, so `effects.workingFiles` is false (contract §8).
 
 import { lstat } from "node:fs/promises";
-import { join } from "node:path";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, SUBMODULE_REVIEW_SUBMODULES, TRUST_INPUT_BYTES } from "../contracts/limits";
 import type { OperationEvent } from "../contracts/outcome";
@@ -38,7 +37,7 @@ import type { OperationRegistry } from "./operations";
 import { isMissing, latin1 } from "./read-steps";
 import type { Head, IndexEntry, OperationState } from "./snapshot";
 import { parseIndexListing } from "./status";
-import { REFUSAL_TEXTS } from "./submodule-review";
+import { pathForms, REFUSAL_TEXTS } from "./submodule-review";
 import { keyParts, parseConfigListing, requestFacts, type ConfigEntry } from "./trust";
 import type { WslIndexFacts } from "./wsl-files";
 
@@ -443,9 +442,10 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
       return f.kind !== "absent" && (f.kind !== "link" || f.component === r.components.length + 1) ? [[r, r.components]] : [];
     }),
   );
+  const forms = pathForms(w, ctx.installation);
   const locationOf = (r: UpdateRowRead): SubmoduleLocation | null => {
     const components = entries.get(r);
-    return components !== undefined ? { worktree: join(w.worktreeRoot, ...components) } : r.kept === null ? null : { gitDir: r.kept };
+    return components !== undefined ? { worktree: forms.join(forms.root, ...components) } : r.kept === null ? null : { gitDir: r.kept };
   };
 
   const git = async (args: string[], maxBytes = DIAGNOSTIC_RETAINED_BYTES_PER_STREAM) => {
@@ -524,7 +524,17 @@ const SUBMODULE_FOREIGN_CAP = 5 + 2 * SUBMODULE_REVIEW_SUBMODULES;
 export async function submoduleLocks(ctx: ObserveContext, head: Head | null, gitDirs: readonly string[]): Promise<string[] | Failure | Stop> {
   const locks = await observedLocks(ctx, head);
   if (!Array.isArray(locks)) return locks;
-  const paths = [`${ctx.workspace.commonDirectory}/config.lock`, ...[...new Set(gitDirs)].flatMap((dir) => [`${dir}/index.lock`, `${dir}/HEAD.lock`])];
+  const w = ctx.workspace;
+  const forms = pathForms(w, ctx.installation);
+  // Contract §8 "Observed locks": a WSL lock path takes its UNC form. Linux Git prints Linux paths, so a name without a UNC form is malformed here.
+  const paths = [`${w.commonDirectory}${w.wsl === undefined ? "/" : "\\"}config.lock`];
+  for (const dir of new Set(gitDirs)) {
+    for (const name of ["index.lock", "HEAD.lock"]) {
+      const path = forms.native(`${dir}/${name}`);
+      if (path === null) return { code: "MALFORMED_GIT_OUTPUT" };
+      paths.push(path);
+    }
+  }
   const found = await Promise.all(paths.map((path) => lstat(path).then(() => true, (error: unknown) => (isMissing(error) ? false : null))));
   if (found.includes(null)) return { code: "GIT_FAILED" };
   return [...locks, ...paths.filter((_, i) => found[i])].slice(0, SUBMODULE_FOREIGN_CAP);

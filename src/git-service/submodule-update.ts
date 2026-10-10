@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T230: `updateSubmodules`, contract §12 "Update protocol", "Trust", "Progress", "Deadlines and Cancel", and "Reconciliation and outcome". The Windows path.
-// The admission reads memory only. A WSL workspace gets SERVICE_UNAVAILABLE until T233. T256 adds the stall notice.
+// T230: `updateSubmodules`, contract §12 "Update protocol", "Trust", "Progress", "Deadlines and Cancel", and "Reconciliation and outcome".
+// T233: a WSL workspace runs the same protocol through contract §11 (§12 "WSL repositories"). The admission reads memory only. T256 adds the stall notice.
 
 import { lstat, readdir } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_PROGRESS_EVENTS_PER_SECOND } from "../contracts/limits";
-import { NATIVE } from "../contracts/native-path";
 import {
   buildRefusalRemedy,
   buildSubmoduleRemedy,
@@ -49,6 +47,7 @@ import { defaultRemote, fallbackRemote, SubmoduleUrlError } from "./submodule-re
 import {
   componentsOf,
   OUTER_SCOPES,
+  pathForms,
   programDirOwner,
   programOwner,
   REFUSAL_TEXTS,
@@ -98,7 +97,7 @@ type RowRemedy = NonNullable<NonNullable<UpdatePhase["refusal"]>["remedy"]>;
 // Contract §2, §9, and §12 "Refusals": the acceptance checks after the accepted event, in this order. Memory only, so no Git process starts.
 export function admitUpdate(
   request: Pick<UpdateRequest, "repositoryId" | "repositoryGeneration">,
-  w: Pick<Workspace, "generation" | "wsl">,
+  w: Pick<Workspace, "generation">,
   accepted: Acceptance,
   retained: (token: string) => RetainedSubmoduleReview | undefined,
 ): UpdateAdmission | { code: ErrorCode; result?: { refusals: SubmoduleRefusal[] } } {
@@ -110,7 +109,6 @@ export function admitUpdate(
   if (review === undefined || review.repositoryId !== request.repositoryId) return { code: "UNKNOWN_TARGET" };
   // The update refuses while a review refusal holds. The token stays unconsumed.
   if (review.value.refusals.length > 0) return { code: "UNSUPPORTED_SUBMODULE", result: { refusals: review.value.refusals } };
-  if (w.wsl !== undefined) return { code: "SERVICE_UNAVAILABLE" };
   return { approval, review };
 }
 
@@ -232,6 +230,7 @@ interface RunContext {
   read: Observed;
   update: RetainedUpdate;
   facts: Map<string, RetainedUpdateRow>;
+  // The Git path of the remedy commands.
   gitPath: string;
   gitVersion: string;
 }
@@ -292,15 +291,22 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
   }
 
   // Contract §12 "Trust": the run confirmation names the worktree of each program row and each kept Git directory without a row.
-  async function confirmRun(w: Workspace, read: Observed): Promise<"approved" | "declined" | Refused> {
+  // Contract §6: a trust frame names native paths, so a WSL path goes in its UNC form.
+  async function confirmRun(w: Workspace, installation: ReadInstallation, read: Observed): Promise<"approved" | "declined" | Refused> {
+    const forms = pathForms(w, installation);
     const worktreeOf = new Map(read.rows.map((p) => [p.row.rowId, p.worktree]));
-    const paths = [...new Set(read.programs.map((e) => ("rowId" in e.program ? worktreeOf.get(e.program.rowId)! : e.program.gitDirectory)))];
+    const paths = new Set<string>();
+    for (const e of read.programs) {
+      const path = forms.native("rowId" in e.program ? worktreeOf.get(e.program.rowId)! : e.program.gitDirectory);
+      if (path === null) return { code: "REPOSITORY_UNAVAILABLE" };
+      paths.add(path);
+    }
     let reply;
     try {
       reply = await o.runner.trust({
         type: "confirmRun",
         worktreeRoot: w.worktreeRoot,
-        submodulePaths: paths,
+        submodulePaths: [...paths],
         programCount: read.programs.length,
         uncheckedCount: read.programs.filter((e) => e.program.digest === "unchecked").length,
       });
@@ -328,8 +334,10 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
   async function run(c: RunContext): Promise<RunEnd> {
     const { ctx, observer, read, update, facts, gitPath, gitVersion } = c;
     const { operationId, signal, workspace: w } = ctx;
+    const forms = pathForms(w, ctx.installation);
+    const wsl = forms.wsl;
     const confirmed = new Set(read.programs.map((e) => JSON.stringify([e.owner, e.identity, e.program.digest])));
-    const fold = (path: string) => NATIVE.fold(resolve(path));
+    const fold = forms.key;
     const confirmedDirs = new Map(read.rowless.map((repo) => [fold(repo.gitDir), programDirOwner(repo.gitDir)]));
     const progress = createProgress(registry, operationId);
     let lastDescendants = 0;
@@ -408,10 +416,17 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       if (fact.kind === "error") throw new RowEnd({ failedRead });
       return fact.kind !== "absent" && (fact.kind !== "link" || fact.component === path.length);
     };
+    // The UNC form of a folder for metadata only. A folder without one fails its read.
+    const nativeOf = (folder: string, failedRead: SubmoduleFailedRead) => {
+      const at = forms.native(folder);
+      if (at === null) throw new RowEnd({ failedRead });
+      return at;
+    };
     // Git `clone_submodule` tests `<parent Git directory>/modules/<name>` with `file_exists`. A read error is no absent path.
     const exists = async (path: string, failedRead: SubmoduleFailedRead) => {
+      const at = nativeOf(path, failedRead);
       try {
-        await lstat(path);
+        await lstat(at);
         return true;
       } catch (error) {
         if (isMissing(error)) return false;
@@ -491,7 +506,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     // Contract §12 step 5 "Folder check": entry types and names only, and no process. `gitOnly`: after a connect step, only the `.git` entry may exist.
     const folderCheck = async (r: RunRow, gitOnly: boolean) => {
       await checkpoint("folder-check", r.p.row.path);
-      const folder = r.p.worktree;
+      const folder = nativeOf(r.p.worktree, "folder");
       let stat;
       try {
         stat = await lstat(folder);
@@ -533,13 +548,13 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       if (head === null || head !== r.p.row.head) return false;
       if (await refHeld(location, "check")) return true;
       const where = "worktree" in location ? { submoduleWorktree: r.p.worktree } : { gitDirectory: location.gitDir };
-      throw refusal("unsaved-commits", REFUSAL_TEXTS.unsavedCommits(r.p.row.path, head), buildRefusalRemedy({ reason: "unsaved-commits", source: "run", gitPath, commit: head, ...where }));
+      throw refusal("unsaved-commits", REFUSAL_TEXTS.unsavedCommits(r.p.row.path, head), buildRefusalRemedy({ reason: "unsaved-commits", source: "run", gitPath, commit: head, wsl, ...where }));
     };
 
     // Contract §12 step 5 first and fallback fetch. False: the fallback fetch failed, so the row ends without a checkout.
     const fetchTarget = async (r: RunRow, location: { worktree: string }, target: string) => {
       const p = r.p;
-      const plain: SubmoduleRemedyRequest = { step: "fetch", gitPath, submoduleWorktree: p.worktree };
+      const plain: SubmoduleRemedyRequest = { step: "fetch", gitPath, submoduleWorktree: p.worktree, wsl };
       await gate(r, withParent(r));
       r.facts.phase.fetched = true;
       const first = await step(r, submoduleFetchArgs(p.gitWorktree), "fetch", plain, true);
@@ -558,7 +573,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
         if (!(error instanceof SubmoduleUrlError)) throw error;
         throw new RowEnd({ failedRead: "url" });
       }
-      const fallback: SubmoduleRemedyRequest = { step: "fallback-fetch", gitPath, submoduleWorktree: p.worktree, remote, target };
+      const fallback: SubmoduleRemedyRequest = { step: "fallback-fetch", gitPath, submoduleWorktree: p.worktree, remote, target, wsl };
       await gate(r, withParent(r));
       const second = await step(r, submoduleFallbackFetchArgs(p.gitWorktree, remote, target, w.objectFormat), "fetch", fallback);
       if (!second.ok) second.fail();
@@ -573,7 +588,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       const at = p.parentGitWorktree;
       const nested = r.parent !== null;
       const update = async (args: string[], kind: "clone" | "connect" | "checkout" | "register") =>
-        step(r, args, "update", { step: kind, gitPath, parentWorktree: p.parentWorktree, path: p.localPath, nested });
+        step(r, args, "update", { step: kind, gitPath, parentWorktree: p.parentWorktree, path: p.localPath, nested, wsl });
       if (row.action === "skip") {
         await gate(r, parentOf(r));
         const x = await update(submoduleRegisterArgs(at, local, nested), "register");
@@ -760,7 +775,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       }
       if (pre.read.programs.length > 0) {
         registry.progress(operationId, "submodule-confirmation");
-        const reply = await confirmRun(w, pre.read);
+        const reply = await confirmRun(w, installation, pre.read);
         if (signal.aborted) return refuse({ stop: "canceled" });
         if (typeof reply !== "string") return refuse(reply);
         if (reply === "declined") {
@@ -826,8 +841,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     const { operationId, signal } = registry.start("updateSubmodules", request.requestId);
     const admitted = admitUpdate(request, w, approvals.accept(key), o.reviews.retained);
     if ("code" in admitted) return void registry.apply(operationId, { type: "invalid-approval", code: admitted.code }, admitted.result);
-    // A Windows workspace has both. A WSL workspace already got SERVICE_UNAVAILABLE.
-    const gitPath = installation.selectedPath;
+    // A Windows workspace with a selected Git has both, and so does a WSL workspace.
+    const gitPath = pathForms(w, installation).gitPath;
     if (gitPath === null || gitVersion === null) return void registry.apply(operationId, { type: "invalid-approval", code: "SERVICE_UNAVAILABLE" });
     void execute(w, installation, gitPath, gitVersion, operationId, signal, key, admitted);
   }

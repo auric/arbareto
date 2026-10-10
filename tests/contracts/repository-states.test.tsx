@@ -162,6 +162,41 @@ describe("repository states", () => {
     expect(failures).toBe(2);
   });
 
+  // plan.md "Required visible states", No repository (start page).
+  describe("start page", () => {
+    const SCOPE = "This test build covers opening repositories, recent repositories, status, diffs, hunk and file staging, local commits, submodule updates, one history page, and a read-only reference list.";
+    const PATH = "D:\\work\\sample-app";
+    function startPage(entries: unknown[]) {
+      const calls: string[] = [];
+      const reply = (name: string, result: unknown) => async () => (calls.push(name), { requestId: crypto.randomUUID(), state: "succeeded", result });
+      const bridge = { listRecentRepositories: reply("listRecentRepositories", { entries }), openRecentRepository: reply("openRecentRepository", {}), removeRecentRepository: reply("removeRecentRepository", { entries }) };
+      const folders: number[] = [];
+      return { calls, folders, node: <states.StartPage bridge={bridge as never} busy={false} onOpenFolder={() => void folders.push(1)} onOpened={noop} /> };
+    }
+    const settle = () => act(async () => await new Promise((resolve) => setImmediate(resolve)));
+
+    test("it reads the recent list once and shows each entry with its name and path only, and no branch text", async () => {
+      const page = startPage([{ entryId: crypto.randomUUID(), path: PATH, location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z" }]);
+      const host = await show(page.node);
+      await settle();
+      expect(page.calls).toEqual(["listRecentRepositories"]);
+      const options = [...host.querySelectorAll('[role="option"]')];
+      expect(options.map((o) => o.getAttribute("aria-label") ?? text(o as HTMLElement))).toEqual(["Open folder… (Ctrl+O)", `sample-app, ${PATH}`]);
+      expect(host.querySelector('[role="combobox"]')).not.toBeNull();
+      expect(text(host)).toContain(SCOPE);
+    });
+
+    test("an empty list reads the empty text, and Open folder… (Ctrl+O) stays", async () => {
+      const page = startPage([]);
+      const host = await show(page.node);
+      await settle();
+      expect(text(host)).toContain("No recent repositories. Open a folder to start.");
+      const open = [...host.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => text(o) === "Open folder… (Ctrl+O)")!;
+      await act(async () => open.click());
+      expect(page.folders).toEqual([1]);
+    });
+  });
+
   test("Limited output shows the code in the code font and the reason as text", async () => {
     const host = await show(<states.LimitedOutput completeness={{ state: "limited", code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_RECORDS" }} />);
     expect(text(host)).toBe("Incomplete: OUTPUT_LIMIT STATUS_LISTING_RECORDS. Changes that depend on this view stay blocked.");

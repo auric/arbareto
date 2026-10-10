@@ -277,6 +277,39 @@ export function buildF02(git: string, name: string, variant: F02Variant = "base"
   return { id: "F02", variant, root, facts };
 }
 
+// F32: the panel-change fixture (SC-012). It is F02 "base" on 150 linear commits, with 60 more unstaged text files.
+export const F32_COMMITS = 150;
+export const F32_PANEL_FILES = Array.from({ length: 60 }, (_, i) => `panel/f${String(i + 1).padStart(2, "0")}.txt`);
+export function buildF32(git: string, name: string): Built {
+  const root = start(name);
+  const facts = newFacts();
+  const r = init(git, join(root, "repo"));
+  const text = (changed: number[]) => lines(40, (n) => (changed.includes(n) ? `line ${n} changed\n` : `line ${n}\n`));
+  const hunks = { staged: [3], unstaged: [20, 36] };
+  const base: Record<string, string> = { "multi.txt": text([]), "other-a.txt": "a\n", "keep.txt": "keep\n" };
+  for (const p of F32_PANEL_FILES) base[p] = `${p}\n`;
+  const stream = Array.from({ length: F32_COMMITS }, (_, i) =>
+    fiCommit({ mark: i + 1, time: FIXED_EPOCH + i + 1, message: `c${i + 1}\n`, files: i === 0 ? base : { [`history/c${String(i + 1).padStart(3, "0")}.txt`]: `c${i + 1}\n` }, ...(i > 0 ? { from: i } : {}) }),
+  );
+  const tip = importHistory(r, Buffer.concat(stream)).get(F32_COMMITS)!;
+  put(r.dir, "multi.txt", text(hunks.staged));
+  put(r.dir, "other-a.txt", "a changed\n");
+  put(r.dir, "other-b.txt", "b\n");
+  add(r, "multi.txt", "other-a.txt", "other-b.txt");
+  put(r.dir, "multi.txt", text([...hunks.staged, ...hunks.unstaged]));
+  for (const p of F32_PANEL_FILES) put(r.dir, p, `${p} changed\n`);
+  normalizeIndex(r);
+  facts.repos.repo = repoFacts(r, {
+    refs: { "refs/heads/main": tip },
+    staged: ["multi.txt", "other-a.txt", "other-b.txt"],
+    unstaged: sorted(["multi.txt", ...F32_PANEL_FILES]),
+  });
+  facts.notes.commits = F32_COMMITS;
+  // Changed line numbers per hunk, as in F02.
+  facts.notes.hunks = { "multi.txt": hunks };
+  return { id: "F32", variant: "base", root, facts };
+}
+
 // F03: Unicode, spaced, option-like, and bracket names, missing final newlines, a long path, a case-only rename, case-colliding and invalid UTF-8 index paths.
 export function buildF03(git: string, name: string): Built {
   const root = start(name);

@@ -36,6 +36,7 @@ import {
   buildF28,
   buildF29,
   buildF30,
+  buildF32,
   CapabilitySkip,
   type Built,
 } from "../git/fixtures";
@@ -68,6 +69,7 @@ const BUILDERS: Record<string, (git: string, name: string) => Built> = {
   F28: (g, n) => buildF28(g, n, "detached-unsaved"),
   F29: (g, n) => buildF29(g, n, "base"),
   F30: (g, n) => buildF30(g, n, "clone"),
+  F32: (g, n) => buildF32(g, n),
 };
 
 const MANIFEST_NAME = "manifest.sha256";

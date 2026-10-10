@@ -272,7 +272,7 @@ export function keyParts(key: string): KeyParts | null {
   const first = key.indexOf(".");
   const last = key.lastIndexOf(".");
   if (first <= 0 || last === key.length - 1) return null;
-  return { section: key.slice(0, first).toLowerCase(), subsection: first === last ? null : key.slice(first + 1, last), variable: key.slice(last + 1).toLowerCase() };
+  return { section: key.slice(0, first), subsection: first === last ? null : key.slice(first + 1, last), variable: key.slice(last + 1) };
 }
 
 // Contract §7 "Value display allowlist".
@@ -959,7 +959,7 @@ function configPaths(entries: readonly ConfigEntry[], roots: Roots, layout: Layo
   else for (const file of configFiles) add(file);
   add(rules.path.join(roots.paths.commonDirectory, "config"));
   // Contract §8: `config.worktree` is a candidate when `extensions.worktreeConfig` is set.
-  if (entries.some((e) => e.key.toLowerCase() === "extensions.worktreeconfig" && parseMaybeBool(e.value) === 1)) add(rules.path.join(roots.paths.gitDirectory, "config.worktree"));
+  if (entries.some((e) => e.key === "extensions.worktreeconfig" && parseMaybeBool(e.value) === 1)) add(rules.path.join(roots.paths.gitDirectory, "config.worktree"));
   for (const entry of entries) {
     const parts = keyParts(entry.key);
     if (parts === null || parts.variable !== "path" || !(parts.section === "include" ? parts.subsection === null : parts.section === "includeif" && parts.subsection !== null)) continue;

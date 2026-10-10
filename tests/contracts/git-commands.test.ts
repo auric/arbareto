@@ -331,7 +331,7 @@ test("the attribute, line-ending, and empty-tree reads are exact", () => {
   expect(commands.lineEndingArgs()).toEqual([...R, "ls-files", "--eol", "-z"]);
   expect(commands.emptyTreeArgs()).toEqual([...R, "hash-object", "-t", "tree", "--stdin"]);
 });
-test("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object -t tree --stdin` exists (needs T104, T199)", () => {
+test("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object -t tree --stdin` exists", () => {
   const hashes = [...builderArrays(), commands.blobHashProofArgs("a.txt")].filter((args) => args.includes("hash-object"));
   expect(hashes.length).toBeGreaterThanOrEqual(3);
   expect(hashes.some((args) => args.includes("-t") && args.includes("tree") && args.includes("--stdin"))).toBe(true);
@@ -341,13 +341,13 @@ test("`hash-object` arrays hold `--stdin` and never `-w`, and `hash-object -t tr
   }
 });
 const endsWith = (args: string[], tail: string[]) => args.length > tail.length && tail.every((item, i) => args[args.length - tail.length + i] === item);
-test("the applyHunk and applyFile steps start with `--no-lazy-fetch`, end with the contract §4 forms, and `apply --cached` reads the retained patch on stdin (needs T104, T199)", () => {
+test("the applyHunk and applyFile steps start with `--no-lazy-fetch`, end with the contract §4 forms, and `apply --cached` reads the retained patch on stdin", () => {
   const arrays = builderArrays();
   for (const tail of [["read-tree", "--empty"], ["update-index", "--add", "--remove", "-z", "--stdin"], ["update-index", "-z", "--index-info"], ["hash-object", "--no-filters", "--stdin"]]) {
     expect({ tail, found: arrays.some((args) => args[0] === "--no-lazy-fetch" && endsWith(args, tail)) }).toEqual({ tail, found: true });
   }
 });
-test("the commit array is exactly `--no-lazy-fetch commit --quiet --file=-` (needs T104)", () => {
+test("the commit array is exactly `--no-lazy-fetch commit --quiet --file=-`", () => {
   expect(builderArrays()).toContainEqual(["--no-lazy-fetch", "commit", "--quiet", "--file=-"]);
 });
 // T104: the mutation steps take only `--no-lazy-fetch`. The `mutation` policy and a `transactionId` select the candidate index, so no array names it.
@@ -445,7 +445,7 @@ test("the T227 submodule step arrays are exact", () => {
   }
 });
 
-test("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` with `config --file .gitmodules --null --list`, and never add `--recursive` (needs T227)", () => {
+test("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` with `config --file .gitmodules --null --list`, and never add `--recursive`", () => {
   const location = { worktree: "C:/repo/sub" };
   const submodule = [
     commands.submoduleHeadOidArgs(location),

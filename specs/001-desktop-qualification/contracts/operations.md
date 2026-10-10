@@ -1380,7 +1380,7 @@ WSL2 repositories are in this slice (spec FR-039 to FR-046). Git inside the dist
 
 - WSL routing exists only on Windows. On other platforms, every path takes the native route.
 - A selected or restored path is a WSL path when it starts with `\\wsl$\` or `\\wsl.localhost\`. Each of the three separators in that prefix can be `\` or `/`, as Win32 accepts both. The prefix comparison ignores letter case, as WSL does (P3).
-- The next segment names the distro. It must equal a name that `wsl.exe --list --quiet` prints. Without an exact match, one match that ignores letter case counts, because `wsl.exe --distribution` accepted another letter case (P3). Any other result gives `WSL_UNAVAILABLE` with reason `distro-missing`.
+- The next segment names the distro. It must equal a name that `wsl.exe --list --quiet` prints. Without an exact match, one match that ignores ASCII letter case (`A` to `Z` only, as in §6 "Startup contexts") counts, because `wsl.exe --distribution` accepted another letter case (P3). Any other result gives `WSL_UNAVAILABLE` with reason `distro-missing`.
 - The identity is one normalized UNC path: the `\\wsl.localhost\` prefix, the listed distro spelling, and the remaining segments. So both prefixes of one folder give one `repositoryId`.
 - The Linux path is `/` followed by the remaining segments, joined with `/`. `wslpath -u` gave the same result in P3.
 - Windows names cannot hold some Linux names. WSL shows such a name with characters in U+F000 to U+F0FF (P5 showed `\` as U+F05C). A repository path segment with such a character gives `UNSUPPORTED_REPOSITORY` with reason `wsl-path`.

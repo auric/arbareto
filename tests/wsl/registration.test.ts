@@ -288,6 +288,17 @@ describe("WSL registration seams (T207)", () => {
     expect(await dismiss(runner, path)).toEqual(refresh);
   });
 
+  // Contract §11 "Route" folds only ASCII letters. U+212A KELVIN SIGN folds to `k` only under Unicode folding.
+  test("a WSL marker dismissal is allowed when the distro segment matches a listed distro only under Unicode folding", async () => {
+    const path = "\\\\wsl.localhost\\Kali\\home\\u\\r";
+    const runner = {
+      addContext: () => crypto.randomUUID(),
+      wslDistros: async () => ({ path, wslExecutable: WSL_EXE, listed: ["Kali"], running: [], keys: [], saved: [] }),
+      wslProbe: () => Promise.reject(new Error("no probe")),
+    } as unknown as GitRunner & WslRunner & { addContext: BunRunner["addContext"] };
+    expect(await dismiss(runner, path)).toEqual({ ok: true });
+  });
+
   const dismissalCases: [string, ProbeChange, DismissalOutcome][] = [
     ["selstat absent", { selstat: "absent" }, { ok: true }],
     ["selstat error", { selstat: "error" }, refresh],

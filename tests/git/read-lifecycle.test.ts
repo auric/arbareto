@@ -515,7 +515,7 @@ describe("late responses (contract §8)", () => {
     TIMEOUT_MS,
   );
 
-  test.todo("a readComparison that finishes after a newer request keeps its old repositoryGeneration and selectionId (needs T105/T115)", async () => {
+  caseTest(TASK, "a readComparison that finishes after a newer request keeps its old repositoryGeneration and selectionId", ["shell-double"], async () => {
     const repo = repoOf(buildF02(gitPath(), "t074-late-comparison"));
     const service = await openService({ git: gitPath(), name: "t074-late-comparison" });
     const release = service.runner.pauseStdout(once((c) => c.arguments.includes("diff-files")));
@@ -531,12 +531,12 @@ describe("late responses (contract §8)", () => {
       release();
       const response = await service.response(late);
       // Contract §2: a response repeats the `repositoryGeneration` and `selectionId` of its validated envelope.
-      expect({ repositoryGeneration: response.repositoryGeneration, selectionId: Object.fromEntries(Object.entries(response)).selectionId }).toEqual({ repositoryGeneration: read.generation, selectionId });
+      expect({ ...outcome(response), repositoryGeneration: response.repositoryGeneration, selectionId: Object.fromEntries(Object.entries(response)).selectionId }).toEqual({ ...SUCCEEDED, repositoryGeneration: read.generation, selectionId });
     } finally {
       release();
       await service.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("recoveryState entry rules (data-model §2)", () => {

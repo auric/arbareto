@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import type { Panel } from "../keyboard/shortcuts";
+
 // All values are DIPs. Sources: plan.md "Chosen layout, sizes, and DPI", "Compact token system", and "Dialog sizes".
 
 export type Density = "compact" | "comfortable";
@@ -9,6 +11,10 @@ export type Size = { width: number; height: number };
 
 export const NATIVE_MINIMUM: Size = { width: 720, height: 480 };
 export const FILE_LANE = { min: 240, max: 400, default: 280 } as const;
+// plan.md "References sidebar". The width stays in DIPs at every text size.
+const SIDEBAR = { min: 180, max: 420, default: 240 } as const;
+// The width beside the sidebar: the 240 lane minimum, the lane splitter, and the 520 diff minimum; narrow keeps the diff minimum.
+const SIDEBAR_REST = { wide: 768, narrow: 520 } as const;
 const WIDE_WIDTH = 1120;
 const NARROW_WIDTH = 960;
 const SPLITTER = 8;
@@ -26,9 +32,11 @@ export function metrics(density: Density, textScale: number) {
   const helpLine = (c ? 18 : 20) + g;
   const workingChangesMin = bar + subgroupHeading + helpLine + row;
   const stagedMin = bar + row;
+  // One pane heading and one row: the smallest pane.
+  const reducedPaneMin = bar + row;
   return {
     header: (c ? 40 : 44) + g,
-    modeBar: bar,
+    stageBar: bar,
     hunkToolbar: bar,
     statusBar: bar,
     paneHeading: bar,
@@ -41,7 +49,7 @@ export function metrics(density: Density, textScale: number) {
     helpLine,
     workingChangesMin,
     stagedMin,
-    wideLaneMin: workingChangesMin + SPLITTER + stagedMin,
+    wideLaneMin: workingChangesMin + bar + stagedMin,
     statusAreaMin: bar + 2 * row,
     trayMin: (c ? 144 : 160) + g,
     trayDefault: c ? 168 : 192,
@@ -49,10 +57,14 @@ export function metrics(density: Density, textScale: number) {
     narrowComparisonMin: 220 + 2 * g,
     // The constrained comparison region grows through its heading and toolbar, as the narrow minimum does.
     constrainedRegionMin: 220 + 2 * g,
-    historyListMin: 240,
+    historyListMin: reducedPaneMin,
+    commitDetailsMin: reducedPaneMin,
+    // The rows region of the history list while the commit details are docked in the constrained profile.
     constrainedListMin: 220,
-    // One pane heading and one row: the smallest constrained pane.
-    reducedPaneMin: bar + row,
+    reducedPaneMin,
+    // The heading row with the Show references toggle.
+    referencesCollapsed: bar,
+    icon: 16,
     splitter: SPLITTER,
   };
 }
@@ -73,14 +85,17 @@ export function headerRows(width: number, textScale: number): number {
   throw new UnmeasuredLayoutError(width, textScale);
 }
 
-const fixedRows = (m: Metrics, rows: number) => rows * m.header + m.modeBar + m.statusBar;
+const fixedRows = (m: Metrics, rows: number) => rows * m.header + m.statusBar;
 
+/** The commit panel minimum: its heading, the content row or the file band and the comparison, the splitters, and the tray minimum. */
+function commitPanelMin(m: Metrics, wide: boolean): number {
+  return m.paneHeading + m.splitter + m.trayMin + (wide ? Math.max(m.wideComparisonMin, m.wideLaneMin) : m.workingChangesMin + m.splitter + m.narrowComparisonMin);
+}
+
+/** plan.md "Height budget": the fixed rows, the band and area reserves, the history list minimum, the dock splitter, and the commit panel minimum. */
 export function layoutFloor(profile: "wide" | "narrow", textScale: number, density: Density, rows: number): number {
   const m = metrics(density, textScale);
-  const base = fixedRows(m, rows) + 2 * m.bandRow + m.statusAreaMin + m.trayMin;
-  return profile === "wide"
-    ? base + m.splitter + Math.max(m.wideComparisonMin, m.wideLaneMin)
-    : base + 2 * m.splitter + m.workingChangesMin + m.narrowComparisonMin;
+  return fixedRows(m, rows) + 2 * m.bandRow + m.statusAreaMin + m.historyListMin + m.splitter + commitPanelMin(m, profile === "wide");
 }
 
 /** Only the client size, the text scale, and the density choose the profile. Content never does. */
@@ -98,7 +113,7 @@ export function chooseProfile(client: Size, textScale: number, density: Density)
   return client.height >= layoutFloor(profile, textScale, density, rows) ? profile : "constrained";
 }
 
-/** The work area height between the mode bar and the status bar. */
+/** The work area height between the header rows and the status bar. */
 export function workAreaHeight(client: Size, textScale: number, density: Density): number {
   return client.height - fixedRows(metrics(density, textScale), headerRows(client.width, textScale));
 }
@@ -121,10 +136,29 @@ export function paneBounds(kind: PaneKind, input: PaneInput): Bounds {
   return { min: m.workingChangesMin, max, default: clamp(128, m.workingChangesMin, max) };
 }
 
+/** plan.md "References sidebar": the sidebar width in the wide and narrow profiles. */
+export function sidebarBounds(profile: "wide" | "narrow", width: number): Bounds {
+  const max = Math.max(SIDEBAR.min, Math.min(SIDEBAR.max, width - SIDEBAR_REST[profile] - SPLITTER));
+  return { min: SIDEBAR.min, max, default: clamp(SIDEBAR.default, SIDEBAR.min, max) };
+}
+
+/**
+ * plan.md "Dock region". `available` is the height of the history list, the dock splitter, and the dock.
+ * The commit panel default keeps the history heading and three rows in view. The commit details default to 40%.
+ */
+export function dockBounds(panel: Panel, input: PaneInput): Bounds {
+  const m = metrics(input.density, input.textScale);
+  const min = panel === "commit" ? commitPanelMin(m, input.width >= WIDE_WIDTH) : m.commitDetailsMin;
+  const max = input.available - m.splitter - m.historyListMin;
+  const preferred = panel === "commit" ? input.available - m.paneHeading - 3 * m.row - m.splitter : 0.4 * input.available;
+  return { min, max, default: clamp(preferred, min, max) };
+}
+
 export type FitInput = { client: Size; textScale: number; density: Density; bandRows: number; statusArea: number };
-export type ClampInput = FitInput & { fileBand: number; tray: number };
-/** `scrolls` is true only when the constrained work area cannot hold the reduced pane minima. */
-export type ClampResult = { fileBand?: number; tray: number; comparison: number; scrolls?: boolean };
+/** `dock` is the remembered commit panel height. Without it, the commit panel default applies. */
+export type ClampInput = FitInput & { fileBand: number; tray: number; dock?: number };
+/** `list` and `dock` exist in the wide and narrow profiles. `scrolls` is true only when the constrained work area cannot hold the reduced pane minima. */
+export type ClampResult = { list?: number; dock?: number; fileBand?: number; tray: number; comparison: number; scrolls?: boolean };
 
 /** The constrained pane height: the work area less the band rows and the status area. A size without a plan.md header row count takes two rows. */
 function constrainedContent(input: FitInput, m: Metrics): number {
@@ -138,8 +172,8 @@ function constrainedContent(input: FitInput, m: Metrics): number {
 }
 
 /**
- * Clamps the remembered sizes to the space that the profile leaves.
- * plan.md gives no shrink order. This shrinks the file band first, then the tray, in the order of plan.md "Default sizes do not always fit".
+ * Clamps the remembered commit panel sizes to the space that the profile leaves (plan.md "Default sizes do not always fit").
+ * The history list shrinks first. Then the file band and the tray shrink in the narrow profile, and the tray in the wide profile.
  */
 export function clampPanes(input: ClampInput): ClampResult {
   const { client, textScale, density } = input;
@@ -148,38 +182,48 @@ export function clampPanes(input: ClampInput): ClampResult {
   const bandMin = m.workingChangesMin;
   const bandMax = Math.max(160, bandMin);
   if (profile === "constrained") {
-    // plan.md "Constrained sizes": no splitter, so remembered sizes do not apply. The file band shrinks first, then the tray, then the comparison.
-    const content = constrainedContent(input, m);
-    const fileBand = clamp(content - m.constrainedRegionMin - m.trayMin, m.reducedPaneMin, bandMin);
-    const tray = clamp(content - m.constrainedRegionMin - fileBand, m.reducedPaneMin, m.trayMin);
-    const comparison = Math.max(m.reducedPaneMin, content - fileBand - tray);
-    return { fileBand, tray, comparison, scrolls: fileBand + tray + comparison > content };
+    // plan.md "Constrained sizes": no splitter, so remembered sizes do not apply.
+    // The references heading row, the history list, and the commit panel heading come first. The file band shrinks first, then the tray, then the comparison.
+    const rest = constrainedContent(input, m) - m.referencesCollapsed - m.historyListMin - m.paneHeading;
+    const fileBand = clamp(rest - m.constrainedRegionMin - m.trayMin, m.reducedPaneMin, bandMin);
+    const tray = clamp(rest - m.constrainedRegionMin - fileBand, m.reducedPaneMin, m.trayMin);
+    const comparison = Math.max(m.reducedPaneMin, rest - fileBand - tray);
+    return { fileBand, tray, comparison, scrolls: fileBand + tray + comparison > rest };
   }
+  const wide = profile === "wide";
   const workArea = workAreaHeight(client, textScale, density);
   const trayBounds = paneBounds("tray", { width: client.width, available: workArea, density, textScale });
   let tray = clamp(input.tray, trayBounds.min, trayBounds.max);
-  const content = workArea - input.bandRows * m.bandRow - input.statusArea;
-  if (profile === "wide") {
-    const need = Math.max(m.wideComparisonMin, m.wideLaneMin);
-    const room = content - m.splitter;
-    tray = clamp(room - need, m.trayMin, tray);
-    return { tray, comparison: Math.max(need, room - tray) };
-  }
-  const need = m.narrowComparisonMin;
-  const room = content - 2 * m.splitter;
   let fileBand = clamp(input.fileBand, bandMin, bandMax);
-  fileBand = clamp(room - need - tray, bandMin, fileBand);
-  tray = clamp(room - need - fileBand, m.trayMin, tray);
-  return { fileBand, tray, comparison: Math.max(need, room - fileBand - tray) };
+  const content = workArea - input.bandRows * m.bandRow - input.statusArea;
+  const bounds = dockBounds("commit", { width: client.width, available: content, density, textScale });
+  // The dock grows into the history list until the comparison keeps its minimum beside the remembered file band and tray.
+  const need = m.paneHeading + m.splitter + tray + (wide ? Math.max(m.wideComparisonMin, m.wideLaneMin) : fileBand + m.splitter + m.narrowComparisonMin);
+  const dock = clamp(Math.max(input.dock ?? bounds.default, need), bounds.min, bounds.max);
+  const list = content - m.splitter - dock;
+  if (wide) {
+    const row = Math.max(m.wideComparisonMin, m.wideLaneMin);
+    const room = dock - m.paneHeading - m.splitter;
+    tray = clamp(room - row, m.trayMin, tray);
+    return { list, dock, tray, comparison: room - tray };
+  }
+  const room = dock - m.paneHeading - 2 * m.splitter;
+  fileBand = clamp(room - m.narrowComparisonMin - tray, bandMin, fileBand);
+  tray = clamp(room - m.narrowComparisonMin - fileBand, m.trayMin, tray);
+  return { list, dock, fileBand, tray, comparison: room - fileBand - tray };
 }
 
-/** plan.md "Constrained sizes" for History: the inspector keeps the reduced pane minimum, and the list shrinks from 220 DIPs to one row. */
+/**
+ * The rows region minimum of the history list while the commit details are docked.
+ * plan.md "Constrained sizes": the details keep the reduced pane minimum, and the list keeps 220 DIPs, then shrinks to one row.
+ */
 export function historyFit(input: FitInput): { listMin: number; scrolls: boolean } {
   const m = metrics(input.density, input.textScale);
-  if (chooseProfile(input.client, input.textScale, input.density) !== "constrained") return { listMin: m.historyListMin, scrolls: false };
+  if (chooseProfile(input.client, input.textScale, input.density) !== "constrained") return { listMin: m.row, scrolls: false };
   const content = constrainedContent(input, m);
-  const listMin = clamp(content - m.paneHeading - m.reducedPaneMin, m.row, m.constrainedListMin);
-  return { listMin, scrolls: m.paneHeading + listMin + m.reducedPaneMin > content };
+  const fixed = m.referencesCollapsed + m.paneHeading + m.commitDetailsMin;
+  const listMin = clamp(content - fixed, m.row, m.constrainedListMin);
+  return { listMin, scrolls: fixed + listMin > content };
 }
 
 /** Arrow keys move 8 DIPs, Shift+Arrow 32, and Home/End reach the bounds. Other keys keep the value. */
@@ -224,10 +268,7 @@ export function statusAreaHeight(input: { content: number; client: Size; textSca
   const profile = chooseProfile(client, textScale, density);
   let max = 0.35 * client.height;
   if (profile !== "constrained") {
-    const sections =
-      profile === "wide"
-        ? m.splitter + Math.max(m.wideComparisonMin, m.wideLaneMin) + m.trayMin
-        : 2 * m.splitter + m.workingChangesMin + m.narrowComparisonMin + m.trayMin;
+    const sections = m.historyListMin + m.splitter + commitPanelMin(m, profile === "wide");
     max = Math.min(max, workAreaHeight(client, textScale, density) - input.bandRows * m.bandRow - sections);
   }
   return clamp(input.content, m.statusAreaMin, Math.max(m.statusAreaMin, max));

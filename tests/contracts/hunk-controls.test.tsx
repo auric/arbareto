@@ -20,7 +20,8 @@ const NEEDS = "(needs T145)";
 type Props = Record<string, unknown>;
 type HunkModule = {
   HunkControls: (props: Props) => ReactNode;
-  wrapHunkToolbar: (widths: Record<string, number>, width: number) => string[][];
+  /** Each width includes the gap after its control. `heading` is the heading width less 120 DIPs of path text and Copy path. */
+  wrapHunkToolbar: (widths: Record<string, number>, room: { heading: number; row: number }) => { heading: string[]; rows: string[][] };
 };
 async function hunkControls(): Promise<HunkModule> {
   const module = "HunkControls";
@@ -79,7 +80,7 @@ function text(node: ReactNode): string {
   return isValidElement<{ children?: ReactNode }>(node) ? text(node.props.children) : "";
 }
 function click(root: ReactNode, label: string) {
-  const found = elements(root).filter((e) => typeof e.props.onClick === "function" && text(e).includes(label));
+  const found = elements(root).filter((e) => typeof e.props.onClick === "function" && (e.props["aria-label"] === label || text(e).includes(label)));
   expect(found).toHaveLength(1);
   (found[0]!.props.onClick as () => void)();
 }
@@ -90,8 +91,9 @@ function tags(html: string, name: string): Tag[] {
   return [...html.matchAll(new RegExp(`<${name}\\b([^>]*)>([\\s\\S]*?)</${name}>`, "g"))].map((m) => ({ name, attrs: m[1]!, text: m[2]!.replace(/<[^>]+>/g, ""), index: m.index! }));
 }
 const attr = (tag: Tag, name: string) => new RegExp(`\\s${name}="([^"]*)"`).exec(tag.attrs)?.[1];
+// A button by its accessible name: `aria-label`, else its text.
 function button(html: string, label: string): Tag {
-  const found = tags(html, "button").filter((b) => b.text.includes(label));
+  const found = tags(html, "button").filter((b) => (attr(b, "aria-label") ?? b.text).includes(label));
   expect(found).toHaveLength(1);
   return found[0]!;
 }
@@ -110,6 +112,20 @@ function expectFocusableDisabled(html: string, label: string, reason: string) {
   expect(attr(b, "tabindex")).not.toBe("-1");
   expect(byId(html, attr(b, "aria-describedby")!).text).toContain(reason);
 }
+// plan.md "Icons": the tooltip opens on keyboard focus and closes on Escape. Base UI opens it only when the trigger matches `:focus-visible`.
+async function keyboardFocus(element: HTMLElement) {
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", code: "Tab", bubbles: true }));
+    element.focus();
+  });
+}
+async function escape(element: HTMLElement) {
+  await act(async () => {
+    element.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+  });
+}
+const tooltipText = () => document.querySelector('[data-slot="tooltip-content"]')?.textContent ?? null;
+
 const expectEnabled = (html: string, label: string) => {
   const b = button(html, label);
   expect(attr(b, "aria-disabled") ?? "false").toBe("false");
@@ -176,12 +192,47 @@ describe("hunk selection", () => {
 });
 
 describe("toolbar layout", () => {
-  test.todo(`the toolbar holds Previous hunk, Next hunk, the hunk action, and the file-action slot, in that order ${NEEDS}`, async () => {
+  test.todo(`the controls are Previous hunk, Next hunk, and the hunk action, in that order, with no file-action slot ${NEEDS}`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
-    const html = renderToStaticMarkup(<HunkControls {...s.props} fileAction={<button type="button">file action double</button>} />);
-    const order = ["Previous hunk", "Next hunk", "Stage selected hunk", "file action double"].map((label) => button(html, label).index);
+    const html = renderToStaticMarkup(<HunkControls {...s.props} />);
+    const order = ["Previous hunk", "Next hunk", "Stage selected hunk"].map((label) => button(html, label).index);
     expect(order).toEqual([...order].sort((x, y) => x - y));
+    expect(tags(html, "button")).toHaveLength(3);
+  });
+
+  test.todo(`Previous hunk and Next hunk are icon buttons with names, aria-keyshortcuts, and the key in the tooltip ${NEEDS}`, async () => {
+    const { HunkControls } = await hunkControls();
+    const s = setup();
+    const html = renderToStaticMarkup(<HunkControls {...s.props} selectedHunk={s.id(2)} />);
+    for (const [label, keys] of [
+      ["Previous hunk", "Alt+ArrowUp"],
+      ["Next hunk", "Alt+ArrowDown"],
+    ] as const) {
+      const b = button(html, label);
+      expect(attr(b, "aria-label")).toBe(label);
+      expect(attr(b, "aria-keyshortcuts")).toBe(keys);
+      expect(b.text.trim()).toBe("");
+      expect(b.attrs + b.text).not.toContain(label + " (");
+    }
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<HunkControls {...s.props} selectedHunk={s.id(2)} />));
+      for (const [label, tip] of [
+        ["Previous hunk", "Previous hunk (Alt+Up)"],
+        ["Next hunk", "Next hunk (Alt+Down)"],
+      ] as const) {
+        const trigger = host.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!;
+        await keyboardFocus(trigger);
+        expect(tooltipText()).toBe(tip);
+        await escape(trigger);
+        expect(tooltipText()).toBeNull();
+      }
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
   });
 
   test.todo(`Staged shows Unstage selected hunk ${NEEDS}`, async () => {
@@ -192,27 +243,28 @@ describe("toolbar layout", () => {
     expect(tags(html, "button").some((b) => b.text.includes("Stage selected hunk") && !b.text.includes("Unstage"))).toBe(false);
   });
 
-  test.todo(`the toolbar owns one reason line below its buttons, on one line with an end ellipsis, and the disabled control takes it as its description ${NEEDS}`, async () => {
+  test.todo(`the controls own one reason line after their buttons, on one line with an end ellipsis, and the disabled control takes it as its description ${NEEDS}`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup({ comparison: comparison(0, "binary") } as Partial<Props>);
-    const html = renderToStaticMarkup(<HunkControls {...s.props} fileAction={<button type="button">file action double</button>} />);
+    const html = renderToStaticMarkup(<HunkControls {...s.props} />);
     const action = button(html, "Stage selected hunk");
     expect(attr(action, "aria-disabled")).toBe("true");
     expect(attr(action, "disabled")).toBeUndefined();
     const reason = byId(html, attr(action, "aria-describedby")!);
     expect(reason.text.trim()).not.toBe("");
-    expect(reason.index).toBeGreaterThan(button(html, "file action double").index);
+    expect(reason.index).toBeGreaterThan(action.index);
     expect(attr(reason, "class")?.split(/\s+/)).toContain("truncate");
     // The 18/20 DIP reason line height (plan.md density table, T124 token).
     expect(reason.attrs).toContain("--h-reason-line");
   });
 
-  test.todo(`the wrap function moves the file-action slot to the second row first, then the hunk action ${NEEDS}`, async () => {
+  // plan.md "Hunk toolbar layout": the controls stay in the heading beside 120 DIPs of path text, else move to a row below it, else the hunk action moves to a second row.
+  test.todo(`the wrap function keeps the controls in the heading, then moves them to one row, then moves the hunk action to a second row ${NEEDS}`, async () => {
     const { wrapHunkToolbar } = await hunkControls();
-    const widths = { previous: 100, next: 100, hunkAction: 100, fileAction: 100 };
-    expect(wrapHunkToolbar(widths, 450)).toEqual([["previous", "next", "hunkAction", "fileAction"]]);
-    expect(wrapHunkToolbar(widths, 350)).toEqual([["previous", "next", "hunkAction"], ["fileAction"]]);
-    expect(wrapHunkToolbar(widths, 250)).toEqual([["previous", "next"], ["hunkAction", "fileAction"]]);
+    const widths = { previous: 24, next: 24, hunkAction: 152 };
+    expect(wrapHunkToolbar(widths, { heading: 200, row: 400 })).toEqual({ heading: ["previous", "next", "hunkAction"], rows: [] });
+    expect(wrapHunkToolbar(widths, { heading: 199, row: 400 })).toEqual({ heading: [], rows: [["previous", "next", "hunkAction"]] });
+    expect(wrapHunkToolbar(widths, { heading: 100, row: 199 })).toEqual({ heading: [], rows: [["previous", "next"], ["hunkAction"]] });
   });
 });
 
@@ -236,16 +288,54 @@ describe("comparison heading", () => {
     expect(html.slice(0, html.indexOf(">"))).toContain("--h-pane-heading");
   });
 
-  test("Copy path is a row button with a Tab stop that copies the full path", async () => {
+  test("Copy path is an icon button with its name, a Tab stop, and no visible text, and it copies the full path", async () => {
     const { ComparisonHeading } = await comparisonView();
     const html = renderToStaticMarkup(<ComparisonHeading {...heading} />);
     const copy = button(html, "Copy path");
+    expect(attr(copy, "aria-label")).toBe("Copy path");
+    expect(copy.text.trim()).toBe("");
+    expect(copy.attrs + html.slice(copy.index, html.indexOf("</button>", copy.index))).toContain("<svg");
     expect(attr(copy, "tabindex")).not.toBe("-1");
     expect(attr(copy, "disabled")).toBeUndefined();
+    // Copy path has no key.
+    expect(attr(copy, "aria-keyshortcuts")).toBeUndefined();
     const written: string[] = [];
     Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => void written.push(value) } });
-    click(tree(() => ComparisonHeading(heading)), "Copy path");
-    expect(written).toEqual([path]);
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<ComparisonHeading {...heading} />));
+      await act(async () => host.querySelector<HTMLElement>('button[aria-label="Copy path"]')!.click());
+      expect(written).toEqual([path]);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  test("the Copy path tooltip reads Copy path without the path, opens on keyboard focus, and closes on Escape", async () => {
+    const { ComparisonHeading } = await comparisonView();
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<ComparisonHeading {...heading} />));
+      const copy = host.querySelector<HTMLElement>('button[aria-label="Copy path"]')!;
+      expect(tooltipText()).toBeNull();
+      await keyboardFocus(copy);
+      expect(tooltipText()).toBe("Copy path");
+      await escape(copy);
+      expect(tooltipText()).toBeNull();
+      expect(document.activeElement).toBe(copy);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  test("the heading holds the hunk controls after Copy path, so Tab reaches Copy path first", async () => {
+    const { ComparisonHeading } = await comparisonView();
+    const html = renderToStaticMarkup(<ComparisonHeading {...heading} controls={<button type="button">hunk controls double</button>} />);
+    expect(button(html, "Copy path").index).toBeLessThan(button(html, "hunk controls double").index);
   });
 
   test("the fit function shrinks the folder, then the file name, then the sides, then the scope, and never Copy path", async () => {
@@ -267,7 +357,7 @@ describe("comparison heading", () => {
     const root = createRoot(host);
     const alt = async (selected: number, label: string, key: "ArrowUp" | "ArrowDown") => {
       await act(async () => root.render(<HunkControls {...s.props} selectedHunk={s.id(selected)} />));
-      const found = [...host.querySelectorAll("button")].filter((b) => (b.textContent ?? "").includes(label));
+      const found = [...host.querySelectorAll("button")].filter((b) => b.getAttribute("aria-label") === label);
       expect(found).toHaveLength(1);
       await act(async () => {
         found[0]!.focus();

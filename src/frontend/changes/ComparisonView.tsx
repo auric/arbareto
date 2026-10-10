@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ChangeEntry, Comparison, ReadComparisonResult } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import { ErrorState, LimitedOutput, Loading, NoSelection, UnsupportedState, useCopy } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
-import { Button } from "../components/ui/button";
+import { IconButton } from "../components/icon-button";
 import { shrinkInOrder, type Part } from "../lib/fit";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { mapHunks } from "./hunk-mapping";
@@ -35,8 +36,8 @@ export function fitComparisonHeading({ width, copyPath, folder, file, sides, sco
 
 const PARTS = ["folder", "file", "scope", "sides"] as const;
 
-/** The sticky comparison heading. Its height is the pane heading height. */
-export function ComparisonHeading({ path, scope, sides }: { path: string; scope: string; sides: string | null }) {
+/** The sticky comparison heading. Its height is the pane heading height. `controls` are the T145 hunk controls after Copy path. */
+export function ComparisonHeading({ path, scope, sides, controls }: { path: string; scope: string; sides: string | null; controls?: ReactNode }) {
   const [folder, file] = splitPath(path, GIT_SEPARATORS);
   const text = { folder, file, scope, sides: sides ?? "" };
   const heading = useRef<HTMLHeadingElement>(null);
@@ -82,9 +83,9 @@ export function ComparisonHeading({ path, scope, sides }: { path: string; scope:
           …
         </span>
       </h2>
-      <Button variant="outline" size="sm" onClick={() => copy(path)}>
-        Copy path
-      </Button>
+      {/* plan.md "Long text": the tooltip reads "Copy path" and holds no path. */}
+      <IconButton icon={Copy01Icon} label="Copy path" onClick={() => copy(path)} />
+      {controls}
     </div>
   );
 }

@@ -29,7 +29,7 @@ const CLONE = buildSubmoduleRemedy({ step: "clone", gitPath: "C:\\Git\\cmd\\git.
 const STEP_REMEDY: Remedy = { command: CLONE.command!, text: CLONE.text };
 const OPERATION_ID = "6f9619ff-8b86-4011-b42d-00cf4fc964ff";
 const ROOT = "C:\\work\\repo";
-const BASE: Fields = { operation: null, worktreeRoot: ROOT, head: { state: "branch", target: "refs/heads/main", oid: "0123456789abcdef0123456789abcdef01234567" }, trusted: false, mode: "changes", modalOpen: false, refusal: null };
+const BASE: Fields = { operation: null, worktreeRoot: ROOT, head: { state: "branch", target: "refs/heads/main", oid: "0123456789abcdef0123456789abcdef01234567" }, trusted: false, panel: "commit", modalOpen: false, refusal: null };
 
 const KINDS = [
   { kind: "commit", remedy: COMMIT_REMEDY, progress: { phase: "commit-handoff", counters: {} } },

@@ -89,7 +89,7 @@ function keyEvent(options: KeyOptions) {
   return event;
 }
 
-const CONTEXT: ShortcutContext = { messageField, comparisonPane, modalOpen: false, menuOpen: false, reviewValid: true };
+const CONTEXT: ShortcutContext = { messageField, comparisonPane, modalOpen: false, menuOpen: false, commitEnabled: true };
 
 // One fresh handler per key, so lone-Alt state never leaks between cases.
 const press = (options: KeyOptions, context: Partial<ShortcutContext> = {}): ShortcutAction | null =>
@@ -114,38 +114,51 @@ const F10 = { key: "F10", code: "F10" } as const;
 const ALT_UP = { key: "ArrowUp", code: "ArrowUp", alt: true } as const;
 const ALT_DOWN = { key: "ArrowDown", code: "ArrowDown", alt: true } as const;
 const CTRL_ENTER = { key: "Enter", code: "Enter", ctrl: true } as const;
+const CTRL_O = { key: "o", code: "KeyO", ctrl: true } as const;
+const CTRL_R = { key: "r", code: "KeyR", ctrl: true } as const;
 
 describe("global shortcuts", () => {
-  test("Ctrl+1 selects Changes and Ctrl+2 selects History", () => {
-    expect(press(CTRL_1)).toEqual({ type: "selectMode", mode: "changes" });
-    expect(press(CTRL_2)).toEqual({ type: "selectMode", mode: "history" });
-    expect(press({ ...CTRL_1, path: PATHS.list })).toEqual({ type: "selectMode", mode: "changes" });
+  test("no mode tabs: Ctrl+1 and Ctrl+2 give nothing", () => {
+    for (const path of [PATHS.body, PATHS.list, PATHS.button, PATHS.comparison]) {
+      expect(press({ ...CTRL_1, path })).toBeNull();
+      expect(press({ ...CTRL_2, path })).toBeNull();
+    }
   });
 
-  test("modifiers match exactly: Ctrl+Shift+1, Ctrl+Alt+1, and Ctrl+Meta+1 do nothing", () => {
-    expect(press({ ...CTRL_1, shift: true })).toBeNull();
-    expect(press({ ...CTRL_1, key: "!", shift: true })).toBeNull();
-    expect(press({ ...CTRL_1, alt: true })).toBeNull();
-    expect(press({ ...CTRL_1, meta: true })).toBeNull();
-    expect(press({ ...CTRL_2, shift: true, key: "@" })).toBeNull();
-    expect(press({ key: "1", code: "Digit1" })).toBeNull();
+  test("Ctrl+O gives Open folder, and Ctrl+R gives the repository switcher", () => {
+    for (const path of [PATHS.body, PATHS.list, PATHS.button, PATHS.comparison]) {
+      expect(press({ ...CTRL_O, path })).toEqual({ type: "openFolder" });
+      expect(press({ ...CTRL_R, path })).toEqual({ type: "openSwitcher" });
+    }
+    // Caps Lock gives the capital letter without Shift.
+    expect(press({ ...CTRL_O, key: "O" })).toEqual({ type: "openFolder" });
+    expect(press({ ...CTRL_R, key: "R" })).toEqual({ type: "openSwitcher" });
+  });
+
+  test("modifiers match exactly: Ctrl+Shift, Ctrl+Alt, and Ctrl+Meta with O or R do nothing, and so do O and R alone", () => {
+    for (const options of [CTRL_O, CTRL_R]) {
+      expect(press({ ...options, shift: true, key: options.key.toUpperCase() })).toBeNull();
+      expect(press({ ...options, alt: true })).toBeNull();
+      expect(press({ ...options, meta: true })).toBeNull();
+      expect(press({ ...options, ctrl: false })).toBeNull();
+    }
   });
 
   test("a key during IME composition does nothing", () => {
-    for (const options of [CTRL_1, CTRL_2, F5, F6, SHIFT_F6, F10]) expect(press({ ...options, composing: true })).toBeNull();
+    for (const options of [CTRL_O, CTRL_R, F5, F6, SHIFT_F6, F10]) expect(press({ ...options, composing: true })).toBeNull();
     expect(press({ ...ALT_UP, composing: true, path: PATHS.comparison })).toBeNull();
   });
 
   test("a key with the AltGraph modifier state does nothing", () => {
-    expect(press({ ...CTRL_1, altGraph: true })).toBeNull();
-    expect(press({ ...CTRL_2, altGraph: true })).toBeNull();
+    expect(press({ ...CTRL_O, altGraph: true })).toBeNull();
+    expect(press({ ...CTRL_R, altGraph: true })).toBeNull();
     expect(press({ ...ALT_DOWN, altGraph: true, path: PATHS.comparison })).toBeNull();
   });
 
-  test("Ctrl+1 in an editable target or in a text input inside a shadow root does nothing", () => {
+  test("Ctrl+O and Ctrl+R in an editable target or in a text input inside a shadow root do nothing", () => {
     for (const path of [PATHS.message, PATHS.otherTextarea, PATHS.textInput, PATHS.contentEditable, PATHS.shadowInput]) {
-      expect(press({ ...CTRL_1, path })).toBeNull();
-      expect(press({ ...CTRL_2, path })).toBeNull();
+      expect(press({ ...CTRL_O, path })).toBeNull();
+      expect(press({ ...CTRL_R, path })).toBeNull();
     }
   });
 
@@ -157,7 +170,7 @@ describe("global shortcuts", () => {
   });
 
   test("a key event with repeat true activates nothing", () => {
-    for (const options of [CTRL_1, CTRL_2, F5, F6, SHIFT_F6, F10]) expect(press({ ...options, repeat: true })).toBeNull();
+    for (const options of [CTRL_O, CTRL_R, F5, F6, SHIFT_F6, F10]) expect(press({ ...options, repeat: true })).toBeNull();
     expect(press({ ...ALT_UP, repeat: true, path: PATHS.comparison })).toBeNull();
     expect(press({ ...CTRL_ENTER, repeat: true, path: PATHS.message })).toBeNull();
   });
@@ -210,7 +223,9 @@ describe("global shortcuts", () => {
       { key: "Enter", code: "Enter" },
       { key: " ", code: "Space" },
       { key: "a", code: "KeyA" },
-      { ...CTRL_1, shift: true },
+      CTRL_1,
+      CTRL_2,
+      { ...CTRL_O, shift: true },
     ]) {
       const event = keyEvent(options);
       expect(handle(event as never, CONTEXT)).toBeNull();
@@ -267,12 +282,12 @@ describe("commit message field (plan.md Message row)", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  test("Ctrl+1 gives nothing", () => {
-    expect(inMessage(CTRL_1)).toBeNull();
+  test("Ctrl+O gives nothing", () => {
+    expect(inMessage(CTRL_O)).toBeNull();
   });
 
-  test("Ctrl+2 gives nothing", () => {
-    expect(inMessage(CTRL_2)).toBeNull();
+  test("Ctrl+R gives nothing", () => {
+    expect(inMessage(CTRL_R)).toBeNull();
   });
 
   test("Alt+Up gives nothing", () => {
@@ -284,21 +299,21 @@ describe("commit message field (plan.md Message row)", () => {
   });
 
   test("with isComposing true, each key of the row gives nothing", () => {
-    for (const options of [F6, SHIFT_F6, F10, F5, CTRL_ENTER, CTRL_1, CTRL_2, ALT_UP, ALT_DOWN, { key: "Tab", code: "Tab" }, { key: "Enter", code: "Enter" }]) {
+    for (const options of [F6, SHIFT_F6, F10, F5, CTRL_ENTER, CTRL_O, CTRL_R, ALT_UP, ALT_DOWN, { key: "Tab", code: "Tab" }, { key: "Enter", code: "Enter" }]) {
       expect(inMessage({ ...options, composing: true })).toBeNull();
     }
     expect(sequence(loneAlt(PATHS.message, { composing: true }))).toEqual([null, null]);
   });
 
-  test("Ctrl+Enter opens Review commit only when the review is valid, and never commits", () => {
-    expect(inMessage(CTRL_ENTER, { reviewValid: true })).toEqual({ type: "openReview" });
-    expect(inMessage(CTRL_ENTER, { reviewValid: false })).toBeNull();
+  test("Ctrl+Enter gives the commit action only when Commit is enabled, and opens no dialog", () => {
+    expect(inMessage(CTRL_ENTER, { commitEnabled: true })).toEqual({ type: "commit" });
+    expect(inMessage(CTRL_ENTER, { commitEnabled: false })).toBeNull();
     expect(inMessage({ ...CTRL_ENTER, shift: true })).toBeNull();
   });
 
   test("in another editable target, Ctrl+Enter and every other action shortcut do nothing", () => {
     for (const path of [PATHS.otherTextarea, PATHS.textInput, PATHS.contentEditable, PATHS.shadowInput]) {
-      for (const options of [CTRL_ENTER, CTRL_1, CTRL_2, ALT_UP, ALT_DOWN]) expect(press({ ...options, path })).toBeNull();
+      for (const options of [CTRL_ENTER, CTRL_O, CTRL_R, ALT_UP, ALT_DOWN]) expect(press({ ...options, path })).toBeNull();
     }
     expect(press({ ...CTRL_ENTER, path: PATHS.body })).toBeNull();
     expect(press({ ...CTRL_ENTER, path: PATHS.list })).toBeNull();
@@ -310,8 +325,8 @@ describe("modal state (plan.md Keyboard and focus)", () => {
     ["a modal dialog", { modalOpen: true }],
     ["a menu", { menuOpen: true }],
   ] as const) {
-    test(`with ${name} open, F5, Ctrl+1, Ctrl+2, F6, Shift+F6, Alt+Up, and Alt+Down give nothing`, () => {
-      for (const options of [F5, CTRL_1, CTRL_2, F6, SHIFT_F6]) {
+    test(`with ${name} open, F5, Ctrl+O, Ctrl+R, F6, Shift+F6, Alt+Up, and Alt+Down give nothing`, () => {
+      for (const options of [F5, CTRL_O, CTRL_R, F6, SHIFT_F6]) {
         expect(press(options, context)).toBeNull();
         expect(press({ ...options, path: PATHS.dialog }, context)).toBeNull();
       }
@@ -320,16 +335,18 @@ describe("modal state (plan.md Keyboard and focus)", () => {
     });
   }
 
-  test("Ctrl+Enter inside the review dialog gives nothing", () => {
-    expect(press({ ...CTRL_ENTER, path: PATHS.dialog }, { modalOpen: true, reviewValid: true })).toBeNull();
+  test("Ctrl+Enter inside a dialog gives nothing", () => {
+    expect(press({ ...CTRL_ENTER, path: PATHS.dialog }, { modalOpen: true, commitEnabled: true })).toBeNull();
+    expect(press({ ...CTRL_ENTER, path: PATHS.message }, { modalOpen: true, commitEnabled: true })).toBeNull();
   });
 });
 
-const CHANGES_ORDER = ["header", "modeTabs", "noticeHeading", "workingChanges", "staged", "comparison", "composer", "statusRegion"];
-const HISTORY_ORDER = ["header", "modeTabs", "noticeHeading", "historyList", "inspector", "statusRegion"];
+// plan.md "Pane navigation": header, notice band, references sidebar, history list, the docked panel sections, and status region.
+const COMMIT_ORDER = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "statusRegion"];
+const DETAILS_ORDER = ["header", "noticeHeading", "references", "historyList", "commitDetails", "statusRegion"];
 
 const state = (fields: Partial<SectionState> = {}): SectionState => ({
-  mode: "changes",
+  panel: "commit",
   hidden: [],
   bandRows: 1,
   status: { text: true, toggle: false, cancel: false },
@@ -347,36 +364,38 @@ const walk = (s: SectionState, direction: "next" | "previous", from: string, ste
 };
 
 describe("F6 section order", () => {
-  test("the Changes and History orders follow plan.md", () => {
-    expect<string[]>([...sectionOrder("changes")]).toEqual(CHANGES_ORDER);
-    expect<string[]>([...sectionOrder("history")]).toEqual(HISTORY_ORDER);
+  test("one order for each docked panel, and no mode tabs stop", () => {
+    expect<string[]>([...sectionOrder("commit")]).toEqual(COMMIT_ORDER);
+    expect<string[]>([...sectionOrder("details")]).toEqual(DETAILS_ORDER);
+    for (const panel of ["commit", "details"] as const) expect<string[]>([...sectionOrder(panel)]).not.toContain("modeTabs");
   });
 
   test("F6 walks the order and wraps; Shift+F6 reverses it", () => {
-    expect(walk(state(), "next", "header", 8)).toEqual([...CHANGES_ORDER.slice(1), "header"]);
-    expect(walk(state(), "previous", "header", 8)).toEqual([...CHANGES_ORDER].reverse());
-    expect(walk(state({ mode: "history" }), "next", "header", 6)).toEqual([...HISTORY_ORDER.slice(1), "header"]);
-    expect(walk(state({ mode: "history" }), "previous", "header", 6)).toEqual([...HISTORY_ORDER].reverse());
+    expect(walk(state(), "next", "header", 9)).toEqual([...COMMIT_ORDER.slice(1), "header"]);
+    expect(walk(state(), "previous", "header", 9)).toEqual([...COMMIT_ORDER].reverse());
+    expect(walk(state({ panel: "details" }), "next", "header", 6)).toEqual([...DETAILS_ORDER.slice(1), "header"]);
+    expect(walk(state({ panel: "details" }), "previous", "header", 6)).toEqual([...DETAILS_ORDER].reverse());
   });
 
   test("the band stop targets the band heading, and a band without rows is skipped", () => {
-    expect(nextSection(state(), "modeTabs", "next")).toBe("noticeHeading");
-    expect(nextSection(state({ bandRows: 0 }), "modeTabs", "next")).toBe("workingChanges");
-    expect(nextSection(state({ bandRows: 0 }), "workingChanges", "previous")).toBe("modeTabs");
-    expect(nextSection(state({ mode: "history", bandRows: 0 }), "modeTabs", "next")).toBe("historyList");
+    expect(nextSection(state(), "header", "next")).toBe("noticeHeading");
+    expect(nextSection(state({ bandRows: 0 }), "header", "next")).toBe("references");
+    expect(nextSection(state({ bandRows: 0 }), "references", "previous")).toBe("header");
+    expect(nextSection(state({ panel: "details", bandRows: 0 }), "header", "next")).toBe("references");
   });
 
   test("hidden sections are skipped", () => {
     expect(nextSection(state({ hidden: ["staged"] }), "workingChanges", "next")).toBe("comparison");
     expect(nextSection(state({ hidden: ["composer"] }), "comparison", "next")).toBe("statusRegion");
     expect(nextSection(state({ hidden: ["staged", "comparison"] }), "composer", "previous")).toBe("workingChanges");
+    expect(nextSection(state({ hidden: ["references"] }), "noticeHeading", "next")).toBe("historyList");
   });
 
   test("a status region without text, toggle, and Cancel is skipped", () => {
     const empty = { text: false, toggle: false, cancel: false };
     expect(nextSection(state({ status: empty }), "composer", "next")).toBe("header");
     expect(nextSection(state({ status: empty }), "header", "previous")).toBe("composer");
-    expect(nextSection(state({ mode: "history", status: empty }), "inspector", "next")).toBe("header");
+    expect(nextSection(state({ panel: "details", status: empty }), "commitDetails", "next")).toBe("header");
     for (const status of [
       { text: true, toggle: false, cancel: false },
       { text: false, toggle: true, cancel: false },
@@ -390,12 +409,12 @@ describe("F6 section order", () => {
 describe("band focus fallback", () => {
   test("a disappearing band control falls back to the band heading while the band keeps a row", () => {
     expect(bandFocusFallback(state({ bandRows: 1 }))).toBe("noticeHeading");
-    expect(bandFocusFallback(state({ mode: "history", bandRows: 2 }))).toBe("noticeHeading");
+    expect(bandFocusFallback(state({ panel: "details", bandRows: 2 }))).toBe("noticeHeading");
   });
 
   test("without band rows, it falls back to the next F6 stop", () => {
-    expect(bandFocusFallback(state({ bandRows: 0 }))).toBe("workingChanges");
-    expect(bandFocusFallback(state({ bandRows: 0, hidden: ["workingChanges"] }))).toBe("staged");
-    expect(bandFocusFallback(state({ mode: "history", bandRows: 0 }))).toBe("historyList");
+    expect(bandFocusFallback(state({ bandRows: 0 }))).toBe("references");
+    expect(bandFocusFallback(state({ bandRows: 0, hidden: ["references"] }))).toBe("historyList");
+    expect(bandFocusFallback(state({ panel: "details", bandRows: 0, hidden: ["references", "historyList"] }))).toBe("commitDetails");
   });
 });

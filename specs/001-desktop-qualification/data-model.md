@@ -31,7 +31,7 @@ A WSL Git installation is one Linux Git per distro (contract §11 "Git per distr
 
 Native settings keep one approved WSL Git for each distro GUID, beside the Windows Git selection.
 
-Native settings retain the last explicitly opened repository and window bounds. Native storage also holds recovery markers (contract §6) and trust approval records (contract §7 "Trust approval store"). A marker holds no message, patch, configuration, environment value, or credential. A trust record holds no configuration value, command text, or credential. Revalidate that repository before restoring its workspace. Unknown or invalid native settings use documented defaults. This slice has no settings migration.
+Native settings retain the last explicitly opened repository and window bounds. A succeeded `chooseRepository` or `openRecentRepository` sets the last repository (`lastRepository`). Native storage also holds recovery markers (contract §6) and trust approval records (contract §7 "Trust approval store"). A marker holds no message, patch, configuration, environment value, or credential. A trust record holds no configuration value, command text, or credential. Revalidate that repository before restoring its workspace. Unknown or invalid native settings use documented defaults. This slice has no settings migration.
 
 Application-owned webview storage retains theme, density, and pane proportions as bounded scalar preferences. Invalid values use documented defaults. No panel preference exists, because a repository always opens with no selected row (spec FR-034). The same storage keeps one stored draft per worktree (§2 "Stored draft"). Keep drafts and per-panel selection/scroll hints in renderer memory. They survive a service restart, because the page does not reload (contract §2). Hunk approvals, file approvals, and commit review tokens belong to the service session, and a service restart invalidates them. Trust approvals persist in native storage (§3). UI preferences never grant Git permissions.
 
@@ -108,7 +108,7 @@ The shell owns these entries in its native settings (contract §3 "Recent reposi
 
 | Field | Meaning and validation |
 | --- | --- |
-| `worktreeRoot` | The Git-resolved worktree root from the registration result, and for WSL its UNC identity path. It is display text and the path of the next `repositoryDiscovery` context. It is no identity. |
+| `worktreeRoot` | The Git-resolved worktree root from the registration result, and for WSL its UNC identity path. A Windows root keeps the form that Git prints, with forward slashes. Display and validation accept both separators. It is display text and the path of the next `repositoryDiscovery` context. It is no identity. |
 | `worktreeKey` | The contract §3 worktree key. One entry per key, so both WSL prefixes of one folder keep one entry. |
 | `openedAt` | UTC time of the last successful open, from the shell clock. It orders the list, newest first. |
 | `entryId` | Opaque §2 identifier that the shell issues for the renderer. It is not stored, and it grants no access by itself. |
@@ -190,7 +190,7 @@ The result of one `readRefs` read (contract §3 "References result", spec FR-057
 | Field | Meaning and validation |
 | --- | --- |
 | Repository/generation | Registered workspace and the request `repositoryGeneration`. |
-| Reference entry | `kind` (`branch`, `remote`, or `tag`), `name` without the kind prefix, `invalidUtf8`, `objectId`, `objectType`, `peeledId`, `peeledType`, `symref`, `upstream`, `upstreamPresent`, and `commitId`. Git sorts the entries by full reference name. |
+| Reference entry | `kind` (`branch`, `remote`, or `tag`), `name` without the kind prefix, `invalidUtf8`, `objectId`, `objectType`, `peeledId`, `peeledType`, `symref`, `upstream`, `upstreamPresent`, and `commitId`. Git sorts the entries by full reference name. `invalidUtf8` covers `name` only. `symref` and `upstream` are decoded with replacement characters. |
 | `commitId` | The commit that the entry marks: `objectId` for a commit, `peeledId` for a tag that Git peels to a commit, else `null`. Only an entry with a `commitId` and no `symref` gets a chip. |
 | `current` | Name and `objectId` of the branch that `%(HEAD)` marks, or `null`. |
 | Completeness | `complete`, or a refusal without entries: `OUTPUT_LIMIT` above the contract §5 bounds, `MALFORMED_GIT_OUTPUT`, or `GIT_FAILED`. |

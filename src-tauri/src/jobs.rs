@@ -206,13 +206,15 @@ pub enum Event {
     Inactivity,
 }
 
-/// The activity state of one tracked process. Activity is a forwarded output byte or a changed I/O sum.
-/// A lower sum counts too: a WSL child that exits before its parent reaps it lowers the anchor sum (contract §6).
+/// The activity state of one tracked process. Activity is a forwarded output byte or a changed activity sum.
+/// A lower sum counts too: the end of a WSL scope lowers the anchor sum (contract §6).
 pub struct Activity {
     stall: Duration,
     inactivity: Option<Duration>,
     last: Instant,
     sum: Option<u64>,
+    /// The last sample was unknown, so the next known sample is the new base (contract §6 "Unknown sample").
+    unknown: bool,
     stalled: bool,
     /// No event follows: the limit expired, or the run ended.
     ended: bool,
@@ -226,6 +228,7 @@ impl Activity {
             inactivity,
             last: now,
             sum: None,
+            unknown: false,
             stalled: false,
             ended: false,
             expired: false,
@@ -237,13 +240,18 @@ impl Activity {
         self.active(now)
     }
 
-    /// One sample of the I/O sum. `None` is a failed read, which shows no activity.
+    /// One sample of the activity sum. `None` is an unknown sample: it is neither activity nor idle time (contract §6 "Unknown sample").
     pub fn sample(&mut self, now: Instant, sum: Option<u64>) -> Option<Event> {
-        let changed = matches!((self.sum, sum), (Some(old), Some(new)) if old != new);
-        if sum.is_some() {
-            self.sum = sum;
+        let Some(new) = sum else {
+            self.unknown = true;
+            return None;
+        };
+        let old = self.sum.replace(new);
+        if std::mem::take(&mut self.unknown) {
+            self.last = now;
+            return None;
         }
-        if changed {
+        if old.is_some_and(|old| old != new) {
             return self.active(now);
         }
         if self.ended {
@@ -1914,9 +1922,9 @@ pub(crate) mod tests {
         );
         assert_eq!(a.sample(at(14), Some(100)), None);
         assert_eq!(
-            a.sample(at(15), None),
+            a.sample(at(15), Some(100)),
             Some(Event::Stalled),
-            "a failed read is no activity"
+            "15 s without activity"
         );
         assert_eq!(a.sample(at(16), Some(100)), None, "stalled goes out once");
         assert_eq!(
@@ -1935,6 +1943,40 @@ pub(crate) mod tests {
         );
         assert_eq!(a.sample(at(54), Some(7)), None);
         assert_eq!(a.sample(at(55), Some(7)), Some(Event::Stalled));
+    }
+
+    #[test]
+    fn an_unknown_sample_is_no_idle_time_and_the_next_known_sample_is_the_new_base() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut a = Activity::new(t0, STALL, Some(Duration::from_secs(300)));
+        assert_eq!(a.sample(at(1), Some(5)), None);
+        for s in 2..=400 {
+            assert_eq!(a.sample(at(s), None), None, "unknown at {s} s");
+        }
+        assert!(!a.expired, "no inactivity limit while samples stay unknown");
+        assert_eq!(a.sample(at(401), Some(5)), None, "the new base");
+        assert_eq!(a.sample(at(415), Some(5)), None);
+        assert_eq!(
+            a.sample(at(416), Some(5)),
+            Some(Event::Stalled),
+            "15 s after the known base"
+        );
+        assert_eq!(
+            a.sample(at(417), None),
+            None,
+            "an unknown sample sends no event"
+        );
+        assert_eq!(
+            a.sample(at(418), Some(9)),
+            None,
+            "a known sample after an unknown one is a base, not activity"
+        );
+        assert_eq!(a.sample(at(419), Some(10)), Some(Event::Active));
+        for s in 420..=800 {
+            assert_eq!(a.sample(at(s), Some(s)), None, "a changing sum at {s} s");
+        }
+        assert_eq!(a.sample(at(1100), Some(800)), Some(Event::Inactivity));
     }
 
     #[test]

@@ -27,6 +27,10 @@ const AFTER_CLOSE_MS = 1_000;
 const STALL_BOUND_MS = 20_000;
 // T232: a silent fetch of the F31 blob completes under a test-injected 2-second inactivity limit.
 const SHORT_INACTIVITY_MS = 2_000;
+// Contract §6 "Activity and stall notice": a blocked read uses no CPU time, so a test-injected 3-second stall limit fires.
+// The bound adds the 1-second sample period and the checkout start before the hook.
+const SHORT_STALL_MS = 3_000;
+const READ_STALL_BOUND_MS = 10_000;
 
 useFixtureRoot();
 useWslFolder();
@@ -212,6 +216,28 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     const operation = await s.response(s.request("getOperation", { operationId: operationOf(s, requestId) }));
     expect(valuesOf(operation.result, "stallRemedy")).toEqual([{ command, text: "This command checks out this submodule in a terminal, where Git can ask for input. Then use Update submodules again." }]);
     expect(JSON.stringify(s.progressOf(requestId)).includes(JSON.stringify(command).slice(1, -1))).toBe(false);
+    s.request("cancel", { operationId: operationOf(s, requestId) });
+    await s.response(requestId);
+    await Bun.sleep(AFTER_CLOSE_MS);
+    expect(pgrep(host, operationOf(s, requestId)!)).toEqual([]);
+  });
+
+  wslCase("F31 read: a hook blocked in a read keeps the anchor CPU-time sum unchanged, so it reaches stalled under a test-injected 3-second stall limit, and Cancel ends it", async (host) => {
+    await underTest();
+    const f = buildF31(host, "read");
+    const { runner, s } = setup(host);
+    const p = await prepare(s, f);
+    runner.inject.limits = { stallMs: SHORT_STALL_MS };
+    const from = runner.calls.length;
+    const requestId = sendUpdate(s, p);
+    const checkout = () => runner.calls.slice(from).find((c) => c.arguments.includes(":(literal)solo") && c.arguments.includes("--no-fetch"));
+    await until(() => checkout() !== undefined, "solo checkout step", 120_000);
+    const seen = s.progressOf(requestId).length;
+    const stalled = () => (s.progressOf(requestId).slice(seen) as { stalled?: boolean }[]).some((e) => e.stalled === true);
+    await until(stalled, "stalled event", READ_STALL_BOUND_MS + 10_000);
+    const elapsed = performance.now() - checkout()!.at;
+    console.log(`OBSERVATION T233: the F31 read hook reached stalled ${Math.round(elapsed)} ms after its checkout step started (injected limit ${SHORT_STALL_MS} ms)`);
+    expect({ canary: readCanary(f), inBound: elapsed <= READ_STALL_BOUND_MS }).toEqual({ canary: "", inBound: true });
     s.request("cancel", { operationId: operationOf(s, requestId) });
     await s.response(requestId);
     await Bun.sleep(AFTER_CLOSE_MS);

@@ -276,9 +276,9 @@ function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest
 
 interface WslAnchor {
   proc: Subprocess<"pipe", "pipe", "ignore">;
-  // The answer to one stdin line: the process count and the I/O sum of the operation scopes.
-  ask(): Promise<[number, number] | null>;
-  last: [number, number] | null;
+  // The answer to one stdin line: the process count and the CPU-time sum of the operation scopes. A null sum is unknown.
+  ask(): Promise<[number, number | null] | null>;
+  last: [number, number | null] | null;
   close(): void;
 }
 
@@ -416,7 +416,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // A matching call reports `stalled` through `onActivity` before it starts (contract §6 "Activity and stall notice").
     stall: null as CallMatch | null,
     // Shorter activity limits than the request (contract §6 "Activity and stall notice", §12 "Deadlines and Cancel").
-    // Only a forwarded output byte, or a changed anchor I/O sum of a WSL call, is activity.
+    // Only a forwarded output byte, or a changed anchor CPU-time sum of a WSL call, is activity.
     limits: {} as { inactivityMs?: number; ceilingMs?: number; stallMs?: number },
   };
   // Each WSL identity reply with its UNC path, in order.
@@ -435,7 +435,7 @@ export function createBunRunner(options: BunRunnerOptions) {
   const stdoutBarriers: Barriers = { every: null, matched: [] };
   // The `run` calls that have no exit reply yet, and the activity input of each spawned one.
   const inflight = new Set<GitCall>();
-  const touches = new Map<GitCall, () => void>();
+  const samples = new Map<GitCall, (sum: number | null) => void>();
   let spawned = 0;
   let disposed = false;
   // Set when `dispose` starts. A call that a start barrier held then starts no process.
@@ -550,7 +550,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     const reader = proc.stdout.getReader();
     const decoder = new TextDecoder();
     let buffered = "";
-    const waiting: ((line: [number, number] | null) => void)[] = [];
+    const waiting: ((line: [number, number | null] | null) => void)[] = [];
     // After the anchor stdout ends, no answer can come.
     let ended = false;
     const anchor: WslAnchor = {
@@ -558,7 +558,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       last: null,
       ask: () => {
         if (ended) return Promise.resolve(null);
-        const answer = new Promise<[number, number] | null>((resolve) => waiting.push(resolve));
+        const answer = new Promise<[number, number | null] | null>((resolve) => waiting.push(resolve));
         proc.stdin.write("\n");
         void proc.stdin.flush();
         return answer;
@@ -571,10 +571,10 @@ export function createBunRunner(options: BunRunnerOptions) {
         if (chunk.done) break;
         buffered += decoder.decode(chunk.value);
         for (let nl = buffered.indexOf("\n"); nl >= 0; nl = buffered.indexOf("\n")) {
-          const m = /^(\d+) (\d+)$/.exec(buffered.slice(0, nl));
+          const m = /^(\d+) (\d+|-)$/.exec(buffered.slice(0, nl));
           buffered = buffered.slice(nl + 1);
           if (!m) continue;
-          anchor.last = [Number(m[1]), Number(m[2])];
+          anchor.last = [Number(m[1]), m[2] === "-" ? null : Number(m[2])];
           waiting.shift()?.(anchor.last);
         }
       }
@@ -831,25 +831,38 @@ export function createBunRunner(options: BunRunnerOptions) {
     let stall: ReturnType<typeof setTimeout> | undefined;
     let stalled = false;
     let exited = false;
-    const touch = () => {
-      if (exited) return;
-      if (network) {
-        clearTimeout(inactivity);
-        inactivity = setTimeout(() => expire("inactivity"), shorter(network.inactivityMs, inject.limits.inactivityMs));
-      }
-      if (stallMs === undefined) return;
+    // Contract §6 "Unknown sample": idle time counts only between known samples. undefined: no sample yet. null: the last sample was unknown.
+    let sum: number | null | undefined;
+    // Restarts idle time at 0. A stalled call stays stalled.
+    const rebase = () => {
+      clearTimeout(inactivity);
       clearTimeout(stall);
-      if (stalled) {
-        stalled = false;
-        call.onActivity?.("active");
-      }
+      if (sum === null) return;
+      if (network) inactivity = setTimeout(() => expire("inactivity"), shorter(network.inactivityMs, inject.limits.inactivityMs));
+      if (stallMs === undefined || stalled) return;
       stall = setTimeout(() => {
         stalled = true;
         call.onActivity?.("stalled");
       }, stallMs);
     };
+    const touch = () => {
+      if (exited) return;
+      if (stalled) {
+        stalled = false;
+        call.onActivity?.("active");
+      }
+      rebase();
+    };
+    // An unknown sum stops idle time, and the next known sum is the new base.
+    const sample = (next: number | null) => {
+      if (exited) return;
+      const last = sum;
+      sum = next;
+      if (next === null || last === null) rebase();
+      else if (last !== undefined && last !== next) touch();
+    };
     touch();
-    touches.set(call, touch);
+    samples.set(call, sample);
     call.signal.addEventListener("abort", kill, { once: true });
     const streams = [
       drain(
@@ -875,7 +888,7 @@ export function createBunRunner(options: BunRunnerOptions) {
 
     await proc.exited;
     exited = true;
-    touches.delete(call);
+    samples.delete(call);
     for (const t of [timer, inactivity, stall]) clearTimeout(t);
     call.signal.removeEventListener("abort", kill);
     own.delete(proc);
@@ -938,16 +951,12 @@ export function createBunRunner(options: BunRunnerOptions) {
     const args = wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir.linux, ...call.arguments.slice(1)]);
     if (commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
     const anchor = call.environmentPolicy === "mutation" || call.environmentPolicy === "network" ? wslAnchor(call.operationId, inst) : null;
-    // Contract §6 "Activity and stall notice": one anchor line each second while a tracked process runs. Any change of the I/O sum is activity.
-    let sum: number | undefined;
+    // Contract §6 "Activity and stall notice": one anchor line each second while a tracked process runs. Any change of the CPU-time sum is activity.
+    // A missing answer is an unknown sample.
     const poll =
       anchor && call.limits.stallMs !== undefined
         ? setInterval(() => {
-            void anchor.ask().then((answer) => {
-              if (answer === null) return;
-              if (sum !== undefined && answer[1] !== sum) touches.get(call)?.();
-              sum = answer[1];
-            });
+            void anchor.ask().then((answer) => samples.get(call)?.(answer?.[1] ?? null));
           }, 1_000)
         : undefined;
     const exit = await execute(call, [WSL_EXE, ...args], launchDirectory, wslEnvironment(), recorded).finally(() => clearInterval(poll));

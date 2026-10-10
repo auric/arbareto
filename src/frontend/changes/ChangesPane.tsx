@@ -6,7 +6,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import type { ChangeEntry } from "../../contracts/envelope";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 
-// plan.md "Task flow and command placement", "Long text", "Keyboard and focus" (Roles, File/history list, Stage key row), and "Required visible states" (No selection, Empty/clean).
+// plan.md "Task flow and command placement", "Long text", "Keyboard and focus" (Roles, File list, Stage key row), and "Required visible states" (No selection, Empty/clean).
 
 type Category = ChangeEntry["category"];
 
@@ -42,6 +42,8 @@ export type ChangesPaneProps = {
   complete?: boolean;
   /** The Unstaged help line. The default states the T202 and T145 controls. */
   helpLine?: string;
+  /** True in a file band: Working changes and Staged sit side by side (plan.md "Chosen layout, sizes, and DPI"). */
+  sideBySide?: boolean;
 };
 
 const WORKING: { category: Category; label: string }[] = [
@@ -73,7 +75,7 @@ function survivor(list: readonly ChangeEntry[], entryId: string, alive: Readonly
 }
 
 export function ChangesPane(props: ChangesPaneProps) {
-  const { entries, selection, fileActionRunning = false, operationRunning = false, toolbarSuccess = null, complete = false, helpLine = HELP_LINE } = props;
+  const { entries, selection, fileActionRunning = false, operationRunning = false, toolbarSuccess = null, complete = false, helpLine = HELP_LINE, sideBySide = false } = props;
   const live = useRef(props);
   live.current = props;
   const groups = byCategory(entries);
@@ -206,7 +208,7 @@ export function ChangesPane(props: ChangesPaneProps) {
     selectedId: selection?.entryId ?? null,
     helpLine,
     register: (handle: ListHandle | null) => void (handle ? (lists.current[category] = handle) : delete lists.current[category]),
-    onEnter: (entry: ChangeEntry) => {
+    onSelect: (entry: ChangeEntry) => {
       if (live.current.selection?.entryId !== entry.entryId) live.current.onSelect(entry.entryId);
     },
     onSpace,
@@ -214,8 +216,8 @@ export function ChangesPane(props: ChangesPaneProps) {
   const working = groups.conflicted.length + groups.unstaged.length + groups.untracked.length;
 
   return (
-    <div ref={root} className="flex h-full min-h-0 flex-col" onFocus={onFocus} onBlur={onBlur}>
-      <section className="flex min-h-0 flex-1 flex-col">
+    <div ref={root} className={`flex h-full min-h-0 flex-1 ${sideBySide ? "flex-row" : "flex-col"}`} onFocus={onFocus} onBlur={onBlur}>
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
         <h2 className="flex items-center px-2 font-semibold" style={{ minHeight: "var(--h-pane-heading)" }}>
           Working changes
         </h2>
@@ -224,7 +226,7 @@ export function ChangesPane(props: ChangesPaneProps) {
           <CategoryList key={w.category} {...listProps(w.category, w.label)} level={3} />
         ))}
       </section>
-      <section className="flex min-h-0 flex-1 flex-col border-t border-divider">
+      <section className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-divider ${sideBySide ? "border-l" : "border-t"}`}>
         <CategoryList {...listProps("staged", "Staged")} level={2} />
       </section>
     </div>
@@ -239,12 +241,13 @@ type CategoryListProps = {
   selectedId: string | null;
   helpLine: string;
   register(handle: ListHandle | null): void;
-  onEnter(entry: ChangeEntry): void;
+  /** Selects the entry when it is not selected. */
+  onSelect(entry: ChangeEntry): void;
   onSpace(entry: ChangeEntry, event: ReactKeyboardEvent): void;
 };
 
 /** One category: its heading with the count, and one WAI-ARIA listbox with one Tab stop and roving focus. */
-function CategoryList({ category, label, level, entries, selectedId, helpLine, register, onEnter, onSpace }: CategoryListProps) {
+function CategoryList({ category, label, level, entries, selectedId, helpLine, register, onSelect, onSpace }: CategoryListProps) {
   const ids = { label: useId(), count: useId(), help: useId() };
   const heading = useRef<HTMLHeadingElement>(null);
   const listbox = useRef<HTMLDivElement>(null);
@@ -302,7 +305,7 @@ function CategoryList({ category, label, level, entries, selectedId, helpLine, r
       if (event.target !== option) return;
       if (event.key === "Enter") {
         event.preventDefault();
-        onEnter(entries[at]!);
+        onSelect(entries[at]!);
       } else onSpace(entries[at]!, event);
       return;
     }
@@ -319,7 +322,10 @@ function CategoryList({ category, label, level, entries, selectedId, helpLine, r
       : null;
     if (to === null) return;
     event.preventDefault();
-    focusEntry(entries[Math.min(entries.length - 1, Math.max(0, to))]!.entryId);
+    // plan.md "Keyboard and focus", File list row: selection follows each navigation key.
+    const target = entries[Math.min(entries.length - 1, Math.max(0, to))]!;
+    focusEntry(target.entryId);
+    onSelect(target);
   }
 
   const Heading = level === 2 ? "h2" : "h3";
@@ -338,6 +344,7 @@ function CategoryList({ category, label, level, entries, selectedId, helpLine, r
         } else rows.current.delete(entry.entryId);
       }}
       onFocus={() => setActiveId(entry.entryId)}
+      onClick={() => onSelect(entry)}
     />
   );
 
@@ -389,10 +396,11 @@ type FileOptionProps = {
   style?: CSSProperties;
   rowRef(element: HTMLElement | null): void;
   onFocus(): void;
+  onClick(): void;
 };
 
 /** One file row. The path keeps the file name whole and ellipsizes the folder part first (plan.md "Long text"). */
-function FileOption({ entry, selected, tabStop, position, style, rowRef, onFocus }: FileOptionProps) {
+function FileOption({ entry, selected, tabStop, position, style, rowRef, onFocus, onClick }: FileOptionProps) {
   const [folder, name] = splitPath(entry.path, GIT_SEPARATORS);
   return (
     <div
@@ -408,6 +416,7 @@ function FileOption({ entry, selected, tabStop, position, style, rowRef, onFocus
       className="list-row flex items-center px-2"
       style={style}
       onFocus={onFocus}
+      onClick={onClick}
     >
       <span aria-hidden="true" className="flex min-w-0 whitespace-nowrap">
         <span className="min-w-0 shrink-[1000] truncate">{folder}</span>

@@ -81,6 +81,21 @@ export function BootView(props: BootProps) {
           </button>
         </section>
       )}
+      {/* A direct call keeps the marker buttons in the BootView element tree. RecoveryMarkers uses no hooks. */}
+      {RecoveryMarkers({ environment: env, onDismissMarker: props.onDismissMarker })}
+    </main>
+  );
+}
+
+/** True when `getEnvironment` reports a recovery marker, a damaged marker, or the marker limit. */
+export function hasMarkers(env: Environment): boolean {
+  return env.markers.length > 0 || env.damagedMarkers.length > 0 || env.markerLimit !== undefined || env.unloadedMarkers !== undefined;
+}
+
+/** The recovery marker sections with their Dismiss actions (contract §6 "Dismissal"). The workbench shows them too. */
+export function RecoveryMarkers({ environment: env, onDismissMarker }: { environment: Environment; onDismissMarker: (markerId: string) => void }) {
+  return (
+    <>
       {env.markers.length > 0 && (
         <section>
           <h2>Recovery markers</h2>
@@ -88,7 +103,7 @@ export function BootView(props: BootProps) {
             {env.markers.map((marker) => (
               <li key={marker.markerId}>
                 {marker.kind} {marker.worktreeRoot} {marker.startedAt}{" "}
-                <button type="button" onClick={() => props.onDismissMarker(marker.markerId)}>
+                <button type="button" onClick={() => onDismissMarker(marker.markerId)}>
                   Dismiss
                 </button>
               </li>
@@ -103,7 +118,7 @@ export function BootView(props: BootProps) {
             {env.damagedMarkers.map((marker) => (
               <li key={marker.markerId}>
                 Damaged recovery marker {marker.fileName}{" "}
-                <button type="button" onClick={() => props.onDismissMarker(marker.markerId)}>
+                <button type="button" onClick={() => onDismissMarker(marker.markerId)}>
                   Dismiss
                 </button>
               </li>
@@ -113,6 +128,6 @@ export function BootView(props: BootProps) {
       )}
       {env.markerLimit !== undefined && <p>Marker limit: {env.markerLimit}</p>}
       {env.unloadedMarkers !== undefined && <p>Unloaded marker files: {env.unloadedMarkers}</p>}
-    </main>
+    </>
   );
 }

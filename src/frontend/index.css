@@ -1,1 +1,379 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (c) 2026 Ihor Lifanov */
+
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* Root attributes: data-theme="light" | "dark" (absent = System) and data-density="comfortable" (absent = Compact). */
+/* Every color token is light-dark(<light>, <dark>) with the plan.md values. */
+
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+}
+
+@theme inline {
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+  --spacing: 4px;
+  --text-xs: calc(var(--font-ui) * var(--text-scale));
+  --text-xs--line-height: var(--leading-ui);
+  --text-sm: calc(14px * var(--text-scale));
+  --text-sm--line-height: var(--leading-ui);
+  --radius-sm: 4px;
+  --radius-md: 4px;
+  --radius-lg: 4px;
+  --radius-xl: 4px;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-text: var(--text);
+  --color-muted-text: var(--muted-text);
+  --color-divider: var(--divider);
+  --color-control-border: var(--control-border);
+  --color-accent-role: var(--accent-role);
+  --color-hover-fill: var(--hover-fill);
+  --color-added: var(--added);
+  --color-added-fill: var(--added-fill);
+  --color-removed: var(--removed);
+  --color-removed-fill: var(--removed-fill);
+  --color-warning: var(--warning);
+  --color-warning-fill: var(--warning-fill);
+  --color-selected-row: var(--selected-row);
+}
+
+:root {
+  color-scheme: light dark;
+
+  /* Base roles (plan.md "Compact token system"). */
+  --canvas: light-dark(#F4F5F7, #17181C);
+  --surface: light-dark(#FFFFFF, #202228);
+  --text: light-dark(#20242C, #E8E9ED);
+  --muted-text: light-dark(#576171, #ABB0BB);
+  --divider: light-dark(#DDE0E6, #343740);
+  --control-border: light-dark(#778294, #687487);
+  --accent-role: light-dark(#245CB5, #8CB4F8);
+  --hover-fill: light-dark(#EBECEF, #242833);
+
+  /* Semantic roles: text, then fill. */
+  --added: light-dark(#17613B, #8DD5A5);
+  --added-fill: light-dark(#E9F5ED, #183026);
+  --removed: light-dark(#9F2636, #F0A4AB);
+  --removed-fill: light-dark(#FCECEE, #38232B);
+  --warning: light-dark(#765500, #E6C479);
+  --warning-fill: light-dark(#FFF4D4, #332D1E);
+  --selected-row: light-dark(#DCE8FA, #2B3C54);
+
+  /* Lane roles (plan.md "History graph design"). */
+  --lane-teal: light-dark(#06726E, #4BB9B2);
+  --lane-sky: light-dark(#00516B, #80D2F0);
+  --lane-violet: light-dark(#724AAB, #B59AE7);
+  --lane-magenta: light-dark(#993582, #F7A6DF);
+
+  /* shadcn variables used by src/frontend/components/ui. */
+  --background: var(--canvas);
+  --foreground: var(--text);
+  --card: var(--surface);
+  --card-foreground: var(--text);
+  --popover: var(--surface);
+  --popover-foreground: var(--text);
+  --primary: var(--accent-role);
+  --primary-foreground: var(--surface);
+  --secondary: var(--canvas);
+  --secondary-foreground: var(--text);
+  --muted: var(--hover-fill);
+  --muted-foreground: var(--muted-text);
+  --accent: var(--hover-fill);
+  --accent-foreground: var(--text);
+  --destructive: var(--removed);
+  --border: var(--divider);
+  --input: var(--control-border);
+  --ring: var(--accent-role);
+  --radius: 4px;
+
+  /* Windows text size factor, 1 to 2.25. */
+  --text-scale: 1;
+
+  /* Compact density (plan.md density table). */
+  --font-ui: 12px;
+  --font-code: 12px;
+  --line-ui: 18px;
+  --marker-height: 16px;
+  --h-row-base: 26px;
+  --h-button-base: 28px;
+  --h-row-button-base: 24px;
+  --h-pane-heading-base: 32px;
+  --h-subgroup-base: 26px;
+  --h-help-line-base: 18px;
+  --h-reason-line-base: 18px;
+  --h-header-base: 40px;
+  --h-mode-bar-base: 32px;
+  --h-band-row-base: 32px;
+  --h-hunk-toolbar-base: 32px;
+  --h-status-bar-base: 32px;
+  --h-area-heading-base: 32px;
+  --h-badge-base: 18px;
+  --h-tray-min-base: 144px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-density="comfortable"] {
+  --font-ui: 13px;
+  --font-code: 13px;
+  --line-ui: 20px;
+  --marker-height: 20px;
+  --h-row-base: 34px;
+  --h-button-base: 36px;
+  --h-row-button-base: 28px;
+  --h-pane-heading-base: 36px;
+  --h-subgroup-base: 28px;
+  --h-help-line-base: 20px;
+  --h-reason-line-base: 20px;
+  --h-header-base: 44px;
+  --h-mode-bar-base: 36px;
+  --h-band-row-base: 36px;
+  --h-hunk-toolbar-base: 36px;
+  --h-status-bar-base: 36px;
+  --h-area-heading-base: 36px;
+  --h-badge-base: 20px;
+  --h-tray-min-base: 160px;
+}
+
+/* plan.md "Windows text size": a text-holding height grows by (factor - 1) x line height. */
+:root {
+  --leading-ui: calc(var(--line-ui) * var(--text-scale));
+  --grow: calc((var(--text-scale) - 1) * var(--line-ui));
+  --h-row: calc(var(--h-row-base) + var(--grow));
+  --h-button: calc(var(--h-button-base) + var(--grow));
+  --h-row-button: calc(var(--h-row-button-base) + var(--grow));
+  --h-pane-heading: calc(var(--h-pane-heading-base) + var(--grow));
+  --h-subgroup: calc(var(--h-subgroup-base) + var(--grow));
+  --h-help-line: calc(var(--h-help-line-base) + var(--grow));
+  --h-reason-line: calc(var(--h-reason-line-base) + var(--grow));
+  --h-header: calc(var(--h-header-base) + var(--grow));
+  --h-mode-bar: calc(var(--h-mode-bar-base) + var(--grow));
+  --h-band-row: calc(var(--h-band-row-base) + var(--grow));
+  --h-hunk-toolbar: calc(var(--h-hunk-toolbar-base) + var(--grow));
+  --h-status-bar: calc(var(--h-status-bar-base) + var(--grow));
+  --h-area-heading: calc(var(--h-area-heading-base) + var(--grow));
+  --h-badge: calc(var(--h-badge-base) + var(--grow));
+  --h-tray-min: calc(var(--h-tray-min-base) + var(--grow));
+
+  /* Fixed DIP geometry: these never scale with text. */
+  --focus-width: 2px;
+  --focus-offset: 2px;
+  --hunk-bar-width: 3px;
+  --marker-width: 2px;
+  --boundary-width: 2px;
+  --boundary-dash: 3px;
+  --boundary-stub: 6px;
+  --boundary-bar: 8px;
+  --boundary-bar-gap: 2px;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring;
+  }
+  html {
+    @apply font-sans;
+    font-size: 16px;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-size: calc(var(--font-ui) * var(--text-scale));
+    line-height: var(--leading-ui);
+  }
+  h1,
+  h2,
+  h3 {
+    font-size: calc(14px * var(--text-scale));
+    line-height: var(--leading-ui);
+  }
+  code,
+  kbd,
+  samp,
+  pre,
+  .font-mono {
+    font-family: var(--font-mono);
+    font-size: calc(var(--font-code) * var(--text-scale));
+    line-height: var(--leading-ui);
+    font-variant-ligatures: none;
+  }
+}
+
+@layer components {
+  .num {
+    text-align: end;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A list option. aria-selected draws the fill and the selection marker. */
+  .list-row {
+    position: relative;
+    min-height: var(--h-row);
+  }
+  .list-row:hover {
+    background: var(--hover-fill);
+  }
+  .list-row[aria-selected="true"] {
+    background: var(--selected-row);
+  }
+  .list-row[aria-selected="true"]::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: var(--marker-width);
+    height: var(--marker-height);
+    transform: translate(-50%, -50%);
+    border-radius: 1px;
+    background: var(--accent-role);
+  }
+  .list-row[aria-selected="true"] :is(button, input, select, textarea, [role="button"]) {
+    border-color: transparent;
+  }
+
+  .selected-hunk-bar {
+    width: var(--hunk-bar-width);
+    align-self: stretch;
+    background: var(--accent-role);
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    height: var(--h-badge);
+    padding-inline: 4px;
+    border: 1px solid var(--accent-role);
+    border-radius: 4px;
+    color: var(--accent-role);
+    white-space: nowrap;
+  }
+  .badge-wsl {
+    border-color: var(--control-border);
+    color: var(--text);
+  }
+
+  .boundary-continuation {
+    stroke-width: var(--boundary-width);
+    stroke-dasharray: var(--boundary-dash) var(--boundary-dash);
+  }
+  .boundary-stub {
+    stroke-width: var(--boundary-width);
+  }
+}
+
+/* Unlayered, so these rules win over the generated outline-none and disabled:opacity-50 utilities. */
+:focus-visible {
+  outline: var(--focus-width) solid var(--accent-role);
+  outline-offset: var(--focus-offset);
+}
+
+:is(:disabled, [aria-disabled="true"], [data-disabled]) {
+  opacity: 1;
+  color: var(--muted-text);
+  border-color: var(--divider);
+  background-color: transparent;
+}
+
+@media (forced-colors: active) {
+  :focus-visible {
+    outline-color: Highlight;
+  }
+  .list-row[aria-selected="true"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .list-row[aria-selected="true"]::before {
+    background: HighlightText;
+  }
+  .selected-hunk-bar {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+  .selected-hunk-label {
+    color: CanvasText;
+  }
+  .badge,
+  .badge-wsl {
+    color: CanvasText;
+    border-color: CanvasText;
+  }
+  .list-row[aria-selected="true"] :is(.badge, .badge-wsl) {
+    color: HighlightText;
+    border-color: HighlightText;
+  }
+  .graph-cell [stroke]:not([stroke="none"]) {
+    stroke: currentColor;
+  }
+  .graph-cell [fill]:not([fill="none"]) {
+    fill: currentColor;
+  }
+  .graph-cell .node-merge {
+    fill: Canvas;
+  }
+  .list-row[aria-selected="true"] .graph-cell .node-merge {
+    fill: Highlight;
+  }
+  .graph-cell :is(.boundary-continuation, .boundary-stub) {
+    stroke: CanvasText;
+  }
+  :is(:disabled, [aria-disabled="true"], [data-disabled]) {
+    color: GrayText;
+    border-color: GrayText;
+  }
+}
+
+/* plan.md "Motion": dialogs, menu popups, tw-animate-css classes, and the status area. */
+@media (prefers-reduced-motion: reduce) {
+  :is(
+      [data-slot="dialog-overlay"],
+      [data-slot="dialog-content"],
+      [data-slot="dropdown-menu-content"],
+      [data-slot="dropdown-menu-sub-content"],
+      [data-slot="menubar-content"],
+      [data-slot="menubar-sub-content"],
+      [data-slot="status-area"],
+      [class*="animate-in"],
+      [class*="animate-out"]
+    ) {
+    transition: none;
+    animation: none;
+  }
+}

@@ -103,6 +103,7 @@ function snapshot(generation: number, entries: ChangeEntry[], fields: Partial<Wo
     recoveryState: "ready",
     completeness: { state: "complete" },
     hunkEligibility: { eligible: true },
+    location: { kind: "native" },
     submoduleNotice: { count: 0, paths: [], filter: "applied" },
     entryCount: entries.length,
     entries,

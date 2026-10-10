@@ -40,7 +40,7 @@ export type RepositoryMenuProps = {
   /** The worktree root and HEAD text of the open workspace. */
   path: string | null;
   head: string | null;
-  /** The distro of a WSL workspace, and its approved Git. No public operation gives the distro Git yet, so the workbench passes null. */
+  /** The distro of a WSL workspace, and its approved Git, from the snapshot `location` (data-model §2). */
   distro?: string | null;
   wslGit?: { path: string; version: string } | null;
   /** The current trust ID of the workspace (contract §3 `readTrust`). Without it, Revoke trust is unavailable. */

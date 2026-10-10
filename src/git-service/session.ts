@@ -238,7 +238,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const route = routeRegistration(await runner.wslDistros({ operationId, bootstrapId }));
       if ("ok" in route) return route;
       if (route.kind === "windows") return await windows();
-      const probed = await probeWslGit(runner, route, { ...target, starting: () => registry.progress(operationId, "wsl-starting") });
+      const probed = await probeWslGit(runner, route, { ...target, starting: () => registry.progress(operationId, "wsl-starting", {}, route.distro) });
       if (!probed.ok) return "canceled" in probed ? { ok: false, code: "CANCELED" } : probed;
       const approved = await approveWslGit(runner, target, probed.git, wslGits.get(route.guid), route.saved);
       if (!approved.ok) return "canceled" in approved ? { ok: false, code: "CANCELED" } : approved;

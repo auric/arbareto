@@ -220,6 +220,7 @@ describe("recovery row lifetime in the workbench", () => {
     recoveryState: "ready",
     completeness: { state: "complete" },
     hunkEligibility: { eligible: true },
+    location: { kind: "native" },
     submoduleNotice: { count: 0, paths: [], filter: "applied" },
     entryCount: 0,
     entries: [],

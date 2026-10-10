@@ -29,9 +29,12 @@ describe("unstage one hunk (contract §4)", () => {
       const before = repoState(repo);
       const oracle = scriptedPatch(repo, "t095-f02-oracle", "reset", "multi.txt", ["y", "n"]);
       await underTest("hunk-publish");
-      expect(outcome(await unstageFirst(service, repo, "multi.txt"))).toEqual(SUCCEEDED);
+      const response = await unstageFirst(service, repo, "multi.txt");
+      expect(outcome(response)).toEqual(SUCCEEDED);
       expect(indexEntries(gitPath(), repo)).toEqual(indexEntries(gitPath(), oracle));
       expect(workingFileDigests(repo)).toEqual(before.files);
+      // T339 (d): the shell close prompt names "Hunk unstaging" from this field (contract §6 "Mutation frames").
+      expect(service.runner.frames.find((f) => f.type === "started" && f.operationId === response.operationId)).toMatchObject({ kind: "applyHunk", direction: "unstage" });
     }),
     TIMEOUT_MS,
   );

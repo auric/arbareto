@@ -32,6 +32,13 @@
             "updateSubmodules"
           ]
         },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "stage",
+            "unstage"
+          ]
+        },
         "worktreeRoot": {
           "type": "string",
           "maxLength": 32767,

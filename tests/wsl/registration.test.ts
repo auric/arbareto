@@ -393,6 +393,8 @@ describe("WSL registration seams (T207)", () => {
       while (!s.progressOf(requestId).some((p) => p.phase === "wsl-starting") && Date.now() < deadline) await Bun.sleep(10);
       const starting = s.progressOf(requestId).find((p) => p.phase === "wsl-starting");
       expect(starting).toBeDefined();
+      // T339 (b): the event names the listed distro, so the renderer can show "Starting WSL distro <name>…".
+      expect(starting).toMatchObject({ distro: host.distro });
       const cancel = s.request("cancel", { operationId: starting!.operationId });
       expect(await s.response(cancel)).toMatchObject({ state: "succeeded" });
       release();

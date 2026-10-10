@@ -856,6 +856,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       recoveryState: recoveryOf(st, w),
       completeness,
       hunkEligibility: eligibility,
+      location: w.wsl === undefined ? ({ kind: "native" } as const) : { kind: "wsl" as const, distro: w.wsl.distro, git: { path: w.wsl.path, version: w.wsl.version } },
       submoduleNotice: submodules.notice,
       entryCount: entries.length,
       entries: [] as ChangeEntry[],

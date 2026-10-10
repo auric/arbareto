@@ -4,6 +4,7 @@
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
 import type { ChangeEntry } from "../../contracts/envelope";
+import { GIT_SEPARATORS, splitPath } from "../lib/path";
 
 // plan.md "Task flow and command placement", "Long text", "Keyboard and focus" (Roles, File/history list, Stage key row), and "Required visible states" (No selection, Empty/clean).
 
@@ -113,8 +114,12 @@ export function ChangesPane(props: ChangesPaneProps) {
   async function run(entry: ChangeEntry, comparisonId: string) {
     const list = byCategory(live.current.entries)[entry.category];
     running.current = true;
-    const result = await live.current.onFileAction({ direction: entry.category === "staged" ? "unstage" : "stage", comparisonId, entryId: entry.entryId });
-    running.current = false;
+    let result: FileActionResult;
+    try {
+      result = await live.current.onFileAction({ direction: entry.category === "staged" ? "unstage" : "stage", comparisonId, entryId: entry.entryId });
+    } finally {
+      running.current = false;
+    }
     if (!mounted.current) return;
     if (reasonShown.current === BUSY_REASON) reason(null);
     if (result.state === "succeeded") moveFrom(entry, list, true);
@@ -386,15 +391,9 @@ type FileOptionProps = {
   onFocus(): void;
 };
 
-// A display path from contract §3. The last separator splits the folder part from the file name.
-function splitPath(path: string): [string, string] {
-  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1;
-  return [path.slice(0, cut), path.slice(cut)];
-}
-
 /** One file row. The path keeps the file name whole and ellipsizes the folder part first (plan.md "Long text"). */
 function FileOption({ entry, selected, tabStop, position, style, rowRef, onFocus }: FileOptionProps) {
-  const [folder, name] = splitPath(entry.path);
+  const [folder, name] = splitPath(entry.path, GIT_SEPARATORS);
   return (
     <div
       ref={rowRef}

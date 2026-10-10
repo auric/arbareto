@@ -160,9 +160,11 @@ export function LimitedOutput({ completeness }: { completeness: Completeness }) 
   );
 }
 
+export const SCOPE_TEXT = "Up to 100 commits";
+
 /** The History scope limit: one page of the current checkout, without pagination or a total count. */
 export function LargeHistory() {
-  return <p className="p-2 text-muted-text">Up to 100 commits</p>;
+  return <p className="p-2 text-muted-text">{SCOPE_TEXT}</p>;
 }
 
 /**

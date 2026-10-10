@@ -92,6 +92,12 @@ describe("comparison view", () => {
     for (const part of ["OBJECT_MISSING", "Run git fsck.", "Current commit to index"]) expect(text(host)).toContain(part);
   });
 
+  test("the heading splits a Git path at the last slash only", async () => {
+    const odd = { ...entry, path: "dir/a\\b.txt" };
+    const host = await show(<ComparisonView entry={odd} response={null} selectedHunk={null} onRefresh={noop} />);
+    expect([host.querySelector('[data-part="folder"]')?.textContent, host.querySelector('[data-part="file"]')?.textContent]).toEqual(["dir/", "a\\b.txt"]);
+  });
+
   test("a failed read shows its code and Refresh", async () => {
     const host = await show(<ComparisonView entry={entry} response={{ state: "failed", code: "UNKNOWN_TARGET" } as never} selectedHunk={null} onRefresh={noop} />);
     expect(text(host)).toContain("UNKNOWN_TARGET");

@@ -7,6 +7,8 @@ import type { ErrorCode } from "../../contracts/errors";
 import { ErrorState, LimitedOutput, Loading, NoSelection, UnsupportedState } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
 import { Button } from "../components/ui/button";
+import { shrinkInOrder, type Part } from "../lib/fit";
+import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { mapHunks } from "./hunk-mapping";
 
 // plan.md "Long text" (comparison heading), "Required visible states", and "Selection, scroll, and stored context".
@@ -22,27 +24,21 @@ const SIDES: Record<Comparison["scope"], string> = {
   "empty-to-untracked": "Empty version to working file",
 };
 
-type Part = { full: number; min: number };
 type HeadingParts = { width: number; copyPath: number; folder: Part; file: Part; sides: Part; scope: Part };
 type HeadingWidths = { folder: number; file: number; sides: number; scope: number };
 
 /** plan.md "Long text": shrink the folder, then the file name, then the sides, then the scope. Copy path never shrinks. */
 export function fitComparisonHeading({ width, copyPath, folder, file, sides, scope }: HeadingParts): HeadingWidths {
-  let over = copyPath + folder.full + file.full + sides.full + scope.full - width;
-  const fit = (p: Part) => {
-    const cut = Math.max(0, Math.min(over, p.full - p.min));
-    over -= cut;
-    return p.full - cut;
-  };
-  return { folder: fit(folder), file: fit(file), sides: fit(sides), scope: fit(scope) };
+  const [f, n, s, c] = shrinkInOrder(width, copyPath, [folder, file, sides, scope]) as [number, number, number, number];
+  return { folder: f, file: n, sides: s, scope: c };
 }
 
 const PARTS = ["folder", "file", "scope", "sides"] as const;
 
 /** The sticky comparison heading. Its height is the pane heading height. */
 export function ComparisonHeading({ path, scope, sides }: { path: string; scope: string; sides: string | null }) {
-  const slash = path.lastIndexOf("/");
-  const text = { folder: path.slice(0, slash + 1), file: path.slice(slash + 1), scope, sides: sides ?? "" };
+  const [folder, file] = splitPath(path, GIT_SEPARATORS);
+  const text = { folder, file, scope, sides: sides ?? "" };
   const heading = useRef<HTMLHeadingElement>(null);
   const [widths, setWidths] = useState<HeadingWidths | null>(null);
 
@@ -122,15 +118,22 @@ function Diff({ comparison, selectedHunk, onRefresh }: { comparison: Comparison;
   return (
     <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
       {/* The canonical patch is the key. A changed comparison remounts the view and resets its scroll. */}
+      {/* T134: the viewport reset notice of an external change goes here. Its text is not in plan.md yet. */}
       <PatchView key={comparison.patch} patch={patch} selected={index < 0 ? null : mapping.file.hunks[index]!} />
     </Suspense>
   );
 }
 
+// Contract §3: `succeeded` and `limited` carry a `ReadComparisonResult`. Other states carry no value.
+export const resultOf = (response: BridgeResponse | null): ReadComparisonResult | null =>
+  response?.state === "succeeded" || response?.state === "limited" ? (response.result as ReadComparisonResult) : null;
+// Contract §3: only `Comparison` has `patch`. Only a supported, complete one shows as a diff.
+export const showsDiff = (result: ReadComparisonResult | null): boolean =>
+  result !== null && "patch" in result && result.support === "supported" && result.completeness.state === "complete";
+
 function Body({ result, selectedHunk, onRefresh }: { result: ReadComparisonResult; selectedHunk: string | null; onRefresh(): void }) {
-  // Contract §3: only `Comparison` has `patch`, and only `ComparisonObjectMissing` has `objectRemedy`.
   if ("patch" in result) {
-    if (result.support === "supported" && result.completeness.state === "complete") return <Diff comparison={result} selectedHunk={selectedHunk} onRefresh={onRefresh} />;
+    if (showsDiff(result)) return <Diff comparison={result} selectedHunk={selectedHunk} onRefresh={onRefresh} />;
     return (
       <>
         <LimitedOutput completeness={result.completeness} />
@@ -138,6 +141,7 @@ function Body({ result, selectedHunk, onRefresh }: { result: ReadComparisonResul
       </>
     );
   }
+  // Contract §3: only `ComparisonObjectMissing` has `objectRemedy`.
   if ("objectRemedy" in result)
     return (
       <>
@@ -152,8 +156,7 @@ function Body({ result, selectedHunk, onRefresh }: { result: ReadComparisonResul
 /** The comparison pane of the selected entry. */
 export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpLine }: ComparisonViewProps) {
   if (entry === null) return <NoSelection helpLine={helpLine} />;
-  // Contract §3: `succeeded` and `limited` carry a `ReadComparisonResult`. Other states carry no value.
-  const result = response?.state === "succeeded" || response?.state === "limited" ? (response.result as ReadComparisonResult) : null;
+  const result = resultOf(response);
   const scope = result !== null && "scope" in result ? SIDES[result.scope] : null;
   return (
     <div className="flex h-full min-h-0 flex-col">

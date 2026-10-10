@@ -17,14 +17,16 @@ type SplitterProps = {
   /** The resized pane sits after the splitter, so moving the rule toward it shrinks it. */
   reverse?: boolean;
   onChange: (value: number) => void;
+  /** The final value of a key step or of a pointer drag. A drag calls `onChange` on each move and this once, at its end. */
+  onCommit?: (value: number) => void;
   className?: string;
 };
 
 const MIRROR: Record<string, string> = { ArrowUp: "ArrowDown", ArrowDown: "ArrowUp", ArrowLeft: "ArrowRight", ArrowRight: "ArrowLeft" };
 
 /** An 8 DIP hit area with a thin visible rule (plan.md "Chosen layout, sizes, and DPI"). */
-export function Splitter({ label, orientation, value, min, max, reverse = false, onChange, className }: SplitterProps) {
-  const drag = useRef<{ pointerId: number; start: number; value: number } | null>(null);
+export function Splitter({ label, orientation, value, min, max, reverse = false, onChange, onCommit, className }: SplitterProps) {
+  const drag = useRef<{ pointerId: number; start: number; value: number; last: number | null } | null>(null);
   const [dragging, setDragging] = useState(false);
   const vertical = orientation === "vertical";
 
@@ -34,13 +36,15 @@ export function Splitter({ label, orientation, value, min, max, reverse = false,
     event.preventDefault();
     const key = reverse ? (MIRROR[event.key] ?? event.key) : event.key;
     const next = splitterStep(key, event.shiftKey, value, { min, max });
-    if (next !== value) onChange(next);
+    if (next === value) return;
+    onChange(next);
+    onCommit?.(next);
   };
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || drag.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { pointerId: event.pointerId, start: vertical ? event.clientX : event.clientY, value };
+    drag.current = { pointerId: event.pointerId, start: vertical ? event.clientX : event.clientY, value, last: null };
     setDragging(true);
   };
 
@@ -49,13 +53,17 @@ export function Splitter({ label, orientation, value, min, max, reverse = false,
     if (!current || current.pointerId !== event.pointerId) return;
     const delta = (vertical ? event.clientX : event.clientY) - current.start;
     const next = Math.min(Math.max(current.value + (reverse ? -delta : delta), min), max);
-    if (next !== value) onChange(next);
+    if (next === value) return;
+    current.last = next;
+    onChange(next);
   };
 
   // Every path that ends the capture ends the drag: release, cancellation, and lost capture.
   const end = (event: PointerEvent<HTMLDivElement>) => {
-    if (drag.current?.pointerId !== event.pointerId) return;
+    const current = drag.current;
+    if (current?.pointerId !== event.pointerId) return;
     drag.current = null;
+    if (current.last !== null) onCommit?.(current.last);
     setDragging(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };

@@ -54,6 +54,15 @@ describe("Unstaged help line", () => {
   });
 });
 
+describe("file row path", () => {
+  test("a Git path splits at the last slash only, so a backslash stays in the file name", () => {
+    const path = "dir/a\\b.txt";
+    const html = renderToStaticMarkup(<ChangesPane entries={[entry("unstaged", path)]} selection={null} onSelect={() => {}} onFileAction={never} />);
+    const row = /<div\b[^>]*role="option"[^>]*>([\s\S]*?)<\/div>/.exec(html)![1]!;
+    expect([...row.matchAll(/<span class="[^"]*truncate[^"]*">([^<]*)<\/span>/g)].map((m) => m[1])).toEqual(["dir/", "a\\b.txt"]);
+  });
+});
+
 // plan.md "Keyboard and focus", Stage key row. The harness owns the selection, as the workbench does.
 // `onSelect` selects an entry and starts its comparison read, as Enter does. The harness then holds `comparisonId: null` until the test delivers the comparison.
 // `onReason` feeds the T145 reason line. `onStatus` feeds the second live element of the status bar. `toolbarSuccess` takes a new object after each T202 button success.

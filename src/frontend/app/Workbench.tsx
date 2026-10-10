@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent } from "react";
 import type { Environment, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { ChangesPane as ChangesList } from "../changes/ChangesPane";
-import { ComparisonView as Comparison } from "../changes/ComparisonView";
+import { ComparisonView as Comparison, resultOf, showsDiff } from "../changes/ComparisonView";
 import { Button } from "../components/ui/button";
 import {
   Menubar,
@@ -21,10 +21,11 @@ import {
   MenubarTrigger,
 } from "../components/ui/menubar";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { HistoryView as History } from "../history/HistoryView";
+import { branchName, HistoryView as History } from "../history/HistoryView";
 import { createShortcutHandler, type Mode } from "../keyboard/shortcuts";
 import { chooseProfile, clampPanes, FILE_LANE, headerRows, metrics, paneBounds, UnmeasuredLayoutError, workAreaHeight, type Density, type Profile, type Size } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
+import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
 import { createRequests, isRegistration, type RequestBridge, type Requests, type RequestState } from "../state/requests";
 import { DEFAULT_PREFERENCES, readPreferences, writePreferences, type Preferences, type Theme } from "../state/preferences";
 import { SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
@@ -53,8 +54,7 @@ export type WorkbenchProps = {
   bridge: WorkbenchBridge;
   ChangesPane: ComponentType<WorkbenchPaneProps>;
   ComparisonView: ComponentType<WorkbenchPaneProps>;
-  /** T144. Without it, History shows an unavailable state. */
-  HistoryView?: ComponentType<WorkbenchPaneProps>;
+  HistoryView: ComponentType<WorkbenchPaneProps>;
   /** The `getEnvironment` result of the passed boot checks. */
   environment?: Environment | null;
   /** The `restoreWorkspace` response of the page start (contract §2). */
@@ -116,8 +116,6 @@ function headerRowCount(width: number): number {
   }
 }
 
-// Git ref names: a local branch is `refs/heads/<name>` (git-check-ref-format(1)).
-const branchName = (target: string) => (target.startsWith("refs/heads/") ? target.slice("refs/heads/".length) : target);
 function headText(head: WorkspaceSnapshot["head"]): string {
   if (head.state === "detached") return "Detached HEAD";
   if (head.state === "unborn") return `${branchName(head.target)}, no commits yet`;
@@ -140,10 +138,10 @@ function MiddleEllipsis({ text, tail, className }: { text: string; tail: string;
   );
 }
 
-// The last path component, with its leading separator. A path is display text from contract §3.
+// The last component of the `worktreeRoot` path, with its leading separator.
 function lastComponent(path: string): string {
-  const index = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
-  return index < 0 ? path : path.slice(index);
+  const [folder, name] = splitPath(path, WINDOWS_SEPARATORS);
+  return folder.slice(-1) + name;
 }
 
 // plan.md "Measurements and budgets": a ready frame needs a complete read with `recoveryState` `ready`.
@@ -176,31 +174,47 @@ export function ChangesPaneMount({ state, requests, menuOpen, modalOpen, onStatu
   );
 }
 
+// The Pierre worker pool. It loads with the first diff and stays mounted, because Pierre ends the pool when its last provider unmounts.
+const PatchPool = lazy(() => import("../changes/PatchPool"));
+
 /** The T134 comparison view of the selected entry. The hunk controls stay unavailable until T148 mounts T145. */
 export function ComparisonViewMount({ state, requests }: WorkbenchPaneProps) {
   const selected = state.selection?.entryId;
   const entry = selected === undefined ? null : (state.entries.find((e) => e.entryId === selected) ?? null);
   const response = entry !== null && state.comparison?.entryId === entry.entryId ? state.comparison : null;
+  const [pool, setPool] = useState(false);
+  if (!pool && showsDiff(resultOf(response))) setPool(true);
+  const view = <Comparison entry={entry} response={response} selectedHunk={state.selectedHunk} onRefresh={requests.refresh} helpLine={INTERIM_HELP_LINE} />;
   return (
     <div className="flex h-full min-h-0 flex-col">
       {entry === null ? null : <p className="px-2 text-muted-text">{LATER.staging}</p>}
       <div className="min-h-0 flex-1">
-        <Comparison entry={entry} response={response} selectedHunk={state.selectedHunk} onRefresh={requests.refresh} helpLine={INTERIM_HELP_LINE} />
+        {pool ? (
+          <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
+            <PatchPool>{view}</PatchPool>
+          </Suspense>
+        ) : (
+          view
+        )}
       </div>
     </div>
   );
 }
 
-/** The T144 History list and inspector. The commit selection is view state, and a repository open clears it. */
+/** The T144 History list and inspector. The commit selection is view state. A repository open clears it, and a refresh keeps it while the new page holds it. */
 export function HistoryViewMount({ state, requests, density, profile, textScale }: WorkbenchPaneProps) {
-  const [selectedOid, setSelectedOid] = useState<string | null>(null);
+  // Each `open` sets a new `repository` object, also for the same `repositoryId` (contract §6 "Registration reuse and release": a matching registration returns the same ID).
+  const [selected, setSelected] = useState({ repository: state.repository, oid: null as string | null });
+  const page = state.history;
+  const kept = selected.repository === state.repository && (page === null || page.rows.some((row) => row.oid === selected.oid)) ? selected.oid : null;
+  if (selected.repository !== state.repository || kept !== selected.oid) setSelected({ repository: state.repository, oid: kept });
+  const onSelect = (oid: string) => setSelected({ repository: state.repository, oid });
   if (state.history === null) {
-    if (selectedOid !== null) setSelectedOid(null);
     if (state.historyFailure !== null) return <ErrorState code={responseCode(state.historyFailure)} result={state.historyFailure.result} onRefresh={requests.refresh} />;
     return <Loading hasContent={false} refreshing={false} />;
   }
   const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
-  return <History page={state.history} entries={entries} selectedOid={selectedOid} onSelect={setSelectedOid} density={density} profile={profile} textScale={textScale} />;
+  return <History page={state.history} entries={entries} selectedOid={kept} onSelect={onSelect} density={density} profile={profile} textScale={textScale} />;
 }
 
 // Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
@@ -398,7 +412,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const clamped = clampPanes({ client, textScale: TEXT_SCALE, density: preferences.density, bandRows, statusArea: 0, fileBand: fileBand ?? band.default, tray: bottom ?? tray.default });
   const trayHeight = clamped.tray;
   const bandHeight = clamped.fileBand ?? band.default;
-  const lane = preferences.panes.fileLane;
+  // A drag shows the live lane width and saves it once, on pointer up.
+  const [dragLane, setDragLane] = useState<number | null>(null);
+  const lane = dragLane ?? preferences.panes.fileLane;
   const grid: CSSProperties =
     profile === "wide"
       ? {
@@ -458,6 +474,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         <div ref={menubar} style={{ order: 3 }} onFocus={onMenubarFocus}>
           <Menubar className="h-auto border-0 p-0">
             <RepositoryMenu
+              key={repositoryId}
               environment={environment}
               path={path}
               head={head}
@@ -571,7 +588,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 value={profile === "wide" ? lane : bandHeight}
                 min={profile === "wide" ? FILE_LANE.min : band.min}
                 max={profile === "wide" ? FILE_LANE.max : band.max}
-                onChange={(value) => (profile === "wide" ? savePreferences({ ...preferences, panes: { fileLane: value } }) : setFileBand(value))}
+                onChange={(value) => (profile === "wide" ? setDragLane(value) : setFileBand(value))}
+                onCommit={(value) => {
+                  if (profile !== "wide") return;
+                  setDragLane(null);
+                  savePreferences({ ...preferences, panes: { fileLane: value } });
+                }}
                 className={resizable ? "[grid-area:laneSplit]" : "hidden"}
               />
               <div className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
@@ -584,7 +606,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             </section>
             {/* HistoryView owns the list and the inspector. */}
             <section aria-label="History" hidden={state.mode !== "history"} className="flex min-h-0 flex-1 flex-col">
-              {HistoryView ? <HistoryView {...pane} /> : <p className="p-2 text-muted-text">{state.history === null ? "Loading…" : "History is not available in this build."}</p>}
+              <HistoryView {...pane} />
             </section>
           </>
         )}

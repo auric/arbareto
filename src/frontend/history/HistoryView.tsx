@@ -3,16 +3,17 @@
 
 import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ChangeEntry, HistoryPage, HistoryRow } from "../../contracts/envelope";
-import { LimitedOutput } from "../app/RepositoryStates";
+import { LimitedOutput, SCOPE_TEXT } from "../app/RepositoryStates";
 import { WarningIcon } from "../app/NoticeBand";
 import { Button } from "../components/ui/button";
 import { metrics, type Density, type Profile } from "../layout/profiles";
+import { shrinkInOrder, type Part } from "../lib/fit";
 import { AncestryCell, LANE_SPACING } from "./AncestryCell";
 import { BOUNDARY_TEXT, layoutHistory, type Cell, type Layout } from "./lanes";
 
 // plan.md "History graph design", "Long text", "Keyboard and focus" (Roles, File/history list), "Compact token system" (selection marker, badges), and "Required visible states".
 
-export const SCOPE_TEXT = "Up to 100 commits";
+export { SCOPE_TEXT };
 export const LIMIT_TEXT: Record<NonNullable<Layout["limit"]>["reached"], string> = {
   lanes: "Graph layout limited: more than 24 lanes",
   segments: "Graph layout limited: more than 4,096 segments",
@@ -26,7 +27,7 @@ const CONSTRAINED_LIST_MIN = 220;
 // plan.md gives no History short ID length. `submodule-review.ts` uses 12 digits.
 const shortId = (oid: string) => oid.slice(0, 12);
 // Git ref names: a local branch is `refs/heads/<name>` (git-check-ref-format(1)).
-const branchName = (target: string) => (target.startsWith("refs/heads/") ? target.slice("refs/heads/".length) : target);
+export const branchName = (target: string) => (target.startsWith("refs/heads/") ? target.slice("refs/heads/".length) : target);
 // `date` is the author time in seconds (contract §3). The contract carries no author time zone, so the text is UTC.
 const dateText = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -46,19 +47,13 @@ function countText(entries: readonly Counted[]): { conflicted: string | null; re
   return { conflicted: conflicted > 0 ? `${conflicted} conflicted, ` : null, rest: `${plural(working, "working change", "working changes")}, ${staged} staged` };
 }
 
-type Part = { full: number; min: number };
 type ScopeParts = { width: number; fixed: number; checkout: Part; commits: Part; limit?: Part };
 type ScopeWidths = { checkout: number; commits: number; limit: number };
 
 /** plan.md "Long text": shrink the checkout name, then "Up to 100 commits", then the limit text. The fixed parts never shrink. */
 export function fitScopeLine({ width, fixed, checkout, commits, limit = { full: 0, min: 0 } }: ScopeParts): ScopeWidths {
-  let over = fixed + checkout.full + commits.full + limit.full - width;
-  const fit = (p: Part) => {
-    const cut = Math.max(0, Math.min(over, p.full - p.min));
-    over -= cut;
-    return p.full - cut;
-  };
-  return { checkout: fit(checkout), commits: fit(commits), limit: fit(limit) };
+  const [c, n, l] = shrinkInOrder(width, fixed, [checkout, commits, limit]) as [number, number, number];
+  return { checkout: c, commits: n, limit: l };
 }
 
 export type ScopeLineProps = {

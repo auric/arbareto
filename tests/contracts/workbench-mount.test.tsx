@@ -1,17 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { act } from "react";
-import type { Environment, HistoryPage, WorkspaceSnapshot } from "../../src/contracts/envelope";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { act, useEffect, type ReactNode } from "react";
+import type { ChangeEntry, Environment, HistoryPage, WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
+// Pierre and its worker need the Vite build (T160). The doubles count the pool provider mounts.
+const pool = { mounts: 0, unmounts: 0 };
+function PoolDouble({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    pool.mounts++;
+    return () => void pool.unmounts++;
+  }, []);
+  return <>{children}</>;
+}
+mock.module("../../src/frontend/changes/PatchPool", () => ({ default: PoolDouble }));
+mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre data-slot="patch-double">{patch}</pre> }));
 // `Workbench.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
 registerDom();
 const { createRoot } = await import("react-dom/client");
 const { ChangesPaneMount, ComparisonViewMount, HistoryViewMount, INTERIM_HELP_LINE, LATER, Workbench } = await import("../../src/frontend/app/Workbench");
+const { readPreferences } = await import("../../src/frontend/state/preferences");
 
 // tasks.md T330: the interim read-only mount. plan.md "Measurements and budgets" (History-ready frame) and "Required visible states".
 
@@ -245,5 +257,156 @@ describe("help line", () => {
     const changes = document.querySelector('section[aria-label="Changes"]')!.textContent ?? "";
     expect(changes).toContain(INTERIM_HELP_LINE);
     expect(changes).not.toContain("Space stages or unstages it");
+  });
+});
+
+// Review fixes of the UI batch. Each test renders the shipped mount with request state, or the workbench with the bridge double.
+const latest = (double: { calls: Call[] }, operation: string) => double.calls.filter((c) => c.operation === operation).at(-1)!;
+const changeEntry = (path: string): ChangeEntry => ({ entryId: crypto.randomUUID(), category: "unstaged", path, pathBytes: Buffer.from(path).toString("base64") }) as ChangeEntry;
+const DIFF = "diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n a\n+n\n b\n";
+const shownComparison = (entryId: string, patch: string) => ({
+  ...succeeded({
+    comparisonId: crypto.randomUUID(),
+    snapshotId: crypto.randomUUID(),
+    entryId,
+    scope: "index-to-worktree",
+    completeness: { state: "complete" },
+    patch: Buffer.from(patch).toString("base64"),
+    hunks: [{ hunkId: crypto.randomUUID(), ordinal: 0, oldStart: 1, oldCount: 2, newStart: 1, newCount: 3, digest: "1".repeat(64) }],
+    support: "supported",
+    fileAction: "stage",
+    remedy: null,
+  }),
+  entryId,
+});
+const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {} } as const;
+
+async function render(node: () => ReactNode) {
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  await act(async () => root.render(node()));
+  unmounts.push(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+  });
+  return { host, rerender: async (next: () => ReactNode) => act(async () => root.render(next())) };
+}
+
+describe("comparison mount", () => {
+  test("the Pierre worker pool mounts once at the first diff and stays across selections, Loading, and patch changes", async () => {
+    pool.mounts = 0;
+    pool.unmounts = 0;
+    const [a, b] = [changeEntry("a.txt"), changeEntry("b.txt")];
+    const base = { repository: REGISTRATION, entries: [a, b], selectedHunk: null } as const;
+    const view = (fields: Record<string, unknown>) => () => <ComparisonViewMount {...PANE} requests={{ refresh: () => {} } as never} state={{ ...base, ...fields } as never} />;
+    const shown = await render(view({ selection: { entryId: a.entryId }, comparison: null }));
+    expect(pool.mounts).toBe(0);
+    await shown.rerender(view({ selection: { entryId: a.entryId }, comparison: shownComparison(a.entryId, DIFF) }));
+    await settle();
+    expect(shown.host.querySelector('[data-slot="patch-double"]')).not.toBeNull();
+    await shown.rerender(view({ selection: { entryId: b.entryId }, comparison: shownComparison(a.entryId, DIFF) }));
+    await settle();
+    expect(shown.host.textContent).toContain("Loading…");
+    await shown.rerender(view({ selection: { entryId: b.entryId }, comparison: shownComparison(b.entryId, DIFF.replace("+n", "+m")) }));
+    await settle();
+    await shown.rerender(view({ selection: null, comparison: null }));
+    await settle();
+    expect(pool).toEqual({ mounts: 1, unmounts: 0 });
+  });
+});
+
+describe("history selection", () => {
+  const row = (oid: string) => ({ oid, parents: [], subject: `Commit ${oid.slice(0, 4)}`, author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null });
+  const [first, second] = ["1".repeat(40), "2".repeat(40)];
+  const pageOf = (...oids: string[]): HistoryPage => ({ ...PAGE, head: { state: "branch", target: "refs/heads/main", oid: oids[0]! }, rows: oids.map(row) });
+  const selected = (host: HTMLElement) => host.querySelector('[role="option"][aria-selected="true"]')?.textContent ?? null;
+  const clickRow = (host: HTMLElement, index: number) => act(async () => host.querySelectorAll<HTMLElement>('[role="option"]')[index]!.click());
+
+  test("the selected OID stays across a page refresh while the new page holds it, and clears when it does not or on a repository open", async () => {
+    const view = (history: HistoryPage | null, repository: object = REGISTRATION) => () => (
+      <HistoryViewMount {...PANE} requests={{ refresh: () => {} } as never} state={{ repository, history, historyFailure: null, workspace: null, entries: [] } as never} />
+    );
+    const shown = await render(view(pageOf(second, first)));
+    await clickRow(shown.host, 1);
+    expect(selected(shown.host)).toContain("Commit 1111");
+    await shown.rerender(view(null));
+    await shown.rerender(view(pageOf(second, first)));
+    expect(selected(shown.host)).toContain("Commit 1111");
+    await shown.rerender(view(pageOf(second)));
+    expect(selected(shown.host)).toBeNull();
+    await shown.rerender(view(pageOf(second, first)));
+    expect(selected(shown.host)).toBeNull();
+    await clickRow(shown.host, 1);
+    expect(selected(shown.host)).toContain("Commit 1111");
+    await shown.rerender(view(pageOf(second, first), { ...REGISTRATION }));
+    expect(selected(shown.host)).toBeNull();
+  });
+});
+
+describe("repository menu", () => {
+  test("the revoke result text leaves when another repository opens", async () => {
+    const double = await mount(succeeded(REGISTRATION));
+    const report = { generation: 1, fingerprint: "f".repeat(64), trustId: crypto.randomUUID(), state: "approved", persistence: "stored", approvalRequired: { reads: false, commit: false }, entries: [], hooks: [] };
+    await resolve(latest(double, "readTrust"), succeeded(report));
+    const openMenu = async () => {
+      const trigger = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === "Repository")!;
+      await act(async () => trigger.focus());
+      await act(async () => trigger.click());
+      await settle();
+    };
+    const item = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => e.textContent === label)!;
+    await openMenu();
+    await act(async () => item("Revoke trust").click());
+    await settle();
+    await resolve(latest(double, "revokeTrust"), succeeded({ endedProcesses: 0 }));
+    expect(text()).toContain("Trust revoked.");
+    await act(async () => item("Open repository").click());
+    await settle();
+    await resolve(latest(double, "chooseRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64) }));
+    await openMenu();
+    expect(document.querySelector('[role="menu"]')).not.toBeNull();
+    expect(text()).not.toContain("Trust revoked.");
+  });
+});
+
+describe("file lane splitter", () => {
+  type HappyWindow = { happyDOM: { setInnerWidth(width: number): void } };
+  test("a pointer drag saves the wide file lane once, on pointer up", async () => {
+    const before = window.innerWidth;
+    (window as unknown as HappyWindow).happyDOM.setInnerWidth(1600);
+    const setItem = spyOn(Storage.prototype, "setItem");
+    try {
+      const double = await mount(succeeded(REGISTRATION));
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
+      const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize file lane"]')!;
+      expect(splitter).not.toBeNull();
+      const start = Number(splitter.getAttribute("aria-valuenow"));
+      const pointer = (type: string, clientX: number) => act(async () => void splitter.dispatchEvent(new PointerEvent(type, { pointerId: 1, button: 0, clientX, bubbles: true })));
+      setItem.mockClear();
+      await pointer("pointerdown", 500);
+      await pointer("pointermove", 520);
+      await pointer("pointermove", 540);
+      expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(start + 40);
+      expect(setItem).not.toHaveBeenCalled();
+      await pointer("pointerup", 540);
+      expect(setItem).toHaveBeenCalledTimes(1);
+      expect(readPreferences(localStorage).panes.fileLane).toBe(start + 40);
+      // A drag back to its start value still ends the live width, so a later preference write shows.
+      await pointer("pointerdown", 540);
+      await pointer("pointermove", 560);
+      await pointer("pointermove", 540);
+      await pointer("pointerup", 540);
+      const view = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === "View")!;
+      await act(async () => view.focus());
+      await act(async () => view.click());
+      await settle();
+      await act(async () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => e.textContent === "Reset pane sizes")!.click());
+      await settle();
+      expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(readPreferences(localStorage).panes.fileLane);
+      expect(Number(splitter.getAttribute("aria-valuenow"))).not.toBe(start + 40);
+    } finally {
+      setItem.mockRestore();
+      (window as unknown as HappyWindow).happyDOM.setInnerWidth(before);
+    }
   });
 });

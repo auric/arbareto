@@ -370,6 +370,50 @@ describe("history responses", () => {
     expect(double.of("readHistory").slice(before).map((c) => c.target)).toEqual([{ repositoryId: REPOSITORY, repositoryGeneration: 2 }]);
     requests.dispose();
   });
+
+  test("REPOSITORY_CHANGED for the retried readHistory sets historyFailure", async () => {
+    const double = bridgeDouble();
+    const requests = createRequests({ bridge: double.bridge, clock: clockDouble().clock, focus: focusDouble(true).focus });
+    requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
+    await flush();
+    const changed = (call: Call) => call.resolve({ requestId: crypto.randomUUID(), state: "rejected", code: "REPOSITORY_CHANGED", repositoryGeneration: 1 });
+    changed(double.last("readHistory"));
+    await flush();
+    expect(double.of("readHistory")).toHaveLength(2);
+    changed(double.last("readHistory"));
+    await flush();
+    expect(double.of("readHistory")).toHaveLength(2);
+    expect(requests.state().historyFailure?.code).toBe("REPOSITORY_CHANGED");
+    requests.dispose();
+  });
+});
+
+describe("in-place updates", () => {
+  test("a new snapshot with the selected category and pathBytes keeps the shown comparison under the new entryId until the new comparison arrives", async () => {
+    const o = await shown();
+    await o.advance(1000);
+    const moved = o.first.entries.map((e) => ({ ...e, entryId: crypto.randomUUID() }));
+    workspaceResponse(o.last("readWorkspace"), snapshot(2, moved));
+    await flush();
+    expect(o.requests.state().selection?.entryId).toBe(moved[0]!.entryId);
+    expect(o.requests.state().comparison?.entryId).toBe(moved[0]!.entryId);
+    expect(o.requests.state().comparison?.result).toEqual(o.value);
+    expect(o.requests.state().capability).toBeNull();
+    o.requests.dispose();
+  });
+
+  test("a pending selection of another entry never takes the earlier comparison after a new snapshot", async () => {
+    const o = await shown();
+    o.requests.selectEntry(o.first.entries[1]!.entryId);
+    await flush();
+    await o.advance(1000);
+    const moved = o.first.entries.map((e) => ({ ...e, entryId: crypto.randomUUID() }));
+    workspaceResponse(o.last("readWorkspace"), snapshot(2, moved));
+    await flush();
+    expect(o.requests.state().selection?.entryId).toBe(moved[1]!.entryId);
+    expect(o.requests.state().comparison?.entryId).not.toBe(moved[1]!.entryId);
+    o.requests.dispose();
+  });
 });
 
 describe("focus return on a Windows workspace", () => {

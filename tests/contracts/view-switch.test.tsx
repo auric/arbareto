@@ -21,11 +21,12 @@ function bridgeDouble(answers: Record<string, unknown> = {}) {
 }
 const ChangesPaneDouble = () => <div>changes pane double</div>;
 const ComparisonViewDouble = () => <div>comparison view double</div>;
+const HistoryViewDouble = () => <div>history view double</div>;
 
 describe("View menu", () => {
   test("the menu bar holds the View menu, and rendering sends no bridge request", () => {
     const { bridge, calls } = bridgeDouble();
-    const html = renderToStaticMarkup(<Workbench bridge={bridge as never} ChangesPane={ChangesPaneDouble} ComparisonView={ComparisonViewDouble} />);
+    const html = renderToStaticMarkup(<Workbench bridge={bridge as never} ChangesPane={ChangesPaneDouble} ComparisonView={ComparisonViewDouble} HistoryView={HistoryViewDouble} />);
     const menubar = html.indexOf('role="menubar"');
     expect(menubar).toBeGreaterThanOrEqual(0);
     expect(html.slice(menubar)).toMatch(/<button[^>]*role="menuitem"[^>]*>View<\/button>/);
@@ -113,7 +114,7 @@ async function openChanges() {
   const double = bridgeDouble({ chooseRepository: registered() });
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  await act(async () => root.render(<Workbench bridge={double.bridge as never} ChangesPane={SelectingChangesPane} ComparisonView={HunkComparisonView} />));
+  await act(async () => root.render(<Workbench bridge={double.bridge as never} ChangesPane={SelectingChangesPane} ComparisonView={HunkComparisonView} HistoryView={HistoryViewDouble} />));
   unmounts.push(async () => {
     await act(async () => root.unmount());
     host.remove();

@@ -227,9 +227,11 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     const previous = state.selection;
     const found = previous ? entries.find((e) => e.category === previous.category && e.pathBytes === previous.pathBytes) : undefined;
     const selection = previous && found ? { ...previous, entryId: found.entryId } : null;
+    // plan.md "Required visible states", Loading: the earlier comparison of the same category and `pathBytes` stays shown until the new one arrives.
+    const comparison = selection && state.comparison?.entryId === previous!.entryId ? { ...state.comparison, entryId: selection.entryId } : null;
     shown = null;
     if (!selection) latestSelectionId = null;
-    update({ ...patch, workspace, entries, selection, readFailure: null, ...(selection ? {} : { comparison: null, selectedHunk: null }) });
+    update({ ...patch, workspace, entries, selection, comparison, readFailure: null, ...(selection ? {} : { selectedHunk: null }) });
     if (selection) requestComparison(selection.entryId);
   }
 
@@ -265,8 +267,8 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       if (e !== epoch) return;
       historyInFlight--;
       const latest = latestHistory === token;
-      if (response.code === "REPOSITORY_CHANGED") {
-        if (latest && !retried) requestHistory(true);
+      if (response.code === "REPOSITORY_CHANGED" && !retried) {
+        if (latest) requestHistory(true);
         return;
       }
       const page = response.result;

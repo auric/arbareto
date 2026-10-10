@@ -288,6 +288,11 @@ export function HistoryView({ page, entries, selectedOid, onSelect, density, pro
                       {row.encoding}
                     </span>
                   )}
+                  {row.invalidUtf8 ? (
+                    <span aria-hidden="true" className="shrink-0 text-muted-text">
+                      Invalid UTF-8
+                    </span>
+                  ) : null}
                   <span aria-hidden="true" className="shrink-0 font-mono text-muted-text">
                     {shortId(row.oid)}
                   </span>

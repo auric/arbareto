@@ -150,6 +150,16 @@ describe("History view", () => {
     );
   });
 
+  test("the row line shows the Invalid UTF-8 badge for a true invalidUtf8, after the encoding name when both are set", async () => {
+    const rows = page([{ ...row(3, []), invalidUtf8: true }, { ...row(2, [3]), encoding: "ISO-8859-1", invalidUtf8: true }, row(1, [2])]);
+    const host = await show(<HistoryView {...props} page={rows} selectedOid={null} />);
+    const line = (i: number) => options(host)[i]!.textContent!;
+    expect(line(0)).toContain("Invalid UTF-8");
+    expect(line(0)).not.toContain("ISO-8859-1");
+    expect(line(1)).toMatch(/ISO-8859-1Invalid UTF-8/);
+    expect(line(2)).not.toContain("Invalid UTF-8");
+  });
+
   test("only the encoding and invalidUtf8 fields set the label: a subject with replacement characters, a null encoding, and invalidUtf8 false shows none", async () => {
     const host = await show(<HistoryView {...props} page={page([row(1, [], "Caf�")])} selectedOid={oid(1)} />);
     expect(text(host)).not.toContain("Declared encoding");

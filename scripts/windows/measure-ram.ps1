@@ -40,4 +40,7 @@ $rows | Format-Table -AutoSize | Out-String -Width 200
 function Sum($Items, [string]$Name) { [math]::Round(($Items | Measure-Object $Name -Sum).Sum, 1) }
 $rows | Group-Object Group | ForEach-Object { [pscustomobject]@{ Group=$_.Name; Count=$_.Count
   PrivWS_MB=Sum $_.Group PrivWS_MB; Private_MB=Sum $_.Group Private_MB; WS_MB=Sum $_.Group WS_MB } } | Format-Table -AutoSize | Out-String
-"ALL: PrivWS={0} MB Private={1} MB WS={2} MB" -f (Sum $rows PrivWS_MB), (Sum $rows Private_MB), (Sum $rows WS_MB)
+''
+"TOTAL MEMORY: {0} MB" -f (Sum $rows PrivWS_MB)
+"  The sum of the private working set of all {0} processes in the tree (Task Manager 'Memory' column)." -f $rows.Count
+"  Other sums: private bytes (commit) {0} MB; working set {1} MB (counts shared pages more than once)." -f (Sum $rows Private_MB), (Sum $rows WS_MB)

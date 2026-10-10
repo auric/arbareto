@@ -31,8 +31,10 @@ const SUGGESTED = `Git created commit ${OID}. Repository state changed during ex
 const TAIL = "pre-commit: <b>refused</b> & stopped\nline 2\n";
 const REFUSAL = "Stage file is unavailable: the file has a conflict";
 const HEAD = { state: "branch", target: "refs/heads/main", oid: OID } as const;
-// The text gaps that tasks.md:616 needs and plan.md does not define.
-const GAP = "(text gap, plan.md:747 and plan.md:754 to plan.md:757)";
+// plan.md "Header layout": the repository name is the last folder name of the worktree root.
+const ROOT = "C:\\work\\my repo";
+const NAME = "my repo";
+const MARKER_REMEDY = "Arbareto could not save its recovery record. Free disk space or restore write access to this folder, then try again.";
 
 const id = () => crypto.randomUUID();
 const running = (fields: Partial<Operation> = {}): Operation => ({ requestId: id(), kind: "commit", progress: null, response: null, ...fields }) as Operation;
@@ -59,7 +61,7 @@ afterEach(async () => {
 });
 
 type Fields = Omit<Props, "bridge" | "onFocusMessageField" | "onClearMessage" | "onRefresh" | "ref">;
-const BASE: Fields = { operation: null, head: HEAD, trusted: false, mode: "history", modalOpen: false, refusal: null };
+const BASE: Fields = { operation: null, worktreeRoot: ROOT, head: HEAD, trusted: false, mode: "history", modalOpen: false, refusal: null };
 
 async function mount(fields: Partial<Fields> = {}, stallRemedy?: unknown) {
   const double = bridgeDouble(stallRemedy);
@@ -409,7 +411,7 @@ describe("live-node counts", () => {
     const op = running();
     const at = (stalled: boolean) => html({ operation: { ...op, progress: progress(op, { stalled }) } });
     expect(changes(at(false), at(true))).toEqual([1, 0]);
-    expect(text(visible(at(true)).querySelector('[role="status"]'))).toBe(STALL_SENTENCE);
+    expect(text(visible(at(true)).querySelector('[role="status"]'))).toBe(`Committing in ${NAME}… ${STALL_SENTENCE}`);
     expect(changes(at(true), at(false))).toEqual([0, 0]);
   });
 
@@ -453,8 +455,79 @@ describe("live-node counts", () => {
     expect([...shown.querySelectorAll("button")].map(text)).toContain("Refresh");
   });
 
-  test.todo(`an operation start shows the operation and the repository ${GAP}`, () => {});
-  test.todo(`Canceled, failed, completed-with-effects, and failed-with-effects outcomes show their outcome sentence ${GAP}`, () => {});
+  const liveOf = (markup: string) => visible(markup).querySelector('[role="status"]')!;
+  const KINDS = [
+    ["commit", undefined, "Commit", "Committing"],
+    ["applyHunk", "stage", "Hunk staging", "Staging hunk"],
+    ["applyHunk", "unstage", "Hunk unstaging", "Unstaging hunk"],
+    ["applyFile", "stage", "File staging", "Staging file"],
+    ["applyFile", "unstage", "File unstaging", "Unstaging file"],
+    ["updateSubmodules", undefined, "Update submodules", "Updating submodules"],
+  ] as const;
+
+  test("an operation start names the operation and the repository name; accepted and running show the same text, so the start is one change", () => {
+    for (const [kind, direction, , verb] of KINDS) {
+      const op = running({ kind, ...(direction === undefined ? {} : { direction }) });
+      const accepted = html({ operation: op });
+      const runs = html({ operation: { ...op, progress: progress(op) } });
+      expect(text(liveOf(accepted))).toBe(`${verb} in ${NAME}…`);
+      expect(changes(html({ operation: null }), accepted)).toEqual([1, 0]);
+      expect(changes(accepted, runs)).toEqual([0, 0]);
+    }
+  });
+
+  test("a WSL worktree root gives the last folder name without the distro prefix", () => {
+    const op = running();
+    expect(text(liveOf(html({ operation: op, worktreeRoot: "\\\\wsl.localhost\\Ubuntu\\home\\me\\project" })))).toBe("Committing in project…");
+  });
+
+  test("a Cancel request reads exactly Cancel requested and gives one change", () => {
+    const op = running();
+    const runs = html({ operation: { ...op, progress: progress(op) } });
+    const requested = html({ operation: { ...op, progress: progress(op, { state: "cancel-requested" }) } });
+    expect(text(liveOf(requested))).toBe("Cancel requested");
+    expect(changes(runs, requested)).toEqual([1, 0]);
+  });
+
+  test("Canceled, failed, rejected, completed-with-effects, and failed-with-effects outcomes read their sentence, with the code in the code font and no end period", () => {
+    for (const [kind, direction, name] of KINDS) {
+      const op = running({ kind, ...(direction === undefined ? {} : { direction }) });
+      const read = (state: string, code?: string, result: Record<string, unknown> = {}) => liveOf(html({ operation: respond(op, state, { lingeringDescendants: 0, ...result }, code) }));
+      expect(text(read("canceled", "CANCELED"))).toBe(`${name} canceled`);
+      const failed = read("failed", "GIT_FAILED");
+      expect(text(failed)).toBe(`${name} did not complete: GIT_FAILED`);
+      expect(text(failed.querySelector("code"))).toBe("GIT_FAILED");
+      expect(text(read("rejected", "BUSY"))).toBe(`${name} did not start: BUSY`);
+      const effects = read("failed-with-effects", "GIT_FAILED", { effects: { head: false, index: true, workingFiles: false, operationState: false } });
+      expect(text(effects)).toBe(`${name} did not complete and left effects: GIT_FAILED`);
+      expect(text(effects.querySelector("code"))).toBe("GIT_FAILED");
+      if (kind !== "commit") expect(text(read("completed-with-effects", undefined, { effects: { head: false, index: true, workingFiles: false, operationState: false } }))).toBe(`${name} completed with effects`);
+    }
+  });
+
+  test("a completed-with-effects commit reads Committed <short ID> with effects", () => {
+    const op = respond(running(), "completed-with-effects", { commitOid: OID, effects: { head: true, index: false, workingFiles: false, operationState: false }, lingeringDescendants: 0 });
+    expect(text(liveOf(html({ operation: op })))).toBe("Committed 0123456789ab with effects");
+  });
+
+  test("a code with a reason shows <code> <reason>, and a result without a code shows its state", () => {
+    const limited = respond(running({ kind: "applyHunk", direction: "stage" }), "failed", { reason: "MUTATION_RAW_INDEX_BYTES", lingeringDescendants: 0 }, "OUTPUT_LIMIT");
+    expect(text(liveOf(html({ operation: limited })))).toBe("Hunk staging did not complete: OUTPUT_LIMIT MUTATION_RAW_INDEX_BYTES");
+    const bare = respond(running(), "failed-with-effects", { effects: { head: true, index: false, workingFiles: false, operationState: false }, lingeringDescendants: 0 });
+    expect(text(liveOf(html({ operation: bare })).querySelector("code"))).toBe("failed-with-effects");
+  });
+
+  test("the outcome is one change of the live text, also with a code and a reason", () => {
+    const op = running();
+    const runs = html({ operation: { ...op, progress: progress(op) } });
+    expect(changes(runs, html({ operation: respond(op, "succeeded", { commitOid: OID, lingeringDescendants: 0 }) }))).toEqual([1, 0]);
+    expect(changes(runs, html({ operation: respond(op, "failed", { reason: "COMMIT_OUTPUT_BYTES", lingeringDescendants: 0 }, "OUTPUT_LIMIT") }))).toEqual([1, 0]);
+  });
+
+  test("a period and a space join the outcome text and the lingering sentence", () => {
+    const op = respond(running({ kind: "applyFile", direction: "unstage" }), "failed", { lingeringDescendants: 3 }, "GIT_FAILED");
+    expect(text(liveOf(html({ operation: op })))).toBe(`File unstaging did not complete: GIT_FAILED. ${lingering(3)}`);
+  });
 });
 
 describe("commit outcomes in the area", () => {
@@ -494,7 +567,62 @@ describe("commit outcomes in the area", () => {
     expect(view.cleared).toHaveLength(1);
   });
 
-  test.todo("a completed-with-effects result shows the observed difference (text gap, plan.md:751 and data-model.md:244)", () => {});
+  test("a completed-with-effects result shows one observed difference sentence for each true effects field, in field order", async () => {
+    const op = running();
+    const view = await mount({ operation: op });
+    await view.update({ operation: respond(op, "completed-with-effects", { commitOid: OID, effects: { head: true, index: false, workingFiles: true, operationState: true }, lingeringDescendants: 0 }) });
+    const content = text(area());
+    const sentences = ["HEAD differs from the planned result.", "Working files changed.", "The Git operation state differs from the planned result."];
+    for (const sentence of sentences) expect(content).toContain(sentence);
+    expect(content).not.toContain("The index differs from the planned result.");
+    expect(sentences.map((s) => content.indexOf(s))).toEqual(sentences.map((s) => content.indexOf(s)).toSorted((a, b) => a - b));
+  });
+
+  test("a failed-with-effects hunk outcome has its area, with the effects sentences, behind the toggle", async () => {
+    const op = running({ kind: "applyHunk", direction: "unstage" });
+    const view = await mount({ operation: op });
+    await view.update({ operation: respond(op, "failed-with-effects", { effects: { head: true, index: true, workingFiles: true, operationState: true }, lingeringDescendants: 0 }, "GIT_FAILED") });
+    expect(area()).toBeNull();
+    expect(text(toggle()[0])).toBe("Show details");
+    await click(toggle()[0]!);
+    expect(text(areaHeading())).toBe("Unstage hunk details");
+    for (const sentence of ["HEAD changed.", "The index changed.", "Working files changed.", "The Git operation state changed."]) expect(text(area())).toContain(sentence);
+    expect(text(area())).toContain("Hunk unstaging did not complete and left effects: GIT_FAILED");
+  });
+});
+
+describe("area headings", () => {
+  for (const [kind, direction, heading] of [
+    ["applyHunk", "stage", "Stage hunk details"],
+    ["applyHunk", "unstage", "Unstage hunk details"],
+    ["applyFile", "stage", "Stage file details"],
+    ["applyFile", "unstage", "Unstage file details"],
+  ] as const) {
+    test(`a ${kind} ${direction} outcome with a lingering count opens the area "${heading}" with the toggle`, async () => {
+      const op = running({ kind, direction });
+      const view = await mount({ operation: op });
+      await view.update({ operation: respond(op, "succeeded", { lingeringDescendants: 2 }) });
+      expect(text(areaHeading())).toBe(heading);
+      expect(text(area())).toContain(lingering(2));
+      expect(text(toggle()[0])).toBe("Hide details");
+    });
+  }
+
+  test("a RECOVERY_MARKER_FAILED result shows the failure class in the code font, the recovery folder with Copy path, and the remedy text", async () => {
+    const folder = "C:\\Users\\me\\AppData\\Local\\Arbareto\\recovery";
+    const op = running({ kind: "applyFile", direction: "stage" });
+    const view = await mount({ operation: op });
+    await view.update({ operation: respond(op, "rejected", { failure: "disk-full", path: folder, remedy: { text: MARKER_REMEDY } }, "RECOVERY_MARKER_FAILED") });
+    expect(text(live()[0])).toBe("File staging did not start: RECOVERY_MARKER_FAILED");
+    await click(toggle()[0]!);
+    expect(text(areaHeading())).toBe("Stage file details");
+    const content = text(area());
+    const lines = ["Failure class: disk-full", `Recovery folder: ${folder}`, MARKER_REMEDY];
+    for (const line of lines) expect(content).toContain(line);
+    expect(lines.map((l) => content.indexOf(l))).toEqual(lines.map((l) => content.indexOf(l)).toSorted((a, b) => a - b));
+    expect([...area()!.querySelectorAll("code")].map(text)).toContain("disk-full");
+    expect(buttons("Copy path")).toHaveLength(1);
+  });
 });
 
 describe("focus at the commit outcome (Confirm row)", () => {

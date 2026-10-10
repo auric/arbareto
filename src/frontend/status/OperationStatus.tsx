@@ -9,9 +9,10 @@ import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
 import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
 import type { Mode } from "../keyboard/shortcuts";
+import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
 import { cn } from "../lib/utils";
 
-// plan.md "Status area", "Required visible states" (Succeeded, Busy, State unknown), "Keyboard and focus" (Status area row), and the Confirm row of "Task flow and command placement".
+// plan.md "Status area", "Status and fallback texts", "Required visible states" (Succeeded, Busy, Cancel requested, Canceled, Completed with effects, State unknown), "Keyboard and focus" (Status area row), and the Confirm row of "Task flow and command placement".
 
 export type StatusOperation = {
   /** A new value starts a new operation: the area and its content clear. */
@@ -31,6 +32,8 @@ export type OperationStatusProps = {
   bridge: Pick<ReturnType<typeof createBridge>, "cancel" | "getOperation">;
   /** Null after another repository opens. */
   operation: StatusOperation | null;
+  /** The `worktreeRoot` of the workspace. */
+  worktreeRoot: string;
   /** The HEAD that the commit used. */
   head: Head | null;
   /** The workspace holds a current trust ID (contract §9 "Lingering count"). */
@@ -55,11 +58,37 @@ type Outcome = {
   lingeringDescendants?: number;
   failure?: string;
   path?: string;
+  reason?: string;
+  effects?: Record<EffectField, boolean>;
 };
 type StallRemedy = { text: string; command?: string };
 type Head = WorkspaceSnapshot["head"];
+/** A status text: `lead`, then `code` in the code font, then `tail`. */
+type Line = { lead: string; code?: string; tail: string };
 
-const HEADING: Partial<Record<StatusOperation["kind"], string>> = { commit: "Commit details", updateSubmodules: "Update submodules details" };
+// plan.md "Status and fallback texts" (mutation name), "Required visible states" (Busy running text), and "Status area" (heading).
+const TEXTS: Record<string, [name: string, running: string, heading: string]> = {
+  commit: ["Commit", "Committing", "Commit details"],
+  "applyHunk:stage": ["Hunk staging", "Staging hunk", "Stage hunk details"],
+  "applyHunk:unstage": ["Hunk unstaging", "Unstaging hunk", "Unstage hunk details"],
+  "applyFile:stage": ["File staging", "Staging file", "Stage file details"],
+  "applyFile:unstage": ["File unstaging", "Unstaging file", "Unstage file details"],
+  updateSubmodules: ["Update submodules", "Updating submodules", "Update submodules details"],
+};
+const textsOf = (op: StatusOperation) => TEXTS[op.kind === "applyHunk" || op.kind === "applyFile" ? `${op.kind}:${op.direction ?? "stage"}` : op.kind]!;
+// Data-model `effects`: the field order of the sentences.
+const EFFECT_FIELDS = ["head", "index", "workingFiles", "operationState"] as const;
+type EffectField = (typeof EFFECT_FIELDS)[number];
+// plan.md "Required visible states", Completed with effects.
+const EFFECT_SENTENCES: Record<string, Record<EffectField, string>> = {
+  "completed-with-effects": {
+    head: "HEAD differs from the planned result.",
+    index: "The index differs from the planned result.",
+    workingFiles: "Working files changed.",
+    operationState: "The Git operation state differs from the planned result.",
+  },
+  "failed-with-effects": { head: "HEAD changed.", index: "The index changed.", workingFiles: "Working files changed.", operationState: "The Git operation state changed." },
+};
 const STALL_SENTENCE = "Git may be waiting for input.";
 // Contract §6 "Activity and stall notice".
 const STALL_NOTICE = "Git may be waiting for a prompt that Arbareto cannot show, or for a sign-in window. To answer a hidden prompt, select Cancel and run this command in a terminal.";
@@ -73,7 +102,10 @@ function outcomeOf(response: BridgeResponse | null | undefined): Outcome {
   const r = response?.result;
   if (!isObject(r)) return {};
   const remedy = isObject(r.remedy) ? { text: isText(r.remedy.text) ? r.remedy.text : undefined, command: isText(r.remedy.command) ? r.remedy.command : null } : undefined;
+  const e = r.effects;
   return {
+    reason: isText(r.reason) ? r.reason : undefined,
+    effects: isObject(e) && EFFECT_FIELDS.every((f) => typeof e[f] === "boolean") ? (e as Record<EffectField, boolean>) : undefined,
     commitOid: isText(r.commitOid) ? r.commitOid : undefined,
     outputTail: isText(r.outputTail) ? r.outputTail : undefined,
     remedy,
@@ -97,27 +129,47 @@ export function outcomeFocus(mode: Mode, modalOpen: boolean, cancelFocused: bool
   return cancelFocused ? "area-heading" : "stay";
 }
 
-// plan.md defines no running text and no canceled, failed, or effects outcome text. These states show no text. T236 adds the submodule step text.
-function operationText(op: StatusOperation, head: Head | null, trusted: boolean): string {
+/** plan.md "Header layout": the last folder name of the worktree root. A WSL root ends in the same name. */
+export function repositoryName(worktreeRoot: string): string {
+  return splitPath(worktreeRoot, WINDOWS_SEPARATORS)[1];
+}
+
+const plain = (line: Line) => line.lead + (line.code ?? "") + line.tail;
+const lineNode = (line: Line) => (
+  <>
+    {line.lead}
+    {line.code === undefined ? null : <code>{line.code}</code>}
+    {line.tail}
+  </>
+);
+
+// T236 replaces the running text of Update submodules with the step text.
+function operationText(op: StatusOperation, worktreeRoot: string, head: Head | null, trusted: boolean): Line {
+  const [name, verb] = textsOf(op);
   const response = op.response;
-  if (response === null) {
-    const p = op.progress;
-    return p?.state === "cancel-requested" ? "Cancel requested" : "";
-  }
-  let text = "";
-  if (response.state === "unknown") text = "State unknown";
+  if (response === null) return { lead: op.progress?.state === "cancel-requested" ? "Cancel requested" : `${verb} in ${repositoryName(worktreeRoot)}…`, tail: "" };
+  const outcome = outcomeOf(response);
+  // plan.md "Status and fallback texts": the contract §9 code, or the result state without a code.
+  const coded = (lead: string): Line => ({ lead, code: response.code ?? response.state, tail: outcome.reason === undefined ? "" : ` ${outcome.reason}` });
+  // plan.md "History graph design": a short ID is the first 12 hex digits.
+  const short = outcome.commitOid?.slice(0, 12);
+  let line: Line = { lead: "", tail: "" };
+  if (response.state === "unknown") line.lead = "State unknown";
+  else if (response.state === "canceled") line.lead = `${name} canceled`;
+  else if (response.state === "failed") line = coded(`${name} did not complete: `);
+  else if (response.state === "rejected") line = coded(`${name} did not start: `);
+  else if (response.state === "failed-with-effects") line = coded(`${name} did not complete and left effects: `);
+  else if (response.state === "completed-with-effects") line.lead = op.kind === "commit" && short !== undefined ? `Committed ${short} with effects` : `${name} completed with effects`;
   else if (response.state === "succeeded") {
-    const oid = outcomeOf(response).commitOid;
-    if (op.kind === "commit" && oid !== undefined && head !== null)
-      // plan.md "History graph design": a short ID is the first 12 hex digits.
-      text = head.state === "detached" ? `Committed ${oid.slice(0, 12)} on detached HEAD` : `Committed ${oid.slice(0, 12)} to ${branchName(head.target)}`;
-    else if (op.kind === "applyHunk") text = op.direction === "unstage" ? "Hunk unstaged" : "Hunk staged";
-    else if (op.kind === "applyFile") text = op.direction === "unstage" ? "File unstaged" : "File staged";
-    else if (op.kind === "updateSubmodules") text = "Submodules updated";
+    if (op.kind === "commit" && short !== undefined && head !== null) line.lead = head.state === "detached" ? `Committed ${short} on detached HEAD` : `Committed ${short} to ${branchName(head.target)}`;
+    else if (op.kind === "applyHunk") line.lead = op.direction === "unstage" ? "Hunk unstaged" : "Hunk staged";
+    else if (op.kind === "applyFile") line.lead = op.direction === "unstage" ? "File unstaged" : "File staged";
+    else if (op.kind === "updateSubmodules") line.lead = "Submodules updated";
   }
-  const count = outcomeOf(response).lingeringDescendants ?? 0;
-  if (count === 0) return text;
-  return text === "" ? lingeringSentence(count, trusted) : `${text}. ${lingeringSentence(count, trusted)}`;
+  const count = outcome.lingeringDescendants ?? 0;
+  if (count === 0) return line;
+  // plan.md "Required visible states", Succeeded: "<outcome>. <lingering sentence>".
+  return plain(line) === "" ? { lead: lingeringSentence(count, trusted), tail: "" } : { ...line, tail: `${line.tail}. ${lingeringSentence(count, trusted)}` };
 }
 
 function readStallRemedy(response: BridgeResponse): StallRemedy | null {
@@ -129,7 +181,7 @@ function readStallRemedy(response: BridgeResponse): StallRemedy | null {
 type Area = { requestId: string; open: boolean; forStall: boolean };
 type Stall = { requestId: string; remedy: StallRemedy | null; ending: boolean };
 
-export function OperationStatus({ bridge, operation: op, head, trusted, mode, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, areaMaxHeight, ref }: OperationStatusProps) {
+export function OperationStatus({ bridge, operation: op, worktreeRoot, head, trusted, mode, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, areaMaxHeight, ref }: OperationStatusProps) {
   const [area, setArea] = useState<Area | null>(null);
   const [stall, setStall] = useState<Stall | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -155,23 +207,28 @@ export function OperationStatus({ bridge, operation: op, head, trusted, mode, mo
   const requestId = op?.requestId ?? null;
   const response = op?.response ?? null;
   const outcome = outcomeOf(response);
-  const heading = op === null ? undefined : HEADING[op.kind];
-  const liveText = op === null ? "" : operationText(op, head, trusted);
+  const heading = op === null ? undefined : textsOf(op)[2];
+  const line = op === null ? null : operationText(op, worktreeRoot, head, trusted);
+  const liveText = line === null ? "" : plain(line);
   const running = op !== null && response === null;
   const stalled = running && op.progress?.stalled === true;
   const percent = running && op.kind === "updateSubmodules" ? op.progress?.counters.percent : undefined;
   const current = area !== null && area.requestId === requestId ? area : null;
   const notice = stall !== null && stall.requestId === requestId ? stall : null;
-  const effects = response?.state === "completed-with-effects" && outcome.commitOid !== undefined;
+  const suggested = op?.kind === "commit" && response?.state === "completed-with-effects" && outcome.commitOid !== undefined;
+  const effects = outcome.effects;
+  const sentences = response !== null && effects !== undefined && response.state in EFFECT_SENTENCES ? EFFECT_FIELDS.filter((f) => effects[f]).map((f) => EFFECT_SENTENCES[response.state]![f]) : [];
+  const markerFailed = response?.code === "RECOVERY_MARKER_FAILED";
   const details =
     notice !== null ||
+    sentences.length > 0 ||
     outcome.outputTail !== undefined ||
     outcome.remedy !== undefined ||
     (outcome.foreign?.length ?? 0) > 0 ||
     (outcome.lingeringDescendants ?? 0) > 0 ||
     outcome.failure !== undefined ||
     outcome.path !== undefined ||
-    effects;
+    suggested;
   const hasArea = heading !== undefined && (details || truncated || current !== null);
   const open = hasArea && current?.open === true;
 
@@ -310,7 +367,7 @@ export function OperationStatus({ bridge, operation: op, head, trusted, mode, mo
             {heading}
           </h2>
           <div tabIndex={0} aria-labelledby={headingId} className="min-h-0 overflow-auto" style={{ gridArea: "content" }}>
-            {liveText === "" ? null : <p>{liveText}</p>}
+            {line === null || liveText === "" ? null : <p>{lineNode(line)}</p>}
             {notice === null ? null : (
               <div ref={noticeRef} className="flex gap-2">
                 <WarningIcon />
@@ -321,8 +378,20 @@ export function OperationStatus({ bridge, operation: op, head, trusted, mode, mo
                 </div>
               </div>
             )}
-            {outcome.failure === undefined ? null : <code className="block">{outcome.failure}</code>}
-            {outcome.path === undefined ? null : <code className="block break-all">{outcome.path}</code>}
+            {outcome.failure === undefined ? null : markerFailed ? (
+              <p>
+                Failure class: <code>{outcome.failure}</code>
+              </p>
+            ) : (
+              <code className="block">{outcome.failure}</code>
+            )}
+            {outcome.path === undefined ? null : markerFailed ? (
+              <p className="break-all">
+                Recovery folder: <code>{outcome.path}</code>
+              </p>
+            ) : (
+              <code className="block break-all">{outcome.path}</code>
+            )}
             {outcome.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap">{outcome.outputTail}</pre>}
             {outcome.remedy?.text === undefined ? null : <p>{outcome.remedy.text}</p>}
             {isText(outcome.remedy?.command) ? <code className="block break-all">{outcome.remedy.command}</code> : null}
@@ -331,7 +400,8 @@ export function OperationStatus({ bridge, operation: op, head, trusted, mode, mo
                 {path}
               </code>
             ))}
-            {effects ? <p>{`Git created commit ${outcome.commitOid}. Repository state changed during execution. Review the resulting commit and staged changes.`}</p> : null}
+            {sentences.length === 0 ? null : <p>{sentences.join(" ")}</p>}
+            {suggested ? <p>{`Git created commit ${outcome.commitOid}. Repository state changed during execution. Review the resulting commit and staged changes.`}</p> : null}
           </div>
           <div className="flex flex-wrap gap-2 py-1" style={{ gridArea: "actions" }}>
             {copies.map((c) =>
@@ -345,7 +415,7 @@ export function OperationStatus({ bridge, operation: op, head, trusted, mode, mo
                 </CopyButton>
               ),
             )}
-            {effects ? (
+            {suggested ? (
               <Button variant="outline" size="sm" onClick={onClearMessage}>
                 Clear message
               </Button>
@@ -358,7 +428,8 @@ export function OperationStatus({ bridge, operation: op, head, trusted, mode, mo
       ) : null}
       <footer ref={footerRef} className="flex items-center gap-2 border-t border-divider px-2" style={{ minHeight: "var(--h-status-bar)" }}>
         <span ref={textRef} role="status" tabIndex={-1} className={cn("min-w-0 flex-1 truncate", refusal !== null && "sr-only")}>
-          <span>{liveText}</span>
+          {/* A line with a code is one added element, so the outcome stays one live-node change. */}
+          <span>{line === null ? null : line.code === undefined ? plain(line) : <span>{lineNode(line)}</span>}</span>
           {stalled ? <span> {STALL_SENTENCE}</span> : null}
         </span>
         {percent === undefined ? null : <span className="shrink-0 tabular-nums">{percent}%</span>}

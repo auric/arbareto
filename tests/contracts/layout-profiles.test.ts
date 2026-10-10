@@ -211,12 +211,16 @@ describe("density metrics and section minima", () => {
 });
 
 describe("pane bounds", () => {
-  test("the wide file lane is 240 to 400 DIPs, 280 by default, with at least 520 DIPs for the diff", () => {
-    for (const width of [1120, 1280, 1920]) {
+  // `width` is the commit panel width: the window less the references sidebar and its splitter.
+  test("the wide file lane is 240 DIPs up to the smaller of 400 and the panel width less the 520 DIP diff minimum and the lane splitter", () => {
+    for (const width of [928, 1280, 1920]) {
       const lane = paneBounds("fileLane", { width, available: 696, density: "compact", textScale: TEXT_100 });
       expect(lane).toEqual({ min: 240, max: 400, default: 280 });
-      expect(width - lane.max).toBeGreaterThanOrEqual(520);
     }
+    // At 1120 DIPs with the 240 DIP sidebar, the panel is 872 DIPs wide.
+    expect(paneBounds("fileLane", { width: 872, available: 696, density: "compact", textScale: TEXT_100 })).toEqual({ min: 240, max: 344, default: 280 });
+    expect(paneBounds("fileLane", { width: 768, available: 696, density: "compact", textScale: TEXT_100 })).toEqual({ min: 240, max: 240, default: 240 });
+    for (const width of [768, 872, 1000]) expect(width - paneBounds("fileLane", { width, available: 696, density: "compact", textScale: TEXT_100 }).max - 8).toBeGreaterThanOrEqual(520);
   });
 
   test("the tray: default 168/192, minimum 144/160, maximum 35% of the available height with 240 DIPs for the comparison", () => {
@@ -480,7 +484,6 @@ describe("status area height", () => {
 
 describe("dialog sizes", () => {
   const DEFAULTS = {
-    reviewCommit: { width: 640, height: 560 },
     trust: { width: 560, height: 440 },
     updateSubmodules: { width: 800, height: 600 },
     about: { width: 560, height: 480 },
@@ -492,7 +495,6 @@ describe("dialog sizes", () => {
 
   test("each side is the smaller of the default and the client side minus 32 DIPs", () => {
     const client = { width: 720, height: 480 };
-    expect(dialogSize("reviewCommit", client)).toEqual({ width: 640, height: 448 });
     expect(dialogSize("trust", client)).toEqual({ width: 560, height: 440 });
     expect(dialogSize("updateSubmodules", client)).toEqual({ width: 688, height: 448 });
     expect(dialogSize("about", client)).toEqual({ width: 560, height: 448 });

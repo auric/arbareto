@@ -18,6 +18,7 @@ const SIDEBAR_REST = { wide: 768, narrow: 520 } as const;
 const WIDE_WIDTH = 1120;
 const NARROW_WIDTH = 960;
 const SPLITTER = 8;
+const DIFF_MIN = 520;
 const DIALOG_MARGIN = 16;
 
 export type Metrics = ReturnType<typeof metrics>;
@@ -126,7 +127,11 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(val
 
 /** `available` is the work area height. */
 export function paneBounds(kind: PaneKind, input: PaneInput): Bounds {
-  if (kind === "fileLane") return { ...FILE_LANE };
+  if (kind === "fileLane") {
+    // plan.md "Chosen layout, sizes, and DPI": the diff keeps 520 DIPs beside the lane and its splitter. `width` is the panel width.
+    const max = Math.max(FILE_LANE.min, Math.min(FILE_LANE.max, input.width - DIFF_MIN - SPLITTER));
+    return { min: FILE_LANE.min, max, default: clamp(FILE_LANE.default, FILE_LANE.min, max) };
+  }
   const m = metrics(input.density, input.textScale);
   if (kind === "tray") {
     const max = Math.max(m.trayMin, Math.min(0.35 * input.available, input.available - m.splitter - m.wideComparisonMin));
@@ -275,7 +280,6 @@ export function statusAreaHeight(input: { content: number; client: Size; textSca
 }
 
 export const DIALOG_DEFAULTS = {
-  reviewCommit: { width: 640, height: 560 },
   trust: { width: 560, height: 440 },
   updateSubmodules: { width: 800, height: 600 },
   about: { width: 560, height: 480 },

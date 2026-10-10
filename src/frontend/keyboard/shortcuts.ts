@@ -3,8 +3,6 @@
 
 // plan.md "Keyboard and focus". Only Ctrl+Enter in the message field commits, and no single-letter key or Space maps to an action.
 
-/** The T355 workbench frame removes the two modes. `requests.ts` and `Workbench.tsx` still use this type until then. */
-export type Mode = "changes" | "history";
 /** The docked panel below the history list (plan.md "Dock region"). */
 export type Panel = "commit" | "details";
 export type Section =

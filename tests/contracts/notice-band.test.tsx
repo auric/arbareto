@@ -255,7 +255,7 @@ describe("recovery row lifetime in the workbench", () => {
       await settle();
     };
     const click = async (label: string) => {
-      const target = [...document.querySelectorAll("button")].find((b) => b.textContent === label)!;
+      const target = [...document.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? b.textContent) === label)!;
       await act(async () => target.click());
       await settle();
     };
@@ -266,14 +266,14 @@ describe("recovery row lifetime in the workbench", () => {
     const view = await mount();
     await view.resolveRead(false, snapshot());
     expect(shown()).toBe(false);
-    await view.click("Refresh (F5)");
+    await view.click("Refresh");
     await view.resolveRead(true, snapshot({ recovery: { outcome: "none" } }));
     expect(shown()).toBe(true);
     await act(async () => void (window.dispatchEvent(new Event("blur")), window.dispatchEvent(new Event("focus"))));
     await settle();
     await view.resolveRead(false, snapshot());
     expect(shown()).toBe(true);
-    await view.click("Refresh (F5)");
+    await view.click("Refresh");
     await view.resolveRead(true, snapshot());
     expect(shown()).toBe(false);
   });
@@ -281,10 +281,12 @@ describe("recovery row lifetime in the workbench", () => {
   test("another repository removes the row", async () => {
     const view = await mount();
     await view.resolveRead(false, snapshot());
-    await view.click("Refresh (F5)");
+    await view.click("Refresh");
     await view.resolveRead(true, snapshot({ recovery: { outcome: "none" } }));
     expect(shown()).toBe(true);
-    await view.click("Open repository");
+    // Ctrl+O runs Open folder (plan.md "Keyboard and focus").
+    await act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "o", code: "KeyO", ctrlKey: true, bubbles: true, cancelable: true })));
+    await settle();
     const choose = view.calls.filter((c) => c.operation === "chooseRepository").at(-1)!;
     await act(async () => choose.resolve(succeeded({ ...registration(), worktreeKey: "b".repeat(64) })));
     await settle();

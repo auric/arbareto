@@ -244,7 +244,9 @@ describe("Starting WSL distro in the workbench", () => {
 
   async function startOpen() {
     const mounted = await mount();
-    await act(async () => button(mounted.host.querySelector("header")!, "Open repository")!.click());
+    await settle();
+    const open = [...mounted.host.querySelectorAll<HTMLElement>('section[aria-label="Start page"] [role="option"]')].find((o) => text(o) === "Open folder… (Ctrl+O)")!;
+    await act(async () => open.click());
     const call = mounted.pending("chooseRepository");
     const onProgress = call.args[0] as (event: unknown) => void;
     const requestId = crypto.randomUUID();
@@ -264,16 +266,16 @@ describe("Starting WSL distro in the workbench", () => {
     expect(text(statusBar(host))).toBe(STARTING_TEXT);
   });
 
-  test("Cancel cancels the registration operation, focus returns to Open repository, and canceled shows the plan.md text", async () => {
+  test("Cancel cancels the registration operation, focus returns to the repository switcher, and canceled shows the plan.md text", async () => {
     const { host, call, pending } = await startOpen();
     await act(async () => button(area(host), "Cancel")!.click());
     expect(pending("cancel").args[0]).toEqual({ operationId: OPERATION });
-    expect(document.activeElement).toBe(button(host.querySelector("header")!, "Open repository")!);
+    expect(document.activeElement).toBe(host.querySelector('header button[aria-keyshortcuts="Control+R"]'));
     await act(async () => call.resolve({ requestId: crypto.randomUUID(), operationId: OPERATION, state: "canceled", code: "CANCELED" }));
     await settle();
     expect(text(area(host))).not.toContain(STARTING_TEXT);
     expect(text(statusBar(host))).toBe(WSL_START_CANCELED_TEXT);
-    expect(text(host.querySelector("header")!)).toContain("No repository");
+    expect(host.querySelector('section[aria-label="Start page"]')).not.toBeNull();
   });
 
   test("a start deadline removes the state and shows the DEADLINE error with Open repository", async () => {

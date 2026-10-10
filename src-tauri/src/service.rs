@@ -545,12 +545,14 @@ impl Service {
         self.dialogs.cancel_open();
         self.contexts.restart("");
         self.ipc.set_session(None);
+        let title = release_workspaces(self.stores.get());
+        if let Some(window) = self.app.get_webview_window(MAIN_WINDOW) {
+            let _ = window.set_title(&title);
+        }
         let markers: Vec<Value> = self
             .stores
             .get()
             .map(|stores| {
-                // The service exit released every workspace.
-                *lock(&stores.current) = None;
                 stores.markers.service_exited();
                 stores
                     .markers
@@ -708,6 +710,14 @@ pub fn window_title(worktree_root: Option<&Path>) -> String {
         }
         None => "Arbareto".to_string(),
     }
+}
+
+/// A service exit releases every workspace: no recent entry is current. Returns the window title without a workspace.
+fn release_workspaces(stores: Option<&Stores>) -> String {
+    if let Some(stores) = stores {
+        *lock(&stores.current) = None;
+    }
+    window_title(None)
 }
 
 /// The `worktreeRoot` of a `succeeded` registration (contract §3 "Recent repositories").
@@ -1610,6 +1620,29 @@ mod tests {
         assert!(
             shell.sent.0.lock().expect("sent").is_empty(),
             "no process frame"
+        );
+    }
+
+    /// A service exit releases every workspace: no entry is current, and the title names no repository.
+    #[test]
+    fn a_service_exit_clears_the_current_key_and_gives_the_title_without_a_workspace() {
+        let shell = Shell::new();
+        let repository = shell.folder("repo");
+        shell.remember(&repository, KEY);
+        *lock(&shell.stores.current) = Some(KEY.to_string());
+        let current = || {
+            answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list")["entries"][0]
+                ["current"]
+                .clone()
+        };
+        assert_eq!(current(), json!(true));
+        assert_eq!(release_workspaces(Some(&shell.stores)), "Arbareto");
+        assert_eq!(*lock(&shell.stores.current), None);
+        assert_eq!(current(), json!(false));
+        assert_eq!(
+            release_workspaces(None),
+            "Arbareto",
+            "an exit before connect"
         );
     }
 

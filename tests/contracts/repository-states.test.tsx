@@ -141,4 +141,30 @@ describe("repository states", () => {
     await act(async () => host.querySelector("button")!.click());
     expect(written).toEqual([command]);
   });
+
+  test("a rejected or absent clipboard write reports the copy failure through the context", async () => {
+    expect(states.COPY_FAILED_TEXT).toBe("Copy failed. Select the text and copy it with Ctrl+C.");
+    let failures = 0;
+    const copy = () => (
+      <states.CopyFailed value={() => void failures++}>
+        <states.CopyButton text="x">Copy path</states.CopyButton>
+      </states.CopyFailed>
+    );
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: () => Promise.reject(new Error("denied")) } });
+    const host = await show(copy());
+    await act(async () => host.querySelector("button")!.click());
+    expect(failures).toBe(1);
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: undefined });
+    await act(async () => host.querySelector("button")!.click());
+    expect(failures).toBe(2);
+    stubClipboard();
+    await act(async () => host.querySelector("button")!.click());
+    expect(failures).toBe(2);
+  });
+
+  test("Limited output shows the code in the code font and the reason as text", async () => {
+    const host = await show(<states.LimitedOutput completeness={{ state: "limited", code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_RECORDS" }} />);
+    expect(text(host)).toBe("Incomplete: OUTPUT_LIMIT STATUS_LISTING_RECORDS. Changes that depend on this view stay blocked.");
+    expect(host.querySelector("code")!.textContent).toBe("OUTPUT_LIMIT");
+  });
 });

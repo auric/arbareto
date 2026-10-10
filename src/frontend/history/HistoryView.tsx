@@ -9,7 +9,7 @@ import { Button } from "../components/ui/button";
 import { metrics, type Density, type Profile } from "../layout/profiles";
 import { shrinkInOrder, type Part } from "../lib/fit";
 import { AncestryCell, LANE_SPACING } from "./AncestryCell";
-import { BOUNDARY_TEXT, layoutHistory, type Cell, type Layout } from "./lanes";
+import { BOUNDARY_TEXT, layoutHistory, UNRESOLVED_TEXT, type Cell, type Layout } from "./lanes";
 
 // plan.md "History graph design", "Long text", "Keyboard and focus" (Roles, File/history list), "Compact token system" (selection marker, badges), and "Required visible states".
 
@@ -24,12 +24,15 @@ const NO_COMMITS = "No commits yet";
 // plan.md "Chosen layout, sizes, and DPI": the constrained History list region minimum.
 const CONSTRAINED_LIST_MIN = 220;
 
-// plan.md gives no History short ID length. `submodule-review.ts` uses 12 digits.
 const shortId = (oid: string) => oid.slice(0, 12);
 // Git ref names: a local branch is `refs/heads/<name>` (git-check-ref-format(1)).
 export const branchName = (target: string) => (target.startsWith("refs/heads/") ? target.slice("refs/heads/".length) : target);
-// `date` is the author time in seconds (contract §3). The contract carries no author time zone, so the text is UTC.
-const dateText = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+// `date` is the author time in seconds (contract §3).
+const isoText = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+/** The author time in the local time zone and the system locale, to the minute. */
+export const LOCAL_DATE = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+const encodingText = (encoding: string) => `Declared encoding: ${encoding}`;
+const ENCODING_NOTE = "Arbareto shows the subject and the author as UTF-8 without conversion. Bytes that are not valid UTF-8 show as replacement characters.";
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 type Counted = { category: ChangeEntry["category"] };
@@ -151,17 +154,19 @@ function checkoutText(head: Head): string {
   return head.state === "detached" ? "Detached HEAD" : branchName(head.target);
 }
 
-/** The full row text: HEAD labels, subject, short ID, author, date, parent count, ordered parents, and boundary labels. */
-export function rowName(row: HistoryRow, cell: Cell, head: Head): string {
+/** The full row text: HEAD labels, subject, short ID, author, date, parent count, ordered parents, boundary labels, and the declared encoding. */
+export function rowName(row: HistoryRow, cell: Cell, head: Head, dateFormat: Intl.DateTimeFormat = LOCAL_DATE): string {
   const parts: string[] = [];
   if (head.state !== "unborn" && row.oid === head.oid) parts.push(head.state === "branch" ? `HEAD, branch ${branchName(head.target)}` : "HEAD, detached");
-  parts.push(row.subject, shortId(row.oid), row.author.name, dateText(row.date));
+  parts.push(row.subject, shortId(row.oid), row.author.name, dateFormat.format(row.date * 1000));
   if (row.parents.length > 0) parts.push(plural(row.parents.length, "parent", "parents"));
   for (const parent of row.parents) {
     parts.push(shortId(parent));
     if (cell.marks.some((m) => m.parent === parent)) parts.push(BOUNDARY_TEXT.outside);
   }
   for (const mark of cell.marks) if (mark.parent === null) parts.push(mark.text);
+  if (cell.unresolved) parts.push(UNRESOLVED_TEXT);
+  if (row.encoding !== null) parts.push(encodingText(row.encoding));
   return parts.join(", ");
 }
 
@@ -178,10 +183,12 @@ export type HistoryViewProps = {
   profile: Profile;
   /** The Windows text size factor. */
   textScale?: number;
+  /** The author time format. Tests pin its time zone and locale. */
+  dateFormat?: Intl.DateTimeFormat;
 };
 
 /** The History list and the "Selected commit" inspector, stacked. */
-export function HistoryView({ page, entries, selectedOid, onSelect, density, profile, textScale = 1 }: HistoryViewProps) {
+export function HistoryView({ page, entries, selectedOid, onSelect, density, profile, textScale = 1, dateFormat = LOCAL_DATE }: HistoryViewProps) {
   const ids = { scope: useId(), limit: useId(), inspector: useId() };
   const rows = page?.rows ?? [];
   const layout = useMemo(() => (page === null ? null : layoutHistory(page)), [page]);
@@ -258,7 +265,7 @@ export function HistoryView({ page, entries, selectedOid, onSelect, density, pro
                   role="option"
                   data-oid={row.oid}
                   aria-selected={row.oid === selectedOid}
-                  aria-label={rowName(row, layout.cells[i]!, head)}
+                  aria-label={rowName(row, layout.cells[i]!, head, dateFormat)}
                   tabIndex={i === activeIndex ? 0 : -1}
                   className="list-row flex items-center gap-2 pr-2"
                   style={{ height: rowHeight }}
@@ -275,6 +282,11 @@ export function HistoryView({ page, entries, selectedOid, onSelect, density, pro
                     ) : null}
                     <span className="min-w-0 truncate">{row.subject}</span>
                   </span>
+                  {row.encoding === null ? null : (
+                    <span aria-hidden="true" className="shrink-0 text-muted-text">
+                      {row.encoding}
+                    </span>
+                  )}
                   <span aria-hidden="true" className="shrink-0 font-mono text-muted-text">
                     {shortId(row.oid)}
                   </span>
@@ -284,7 +296,7 @@ export function HistoryView({ page, entries, selectedOid, onSelect, density, pro
                         {row.author.name}
                       </span>
                       <span aria-hidden="true" className="num shrink-0 text-muted-text">
-                        {dateText(row.date)}
+                        {dateFormat.format(row.date * 1000)}
                       </span>
                     </>
                   ) : null}
@@ -300,14 +312,16 @@ export function HistoryView({ page, entries, selectedOid, onSelect, density, pro
         {selected === null || layout === null ? (
           <p className="text-muted-text">{NO_SELECTION}</p>
         ) : (
-          <Inspector row={selected} cell={layout.cells[at(selected.oid)]!} loaded={index} onParent={onParent} />
+          <Inspector row={selected} cell={layout.cells[at(selected.oid)]!} loaded={index} onParent={onParent} dateFormat={dateFormat} />
         )}
       </section>
     </div>
   );
 }
 
-function Inspector({ row, cell, loaded, onParent }: { row: HistoryRow; cell: Cell; loaded: ReadonlyMap<string, number>; onParent(oid: string): void }) {
+type InspectorProps = { row: HistoryRow; cell: Cell; loaded: ReadonlyMap<string, number>; onParent(oid: string): void; dateFormat: Intl.DateTimeFormat };
+
+function Inspector({ row, cell, loaded, onParent, dateFormat }: InspectorProps) {
   return (
     <div className="flex flex-col gap-1">
       <p className="break-words">{row.subject}</p>
@@ -319,7 +333,10 @@ function Inspector({ row, cell, loaded, onParent }: { row: HistoryRow; cell: Cel
           {row.author.name} &lt;{row.author.email}&gt;
         </dd>
         <dt className="text-muted-text">Date</dt>
-        <dd>{dateText(row.date)}</dd>
+        <dd className="flex flex-wrap gap-x-2">
+          <time dateTime={isoText(row.date)}>{dateFormat.format(row.date * 1000)}</time>
+          <span className="num">{isoText(row.date)}</span>
+        </dd>
         <dt className="text-muted-text">Parents</dt>
         <dd>
           <ol className="flex flex-col items-start gap-1">
@@ -342,9 +359,11 @@ function Inspector({ row, cell, loaded, onParent }: { row: HistoryRow; cell: Cel
               .map((m) => (
                 <li key={m.kind}>{m.text}</li>
               ))}
+            {cell.unresolved ? <li>{UNRESOLVED_TEXT}</li> : null}
           </ol>
         </dd>
       </dl>
+      {row.encoding === null ? null : <p>{`${encodingText(row.encoding)}. ${ENCODING_NOTE}`}</p>}
       <p className="text-muted-text">{NO_FILES}</p>
     </div>
   );

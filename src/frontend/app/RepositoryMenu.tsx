@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useState, type ComponentProps } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import type { Environment } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
 import { MenubarContent, MenubarGroup, MenubarItem, MenubarLabel, MenubarMenu, MenubarSeparator, MenubarTrigger } from "../components/ui/menubar";
+import { codeText } from "./RepositoryStates";
 
 // plan.md "Provisional prerequisite admission", "Compact token system" (repository menu), and contract §3 `revokeTrust`.
 
@@ -26,12 +27,12 @@ export function GitVersionRow({ path, version, scope }: { path: string; version:
 // plan.md "Long text": a count of 1 takes the singular noun.
 const processes = (n: number) => (n === 1 ? "1 process" : `${n} processes`);
 
-function revokeText(response: BridgeResponse): string {
+function revokeText(response: BridgeResponse): ReactNode {
   const ended = (response.result as { endedProcesses?: unknown } | undefined)?.endedProcesses;
   if (response.state === "succeeded" && typeof ended === "number") return `Trust revoked. The revoke ended ${processes(ended)}.`;
   // Contract §5 "Deadline outcomes": after a `revoke` deadline, the service revocation stays, and the process count is unknown.
   if (response.state === "failed" && response.code === "DEADLINE") return "Trust revoked. The process count is unknown, because the revoke reached its deadline.";
-  return `Revoke trust did not complete: ${response.code ?? response.state}.`;
+  return codeText("Revoke trust did not complete: ", response.code ?? response.state);
 }
 
 export type RepositoryMenuProps = {
@@ -51,7 +52,7 @@ export type RepositoryMenuProps = {
 
 /** The repository menu of the header menu bar. Render it inside `Menubar`. */
 export function RepositoryMenu({ environment, path, head, trustId, onOpenRepository, onSelectGit, onReviewTrust, revokeTrust, onOpenChange, finalFocus }: RepositoryMenuProps) {
-  const [revoked, setRevoked] = useState<string | null>(null);
+  const [revoked, setRevoked] = useState<ReactNode>(null);
   const [revoking, setRevoking] = useState(false);
   const gitPath = environment?.selectedPath;
   const version = environment?.detectedVersion;

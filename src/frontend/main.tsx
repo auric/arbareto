@@ -28,6 +28,11 @@ function App() {
   useEffect(() => {
     sessionChanged = ready === null ? reload : () => setSession((n) => n + 1);
   }, [ready]);
+  // plan.md "Marker and frame source": on the pass path, the first rendered view is the workbench. React runs this effect after the workbench commits.
+  const workbench = ready !== null;
+  useEffect(() => {
+    if (workbench) markBootView();
+  }, [workbench]);
 
   if (ready !== null) {
     // A new environment read keeps the workbench while the checks pass. A blocked result returns to the boot view.
@@ -69,9 +74,7 @@ function Boot({ view, reload, onPass }: { view: { environment: Promise<BridgeRes
   const session = use(view.hasSession);
   const pass = passed(result);
   useLayoutEffect(() => {
-    if (!pass) return;
-    markBootView();
-    onPass(result.result as Environment);
+    if (pass) onPass(result.result as Environment);
   }, [pass, result]);
   if (pass) return null;
   if (result.state !== "succeeded") return <BootView state="unavailable" code={result.code ?? result.state} session={session} />;

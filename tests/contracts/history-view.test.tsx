@@ -113,6 +113,58 @@ describe("History view", () => {
     expect(options(host)).toHaveLength(0);
   });
 
+  // plan.md "History graph design": the third case of a row without parents.
+  const UNRESOLVED = "Arbareto cannot tell whether this commit is a root or a shallow boundary.";
+
+  test("with shallow boundaries and two rows without parents, each such row names the unresolved text in its name and its inspector", async () => {
+    const shallow = page([row(2, []), row(1, [])], undefined, { page: [], shallow: [oid(9)] });
+    const host = await show(<HistoryView {...props} page={shallow} selectedOid={oid(1)} />);
+    for (const option of options(host)) expect(option.getAttribute("aria-label")!.endsWith(UNRESOLVED)).toBe(true);
+    expect(text(host.querySelector("section")!)).toContain(UNRESOLVED);
+    expect(text(host)).not.toContain("Root commit");
+    expect(text(host)).not.toContain("Shallow history boundary");
+  });
+
+  test("a root or a shallow row never shows the unresolved text", async () => {
+    const host = await show(<HistoryView {...props} page={MERGE} selectedOid={oid(1)} />);
+    expect(text(host)).not.toContain(UNRESOLVED);
+    expect(options(host).some((o) => o.getAttribute("aria-label")!.includes(UNRESOLVED))).toBe(false);
+  });
+
+  test("a non-null encoding ends the row name with the declared encoding, and the inspector shows the full sentence", async () => {
+    const declared = page([{ ...row(1, []), encoding: "ISO-8859-1" }]);
+    const host = await show(<HistoryView {...props} page={declared} selectedOid={oid(1)} />);
+    expect(options(host)[0]!.getAttribute("aria-label")!.endsWith("Declared encoding: ISO-8859-1")).toBe(true);
+    expect(text(host.querySelector("section")!)).toContain(
+      "Declared encoding: ISO-8859-1. Arbareto shows the subject and the author as UTF-8 without conversion. Bytes that are not valid UTF-8 show as replacement characters.",
+    );
+  });
+
+  test("only the encoding field sets the label: a subject with replacement characters and a null encoding shows none", async () => {
+    const host = await show(<HistoryView {...props} page={page([row(1, [], "Caf�")])} selectedOid={oid(1)} />);
+    expect(text(host)).not.toContain("Declared encoding");
+  });
+
+  test("rows and the inspector show the author time through the injected formatter, and the inspector adds the ISO 8601 UTC time", async () => {
+    // A pinned zone and locale keep the test independent of the machine. Tokyo is UTC+9 without daylight saving time.
+    const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Tokyo" });
+    const local = dateFormat.format(new Date((1577836800 + 1) * 1000));
+    expect(local).toContain("9:00");
+    const host = await show(<HistoryView {...props} page={page([row(1, [])])} selectedOid={oid(1)} dateFormat={dateFormat} />);
+    expect(options(host)[0]!.getAttribute("aria-label")).toContain(`, Ada, ${local}`);
+    expect(text(options(host)[0]!)).toContain(local.replace(/\s+/g, " "));
+    const region = text(host.querySelector("section")!);
+    expect(region).toContain(local.replace(/\s+/g, " "));
+    expect(region).toContain("2020-01-01T00:00:01Z");
+    expect(text(options(host)[0]!)).not.toContain("2020-01-01T00:00:01Z");
+  });
+
+  test("a short ID is the first 12 hex digits", async () => {
+    const host = await show(<HistoryView {...props} page={page([row(1, [])])} selectedOid={null} />);
+    expect(options(host)[0]!.getAttribute("aria-label")).toContain(`, ${oid(1).slice(0, 12)}, `);
+    expect(options(host)[0]!.getAttribute("aria-label")).not.toContain(oid(1).slice(0, 13));
+  });
+
   test("a layout limit gives node-only rows, and the limit text is the list's accessible description", async () => {
     const wide = page([row(1, Array.from({ length: 25 }, (_, i) => 100 + i))], undefined, { page: Array.from({ length: 25 }, (_, i) => oid(100 + i)), shallow: [] });
     const host = await show(<HistoryView {...props} page={wide} selectedOid={null} />);

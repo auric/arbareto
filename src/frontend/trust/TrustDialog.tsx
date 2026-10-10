@@ -28,6 +28,7 @@ const BOUND_TEXT: Record<NonNullable<TrustReport["bound"]>, string> = {
 };
 const SESSION_ONLY = "Arbareto cannot check these program files for later edits. This approval lasts until Arbareto closes or its Git service restarts.";
 // Contract §7 "Trust approval store".
+const PERSISTS = "Arbareto keeps this approval across launches until you revoke trust, or until the named programs or the Git selection change.";
 export const SAVE_FAILED_TEXT = "Arbareto could not save this approval. This approval lasts until Arbareto closes or its Git service restarts.";
 
 /** The notice after an `approveTrust` result with `saveFailed: true`. The mount places it, because the dialog closes on approval. */
@@ -91,7 +92,9 @@ export function TrustDialog({ open, report, repositoryId, bridge, client, finalF
         </DialogTitle>
         <div role="region" aria-labelledby={headingId} tabIndex={0} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-2">
           <p>{CODE_EXECUTION}</p>
-          {report.bound === undefined ? null : (
+          {report.bound === undefined ? (
+            <p>{PERSISTS}</p>
+          ) : (
             <p>
               Reached bound: {BOUND_TEXT[report.bound]}. {SESSION_ONLY}
             </p>

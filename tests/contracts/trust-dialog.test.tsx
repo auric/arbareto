@@ -197,5 +197,17 @@ describe("trust dialog (plan.md \"Keyboard and focus\" Trust dialog row)", () =>
     expect(trustBeforeReview({ ...REPORT, state: "approved", trustId: "t" })).toBe(false);
   });
 
-  test.todo("the dialog explains that approval persists across launches until Revoke trust, or a repository, selected Git path, or policy change (needs a contract §7 text)", () => {});
+  // Contract §7 "Trust approval store": the dialog text without a reached bound.
+  const PERSISTS = "Arbareto keeps this approval across launches until you revoke trust, or until the named programs or the Git selection change.";
+
+  test("without a reached bound, the dialog states that the approval persists across launches", async () => {
+    await mount(REPORT, bridgeDouble().bridge);
+    expect(popup()!.textContent).toContain(PERSISTS);
+  });
+
+  test("with a reached bound, the dialog shows the session-only text and not the persistence sentence", async () => {
+    await mount({ ...REPORT, persistence: "session", bound: "link" }, bridgeDouble().bridge);
+    expect(popup()!.textContent).toContain(`Reached bound: a link that Arbareto cannot follow. ${SESSION}`);
+    expect(popup()!.textContent).not.toContain(PERSISTS);
+  });
 });

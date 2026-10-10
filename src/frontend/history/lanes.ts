@@ -12,6 +12,8 @@ export const BOUNDARY_TEXT: Record<BoundaryKind, string> = {
   shallow: "Shallow history boundary",
   root: "Root commit",
 };
+// plan.md "History graph design": the text of a row without parents that is neither a root nor the one shallow row.
+export const UNRESOLVED_TEXT = "Arbareto cannot tell whether this commit is a root or a shallow boundary.";
 
 // The plan.md lane roles in color index order.
 export const LANE_ROLES = ["teal", "sky", "violet", "magenta"] as const;

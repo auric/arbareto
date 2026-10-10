@@ -129,6 +129,22 @@ describe("start", () => {
     await mount({ requestId: crypto.randomUUID(), state: "failed", code: "UNSUPPORTED_REPOSITORY" });
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("UNSUPPORTED_REPOSITORY");
   });
+
+  test("a failed clipboard write shows the copy failure text in the status bar", async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: () => Promise.reject(new Error("denied")) } });
+    try {
+      await mount({ requestId: crypto.randomUUID(), state: "failed", code: "UNSUPPORTED_REPOSITORY", result: { remedy: { text: "Use Git.", command: "git status" } } });
+      const copy = [...document.querySelectorAll("button")].find((b) => b.textContent === "Copy command")!;
+      await act(async () => copy.click());
+      await settle();
+      const status = [...document.querySelectorAll('footer [role="status"]')].map((s) => s.textContent);
+      expect(status).toContain("Copy failed. Select the text and copy it with Ctrl+C.");
+    } finally {
+      if (original) Object.defineProperty(globalThis.navigator, "clipboard", original);
+      else delete (globalThis.navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
 });
 
 describe("History", () => {
@@ -179,8 +195,7 @@ describe("read-only places", () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ submoduleNotice: { count: 2, paths: ["a", "b"], filter: "applied" } })));
     const band = document.querySelector('[data-slot="notice-band"]')!;
-    expect(band.textContent).toContain("Count: 2.");
-    expect(band.textContent).toContain(LATER.submodules);
+    expect(band.textContent).toContain(`Some submodules are not initialized or not at their recorded commit. Count: 2. ${LATER.submodules}`);
     expect(band.querySelector("button")).toBeNull();
   });
 });
@@ -312,6 +327,41 @@ describe("comparison mount", () => {
     await shown.rerender(view({ selection: null, comparison: null }));
     await settle();
     expect(pool).toEqual({ mounts: 1, unmounts: 0 });
+  });
+
+  test("the reset notice shows only when a new comparison of the same category and pathBytes has another patch", async () => {
+    const NOTICE = "The file changed outside Arbareto. The view shows the new version.";
+    const a = changeEntry("a.txt");
+    // A new snapshot gives new entry IDs. The category and the path bytes identify the file.
+    const again = { ...a, entryId: crypto.randomUUID() };
+    const staged = { ...a, entryId: crypto.randomUUID(), category: "staged" } as ChangeEntry;
+    const b = changeEntry("b.txt");
+    const other = DIFF.replace("+n", "+m");
+    const view = (entry: ChangeEntry, patch: string | null) => () => (
+      <ComparisonViewMount
+        {...PANE}
+        requests={{ refresh: () => {} } as never}
+        state={{ repository: REGISTRATION, entries: [entry], selectedHunk: null, selection: { entryId: entry.entryId }, comparison: patch === null ? null : shownComparison(entry.entryId, patch) } as never}
+      />
+    );
+    const shown = await render(view(a, DIFF));
+    await settle();
+    const notice = () => shown.host.textContent!.includes(NOTICE);
+    expect(notice()).toBe(false);
+    await shown.rerender(view(again, DIFF));
+    await settle();
+    expect(notice()).toBe(false);
+    await shown.rerender(view(again, null));
+    await shown.rerender(view(again, other));
+    await settle();
+    expect(notice()).toBe(true);
+    expect(shown.host.querySelector('[role="status"]')?.textContent).toBe(NOTICE);
+    await shown.rerender(view(staged, DIFF));
+    await settle();
+    expect(notice()).toBe(false);
+    await shown.rerender(view(b, other));
+    await settle();
+    expect(notice()).toBe(false);
   });
 });
 

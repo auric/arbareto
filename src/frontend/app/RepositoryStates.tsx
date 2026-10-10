@@ -3,6 +3,7 @@
 
 import { CancelCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { createContext, useContext, type ReactNode } from "react";
 import type { Comparison, Completeness, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import { Button } from "../components/ui/button";
@@ -19,10 +20,28 @@ function ErrorIcon() {
   return <HugeiconsIcon icon={CancelCircleIcon} size="1em" strokeWidth={2} aria-hidden="true" className="shrink-0 text-removed" />;
 }
 
-/** Copies `text` with the web clipboard API. The app has no clipboard plugin (research.md R9, T006). */
+// plan.md "Required visible states", status and fallback texts.
+export const COPY_FAILED_TEXT = "Copy failed. Select the text and copy it with Ctrl+C.";
+/** Receives each failed clipboard write. The workbench shows `COPY_FAILED_TEXT` in the status bar. */
+export const CopyFailed = createContext<() => void>(() => {});
+
+/** Copies with the web clipboard API. The app has no clipboard plugin (research.md R9, T006). */
+export function useCopy(): (text: string) => void {
+  const failed = useContext(CopyFailed);
+  return (text) => {
+    // `navigator.clipboard` is absent outside a secure context, so the call can throw before it returns a promise.
+    try {
+      navigator.clipboard.writeText(text).catch(() => failed());
+    } catch {
+      failed();
+    }
+  };
+}
+
 export function CopyButton({ text, children }: { text: string; children: string }) {
+  const copy = useCopy();
   return (
-    <Button variant="outline" size="sm" onClick={() => void navigator.clipboard.writeText(text).catch(() => {})}>
+    <Button variant="outline" size="sm" onClick={() => copy(text)}>
       {children}
     </Button>
   );
@@ -30,6 +49,16 @@ export function CopyButton({ text, children }: { text: string; children: string 
 
 function Code({ children }: { children: string }) {
   return <code className="break-all">{children}</code>;
+}
+
+/** A status text that ends in a code: `<text><code>.` The code shows in the code font. */
+export function codeText(text: string, code: string): ReactNode {
+  return (
+    <>
+      {text}
+      <Code>{code}</Code>.
+    </>
+  );
 }
 
 function CommandRemedy({ remedy }: { remedy: Remedy | undefined }) {
@@ -154,7 +183,8 @@ export function LimitedOutput({ completeness }: { completeness: Completeness }) 
     <p className="flex items-center gap-2 p-2">
       <WarningIcon />
       <span>
-        Incomplete: <Code>{completeness.reason === undefined ? completeness.code : `${completeness.code} ${completeness.reason}`}</Code>. Changes that depend on this view stay blocked.
+        Incomplete: <Code>{completeness.code}</Code>
+        {completeness.reason === undefined ? "" : ` ${completeness.reason}`}. Changes that depend on this view stay blocked.
       </span>
     </p>
   );

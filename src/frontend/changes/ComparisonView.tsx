@@ -4,7 +4,7 @@
 import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEntry, Comparison, ReadComparisonResult } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
-import { ErrorState, LimitedOutput, Loading, NoSelection, UnsupportedState } from "../app/RepositoryStates";
+import { ErrorState, LimitedOutput, Loading, NoSelection, UnsupportedState, useCopy } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
 import { Button } from "../components/ui/button";
 import { shrinkInOrder, type Part } from "../lib/fit";
@@ -41,6 +41,7 @@ export function ComparisonHeading({ path, scope, sides }: { path: string; scope:
   const text = { folder, file, scope, sides: sides ?? "" };
   const heading = useRef<HTMLHeadingElement>(null);
   const [widths, setWidths] = useState<HeadingWidths | null>(null);
+  const copy = useCopy();
 
   useLayoutEffect(() => {
     const h = heading.current;
@@ -81,7 +82,7 @@ export function ComparisonHeading({ path, scope, sides }: { path: string; scope:
           …
         </span>
       </h2>
-      <Button variant="outline" size="sm" onClick={() => void navigator.clipboard.writeText(path).catch(() => {})}>
+      <Button variant="outline" size="sm" onClick={() => copy(path)}>
         Copy path
       </Button>
     </div>
@@ -109,18 +110,29 @@ function decode(base64: string): string | null {
   }
 }
 
+// plan.md "Selection, scroll, and stored context".
+export const RESET_NOTICE = "The file changed outside Arbareto. The view shows the new version.";
+
+type DiffProps = { comparison: Comparison; selectedHunk: string | null; onRefresh(): void; reset: boolean };
+
 /** A supported, complete comparison: the mapped diff, or `DISPLAY_MAPPING_FAILED` with every hunk action disabled. */
-function Diff({ comparison, selectedHunk, onRefresh }: { comparison: Comparison; selectedHunk: string | null; onRefresh(): void }) {
+function Diff({ comparison, selectedHunk, onRefresh, reset }: DiffProps) {
   const patch = useMemo(() => decode(comparison.patch), [comparison.patch]);
   const mapping = useMemo(() => (patch === null ? null : mapHunks(patch, comparison.hunks)), [patch, comparison.hunks]);
   if (patch === null || mapping === null || !mapping.ok) return <ErrorState code="DISPLAY_MAPPING_FAILED" result={undefined} onRefresh={onRefresh} />;
   const index = selectedHunk === null ? -1 : mapping.hunkIds.indexOf(selectedHunk);
   return (
-    <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
-      {/* The canonical patch is the key. A changed comparison remounts the view and resets its scroll. */}
-      {/* T134: the viewport reset notice of an external change goes here. Its text is not in plan.md yet. */}
-      <PatchView key={comparison.patch} patch={patch} selected={index < 0 ? null : mapping.file.hunks[index]!} />
-    </Suspense>
+    <>
+      {reset ? (
+        <p role="status" className="px-2">
+          {RESET_NOTICE}
+        </p>
+      ) : null}
+      <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
+        {/* The canonical patch is the key. A changed comparison remounts the view and resets its scroll. */}
+        <PatchView key={comparison.patch} patch={patch} selected={index < 0 ? null : mapping.file.hunks[index]!} />
+      </Suspense>
+    </>
   );
 }
 
@@ -131,9 +143,9 @@ export const resultOf = (response: BridgeResponse | null): ReadComparisonResult 
 export const showsDiff = (result: ReadComparisonResult | null): boolean =>
   result !== null && "patch" in result && result.support === "supported" && result.completeness.state === "complete";
 
-function Body({ result, selectedHunk, onRefresh }: { result: ReadComparisonResult; selectedHunk: string | null; onRefresh(): void }) {
+function Body({ result, selectedHunk, onRefresh, reset }: { result: ReadComparisonResult; selectedHunk: string | null; onRefresh(): void; reset: boolean }) {
   if ("patch" in result) {
-    if (showsDiff(result)) return <Diff comparison={result} selectedHunk={selectedHunk} onRefresh={onRefresh} />;
+    if (showsDiff(result)) return <Diff comparison={result} selectedHunk={selectedHunk} onRefresh={onRefresh} reset={reset} />;
     return (
       <>
         <LimitedOutput completeness={result.completeness} />
@@ -155,8 +167,15 @@ function Body({ result, selectedHunk, onRefresh }: { result: ReadComparisonResul
 
 /** The comparison pane of the selected entry. */
 export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpLine }: ComparisonViewProps) {
-  if (entry === null) return <NoSelection helpLine={helpLine} />;
   const result = resultOf(response);
+  // The category and the path bytes name the shown file. A new snapshot gives new entry IDs.
+  // T145 must exclude the patch after the application's own hunk action. Until then, each other patch of the same file is an external change.
+  const file = entry === null ? null : `${entry.category}:${entry.pathBytes}`;
+  const patch = showsDiff(result) ? (result as Comparison).patch : null;
+  const [shown, setShown] = useState({ file, patch, reset: false });
+  if (shown.file !== file) setShown({ file, patch, reset: false });
+  else if (patch !== null && patch !== shown.patch) setShown({ file, patch, reset: shown.patch !== null });
+  if (entry === null) return <NoSelection helpLine={helpLine} />;
   const scope = result !== null && "scope" in result ? SIDES[result.scope] : null;
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -166,7 +185,7 @@ export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpL
       ) : result === null ? (
         <ErrorState code={(response.code ?? response.state) as ErrorCode} result={response.result} onRefresh={onRefresh} />
       ) : (
-        <Body result={result} selectedHunk={selectedHunk} onRefresh={onRefresh} />
+        <Body result={result} selectedHunk={selectedHunk} onRefresh={onRefresh} reset={shown.reset} />
       )}
     </div>
   );

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode } from "react";
 import type { Environment, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge } from "../bridge";
@@ -31,7 +31,7 @@ import { DEFAULT_PREFERENCES, readPreferences, writePreferences, type Preference
 import { SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
 import { blockingText, NoticeBand, WarningIcon } from "./NoticeBand";
 import { RepositoryMenu } from "./RepositoryMenu";
-import { ErrorState, LimitedOutput, Loading, RepositoryRefused } from "./RepositoryStates";
+import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused } from "./RepositoryStates";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 
 // plan.md "Two feasible layouts" (layout A), "Chosen layout, sizes, and DPI", "Keyboard and focus", and "Required visible states".
@@ -246,7 +246,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [restoring, setRestoring] = useState(restored !== undefined);
   const [trust, setTrust] = useState<{ report: TrustReport; open: boolean } | null>(null);
   const [trustRead, setTrustRead] = useState(0);
-  const [trustNotice, setTrustNotice] = useState<string | null>(null);
+  // A trust failure or a copy failure. It shows in the first live element of the status bar until the next notice or repository.
+  const [notice, setNotice] = useState<ReactNode>(null);
   const [saveFailed, setSaveFailed] = useState(false);
   const [paneStatus, setPaneStatus] = useState<string | null>(null);
   const modalOpen = trust?.open === true;
@@ -294,7 +295,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const trustShown = useRef<string | null>(null);
   useEffect(() => {
     setTrust(null);
-    setTrustNotice(null);
+    setNotice(null);
     if (repositoryId === null) return;
     let current = true;
     void bridge.readTrust({ repositoryId }).then((response) => {
@@ -374,7 +375,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (repositoryId === null) return;
     const response = await bridge.readTrust({ repositoryId });
     if (response.state === "succeeded" && isTrustReport(response.result)) setTrust({ report: response.result, open: true });
-    else setTrustNotice(`Trust review did not complete: ${responseCode(response)}.`);
+    else setNotice(codeText("Trust review did not complete: ", responseCode(response)));
   }
 
   // The menu shows the outcome text. A new trust read gives the new trust state and trust ID.
@@ -447,199 +448,201 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     />
   );
 
-  const statusText = state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : (trustNotice ?? "");
+  const statusText = state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : notice;
 
   return (
-    <div data-profile={profile} className="flex h-dvh flex-col bg-canvas text-text">
-      {environment !== null && hasMarkers(environment) ? (
-        <div data-slot="recovery-markers" className="max-h-[40dvh] shrink-0 overflow-y-auto border-b border-divider p-2">
-          <RecoveryMarkers environment={environment} onDismissMarker={dismissMarker} />
-        </div>
-      ) : null}
-      <header className="flex flex-wrap items-center gap-x-3 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
-        <Button ref={opener} variant="outline" style={{ order: 1 }} onClick={() => void openRepository()}>
-          Open repository
-        </Button>
-        <div className="flex min-w-[160px] flex-1 items-center gap-2" style={{ order: rows === 1 ? 2 : 6, flexBasis: rows === 1 ? undefined : "100%", minHeight: "var(--h-header)" }}>
-          {path === null ? (
-            <span className="text-muted-text">{state.repository || restoring ? "Loading…" : "No repository"}</span>
+    <CopyFailed value={() => setNotice(COPY_FAILED_TEXT)}>
+      <div data-profile={profile} className="flex h-dvh flex-col bg-canvas text-text">
+        {environment !== null && hasMarkers(environment) ? (
+          <div data-slot="recovery-markers" className="max-h-[40dvh] shrink-0 overflow-y-auto border-b border-divider p-2">
+            <RecoveryMarkers environment={environment} onDismissMarker={dismissMarker} />
+          </div>
+        ) : null}
+        <header className="flex flex-wrap items-center gap-x-3 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
+          <Button ref={opener} variant="outline" style={{ order: 1 }} onClick={() => void openRepository()}>
+            Open repository
+          </Button>
+          <div className="flex min-w-[160px] flex-1 items-center gap-2" style={{ order: rows === 1 ? 2 : 6, flexBasis: rows === 1 ? undefined : "100%", minHeight: "var(--h-header)" }}>
+            {path === null ? (
+              <span className="text-muted-text">{state.repository || restoring ? "Loading…" : "No repository"}</span>
+            ) : (
+              <>
+                <MiddleEllipsis text={path} tail={lastComponent(path)} className="min-w-[160px] shrink-[4]" />
+                <span className="badge shrink-0">HEAD</span>
+                <MiddleEllipsis text={head ?? ""} tail={(head ?? "").slice(-Math.ceil((head ?? "").length / 2))} className="min-w-0 shrink" />
+              </>
+            )}
+          </div>
+          <div ref={menubar} style={{ order: 3 }} onFocus={onMenubarFocus}>
+            <Menubar className="h-auto border-0 p-0">
+              <RepositoryMenu
+                key={repositoryId}
+                environment={environment}
+                path={path}
+                head={head}
+                trustId={trust?.report.trustId ?? null}
+                onOpenRepository={() => void openRepository()}
+                onSelectGit={onSelectGit}
+                onReviewTrust={() => void reviewTrust()}
+                revokeTrust={revokeTrust}
+                onOpenChange={onMenuOpen("repository")}
+                finalFocus={finalFocus}
+              />
+              <MenubarMenu onOpenChange={onMenuOpen("view")}>
+                <MenubarTrigger>View</MenubarTrigger>
+                <MenubarContent finalFocus={finalFocus}>
+                  <MenubarRadioGroup value={preferences.theme} onValueChange={(theme) => savePreferences({ ...preferences, theme: theme as Theme })}>
+                    <MenubarLabel>Theme</MenubarLabel>
+                    {THEMES.map((t) => (
+                      <MenubarRadioItem key={t.value} value={t.value}>
+                        {t.label}
+                      </MenubarRadioItem>
+                    ))}
+                  </MenubarRadioGroup>
+                  <MenubarSeparator />
+                  <MenubarRadioGroup value={preferences.density} onValueChange={(density) => savePreferences({ ...preferences, density: density as Density })}>
+                    <MenubarLabel>Density</MenubarLabel>
+                    {DENSITIES.map((d) => (
+                      <MenubarRadioItem key={d.value} value={d.value}>
+                        {d.label}
+                      </MenubarRadioItem>
+                    ))}
+                  </MenubarRadioGroup>
+                  <MenubarSeparator />
+                  <MenubarItem
+                    onClick={() => {
+                      savePreferences({ ...preferences, panes: { fileLane: FILE_LANE.default } });
+                      setBottom(null);
+                      setFileBand(null);
+                    }}
+                  >
+                    Reset pane sizes
+                  </MenubarItem>
+                </MenubarContent>
+              </MenubarMenu>
+              <MenubarMenu onOpenChange={onMenuOpen("help")}>
+                <MenubarTrigger>Help</MenubarTrigger>
+                <MenubarContent finalFocus={finalFocus}>
+                  <MenubarGroup>
+                    <MenubarLabel className="whitespace-normal">{SCOPE_LINE}</MenubarLabel>
+                  </MenubarGroup>
+                </MenubarContent>
+              </MenubarMenu>
+            </Menubar>
+          </div>
+          <Button variant="outline" style={{ order: 5 }} disabled={!state.repository} onClick={() => requests.refresh()}>
+            Refresh (F5)
+          </Button>
+        </header>
+
+        <Tabs value={state.mode} onValueChange={(mode) => requests.setMode(mode as Mode)} className="gap-0">
+          <TabsList variant="line" className="px-2" style={{ height: "var(--h-mode-bar)" }}>
+            <TabsTrigger value="changes" disabled={!state.repository}>
+              Changes (Ctrl+1)
+            </TabsTrigger>
+            <TabsTrigger value="history" disabled={!state.repository}>
+              History (Ctrl+2)
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div data-slot="notice-band">
+            {workspace === null ? null : (
+              <NoticeBand
+                operationState={workspace.operationState}
+                conflicted={conflicted}
+                submoduleRow={
+                  submodules > 0 ? (
+                    <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
+                      <WarningIcon />
+                      <span>
+                        Some submodules are not initialized or not at their recorded commit. Count: {submodules}. {LATER.submodules}
+                      </span>
+                    </p>
+                  ) : undefined
+                }
+              />
+            )}
+          </div>
+          {refusal === null ? null : <RepositoryRefused code={responseCode(refusal)} result={refusal.result as RegistrationResult | undefined} onOpenRepository={() => void openRepository()} />}
+          {saveFailed ? <SaveFailedNotice /> : null}
+          {state.repository === null ? (
+            restoring ? (
+              <Loading hasContent={false} refreshing={false} />
+            ) : (
+              <section className="flex flex-col items-start gap-2 p-4">
+                <Button variant="outline" onClick={() => void openRepository()}>
+                  Open repository
+                </Button>
+                <p className="text-muted-text">{SCOPE_LINE}</p>
+              </section>
+            )
           ) : (
             <>
-              <MiddleEllipsis text={path} tail={lastComponent(path)} className="min-w-[160px] shrink-[4]" />
-              <span className="badge shrink-0">HEAD</span>
-              <MiddleEllipsis text={head ?? ""} tail={(head ?? "").slice(-Math.ceil((head ?? "").length / 2))} className="min-w-0 shrink" />
+              <section aria-label="Changes" hidden={state.mode !== "changes"} className="grid flex-1" style={grid}>
+                <div className="min-h-0 overflow-auto" style={{ gridArea: "lane" }}>
+                  <ChangesPane {...pane} />
+                </div>
+                <Splitter
+                  label={profile === "wide" ? "Resize file lane" : "Resize file band"}
+                  orientation={profile === "wide" ? "vertical" : "horizontal"}
+                  value={profile === "wide" ? lane : bandHeight}
+                  min={profile === "wide" ? FILE_LANE.min : band.min}
+                  max={profile === "wide" ? FILE_LANE.max : band.max}
+                  onChange={(value) => (profile === "wide" ? setDragLane(value) : setFileBand(value))}
+                  onCommit={(value) => {
+                    if (profile !== "wide") return;
+                    setDragLane(null);
+                    savePreferences({ ...preferences, panes: { fileLane: value } });
+                  }}
+                  className={resizable ? "[grid-area:laneSplit]" : "hidden"}
+                />
+                <div className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
+                  <ComparisonView {...pane} />
+                </div>
+                <div className="[grid-area:traySplit]">{traySplitter}</div>
+                <div className="min-h-0 overflow-auto border-t border-divider p-2 text-muted-text" style={{ gridArea: "tray" }}>
+                  {LATER.commit}
+                </div>
+              </section>
+              {/* HistoryView owns the list and the inspector. */}
+              <section aria-label="History" hidden={state.mode !== "history"} className="flex min-h-0 flex-1 flex-col">
+                <HistoryView {...pane} />
+              </section>
             </>
           )}
-        </div>
-        <div ref={menubar} style={{ order: 3 }} onFocus={onMenubarFocus}>
-          <Menubar className="h-auto border-0 p-0">
-            <RepositoryMenu
-              key={repositoryId}
-              environment={environment}
-              path={path}
-              head={head}
-              trustId={trust?.report.trustId ?? null}
-              onOpenRepository={() => void openRepository()}
-              onSelectGit={onSelectGit}
-              onReviewTrust={() => void reviewTrust()}
-              revokeTrust={revokeTrust}
-              onOpenChange={onMenuOpen("repository")}
-              finalFocus={finalFocus}
-            />
-            <MenubarMenu onOpenChange={onMenuOpen("view")}>
-              <MenubarTrigger>View</MenubarTrigger>
-              <MenubarContent finalFocus={finalFocus}>
-                <MenubarRadioGroup value={preferences.theme} onValueChange={(theme) => savePreferences({ ...preferences, theme: theme as Theme })}>
-                  <MenubarLabel>Theme</MenubarLabel>
-                  {THEMES.map((t) => (
-                    <MenubarRadioItem key={t.value} value={t.value}>
-                      {t.label}
-                    </MenubarRadioItem>
-                  ))}
-                </MenubarRadioGroup>
-                <MenubarSeparator />
-                <MenubarRadioGroup value={preferences.density} onValueChange={(density) => savePreferences({ ...preferences, density: density as Density })}>
-                  <MenubarLabel>Density</MenubarLabel>
-                  {DENSITIES.map((d) => (
-                    <MenubarRadioItem key={d.value} value={d.value}>
-                      {d.label}
-                    </MenubarRadioItem>
-                  ))}
-                </MenubarRadioGroup>
-                <MenubarSeparator />
-                <MenubarItem
-                  onClick={() => {
-                    savePreferences({ ...preferences, panes: { fileLane: FILE_LANE.default } });
-                    setBottom(null);
-                    setFileBand(null);
-                  }}
-                >
-                  Reset pane sizes
-                </MenubarItem>
-              </MenubarContent>
-            </MenubarMenu>
-            <MenubarMenu onOpenChange={onMenuOpen("help")}>
-              <MenubarTrigger>Help</MenubarTrigger>
-              <MenubarContent finalFocus={finalFocus}>
-                <MenubarGroup>
-                  <MenubarLabel className="whitespace-normal">{SCOPE_LINE}</MenubarLabel>
-                </MenubarGroup>
-              </MenubarContent>
-            </MenubarMenu>
-          </Menubar>
-        </div>
-        <Button variant="outline" style={{ order: 5 }} disabled={!state.repository} onClick={() => requests.refresh()}>
-          Refresh (F5)
-        </Button>
-      </header>
+          {/* plan.md "Status area": T138 fills this slot. */}
+          <div data-slot="status-area" />
+        </main>
 
-      <Tabs value={state.mode} onValueChange={(mode) => requests.setMode(mode as Mode)} className="gap-0">
-        <TabsList variant="line" className="px-2" style={{ height: "var(--h-mode-bar)" }}>
-          <TabsTrigger value="changes" disabled={!state.repository}>
-            Changes (Ctrl+1)
-          </TabsTrigger>
-          <TabsTrigger value="history" disabled={!state.repository}>
-            History (Ctrl+2)
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <div data-slot="notice-band">
-          {workspace === null ? null : (
-            <NoticeBand
-              operationState={workspace.operationState}
-              conflicted={conflicted}
-              submoduleRow={
-                submodules > 0 ? (
-                  <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
-                    <WarningIcon />
-                    <span>
-                      Some submodules are not initialized or not at their recorded commit. Count: {submodules}. {LATER.submodules}
-                    </span>
-                  </p>
-                ) : undefined
-              }
-            />
-          )}
-        </div>
-        {refusal === null ? null : <RepositoryRefused code={responseCode(refusal)} result={refusal.result as RegistrationResult | undefined} onOpenRepository={() => void openRepository()} />}
-        {saveFailed ? <SaveFailedNotice /> : null}
-        {state.repository === null ? (
-          restoring ? (
-            <Loading hasContent={false} refreshing={false} />
-          ) : (
-            <section className="flex flex-col items-start gap-2 p-4">
-              <Button variant="outline" onClick={() => void openRepository()}>
-                Open repository
-              </Button>
-              <p className="text-muted-text">{SCOPE_LINE}</p>
-            </section>
-          )
-        ) : (
-          <>
-            <section aria-label="Changes" hidden={state.mode !== "changes"} className="grid flex-1" style={grid}>
-              <div className="min-h-0 overflow-auto" style={{ gridArea: "lane" }}>
-                <ChangesPane {...pane} />
-              </div>
-              <Splitter
-                label={profile === "wide" ? "Resize file lane" : "Resize file band"}
-                orientation={profile === "wide" ? "vertical" : "horizontal"}
-                value={profile === "wide" ? lane : bandHeight}
-                min={profile === "wide" ? FILE_LANE.min : band.min}
-                max={profile === "wide" ? FILE_LANE.max : band.max}
-                onChange={(value) => (profile === "wide" ? setDragLane(value) : setFileBand(value))}
-                onCommit={(value) => {
-                  if (profile !== "wide") return;
-                  setDragLane(null);
-                  savePreferences({ ...preferences, panes: { fileLane: value } });
-                }}
-                className={resizable ? "[grid-area:laneSplit]" : "hidden"}
-              />
-              <div className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
-                <ComparisonView {...pane} />
-              </div>
-              <div className="[grid-area:traySplit]">{traySplitter}</div>
-              <div className="min-h-0 overflow-auto border-t border-divider p-2 text-muted-text" style={{ gridArea: "tray" }}>
-                {LATER.commit}
-              </div>
-            </section>
-            {/* HistoryView owns the list and the inspector. */}
-            <section aria-label="History" hidden={state.mode !== "history"} className="flex min-h-0 flex-1 flex-col">
-              <HistoryView {...pane} />
-            </section>
-          </>
+        <footer className="flex items-center gap-2 border-t border-divider px-2" style={{ minHeight: "var(--h-status-bar)" }}>
+          <span role="status" className="min-w-0 flex-1 truncate">
+            {statusText}
+          </span>
+          <span role="status" className="min-w-0 flex-1 truncate">
+            {paneStatus}
+          </span>
+        </footer>
+        {trust === null || state.repository === null ? null : (
+          <TrustDialog
+            open={trust.open}
+            report={trust.report}
+            repositoryId={state.repository.repositoryId}
+            bridge={bridge}
+            client={client}
+            finalFocus={() => opener.current}
+            onCancel={() => setTrust({ ...trust, open: false })}
+            onApproved={(result) => {
+              setTrust({ ...trust, open: false });
+              setSaveFailed(result.saveFailed);
+              requests.trustApproved();
+              setTrustRead((n) => n + 1);
+            }}
+            onFailed={(response) => setNotice(codeText("Trust approval did not complete: ", responseCode(response)))}
+          />
         )}
-        {/* plan.md "Status area": T138 fills this slot. */}
-        <div data-slot="status-area" />
-      </main>
-
-      <footer className="flex items-center gap-2 border-t border-divider px-2" style={{ minHeight: "var(--h-status-bar)" }}>
-        <span role="status" className="min-w-0 flex-1 truncate">
-          {statusText}
-        </span>
-        <span role="status" className="min-w-0 flex-1 truncate">
-          {paneStatus}
-        </span>
-      </footer>
-      {trust === null || state.repository === null ? null : (
-        <TrustDialog
-          open={trust.open}
-          report={trust.report}
-          repositoryId={state.repository.repositoryId}
-          bridge={bridge}
-          client={client}
-          finalFocus={() => opener.current}
-          onCancel={() => setTrust({ ...trust, open: false })}
-          onApproved={(result) => {
-            setTrust({ ...trust, open: false });
-            setSaveFailed(result.saveFailed);
-            requests.trustApproved();
-            setTrustRead((n) => n + 1);
-          }}
-          onFailed={(response) => setTrustNotice(`Trust approval did not complete: ${responseCode(response)}.`)}
-        />
-      )}
-    </div>
+      </div>
+    </CopyFailed>
   );
 }

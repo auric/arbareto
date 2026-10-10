@@ -32,20 +32,24 @@ export function realGlobalConfigDigests(git: string): string[] {
 // The removal of two T164 M copies takes longer than the 5-second default of Bun hooks.
 const REMOVE_TIMEOUT_MS = 120_000;
 
-// Bun test runs no process exit handler, so each test file owns the root from its first test to its last.
 // The non-recursive `mkdirSync` fails when another process holds the name.
+export function createFixtureRoot(): void {
+  mkdirSync(FIXTURE_ROOT);
+  console.log(`FIXTURE_ROOT ${FIXTURE_ROOT}`);
+  mkdirSync(join(FIXTURE_HOME, ".config"), { recursive: true });
+  writeFileSync(
+    FIXTURE_GLOBAL_CONFIG,
+    `[user]\n\tname = ${FIXED_IDENTITY.name}\n\temail = ${FIXED_IDENTITY.email}\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n`,
+  );
+}
+
+// Bun test runs no process exit handler, so each test file owns the root from its first test to its last.
 export function useFixtureRoot(): void {
   let before: string[] = [];
   beforeAll(() => {
     if (GIT !== null) before = realGlobalConfigDigests(GIT);
     for (const line of before) console.log(`GLOBAL_CONFIG_SHA256 before ${line}`);
-    mkdirSync(FIXTURE_ROOT);
-    console.log(`FIXTURE_ROOT ${FIXTURE_ROOT}`);
-    mkdirSync(join(FIXTURE_HOME, ".config"), { recursive: true });
-    writeFileSync(
-      FIXTURE_GLOBAL_CONFIG,
-      `[user]\n\tname = ${FIXED_IDENTITY.name}\n\temail = ${FIXED_IDENTITY.email}\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n`,
-    );
+    createFixtureRoot();
   });
   afterAll(() => {
     removeFixtureRoot();

@@ -96,7 +96,7 @@ export function indexEntries(gitPath: string, repo: string, config: string[] = [
   return entries;
 }
 
-function gitPath(gitExe: string, repo: string, names: string[]): string[] {
+export function gitPath(gitExe: string, repo: string, names: string[]): string[] {
   const args = names.flatMap((n) => ["--git-path", n]);
   return Buffer.from(git(gitExe, repo, ["rev-parse", ...args])).toString("utf8").trimEnd().split("\n").map((p) => resolve(repo, p));
 }
@@ -137,6 +137,12 @@ export function refState(gitExe: string, repo: string): RefState {
   const target = Buffer.from(git(gitExe, repo, ["symbolic-ref", "-q", "HEAD"], [0, 1])).toString("utf8").trim();
   const oid = Buffer.from(git(gitExe, repo, ["rev-parse", "--verify", "-q", "HEAD"], [0, 1])).toString("utf8").trim();
   return { refs, headTarget: target || null, headOid: oid || null };
+}
+
+// The `rev-list --parents --date-order --max-count=100 HEAD` lines. An unborn HEAD gives no lines.
+export function historyRows(gitExe: string, repo: string): string[] {
+  if (refState(gitExe, repo).headOid === null) return [];
+  return Buffer.from(git(gitExe, repo, ["rev-list", "--parents", "--date-order", "--max-count=100", "HEAD"])).toString("utf8").split("\n").filter((l) => l !== "");
 }
 
 export interface SubmoduleUpdateResult {

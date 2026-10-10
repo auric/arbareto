@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T113: commit reconciliation after handoff, research R4, contract §4 "Commit validation and handoff", §8, and §9. The Windows path.
+// T113: commit reconciliation after handoff, research R4, contract §4 "Commit validation and handoff", §8, and §9.
 // It never retries, resets, amends, or undoes. A commit binds no working file, so `effects.workingFiles` is false (contract §8).
 
 import { HISTORY_COMMIT_OBJECT_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../contracts/limits";
@@ -13,12 +13,13 @@ import type { RetainedReview } from "./commit-review";
 import { IndexFormatError, rawIndexEntries } from "./eligibility";
 import { createCollector, type GitExit, type GitRunner } from "./git-runner";
 import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
-import { diagnosticCause, enterReconciling, observedLocks, observeState, stepOf, type Fact, type Failure, type IndexFacts, type ObserveContext, type Stop } from "./hunk-publish";
+import { canonicalIndex, diagnosticCause, enterReconciling, observedLocks, observeState, stepOf, type Fact, type Failure, type IndexFacts, type ObserveContext, type PublishContext, type Stop } from "./hunk-publish";
 import type { DiagnosticCause, EffectSummary } from "./log";
 import type { OperationRegistry } from "./operations";
 import { latin1 } from "./read-steps";
 import type { Head, IndexEntry, OperationState } from "./snapshot";
 import { parseIndexListing } from "./status";
+import type { WslIndexFacts } from "./wsl-files";
 
 const NUL = 0x00;
 const TAB = 0x09;
@@ -36,7 +37,7 @@ export interface CommitReconciliation {
   retained: Pick<Map<string, unknown>, "delete">;
   operationId: string;
   markerId: string;
-  ctx: ObserveContext;
+  ctx: PublishContext;
   review: RetainedReview;
   binding: Pick<CommitBinding, "head" | "reviewedIndex" | "operationState">;
   // The preflight tip (contract §8 "Attribution window").
@@ -99,19 +100,22 @@ const sameEntries = <E extends { path: Uint8Array }>(a: readonly E[], b: readonl
   a.length === b.length && a.every((e, i) => Buffer.compare(e.path, b[i]!.path) === 0 && Bun.deepEquals({ ...e, path: null }, { ...b[i]!, path: null }, true));
 
 // Git writes the index again during `commit` (research R4), so the logical entries decide. Stat data never counts.
-async function sameIndex(ctx: ObserveContext, review: RetainedReview, reviewedDigest: string | null, observed: IndexFacts): Promise<Fact<boolean>> {
+// A WSL review keeps no raw index (contract §11 "Paths and file access"), so a changed WSL digest goes to the listing.
+async function sameIndex(ctx: ObserveContext, review: RetainedReview, reviewedDigest: string | null, observed: IndexFacts | WslIndexFacts): Promise<Fact<boolean>> {
   if (observed.digest === reviewedDigest) return { value: true };
   const objectFormat = ctx.workspace.objectFormat;
-  let before, after;
-  try {
-    before = review.rawIndex === null ? NO_ENTRIES : rawIndexEntries(review.rawIndex, objectFormat);
-    after = observed.raw === null ? NO_ENTRIES : rawIndexEntries(observed.raw, objectFormat);
-  } catch (error) {
-    if (error instanceof IndexFormatError) return { code: "MALFORMED_GIT_OUTPUT" };
-    throw error;
+  if (!("reply" in observed)) {
+    let before, after;
+    try {
+      before = review.rawIndex === null ? NO_ENTRIES : rawIndexEntries(review.rawIndex, objectFormat);
+      after = observed.raw === null ? NO_ENTRIES : rawIndexEntries(observed.raw, objectFormat);
+    } catch (error) {
+      if (error instanceof IndexFormatError) return { code: "MALFORMED_GIT_OUTPUT" };
+      throw error;
+    }
+    if (before.link === null && after.link === null) return { value: sameEntries(before.entries, after.entries) };
   }
-  if (before.link === null && after.link === null) return { value: sameEntries(before.entries, after.entries) };
-  // ponytail: a split index compares Git's `ls-files -v` listing, which shows no intent-to-add flag. Read the shared index when that flag must count.
+  // ponytail: a split index and a WSL index compare Git's `ls-files -v` listing, which shows no intent-to-add flag. Read the index when that flag must count.
   const listed = await listingOf(ctx, indexEntryArgs(), (bytes) => parseIndexListing(bytes, objectFormat));
   if (!("value" in listed)) return listed;
   return { value: sameEntries(review.entries.map(({ intentToAdd: _, ...e }) => e), listed.value) };
@@ -172,7 +176,7 @@ const undetermined = (reason: "ambiguous" | "evidence-limit"): Decision => ({ ev
 
 interface Observed {
   head: Head;
-  index: IndexFacts;
+  index: IndexFacts | WslIndexFacts;
   operationState: OperationState;
 }
 
@@ -214,16 +218,16 @@ export async function reconcileCommit(r: CommitReconciliation): Promise<void> {
   const deadline = exit?.deadline !== undefined;
   const canceled = enterReconciling(registry, operationId, deadline, exit?.activeDescendants ?? 0);
   // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
-  const q: ObserveContext = { ...r.ctx, signal: new AbortController().signal };
+  const q: PublishContext = { ...r.ctx, signal: new AbortController().signal };
   // Git exits 128 for the window read of an unborn HEAD. With an unborn reviewed HEAD, the window read waits for the observed HEAD.
-  const [state, early] = await Promise.all([observeState(q, EMPTY, false), binding.head.state === "unborn" ? null : readWindow(q, r.tip)]);
+  const [state, early] = await Promise.all([observeState(q, EMPTY, false, canonicalIndex(q, binding.reviewedIndex)), binding.head.state === "unborn" ? null : readWindow(q, r.tip)]);
   const head = "value" in state.head ? state.head.value : null;
   const window = head === null || head.state === "unborn" ? NO_RECORDS : (early ?? (await readWindow(q, r.tip)));
   const failed = [state.head, state.index, state.operationState, window].find((f) => !("value" in f)) as Failure | Stop | undefined;
   let decision =
     failed !== undefined
       ? unknownOf(failed)
-      : await decide(q, r, { head: head!, index: (state.index as { value: IndexFacts }).value, operationState: (state.operationState as { value: OperationState }).value }, (window as { value: Window }).value, canceled, deadline);
+      : await decide(q, r, { head: head!, index: (state.index as { value: IndexFacts | WslIndexFacts }).value, operationState: (state.operationState as { value: OperationState }).value }, (window as { value: Window }).value, canceled, deadline);
 
   const event = decision.event;
   if (event.type !== "intended-effects-confirmed") {

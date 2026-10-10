@@ -371,7 +371,13 @@ describeGit("bun runner", (git) => {
 
   test("dispose ends each recorded live process", async () => {
     const records = readdirSync(runner.recordsDirectory).map((n) => n.split("-").map(BigInt));
+    // A call that the start barrier holds gets UNKNOWN_TARGET when dispose opens the barrier, and starts no process.
+    runner.holdStart();
+    const held = runner.run(call()).catch((error: unknown) => error);
+    const before = runner.spawned;
     await runner.dispose();
+    expect(await held).toMatchObject({ code: "UNKNOWN_TARGET" });
+    expect(runner.spawned).toBe(before);
     for (const [pid, created] of records) expect(processCreationTime(Number(pid)) === created).toBe(false);
   });
 });

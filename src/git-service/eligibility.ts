@@ -181,8 +181,8 @@ export function rawIndexEntries(rawIndex: Uint8Array, objectFormat: ObjectFormat
 
 // ---- Hunk eligibility (contract §4 "Hunk eligibility and publication", data-model §2 `hunkEligibility`) ----
 
-// Order of the contract §4 list. The first reason that applies wins.
-export const HUNK_REFUSAL_REASONS = ["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor"] as const;
+// Order of the contract §4 list, then the WSL reason of §4 "WSL index publication". The first reason that applies wins.
+export const HUNK_REFUSAL_REASONS = ["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"] as const;
 export type HunkRefusalReason = (typeof HUNK_REFUSAL_REASONS)[number];
 export type HunkEligibility = { eligible: true } | { eligible: false; reason: HunkRefusalReason };
 
@@ -196,11 +196,14 @@ function effective(entries: readonly ConfigEntry[], key: string): ConfigEntry | 
   return found;
 }
 
+// Contract §4 "WSL index publication": the in-distro `lock` mode does not apply `core.sharedRepository`, so its key at any scope refuses.
+export const holdsSharedRepository = (entries: readonly ConfigEntry[]) => entries.some((entry) => entry.key === "core.sharedrepository");
+
 // `rawIndex` holds the index file bytes that the read captured, or null when the index file is absent.
 // `{ link }` holds the `link` hash of index bytes that an earlier read parsed (contract §11 "Change polling").
 // This function starts no process and never asks Git for the shared index path (contract §6).
 // It throws IndexFormatError for bytes that are no Git index. The caller must not treat that as eligible.
-export function hunkEligibility(rawIndex: Uint8Array | null | { link: string | null }, objectFormat: ObjectFormat, listing: Pick<TrustListing, "entries" | "hooks">): HunkEligibility {
+export function hunkEligibility(rawIndex: Uint8Array | null | { link: string | null }, objectFormat: ObjectFormat, listing: Pick<TrustListing, "entries" | "hooks">, wsl: boolean): HunkEligibility {
   const refuse = (reason: HunkRefusalReason): HunkEligibility => ({ eligible: false, reason });
   const { entries, hooks } = listing;
   // repo-settings.c `prepare_repo_settings`: `index.sparse` is a Git boolean.
@@ -219,5 +222,6 @@ export function hunkEligibility(rawIndex: Uint8Array | null | { link: string | n
     if (mode === -1) return refuse("executable-monitor");
     if (mode === 1) return refuse("unqualified-monitor");
   }
+  if (wsl && holdsSharedRepository(entries)) return refuse("shared-repository");
   return { eligible: true };
 }

@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T109: research R3 steps 6 to 10, contract §4 "Candidate time", "Split index", and "Hunk eligibility and publication". The Windows path.
+// T109: research R3 steps 6 to 10, contract §4 "Candidate time", "Split index", and "Hunk eligibility and publication".
 // The caller holds the owned index lock (T107). This module never writes the canonical index.
+// T214: a WSL repository copies the candidate inside the distro (contract §4 "WSL index publication"). Git gets its UNC path as the index file.
 
 import { constants } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_PROCESS_DEADLINE_MS, MUTATION_RAW_INDEX_BYTES } from "../contracts/limits";
 import { applyCachedArgs, applyCachedReverseArgs, batchCommandArgs, entryHashArgs, isObjectId, readTreeEmptyArgs } from "./commands";
 import type { RetainedComparison } from "./comparison";
 import { parsePatch, type PatchHunk } from "./diff-parser";
 import { IndexFormatError, rawIndexEntries, type RawIndexEntry } from "./eligibility";
-import { createCollector, RunnerRefusal, type Collector, type GitRunner, type RefusedCode } from "./git-runner";
+import { createCollector, RunnerRefusal, type Collector, type GitRunner, type RefusedCode, type WslRunner } from "./git-runner";
 import { contextOf, isMissing, latin1, readHandleBounded } from "./read-steps";
 import type { Workspace } from "./registration";
+import { wslCopy } from "./wsl-files";
 
 // Contract §8: the fixed prefix of every candidate file.
 const CANDIDATE_PREFIX = "arbareto-candidate-";
@@ -23,7 +25,8 @@ const LF = 0x0a;
 const CANDIDATE_STEP_NS = 100n;
 const NS_PER_MS = 1_000_000n;
 
-export type CandidateStep = "read-tree" | "apply" | "blob" | "hash" | "update-index" | "check";
+// `candidate`: the WSL `candidate` walk.
+export type CandidateStep = "candidate" | "read-tree" | "apply" | "blob" | "hash" | "update-index" | "check";
 
 export type CandidateFailure =
   // UNSUPPORTED_HUNK_PROFILE (contract §4 "Split index").
@@ -59,7 +62,7 @@ export interface Candidate {
 export type CandidateOutcome = { ok: true; candidate: Candidate } | { ok: false; path: string | null; failure: CandidateFailure };
 
 export interface CandidateTarget {
-  runner: GitRunner;
+  runner: GitRunner & WslRunner;
   operationId: string;
   signal: AbortSignal;
   workspace: Workspace;
@@ -190,23 +193,47 @@ export function ownedCandidate(t: CandidateBase) {
     return raw.subarray(head + 1, head + 1 + size);
   }
 
+  // Contract §4: an absent index gets its first candidate from Git, never a zero-byte file.
+  async function empty(): Promise<null> {
+    if (t.signal.aborted) throw new Stop({ reason: "canceled" });
+    // The step reply comes after its process ends, so the file state is then final.
+    try {
+      await step("read-tree", readTreeEmptyArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), new Uint8Array(), true);
+    } finally {
+      created = await lstat(path).then(() => true, (error) => !isMissing(error));
+    }
+    return null;
+  }
+
+  // Contract §4 "WSL index publication": the `candidate` walk copies the index and sets the candidate time inside the distro.
+  async function wslCopied(): Promise<RawIndexEntry[] | null> {
+    // A stopped or failed walk can leave a candidate. The caller decides by `lstat` after the process-end fact.
+    created = true;
+    const r = await wslCopy(t, basename(path), t.rawIndexDigest);
+    if ("stop" in r) throw new Stop(r.stop === "canceled" ? { reason: "canceled" } : { reason: "deadline", step: "candidate" });
+    // A `wslFiles` refusal carries a runner refusal code, or PROCESS_OWNERSHIP_FAILED for a reply outside the contract form.
+    if ("code" in r) throw new Stop({ reason: "refused", code: r.code as RefusedCode });
+    if ("failure" in r) throw new Stop(r.failure);
+    if (r.value === null) {
+      created = false;
+      return empty();
+    }
+    // Contract §11 "Paths and file access": the raw candidate bytes cross for the `link` check. They must be the copied index bytes.
+    const { bytes } = await readCandidate();
+    if (sha256(bytes) !== r.value.candidate.sha256) throw new Stop({ reason: "verification", detail: "content" });
+    return parse(bytes);
+  }
+
   // Research R3 step 6. Returns the canonical entries, or null for an absent index.
   async function copy(): Promise<RawIndexEntry[] | null> {
+    if (w.wsl !== undefined) return wslCopied();
     let canonical: FileHandle;
     try {
       canonical = await open(w.indexPath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
     } catch (error) {
       if (!isMissing(error)) throw new Stop({ reason: "unavailable", errno: (error as NodeJS.ErrnoException).code ?? "unknown" });
       if (t.rawIndexDigest !== null) throw new Stop({ reason: "index-changed" });
-      if (t.signal.aborted) throw new Stop({ reason: "canceled" });
-      // Contract §4: an absent index gets its first candidate from Git, never a zero-byte file.
-      // The step reply comes after its process ends, so the file state is then final.
-      try {
-        await step("read-tree", readTreeEmptyArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), new Uint8Array(), true);
-      } finally {
-        created = await lstat(path).then(() => true, (error) => !isMissing(error));
-      }
-      return null;
+      return empty();
     }
     let read: { bytes: Uint8Array | "over"; mtimeNs: bigint };
     try {

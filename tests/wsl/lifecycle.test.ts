@@ -4,12 +4,14 @@
 // T209: WSL process lifetime with F25 (contract §6 "Lingering Jobs", §11 "Process ownership").
 // The seam case runs first and needs no Git 2.55.0 (tasks.md "Test harness rules"). The other cases re-probe the research R13 design change.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect } from "bun:test";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
+import { psQuote } from "../git/hunk-harness";
+import { printOrigin } from "../origin";
 import { buildF25, globalConfig, seamProbe, startSession, type WslRepo, type WslSession } from "./fixtures";
-import { inDistro, listScopes, pgrep, uncPath, useWslFolder, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_EXE, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 const CASE_TIMEOUT_MS = 240_000;
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
@@ -19,6 +21,7 @@ const CLOSE_TARGET_MS = 5_000;
 
 useFixtureRoot();
 useWslFolder();
+printOrigin("../../src/git-service/commit.ts", import.meta.dir);
 
 let runners: BunRunner[] = [];
 // Each dispose ends the WSL scopes of the runner through `wsl.exe`, so the hook takes the case bound.
@@ -64,12 +67,13 @@ async function prepare(s: WslSession, repo: WslRepo): Promise<Prepared> {
   return { repositoryId, generation: result.generation, trustId: (approved.result as { trustId: string }).trustId, snapshotId: result.snapshotId };
 }
 
-// Sends `commit` after `reviewCommit` and returns its request ID.
-async function commit(s: WslSession, p: Prepared): Promise<string> {
+// Sends `commit` after `reviewCommit` and returns its request ID. `beforeCommit` runs after the review response, so a start hold does not stop the review.
+async function commit(s: WslSession, p: Prepared, beforeCommit: () => void = () => {}): Promise<string> {
   const envelope = { repositoryId: p.repositoryId, repositoryGeneration: p.generation };
   const review = await s.response(s.request("reviewCommit", { snapshotId: p.snapshotId }, envelope));
   expect(review).toMatchObject({ state: "succeeded" });
   const reviewToken = (review.result as { reviewToken: string }).reviewToken;
+  beforeCommit();
   return s.request("commit", { reviewToken, message: "T209 commit", confirmFullScope: true }, envelope);
 }
 
@@ -112,10 +116,10 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  test.todo(
+  wslTest(
     "Cancel of a slow hook, a test-injected deadline, and a service failure each leave no process 1 second after the Job close (needs T214/T115)",
-    async () => {
-      const host = wslHost()!;
+    NEEDS,
+    async (host) => {
       const f25 = buildF25(host);
       for (const ending of ["cancel", "deadline", "service-failure"] as const) {
         const { runner, s } = setup(host);
@@ -137,21 +141,24 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  test.todo(
+  wslTest(
     "the plain, setsid, and nohup children of a post-commit hook linger and count three, the anchor lives across the mutation, and Revoke trust ends them (needs T214/T115)",
-    async () => {
-      const host = wslHost()!;
+    NEEDS,
+    async (host) => {
       const f25 = buildF25(host);
       const { runner, s } = setup(host);
       const p = await prepare(s, f25.linger);
       let operationId = "";
       const anchorSeen: boolean[] = [];
-      runner.inject.afterWslExit = async (call) => {
-        operationId = call.operationId;
-        anchorSeen.push(pgrep(host, call.operationId).length > 0);
-      };
-      const release = runner.holdStart();
-      const requestId = await commit(s, p);
+      let release = () => {};
+      // The review is a read operation without an anchor, so only the processes after the review response count.
+      const requestId = await commit(s, p, () => {
+        runner.inject.afterWslExit = async (call) => {
+          operationId = call.operationId;
+          anchorSeen.push(pgrep(host, call.operationId).length > 0);
+        };
+        release = runner.holdStart();
+      });
       expect(await until(() => operationOf(s, requestId) !== undefined, 30_000)).toBe(true);
       // The anchor starts before the first Git process of the mutation.
       expect(await until(() => pgrep(host, operationOf(s, requestId)!).length > 0, 30_000)).toBe(true);
@@ -185,10 +192,10 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
     CASE_TIMEOUT_MS,
   );
 
-  test.todo(
+  wslTest(
     "a pre-commit hook that opens /dev/tty fails within 10 seconds with GIT_FAILED and its output tail (needs T214/T115)",
-    async () => {
-      const host = wslHost()!;
+    NEEDS,
+    async (host) => {
       const f25 = buildF25(host);
       const { s } = setup(host);
       const p = await prepare(s, f25.tty);
@@ -197,15 +204,18 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
       expect(Date.now() - started).toBeLessThan(10_000);
       expect(response).toMatchObject({ state: "failed", code: "GIT_FAILED" });
       expect(JSON.stringify(response.result)).toContain("reading the terminal");
+      // Contract §9 and §11 "Remedy commands": the WSL form of the hook remedy.
+      const hook = `& ${psQuote(WSL_EXE)} --distribution ${psQuote(host.distro)} --cd / --exec ${psQuote(host.probe.paths.git!)} --no-lazy-fetch -C ${psQuote(f25.tty.dir)} hook run --ignore-missing pre-commit`;
+      expect((response.result as { remedy?: { command?: string | null } } | undefined)?.remedy?.command).toBe(hook);
       expect(listScopes(host)).toEqual([]);
     },
     CASE_TIMEOUT_MS,
   );
 
-  test.todo(
+  wslTest(
     "a simulated application close ends lingering children within 5 seconds (needs T214/T115)",
-    async () => {
-      const host = wslHost()!;
+    NEEDS,
+    async (host) => {
       const f25 = buildF25(host);
       const { runner, s } = setup(host);
       const p = await prepare(s, f25.linger);

@@ -2514,7 +2514,7 @@ Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-comm
 | Only the `remote-name` refusal, without `--` (H1) | A nested level can add a remote after the review. One guard then remains. | Reject; use both. |
 | A `& { $env:... }` block without `finally` for the fetch remedy (H1) | `$env:` changes the whole process, not the script block scope. | Reject; `finally` restores the value. |
 
-### Probes S1 to S35
+### Probes S1 to S40
 
 The probes ran on 2026-09-30 and 2026-10-01 with Git `2.55.0.windows.3` on the R13 host. They used only session scratch folders and the distro's `/tmp`. Each used an owned `GIT_CONFIG_GLOBAL` with `protocol.file.allow=always` and `GIT_CONFIG_NOSYSTEM=1`. The remotes were local bare repositories: a superproject with two submodules, one of which held a nested submodule. No probe fetched from the internet. These probes are not qualification evidence.
 
@@ -2801,6 +2801,50 @@ The probe S35 ran on 2026-10-08 for the T229 discovery notice. It used Git `2.56
 - A non-boolean `submodule.<name>.active=maybe`: `status` exited 0. `submodule status`, `submodule update`, and `submodule update --init` exited 128 with "bad boolean config value".
 - `config --blob :.gitmodules` loaded the index. With a command-valued `core.fsmonitor`, it ran the hook. With `core.fsmonitor=true`, it started `git fsmonitor--daemon`.
 - `config --blob HEAD:.gitmodules`, `config --blob <object ID>`, and `config --file` started no child.
+
+The probes S36 to S40 ran on 2026-10-10 for T230. They used Git `2.56.0.windows.1` and Bun `1.4.2`. Each used the owned fixture root of `tests/git/fixture-root.ts`, an owned `GIT_CONFIG_GLOBAL`, and `GIT_CONFIG_NOSYSTEM=1`. The real global file kept its digest. Scripts stay in the session scratch folder.
+
+**S36. An appended LF and the `.gitmodules` listing.**
+
+- F27 `base`. `config --file .gitmodules --null --list` exited 0 before and after one LF was appended to the worktree `.gitmodules`.
+- Both outputs had the same 108 bytes, with SHA-256 `5100f6a8…`. The file SHA-256 changed from `c209101e…` to `f2322d0d…`.
+- Porcelain v2 status then reported `.gitmodules` as `.M`.
+- So the listing does not show a byte change of the file. A binding of the file digest shows it (contract §12 "Update protocol" step 2).
+
+**S37. What a failed clone step leaves.**
+
+- F27 `base`, the `clone` row `solo`. The step was `--no-lazy-fetch -c fetch.recurseSubmodules=no -C <super> submodule update --init --progress -- :(literal)solo`, with `GIT_TERMINAL_PROMPT=0` and `GIT_PROTOCOL_FROM_USER=0`.
+- Case A: the worktree `.gitmodules` URL `ext::sh -c echo% x`. Git printed "transport 'ext' not allowed".
+- Case B: the URL `../solo.git`, a local folder, with a global file without `protocol.file.allow`. Git printed "transport 'file' not allowed".
+- Case C: the loopback server of `tests/git/http-401.ts`, which answers 401. Git printed "terminal prompts disabled", and the server counted 2 requests.
+- In each case, the step exited 1, not 128. Git tried the clone twice ("a second time, aborting").
+- Before and after the step, the worktree path was an empty folder without a `.git` entry. No `modules/solo` existed.
+- Before the step, the superproject `config --local` held no `submodule.*` key. After it, it held `submodule.solo.active` and `submodule.solo.url`.
+- So a failed clone of an unregistered row leaves no `.git` entry and no Git directory, but it registers the row. The row ends `failed` with `registered`, which is an effect. Only a killed clone left the `clone-interrupted` state (S9).
+
+**S38. An unmapped `.gitmodules` entry with a refused `update` value.**
+
+- F27 `behind-present`: `solo` is initialized at `main~1`, and `mid` is not initialized. The worktree `.gitmodules` got `submodule.ghost` with `path = ghost` and `url = ../ghost.git`. Copy A added `update = !true`, and copy B added `update = foo`. The index had no gitlink `ghost`.
+- In both copies, each of these steps exited 128 with "invalid value for 'submodule.ghost.update'": the clone step for `mid`, the register step `submodule init -- :(literal)mid`, and the checkout step `submodule update --init --no-fetch --progress -- :(literal)solo`.
+- No step wrote a `submodule.*` key. The keys stayed `submodule.solo.active` and `submodule.solo.url`. No `mid/.git` entry appeared, and the `solo` HEAD did not change.
+- `--no-lazy-fetch -C <super>/solo fetch --progress --no-recurse-submodules` exited 0 in both copies.
+- So such an entry makes every `submodule` step fail before a write, but a fetch step runs. With only `clone` and register rows, no row has an effect, and the update ends `failed` with `GIT_FAILED`. A row that fetches first still gets `fetched`.
+
+**S39. The binding of two reviews of one unchanged repository.**
+
+- F27 `base` at commit `8c2f489`. One service session reviewed the superproject twice through `reviewSubmodules`. The probe wrapped `createApprovals` with `mock.module` and recorded the binding of each submodule approval.
+- Both reviews succeeded with the `clone` rows `mid` and `solo` and no program. Each review gave other row IDs.
+- The `review` hashes were equal (`f5e14a84…`). The `programs` hashes differed (`f86a7521…` and `63d37f86…`). The trust views were equal (`untrusted`).
+- Cause: the program inputs hold one `[row ID, listing fingerprint]` entry for each row, and the row ID is random (`src/git-service/submodule-review.ts` `ownerKey`). F27 `base` has no nested row, so `parentRowId` did not change the `review` hash here.
+- So a preflight that reviews again gives `STALE_REVIEW` for every repository with a row.
+
+**S40. Bun `test.todo` with `--todo`.**
+
+- A file held two `test.todo` cases. One body failed an `expect`, and one body passed.
+- `bun test` ran no body. It reported 2 todo cases and exited 0.
+- `bun test --todo` ran both bodies. The failed body printed its error and counted as todo. The passed body counted as a failure with "this test is marked as todo but passes". The run exited 1.
+- `bun test --todo -t <name>` ran only the matching body, with the same results: exit 0 for the failed body, and exit 1 for the passed body.
+- So `--todo -t` runs a `todoCase` body. A green body shows as a failure that names the todo mark. A red body shows its error, and the run exits 0.
 
 ### Security notes
 

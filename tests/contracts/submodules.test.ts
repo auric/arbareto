@@ -12,6 +12,7 @@ import {
   redactUrlUserInfo,
   StallRemedy,
   SUBMODULE_ACTIONS,
+  SUBMODULE_FAILED_READS,
   SUBMODULE_PROGRESS_PHASES,
   SUBMODULE_REFUSAL_REASONS,
   SUBMODULE_ROW_STATES,
@@ -75,6 +76,10 @@ describe("closed lists (data-model §9, contract §9 and §12)", () => {
   test("row states and progress phases", () => {
     expect([...SUBMODULE_ROW_STATES]).toEqual(["cloned", "moved", "unchanged", "failed", "clone-interrupted", "changed-elsewhere", "refused"]);
     expect([...SUBMODULE_PROGRESS_PHASES]).toEqual(["fetch", "update"]);
+  });
+
+  test("failed reads", () => {
+    expect([...SUBMODULE_FAILED_READS]).toEqual(["check", "remote-get-url", "folder", "clone-check", "level", "url"]);
   });
 });
 
@@ -167,6 +172,8 @@ describe("row result validator (data-model §9 'Row result', contract §12 'Reco
     const failedRead = { ...base, state: "failed", newCommit: OLD, failedRead: "remote-get-url" };
     expect(SubmoduleRowResult.safeParse(failedRead).success).toBe(true);
     expect(SubmoduleRowResult.safeParse({ ...failedRead, remedy: { command: "x", text: CHECKOUT_TEXT } }).success).toBe(false);
+    for (const read of SUBMODULE_FAILED_READS) expect(SubmoduleRowResult.safeParse({ ...failedRead, failedRead: read }).success).toBe(true);
+    expect(SubmoduleRowResult.safeParse({ ...base, state: "unchanged", newCommit: OLD, failedRead: "level" }).success).toBe(false);
   });
 
   test("a moved row carries its old and its new commit", () => {

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { z } from "zod";
-import { CHANNEL_PATH_UNITS, IDENTIFIER_BYTES } from "./limits";
+import { CHANNEL_PATH_UNITS, COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES, IDENTIFIER_BYTES } from "./limits";
 import { NATIVE } from "./native-path";
 
 // Contract §3: the closed list of public operations.
@@ -72,3 +72,33 @@ export const ChannelPath = z
   // zod `max` and JSON Schema `maxLength` count code points. This check counts the UTF-16 units.
   .refine((value) => value.length <= CHANNEL_PATH_UNITS && value.isWellFormed() && NATIVE.isAbsolute(value));
 export const isChannelPath = (value: unknown): value is string => ChannelPath.safeParse(value).success;
+
+// Data-model §7 `phase`.
+export const PHASES = [
+  "wsl-starting",
+  "preflight",
+  "candidate-verification",
+  "publication",
+  "commit-handoff",
+  "submodule-confirmation",
+  "fetch",
+  "update",
+  "reconciliation",
+] as const;
+export const Phase = z.enum(PHASES);
+export type Phase = z.infer<typeof Phase>;
+
+// Contract §2: exactly these fields. A progress event holds no command, configuration, environment, patch content, Git text, or credential.
+export const ProgressEvent = z.strictObject({
+  requestId: Identifier,
+  operationId: Identifier,
+  state: z.enum(["accepted", "running", "cancel-requested", "reconciling"]),
+  phase: Phase.optional(),
+  counters: z.record(z.string(), Count),
+  stalled: z.boolean().optional(),
+});
+export type ProgressEvent = z.infer<typeof ProgressEvent>;
+
+// Contract §9 "Commit failure output": an output tail stays within 16 KiB and 100 lines.
+const tailLines = (tail: string) => (tail === "" ? 0 : tail.split("\n").length - (tail.endsWith("\n") ? 1 : 0));
+export const OutputTail = Text.refine((tail) => new TextEncoder().encode(tail).length <= COMMIT_OUTPUT_TAIL_BYTES && tailLines(tail) <= COMMIT_OUTPUT_TAIL_LINES);

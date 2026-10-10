@@ -14,6 +14,7 @@ use crate::close::{self, Decision};
 use crate::framing::{PUBLIC_REQUEST_BYTES, public_request_body};
 use crate::process_requests::{decode_strict, is_identifier};
 use crate::schema;
+use crate::text_scale::{self, Current};
 
 /// The label of the only window that may call the public operations (contract §1).
 pub const MAIN_WINDOW: &str = "main";
@@ -119,6 +120,7 @@ pub struct Ipc {
     forward: FrameSink,
     session: Mutex<Session>,
     native: OnceLock<Weak<dyn NativeFirst>>,
+    text_scale: Current,
 }
 
 impl Ipc {
@@ -127,7 +129,13 @@ impl Ipc {
             forward,
             session: Mutex::new(Session::default()),
             native: OnceLock::new(),
+            text_scale: Current::default(),
         }
+    }
+
+    /// The factor of each `currentSession` answer.
+    pub fn text_scale(&self) -> &Current {
+        &self.text_scale
     }
 
     /// Without the native steps, each native-first operation gives `SERVICE_UNAVAILABLE`.
@@ -236,12 +244,11 @@ impl Ipc {
             return reject(INVALID);
         }
         if operation == "currentSession" {
-            return match &self.session().session_id {
-                Some(session_id) => Submitted::Answer(json!({
-                    "requestId": request_id, "state": "succeeded", "result": { "sessionId": session_id },
-                })),
-                None => reject("SERVICE_UNAVAILABLE"),
-            };
+            return Submitted::Answer(text_scale::session_answer(
+                request_id,
+                self.session().session_id.as_deref(),
+                self.text_scale.get(),
+            ));
         }
         let native_first = NATIVE_FIRST.contains(&operation);
         let mut envelope = Value::Null;
@@ -1216,6 +1223,11 @@ mod tests {
             (Some(REQUEST_ID), Some("succeeded"))
         );
         assert_eq!(first["result"]["sessionId"], SESSION_ID);
+        assert_eq!(
+            first["result"]["textScale"], 1.0,
+            "the factor before any read"
+        );
+        ipc.text_scale().set(1.5);
         ipc.set_session(Some("0f0f0f0f-0000-4000-8000-0000000000bb".to_string()));
         let Outcome::Answer(after) = send(&ipc, &current) else {
             panic!("an answer")
@@ -1224,10 +1236,14 @@ mod tests {
             after["result"]["sessionId"], "0f0f0f0f-0000-4000-8000-0000000000bb",
             "the new ID after a restart"
         );
+        assert_eq!(after["result"]["textScale"], 1.5);
         ipc.set_session(None);
         assert_eq!(
             send(&ipc, &current),
-            rejected("SERVICE_UNAVAILABLE"),
+            Outcome::Answer(json!({
+                "requestId": REQUEST_ID, "state": "rejected", "code": "SERVICE_UNAVAILABLE",
+                "result": { "textScale": 1.5 },
+            })),
             "without a service session"
         );
         assert!(

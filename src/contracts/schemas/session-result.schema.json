@@ -6,10 +6,16 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "textScale": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 2.25
     }
   },
   "required": [
-    "sessionId"
+    "sessionId",
+    "textScale"
   ],
   "additionalProperties": false,
   "title": "SessionResult"

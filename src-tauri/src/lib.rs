@@ -34,6 +34,8 @@ mod settings;
 #[cfg(windows)]
 mod spawn;
 #[cfg(windows)]
+mod text_scale;
+#[cfg(windows)]
 mod webview;
 #[cfg(windows)]
 mod wsl;
@@ -164,6 +166,8 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             app.manage(Arc::new(Ipc::new(Arc::new(|_| false))));
         }
     }
+    let ipc = Arc::clone(&app.state::<Arc<Ipc>>());
+    app.manage(text_scale::watch(ipc, app.handle().clone()));
 
     let window = main_window(app, stored_bounds)?;
     let shown = window.clone();

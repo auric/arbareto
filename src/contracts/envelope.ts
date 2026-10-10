@@ -25,7 +25,7 @@ import {
 } from "./operations";
 import { ATTRIBUTION_REASONS, OPERATION_STATES } from "./outcome";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "./strict-json";
-import { SubmoduleRowResult } from "./submodules";
+import { StallRemedy, SubmoduleRowResult } from "./submodules";
 
 const ErrorCodeSchema = z.enum(ERROR_CODES as [ErrorCode, ...ErrorCode[]]);
 
@@ -559,20 +559,24 @@ export type Comparison = z.infer<typeof Comparison>;
 export type ComparisonHunk = z.infer<typeof ComparisonHunk>;
 
 // Contract §3 `cancel` and `getOperation`: the current or retained state of an issued operation (data-model §7).
-export const OperationResult = z.strictObject({
-  operationId: Identifier,
-  operation: z.enum(OPERATION_NAMES),
-  state: z.enum(OPERATION_STATES),
-  phase: Phase.optional(),
-  code: ErrorCodeSchema.optional(),
-  cause: z.string().optional(),
-  reason: z.string().optional(),
-  stalled: z.boolean().optional(),
-  endProcesses: z.boolean().optional(),
-  lingering: z.boolean().optional(),
-  lingeringDescendants: Count.optional(),
-  rowId: Identifier.optional(),
-});
+// Contract §6 "Activity and stall notice": `stallRemedy` exists only while `stalled` is true.
+export const OperationResult = z
+  .strictObject({
+    operationId: Identifier,
+    operation: z.enum(OPERATION_NAMES),
+    state: z.enum(OPERATION_STATES),
+    phase: Phase.optional(),
+    code: ErrorCodeSchema.optional(),
+    cause: z.string().optional(),
+    reason: z.string().optional(),
+    stalled: z.boolean().optional(),
+    stallRemedy: StallRemedy.optional(),
+    endProcesses: z.boolean().optional(),
+    lingering: z.boolean().optional(),
+    lingeringDescendants: Count.optional(),
+    rowId: Identifier.optional(),
+  })
+  .refine((r) => r.stallRemedy === undefined || r.stalled === true);
 
 // Contract §3 `currentSession`: plan.md "Windows text size" gives the factor range.
 export const SessionResult = z.strictObject({ sessionId: Identifier, textScale: z.number().min(1).max(2.25) });

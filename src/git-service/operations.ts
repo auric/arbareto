@@ -6,12 +6,14 @@ import { TERMINAL_STATES, type ErrorCode, type TerminalState } from "../contract
 import { FINISHED_OPERATION_RECORDS } from "../contracts/limits";
 import { MUTATIONS, type OperationName } from "../contracts/operations";
 import { transition, type OperationEvent, type OperationSnapshot, type TransitionResult } from "../contracts/outcome";
+import type { StallRemedy } from "../contracts/submodules";
 import type { GitRunner } from "./git-runner";
 import type { DiagnosticCause, SessionLog } from "./log";
 
 export interface OperationView extends OperationSnapshot {
   operationId: string;
   phase?: Phase;
+  stallRemedy?: StallRemedy;
 }
 
 interface Entry {
@@ -66,7 +68,9 @@ export function createOperationRegistry(
       const e = entry(operationId);
       const next = transition(e.view, event);
       const { actions, terminalResponse, endedProcesses, rowResult, ...fields } = next;
-      e.view = { ...fields, operationId, operation: e.view.operation, phase: e.view.phase };
+      // Contract §6 "Activity and stall notice": `stallRemedy` exists only while `stalled` is true.
+      const { stallRemedy } = e.view;
+      e.view = { ...fields, operationId, operation: e.view.operation, phase: e.view.phase, ...(fields.stalled === true && stallRemedy !== undefined ? { stallRemedy } : {}) };
       if (event.type === "marker-recorded") e.marker = true;
       if (actions.includes("signal-owned-processes")) e.controller.abort();
       if (terminalResponse) {
@@ -100,6 +104,11 @@ export function createOperationRegistry(
       if (isTerminal(e.view.state) || !ProgressEvent.safeParse(event).success) throw new TypeError("progress event refused");
       e.view = { ...e.view, phase };
       progress(event);
+    },
+
+    setStallRemedy(operationId: string, stallRemedy: StallRemedy): void {
+      const e = entry(operationId);
+      if (e.view.stalled === true) e.view = { ...e.view, stallRemedy };
     },
 
     get(operationId: string): OperationView | undefined {

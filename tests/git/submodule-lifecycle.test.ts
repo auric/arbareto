@@ -13,7 +13,7 @@ import { printOrigin } from "../origin";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF30, type Built } from "./fixtures";
 import { fileSha256, workingFileDigests } from "./git-oracle";
-import { gitPath, mutationFrames, one, outcome, progressStates, SUCCEEDED, todoCase, until, valuesOf, withService } from "./hunk-harness";
+import { gitPath, mutationFrames, one, outcome, progressStates, SUCCEEDED, until, valuesOf, withService } from "./hunk-harness";
 import { gitOpenssl, loopbackCertificate, startHttp401 } from "./http-401";
 import { caseTest, openService, type Capability, type Service, type ServiceResponse } from "./service-harness";
 import {
@@ -374,7 +374,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   // Windows OpenSSH reads `~/.ssh` from the account profile, not from `HOME` or `USERPROFILE`, so a `core.sshCommand` without arguments cannot name a fixture key.
   // That case needs the key as the default identity of the account. The test never writes `~/.ssh`.
   for (const withArguments of [false, true]) {
-    (withArguments ? todoCase : caseTest)(TASK, `SSH passphrase key through a core.sshCommand ${withArguments ? "with arguments: the double reports stalled, getOperation returns the fetch command in stallRemedy, no progress event carries it, and the step ends at a test-injected 5-second inactivity limit (needs T256)" : "without arguments: the update fails without a wait"}`, [...SHELL, "openssh", "ssh-server", "ssh-key"], async () => {
+    caseTest(TASK, `SSH passphrase key through a core.sshCommand ${withArguments ? "with arguments: the double reports stalled, getOperation returns the fetch command in stallRemedy, no progress event carries it, and the step ends at a test-injected 5-second inactivity limit" : "without arguments: the update fails without a wait"}`, [...SHELL, "openssh", "ssh-server", "ssh-key"], async () => {
       await update();
       const name = `t224-ssh-key-${withArguments ? "args" : "plain"}`;
       const ssh = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "OpenSSH", "ssh.exe").replaceAll("\\", "/");

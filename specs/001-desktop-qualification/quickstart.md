@@ -39,7 +39,7 @@ Before building, verify:
 - Frontend build compatibility under Bun, without an accidental Node shebang fallback.
 - An owned temporary fixture root and isolated fixture configuration.
 
-Fixture runs on the reference host (T149, T153, T160 to T163) start the app only with `bun tests/windows/installed-app.ts --launch <root>`. The launcher points `HOME`, `XDG_CONFIG_HOME`, and `GIT_CONFIG_GLOBAL` into the owned root. It removes Git identity and configuration-injection variables. The developer's global hooks, signing, and identity then never apply to fixtures. System configuration stays active; record its origin and digest. T151 belongs to batch 4, so the T149 smoke run uses the launcher too. The T155 clean environment and the T165 measurement account are isolated by design and do not use the launcher.
+Fixture runs on the reference host (T149, T153, T160 to T163) start the app only with `bun tests/windows/installed-app.ts --launch <root>`. The launcher points `HOME`, `XDG_CONFIG_HOME`, and `GIT_CONFIG_GLOBAL` into the owned root. It removes Git identity and configuration-injection variables. It also sets `ARBARETO_PROFILE_ROOT` inside the owned root (T360). The app then keeps its settings, app data, and WebView2 data there, not in the real user profile. The developer's global hooks, signing, and identity then never apply to fixtures. System configuration stays active; record its origin and digest. T151 belongs to batch 4, so the T149 smoke run uses the launcher too. The T155 clean environment and the T165 measurement account are isolated by design and do not use the launcher.
 
 Do not install duplicate tools automatically. A missing toolchain component is a prerequisite, not a passing build result.
 

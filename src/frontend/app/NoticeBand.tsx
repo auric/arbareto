@@ -5,6 +5,7 @@ import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, type ReactNode } from "react";
 import type { RecoveryStatement, WorkspaceSnapshot } from "../../contracts/envelope";
+import type { SubmoduleRowResult } from "../../contracts/submodules";
 
 // plan.md "Notice band" and "Long text" (singular counts).
 
@@ -41,19 +42,30 @@ const INDEX_MATCH = {
   "not-published": "The interrupted hunk or file action did not reach the index.",
   neither: "The index matches neither the state before nor the state after the interrupted hunk or file action.",
 } as const;
+// plan.md "History graph design": a short ID is the first 12 hex digits.
+const short = (oid: string | null) => oid?.slice(0, 12);
+// plan.md "Required visible states", Updating submodules row states.
+const SUBMODULE_STATE: Record<SubmoduleRowResult["state"], (row: SubmoduleRowResult) => string> = {
+  cloned: () => "Cloned",
+  moved: (row) => `Moved from ${short(row.oldCommit)} to ${short(row.newCommit)}`,
+  unchanged: () => "No change",
+  failed: () => "Failed",
+  "clone-interrupted": () => "Clone interrupted",
+  "changed-elsewhere": (row) => (row.newCommit === null ? "Changed elsewhere" : `Changed elsewhere to ${short(row.newCommit)}`),
+  refused: () => "Refused",
+};
 const FOREIGN = "Another Git process or a crash can have left these files. Remove them only after all Git tools stop, including other Arbareto windows.";
 
-/** The sentences of the recovery row, in field order. */
-function recoverySentences({ outcome, attribution, indexMatch, foreign }: RecoveryStatement): string[] {
+/** The sentences of the recovery row before `foreign`, in field order. */
+function recoverySentences({ outcome, attribution, indexMatch, submoduleResults }: RecoveryStatement): string[] {
   const out: string[] = [];
   if (outcome === "none") out.push("The earlier session ended, and Arbareto found nothing to reconcile.");
-  // plan.md "History graph design": a short ID is the first 12 hex digits.
-  if (attribution?.result === "identified") out.push(`The interrupted commit exists as ${attribution.commitOid.slice(0, 12)}.`);
+  if (attribution?.result === "identified") out.push(`The interrupted commit exists as ${short(attribution.commitOid)}.`);
   else if (attribution?.result === "none") out.push("The interrupted operation made no commit.");
   else if (attribution?.reason === "no-retained-request") out.push("Arbareto cannot tell what the interrupted operation changed, because this Git service session has no record of its request.");
   else if (attribution !== undefined) out.push(`Arbareto cannot tell if the interrupted operation made a commit, because ${ATTRIBUTION_REASON[attribution.reason]}.`);
   if (indexMatch !== undefined) out.push(INDEX_MATCH[indexMatch]);
-  if (foreign !== undefined) out.push(FOREIGN);
+  if (submoduleResults !== undefined) out.push("The interrupted submodule update left these rows:");
   return out;
 }
 
@@ -67,6 +79,10 @@ function RecoveryRow({ recovery }: { recovery: RecoveryStatement }) {
       </span>
       <div className="min-w-0">
         <p>{recoverySentences(recovery).join(" ")}</p>
+        {recovery.submoduleResults?.map((row) => (
+          <p key={row.rowId}>{`${row.path}: ${SUBMODULE_STATE[row.state](row)}`}</p>
+        ))}
+        {recovery.foreign === undefined ? null : <p>{FOREIGN}</p>}
         {foreign.map((path) => (
           <code key={path} className="block break-all">
             {path}
@@ -96,7 +112,7 @@ export type NoticeBandProps = {
 export function NoticeBand({ operationState, conflicted, submoduleRow, recovery }: NoticeBandProps) {
   const headingId = useId();
   const first = blockingText(operationState, conflicted);
-  const recoveryRow = recovery !== undefined && recoverySentences(recovery).length > 0;
+  const recoveryRow = recovery !== undefined && (recoverySentences(recovery).length > 0 || recovery.foreign !== undefined);
   if (first === null && !submoduleRow && !recoveryRow) return null;
   return (
     <section aria-labelledby={headingId} className="flex items-start gap-3 border-b border-divider bg-warning-fill px-2">

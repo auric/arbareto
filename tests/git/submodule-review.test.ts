@@ -48,7 +48,7 @@ import {
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
 const TASK = "T222";
-const TOKEN = "(needs T230/T231)";
+const TOKEN = "(needs T231)";
 const SHELL: Capability[] = ["shell-double"];
 const reviewCase = (name: string, fn: () => Promise<void>) => caseTest(TASK, name, SHELL, fn, TIMEOUT_MS);
 

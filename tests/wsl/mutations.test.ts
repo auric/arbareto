@@ -23,10 +23,6 @@ import { inDistro, missingCapability, uncPath, useWslFolder, WSL_EXE, wslExec, w
 const TASK = "T213";
 const CASE_TIMEOUT_MS = 240_000;
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
-const HUNK = "(needs T214/T115)";
-const FILE = "(needs T214/T115)";
-const COMMIT = "(needs T214/T115)";
-const BOTH = "(needs T214/T115)";
 // Contract §4 "Limitation remedies".
 const REMEDY_TEXT = "This command stages or unstages the whole file with your Git settings. Run it in a terminal.";
 
@@ -234,7 +230,7 @@ function checkPublication(files: FilesEntry[], indexFiles: { operationId: string
 
 describe("WSL mutations equal the distro Git (T213)", () => {
   wslCase(
-    `applyHunk stages as git add -p does in a copy; the lock, candidate, and publication run through wslFiles, and working files stay ${HUNK}`,
+    `applyHunk stages as git add -p does in a copy; the lock, candidate, and publication run through wslFiles, and working files stay`,
     NEEDS,
     async (host) => {
       await underTest("hunk-publish");
@@ -257,7 +253,7 @@ describe("WSL mutations equal the distro Git (T213)", () => {
     ["unstage", "other-a.txt", "staged", ["--literal-pathspecs", "restore", "--staged", "--", "other-a.txt"]],
   ] as const) {
     wslCase(
-      `applyFile ${direction} of ${path} equals git ${command[1]} in a copy; the lock, candidate, and publication run through wslFiles, and working files stay ${FILE}`,
+      `applyFile ${direction} of ${path} equals git ${command[1]} in a copy; the lock, candidate, and publication run through wslFiles, and working files stay`,
       NEEDS,
       async (host) => {
         await underTest("file-publish");
@@ -277,7 +273,7 @@ describe("WSL mutations equal the distro Git (T213)", () => {
   }
 
   wslCase(
-    `commit gives the tree, parent, and message of git commit in a copy, and the pre-commit hook runs as the Linux user ${COMMIT}`,
+    `commit gives the tree, parent, and message of git commit in a copy, and the pre-commit hook runs as the Linux user`,
     NEEDS,
     async (host) => {
       await underTest("commit");
@@ -308,7 +304,7 @@ describe("core.sharedRepository (contract §4 \"WSL index publication\", §9)", 
 
   for (const scope of ["local", "global", "worktree"] satisfies Scope[]) {
     wslCase(
-      `core.sharedRepository at ${scope} scope makes readWorkspace report shared-repository and refuses applyHunk and applyFile with UNSUPPORTED_HUNK_PROFILE; the index keeps its bytes, no owned lock or candidate remains, and no config process starts; without the key, the same request publishes ${BOTH}`,
+      `core.sharedRepository at ${scope} scope makes readWorkspace report shared-repository and refuses applyHunk and applyFile with UNSUPPORTED_HUNK_PROFILE; the index keeps its bytes, no owned lock or candidate remains, and no config process starts; without the key, the same request publishes`,
       NEEDS,
       async (host) => {
         await underTest("hunk-publish", "file-publish");
@@ -376,8 +372,8 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   for (const after of [true, false]) {
     wslCase(
       after
-        ? `a deadline after Perl created and wrote the lock: no remove or indexDigest decision comes before the process-end fact, and remove with the token then gives removed ${FILE}`
-        : `a deadline before the lock create: after the process-end fact, remove with the token gives notOwned ${FILE}`,
+        ? `a deadline after Perl created and wrote the lock: no remove or indexDigest decision comes before the process-end fact, and remove with the token then gives removed`
+        : `a deadline before the lock create: after the process-end fact, remove with the token gives notOwned`,
       NEEDS,
       async (host) => {
         await underTest("file-publish");
@@ -400,7 +396,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   }
 
   wslCase(
-    `a publish walk stopped by a deadline after the rename is decided from indexDigest after the process-end fact, and the index equals git add in a copy ${FILE}`,
+    `a publish walk stopped by a deadline after the rename is decided from indexDigest after the process-end fact, and the index equals git add in a copy`,
     NEEDS,
     async (host) => {
       await underTest("file-publish");
@@ -430,7 +426,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   };
   for (const [swap, change] of Object.entries(SWAPS)) {
     wslCase(
-      `a lock with ${swap} gives publish notOwned with no rename ${FILE}`,
+      `a lock with ${swap} gives publish notOwned with no rename`,
       NEEDS,
       async (host) => {
         await underTest("file-publish");
@@ -478,8 +474,8 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   for (const ending of ["cancel", "error"] as const) {
     wslCase(
       ending === "cancel"
-        ? `a lock walk stopped by cancel after the create gives canceled after the process-end fact and a token-only remove that gives removed ${FILE}`
-        : `a lock reply error after the create gives GIT_FAILED with cause lock-create after the process-end fact and a token-only remove that gives removed ${FILE}`,
+        ? `a lock walk stopped by cancel after the create gives canceled after the process-end fact and a token-only remove that gives removed`
+        : `a lock reply error after the create gives GIT_FAILED with cause lock-create after the process-end fact and a token-only remove that gives removed`,
       NEEDS,
       async (host) => {
         await underTest("file-publish");
@@ -513,8 +509,8 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   for (const reply of ["time", "bound"] as const) {
     wslCase(
       reply === "time"
-        ? `a candidate time above the canonical time gives GIT_FAILED with cause candidate-time, no Git step uses the candidate, the lock is removed, and the unverified candidate is foreign ${FILE}`
-        : `a candidate reply bound gives OUTPUT_LIMIT with reason MUTATION_RAW_INDEX_BYTES, no Git step uses a candidate, and the lock is removed ${FILE}`,
+        ? `a candidate time above the canonical time gives GIT_FAILED with cause candidate-time, no Git step uses the candidate, the lock is removed, and the unverified candidate is foreign`
+        : `a candidate reply bound gives OUTPUT_LIMIT with reason MUTATION_RAW_INDEX_BYTES, no Git step uses a candidate, and the lock is removed`,
       NEEDS,
       async (host) => {
         await underTest("file-publish");
@@ -548,7 +544,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   }
 
   wslCase(
-    `a lock with another inode at the candidate request and a candidate reply bound: the lock form of remove gives notOwned, and the other lock stays ${FILE}`,
+    `a lock with another inode at the candidate request and a candidate reply bound: the lock form of remove gives notOwned, and the other lock stays`,
     NEEDS,
     async (host) => {
       await underTest("file-publish");
@@ -575,7 +571,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   );
 
   wslCase(
-    `a candidate changed before publish gives publish mismatch and STALE_SELECTION, nothing is published, and the lock form of remove gives removed ${FILE}`,
+    `a candidate changed before publish gives publish mismatch and STALE_SELECTION, nothing is published, and the lock form of remove gives removed`,
     NEEDS,
     async (host) => {
       await underTest("file-publish");
@@ -597,7 +593,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   );
 
   wslCase(
-    `a publish reply error is a failed replace step: after the process-end fact, indexDigest shows the before digest, the lock form of remove gives removed, and the outcome is GIT_FAILED with the step remedy ${FILE}`,
+    `a publish reply error is a failed replace step: after the process-end fact, indexDigest shows the before digest, the lock form of remove gives removed, and the outcome is GIT_FAILED with the step remedy`,
     NEEDS,
     async (host) => {
       await underTest("file-publish");
@@ -623,7 +619,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   );
 
   wslCase(
-    `a closeJob during publish gives unknown with the lock and the candidate in foreign and keeps the marker; a refresh then states indexMatch not-published with the lock and the candidate in foreign, sends resolved, and removes nothing ${FILE}`,
+    `a closeJob during publish gives unknown with the lock and the candidate in foreign and keeps the marker; a refresh then states indexMatch not-published with the lock and the candidate in foreign, sends resolved, and removes nothing`,
     NEEDS,
     async (host) => {
       await underTest("file-publish", "recovery");
@@ -667,7 +663,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   );
 
   wslCase(
-    `a working-file change after the comparison gives applyHunk STALE_SELECTION, the external bytes stay, and nothing is published ${HUNK}`,
+    `a working-file change after the comparison gives applyHunk STALE_SELECTION, the external bytes stay, and nothing is published`,
     NEEDS,
     async (host) => {
       await underTest("hunk-publish");
@@ -689,7 +685,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
 
 describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs\", §9)", () => {
   wslCase(
-    `no step reads working-file or index bytes through UNC while the index digest is unchanged ${BOTH}`,
+    `no step reads working-file or index bytes through UNC while the index digest is unchanged`,
     NEEDS,
     async (host) => {
       await underTest("hunk-publish", "file-publish");
@@ -708,7 +704,7 @@ describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs
   );
 
   wslCase(
-    `a held index.lock gives LOCKED for applyFile and applyHunk, and the lock keeps its bytes ${BOTH}`,
+    `a held index.lock gives LOCKED for applyFile and applyHunk, and the lock keeps its bytes`,
     NEEDS,
     async (host) => {
       await underTest("hunk-publish", "file-publish");
@@ -725,7 +721,7 @@ describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs
   );
 
   wslCase(
-    `a post-commit hook's setsid child gives lingeringDescendants 1 from the anchor ${COMMIT}`,
+    `a post-commit hook's setsid child gives lingeringDescendants 1 from the anchor`,
     NEEDS,
     async (host) => {
       await underTest("commit");
@@ -741,7 +737,7 @@ describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs
 
   const shell = Bun.which("pwsh") ?? Bun.which("powershell");
   wslCase(
-    `each WSL remedy command, run in PowerShell, gives the index of the distro's own command in a copy ${FILE}`,
+    `each WSL remedy command, run in PowerShell, gives the index of the distro's own command in a copy`,
     NEEDS,
     async (host) => {
       await underTest("file-publish");

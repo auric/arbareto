@@ -20,7 +20,7 @@ printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
 const TASK = "T255";
 const COMMIT_NEEDS = "(needs T256)";
-const UPDATE_NEEDS = "(needs T256/T230/T231)";
+const UPDATE_NEEDS = "(needs T256/T231)";
 const SHELL: Capability[] = ["shell-double"];
 // Contract §6 "Activity and stall notice": the commit stall text.
 const COMMIT_STALL_TEXT = "This command runs only the pre-commit hook and does not commit. It cannot repeat a prompt from another hook or from signing.";

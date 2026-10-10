@@ -55,7 +55,7 @@ import {
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
 const TASK = "T223";
-const NEEDS = "(needs T230/T231)";
+const NEEDS = "(needs T231)";
 const SHELL: Capability[] = ["shell-double"];
 
 useFixtureRoot();

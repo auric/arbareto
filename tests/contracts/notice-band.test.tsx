@@ -5,6 +5,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChangeEntry, RecoveryStatement, WorkspaceSnapshot } from "../../src/contracts/envelope";
+import type { SubmoduleRowResult } from "../../src/contracts/submodules";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { NoticeBand } from "../../src/frontend/app/NoticeBand";
@@ -146,6 +147,48 @@ describe("recovery row", () => {
     const end = (foreignTotal: number) => recoveryText({ outcome: "unknown", foreign: LOCKS, foreignTotal });
     expect(end(9)).toEndWith(`${LOCKS[1]} and 7 more files`);
     expect(end(3)).toEndWith(`${LOCKS[1]} and 1 more file`);
+  });
+
+  // plan.md "Updating submodules" row state texts.
+  const OLD = "fedcba9876543210fedcba9876543210fedcba98";
+  const subRow = (path: string, state: SubmoduleRowResult["state"], extra: Partial<SubmoduleRowResult> = {}): SubmoduleRowResult => ({
+    rowId: crypto.randomUUID(),
+    path,
+    state,
+    oldCommit: OLD,
+    newCommit: OID,
+    fetched: false,
+    connected: false,
+    found: false,
+    registered: false,
+    ...extra,
+  });
+  const SUB_ROWS: [SubmoduleRowResult, string][] = [
+    [subRow("lib/a", "cloned", { oldCommit: null }), "lib/a: Cloned"],
+    [subRow("lib/b", "moved"), "lib/b: Moved from fedcba987654 to 0123456789ab"],
+    [subRow("lib/c", "unchanged", { newCommit: OLD }), "lib/c: No change"],
+    [subRow("lib/d", "failed", { failedRead: "check" }), "lib/d: Failed"],
+    [subRow("lib/e", "clone-interrupted", { folderPath: "lib/e", text: "t", remedy: { command: null, text: "r" } }), "lib/e: Clone interrupted"],
+    [subRow("lib/f", "changed-elsewhere"), "lib/f: Changed elsewhere to 0123456789ab"],
+    [subRow("lib/g", "refused", { reason: "update-mode", text: "t" }), "lib/g: Refused"],
+  ];
+  const SUB_INTRO = "The interrupted submodule update left these rows:";
+
+  test("submoduleResults adds its sentence, then one line per row with the row state text, in field order", () => {
+    const html = band({ operationState: "normal", conflicted: 0, recovery: { outcome: "unknown", indexMatch: "published", submoduleResults: SUB_ROWS.map(([r]) => r), foreign: [LOCKS[0]!] } });
+    const text = plain(html);
+    const parts = ["The interrupted hunk or file action reached the index.", SUB_INTRO, ...SUB_ROWS.map(([, line]) => line), FOREIGN, LOCKS[0]!];
+    expect(parts.every((p) => count(text, p) === 1)).toBe(true);
+    expect(parts.map((p) => text.indexOf(p))).toEqual(parts.map((p) => text.indexOf(p)).toSorted((a, b) => a - b));
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    const lines = [...host.querySelectorAll("p")].map((p) => p.textContent);
+    for (const [, line] of SUB_ROWS) expect(lines).toContain(line);
+  });
+
+  test("submoduleResults alone renders the row; without it the row has no submodule sentence", () => {
+    expect(recoveryText({ outcome: "unknown", submoduleResults: [SUB_ROWS[0]![0]] })).toContain(`${SUB_INTRO} lib/a: Cloned`);
+    expect(recoveryText({ outcome: "none" })).not.toContain(SUB_INTRO);
   });
 
   test("the row shows the Warning icon, has no control, and follows the submodule row; it alone renders the band", () => {

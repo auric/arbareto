@@ -12,7 +12,7 @@ import { codeText } from "./RepositoryStates";
 type Scope = Environment["platformScope"];
 
 /** The selected Git path and version. Scope `other` adds the "Unqualified platform" label beside the version. */
-export function GitVersionRow({ path, version, scope }: { path: string; version: string; scope: Scope }) {
+export function GitVersionRow({ path, version, scope }: { path: string; version: string; scope: Scope | undefined }) {
   return (
     <span className="flex flex-col gap-1">
       <span className="break-all">Git: {path}</span>
@@ -40,6 +40,9 @@ export type RepositoryMenuProps = {
   /** The worktree root and HEAD text of the open workspace. */
   path: string | null;
   head: string | null;
+  /** The distro of a WSL workspace, and its approved Git. No public operation gives the distro Git yet, so the workbench passes null. */
+  distro?: string | null;
+  wslGit?: { path: string; version: string } | null;
   /** The current trust ID of the workspace (contract §3 `readTrust`). Without it, Revoke trust is unavailable. */
   trustId: string | null;
   onOpenRepository(): void;
@@ -51,7 +54,7 @@ export type RepositoryMenuProps = {
 };
 
 /** The repository menu of the header menu bar. Render it inside `Menubar`. */
-export function RepositoryMenu({ environment, path, head, trustId, onOpenRepository, onSelectGit, onReviewTrust, revokeTrust, onOpenChange, finalFocus }: RepositoryMenuProps) {
+export function RepositoryMenu({ environment, path, head, distro = null, wslGit = null, trustId, onOpenRepository, onSelectGit, onReviewTrust, revokeTrust, onOpenChange, finalFocus }: RepositoryMenuProps) {
   const [revoked, setRevoked] = useState<ReactNode>(null);
   const [revoking, setRevoking] = useState(false);
   const gitPath = environment?.selectedPath;
@@ -75,6 +78,17 @@ export function RepositoryMenu({ environment, path, head, trustId, onOpenReposit
         <MenubarSeparator />
         <MenubarItem onClick={onOpenRepository}>Open repository</MenubarItem>
         <MenubarSeparator />
+        {distro === null ? null : (
+          // plan.md "Required visible states", WSL location: the label above the distro Git path and version.
+          <MenubarGroup>
+            <MenubarLabel className="break-all whitespace-normal">WSL: {distro}</MenubarLabel>
+            {wslGit === null ? null : (
+              <MenubarLabel className="whitespace-normal">
+                <GitVersionRow path={wslGit.path} version={wslGit.version} scope={environment?.platformScope} />
+              </MenubarLabel>
+            )}
+          </MenubarGroup>
+        )}
         <MenubarGroup>
           {environment && gitPath !== undefined && version !== undefined ? (
             <MenubarLabel className="whitespace-normal">

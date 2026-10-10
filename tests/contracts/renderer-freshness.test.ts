@@ -24,6 +24,7 @@ function bridgeDouble() {
     readEntries: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readEntries", target, payload),
     readHistory: (target: Record<string, unknown>) => record("readHistory", target),
     readComparison: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readComparison", target, payload),
+    cancel: (payload: Record<string, unknown>) => record("cancel", {}, payload),
   };
   const of = (operation: string) => calls.filter((call) => call.operation === operation);
   const last = (operation: string) => {

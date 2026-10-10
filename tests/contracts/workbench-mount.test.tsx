@@ -411,7 +411,7 @@ describe("repository menu", () => {
     await settle();
     await resolve(latest(double, "revokeTrust"), succeeded({ endedProcesses: 0 }));
     expect(text()).toContain("Trust revoked.");
-    await act(async () => item("Open repository").click());
+    await act(async () => item("Open folder… (Ctrl+O)").click());
     await settle();
     await resolve(latest(double, "chooseRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64) }));
     await openMenu();

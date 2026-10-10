@@ -46,6 +46,7 @@
     "tests/contracts/remedy-command.test.ts",
     "tests/contracts/renderer-freshness.test.ts",
     "tests/contracts/repository-states.test.tsx",
+    "tests/contracts/repository-switcher.test.tsx",
     "tests/contracts/schemas.test.ts",
     "tests/contracts/service-boundary.test.ts",
     "tests/contracts/session-startup.test.ts",

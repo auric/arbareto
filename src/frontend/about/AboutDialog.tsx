@@ -3,6 +3,7 @@
 
 import { useRef, type RefObject } from "react";
 import type { Environment } from "../../contracts/envelope";
+import { SCOPE_LINE } from "../app/RepositoryStates";
 import type { Notices } from "../build/notices";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
@@ -10,8 +11,6 @@ import { dialogSize, type Size } from "../layout/profiles";
 
 // plan.md "About window" and "Dialog sizes". The mount passes the `bun run build:notices` output (T130) as `notices`.
 
-// plan.md "About window" Overview row.
-const SCOPE_LINE = "This test build covers opening repositories, status, diffs, hunk and file staging, local commits, submodule updates, and one history page.";
 // NOTICE.md lines 3, 7, and 9.
 const COPYRIGHT = "Copyright (c) 2026 Ihor Lifanov";
 const PERMISSION =

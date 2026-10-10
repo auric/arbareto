@@ -11,6 +11,7 @@ import { Button } from "../components/ui/button";
 import { HELP_LINE } from "../changes/ChangesPane";
 import { LIMITATION_TEXT } from "../changes/limitation-text";
 import { blockingText, WarningIcon } from "./NoticeBand";
+import { RecentList, type RecentListProps } from "./RepositorySwitcher";
 
 // plan.md "Required visible states": Repository refused, Starting WSL distro, Loading, No selection, Conflicted/unfinished operation, Error, Limited output, Large history, and Unsupported/binary.
 // No state offers repair, a configuration change, or lock removal.
@@ -115,6 +116,19 @@ export function RepositoryRefused({ code, result, onOpenRepository }: { code: Er
       <Button variant="outline" onClick={onOpenRepository}>
         Open repository
       </Button>
+    </section>
+  );
+}
+
+export const SCOPE_LINE =
+  "This test build covers opening repositories, recent repositories, status, diffs, hunk and file staging, local commits, submodule updates, one history page, and a read-only reference list.";
+
+/** plan.md "Required visible states", No repository: the recent list with its filter, Open folder, and the static line. No branch per entry. */
+export function StartPage(props: Omit<RecentListProps, "current" | "onClose" | "popup">) {
+  return (
+    <section aria-label="Start page" className="flex min-h-0 max-w-[480px] flex-col gap-4 p-4">
+      <RecentList {...props} />
+      <p className="text-muted-text">{SCOPE_LINE}</p>
     </section>
   );
 }

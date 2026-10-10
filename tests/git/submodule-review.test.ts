@@ -359,6 +359,25 @@ describe("refusals (contract §12 \"Refusals\")", () => {
     });
   }
 
+  // Contract §12 "Refusals" `clone-interrupted`: the HEAD read after `rev-parse --verify -q HEAD` fails. F28 interrupted writes `ref: refs/heads/main`, so `show-ref --exists` exits 2.
+  for (const [id, head, label, code] of [
+    ["placeholder", "ref: refs/heads/.invalid\n", "Git's clone placeholder target fails the ref-name rules, so the review refuses clone-interrupted", undefined],
+    ["loop", "ref: refs/heads/loop\n", "a symbolic-ref loop exits 128, and its valid no-recurse target gives GIT_FAILED", "GIT_FAILED"],
+    ["no-ref", "no ref\n", "a HEAD file that makes both symbolic-ref reads exit 128 gives GIT_FAILED", "GIT_FAILED"],
+  ] as const) {
+    reviewCase(`F28 interrupted: ${label}`, () => {
+      const name = `t222-interrupted-${id}`;
+      const b = buildF28(gitPath(), name, "interrupted");
+      const gitDir = resolve(b.root, (b.facts.notes.interrupted as { gitDir: string }).gitDir);
+      writeFileSync(join(gitDir, "HEAD"), head);
+      if (id === "loop") put(gitDir, "refs/heads/loop", "ref: refs/heads/loop\n");
+      return withFixture(b, name, async (service) => {
+        const { r } = await reviewed(service, b);
+        expect({ code: r.response.code, refusals: r.refusals.map(shape) }).toEqual(code === undefined ? { code: undefined, refusals: [{ path: "solo", reason: "clone-interrupted", text: TEXTS.cloneInterrupted("solo"), command: null }] } : { code, refusals: [] });
+      });
+    });
+  }
+
   reviewCase(`F28 path: the review gives reason path, starts no Git process inside a submodule, and every repository digest stays equal`, () => {
     const b = buildF28(gitPath(), "t222-refuse-path-digests", "path");
     const sup = superOf(b);

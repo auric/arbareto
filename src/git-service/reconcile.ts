@@ -22,7 +22,9 @@ import {
   submoduleGitDirArgs,
   submoduleHeadOidArgs,
   submoduleHeadTargetArgs,
+  submoduleHeadTargetNoRecurseArgs,
   submoduleRefExistsArgs,
+  submoduleRefFormatArgs,
   type ObjectFormat,
   type SubmoduleLocation,
 } from "./commands";
@@ -491,11 +493,18 @@ export async function observeUpdateRows(ctx: ObserveContext, reads: readonly Upd
           if (head === null || !isObjectId(head, w.objectFormat)) return { code: "MALFORMED_GIT_OUTPUT" };
           refs = true;
         } else {
-          // Only exit 2 of git-show-ref(1) `--exists` means that HEAD names no commit.
-          const ref = await line(submoduleHeadTargetArgs(at));
-          if (!isRefName(ref)) return { code: "MALFORMED_GIT_OUTPUT" };
-          const exists = await git(submoduleRefExistsArgs(at, ref));
-          if (exists.code !== 2) return { code: "GIT_FAILED" };
+          // HEAD names no commit only when git-show-ref(1) `--exists` exits 2, or when the target fails the ref-name rules.
+          const symbolic = await git(submoduleHeadTargetArgs(at));
+          if (symbolic.code === 0) {
+            const ref = lineOf(symbolic.out);
+            if (ref === null || !isRefName(ref)) return { code: "MALFORMED_GIT_OUTPUT" };
+            const exists = await git(submoduleRefExistsArgs(at, ref));
+            if (exists.code !== 2) return { code: "GIT_FAILED" };
+          } else {
+            if (symbolic.code !== 128) return { code: "GIT_FAILED" };
+            const format = await git(submoduleRefFormatArgs(at, await line(submoduleHeadTargetNoRecurseArgs(at))));
+            if (format.code !== 1) return { code: "GIT_FAILED" };
+          }
         }
         gitDirs.push(await line(submoduleGitDirArgs(at)));
       }

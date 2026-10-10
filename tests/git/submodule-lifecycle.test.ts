@@ -107,8 +107,7 @@ function duringReconciling(service: Service, requestId: () => string | undefined
 }
 
 describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research.md R14 S9)", () => {
-  // A killed clone keeps HEAD at Git's placeholder `ref: refs/heads/.invalid`. `symbolic-ref -q HEAD` then exits 128, and reconciliation gives unknown.
-  todoCase(TASK, `F30 clone: Cancel during the clone of the large remote sends the run cancel and starts no later step, the outcome arrives within 5 seconds, the row states clone-interrupted with its folder and move-out remedy, every S9 file remains, the next review refuses clone-interrupted, and after the move-out the next update reaches the recorded commit while the moved folder keeps every byte (needs the reconciliation HEAD read of a killed clone)`, SHELL, async () => {
+  caseTest(TASK, `F30 clone: Cancel during the clone of the large remote sends the run cancel and starts no later step, the outcome arrives within 5 seconds, the row states clone-interrupted with its folder and move-out remedy, every S9 file remains, the next review refuses clone-interrupted, and after the move-out the next update reaches the recorded commit while the moved folder keeps every byte`, SHELL, async () => {
     await update();
     const name = "t224-clone-cancel";
     const b = buildF30(gitPath(), name, "clone");
@@ -153,7 +152,8 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
       renameSync(join(sup, "big"), moved);
       const bytes = { ...workingFileDigests(moved), ".git": fileSha256(join(moved, ".git")) };
       const next = await reviewSubmodules(service, repositoryId);
-      expect(outcome(await updateSubmodules(service, repositoryId, next))).toEqual(SUCCEEDED);
+      // The update clones the 300 MB file, which takes longer than the default response wait.
+      expect(outcome(await service.response(sendUpdate(service, repositoryId, next), LONG_TIMEOUT_MS))).toEqual(SUCCEEDED);
       expect(fixtureGit(b, join(sup, "big"), ["rev-parse", "HEAD"]).trim()).toBe(recorded);
       expect({ ...workingFileDigests(moved), ".git": fileSha256(join(moved, ".git")) }).toEqual(bytes);
     });

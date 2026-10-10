@@ -37,10 +37,12 @@ import {
   submoduleHeadOidArgs,
   submoduleHeadRefArgs,
   submoduleHeadTargetArgs,
+  submoduleHeadTargetNoRecurseArgs,
   submoduleHooksPathArgs,
   submoduleObjectCheckArgs,
   submoduleReachArgs,
   submoduleRefExistsArgs,
+  submoduleRefFormatArgs,
   submoduleTreeArgs,
   type ObjectFormat,
   type SubmoduleLocation,
@@ -531,7 +533,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       return { gitDir, hooks, entries };
     };
 
-    // `rev-parse --verify -q HEAD`. A nonzero exit leads to `symbolic-ref -q HEAD` and `show-ref --exists`; only exit 2 means no commit.
+    // `rev-parse --verify -q HEAD`. After a nonzero exit, HEAD names no commit only when `show-ref --exists` exits 2, or when the HEAD target fails the ref-name rules.
     const readHead = async (location: SubmoduleLocation): Promise<Pick<Repo, "head" | "headRef">> => {
       const headRead = await git(submoduleHeadOidArgs(location));
       const symbolic = await git(submoduleHeadTargetArgs(location));
@@ -539,18 +541,24 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       if (symbolic.code === 0) {
         headRef = oneLine(symbolic.out);
         if (headRef === null) throw failed("MALFORMED_GIT_OUTPUT");
-      } else if (symbolic.code !== 1) throw failed("GIT_FAILED");
-      let head: string | null;
+      } else if (symbolic.code !== 1 && (symbolic.code !== 128 || headRead.code === 0)) throw failed("GIT_FAILED");
       if (headRead.code === 0) {
-        head = oneLine(headRead.out);
+        const head = oneLine(headRead.out);
         if (head === null || !isObjectId(head, objectFormat)) throw failed("GIT_FAILED");
-      } else {
-        if (headRef === null) throw failed("GIT_FAILED");
-        const exists = await git(submoduleRefExistsArgs(location, headRef));
-        if (exists.code !== 2) throw failed("GIT_FAILED");
-        head = null;
+        return { head, headRef };
       }
-      return { head, headRef };
+      if (symbolic.code === 128) {
+        const target = await git(submoduleHeadTargetNoRecurseArgs(location));
+        const name = target.code === 0 ? oneLine(target.out) : null;
+        if (name === null) throw failed(target.code === 0 ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED");
+        const format = await git(submoduleRefFormatArgs(location, name));
+        if (format.code !== 1) throw failed("GIT_FAILED");
+        return { head: null, headRef: null };
+      }
+      if (headRef === null) throw failed("GIT_FAILED");
+      const exists = await git(submoduleRefExistsArgs(location, headRef));
+      if (exists.code !== 2) throw failed("GIT_FAILED");
+      return { head: null, headRef };
     };
 
     const readRepo = async (location: SubmoduleLocation): Promise<Repo> => {

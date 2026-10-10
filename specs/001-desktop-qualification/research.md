@@ -2856,7 +2856,7 @@ The probes S36 to S40 ran on 2026-10-10 for T230. They used Git `2.56.0.windows.
 - In both copies, each of these steps exited 128 with "invalid value for 'submodule.ghost.update'": the clone step for `mid`, the register step `submodule init -- :(literal)mid`, and the checkout step `submodule update --init --no-fetch --progress -- :(literal)solo`.
 - No step wrote a `submodule.*` key. The keys stayed `submodule.solo.active` and `submodule.solo.url`. No `mid/.git` entry appeared, and the `solo` HEAD did not change.
 - `--no-lazy-fetch -C <super>/solo fetch --progress --no-recurse-submodules` exited 0 in both copies.
-- So such an entry makes every `submodule` step fail before a write, but a fetch step runs. With only `clone` and register rows, no row has an effect, and the update ends `failed` with `GIT_FAILED`. A row that fetches first still gets `fetched`.
+- So such an entry makes every `submodule` step fail before a write, but a fetch step runs. A started clone step, connect step, or `reuse` checkout step sets `connected`, which is an effect. So the update ends `failed-with-effects` when one of these steps started (contract §12 "Refusals"). It ends `failed` with `GIT_FAILED` only when no row has the `fetched`, `connected`, or `registered` flag. A row that fetches first still gets `fetched`.
 
 **S39. The binding of two reviews of one unchanged repository.**
 

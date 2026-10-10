@@ -378,6 +378,17 @@ export function submoduleHeadTargetArgs(location: SubmoduleLocation): string[] {
   return submoduleRead(location, "symbolic-ref", "-q", "HEAD");
 }
 
+// git-symbolic-ref(1) `--no-recurse`: Git prints the HEAD target without the name check that makes `symbolic-ref -q HEAD` exit 128.
+export function submoduleHeadTargetNoRecurseArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "symbolic-ref", "--no-recurse", "-q", "HEAD");
+}
+
+// Git checks a symbolic-ref target with the `--allow-onelevel` rules (refs.c `refs_resolve_ref_unsafe`). Exit 1 means that the name is not valid (builtin/check-ref-format.c).
+export function submoduleRefFormatArgs(location: SubmoduleLocation, name: string): string[] {
+  if (typeof name !== "string" || name.includes("\0")) throw new TypeError("ref name refused");
+  return submoduleRead(location, "check-ref-format", "--allow-onelevel", name);
+}
+
 // Contract §12 "Update protocol", read failures: only the exit status decides. git-show-ref(1) `--exists`: 0 present, 2 missing, 1 another lookup error.
 export function submoduleRefExistsArgs(location: SubmoduleLocation, name: string): string[] {
   if (!isRefName(name)) throw new TypeError("ref name refused");

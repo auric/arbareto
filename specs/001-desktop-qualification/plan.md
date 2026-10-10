@@ -158,6 +158,8 @@ This section plans the interface only. Mutation eligibility follows the explicit
 
 Use the selected Base UI-based shadcn family, Tailwind, and Pierre. Keep the service authoritative for comparisons and hunk identifiers. Display selection never constructs a staging patch.
 
+The comparison view highlights only the languages in research.md R9 "Highlight set". It uses the `github-light` theme in the light theme and the `github-dark` theme in the dark theme. Pierre selects the language from the file name. A file outside the set shows as plain text. The build ships no Oniguruma WASM.
+
 Git Extensions is the primary workflow and graph reference. T3 Code is the visual-style reference. Borrow behavior and layout ideas only.
 
 #### T3 source inspection and selective reuse

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import type { DiffLineAnnotation, Hunk, SelectedLineRange } from "@pierre/diffs";
-import { PatchDiff, Virtualizer } from "@pierre/diffs/react";
+import { getSingularPatch, setLanguageOverride, type DiffLineAnnotation, type Hunk, type SelectedLineRange } from "@pierre/diffs";
+import { FileDiff, Virtualizer } from "@pierre/diffs/react";
+import { useMemo } from "react";
+import { diffLanguage } from "../highlight/language";
+import { DIFF_THEME } from "../highlight/set";
 
 // Static CSS only. Repository content never enters `unsafeCSS`.
 // plan.md "Selected hunk": a 3 DIP Accent left bar and no fill. The focus outline stays as Pierre draws it.
@@ -25,16 +28,22 @@ function hunkRange(h: Hunk): SelectedLineRange {
 }
 
 export default function PatchView({ patch, selected }: PatchViewProps) {
+  // PatchDiff does the same getSingularPatch call. FileDiff takes the parsed file, so the language override can apply.
+  const fileDiff = useMemo(() => {
+    const file = getSingularPatch(patch);
+    const lang = diffLanguage(file);
+    return lang === undefined ? file : setLanguageOverride(file, lang);
+  }, [patch]);
   const range = selected ? hunkRange(selected) : null;
   const annotations: DiffLineAnnotation[] = range ? [{ side: range.side!, lineNumber: range.start }] : [];
   return (
     <Virtualizer className="min-h-0 flex-1 overflow-auto">
-      <PatchDiff
-        patch={patch}
+      <FileDiff
+        fileDiff={fileDiff}
         selectedLines={range}
         lineAnnotations={annotations}
         renderAnnotation={() => <span className="block border-l-3 border-accent-role px-2 font-semibold">Selected hunk</span>}
-        options={{ diffStyle: "unified", disableFileHeader: true, preferredHighlighter: "shiki-js", unsafeCSS: CSS }}
+        options={{ diffStyle: "unified", disableFileHeader: true, preferredHighlighter: "shiki-js", theme: DIFF_THEME, unsafeCSS: CSS }}
       />
     </Virtualizer>
   );

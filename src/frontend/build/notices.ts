@@ -4,6 +4,8 @@
 // T130: the third-party notice inventory (plan.md "Tool and runtime boundaries" and "About window", research.md R7 and R9).
 // This build script runs under Bun and never enters the renderer bundle. tests/git/portable-imports.test.ts permits no runtime import under src/frontend, so it uses Bun globals only.
 
+import { TM_GRAMMARS_VERSION, TM_THEMES_VERSION } from "../highlight/set";
+
 type LockEntry = [string, ...unknown[]];
 type LockMeta = { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
 export type BunLock = { workspaces: Record<string, { dependencies?: Record<string, string>; devDependencies?: Record<string, string> }>; packages: Record<string, LockEntry> };
@@ -232,8 +234,11 @@ async function main(): Promise<number> {
   // research.md R7: Bun is MIT, and it statically links LGPL-2 JavaScriptCore and WebKit and other libraries. Its LICENSE.md lists them.
   const bunKey = vendoredKey(vendoredKeys, "runtime", "bun", Bun.version);
   shipped.push({ name: "Bun runtime and linked components", version: Bun.version, license: "MIT, LGPL-2.0 (JavaScriptCore, WebKit), and linked-library licences", files: await filesOf([], bunKey) });
-  // research.md R9 names no source for these notices, so this entry stays a refusal.
-  shipped.push({ name: "Shiki grammars, themes, and Oniguruma WASM", license: undefined, files: [] });
+  // research.md R9 and R10: the shipped Shiki grammars and themes come from these releases, and every shipped entry is MIT.
+  // The vite.config.ts bundle check refuses Oniguruma WASM in the build, so it needs no notice.
+  for (const [name, version] of [["tm-grammars", TM_GRAMMARS_VERSION], ["tm-themes", TM_THEMES_VERSION]] as const) {
+    shipped.push({ name, version, license: "MIT", files: await filesOf([], vendoredKey(vendoredKeys, "npm", name, version)) });
+  }
 
   const project = { license: await Bun.file(`${root}/LICENSE`).text(), notice: await Bun.file(`${root}/NOTICE.md`).text() };
   const result = inventory(shipped, manifest.repository?.url ?? "", project);

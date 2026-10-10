@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { cargoShipped, cssPackages, inventory, licenseFileNames, npmClosure, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
+import { TM_GRAMMARS_VERSION, TM_THEMES_VERSION } from "../../src/frontend/highlight/set";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/frontend/build/notices.ts", import.meta.dir);
@@ -128,6 +129,16 @@ describe("vendored licence texts (T338)", () => {
     expect(vendoredKey(KEYS, "cargo", "lru_map", "0.4.1")).toBeUndefined();
     const result = inventory([{ name: "lru_map", version: "0.4.2", license: "MIT", files: [] }], REPO, PROJECT);
     expect(result.problems).toEqual(["lru_map 0.4.2: no licence text"]);
+  });
+
+  test("the Shiki grammar and theme texts exist for the exact versions of the shipped set, and another version is a refusal", () => {
+    const root = `${import.meta.dir}/../../third-party-licenses`;
+    const keys = new Set([...new Bun.Glob("**/*").scanSync({ cwd: root, onlyFiles: true })].map((file) => file.replaceAll("\\", "/").replace(/\/[^/]*$/, "")));
+    expect(vendoredKey(keys, "npm", "tm-grammars", TM_GRAMMARS_VERSION)).toBe(`npm/tm-grammars@${TM_GRAMMARS_VERSION}`);
+    expect(vendoredKey(keys, "npm", "tm-themes", TM_THEMES_VERSION)).toBe(`npm/tm-themes@${TM_THEMES_VERSION}`);
+    expect(vendoredKey(keys, "npm", "tm-grammars", "1.32.21")).toBeUndefined();
+    const result = inventory([{ name: "tm-grammars", version: "1.32.21", license: "MIT", files: [] }], REPO, PROJECT);
+    expect(result.problems).toEqual(["tm-grammars 1.32.21: no licence text"]);
   });
 });
 

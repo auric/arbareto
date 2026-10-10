@@ -46,7 +46,7 @@ import {
 import { Splitter } from "../layout/Splitter";
 import { ReferencesSidebar } from "../refs/ReferencesSidebar";
 import { createRequests, isRegistration, refsPair, wslDistro, type RequestBridge, type Requests, type RequestState } from "../state/requests";
-import { DEFAULT_PREFERENCES, readPreferences, writePreferences, type Preferences, type Theme } from "../state/preferences";
+import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, writePreferences, type DarkPalette, type Preferences, type Theme } from "../state/preferences";
 import { SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
 import { blockingText, NoticeBand, WarningIcon } from "./NoticeBand";
 import { RepositoryMenu } from "./RepositoryMenu";
@@ -113,6 +113,12 @@ const THEMES: { value: Theme; label: string }[] = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
   { value: "system", label: "System" },
+];
+// plan.md "Dark palettes".
+const DARK_PALETTES: { value: DarkPalette; label: string }[] = [
+  { value: "graphite", label: "Graphite" },
+  { value: "ink", label: "Ink" },
+  { value: "warm", label: "Warm dark" },
 ];
 const DENSITIES: { value: Density; label: string }[] = [
   { value: "comfortable", label: "Comfortable" },
@@ -396,7 +402,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     else root.setAttribute("data-theme", preferences.theme);
     if (preferences.density === "compact") root.removeAttribute("data-density");
     else root.setAttribute("data-density", preferences.density);
-  }, [preferences.theme, preferences.density]);
+    const palette = darkPaletteAttribute(preferences.darkPalette);
+    if (palette === null) root.removeAttribute("data-dark-palette");
+    else root.setAttribute("data-dark-palette", palette);
+  }, [preferences.theme, preferences.density, preferences.darkPalette]);
 
   const savePreferences = (next: Preferences) => {
     setPreferences(next);
@@ -755,6 +764,15 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                     {THEMES.map((t) => (
                       <MenubarRadioItem key={t.value} value={t.value}>
                         {t.label}
+                      </MenubarRadioItem>
+                    ))}
+                  </MenubarRadioGroup>
+                  <MenubarSeparator />
+                  <MenubarRadioGroup value={preferences.darkPalette} onValueChange={(darkPalette) => savePreferences({ ...preferences, darkPalette: darkPalette as DarkPalette })}>
+                    <MenubarLabel>Dark palette</MenubarLabel>
+                    {DARK_PALETTES.map((p) => (
+                      <MenubarRadioItem key={p.value} value={p.value}>
+                        {p.label}
                       </MenubarRadioItem>
                     ))}
                   </MenubarRadioGroup>

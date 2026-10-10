@@ -39,9 +39,25 @@ export const LANGUAGES: Record<string, { aliases: string[]; load: Loader<Languag
   xml: { aliases: [], load: () => import("shiki/langs/xml.mjs") },
 };
 
+// plan.md "Dark palettes": two upstream foregrounds stay below 4.5:1. The theme is MIT-licensed.
+// The comment color `#6a737d` reaches 2.81:1 to 3.09:1 on the palette Surface and fills; `#959da5`, the theme's own `descriptionForeground`, reaches at least 4.93:1.
+// `markup.changed` draws `#ffab70` on its own `#c24e00` at 2.58:1; `#ffffff` reaches 4.79:1.
+const READABLE: { foreground: string; background: string | undefined; to: string }[] = [
+  { foreground: "#6a737d", background: undefined, to: "#959da5" },
+  { foreground: "#ffab70", background: "#c24e00", to: "#ffffff" },
+];
+function readableColors(module: { default: ThemeRegistrationRaw }): { default: ThemeRegistrationRaw } {
+  const theme = module.default;
+  const tokenColors = theme.tokenColors?.map((rule) => {
+    const fix = READABLE.find((r) => r.foreground === rule.settings.foreground?.toLowerCase() && r.background === rule.settings.background?.toLowerCase());
+    return fix === undefined ? rule : { ...rule, settings: { ...rule.settings, foreground: fix.to } };
+  });
+  return { default: { ...theme, tokenColors } };
+}
+
 export const THEMES: Record<string, { colorScheme: "light" | "dark"; load: Loader<ThemeRegistrationRaw> }> = {
   "github-light": { colorScheme: "light", load: () => import("shiki/themes/github-light.mjs") },
-  "github-dark": { colorScheme: "dark", load: () => import("shiki/themes/github-dark.mjs") },
+  "github-dark": { colorScheme: "dark", load: () => import("shiki/themes/github-dark.mjs").then(readableColors) },
 };
 
 /** The Pierre `theme` option: the application light and dark themes. */

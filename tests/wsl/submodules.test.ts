@@ -4,7 +4,7 @@
 // T232: submodule review and update of a WSL repository with F31 (contract §6 "Activity and stall notice", §11, §12 "WSL repositories").
 // T233 routes `submodule-review.ts` and `submodule-update.ts` through contract §11. The oracle is the distro Git in a disposable copy.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect } from "bun:test";
 import { STALL_NOTICE_MS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
@@ -15,7 +15,7 @@ import { withFsCalls, type FsCall } from "../git/service-harness";
 import { commandOf, objectsWith } from "../git/submodule-harness";
 import type { SubmoduleRowResult } from "../../src/contracts/submodules";
 import { buildF31, distroGit, distroSubmoduleOracle, distroSubmoduleState, globalConfig, startSession, type F31, type WslSession } from "./fixtures";
-import { inDistro, listScopes, missingCapability, pgrep, uncPath, useWslFolder, WSL_EXE, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_EXE, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
@@ -47,17 +47,6 @@ async function underTest(): Promise<void> {
 }
 
 const wslCase = (name: string, body: (host: WslHost) => Promise<void>) => wslTest(name, NEEDS, body, CASE_TIMEOUT_MS);
-
-// A case that waits for the task in its title. A missing capability skips it, as `wslTest` does.
-function wslTodo(name: string, body: (host: WslHost) => Promise<void>): void {
-  const missing = missingCapability(NEEDS);
-  if (missing !== null) {
-    console.log(`SKIP ${missing}: ${name}`);
-    test.skip(`${name} (SKIP: ${missing})`, () => {});
-    return;
-  }
-  test.todo(name, () => body(wslHost()!), CASE_TIMEOUT_MS);
-}
 
 function setup(host: WslHost): { runner: BunRunner; s: WslSession } {
   const runner = createBunRunner({ git: GIT ?? "git", directory: fixtureDir(`runner-${crypto.randomUUID()}`), environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });
@@ -204,7 +193,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     expect(values).toContain(`${modules}/solo`);
   });
 
-  wslTodo("F31 sleep: the sleeping hook sends stalled within 20 seconds through the anchor I/O sum, and Cancel ends it (needs T256)", async (host) => {
+  wslCase("F31 sleep: the sleeping hook sends stalled within 20 seconds through the anchor I/O sum, getOperation returns the WSL checkout command in stallRemedy, no progress event holds it, and Cancel ends it", async (host) => {
     await underTest();
     const f = buildF31(host, "sleep");
     const { runner, s } = setup(host);
@@ -218,6 +207,11 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     const elapsed = performance.now() - checkout()!.at;
     console.log(`OBSERVATION T232: the F31 sleeping hook reached stalled ${Math.round(elapsed)} ms after its checkout step started (threshold ${STALL_NOTICE_MS} ms)`);
     expect(elapsed).toBeLessThanOrEqual(STALL_BOUND_MS);
+    // Contract §6 "Activity and stall notice", §11 "Remedy commands", and §12 "Remedies": the WSL form of the running checkout step.
+    const command = `& ${psQuote(WSL_EXE)} --distribution ${psQuote(host.distro)} --cd / --exec ${psQuote(host.probe.paths.git!)} --no-lazy-fetch -C ${psQuote(f.sup.dir)} submodule update --init --no-fetch -- ${psQuote(":(literal)solo")}`;
+    const operation = await s.response(s.request("getOperation", { operationId: operationOf(s, requestId) }));
+    expect(valuesOf(operation.result, "stallRemedy")).toEqual([{ command, text: "This command checks out this submodule in a terminal, where Git can ask for input. Then use Update submodules again." }]);
+    expect(JSON.stringify(s.progressOf(requestId)).includes(JSON.stringify(command).slice(1, -1))).toBe(false);
     s.request("cancel", { operationId: operationOf(s, requestId) });
     await s.response(requestId);
     await Bun.sleep(AFTER_CLOSE_MS);

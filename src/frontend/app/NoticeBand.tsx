@@ -10,12 +10,14 @@ import type { WorkspaceSnapshot } from "../../contracts/envelope";
 
 type OperationState = WorkspaceSnapshot["operationState"];
 
-// plan.md "Notice band" item 1 names only these four unfinished operations. `sequencer-active` and `unknown` have no plan.md sentence.
+// plan.md "Notice band" item 1, without the final period.
 const OPERATION: Partial<Record<OperationState, string>> = {
-  merging: "A merge",
-  rebasing: "A rebase",
-  "cherry-picking": "A cherry-pick",
-  reverting: "A revert",
+  merging: "A merge is in progress",
+  rebasing: "A rebase is in progress",
+  "cherry-picking": "A cherry-pick is in progress",
+  reverting: "A revert is in progress",
+  "sequencer-active": "A cherry-pick or revert sequence is in progress",
+  unknown: "Arbareto cannot identify the Git operation in progress",
 };
 const SECOND = "Arbareto blocks changes until you finish it outside Arbareto and select Refresh (F5).";
 
@@ -24,7 +26,7 @@ const files = (n: number) => (n === 1 ? "1 conflicted file" : `${n} conflicted f
 /** The first sentence of the blocking row, or null when plan.md gives none for the state. */
 export function blockingText(operationState: OperationState, conflicted: number): string | null {
   const operation = OPERATION[operationState];
-  if (operation !== undefined) return conflicted > 0 ? `${operation} is in progress, with ${files(conflicted)}.` : `${operation} is in progress.`;
+  if (operation !== undefined) return conflicted > 0 ? `${operation}, with ${files(conflicted)}.` : `${operation}.`;
   if (conflicted > 0) return conflicted === 1 ? "1 file has conflicts." : `${conflicted} files have conflicts.`;
   return null;
 }

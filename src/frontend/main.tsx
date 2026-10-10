@@ -5,6 +5,7 @@ import { Suspense, use, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createBridge, type BridgeResponse } from "./bridge";
 import { BootView, bootActions, type Environment } from "./boot/BootView";
+import "./index.css";
 
 let sessionChanged = () => {};
 // The capability grants no `unlisten`, so the bridge must exist once for the page life, outside React.

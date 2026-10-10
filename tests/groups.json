@@ -19,6 +19,7 @@
     "tests/contracts/admission.test.ts",
     "tests/contracts/boot-view.test.tsx",
     "tests/contracts/bridge.test.ts",
+    "tests/contracts/comparison-view.test.tsx",
     "tests/contracts/diff-parser.test.ts",
     "tests/contracts/envelope.test.ts",
     "tests/contracts/environment.test.ts",

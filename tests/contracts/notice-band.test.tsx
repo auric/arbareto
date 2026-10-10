@@ -40,6 +40,10 @@ describe("notice band", () => {
     ["merging", 0, "A merge is in progress."],
     ["cherry-picking", 0, "A cherry-pick is in progress."],
     ["reverting", 0, "A revert is in progress."],
+    ["sequencer-active", 0, "A cherry-pick or revert sequence is in progress."],
+    ["sequencer-active", 3, "A cherry-pick or revert sequence is in progress, with 3 conflicted files."],
+    ["unknown", 0, "Arbareto cannot identify the Git operation in progress."],
+    ["unknown", 1, "Arbareto cannot identify the Git operation in progress, with 1 conflicted file."],
     ["conflicted", 2, "2 files have conflicts."],
     ["conflicted", 1, "1 file has conflicts."],
   ] as const) {

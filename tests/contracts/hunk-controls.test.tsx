@@ -10,16 +10,9 @@ registerDom();
 const { renderToStaticMarkup } = await import("react-dom/server");
 const { createRoot } = await import("react-dom/client");
 
-// T134 is not built. A template path keeps `tsc` from resolving the module before it exists.
-const NEEDS_VIEW = "(needs T134)";
-type ViewModule = {
-  ComparisonHeading: (props: { path: string; scope: string; sides: string }) => ReactNode;
-  fitComparisonHeading: (parts: Record<string, unknown>) => Record<string, number>;
-};
-async function comparisonView(): Promise<ViewModule> {
-  const module = "ComparisonView";
-  printOrigin(`../../src/frontend/changes/${module}.tsx`, import.meta.dir);
-  return (await import(`../../src/frontend/changes/${module}.tsx`)) as ViewModule;
+async function comparisonView() {
+  printOrigin("../../src/frontend/changes/ComparisonView.tsx", import.meta.dir);
+  return await import("../../src/frontend/changes/ComparisonView");
 }
 
 // T145 waits for T117. A template path keeps `tsc` from resolving the module before it exists.
@@ -232,7 +225,7 @@ describe("comparison heading", () => {
     else delete (globalThis.navigator as { clipboard?: unknown }).clipboard;
   });
 
-  test.todo(`its accessible name holds the full path, scope, and sides, and it keeps the pane heading height ${NEEDS_VIEW}`, async () => {
+  test("its accessible name holds the full path, scope, and sides, and it keeps the pane heading height", async () => {
     const { ComparisonHeading } = await comparisonView();
     const html = renderToStaticMarkup(<ComparisonHeading {...heading} />);
     const named = [...html.matchAll(/<(\w+)\b([^>]*)\saria-label="([^"]*)"/g)].find((m) => m[3]!.includes(path));
@@ -243,7 +236,7 @@ describe("comparison heading", () => {
     expect(html.slice(0, html.indexOf(">"))).toContain("--h-pane-heading");
   });
 
-  test.todo(`Copy path is a row button with a Tab stop that copies the full path ${NEEDS_VIEW}`, async () => {
+  test("Copy path is a row button with a Tab stop that copies the full path", async () => {
     const { ComparisonHeading } = await comparisonView();
     const html = renderToStaticMarkup(<ComparisonHeading {...heading} />);
     const copy = button(html, "Copy path");
@@ -255,7 +248,7 @@ describe("comparison heading", () => {
     expect(written).toEqual([path]);
   });
 
-  test.todo(`the fit function shrinks the folder, then the file name, then the sides, then the scope, and never Copy path ${NEEDS_VIEW}`, async () => {
+  test("the fit function shrinks the folder, then the file name, then the sides, then the scope, and never Copy path", async () => {
     const { fitComparisonHeading } = await comparisonView();
     const parts = { copyPath: 80, folder: { full: 300, min: 20 }, file: { full: 100, min: 30 }, sides: { full: 120, min: 20 }, scope: { full: 100, min: 20 } };
     expect(fitComparisonHeading({ ...parts, width: 700 })).toEqual({ folder: 300, file: 100, sides: 120, scope: 100 });

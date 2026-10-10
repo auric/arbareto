@@ -7,6 +7,7 @@ import type { Comparison, Completeness, RegistrationResult, WorkspaceSnapshot } 
 import type { ErrorCode } from "../../contracts/errors";
 import { Button } from "../components/ui/button";
 import { HELP_LINE } from "../changes/ChangesPane";
+import { LIMITATION_TEXT } from "../changes/limitation-text";
 import { blockingText, WarningIcon } from "./NoticeBand";
 
 // plan.md "Required visible states": Repository refused, Loading, No selection, Conflicted/unfinished operation, Error, Limited output, Large history, and Unsupported/binary.
@@ -165,19 +166,17 @@ export function LargeHistory() {
 }
 
 /**
- * An unsupported or binary comparison. It shows the contract `support` value. Only an entry that `applyFile` refuses shows the service remedy with Copy command.
+ * An unsupported or binary comparison. It shows the plan.md "Limitation text" sentence for the contract `support` reason. Only an entry that `applyFile` refuses shows the service remedy with Copy command.
  * `fileAction` `stage` or `unstage` means that `applyFile` accepts the entry.
  */
 export function UnsupportedState({ support, fileAction, remedy }: Pick<Comparison, "support" | "fileAction" | "remedy">) {
   const refused = fileAction !== "stage" && fileAction !== "unstage";
   return (
     <div className="flex flex-col items-start gap-2 p-2">
-      {support === null ? null : (
+      {support === null || support === "supported" ? null : (
         <p className="flex items-center gap-2">
           <WarningIcon />
-          <span>
-            No text diff: <Code>{support}</Code>
-          </span>
+          <span>{LIMITATION_TEXT[support]}</span>
         </p>
       )}
       {refused ? <CommandRemedy remedy={remedy ?? undefined} /> : null}

@@ -96,15 +96,42 @@ describe("repository states", () => {
     expect(text(await show(<states.LargeHistory />))).toBe("Up to 100 commits");
   });
 
-  test("Unsupported or binary shows the support value, and the remedy with Copy command only for an entry that applyFile refuses", async () => {
+  test("Unsupported or binary shows the limitation sentence, and the remedy with Copy command only for an entry that applyFile refuses", async () => {
     const remedy = { text: "Stage this file in a terminal.", command: "& 'C:\\Git\\cmd\\git.exe' --literal-pathspecs -C 'D:\\repo' add -- 'big.bin'" };
     const refused = await show(<states.UnsupportedState support="size" fileAction="size" remedy={remedy} />);
-    for (const part of ["size", remedy.text, remedy.command]) expect(text(refused)).toContain(part);
+    for (const part of ["This file is larger than the Arbareto size limit.", remedy.text, remedy.command]) expect(text(refused)).toContain(part);
     expect(buttons(refused)).toEqual(["Copy command"]);
     const accepted = await show(<states.UnsupportedState support="binary" fileAction="stage" remedy={remedy} />);
-    expect(text(accepted)).toContain("binary");
-    expect(text(accepted)).not.toContain(remedy.text);
+    expect(text(accepted)).toBe("Git reports binary content in this file.");
     expect(buttons(accepted)).toEqual([]);
+  });
+
+  // plan.md "Limitation text": one sentence per data-model §5 "Support decision" reason, never the raw value.
+  for (const [support, sentence] of [
+    ["binary", "Git reports binary content in this file."],
+    ["encoding", "This file is not valid UTF-8 text, or Git converts its encoding."],
+    ["size", "This file is larger than the Arbareto size limit."],
+    ["rename", "This change is a rename."],
+    ["mode", "This change alters the file mode."],
+    ["type", "This change alters the file type, or the path is not a regular file."],
+    ["symlink", "This entry is a symbolic link."],
+    ["submodule", "This entry is a submodule or a nested repository."],
+    ["LFS", "Git LFS manages this file."],
+    ["filter", "A Git filter applies to this file."],
+    ["state", "This file has conflicts."],
+    ["line-endings", "This file has mixed line endings, or only the index holds its line-ending attributes."],
+    ["index-flag", "This entry is intent-to-add, assume-unchanged, or skip-worktree."],
+    ["path", "Arbareto cannot match this path to exactly one file."],
+  ] as const) {
+    test(`the ${support} reason shows its sentence and never the raw value`, async () => {
+      const host = await show(<states.UnsupportedState support={support} fileAction="stage" remedy={null} />);
+      expect(text(host)).toBe(sentence);
+      expect(host.querySelector("code")).toBeNull();
+    });
+  }
+
+  test("without a support decision, the unsupported state shows no reason line", async () => {
+    expect(text(await show(<states.UnsupportedState support={null} fileAction="stage" remedy={null} />))).toBe("");
   });
 
   test("CopyButton writes the exact remedy text through navigator.clipboard.writeText", async () => {

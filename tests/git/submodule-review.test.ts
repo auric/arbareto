@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T222: `reviewSubmodules` and the `submoduleNotice` of `readWorkspace` (contract §12 "Discovery notice", "Review reads", "Plan", "Refusals", "Trust").
-// `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T229 registers `reviewSubmodules`, and T231 registers `updateSubmodules`.
+// `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T229 registers `reviewSubmodules`, and T230 registers `updateSubmodules`.
 
 import { describe, expect, spyOn } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -14,7 +14,7 @@ import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
-import { gitPath, readOk, TIMEOUT_MS, todoCase, valuesOf } from "./hunk-harness";
+import { gitPath, readOk, TIMEOUT_MS, valuesOf } from "./hunk-harness";
 import { caseTest, withFsCalls, type Capability, type Service } from "./service-harness";
 import {
   actionsOf,
@@ -24,6 +24,7 @@ import {
   fixtureGit,
   gitLocation,
   globalEnv,
+  invalidGitFolder,
   isReviewRead,
   moduleDirOf,
   NOTES,
@@ -48,7 +49,6 @@ import {
 printOrigin("../../src/contracts/submodules.ts", import.meta.dir);
 
 const TASK = "T222";
-const TOKEN = "(needs T231)";
 const SHELL: Capability[] = ["shell-double"];
 const reviewCase = (name: string, fn: () => Promise<void>) => caseTest(TASK, name, SHELL, fn, TIMEOUT_MS);
 
@@ -378,6 +378,19 @@ describe("refusals (contract §12 \"Refusals\")", () => {
       });
     });
   }
+
+  // Contract §12 "Review reads": `--git-dir=.git` after `-C <submodule worktree>`. Without it, Git discovery from that folder finds the superproject.
+  caseTest("T231", `a submodule .git folder whose HEAD is not valid ends the review failed with GIT_FAILED; no read in it succeeds, and no token goes out`, SHELL, () => {
+    const b = buildF27(gitPath(), "t231-invalid-git", "base");
+    const sup = superOf(b);
+    invalidGitFolder(join(sup, "solo"));
+    expect(fixtureGit(b, join(sup, "solo"), ["rev-parse", "--absolute-git-dir"])).toBe(fixtureGit(b, sup, ["rev-parse", "--absolute-git-dir"]));
+    return withFixture(b, "t231-invalid-git", async (service) => {
+      const { r } = await reviewed(service, b);
+      const inside = submoduleCalls(service, sup);
+      expect({ code: r.response.code, token: r.token, reads: inside.length > 0, succeeded: inside.filter((c) => c.exit?.exitCode === 0).map((c) => c.arguments) }).toEqual({ code: "GIT_FAILED", token: undefined, reads: true, succeeded: [] });
+    });
+  }, TIMEOUT_MS);
 
   // Git resolves a one-level HEAD target as a ref name (refs.c `refs_resolve_ref_unsafe`, REFNAME_ALLOW_ONELEVEL). Only `reftable` stores `HEAD -> master`: setup.c `validate_headref` refuses a `ref: master` HEAD file.
   for (const present of [false, true]) {
@@ -795,7 +808,7 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
   });
 
   for (const [what, { variant, change }] of Object.entries(CHANGES)) {
-    todoCase(TASK, `a change of ${what} after the review makes updateSubmodules give STALE_REVIEW, and no update step starts ${TOKEN}`, SHELL, () => {
+    reviewCase(`a change of ${what} after the review makes updateSubmodules give STALE_REVIEW, and no update step starts`, () => {
       const name = `t222-token-${what.replaceAll(/[^a-z]+/g, "-")}`;
       const b = variant === "f29" ? buildF29(gitPath(), name, "base") : buildF27(gitPath(), name, variant);
       return withFixture(
@@ -814,7 +827,7 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
     });
   }
 
-  todoCase(TASK, `a token older than APPROVAL_LIFETIME_MS on an injected clock gives APPROVAL_EXPIRED, and no update step starts ${TOKEN}`, SHELL, () => {
+  reviewCase(`a token older than APPROVAL_LIFETIME_MS on an injected clock gives APPROVAL_EXPIRED, and no Git process starts`, () => {
     const b = buildF27(gitPath(), "t222-token-expired", "base");
     // The approval lifetime runs on the monotonic service clock (T110 decision G5). The case moves that clock.
     let elapsed = 0;
@@ -829,7 +842,7 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
         const from = service.runner.calls.length;
         elapsed = APPROVAL_LIFETIME_MS + 1;
         const response = await updateSubmodules(service, repositoryId, r);
-        expect({ code: response.code, steps: updateSteps(service, from).length }).toEqual({ code: "APPROVAL_EXPIRED", steps: 0 });
+        expect({ code: response.code, runs: service.runner.calls.length - from }).toEqual({ code: "APPROVAL_EXPIRED", runs: 0 });
       },
       { approvalClock },
     );

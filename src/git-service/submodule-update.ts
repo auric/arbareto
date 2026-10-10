@@ -571,11 +571,12 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       const row = p.row;
       const local = UTF8.decode(p.localPath);
       const at = p.parentGitWorktree;
+      const nested = r.parent !== null;
       const update = async (args: string[], kind: "clone" | "connect" | "checkout" | "register") =>
         step(r, args, "update", { step: kind, gitPath, parentWorktree: p.parentWorktree, path: p.localPath });
       if (row.action === "skip") {
         await gate(r, parentOf(r));
-        const x = await update(submoduleRegisterArgs(at, local), "register");
+        const x = await update(submoduleRegisterArgs(at, local, nested), "register");
         if (!x.ok) x.fail();
         return false;
       }
@@ -586,7 +587,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
         await cloneCheck(r);
         await gate(r, withParent(r));
         r.facts.phase.connected = true;
-        const x = await update(submoduleCloneArgs(at, local), "clone");
+        const x = await update(submoduleCloneArgs(at, local, nested), "clone");
         if (!x.ok) x.fail();
         return x.ok;
       }
@@ -599,7 +600,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
         if (!(await check(r, kept))) return false;
         await gate(r, withParent(r));
         r.facts.phase.connected = true;
-        const x = await update(submoduleCheckoutArgs(at, local), fetches ? "connect" : "checkout");
+        const x = await update(submoduleCheckoutArgs(at, local, nested), fetches ? "connect" : "checkout");
         if (x.ok || !fetches) {
           if (!x.ok) x.fail();
           return x.ok;
@@ -617,7 +618,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       }
       if (!(await check(r, worktree))) return false;
       await gate(r, withParent(r));
-      const x = await update(submoduleCheckoutArgs(at, local), "checkout");
+      const x = await update(submoduleCheckoutArgs(at, local, nested), "checkout");
       if (!x.ok) x.fail();
       return x.ok;
     };

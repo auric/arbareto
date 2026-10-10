@@ -186,6 +186,12 @@ export function copySuper(b: Built, name: string): string {
 // The Git folder of a submodule by name, resolved by Git (`rev-parse --git-path modules/<name>`).
 export const moduleDirOf = (b: Built, superDir: string, name: string) => resolve(superDir, fixtureGit(b, superDir, ["rev-parse", "--git-path", `modules/${name}`]).trimEnd());
 
+// A `.git` folder whose HEAD names no ref. Git accepts no such folder (setup.c `is_git_directory`), so Git discovery from `dir` searches the parent folders.
+export function invalidGitFolder(dir: string): void {
+  put(dir, ".git/HEAD", "invalid\n");
+  for (const name of ["objects", "refs"]) mkdirSync(join(dir, ".git", name), { recursive: true });
+}
+
 // Contract §4 "Quoting rule": the remedy value forms of `psQuote`.
 export const q = psQuote;
 // Contract §12 "Refusals" `unsaved-commits`: the short ID has 12 hex digits.

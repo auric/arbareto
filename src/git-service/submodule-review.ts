@@ -524,7 +524,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const hooksRead = await git(submoduleHooksPathArgs(location));
       const hooksText = hooksRead.code === 0 ? oneLine(hooksRead.out) : null;
       if (hooksText === null) throw failed("GIT_FAILED");
-      // Git prints the hooks path relative to the folder where it ran: the `-C` folder, or the worktree root with `--git-dir`.
+      // Git prints the hooks path relative to the folder where it ran: the `-C` folder, or the worktree root for a kept Git directory.
       const hooks = resolve("worktree" in location ? location.worktree : w.worktreeRoot, hooksText);
       const config = await git(submoduleConfigListArgs(location), { max: TRUST_INPUT_BYTES });
       if (config.limited) throw failed("OUTPUT_LIMIT");

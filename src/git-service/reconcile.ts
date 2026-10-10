@@ -423,7 +423,7 @@ function lineOf(bytes: Uint8Array): string | null {
 }
 
 // Contract §12 "Reconciliation and outcome": the review reads of each row, in row order. `gitDirs` holds the Git directory of each row that has one.
-// A `-C` folder without a `.git` entry makes Git search the folders above it, so only a found entry or a kept directory gets a Git read.
+// With `--git-dir=.git`, Git exits 128 in a folder without a `.git` entry, so only a found entry or a kept directory gets a Git read.
 export async function observeUpdateRows(ctx: ObserveContext, reads: readonly UpdateRowRead[]): Promise<Fact<{ observations: RowObservation[]; gitDirs: string[] }>> {
   const w = ctx.workspace;
   const listed = await settled(ctx.signal, ctx.trust.listTrust({ operationId: ctx.operationId, signal: ctx.signal, workspace: w }));

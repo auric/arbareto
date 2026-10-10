@@ -461,3 +461,119 @@ describe("file lane splitter", () => {
     }
   });
 });
+
+type SizedWindow = { happyDOM: { setInnerWidth(width: number): void; setInnerHeight(height: number): void } };
+async function sized(width: number, height: number, run: () => Promise<void>) {
+  const before = { width: window.innerWidth, height: window.innerHeight };
+  const happy = (window as unknown as SizedWindow).happyDOM;
+  happy.setInnerWidth(width);
+  happy.setInnerHeight(height);
+  try {
+    await run();
+  } finally {
+    happy.setInnerWidth(before.width);
+    happy.setInnerHeight(before.height);
+  }
+}
+const tab = (label: string) => act(async () => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => t.textContent?.includes(label))!.click());
+
+// plan.md "Keyboard and focus", File list row: a click and each navigation key select an entry and read its comparison.
+describe("selection follows focus", () => {
+  test("a click and fast ArrowDown presses each read one comparison, and only the last response shows", async () => {
+    const entries = ["a.txt", "b.txt", "c.txt"].map(changeEntry);
+    const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries, entryCount: entries.length })));
+    await tab("Changes");
+    await settle();
+    const first = document.querySelector<HTMLElement>('section[aria-label="Changes"] [role="option"]')!;
+    await act(async () => {
+      first.focus();
+      first.click();
+    });
+    for (let i = 0; i < 2; i++) await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true, cancelable: true })));
+    const reads = double.calls.filter((c) => c.operation === "readComparison");
+    expect(reads.map((c) => (c.args[1] as { entryId: string }).entryId)).toEqual(entries.map((e) => e.entryId));
+    expect(new Set(reads.map((c) => (c.args[0] as { selectionId: string }).selectionId)).size).toBe(3);
+    // The last response arrives first. The superseded responses arrive after it and show nothing.
+    for (const i of [2, 0, 1]) await resolve(reads[i]!, shownComparison(entries[i]!.entryId, DIFF.replace("+n", `+line${i}`)));
+    const shown = document.querySelector('[data-slot="patch-double"]')?.textContent ?? "";
+    expect(shown).toContain("+line2");
+    expect(shown).not.toContain("+line0");
+    expect(shown).not.toContain("+line1");
+  });
+});
+
+// plan.md "Section minima" and "Constrained sizes": each pane scrolls inside its own bounds, and the work area does not scroll.
+describe("pane scrolling", () => {
+  const scrolls = (e: Element) => /\boverflow-(y-)?auto\b/.test(e.getAttribute("class") ?? "");
+  const scroller = (e: Element | null) => {
+    for (let n = e; n !== null; n = n.parentElement) if (scrolls(n)) return n;
+    return null;
+  };
+  const staged = (path: string) => ({ ...changeEntry(path), category: "staged" }) as ChangeEntry;
+
+  for (const [width, height, profile] of [
+    [1600, 900, "wide"],
+    [1000, 900, "narrow"],
+    [720, 480, "constrained"],
+  ] as const) {
+    test(`at ${width}x${height} (${profile}), each pane has its own scroll container, and the work area has none`, async () => {
+      await sized(width, height, async () => {
+        const entries = [changeEntry("a.txt"), changeEntry("b.txt"), staged("c.txt")];
+        const double = await mount(succeeded(REGISTRATION));
+        await resolve(double.pending("readHistory"), succeeded(PAGE));
+        await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries, entryCount: entries.length, submoduleNotice: { count: 1, paths: ["s"], filter: "applied" } })));
+        expect(document.querySelector("[data-profile]")?.getAttribute("data-profile")).toBe(profile);
+        const main = document.querySelector("main")!;
+        expect(scroller(main) === null).toBe(true);
+        // Booleans only: a failed DOM comparison would print the whole window.
+        const own = (pane: Element | null) => {
+          expect(pane !== null).toBe(true);
+          const s = scroller(pane);
+          expect(s !== null && s !== main && main.contains(s)).toBe(true);
+          return s === pane;
+        };
+        const band = document.querySelector<HTMLElement>('[data-slot="notice-band"]')!;
+        expect(own(band)).toBe(true);
+        expect(band.style.maxHeight).not.toBe("");
+        const area = document.querySelector<HTMLElement>('[data-slot="status-area"]')!;
+        expect(own(area)).toBe(true);
+        expect(area.style.maxHeight).not.toBe("");
+
+        await tab("Changes");
+        await settle();
+        const changes = document.querySelector<HTMLElement>('section[aria-label="Changes"]')!;
+        const listboxes = [...changes.querySelectorAll('[role="listbox"]')];
+        expect(listboxes).toHaveLength(2);
+        for (const box of listboxes) expect(own(box)).toBe(true);
+        const cells = [...changes.children].filter((c) => ["lane", "comparison", "tray"].includes((c as HTMLElement).style.gridArea.split(" ")[0]!));
+        expect(cells).toHaveLength(3);
+        for (const cell of cells) expect(own(cell)).toBe(true);
+        // Working changes and Staged each scroll inside their own section.
+        const sections = [...changes.querySelectorAll('[role="listbox"]')].map((box) => box.closest("section:not([aria-label])"));
+        expect(new Set(sections).size).toBe(2);
+        for (const section of sections) expect(scrolls(section!)).toBe(true);
+        // The narrow and constrained file band holds both sections side by side ("Chosen layout, sizes, and DPI").
+        expect(sections[0]!.parentElement!.className.split(/\s+/)).toContain(profile === "wide" ? "flex-col" : "flex-row");
+
+        await tab("History");
+        await settle();
+        const history = document.querySelector('section[aria-label="History"]')!;
+        const list = history.querySelector('[role="listbox"]')!;
+        expect(own(list)).toBe(true);
+        const inspector = [...history.querySelectorAll("section")].find((s) => s.textContent?.startsWith("Selected commit"))!;
+        expect(own(inspector)).toBe(true);
+        expect(scroller(main) === null).toBe(true);
+      });
+    });
+  }
+
+  test("at 720x480 compact with one band row, the file band and the tray take the reduced pane minimum", async () => {
+    await sized(720, 480, async () => {
+      const double = await mount(succeeded(REGISTRATION));
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries: [changeEntry("a.txt")], entryCount: 1, submoduleNotice: { count: 1, paths: ["s"], filter: "applied" } })));
+      const rows = document.querySelector<HTMLElement>('section[aria-label="Changes"]')!.style.gridTemplateRows.split(/\s+(?![^(]*\))/);
+      expect(rows).toEqual(["58px", "0", "minmax(0px, 1fr)", "0", "58px"]);
+    });
+  });
+});

@@ -23,7 +23,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { branchName, HistoryView as History } from "../history/HistoryView";
 import { createShortcutHandler, type Mode } from "../keyboard/shortcuts";
-import { chooseProfile, clampPanes, FILE_LANE, headerRows, metrics, paneBounds, UnmeasuredLayoutError, workAreaHeight, type Density, type Profile, type Size } from "../layout/profiles";
+import { chooseProfile, clampPanes, FILE_LANE, headerRows, historyFit, metrics, paneBounds, statusAreaHeight, UnmeasuredLayoutError, workAreaHeight, type Density, type Profile, type Size } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
 import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
 import { createRequests, isRegistration, wslDistro, type RequestBridge, type Requests, type RequestState } from "../state/requests";
@@ -49,6 +49,8 @@ export type WorkbenchPaneProps = {
   modalOpen: boolean;
   /** Feeds the second live element of the status bar. Null clears it. */
   onStatus(text: string | null): void;
+  /** The History list region minimum of `historyFit`. */
+  historyListMin?: number;
 };
 export type WorkbenchProps = {
   bridge: WorkbenchBridge;
@@ -76,8 +78,8 @@ export const LATER = {
   staging: "Hunk and file staging are available after batch 3.",
   submodules: "Update submodules is available after batch 3.",
 };
-// The interim help line: Enter works, and Space shows the staging sentence.
-export const INTERIM_HELP_LINE = `Enter shows a file. ${LATER.staging}`;
+// The interim help line: a click or a navigation key shows a file, and Space shows the staging sentence.
+export const INTERIM_HELP_LINE = `Select a file to show its changes. ${LATER.staging}`;
 
 const SCOPE_LINE = "This test build covers opening repositories, status, diffs, hunk and file staging, local commits, submodule updates, and one history page.";
 const THEMES: { value: Theme; label: string }[] = [
@@ -169,7 +171,7 @@ const responseCode = (response: BridgeResponse) => (response.code ?? response.st
 const refuseFileAction = async () => ({ state: "refused" as const, text: LATER.staging });
 
 /** The T133 changes pane on the T132 request state. File staging stays refused until T148 mounts T202. */
-export function ChangesPaneMount({ state, requests, menuOpen, modalOpen, onStatus }: WorkbenchPaneProps) {
+export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen, onStatus }: WorkbenchPaneProps) {
   const workspace = state.workspace;
   const failure = state.readFailure === null ? null : <ErrorState code={responseCode(state.readFailure)} result={state.readFailure.result} onRefresh={requests.refresh} />;
   if (workspace === null) return failure ?? <Loading hasContent={false} refreshing={false} />;
@@ -188,6 +190,7 @@ export function ChangesPaneMount({ state, requests, menuOpen, modalOpen, onStatu
         modalOpen={modalOpen}
         complete={workspace.completeness.state === "complete"}
         helpLine={INTERIM_HELP_LINE}
+        sideBySide={profile !== "wide"}
       />
     </div>
   );
@@ -221,7 +224,7 @@ export function ComparisonViewMount({ state, requests }: WorkbenchPaneProps) {
 }
 
 /** The T144 History list and inspector. The commit selection is view state. A repository open clears it, and a refresh keeps it while the new page holds it. */
-export function HistoryViewMount({ state, requests, density, profile, textScale }: WorkbenchPaneProps) {
+export function HistoryViewMount({ state, requests, density, profile, textScale, historyListMin }: WorkbenchPaneProps) {
   // Each `open` sets a new `repository` object, also for the same `repositoryId` (contract §6 "Registration reuse and release": a matching registration returns the same ID).
   const [selected, setSelected] = useState({ repository: state.repository, oid: null as string | null });
   const page = state.history;
@@ -233,7 +236,7 @@ export function HistoryViewMount({ state, requests, density, profile, textScale 
     return <Loading hasContent={false} refreshing={false} />;
   }
   const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
-  return <History page={state.history} entries={entries} selectedOid={kept} onSelect={onSelect} density={density} profile={profile} textScale={textScale} />;
+  return <History page={state.history} entries={entries} selectedOid={kept} onSelect={onSelect} density={density} profile={profile} textScale={textScale} listMin={historyListMin} />;
 }
 
 // Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
@@ -459,22 +462,30 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const wslGit = workspace?.location.kind === "wsl" ? workspace.location.git : null;
   const head = workspace ? headText(workspace.head) : null;
   const rows = headerRowCount(client.width, textScale);
-  const pane: WorkbenchPaneProps = { state, requests, density: preferences.density, profile, textScale, menuOpen: menuOpen !== null, modalOpen, onStatus: setPaneStatus };
   // plan.md "Notice band": the blocking row, then the submodule row.
   const conflicted = workspace === null ? 0 : state.entries.reduce((n, e) => n + (e.category === "conflicted" ? 1 : 0), 0);
   const blockingRow = workspace !== null && blockingText(workspace.operationState, conflicted) !== null;
   const submodules = workspace?.submoduleNotice.count ?? 0;
   const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0);
 
-  // Sizes in DIPs. The work area scrolls when the sections reach their minima (plan.md "Overflow").
+  // Sizes in DIPs. Each pane scrolls inside its own bounds (plan.md "Section minima" and "Constrained sizes").
   // `workAreaHeight` needs a plan.md header row count, which only the wide and narrow profiles guarantee.
   const available = profile === "constrained" ? client.height : workAreaHeight(client, textScale, preferences.density);
   const tray = paneBounds("tray", { width: client.width, available, density: preferences.density, textScale });
   const band = paneBounds("fileBand", { width: client.width, available, density: preferences.density, textScale });
   // The status area is an empty slot until T138, so it takes no rows here.
-  const clamped = clampPanes({ client, textScale, density: preferences.density, bandRows, statusArea: 0, fileBand: fileBand ?? band.default, tray: bottom ?? tray.default });
+  const fit = { client, textScale, density: preferences.density, bandRows, statusArea: 0 };
+  const clamped = clampPanes({ ...fit, fileBand: fileBand ?? band.default, tray: bottom ?? tray.default });
+  const history = historyFit(fit);
   const trayHeight = clamped.tray;
   const bandHeight = clamped.fileBand ?? band.default;
+  const markers = environment !== null && hasMarkers(environment);
+  // The work area scrolls only when the reduced pane minima do not fit, or below the recovery markers, which no floor reserves.
+  const scrolls = markers || (state.mode === "history" ? history.scrolls : clamped.scrolls === true);
+  // The flexible row keeps its computed height only while the work area scrolls. Otherwise it absorbs a shortfall, so the fixed panes stay in view.
+  const flexible = `minmax(${scrolls ? clamped.comparison : 0}px, 1fr)`;
+  const statusAreaMax = statusAreaHeight({ content: Number.POSITIVE_INFINITY, client, textScale, density: preferences.density, bandRows });
+  const pane: WorkbenchPaneProps = { state, requests, density: preferences.density, profile, textScale, menuOpen: menuOpen !== null, modalOpen, onStatus: setPaneStatus, historyListMin: history.listMin };
   // A drag shows the live lane width and saves it once, on pointer up.
   const [dragLane, setDragLane] = useState<number | null>(null);
   const lane = dragLane ?? preferences.panes.fileLane;
@@ -482,18 +493,18 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     profile === "wide"
       ? {
           gridTemplateColumns: `${lane}px ${m.splitter}px minmax(0, 1fr)`,
-          gridTemplateRows: `minmax(${Math.max(m.wideComparisonMin, m.wideLaneMin)}px, 1fr) ${m.splitter}px ${trayHeight}px`,
+          gridTemplateRows: `${flexible} ${m.splitter}px ${trayHeight}px`,
           gridTemplateAreas: '"lane laneSplit comparison" "traySplit traySplit traySplit" "tray tray tray"',
         }
       : profile === "narrow"
         ? {
             gridTemplateColumns: "minmax(0, 1fr)",
-            gridTemplateRows: `${bandHeight}px ${m.splitter}px minmax(${m.narrowComparisonMin}px, 1fr) ${m.splitter}px ${trayHeight}px`,
+            gridTemplateRows: `${bandHeight}px ${m.splitter}px ${flexible} ${m.splitter}px ${trayHeight}px`,
             gridTemplateAreas: '"lane" "laneSplit" "comparison" "traySplit" "tray"',
           }
         : {
             gridTemplateColumns: "minmax(0, 1fr)",
-            gridTemplateRows: `auto 0 ${m.constrainedRegionMin}px 0 ${trayHeight}px`,
+            gridTemplateRows: `${bandHeight}px 0 ${flexible} 0 ${trayHeight}px`,
             gridTemplateAreas: '"lane" "laneSplit" "comparison" "traySplit" "tray"',
           };
   const resizable = profile !== "constrained";
@@ -516,7 +527,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   return (
     <CopyFailed value={() => setNotice(COPY_FAILED_TEXT)}>
       <div data-profile={profile} className="flex h-dvh flex-col bg-canvas text-text">
-        {environment !== null && hasMarkers(environment) ? (
+        {markers ? (
           <div data-slot="recovery-markers" className="max-h-[40dvh] shrink-0 overflow-y-auto border-b border-divider p-2">
             <RecoveryMarkers environment={environment} onDismissMarker={dismissMarker} />
           </div>
@@ -612,8 +623,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </TabsList>
         </Tabs>
 
-        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <div data-slot="notice-band">
+        <main className={`flex min-h-0 flex-1 flex-col ${scrolls ? "overflow-y-auto" : "overflow-clip"}`}>
+          {/* plan.md "Overflow": the band shows at most its two reserved rows and scrolls inside them. */}
+          <div data-slot="notice-band" className="shrink-0 overflow-y-auto" style={{ maxHeight: 2 * m.bandRow }}>
             {workspace === null ? null : (
               <NoticeBand
                 operationState={workspace.operationState}
@@ -647,7 +659,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             )
           ) : (
             <>
-              <section aria-label="Changes" hidden={state.mode !== "changes"} className="grid flex-1" style={grid}>
+              <section aria-label="Changes" hidden={state.mode !== "changes"} className="grid min-h-0 flex-1" style={grid}>
                 <div className="min-h-0 overflow-auto" style={{ gridArea: "lane" }}>
                   <ChangesPane {...pane} />
                 </div>
@@ -680,7 +692,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             </>
           )}
           {/* plan.md "Status area": T138 fills this slot. */}
-          <div data-slot="status-area">{starting === null ? null : <WslStarting name={starting.distro} operationId={starting.operationId} cancel={cancelStart} />}</div>
+          <div data-slot="status-area" className="shrink-0 overflow-y-auto" style={{ maxHeight: statusAreaMax }}>{starting === null ? null : <WslStarting name={starting.distro} operationId={starting.operationId} cancel={cancelStart} />}</div>
         </main>
 
         <footer className="flex items-center gap-2 border-t border-divider px-2" style={{ minHeight: "var(--h-status-bar)" }}>

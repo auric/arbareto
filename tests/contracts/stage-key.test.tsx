@@ -372,3 +372,49 @@ describe("Stage key", () => {
     expect(pane.actions).toEqual([]);
   });
 });
+
+// plan.md "Keyboard and focus", File list row: selection follows a click and each navigation key.
+describe("selection follows focus", () => {
+  test("a click on an entry selects it and requests its comparison", async () => {
+    const pane = await mount(null);
+    await act(async () => option(unstagedB).click());
+    expect(pane.reads).toEqual([unstagedB.entryId]);
+    expect(option(unstagedB).getAttribute("aria-selected")).toBe("true");
+    expect(pane.actions).toEqual([]);
+  });
+
+  test("ArrowDown selects the next entry and requests its comparison, and so do ArrowUp, End, Home, PageDown, and PageUp", async () => {
+    const pane = await mount({ entryId: unstagedA.entryId, comparisonId: id() });
+    await focus(option(unstagedA));
+    await press(option(unstagedA), "ArrowDown");
+    expect(pane.reads).toEqual([unstagedB.entryId]);
+    expect(document.activeElement).toBe(option(unstagedB));
+    expect(option(unstagedB).getAttribute("aria-selected")).toBe("true");
+    for (const [key, to] of [["ArrowUp", unstagedA], ["End", unstagedB], ["Home", unstagedA], ["PageDown", unstagedB], ["PageUp", unstagedA]] as const) {
+      await press(document.activeElement!, key);
+      expect(document.activeElement).toBe(option(to));
+      expect(pane.reads.at(-1)).toBe(to.entryId);
+    }
+    expect(pane.reads).toHaveLength(6);
+    expect(pane.actions).toEqual([]);
+  });
+
+  test("a navigation key that keeps the selected entry starts no read", async () => {
+    const pane = await mount({ entryId: unstagedA.entryId, comparisonId: id() });
+    await focus(option(unstagedA));
+    await press(option(unstagedA), "Home");
+    await press(option(unstagedA), "ArrowUp");
+    expect(pane.reads).toEqual([]);
+  });
+
+  test("a fast key sequence selects each entry, and only the last selection stays", async () => {
+    const pane = await mount({ entryId: unstagedA.entryId, comparisonId: id() });
+    await focus(option(unstagedA));
+    for (const key of ["ArrowDown", "ArrowUp", "ArrowDown"]) await press(document.activeElement!, key);
+    expect(pane.reads).toEqual([unstagedB.entryId, unstagedA.entryId, unstagedB.entryId]);
+    // A late comparison of an earlier entry changes nothing.
+    await pane.arrive(unstagedA.entryId, id());
+    const selected = [...document.querySelectorAll('[role="option"][aria-selected="true"]')];
+    expect(selected.length === 1 && selected[0] === option(unstagedB)).toBe(true);
+  });
+});

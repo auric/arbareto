@@ -19,7 +19,7 @@
     "test:windows": "bun test tests/windows",
     "test:all": "bun tests/run.ts full",
     "test:fast": "bun tests/run.ts fast",
-    "dev": "bun run build && cargo tauri dev --no-dev-server"
+    "dev": "bun run build:frontend && bun run build:service && cargo tauri dev --no-dev-server"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

@@ -4,10 +4,11 @@
 import WorkerUrl from "@pierre/diffs/worker/worker.js?worker&url";
 import { WorkerPoolContextProvider } from "@pierre/diffs/react";
 import type { ReactNode } from "react";
+import { DIFF_THEME } from "../highlight/set";
 
 // research.md R9: two local workers and the Shiki JavaScript engine, so no WebAssembly compiles.
 const POOL = { workerFactory: () => new Worker(WorkerUrl, { type: "module" }), poolSize: 2 };
-const HIGHLIGHTER = { preferredHighlighter: "shiki-js" } as const;
+const HIGHLIGHTER = { preferredHighlighter: "shiki-js", theme: DIFF_THEME } as const;
 
 /** The Pierre worker pool. Pierre ends the pool when its last provider unmounts, so mount this once for the session. */
 export default function PatchPool({ children }: { children: ReactNode }) {

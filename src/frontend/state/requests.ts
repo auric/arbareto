@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { ChangeEntry, HistoryPage, ReadEntriesResult, WorkspaceSnapshot } from "../../contracts/envelope";
-import type { BridgeResponse } from "../bridge";
+import type { BridgeResponse, OnProgress } from "../bridge";
 import type { Mode } from "../keyboard/shortcuts";
 
-// Contract §2, §3 "HistoryPage result", §5 "Pending reads", and §8. plan.md "Freshness and reconciliation".
+// Contract §2, §3 "HistoryPage result", §5 "Pending reads", §8, and §11 "Change polling". plan.md "Freshness and reconciliation".
 
 type Head = WorkspaceSnapshot["head"];
 type Check = "full" | "changes";
@@ -16,12 +16,18 @@ export type Registration = { repositoryId: string; generation: number; worktreeK
 /** The bridge operations that this module calls. `createBridge` in `bridge.ts` provides them. */
 export type RequestBridge = {
   restoreWorkspace(): Promise<BridgeResponse>;
-  readWorkspace(target: { repositoryId: string }, payload: { refresh: boolean; check: Check }): Promise<BridgeResponse>;
+  readWorkspace(target: { repositoryId: string }, payload: { refresh: boolean; check: Check }, onProgress?: OnProgress): Promise<BridgeResponse>;
   readEntries(target: Target, payload: { snapshotId: string; cursor: string }): Promise<BridgeResponse>;
   readHistory(target: Target): Promise<BridgeResponse>;
   readComparison(target: Target & { selectionId: string }, payload: { snapshotId: string; entryId: string }): Promise<BridgeResponse>;
+  cancel(payload: { operationId: string }): Promise<BridgeResponse>;
 };
-export type Clock = { setInterval(run: () => void, ms: number): unknown; clearInterval(id: unknown): void };
+export type Clock = {
+  setInterval(run: () => void, ms: number): unknown;
+  clearInterval(id: unknown): void;
+  setTimeout(run: () => void, ms: number): unknown;
+  clearTimeout(id: unknown): void;
+};
 export type FocusSource = { hasFocus(): boolean; subscribe(listener: (focused: boolean) => void): () => void };
 
 // The T331 `ReadComparisonResult` type is on another branch. These are the only fields that this module reads.
@@ -58,6 +64,8 @@ export type RequestState = {
 };
 
 const POLL_MS = 1000;
+// Contract §5 "Concurrent reads": 2 per workspace.
+const WORKSPACE_READ_SLOTS = 2;
 // Contract §8 and §9: the codes that end a hunk or file approval without a Git change by this request.
 const APPROVAL_ENDED = new Set(["APPROVAL_EXPIRED", "UNKNOWN_TARGET", "STALE_SELECTION", "REPOSITORY_CHANGED"]);
 const APPROVAL_OPERATIONS = new Set(["applyHunk", "applyFile"]);
@@ -92,7 +100,23 @@ const comparisonFields = (value: unknown): ComparisonFields | null =>
   isObject(value) && typeof value.comparisonId === "string" && typeof value.snapshotId === "string" && Array.isArray(value.hunks) ? (value as ComparisonFields) : null;
 const sameHead = (a: Head, b: Head) => a.state === b.state && (a as { target?: string }).target === (b as { target?: string }).target && (a as { oid?: string }).oid === (b as { oid?: string }).oid;
 
-const browserClock: Clock = { setInterval: (run, ms) => globalThis.setInterval(run, ms), clearInterval: (id) => globalThis.clearInterval(id as number) };
+// Contract §11 "Route": a WSL identity is one normalized UNC path, `\\wsl.localhost\<listed distro>\…` (`wslIdentityPath`).
+// "Paths and file access": a Windows repository under a WSL prefix gets `mixed-location`, so a Windows identity never starts with it.
+const WSL_IDENTITY_PREFIX = "\\\\wsl.localhost\\";
+
+/** The distro of a WSL workspace, else null. */
+export function wslDistro(workspace: WorkspaceSnapshot | null): string | null {
+  const root = workspace?.identity.worktreeRoot;
+  if (root === undefined || !root.startsWith(WSL_IDENTITY_PREFIX)) return null;
+  return root.slice(WSL_IDENTITY_PREFIX.length).split("\\")[0] || null;
+}
+
+const browserClock: Clock = {
+  setInterval: (run, ms) => globalThis.setInterval(run, ms),
+  clearInterval: (id) => globalThis.clearInterval(id as number),
+  setTimeout: (run, ms) => globalThis.setTimeout(run, ms),
+  clearTimeout: (id) => globalThis.clearTimeout(id as number),
+};
 const browserFocus: FocusSource = {
   hasFocus: () => document.hasFocus(),
   subscribe(listener) {
@@ -132,10 +156,17 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
   let reconciling: object | null = null;
   let latestHistory: object | null = null;
   let historyInFlight = 0;
+  let comparisonsInFlight = 0;
+  // Contract §11 "Change polling": the WSL poll timer, a poll that fell due during another read, and the running poll.
+  let pollTimer: unknown = null;
+  let pollDue = false;
+  let poll: { operationId: string | null; cancel: boolean } | null = null;
   let focused = false;
   let interval: unknown = null;
   let unsubscribe: (() => void) | null = null;
 
+  const wsl = () => wslDistro(state.workspace) !== null;
+  const reads = () => pendingReads + historyInFlight + comparisonsInFlight;
   const blocked = (workspace = state.workspace) => sessionBlocked || (workspace !== null && workspace.recoveryState !== "ready");
 
   function capability(next: RequestState): Capability | null {
@@ -151,22 +182,63 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     set({ ...patch, blocked: blocked(next.workspace), capability: capability(next) });
   };
 
-  function readWorkspace(refresh: boolean, check: Check) {
+  function readWorkspace(refresh: boolean, check: Check, isPoll = false) {
     if (!repository) return;
+    if (!isPoll) userRead();
     const e = epoch;
     const token = {};
+    const own: typeof poll = isPoll ? (poll = { operationId: null, cancel: false }) : null;
     pendingReads++;
     if (refresh) userReads++;
     if (refresh) set({ refreshing: true });
     if (check === "full") fullDue = false;
-    void bridge.readWorkspace({ repositoryId: repository.repositoryId }, { refresh, check }).then((response) => {
+    // The accepted event carries the `operationId` that `cancel` names (contract §2).
+    const onProgress: OnProgress | undefined = own
+      ? (event) => {
+          if (e !== epoch || own.operationId !== null) return;
+          own.operationId = event.operationId;
+          if (own.cancel) void bridge.cancel({ operationId: own.operationId });
+        }
+      : undefined;
+    void bridge.readWorkspace({ repositoryId: repository.repositoryId }, { refresh, check }, onProgress).then((response) => {
       if (e !== epoch) return;
       pendingReads--;
       if (refresh) userReads--;
       if (refresh && userReads === 0) set({ refreshing: false });
-      onWorkspace(response, refresh, token);
+      if (own && poll === own) poll = null;
+      // Data-model "WSL start and poll transitions": a poll that the renderer canceled ends without a shown result.
+      if (!(own?.cancel && response.state === "canceled")) onWorkspace(response, refresh, token);
+      if (own) armPoll();
+      readEnded();
     });
     return token;
+  }
+
+  // Contract §11 "Change polling": a user read that finds both workspace read slots busy cancels a running poll.
+  function userRead() {
+    if (!poll || poll.cancel || reads() < WORKSPACE_READ_SLOTS) return;
+    poll.cancel = true;
+    if (poll.operationId !== null) void bridge.cancel({ operationId: poll.operationId });
+  }
+
+  // A poll starts 1 second after the previous poll ends. Another read end arms the timer only when none runs.
+  function armPoll() {
+    if (pollTimer !== null || !repository || !focused || !wsl()) return;
+    pollTimer = clock.setTimeout(() => {
+      pollTimer = null;
+      if (!repository || !focused || !wsl()) return;
+      if (reads() > 0 || paging !== null) pollDue = true;
+      else readWorkspace(false, "full", true);
+    }, POLL_MS);
+  }
+
+  // A poll never starts beside another read of the workspace. A poll that fell due starts when the last read ends.
+  function readEnded() {
+    if (reads() > 0 || paging !== null || !repository) return;
+    if (pollDue && focused && wsl()) {
+      pollDue = false;
+      readWorkspace(false, "full", true);
+    } else if (poll === null) armPoll();
   }
 
   function onWorkspace(response: BridgeResponse, refresh: boolean, token: object) {
@@ -215,11 +287,13 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
         page.entries.push(...response.result.entries);
         if (response.result.cursor !== null) return fetchPage(page, response.result.cursor);
         paging = null;
-        return commit(page.snapshot, page.entries, {});
+        commit(page.snapshot, page.entries, {});
+      } else {
+        paging = null;
+        if (response.code === "UNKNOWN_TARGET" || response.code === "REPOSITORY_CHANGED") readWorkspace(false, "full");
+        else update({ readFailure: response });
       }
-      paging = null;
-      if (response.code === "UNKNOWN_TARGET" || response.code === "REPOSITORY_CHANGED") readWorkspace(false, "full");
-      else update({ readFailure: response });
+      readEnded();
     });
   }
 
@@ -243,22 +317,32 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     latestSelectionId = selectionId;
     const request = { selectionId, generation: workspace.generation, snapshotId: workspace.snapshotId };
     update({});
+    userRead();
+    comparisonsInFlight++;
     const target = { repositoryId: repository.repositoryId, repositoryGeneration: request.generation, selectionId };
     void bridge.readComparison(target, { snapshotId: request.snapshotId, entryId }).then((response) => {
-      // Contract §5: a newer `readComparison` supersedes this one. A superseded response, `canceled` included, shows nothing.
-      if (e !== epoch || selectionId !== latestSelectionId) return;
-      shown = request;
-      const previous = comparisonFields(state.comparison?.result);
-      const next = comparisonFields(response.result);
-      // Contract §8: the hunk selection returns only with a hunk of the same canonical digest.
-      const digest = previous?.hunks.find((h) => h.hunkId === state.selectedHunk)?.digest;
-      const selectedHunk = digest === undefined ? null : (next?.hunks.find((h) => h.digest === digest)?.hunkId ?? null);
-      update({ comparison: { ...response, entryId }, selectedHunk });
+      if (e !== epoch) return;
+      comparisonsInFlight--;
+      onComparison(response, request, entryId);
+      readEnded();
     });
+  }
+
+  function onComparison(response: BridgeResponse, request: NonNullable<typeof shown>, entryId: string) {
+    // Contract §5: a newer `readComparison` supersedes this one. A superseded response, `canceled` included, shows nothing.
+    if (request.selectionId !== latestSelectionId) return;
+    shown = request;
+    const previous = comparisonFields(state.comparison?.result);
+    const next = comparisonFields(response.result);
+    // Contract §8: the hunk selection returns only with a hunk of the same canonical digest.
+    const digest = previous?.hunks.find((h) => h.hunkId === state.selectedHunk)?.digest;
+    const selectedHunk = digest === undefined ? null : (next?.hunks.find((h) => h.digest === digest)?.hunkId ?? null);
+    update({ comparison: { ...response, entryId }, selectedHunk });
   }
 
   function requestHistory(retried: boolean) {
     if (!repository) return;
+    userRead();
     const e = epoch;
     const token = {};
     latestHistory = token;
@@ -266,32 +350,41 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     void bridge.readHistory({ repositoryId: repository.repositoryId, repositoryGeneration: generation }).then((response) => {
       if (e !== epoch) return;
       historyInFlight--;
-      const latest = latestHistory === token;
-      if (response.code === "REPOSITORY_CHANGED" && !retried) {
-        if (latest) requestHistory(true);
-        return;
-      }
-      const page = response.result;
-      if (!isHistoryPage(page)) {
-        if (latest) set({ historyFailure: response });
-        return;
-      }
-      if (observedHead === null || sameHead(page.head, observedHead)) set({ history: page, historyFailure: null });
-      else if (latest && historyInFlight === 0) requestHistory(false);
+      onHistory(response, token, retried);
+      readEnded();
     });
   }
 
+  function onHistory(response: BridgeResponse, token: object, retried: boolean) {
+    const latest = latestHistory === token;
+    if (response.code === "REPOSITORY_CHANGED" && !retried) {
+      if (latest) requestHistory(true);
+      return;
+    }
+    const page = response.result;
+    if (!isHistoryPage(page)) {
+      if (latest) set({ historyFailure: response });
+      return;
+    }
+    if (observedHead === null || sameHead(page.head, observedHead)) set({ history: page, historyFailure: null });
+    else if (latest && historyInFlight === 0) requestHistory(false);
+  }
+
+  // The Windows interval poll. A WSL workspace polls through `armPoll` instead (contract §11 "Change polling").
+  // Without a snapshot, the location is unknown, and contract §11 forbids `changes` for WSL.
   function tick() {
-    if (!repository || !focused || pendingReads > 0 || paging !== null) return;
-    readWorkspace(false, fullDue ? "full" : "changes");
+    if (!repository || !focused || pendingReads > 0 || paging !== null || wsl()) return;
+    readWorkspace(false, fullDue || state.workspace === null ? "full" : "changes");
   }
 
   function onFocus(next: boolean) {
     const returned = next && !focused;
     focused = next;
+    if (!next) pollDue = false;
     if (!returned || !repository) return;
     fullDue = true;
-    tick();
+    if (wsl()) readWorkspace(false, "full");
+    else tick();
   }
 
   function watch() {
@@ -319,6 +412,11 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     reconciling = null;
     latestHistory = null;
     historyInFlight = 0;
+    comparisonsInFlight = 0;
+    if (pollTimer !== null) clock.clearTimeout(pollTimer);
+    pollTimer = null;
+    pollDue = false;
+    poll = null;
   }
 
   return {

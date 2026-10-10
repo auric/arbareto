@@ -26,7 +26,7 @@ import { createShortcutHandler, type Mode } from "../keyboard/shortcuts";
 import { chooseProfile, clampPanes, FILE_LANE, headerRows, metrics, paneBounds, UnmeasuredLayoutError, workAreaHeight, type Density, type Profile, type Size } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
 import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
-import { createRequests, isRegistration, type RequestBridge, type Requests, type RequestState } from "../state/requests";
+import { createRequests, isRegistration, wslDistro, type RequestBridge, type Requests, type RequestState } from "../state/requests";
 import { DEFAULT_PREFERENCES, readPreferences, writePreferences, type Preferences, type Theme } from "../state/preferences";
 import { SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
 import { blockingText, NoticeBand, WarningIcon } from "./NoticeBand";
@@ -137,6 +137,24 @@ function MiddleEllipsis({ text, tail, className }: { text: string; tail: string;
   );
 }
 
+// plan.md "Header layout": the WSL badge is 160 DIPs wide, times the text-size factor.
+const WSL_BADGE_DIPS = 160;
+
+/** "WSL: " stays whole, and a distro name that does not fit gets an end ellipsis. The full label stays the accessible name. */
+function WslBadge({ distro, textScale }: { distro: string; textScale: number }) {
+  return (
+    <span data-slot="wsl-badge" className="badge badge-wsl shrink-0" style={{ width: WSL_BADGE_DIPS * textScale }}>
+      <span className="sr-only">WSL: {distro}</span>
+      <span aria-hidden="true" className="shrink-0 whitespace-pre">
+        {"WSL: "}
+      </span>
+      <span aria-hidden="true" className="min-w-0 truncate">
+        {distro}
+      </span>
+    </span>
+  );
+}
+
 // The last component of the `worktreeRoot` path, with its leading separator.
 function lastComponent(path: string): string {
   const [folder, name] = splitPath(path, WINDOWS_SEPARATORS);
@@ -229,9 +247,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         readEntries: (target, payload) => bridge.readEntries(target, payload),
         readHistory: (target) => bridge.readHistory(target),
         readComparison: (target, payload) => bridge.readComparison(target, payload),
+        cancel: (payload) => bridge.cancel(payload),
         // Contract §3: only a `refresh: true` read carries `recovery`.
-        readWorkspace: (target, payload) =>
-          bridge.readWorkspace(target, payload).then((response) => {
+        readWorkspace: (target, payload, onProgress) =>
+          bridge.readWorkspace(target, payload, onProgress).then((response) => {
             const statement = (response.result as Partial<WorkspaceSnapshot> | undefined)?.recovery;
             if (payload.refresh) setRecovery(statement === undefined ? null : { repositoryId: target.repositoryId, statement });
             return response;
@@ -413,6 +432,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
   const workspace = state.workspace;
   const path = workspace?.identity.worktreeRoot ?? null;
+  const distro = wslDistro(workspace);
   const head = workspace ? headText(workspace.head) : null;
   const rows = headerRowCount(client.width, textScale);
   const pane: WorkbenchPaneProps = { state, requests, density: preferences.density, profile, textScale, menuOpen: menuOpen !== null, modalOpen, onStatus: setPaneStatus };
@@ -486,6 +506,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             ) : (
               <>
                 <MiddleEllipsis text={path} tail={lastComponent(path)} className="min-w-[160px] shrink-[4]" />
+                {distro === null ? null : <WslBadge distro={distro} textScale={textScale} />}
                 <span className="badge shrink-0">HEAD</span>
                 <MiddleEllipsis text={head ?? ""} tail={(head ?? "").slice(-Math.ceil((head ?? "").length / 2))} className="min-w-0 shrink" />
               </>
@@ -498,6 +519,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 environment={environment}
                 path={path}
                 head={head}
+                distro={distro}
                 trustId={trust?.report.trustId ?? null}
                 onOpenRepository={() => void openRepository()}
                 onSelectGit={onSelectGit}

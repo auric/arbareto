@@ -6,12 +6,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { createContext, useContext, type ReactNode } from "react";
 import type { Comparison, Completeness, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
+import type { BridgeResponse } from "../bridge";
 import { Button } from "../components/ui/button";
 import { HELP_LINE } from "../changes/ChangesPane";
 import { LIMITATION_TEXT } from "../changes/limitation-text";
 import { blockingText, WarningIcon } from "./NoticeBand";
 
-// plan.md "Required visible states": Repository refused, Loading, No selection, Conflicted/unfinished operation, Error, Limited output, Large history, and Unsupported/binary.
+// plan.md "Required visible states": Repository refused, Starting WSL distro, Loading, No selection, Conflicted/unfinished operation, Error, Limited output, Large history, and Unsupported/binary.
 // No state offers repair, a configuration change, or lock removal.
 
 type Remedy = { text?: string; command?: string | null };
@@ -115,6 +116,20 @@ export function RepositoryRefused({ code, result, onOpenRepository }: { code: Er
         Open repository
       </Button>
     </section>
+  );
+}
+
+export const WSL_START_CANCELED_TEXT = "WSL start canceled. The distro can keep starting.";
+
+/** Phase `wsl-starting` of a registration or restore (contract §11 "Distro start"). The text is static: no spinner, animation, or percentage. */
+export function WslStarting({ name, operationId, cancel }: { name: string; operationId: string; cancel(payload: { operationId: string }): Promise<BridgeResponse> }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 p-2">
+      <span>Starting WSL distro {name}…</span>
+      <Button variant="outline" size="sm" onClick={() => void cancel({ operationId })}>
+        Cancel
+      </Button>
+    </div>
   );
 }
 

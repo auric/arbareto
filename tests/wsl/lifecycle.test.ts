@@ -113,7 +113,7 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
   );
 
   test.todo(
-    "Cancel of a slow hook, a test-injected deadline, and a service failure each leave no process 1 second after the Job close (needs T112, T115, T214)",
+    "Cancel of a slow hook, a test-injected deadline, and a service failure each leave no process 1 second after the Job close (needs T214/T115)",
     async () => {
       const host = wslHost()!;
       const f25 = buildF25(host);
@@ -138,7 +138,7 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
   );
 
   test.todo(
-    "the plain, setsid, and nohup children of a post-commit hook linger and count three, the anchor lives across the mutation, and Revoke trust ends them (needs T112, T115, T214)",
+    "the plain, setsid, and nohup children of a post-commit hook linger and count three, the anchor lives across the mutation, and Revoke trust ends them (needs T214/T115)",
     async () => {
       const host = wslHost()!;
       const f25 = buildF25(host);
@@ -186,7 +186,7 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
   );
 
   test.todo(
-    "a pre-commit hook that opens /dev/tty fails within 10 seconds with GIT_FAILED and its output tail (needs T112, T115, T214)",
+    "a pre-commit hook that opens /dev/tty fails within 10 seconds with GIT_FAILED and its output tail (needs T214/T115)",
     async () => {
       const host = wslHost()!;
       const f25 = buildF25(host);
@@ -203,7 +203,7 @@ describe("WSL process lifetime with Git 2.55.0 (T209)", () => {
   );
 
   test.todo(
-    "a simulated application close ends lingering children within 5 seconds (needs T112, T115, T214)",
+    "a simulated application close ends lingering children within 5 seconds (needs T214/T115)",
     async () => {
       const host = wslHost()!;
       const f25 = buildF25(host);

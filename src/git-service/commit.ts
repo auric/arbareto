@@ -108,7 +108,7 @@ export function admitCommit(
   // T111 drops kept review data older than 60 seconds at its next issue, so the admission keeps this reference.
   const review = retained(approval.reviewToken);
   if (review === undefined || review.repositoryId !== request.repositoryId) return { code: "UNKNOWN_TARGET" };
-  // Data-model §7: an unfinished operation refuses at acceptance. `unknown` decides at the preflight.
+  // Contract §9: an unfinished operation refuses at acceptance, before the trust gate. `unknown` decides at the preflight.
   const state = approval.binding.operationState;
   if (state === "conflicted") return { code: "CONFLICTED" };
   if (state !== "normal" && state !== "unknown") return { code: "OPERATION_IN_PROGRESS" };
@@ -135,10 +135,10 @@ export function preflightRefusal(
   if (!("value" in state.index)) return refusalOf(state.index as Failure);
   if (!("value" in state.operationState)) return refusalOf(state.operationState as Failure);
   if (!("value" in state.head)) return refusalOf(state.head as Failure);
-  // Contract §9: every tip failure gives GIT_FAILED, except an OUTPUT_LIMIT bound.
-  if (!("value" in tip)) return (tip as Failure).code === "OUTPUT_LIMIT" ? refusalOf(tip as Failure) : { code: "GIT_FAILED" };
   const observed = state.operationState.value;
   if (state.index.value.digest !== b.reviewedIndex.rawIndexDigest || !Bun.deepEquals(state.head.value, b.head, true) || observed === "unknown" || observed !== b.operationState) return STALE;
+  // Contract §9: every tip failure gives GIT_FAILED, except an OUTPUT_LIMIT bound.
+  if (!("value" in tip)) return (tip as Failure).code === "OUTPUT_LIMIT" ? refusalOf(tip as Failure) : { code: "GIT_FAILED" };
   return utf8Commits(policy.listing.entries) ? null : { code: "COMMIT_ENCODING_UNSUPPORTED" };
 }
 

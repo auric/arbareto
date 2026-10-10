@@ -42,7 +42,7 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 
 ## Keyboard and Focus
 
-- [x] CHK019 Are keyboard bindings defined for every workbench context, including mode switching, panes, lists, comparison, splitter, message, dialog, and refresh? [Coverage, Spec §FR-004] — plan.md "Keyboard and focus" table.
+- [x] CHK019 Are keyboard bindings defined for every workbench context, including docked panel changes, the repository switcher, the references tree, panes, lists, comparison, splitter, message, dialog, and refresh? [Coverage, Spec §FR-004] — plan.md "Keyboard and focus" table (2026-10-10 rows: Repository switcher, Open folder, Tooltips, References sidebar).
 - [x] CHK020 Are pane names in the keyboard rules consistent with the layout terms? [Consistency] — plan.md "Keyboard and focus" Pane navigation row uses the layout section names.
 - [x] CHK021 Are focus-restoration rules defined for dialog close, mode return, and removal of the selected entry? [Completeness, Spec §FR-034] — plan.md "Keyboard and focus" Dialog row and focus paragraphs; plan.md "Selection, scroll, and stored context".
 - [x] CHK022 Are deliberate keyboard differences from Git Extensions documented with a safety reason? [Clarity] — plan.md "Git Extensions reference" keyboard-difference paragraph.
@@ -50,7 +50,7 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 
 ## Selection, Scroll, and Context Restoration
 
-- [x] CHK024 Are per-mode selection, scroll anchor, draft, and focus restoration rules defined, including stale-approval invalidation? [Completeness, Spec §FR-034, §SC-012] — plan.md "Selection, scroll, and stored context"; spec FR-034 and SC-012.
+- [x] CHK024 Are per-panel selection, scroll anchor, draft, and focus restoration rules defined, including stale-approval invalidation? [Completeness, Spec §FR-034, §SC-012] — plan.md "Selection, scroll, and stored context"; spec FR-034 and SC-012.
 - [x] CHK025 Is behavior defined when a selected commit leaves the loaded page after refresh? [Edge Case, Spec §FR-022] — plan.md "History graph design" interaction bullets (selection that leaves the page).
 
 ## Required Visible States
@@ -62,7 +62,7 @@ Audience: requirements reviewer. Depth: formal review gate. Evaluated on 2026-09
 
 ## Destructive-Action Separation
 
-- [x] CHK030 Are destructive actions excluded from this slice, with a rule for their future separation and scope confirmation? [Clarity, Spec §FR-027] — plan.md "Task flow and command placement" destructive-action paragraph; plan.md "Git Extensions reference" (`FormResetChanges`). The review dialog default, Commit staged changes, is not destructive (plan.md "Keyboard and focus", spec Clarifications 2026-09-30).
+- [x] CHK030 Are destructive actions excluded from this slice, with a rule for their future separation and scope confirmation? [Clarity, Spec §FR-027] — plan.md "Task flow and command placement" destructive-action paragraph; plan.md "Git Extensions reference" (`FormResetChanges`). Commit is not destructive and opens no dialog (plan.md "Keyboard and focus", spec Clarifications 2026-10-10).
 
 ## Graph Data and Rendering Rules
 

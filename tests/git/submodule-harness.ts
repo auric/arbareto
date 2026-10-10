@@ -241,11 +241,11 @@ export const STEP_TEXT = {
 export const cloneRemedy = (parent: string, path: string) => `& ${q(gitPath())} --no-lazy-fetch -C ${q(parent)} submodule update --init -- ${q(`:(literal)${path}`)}`;
 export const checkoutRemedy = (parent: string, path: string) => `& ${q(gitPath())} --no-lazy-fetch -C ${q(parent)} submodule update --init --no-fetch -- ${q(`:(literal)${path}`)}`;
 export const fetchRemedy = (worktree: string, tail = "") =>
-  `& { $p = $env:GIT_PROTOCOL_FROM_USER; $env:GIT_PROTOCOL_FROM_USER = '0'; try { & ${q(gitPath())} --no-lazy-fetch -C ${q(worktree)} fetch --no-recurse-submodules${tail} } finally { $env:GIT_PROTOCOL_FROM_USER = $p } }`;
+  `& { $p = $env:GIT_PROTOCOL_FROM_USER; $env:GIT_PROTOCOL_FROM_USER = '0'; try { & ${q(gitPath())} --no-lazy-fetch -C ${q(worktree)} --git-dir=.git fetch --no-recurse-submodules${tail} } finally { $env:GIT_PROTOCOL_FROM_USER = $p } }`;
 
 // Contract §12 "Remedies": the unsaved-commits save command of a worktree or a kept Git directory.
 export function saveCommand(location: { worktree: string } | { gitDir: string }, oid: string): string {
-  const where = "worktree" in location ? `-C ${q(location.worktree)}` : `--git-dir=${q(location.gitDir)} --work-tree=${q(location.gitDir)}`;
+  const where = "worktree" in location ? `-C ${q(location.worktree)} --git-dir=.git` : `--git-dir=${q(location.gitDir)} --work-tree=${q(location.gitDir)}`;
   return `& ${q(gitPath())} --no-lazy-fetch ${where} branch ${q(`arbareto-saved-${short(oid)}`)} ${q(oid)}`;
 }
 

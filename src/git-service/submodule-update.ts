@@ -573,7 +573,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       const at = p.parentGitWorktree;
       const nested = r.parent !== null;
       const update = async (args: string[], kind: "clone" | "connect" | "checkout" | "register") =>
-        step(r, args, "update", { step: kind, gitPath, parentWorktree: p.parentWorktree, path: p.localPath });
+        step(r, args, "update", { step: kind, gitPath, parentWorktree: p.parentWorktree, path: p.localPath, nested });
       if (row.action === "skip") {
         await gate(r, parentOf(r));
         const x = await update(submoduleRegisterArgs(at, local, nested), "register");

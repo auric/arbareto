@@ -242,7 +242,8 @@ export interface SubmoduleWslTarget {
 export type SubmoduleRemedyRequest =
   | { step: "fetch"; gitPath: string; submoduleWorktree: string; wsl?: SubmoduleWslTarget }
   | { step: "fallback-fetch"; gitPath: string; submoduleWorktree: string; remote: string; target: string; wsl?: SubmoduleWslTarget }
-  | { step: "connect" | "checkout" | "clone" | "register"; gitPath: string; parentWorktree: string; path: string | Uint8Array; wsl?: SubmoduleWslTarget };
+  // `nested`: the parent worktree is a submodule worktree.
+  | { step: "connect" | "checkout" | "clone" | "register"; gitPath: string; parentWorktree: string; path: string | Uint8Array; nested?: boolean; wsl?: SubmoduleWslTarget };
 
 export interface SubmoduleStepRemedy {
   command: string | null;
@@ -258,9 +259,9 @@ type Source = "review" | "run" | "clone-check";
 type Location = { submoduleWorktree: string; gitDirectory?: never } | { gitDirectory: string; submoduleWorktree?: never };
 
 export type SubmoduleRefusalRemedyRequest =
-  | { reason: "update-mode"; gitPath: string; parentWorktree: string; path: string | Uint8Array; wsl?: SubmoduleWslTarget }
+  | { reason: "update-mode"; gitPath: string; parentWorktree: string; path: string | Uint8Array; nested?: boolean; wsl?: SubmoduleWslTarget }
   // A submodule setting names its path. A superproject setting has none.
-  | { reason: "gitdir-config"; gitPath: string; parentWorktree: string; path?: string | Uint8Array; wsl?: SubmoduleWslTarget }
+  | { reason: "gitdir-config"; gitPath: string; parentWorktree: string; path?: string | Uint8Array; nested?: boolean; wsl?: SubmoduleWslTarget }
   | { reason: "limit"; gitPath: string; parentWorktree: string; path?: never; wsl?: SubmoduleWslTarget }
   | ({ reason: "unsaved-commits"; source: Source; gitPath: string; commit: string; wsl?: SubmoduleWslTarget } & Location)
   | {
@@ -285,6 +286,10 @@ const literalPath = (path: string | Uint8Array): RemedyValue => {
   text.set(bytes, LITERAL.length);
   return { kind: "path", text };
 };
+
+// Contract §12 "Review reads": the same form as the service commands. Plain discovery from an invalid `.git` entry reaches the parent repository.
+const IN_SUBMODULE = "-C {worktree} --git-dir=.git";
+const parentAt = (nested: boolean | undefined) => (nested ? "-C {parent} --git-dir=.git" : "-C {parent}");
 
 // `git` is the template for the Git program with its first argument `--no-lazy-fetch`. The values hold no form for paths; this function adds it.
 function build(gitArguments: string, values: Record<string, RemedyValue>, wsl: SubmoduleWslTarget | undefined, fetch: boolean): string | null {
@@ -319,7 +324,7 @@ export function buildSubmoduleRemedy(request: SubmoduleRemedyRequest): Submodule
     case "fetch":
     case "fallback-fetch": {
       const values: Record<string, RemedyValue> = { git, worktree: { kind: "submoduleWorktree", text: request.submoduleWorktree } };
-      let fetchArguments = "-C {worktree} fetch --no-recurse-submodules";
+      let fetchArguments = `${IN_SUBMODULE} fetch --no-recurse-submodules`;
       if (request.step === "fallback-fetch") {
         if (!FULL_OBJECT_ID.test(request.target)) return { command: null, text: FETCH_TEXT };
         values.remote = { kind: "remoteName", text: request.remote };
@@ -340,7 +345,7 @@ export function buildSubmoduleRemedy(request: SubmoduleRemedyRequest): Submodule
           : request.step === "clone"
             ? ["submodule update --init", CLONE_TEXT]
             : ["submodule update --init --no-fetch", CHECKOUT_TEXT];
-      return { command: build(`-C {parent} ${subcommand} -- {path}`, values, request.wsl, false), text };
+      return { command: build(`${parentAt(request.nested)} ${subcommand} -- {path}`, values, request.wsl, false), text };
     }
   }
 }
@@ -355,7 +360,7 @@ export function buildRefusalRemedy(request: SubmoduleRefusalRemedyRequest): Subm
         git: { kind: "gitPath", text: request.gitPath },
         parent: { kind: "worktreeRoot", text: request.parentWorktree },
       };
-      let updateArguments = "-C {parent} submodule update --init --recursive";
+      let updateArguments = `${parentAt(request.reason !== "limit" && request.nested)} submodule update --init --recursive`;
       if (request.path !== undefined) {
         values.path = literalPath(request.path);
         updateArguments += " -- {path}";
@@ -377,7 +382,7 @@ export function buildRefusalRemedy(request: SubmoduleRefusalRemedyRequest): Subm
         where = "--git-dir={directory} --work-tree={directory}";
       } else {
         values.worktree = { kind: "submoduleWorktree", text: request.submoduleWorktree };
-        where = "-C {worktree}";
+        where = IN_SUBMODULE;
       }
       // The refusal text carries the instruction, so a refused value leaves no remedy.
       const command = build(`${where} branch {branch} {commit}`, values, request.wsl, false);

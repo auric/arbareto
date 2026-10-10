@@ -22,6 +22,12 @@ function bridgeDouble(answers: Record<string, unknown> = {}) {
 const ChangesPaneDouble = () => <div>changes pane double</div>;
 const ComparisonViewDouble = () => <div>comparison view double</div>;
 const HistoryViewDouble = () => <div>history view double</div>;
+// Docks the commit panel as a click on the Working directory row does.
+const SelectingHistoryView = ({ onSelectRow }: { onSelectRow(id: string): void }) => (
+  <button type="button" onClick={() => onSelectRow("working-directory")}>
+    Select Working directory
+  </button>
+);
 
 describe("View menu", () => {
   test("the menu bar holds the View menu, and rendering sends no bridge request", () => {
@@ -109,20 +115,18 @@ async function press(target: Element, key: string) {
   await settle();
 }
 
-// Opens a repository, enters Changes, and selects an Unstaged entry with its shown comparison and hunk 2.
+// Opens a repository from the start page, docks the commit panel, and selects an Unstaged entry with its shown comparison and hunk 2.
 async function openChanges() {
   const double = bridgeDouble({ chooseRepository: registered() });
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  await act(async () => root.render(<Workbench bridge={double.bridge as never} ChangesPane={SelectingChangesPane} ComparisonView={HunkComparisonView} HistoryView={HistoryViewDouble} />));
+  await act(async () => root.render(<Workbench bridge={double.bridge as never} ChangesPane={SelectingChangesPane} ComparisonView={HunkComparisonView} HistoryView={SelectingHistoryView} />));
   unmounts.push(async () => {
     await act(async () => root.unmount());
     host.remove();
   });
-  const open = named("button", "Open repository");
-  expect(open.length).toBeGreaterThan(0);
-  await click(open[0]!);
-  await click(one('[role="tab"]', "Changes"));
+  await click(one('section[aria-label="Start page"] [role="option"]', "Open folder"));
+  await click(one("button", "Select Working directory"));
   await click(one("button", "Select src/a.ts"));
   await click(one("button", "Select hunk 2"));
   const field = document.querySelector("textarea");

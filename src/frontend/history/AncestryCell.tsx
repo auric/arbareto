@@ -32,10 +32,36 @@ export type AncestryCellProps = {
   /** The shared row height, grown by the text size. */
   rowHeight: number;
   selected: boolean;
+  /** The HEAD row: the dotted Working directory line runs from the top edge to the node. */
+  leadIn?: boolean;
 };
 
+// plan.md "History graph design": the dotted lane-0 line of the Working directory and Index rows.
+const DOT = "1 3";
+
+function WorkingLine({ x, from, to }: { x: number; from: number; to: number }) {
+  return <path className="working-line stroke-(--muted-text)" d={`M${x} ${from}V${to}`} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} strokeDasharray={DOT} strokeLinecap="round" />;
+}
+
+export type WorkingLineCellProps = Pick<AncestryCellProps, "lanes" | "spacing" | "rowHeight"> & {
+  /** `start` begins at the row center, below the Working directory text. `through` crosses the Index row. */
+  part: "start" | "through";
+  /** False on a page without rows: an unborn branch shows no line. */
+  line: boolean;
+};
+
+/** The graph cell of the Working directory or Index row. It draws no node of its own. */
+export function WorkingLineCell({ lanes, spacing, rowHeight, part, line }: WorkingLineCellProps) {
+  const width = columnWidth(lanes, spacing);
+  return (
+    <svg className="graph-cell pointer-events-none shrink-0" width={width} height={rowHeight} viewBox={`0 0 ${width} ${rowHeight}`} aria-hidden="true" focusable="false">
+      {line ? <WorkingLine x={SIDE_PADDING + 0.5 * spacing} from={part === "start" ? rowHeight / 2 : 0} to={rowHeight} /> : null}
+    </svg>
+  );
+}
+
 /** One row's ancestry cell. It holds no label, and it follows the hover state of its row. */
-export function AncestryCell({ cell, lanes, spacing, rowHeight, selected }: AncestryCellProps) {
+export function AncestryCell({ cell, lanes, spacing, rowHeight, selected, leadIn = false }: AncestryCellProps) {
   const x = (lane: number) => SIDE_PADDING + (lane + 0.5) * spacing;
   const middle = rowHeight / 2;
   const y = (p: Point) => (p.at === "top" ? 0 : p.at === "node" ? middle : rowHeight);
@@ -66,6 +92,7 @@ export function AncestryCell({ cell, lanes, spacing, rowHeight, selected }: Ance
           <path key={i} className={STROKE[s.color]} d={d} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} strokeLinecap="round" strokeLinejoin="round" />
         );
       })}
+      {leadIn ? <WorkingLine x={x(0)} from={0} to={middle - NODE_RADIUS} /> : null}
       {cell.merge ? (
         <circle className={`node-merge ${STROKE[cell.color]} fill-(--canvas)`} cx={nx} cy={middle} r={NODE_RADIUS} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} />
       ) : (

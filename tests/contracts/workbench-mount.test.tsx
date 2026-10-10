@@ -25,7 +25,7 @@ const { createRoot } = await import("react-dom/client");
 const { ChangesPaneMount, ComparisonViewMount, HistoryViewMount, INTERIM_HELP_LINE, LATER, Workbench } = await import("../../src/frontend/app/Workbench");
 const { readPreferences } = await import("../../src/frontend/state/preferences");
 
-// tasks.md T330: the interim read-only mount. plan.md "Measurements and budgets" (History-ready frame) and "Required visible states".
+// tasks.md T354: the single-view frame. plan.md "Chosen layout: one view", "Dock region", "Measurements and budgets" (ready frames), and "Required visible states".
 
 type Call = { operation: string; args: unknown[]; resolve(response: unknown): void };
 // Each request stays pending until the test resolves it.
@@ -111,20 +111,31 @@ async function resolve(call: Call, response: unknown) {
   await act(async () => call.resolve(response));
   await settle();
 }
+// Clicks a history option by its row ID: "working-directory", "index", or a commit OID.
+async function selectRow(id: string) {
+  const option = document.querySelector<HTMLElement>(`section[aria-label="History"] [role="option"][data-row-id="${id}"]`);
+  expect(option !== null).toBe(true);
+  await act(async () => option!.click());
+  await settle();
+}
 
 describe("start", () => {
-  test("a canceled restoreWorkspace, which means no stored repository, shows No repository and no refusal", async () => {
+  test("a canceled restoreWorkspace, which means no stored repository, shows the start page, No repository open, and no refusal", async () => {
     const double = await mount({ requestId: null, state: "canceled" });
-    expect(text()).toContain("No repository");
+    expect(document.querySelector('section[aria-label="Start page"]')).not.toBeNull();
+    expect(document.querySelector('footer [role="status"]')?.textContent).toBe("No repository open");
     expect(document.querySelector('[role="alert"]')).toBeNull();
-    expect(double.calls.map((c) => c.operation)).toEqual([]);
+    // Only the start page reads the recent list (plan.md "Cold-start critical path").
+    expect(double.calls.map((c) => c.operation)).toEqual(["listRecentRepositories"]);
   });
 
-  test("a restoreWorkspace registration opens History and sends the full read, readHistory, and readTrust", async () => {
+  test("a restoreWorkspace registration shows the one view without mode tabs and sends the full read, readHistory, and readTrust", async () => {
     const double = await mount(succeeded(REGISTRATION));
     expect(double.calls.map((c) => c.operation).sort()).toEqual(["readHistory", "readTrust", "readWorkspace"]);
     expect(double.pending("readWorkspace").args[1]).toEqual({ refresh: false, check: "full" });
-    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("History");
+    expect(document.querySelector('[role="tab"], [role="tablist"]')).toBeNull();
+    expect(document.querySelector('section[aria-label="History"]')).not.toBeNull();
+    expect(text()).toContain("Select the Working directory row to commit, or a commit to see its details.");
   });
 
   test("a refused restoreWorkspace shows the Repository refused state with its code", async () => {
@@ -175,22 +186,27 @@ describe("History", () => {
     }
   });
 
-  test("History shows one inspector and no bottom region splitter of its own", async () => {
+  test("the history list holds no inspector; the dock below it holds one panel at a time", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readHistory"), succeeded(PAGE));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
     const history = document.querySelector('section[aria-label="History"]')!;
     expect(history.querySelectorAll('[role="listbox"]')).toHaveLength(1);
-    expect((history.textContent ?? "").split("Select a commit to see its details")).toHaveLength(2);
-    expect(history.querySelector('[role="separator"]')).toBeNull();
+    expect(history.querySelector("section")).toBeNull();
+    await selectRow(HEAD);
+    const dock = document.querySelector('section[aria-label="Dock"]')!;
+    expect(dock.textContent).toContain("Selected commit");
+    expect(dock.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).not.toBeNull();
   });
 });
 
 describe("read-only places", () => {
   test("the commit place states that commit is available after batch 3", async () => {
     const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readHistory"), succeeded(PAGE));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
-    expect(document.querySelector('section[aria-label="Changes"]')?.textContent).toContain(LATER.commit);
+    await selectRow("working-directory");
+    expect(document.querySelector('section[aria-label="Commit panel"]')?.textContent).toContain(LATER.commit);
   });
 
   test("the submodule row shows the service count and no Update submodules button", async () => {
@@ -270,8 +286,10 @@ describe("recovery markers", () => {
 describe("help line", () => {
   test("the No selection help line states the interim staging sentence", async () => {
     const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readHistory"), succeeded(PAGE));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
-    const changes = document.querySelector('section[aria-label="Changes"]')!.textContent ?? "";
+    await selectRow("working-directory");
+    const changes = document.querySelector('section[aria-label="Commit panel"]')!.textContent ?? "";
     expect(changes).toContain(INTERIM_HELP_LINE);
     expect(changes).not.toContain("Space stages or unstages it");
   });
@@ -296,7 +314,7 @@ const shownComparison = (entryId: string, patch: string) => ({
   }),
   entryId,
 });
-const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {} } as const;
+const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {}, selected: null, onSelectRow: () => {} } as const;
 
 async function render(node: () => ReactNode) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -371,27 +389,21 @@ describe("history selection", () => {
   const row = (oid: string) => ({ oid, parents: [], subject: `Commit ${oid.slice(0, 4)}`, author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.invalid" }, committerDate: 1_700_000_000, body: "", bodyCut: false });
   const [first, second] = ["1".repeat(40), "2".repeat(40)];
   const pageOf = (...oids: string[]): HistoryPage => ({ ...PAGE, head: { state: "branch", target: "refs/heads/main", oid: oids[0]! }, rows: oids.map(row) });
-  const selected = (host: HTMLElement) => host.querySelector('[role="option"][aria-selected="true"]')?.textContent ?? null;
-  const clickRow = (host: HTMLElement, index: number) => act(async () => host.querySelectorAll<HTMLElement>('[role="option"]')[index]!.click());
 
-  test("the selected OID stays across a page refresh while the new page holds it, and clears when it does not or on a repository open", async () => {
-    const view = (history: HistoryPage | null, repository: object = REGISTRATION) => () => (
-      <HistoryViewMount {...PANE} requests={{ refresh: () => {} } as never} state={{ repository, history, historyFailure: null, workspace: null, entries: [] } as never} />
-    );
-    const shown = await render(view(pageOf(second, first)));
-    await clickRow(shown.host, 1);
-    expect(selected(shown.host)).toContain("Commit 1111");
-    await shown.rerender(view(null));
-    await shown.rerender(view(pageOf(second, first)));
-    expect(selected(shown.host)).toContain("Commit 1111");
-    await shown.rerender(view(pageOf(second)));
-    expect(selected(shown.host)).toBeNull();
-    await shown.rerender(view(pageOf(second, first)));
-    expect(selected(shown.host)).toBeNull();
-    await clickRow(shown.host, 1);
-    expect(selected(shown.host)).toContain("Commit 1111");
-    await shown.rerender(view(pageOf(second, first), { ...REGISTRATION }));
-    expect(selected(shown.host)).toBeNull();
+  test("the selected commit stays across a refresh while the new page holds it, and the dock returns to its hint when it does not", async () => {
+    const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readHistory"), succeeded(pageOf(second, first)));
+    await resolve(double.pending("readWorkspace"), succeeded(snapshot({ head: { state: "branch", target: "refs/heads/main", oid: second } })));
+    await selectRow(first);
+    expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Commit 1111");
+    await act(async () => document.querySelector<HTMLElement>('button[aria-label="Refresh"]')!.click());
+    await settle();
+    await resolve(latest(double, "readHistory"), succeeded(pageOf(second, first)));
+    expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Commit 1111");
+    await act(async () => document.querySelector<HTMLElement>('button[aria-label="Refresh"]')!.click());
+    await settle();
+    await resolve(latest(double, "readHistory"), succeeded(pageOf(second)));
+    expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Select the Working directory row to commit, or a commit to see its details.");
   });
 });
 
@@ -429,7 +441,9 @@ describe("file lane splitter", () => {
     const setItem = spyOn(Storage.prototype, "setItem");
     try {
       const double = await mount(succeeded(REGISTRATION));
+      await resolve(double.pending("readHistory"), succeeded(PAGE));
       await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
+      await selectRow("working-directory");
       const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize file lane"]')!;
       expect(splitter).not.toBeNull();
       const start = Number(splitter.getAttribute("aria-valuenow"));
@@ -476,17 +490,16 @@ async function sized(width: number, height: number, run: () => Promise<void>) {
     happy.setInnerHeight(before.height);
   }
 }
-const tab = (label: string) => act(async () => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => t.textContent?.includes(label))!.click());
 
 // plan.md "Keyboard and focus", File list row: a click and each navigation key select an entry and read its comparison.
 describe("selection follows focus", () => {
   test("a click and fast ArrowDown presses each read one comparison, and only the last response shows", async () => {
     const entries = ["a.txt", "b.txt", "c.txt"].map(changeEntry);
     const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readHistory"), succeeded(PAGE));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries, entryCount: entries.length })));
-    await tab("Changes");
-    await settle();
-    const first = document.querySelector<HTMLElement>('section[aria-label="Changes"] [role="option"]')!;
+    await selectRow("working-directory");
+    const first = document.querySelector<HTMLElement>('section[aria-label="Commit panel"] [role="option"]')!;
     await act(async () => {
       first.focus();
       first.click();
@@ -541,9 +554,11 @@ describe("pane scrolling", () => {
         expect(own(area)).toBe(true);
         expect(area.style.maxHeight).not.toBe("");
 
-        await tab("Changes");
-        await settle();
-        const changes = document.querySelector<HTMLElement>('section[aria-label="Changes"]')!;
+        // The references sidebar scrolls inside its own region.
+        const tree = document.querySelector('[data-section="references"]')!;
+        expect(tree !== null).toBe(true);
+        await selectRow("working-directory");
+        const changes = document.querySelector<HTMLElement>('section[aria-label="Commit panel"]')!;
         const listboxes = [...changes.querySelectorAll('[role="listbox"]')];
         expect(listboxes).toHaveLength(2);
         for (const box of listboxes) expect(own(box)).toBe(true);
@@ -557,13 +572,13 @@ describe("pane scrolling", () => {
         // The narrow and constrained file band holds both sections side by side ("Chosen layout, sizes, and DPI").
         expect(sections[0]!.parentElement!.className.split(/\s+/)).toContain(profile === "wide" ? "flex-col" : "flex-row");
 
-        await tab("History");
-        await settle();
         const history = document.querySelector('section[aria-label="History"]')!;
         const list = history.querySelector('[role="listbox"]')!;
         expect(own(list)).toBe(true);
-        const inspector = [...history.querySelectorAll("section")].find((s) => s.textContent?.startsWith("Selected commit"))!;
-        expect(own(inspector)).toBe(true);
+        await selectRow(HEAD);
+        const details = document.querySelector('[data-section="commitDetails"] section')!;
+        const body = [...details.querySelectorAll("div")].find((d) => scrolls(d))!;
+        expect(own(body)).toBe(true);
         expect(scroller(main) === null).toBe(true);
       });
     });
@@ -572,9 +587,166 @@ describe("pane scrolling", () => {
   test("at 720x480 compact with one band row, the file band and the tray take the reduced pane minimum", async () => {
     await sized(720, 480, async () => {
       const double = await mount(succeeded(REGISTRATION));
+      await resolve(double.pending("readHistory"), succeeded(PAGE));
       await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries: [changeEntry("a.txt")], entryCount: 1, submoduleNotice: { count: 1, paths: ["s"], filter: "applied" } })));
-      const rows = document.querySelector<HTMLElement>('section[aria-label="Changes"]')!.style.gridTemplateRows.split(/\s+(?![^(]*\))/);
+      await selectRow("working-directory");
+      const rows = document.querySelector<HTMLElement>('section[aria-label="Commit panel"]')!.style.gridTemplateRows.split(/\s+(?![^(]*\))/);
       expect(rows).toEqual(["58px", "0", "minmax(0px, 1fr)", "0", "58px"]);
     });
+  });
+});
+
+// T354: plan.md "Chosen layout: one view", "Header layout", "Dock region", "Keyboard and focus", and "Measurements and budgets".
+describe("single view", () => {
+  const WSL_SNAPSHOT = { location: { kind: "wsl", distro: "Ubuntu-26.04", git: { path: "/usr/bin/git", version: "2.55.0" } }, identity: { ...snapshot().identity, worktreeRoot: "\\\\wsl.localhost\\Ubuntu-26.04\\home\\me\\repo" } } as unknown as Partial<WorkspaceSnapshot>;
+  const opened = async (fields: Partial<WorkspaceSnapshot> = {}, environment: Environment | null = null) => {
+    const double = await mount(succeeded(REGISTRATION), environment);
+    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await resolve(double.pending("readWorkspace"), succeeded(snapshot(fields)));
+    return double;
+  };
+  const follows = (a: Element | null, b: Element | null) => a !== null && b !== null && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  test("the toolbar holds the switcher, the WSL label, the branch text, the menu bar, Refresh, and Commit, in that order", async () => {
+    await opened(WSL_SNAPSHOT);
+    const header = document.querySelector("header")!;
+    const items = [
+      header.querySelector('button[aria-keyshortcuts="Control+R"]'),
+      header.querySelector('[data-slot="wsl-badge"]'),
+      header.querySelector('[data-slot="branch-text"]'),
+      header.querySelector('[role="menubar"]'),
+      header.querySelector('button[aria-label="Refresh"]'),
+      header.querySelector('button[aria-label^="Commit:"]'),
+    ];
+    expect(items.map((i) => i !== null)).toEqual([true, true, true, true, true, true]);
+    for (let i = 1; i < items.length; i++) expect(follows(items[i - 1]!, items[i]!)).toBe(true);
+    expect(header.querySelector('[data-slot="branch-text"]')!.textContent).toBe("main");
+    expect(header.querySelector('button[aria-label="Refresh"]')!.getAttribute("aria-keyshortcuts")).toBe("F5");
+  });
+
+  test("the Commit button names both counts and selects the Working directory row", async () => {
+    const entries = [changeEntry("a.txt"), { ...changeEntry("b.txt"), category: "staged" } as ChangeEntry];
+    await opened({ entries, entryCount: 2 });
+    const commit = document.querySelector<HTMLElement>('header button[aria-label^="Commit:"]')!;
+    expect(commit.getAttribute("aria-label")).toBe("Commit: 1 working change, 1 staged");
+    await act(async () => commit.click());
+    await settle();
+    expect(document.querySelector('[data-row-id="working-directory"]')!.getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).toBeNull();
+  });
+
+  test("one notice band spans the width above the sidebar and the history list", async () => {
+    await opened({ submoduleNotice: { count: 1, paths: ["s"], filter: "applied" } });
+    expect(document.querySelectorAll('[data-slot="notice-band"]')).toHaveLength(1);
+    expect(follows(document.querySelector('[data-slot="notice-band"]'), document.querySelector('[data-section="references"]'))).toBe(true);
+  });
+
+  test("the references sidebar is a column with its splitter, and the constrained profile collapses it to its toggle", async () => {
+    await sized(1600, 900, async () => {
+      await opened();
+      expect(document.querySelector('[data-section="references"] h2')?.textContent).toBe("References");
+      expect(document.querySelector('[role="separator"][aria-label="Resize references sidebar"]')).not.toBeNull();
+    });
+    await sized(720, 480, async () => {
+      await opened();
+      const toggles = document.querySelectorAll('button[aria-label="Show references"]');
+      expect(toggles.length).toBeGreaterThan(0);
+      expect(toggles[toggles.length - 1]!.getAttribute("aria-expanded")).toBe("false");
+    });
+  });
+
+  test("a row selection changes the dock without a bridge request", async () => {
+    const double = await opened();
+    const before = double.calls.length;
+    await selectRow("working-directory");
+    expect(document.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).toBeNull();
+    await selectRow("index");
+    await selectRow(HEAD);
+    expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Selected commit");
+    expect(double.calls.slice(before).map((c) => c.operation)).toEqual([]);
+  });
+
+  test("the History-ready, Commit-panel-ready, and Details-ready marks follow their states once each", async () => {
+    const mark = spyOn(performance, "mark");
+    try {
+      await opened();
+      const count = (name: string) => mark.mock.calls.filter(([n]) => n === name).length;
+      expect(count("arbareto:history-painted")).toBe(1);
+      expect(count("arbareto:commit-panel-ready")).toBe(0);
+      await selectRow("working-directory");
+      expect(count("arbareto:commit-panel-ready")).toBe(1);
+      await selectRow(HEAD);
+      expect(count("arbareto:details-ready")).toBe(1);
+      await selectRow("index");
+      expect(count("arbareto:commit-panel-ready")).toBe(2);
+    } finally {
+      mark.mockRestore();
+    }
+  });
+
+  test("F6 moves from the header to the references sidebar, then to the history list, and wraps", async () => {
+    await opened();
+    const f6 = async () => {
+      await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "F6", code: "F6", bubbles: true, cancelable: true })));
+      await settle();
+    };
+    await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.focus());
+    await f6();
+    expect(document.activeElement!.closest("[data-section]")?.getAttribute("data-section")).toBe("references");
+    await f6();
+    expect(document.activeElement!.closest("[data-section]")?.getAttribute("data-section")).toBe("historyList");
+    await f6();
+    expect(document.activeElement!.closest("[data-section]")?.getAttribute("data-section")).toBe("header");
+  });
+
+  test("Ctrl+O runs the folder dialog, and Ctrl+R opens the switcher", async () => {
+    const double = await opened();
+    const key = (k: string) => act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, code: `Key${k.toUpperCase()}`, ctrlKey: true, bubbles: true, cancelable: true })));
+    await key("o");
+    await settle();
+    expect(double.calls.filter((c) => c.operation === "chooseRepository")).toHaveLength(1);
+    await key("r");
+    await settle();
+    expect(document.querySelector('[role="combobox"]')).not.toBeNull();
+    expect(double.calls.filter((c) => c.operation === "listRecentRepositories")).toHaveLength(1);
+  });
+
+  test("the status bar ends with Git <version> outside every live region", async () => {
+    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), signing: "unsigned" }, platformScope: "qualification-target", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [], damagedMarkers: [] } as unknown as Environment;
+    await opened({}, environment);
+    const version = document.querySelector('footer [data-slot="git-version"]')!;
+    expect(version.textContent).toBe("Git 2.55.0.windows.3");
+    expect(version.closest('[role="status"]')).toBeNull();
+    expect(document.querySelector("footer")!.lastElementChild).toBe(version);
+  });
+
+  test("a WSL workspace names its distro after the Git version", async () => {
+    await opened(WSL_SNAPSHOT);
+    expect(document.querySelector('footer [data-slot="git-version"]')!.textContent).toBe("Git 2.55.0 (WSL: Ubuntu-26.04)");
+  });
+
+  test("no Fetch, Pull, Push, Stash, Clone, or settings control renders anywhere (FR-056)", async () => {
+    await opened();
+    await selectRow("working-directory");
+    const names = [...document.querySelectorAll('button, [role="menuitem"], [role="tab"], a')].map((e) => `${e.getAttribute("aria-label") ?? ""} ${e.textContent ?? ""}`);
+    for (const name of names) expect(name).not.toMatch(/\b(fetch|pull|push|stash|clone|settings)\b/i);
+  });
+});
+
+// plan.md "Switch repository": a switch never discards a draft. The T146 composer and the T147 draft store mount are not in the workbench yet.
+describe("drafts across a switch", () => {
+  test.todo("an unsent message draft stays in the draft store after a switch through the repository switcher, and returns with its worktree (needs T146 and T147)", async () => {
+    const double = await mount(succeeded(REGISTRATION));
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Unsent draft");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.click());
+    await settle();
+    await resolve(latest(double, "listRecentRepositories"), succeeded({ entries: [{ entryId: crypto.randomUUID(), path: "C:\other", location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }] }));
+    await act(async () => document.querySelectorAll<HTMLElement>('[role="option"]')[1]!.click());
+    await resolve(latest(double, "openRecentRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64), worktreeRoot: "C:\other" }));
+    expect(double.calls.some((c) => c.operation === "removeDraft")).toBe(false);
   });
 });

@@ -24,6 +24,7 @@ function bridgeDouble() {
     readEntries: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readEntries", target, payload),
     readHistory: (target: Record<string, unknown>) => record("readHistory", target),
     readComparison: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readComparison", target, payload),
+    readRefs: (target: Record<string, unknown>) => record("readRefs", target),
     cancel: (payload: Record<string, unknown>) => record("cancel", {}, payload),
   };
   const of = (operation: string) => calls.filter((call) => call.operation === operation);
@@ -536,6 +537,126 @@ describe("superseded comparison reads", () => {
     echo(o.last("readComparison"), { state: "canceled", code: "CANCELED" });
     await flush();
     expect(o.requests.state().comparison?.state).toBe("canceled");
+    o.requests.dispose();
+  });
+});
+
+// T358: contract §3 "References result" and "Pairing with the history page"; plan.md Refresh row.
+describe("reference reads", () => {
+  const refs = (generation: number, current: { name: string; objectId: string } | null) => ({ generation, refs: [], current, completeness: { state: "complete" as const } });
+
+  test("readRefs follows a full readWorkspace result with its generation, and the paired result shows", async () => {
+    const o = await opened();
+    expect(o.of("readRefs").map((c) => c.target)).toEqual([{ repositoryId: REPOSITORY, repositoryGeneration: 1 }]);
+    const value = refs(1, { name: "main", objectId: HEAD_A });
+    echo(o.last("readRefs"), { result: value });
+    await flush();
+    expect(o.requests.state().refs).toEqual(value);
+    expect(o.requests.state().refsUnpaired).toBe(0);
+    o.requests.dispose();
+  });
+
+  test("a retained readWorkspace result and a selection send no readRefs", async () => {
+    const o = await opened();
+    const before = o.of("readRefs").length;
+    await o.advance(1000);
+    workspaceResponse(o.last("readWorkspace"), snapshot(1, o.first.entries, { readKind: "retained" }));
+    await flush();
+    o.requests.selectEntry(o.first.entries[0]!.entryId);
+    await flush();
+    expect(o.of("readRefs")).toHaveLength(before);
+    o.requests.dispose();
+  });
+
+  test("a WSL poll result sends no readRefs, and a user full read on WSL does", async () => {
+    const double = bridgeDouble();
+    const time = clockDouble();
+    const requests = createRequests({ bridge: double.bridge, clock: time.clock, focus: focusDouble(true).focus });
+    requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
+    await flush();
+    const wsl = { location: { kind: "wsl", distro: "Ubuntu-26.04", git: { path: "/usr/bin/git", version: "2.55.0" } } } as unknown as Partial<WorkspaceSnapshot>;
+    workspaceResponse(double.last("readWorkspace"), snapshot(1, [], wsl));
+    await flush();
+    expect(double.of("readRefs")).toHaveLength(1);
+    await time.advance(1000);
+    const poll = double.last("readWorkspace");
+    workspaceResponse(poll, snapshot(1, [], wsl));
+    await flush();
+    expect(double.of("readRefs")).toHaveLength(1);
+    requests.dispose();
+  });
+
+  test("readRefs follows each readHistory that a changed HEAD starts", async () => {
+    const o = await opened();
+    const before = o.of("readRefs").length;
+    await o.advance(1000);
+    workspaceResponse(o.last("readWorkspace"), snapshot(1, o.first.entries, { readKind: "retained", head: { state: "branch", target: "refs/heads/main", oid: HEAD_B } }));
+    await flush();
+    expect(o.of("readRefs")).toHaveLength(before);
+    echo(o.last("readHistory"), { result: page(1, HEAD_B) });
+    await flush();
+    expect(o.of("readRefs")).toHaveLength(before + 1);
+    o.requests.dispose();
+  });
+
+  test("without a pair, one readHistory and one readRefs go out; a second unpaired result sends nothing", async () => {
+    const o = await opened();
+    const histories = o.of("readHistory").length;
+    echo(o.last("readRefs"), { result: refs(1, { name: "main", objectId: HEAD_B }) });
+    await flush();
+    expect(o.requests.state().refsUnpaired).toBe(1);
+    expect(o.of("readHistory")).toHaveLength(histories + 1);
+    expect(o.of("readRefs")).toHaveLength(2);
+    echo(o.last("readHistory"), { result: page(1, HEAD_A) });
+    echo(o.last("readRefs"), { result: refs(1, { name: "other", objectId: HEAD_A }) });
+    await flush();
+    expect(o.requests.state().refsUnpaired).toBe(2);
+    expect(o.of("readHistory")).toHaveLength(histories + 1);
+    expect(o.of("readRefs")).toHaveLength(2);
+    o.requests.dispose();
+  });
+
+  test("a newer readRefs supersedes an older one", async () => {
+    const o = await opened();
+    const older = o.last("readRefs");
+    o.requests.refresh();
+    await flush();
+    workspaceResponse(o.last("readWorkspace"), snapshot(1, o.first.entries));
+    await flush();
+    const newer = o.last("readRefs");
+    expect(newer).not.toBe(older);
+    const fresh = refs(1, { name: "main", objectId: HEAD_A });
+    echo(newer, { result: fresh });
+    await flush();
+    echo(older, { result: { ...refs(1, { name: "main", objectId: HEAD_A }), refs: [{ kind: "tag", name: "stale" }] } as never });
+    await flush();
+    expect(o.requests.state().refs).toEqual(fresh);
+    o.requests.dispose();
+  });
+
+  test("a refusal sets refsFailure, and a later list clears it", async () => {
+    const o = await opened();
+    const refused = { completeness: { state: "limited", code: "OUTPUT_LIMIT", reason: "REF_LISTING_RECORDS" } };
+    echo(o.last("readRefs"), { state: "limited", code: "OUTPUT_LIMIT", result: refused });
+    await flush();
+    expect(o.requests.state().refsFailure?.result).toEqual(refused);
+    expect(o.requests.state().refs).toBeNull();
+    o.requests.dispose();
+  });
+});
+
+// T354: one view without modes. The History-ready mark (`arbareto:history-painted`) counts `historyEpoch`.
+describe("refresh in the one view", () => {
+  test("a user Refresh sends readWorkspace with refresh true and readHistory together, and adds 1 to historyEpoch", async () => {
+    const o = await opened();
+    const epoch = o.requests.state().historyEpoch;
+    const histories = o.of("readHistory").length;
+    o.requests.refresh();
+    await flush();
+    expect(o.last("readWorkspace").payload).toEqual({ refresh: true, check: "full" });
+    expect(o.of("readHistory")).toHaveLength(histories + 1);
+    expect(o.requests.state().historyEpoch).toBe(epoch + 1);
+    expect("mode" in o.requests.state()).toBe(false);
     o.requests.dispose();
   });
 });

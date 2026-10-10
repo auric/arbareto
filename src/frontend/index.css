@@ -289,6 +289,19 @@
     border-color: var(--control-border);
     color: var(--text);
   }
+  /* plan.md "Reference chips": local branches use Accent; remote and tag chips use Text for the name, icon, and outline. */
+  .chip {
+    height: var(--h-badge);
+    padding-inline: 4px;
+    border: 1px solid var(--text);
+    border-radius: 4px;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .chip[data-kind="branch"] {
+    border-color: var(--accent-role);
+    color: var(--accent-role);
+  }
 
   .boundary-continuation {
     stroke-width: var(--boundary-width);
@@ -332,11 +345,13 @@
     color: CanvasText;
   }
   .badge,
-  .badge-wsl {
+  .badge-wsl,
+  .chip,
+  .chip[data-kind="branch"] {
     color: CanvasText;
     border-color: CanvasText;
   }
-  .list-row[aria-selected="true"] :is(.badge, .badge-wsl) {
+  .list-row[aria-selected="true"] :is(.badge, .badge-wsl, .chip, .chip[data-kind="branch"]) {
     color: HighlightText;
     border-color: HighlightText;
   }

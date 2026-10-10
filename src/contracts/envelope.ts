@@ -8,7 +8,7 @@ import { FILE_ACTION_REASONS } from "./file-action";
 import * as limits from "./limits";
 import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REGISTERED_WORKSPACES } from "./limits";
 import { ChannelPath, Count, Fingerprint, Identifier, isOperationName, MutationKind, OPERATION_NAMES, SHELL_ONLY, Text, type OperationName } from "./operations";
-import { OPERATION_STATES } from "./outcome";
+import { ATTRIBUTION_REASONS, OPERATION_STATES } from "./outcome";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "./strict-json";
 
 const ErrorCodeSchema = z.enum(ERROR_CODES as [ErrorCode, ...ErrorCode[]]);
@@ -396,6 +396,27 @@ export const HunkEligibility = z
 export const WorkspaceOperationState = z.enum(["normal", "conflicted", "merging", "rebasing", "cherry-picking", "reverting", "sequencer-active", "unknown"]);
 export const RecoveryState = z.enum(["ready", "refreshing", "reconciling", "unknown", "unavailable"]);
 
+// Contract §8 "Observed locks": `applyHunk` and `applyFile` name at most 6 files. The restart list of foreign files uses the same bound.
+export const RECOVERY_FOREIGN_CAP = 6;
+
+// Contract §8: the statement of a recovery refresh. `foreignTotal` counts the foreign files when the list is cut.
+export const RecoveryStatement = z
+  .strictObject({
+    outcome: z.enum(["unknown", "none"]),
+    attribution: z
+      .discriminatedUnion("result", [
+        z.strictObject({ result: z.literal("identified"), commitOid: ObjectId }).meta({ title: "AttributionIdentified" }),
+        z.strictObject({ result: z.literal("none") }).meta({ title: "AttributionNone" }),
+        z.strictObject({ result: z.literal("unknown"), reason: z.enum(ATTRIBUTION_REASONS) }).meta({ title: "AttributionUnknown" }),
+      ])
+      .optional(),
+    indexMatch: z.enum(["published", "not-published", "neither"]).optional(),
+    foreign: z.array(ChannelPath).max(RECOVERY_FOREIGN_CAP).optional(),
+    foreignTotal: Count.optional(),
+  })
+  .meta({ title: "RecoveryStatement" });
+export type RecoveryStatement = z.infer<typeof RecoveryStatement>;
+
 // Contract §3 `readWorkspace` with a retained snapshot: the summary, `entryCount`, the first page, and the cursor of the next page or null.
 export const WorkspaceSnapshot = z
   .strictObject({
@@ -419,6 +440,7 @@ export const WorkspaceSnapshot = z
     entryCount: Count,
     entries: z.array(ChangeEntry),
     cursor: Identifier.nullable(),
+    recovery: RecoveryStatement.optional(),
   })
   .refine((r) => r.completeness.state !== "failed" && (r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount))
   .meta({ title: "WorkspaceSnapshot" });

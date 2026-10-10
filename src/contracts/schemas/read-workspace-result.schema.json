@@ -544,6 +544,105 @@
               "type": "null"
             }
           ]
+        },
+        "recovery": {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "unknown",
+                "none"
+              ]
+            },
+            "attribution": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "string",
+                      "const": "identified"
+                    },
+                    "commitOid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    }
+                  },
+                  "required": [
+                    "result",
+                    "commitOid"
+                  ],
+                  "additionalProperties": false,
+                  "title": "AttributionIdentified"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "string",
+                      "const": "none"
+                    }
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "additionalProperties": false,
+                  "title": "AttributionNone"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "string",
+                      "const": "unknown"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "ambiguous",
+                        "evidence-limit",
+                        "no-retained-request"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "result",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "title": "AttributionUnknown"
+                }
+              ]
+            },
+            "indexMatch": {
+              "type": "string",
+              "enum": [
+                "published",
+                "not-published",
+                "neither"
+              ]
+            },
+            "foreign": {
+              "maxItems": 6,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "foreignTotal": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "additionalProperties": false,
+          "title": "RecoveryStatement"
         }
       },
       "required": [

@@ -6,6 +6,7 @@
 import { describe, expect } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { APPROVAL_LIFETIME_MS, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { useFixtureRoot } from "./fixture-root";
 import { buildChanged, buildF11, buildF20, CapabilitySkip, inflateHeadReflog, type F20Variant, type RefFormat } from "./fixtures";
@@ -33,7 +34,6 @@ import {
   subcommand,
   SUCCEEDED,
   TIMEOUT_MS,
-  todoCase,
   treeOf,
   underTest,
   valuesOf,
@@ -51,6 +51,8 @@ useFixtureRoot();
 // Contract §8: an outcome after handoff is the observed result or `unknown`, never ordinary success.
 const AFTER_HANDOFF = ["completed-with-effects", "failed-with-effects", "failed", "unknown"];
 const STATE_UNKNOWN = { state: "rejected", code: "STATE_UNKNOWN" };
+// The contract §8 recovery statement of a read. The strict schema fails on a wrong result shape.
+const recoveryOf = (read: ServiceResponse) => WorkspaceSnapshot.parse(read.result).recovery;
 
 // F09 changes before handoff. Each one ignores the canonical index lock, as an independent writer can.
 type Prepared = { index: Uint8Array; commit: string };
@@ -322,7 +324,7 @@ describe("changes after handoff (contract §4, §8)", () => {
 });
 
 describe("recovery refresh (contract §8)", () => {
-  todoCase(TASK, `F20: a status-only readWorkspace leaves mutations blocked; an explicit refresh with complete reconciliation enables them, also with attribution unknown, and states that outcome and its reason ${RECOVERY}`, SHELL, () =>
+  caseTest(TASK, `F20: a status-only readWorkspace leaves mutations blocked; an explicit refresh with complete reconciliation enables them, also with attribution unknown, and states that outcome and its reason ${RECOVERY}`, SHELL, () =>
     withService({ name: "t099-recovery" }, async (service) => {
       const built = buildF20(gitPath(), "t099-recovery", "reflog-bytes");
       await underTest("recovery");
@@ -331,16 +333,20 @@ describe("recovery refresh (contract §8)", () => {
       expect((await readOk(service, repositoryId)).recoveryState).toBe("unknown");
       expect(outcome(await stageHunk(service, repositoryId))).toEqual(STATE_UNKNOWN);
       const refresh = await service.readWorkspace(repositoryId, { refresh: true, check: "full" });
-      expect(outcome(refresh)).toEqual(SUCCEEDED);
-      expect({ recoveryState: refresh.result!.recoveryState, completeness: refresh.result!.completeness.state }).toEqual({ recoveryState: "ready", completeness: "complete" });
-      const recovery = one<{ outcome: string; attribution: { result: string; reason?: string } }>(refresh.result, "recovery");
-      expect({ outcome: recovery.outcome, attribution: recovery.attribution.result, reason: recovery.attribution.reason }).toEqual({ outcome: "unknown", attribution: "unknown", reason: "evidence-limit" });
+      // Contract §8: the refresh runs one attribution attempt from the retained preflight tip. The HEAD log stays above 4 MiB.
+      expect({ ...outcome(refresh), recoveryState: refresh.result?.recoveryState, completeness: refresh.result?.completeness.state, recovery: recoveryOf(refresh) }).toEqual({
+        ...SUCCEEDED,
+        recoveryState: "ready",
+        completeness: "complete",
+        recovery: { outcome: "unknown", attribution: { result: "unknown", reason: "evidence-limit" } },
+      });
       expect(outcome(await stageHunk(service, repositoryId))).toEqual(SUCCEEDED);
     }),
+    TIMEOUT_MS,
   );
 
   // A status listing above STATUS_LISTING_RECORDS gives a `limited` snapshot (contract §5).
-  todoCase(TASK, `F20: a recovery refresh with a limited snapshot keeps mutations blocked ${RECOVERY}`, SHELL, () =>
+  caseTest(TASK, `F20: a recovery refresh with a limited snapshot keeps mutations blocked ${RECOVERY}`, SHELL, () =>
     withService({ name: "t099-limited" }, async (service) => {
       const built = buildF20(gitPath(), "t099-limited", "reflog-bytes");
       const repo = repoOf(built);
@@ -355,8 +361,10 @@ describe("recovery refresh (contract §8)", () => {
       } finally {
         service.runner.inject.stdout = undefined;
       }
-      expect({ state: refresh.state, completeness: refresh.result?.completeness.state, recoveryState: refresh.result?.recoveryState }).toEqual({ state: "limited", completeness: "limited", recoveryState: "unknown" });
+      // Contract §8 "Recovery statement": a read without a successful recovery reconciliation carries no `recovery`.
+      expect({ state: refresh.state, completeness: refresh.result?.completeness.state, recoveryState: refresh.result?.recoveryState, recovery: recoveryOf(refresh) }).toEqual({ state: "limited", completeness: "limited", recoveryState: "unknown", recovery: undefined });
       expect(outcome(await stageHunk(service, repositoryId))).toEqual(STATE_UNKNOWN);
     }),
+    TIMEOUT_MS,
   );
 });

@@ -1,0 +1,6 @@
+{
+  "schema": "read-workspace-result",
+  "expected": "valid",
+  "platform": "windows",
+  "text": "{\"generation\":3,\"snapshotId\":\"0f0f0f0f-0000-4000-8000-000000000200\",\"identity\":{\"worktreeRoot\":\"C:\\\\repo\",\"gitDirectory\":\"C:/repo/.git\",\"commonDirectory\":\"C:/repo/.git\",\"indexPath\":\"C:/repo/.git/index\",\"objectFormat\":\"sha1\",\"refFormat\":\"files\"},\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"operationState\":\"normal\",\"recoveryState\":\"ready\",\"completeness\":{\"state\":\"complete\"},\"hunkEligibility\":{\"eligible\":true},\"submoduleNotice\":{\"count\":0,\"paths\":[],\"filter\":\"applied\"},\"entryCount\":0,\"entries\":[],\"cursor\":null,\"recovery\":{\"outcome\":\"none\"}}"
+}

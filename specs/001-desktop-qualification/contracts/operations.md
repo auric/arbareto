@@ -599,11 +599,13 @@ The owning shell keeps each marker file open without delete sharing. At startup,
 **Dismissal.** A marker for a deleted or moved repository never resolves through a refresh. `dismissRecoveryMarker` removes such a marker explicitly. The shell binds a `repositoryDiscovery` context to the stored worktree path of the marker. The context needs the identity of that path. When the identity open fails with `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`, the path does not exist. The shell then creates no context and forwards only the marker ID. Any other identity failure refuses the request with its code ("Registration bootstrap"). With a context, the service runs the discovery profiles there. The service returns one of two results:
 
 - Dismissal allowed: the payload holds no `bootstrapId`, so the service runs no discovery. Discovery also allows it when it gives `REPOSITORY_UNAVAILABLE`, which includes the merged refusal ("Registration bootstrap"). The native confirmation below still follows. It allows it when the resolved common-directory identity differs from the marker identity.
-- Dismissal refused: any other result. The code is `STATE_UNKNOWN` with the remedy "Open this repository and use Refresh."
+- Dismissal refused: any other discovery result. The code is `STATE_UNKNOWN` with the remedy "Open this repository and use Refresh."
 
 A damaged marker needs no repository context. The shell creates no context and forwards only its marker ID, so the service allows the dismissal.
 
-For a WSL marker, the shell always creates a context. The service allows the dismissal when the distro of the path is absent from the `wslDistros` `listed` set, or when the §11 probe reports the path `absent`. A listed distro without a registration key is not absent. A WSL marker also gets the two Windows allowances: WSL discovery call 1 exits nonzero (`REPOSITORY_UNAVAILABLE`), or the common-directory WSL identity differs from the marker identity. Any other result gives `STATE_UNKNOWN`.
+For a WSL marker, the shell always creates a context. The service allows the dismissal when the distro of the path is absent from the `wslDistros` `listed` set, or when the §11 probe reports the path `absent`. A listed distro without a registration key is not absent. A WSL marker also gets the two Windows allowances: WSL discovery call 1 exits nonzero (`REPOSITORY_UNAVAILABLE`), or the common-directory WSL identity differs from the marker identity. Any other probe or discovery result gives `STATE_UNKNOWN`.
+
+A dismissal that reaches its deadline gives `DEADLINE`, and a canceled dismissal gives `CANCELED`.
 
 When dismissal is allowed, the shell shows a native confirmation. It names the worktree path, the operation kind, and the start time. For a damaged marker, it names the file name instead. It states that the operation outcome stays unknown. Its buttons are Dismiss and Cancel, and Cancel is the default. Enter on the default, Escape, Alt+F4, the close button, and a call failure mean Cancel. Only the Dismiss button deletes the file. A dismissed marker never counts as a resolved outcome.
 

@@ -43,7 +43,6 @@ import type { Built } from "./fixtures";
 import { caseTest, type Capability, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 const TASK = "T099";
-const RECOVERY = "(needs T114/T115)";
 const SHELL: Capability[] = ["shell-double"];
 
 useFixtureRoot();
@@ -324,7 +323,7 @@ describe("changes after handoff (contract §4, §8)", () => {
 });
 
 describe("recovery refresh (contract §8)", () => {
-  caseTest(TASK, `F20: a status-only readWorkspace leaves mutations blocked; an explicit refresh with complete reconciliation enables them, also with attribution unknown, and states that outcome and its reason ${RECOVERY}`, SHELL, () =>
+  caseTest(TASK, `F20: a status-only readWorkspace leaves mutations blocked; an explicit refresh with complete reconciliation enables them, also with attribution unknown, and states that outcome and its reason`, SHELL, () =>
     withService({ name: "t099-recovery" }, async (service) => {
       const built = buildF20(gitPath(), "t099-recovery", "reflog-bytes");
       await underTest("recovery");
@@ -346,7 +345,7 @@ describe("recovery refresh (contract §8)", () => {
   );
 
   // A status listing above STATUS_LISTING_RECORDS gives a `limited` snapshot (contract §5).
-  caseTest(TASK, `F20: a recovery refresh with a limited snapshot keeps mutations blocked ${RECOVERY}`, SHELL, () =>
+  caseTest(TASK, `F20: a recovery refresh with a limited snapshot keeps mutations blocked`, SHELL, () =>
     withService({ name: "t099-limited" }, async (service) => {
       const built = buildF20(gitPath(), "t099-limited", "reflog-bytes");
       const repo = repoOf(built);

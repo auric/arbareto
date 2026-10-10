@@ -43,7 +43,6 @@ import {
 import { caseTest, openService, type Capability, type ChangeEntry, type Envelope, type HunkCheckpoint, type OpenOptions, type Refusal, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T197";
-const RECOVERY = "(needs T114/T115)";
 const SHELL: Capability[] = ["shell-double"];
 
 useFixtureRoot();
@@ -753,7 +752,7 @@ describe("races and outcomes (contract §5, §8)", () => {
   // Contract §8: an `applyFile` left `unknown` runs no attribution step. The refresh compares the canonical index with the retained candidate and pre-publication digests.
   type Match = "published" | "not-published" | "neither";
   for (const match of ["published", "not-published", "neither"] satisfies Match[]) {
-    caseTest(TASK, `an applyFile left unknown recovers from its retained digests, and its refresh reports ${match} with no attribution step ${RECOVERY}`, SHELL, () => {
+    caseTest(TASK, `an applyFile left unknown recovers from its retained digests, and its refresh reports ${match} with no attribution step`, SHELL, () => {
       const name = `t197-unknown-${match}`;
       return withObserver(name, async (service, hooks) => {
         const repo = changed(name);
@@ -782,7 +781,7 @@ describe("races and outcomes (contract §5, §8)", () => {
     }, TIMEOUT_MS);
   }
 
-  caseTest(TASK, `after a handshake with restarted true, applyFile gives STATE_UNKNOWN, also after a refresh false read, until a refresh true read ${RECOVERY}`, SHELL, async () => {
+  caseTest(TASK, `after a handshake with restarted true, applyFile gives STATE_UNKNOWN, also after a refresh false read, until a refresh true read`, SHELL, async () => {
     const repo = changed("t197-restart");
     await underTest();
     const service = await openService({ git: gitPath(), name: "t197-restart" });
@@ -805,7 +804,7 @@ describe("races and outcomes (contract §5, §8)", () => {
     }
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `the applyFile mutation frames arrive as started, ended, then resolved ${RECOVERY}`, SHELL, () =>
+  caseTest(TASK, `the applyFile mutation frames arrive as started, ended, then resolved`, SHELL, () =>
     withService({ name: "t197-frames" }, async (service) => {
       const repo = changed("t197-frames");
       await underTest();

@@ -54,8 +54,6 @@ import {
 import { caseTest, openService, type Capability, type HunkCheckpoint, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T100";
-const NEEDS = "(needs T114/T115)";
-const HUNK = "(needs T114/T115)";
 const SHELL: Capability[] = ["shell-double"];
 // Contract §6 "Lingering Jobs" and §8: the child ends within 5 seconds.
 const END_MS = 5_000;
@@ -108,7 +106,7 @@ async function markerFor(name: string, repo: string, kind: Marker["kind"] = "com
 const gitFiles = (repo: string) => (readdirSync(gitDirOf(repo), { recursive: true }) as string[]).map(String).sort();
 
 describe("cancellation and reconciliation (contract §8)", () => {
-  caseTest(TASK, `F13: cancellation near commit completion reports the created commit as succeeded and never claims rollback ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F13: cancellation near commit completion reports the created commit as succeeded and never claims rollback`, SHELL, () =>
     withService({ name: "t100-cancel-late" }, async (service) => {
       const built = buildChanged(gitPath(), "t100-cancel-late", "F13");
       const repo = repoOf(built);
@@ -130,7 +128,7 @@ describe("cancellation and reconciliation (contract §8)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `F13: an interrupted commit passes through reconciling and reports its exact effects ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F13: an interrupted commit passes through reconciling and reports its exact effects`, SHELL, () =>
     withService({ name: "t100-interrupted" }, async (service) => {
       const built = buildChanged(gitPath(), "t100-interrupted", "F13");
       const repo = repoOf(built);
@@ -152,7 +150,7 @@ describe("cancellation and reconciliation (contract §8)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `a reconciliation read past its deadline gives unknown, keeps the marker, sends no resolved, and blocks further mutations in the workspace ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `a reconciliation read past its deadline gives unknown, keeps the marker, sends no resolved, and blocks further mutations in the workspace`, SHELL, () =>
     withService({ name: "t100-reconcile-deadline" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-reconcile-deadline", "F09"));
       await underTest("recovery");
@@ -178,7 +176,7 @@ describe("cancellation and reconciliation (contract §8)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `cancel during reconciling while the F14 child runs: reconciliation completes with its observed outcome, lingeringDescendants is 0, ended sets endProcesses, and the child ends within 5 seconds ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `cancel during reconciling while the F14 child runs: reconciliation completes with its observed outcome, lingeringDescendants is 0, ended sets endProcesses, and the child ends within 5 seconds`, SHELL, () =>
     withService({ name: "t100-cancel-reconciling" }, async (service) => {
       const repo = repoOf(buildF14(gitPath(), "t100-cancel-reconciling", "lingering"));
       await underTest("recovery");
@@ -201,7 +199,7 @@ describe("cancellation and reconciliation (contract §8)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `interrupt and close during reconciling sends no terminal response, the marker stays, and the next handshake makes that workspace unknown ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `interrupt and close during reconciling sends no terminal response, the marker stays, and the next handshake makes that workspace unknown`, SHELL, async () => {
     const name = "t100-interrupt-close";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     let leftover: Marker[] = [];
@@ -230,7 +228,7 @@ describe("cancellation and reconciliation (contract §8)", () => {
 });
 
 describe("lost responses and tokens (contract §2, data-model §6)", () => {
-  caseTest(TASK, `after a lost response, getOperation returns the retained terminal state and never retries ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `after a lost response, getOperation returns the retained terminal state and never retries`, SHELL, () =>
     withService({ name: "t100-lost" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-lost", "F09"));
       await underTest("recovery");
@@ -244,7 +242,7 @@ describe("lost responses and tokens (contract §2, data-model §6)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `after a lost commit response, the same requestId gives INVALID_REQUEST, and a new requestId gets succeeded with the first operationId; neither retry starts a Git process ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `after a lost commit response, the same requestId gives INVALID_REQUEST, and a new requestId gets succeeded with the first operationId; neither retry starts a Git process`, SHELL, () =>
     withService({ name: "t100-retry" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-retry", "F09"));
       await underTest("recovery");
@@ -265,7 +263,7 @@ describe("lost responses and tokens (contract §2, data-model §6)", () => {
   );
 
   // Data-model §6: "Tokens expire on refresh, relevant state change, service restart, or successful consumption." Contract §9 gives UNKNOWN_TARGET.
-  caseTest(TASK, `a new service session invalidates all tokens: a commit with an earlier review token gives UNKNOWN_TARGET and cannot replay ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a new service session invalidates all tokens: a commit with an earlier review token gives UNKNOWN_TARGET and cannot replay`, SHELL, async () => {
     const repo = repoOf(buildChanged(gitPath(), "t100-new-session", "F09"));
     await underTest("recovery");
     const service = await openService({ git: gitPath(), name: "t100-new-session" });
@@ -310,7 +308,7 @@ describe("automatic maintenance (contract §4, research.md R4)", () => {
     return { argv: (start?.argv as string[] | undefined) ?? null, waits: childExitAt >= 0 && childExitAt < exitAt, durationMs: childExitAt >= 0 ? Number(events[childExitAt]!.t_rel) * 1000 : null, outlives, files: gitFiles(copy) };
   }
 
-  caseTest(TASK, `F12 gc.auto=1: report whether git commit waits for automatic maintenance, how long it runs, and whether it outlives the commit; the service outcome reports the created commit and counts a lingering maintenance process ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F12 gc.auto=1: report whether git commit waits for automatic maintenance, how long it runs, and whether it outlives the commit; the service outcome reports the created commit and counts a lingering maintenance process`, SHELL, () =>
     withService({ name: "t100-gc-auto" }, async (service) => {
       const repo = repoOf(buildF12(gitPath(), "t100-gc-auto", "gc-auto"));
       const oracle = maintenanceOracle(repo, "t100-gc-auto-oracle");
@@ -332,7 +330,7 @@ describe("automatic maintenance (contract §4, research.md R4)", () => {
   );
 
   // `git gc --auto` runs the `pre-auto-gc` hook before it collects (githooks(5)), so the hook barrier holds the commit inside maintenance.
-  caseTest(TASK, `F12 gc.auto=1: a 20-second injected deadline that fires during maintenance reconciles from observed state and reports the created commit; report the files that the interruption leaves ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F12 gc.auto=1: a 20-second injected deadline that fires during maintenance reconciles from observed state and reports the created commit; report the files that the interruption leaves`, SHELL, () =>
     withService({ name: "t100-gc-deadline" }, async (service) => {
       const built = buildF12(gitPath(), "t100-gc-deadline", "gc-auto");
       const repo = repoOf(built);
@@ -359,7 +357,7 @@ describe("automatic maintenance (contract §4, research.md R4)", () => {
 });
 
 describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
-  caseTest(TASK, `the applyHunk mutation frames arrive as started, ended, then resolved, and started precedes the lock creation ${HUNK}`, SHELL, async () => {
+  caseTest(TASK, `the applyHunk mutation frames arrive as started, ended, then resolved, and started precedes the lock creation`, SHELL, async () => {
     const name = "t100-hunk-frames";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const lock = gitPathOf(repo, "index.lock");
@@ -378,7 +376,7 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `a leftover marker in the startup handshake makes the matching workspace unknown; its recovery refresh reports no-retained-request, resolves the marker, and enables mutations ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a leftover marker in the startup handshake makes the matching workspace unknown; its recovery refresh reports no-retained-request, resolves the marker, and enables mutations`, SHELL, async () => {
     const name = "t100-leftover";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const marker = await markerFor(name, repo);
@@ -394,7 +392,7 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `an injected failed marker write gives RECOVERY_MARKER_FAILED with its failure class, folder, and remedy, and no lock or Git process appears ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `an injected failed marker write gives RECOVERY_MARKER_FAILED with its failure class, folder, and remedy, and no lock or Git process appears`, SHELL, () =>
     withService({ name: "t100-marker-failed" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-marker-failed", "F09"));
       await underTest("recovery");
@@ -415,7 +413,7 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
   );
 
   // Contract §5 "Recovery markers": above 64 marker files, every mutation stays blocked. The 64 loaded markers name other folders.
-  caseTest(TASK, `a handshake that reports the marker limit makes every mutation give STATE_UNKNOWN, also in a fixture without a marker ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a handshake that reports the marker limit makes every mutation give STATE_UNKNOWN, also in a fixture without a marker`, SHELL, async () => {
     const name = "t100-marker-limit";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const elsewhere = (i: number) => join(FIXTURE_ROOT, "t100-elsewhere", `m${i}`);
@@ -435,7 +433,7 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `opening another repository while a commit runs gives BUSY, and both linked worktree registrations stay ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `opening another repository while a commit runs gives BUSY, and both linked worktree registrations stay`, SHELL, () =>
     withService({ name: "t100-open-busy" }, async (service) => {
       const built = buildF07(gitPath(), "t100-open-busy");
       const other = repoOf(buildChanged(gitPath(), "t100-open-busy-other", "F09"));
@@ -458,7 +456,7 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `an applyHunk left unknown recovers without an attribution step, and its refresh reports published from the retained digests ${HUNK}`, SHELL, async () => {
+  caseTest(TASK, `an applyHunk left unknown recovers without an attribution step, and its refresh reports published from the retained digests`, SHELL, async () => {
     const name = "t100-hunk-unknown";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const oracle = scriptedPatch(repo, `${name}-oracle`, "add", "multi.txt", ["y", "n"]);
@@ -480,7 +478,7 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
   }, TIMEOUT_MS);
 
   // Contract §8 "Service restart": without an ownership record, every lock of the "Observed locks" set and every candidate file is foreign. The list holds the locks first, then the candidates in byte order of their names.
-  caseTest(TASK, `a leftover marker with a HEAD.lock and 6 candidate files: the recovery refresh names ${RECOVERY_FOREIGN_CAP} foreign files with the lock first, counts 7, and removes nothing ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a leftover marker with a HEAD.lock and 6 candidate files: the recovery refresh names ${RECOVERY_FOREIGN_CAP} foreign files with the lock first, counts 7, and removes nothing`, SHELL, async () => {
     const name = "t100-foreign-cap";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const marker = await markerFor(name, repo);
@@ -507,7 +505,7 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
   const dismiss = (service: Service, markerId: string, path?: string) =>
     service.request("dismissRecoveryMarker", path === undefined ? { markerId } : { markerId, bootstrapId: service.runner.addContext("repositoryDiscovery", path) });
 
-  caseTest(TASK, `dismissRecoveryMarker is allowed for a marker whose worktree path Git reports unavailable, and the result states that the outcome stays unknown ${NEEDS}`, [...SHELL, "no-enclosing-repository"], async () => {
+  caseTest(TASK, `dismissRecoveryMarker is allowed for a marker whose worktree path Git reports unavailable, and the result states that the outcome stays unknown`, [...SHELL, "no-enclosing-repository"], async () => {
     const name = "t100-dismiss-unavailable";
     const plain = fixtureDir(`${name}-plain`);
     put(plain, "file.txt", "plain\n");
@@ -520,7 +518,7 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
   }, TIMEOUT_MS);
 
   // Contract §6 "Dismissal": a payload without `bootstrapId` allows the dismissal, and the service runs no discovery. A damaged marker takes this form.
-  caseTest(TASK, `dismissRecoveryMarker with only a markerId is allowed, states that the outcome stays unknown, and starts no Git process ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `dismissRecoveryMarker with only a markerId is allowed, states that the outcome stays unknown, and starts no Git process`, SHELL, async () => {
     const name = "t100-dismiss-no-context";
     const gone = join(fixtureDir(name), "gone");
     const marker: Marker = { markerId: crypto.randomUUID(), kind: "commit", startedAt: new Date().toISOString(), worktreeRoot: gone, commonDirectory: join(gone, ".git"), commonIdentity: { volumeSerial: "f".repeat(16), fileId: "e".repeat(32) } };
@@ -532,7 +530,7 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `dismissRecoveryMarker is allowed for a marker whose resolved common-directory identity differs ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `dismissRecoveryMarker is allowed for a marker whose resolved common-directory identity differs`, SHELL, async () => {
     const name = "t100-dismiss-other";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const real = await markerFor(name, repo);
@@ -545,7 +543,7 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `dismissRecoveryMarker for an available matching repository gives STATE_UNKNOWN with the remedy "${DISMISS_REMEDY}" ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `dismissRecoveryMarker for an available matching repository gives STATE_UNKNOWN with the remedy "${DISMISS_REMEDY}"`, SHELL, async () => {
     const name = "t100-dismiss-matching";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const marker = await markerFor(name, repo);
@@ -558,7 +556,7 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
 });
 
 describe("service restart (contract §8 \"Service restart\")", () => {
-  caseTest(TASK, `after a handshake with restarted true and no marker, restoreWorkspace gives an unknown workspace; applyHunk and commit give STATE_UNKNOWN, also after a refresh false read; a refresh true read states that no outcome is pending, and a hunk stage then succeeds ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `after a handshake with restarted true and no marker, restoreWorkspace gives an unknown workspace; applyHunk and commit give STATE_UNKNOWN, also after a refresh false read; a refresh true read states that no outcome is pending, and a hunk stage then succeeds`, SHELL, async () => {
     const repo = repoOf(buildChanged(gitPath(), "t100-restart", "F09"));
     await underTest("recovery");
     const service = await openService({ git: gitPath(), name: "t100-restart" });
@@ -581,7 +579,7 @@ describe("service restart (contract §8 \"Service restart\")", () => {
 });
 
 describe("deadlines (contract §5 \"Deadline outcomes\")", () => {
-  caseTest(TASK, `an applyHunk Git step past a short deadline closes the Job, passes through reconciling, and ends failed with DEADLINE; the canonical index bytes stay, and the owned lock is gone ${HUNK}`, SHELL, async () => {
+  caseTest(TASK, `an applyHunk Git step past a short deadline closes the Job, passes through reconciling, and ends failed with DEADLINE; the canonical index bytes stay, and the owned lock is gone`, SHELL, async () => {
     const name = "t100-hunk-deadline";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     let deadline: { arm(): void } | null = null;
@@ -601,7 +599,7 @@ describe("deadlines (contract §5 \"Deadline outcomes\")", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `a commit preflight read past a short deadline ends failed with DEADLINE through reconciling; no commit process starts, and the review token stays unconsumed ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a commit preflight read past a short deadline ends failed with DEADLINE through reconciling; no commit process starts, and the review token stays unconsumed`, SHELL, async () => {
     const name = "t100-preflight-deadline";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     let deadline: { arm(): void } | null = null;
@@ -620,7 +618,7 @@ describe("deadlines (contract §5 \"Deadline outcomes\")", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `a bootstrap probe past a short deadline gives DEADLINE and registers nothing ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `a bootstrap probe past a short deadline gives DEADLINE and registers nothing`, SHELL, () =>
     withService({ name: "t100-bootstrap-deadline" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-bootstrap-deadline", "F09"));
       await underTest("recovery");
@@ -643,7 +641,7 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
     return { built, repo, gate };
   }
 
-  caseTest(TASK, `a commit that leaves the F14 child running ends unknown through attribution evidence above 4 MiB, and its recovery refresh succeeds while the child still runs ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `a commit that leaves the F14 child running ends unknown through attribution evidence above 4 MiB, and its recovery refresh succeeds while the child still runs`, SHELL, () =>
     withService({ name: "t100-linger-unknown" }, async (service) => {
       const { built, repo, gate } = lingeringBigReflog("t100-linger-unknown");
       await underTest("recovery");
@@ -668,7 +666,7 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `after an F14 commit, revokeTrust ends the lingering child within 5 seconds and returns count 1 ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `after an F14 commit, revokeTrust ends the lingering child within 5 seconds and returns count 1`, SHELL, () =>
     withService({ name: "t100-revoke-after" }, async (service) => {
       const repo = repoOf(buildF14(gitPath(), "t100-revoke-after", "lingering"));
       await underTest("recovery");
@@ -683,7 +681,7 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `a revoke during a running commit cancels nothing, ended sets endProcesses, and the child ends ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `a revoke during a running commit cancels nothing, ended sets endProcesses, and the child ends`, SHELL, () =>
     withService({ name: "t100-revoke-during" }, async (service) => {
       const built = buildF14(gitPath(), "t100-revoke-during", "lingering");
       const repo = repoOf(built);
@@ -705,7 +703,7 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `a lingering child from an earlier service session also ends at revoke ${NEEDS}`, [...SHELL, "restart-keeps-lingering"], async () => {
+  caseTest(TASK, `a lingering child from an earlier service session also ends at revoke`, [...SHELL, "restart-keeps-lingering"], async () => {
     const name = "t100-revoke-restart";
     const repo = repoOf(buildF14(gitPath(), name, "lingering"));
     await underTest("recovery");
@@ -723,7 +721,7 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
     }
   }, TIMEOUT_MS);
 
-  caseTest(TASK, `F14 ref lock: the next commit gives GIT_FAILED with the observed lock path, and the lock stays; after the child removes its lock and exits, a refresh and a new commit succeed ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F14 ref lock: the next commit gives GIT_FAILED with the observed lock path, and the lock stays; after the child removes its lock and exits, a refresh and a new commit succeed`, SHELL, () =>
     withService({ name: "t100-ref-lock" }, async (service) => {
       const built = buildChanged(gitPath(), "t100-ref-lock", "F09");
       const repo = repoOf(built);

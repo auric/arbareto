@@ -42,6 +42,7 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   readWorkspace: (b) => b.readWorkspace(repo(), { refresh: false, check: "full" }),
   readEntries: (b) => b.readEntries(gen(), { snapshotId: id(), cursor: id() }),
   readHistory: (b) => b.readHistory(gen()),
+  readRefs: (b) => b.readRefs(gen()),
   readComparison: (b) => b.readComparison({ ...gen(), selectionId: id() }, { snapshotId: id(), entryId: id() }),
   readTrust: (b) => b.readTrust(repo()),
   approveTrust: (b) => b.approveTrust(gen(), { fingerprint: "a".repeat(64), approve: true }),

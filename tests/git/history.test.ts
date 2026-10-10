@@ -4,8 +4,9 @@
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { HISTORY_BODY_BYTES } from "../../src/contracts/envelope";
 import * as LIMITS from "../../src/contracts/limits";
-import { configListArgs } from "../../src/git-service/commands";
+import { batchCommandArgs, configListArgs, headOidArgs, headTargetArgs, hooksPathArgs, revListArgs, shallowPathArgs } from "../../src/git-service/commands";
 import { probeGit } from "../../src/git-service/git-installation";
 import { createHistoryReader, DAMAGED_STORE_REMEDY } from "../../src/git-service/history";
 import { createRegistrations } from "../../src/git-service/registration";
@@ -100,8 +101,42 @@ function shallowFile(repo: string): Set<string> {
   return new Set(existsSync(path) ? readFileSync(path, "latin1").split("\n").filter((l) => l !== "") : []);
 }
 
+// T341 oracle: Git's own `%cn`, `%ce`, `%ct`, and `%b` bytes. git-log(1) `--encoding`: an object that claims the output encoding is output verbatim.
+// A commit without an `encoding` header claims UTF-8. With `-z`, NUL ends each field and each commit. No field holds NUL, because Git reads the message as a C string.
+type CommitterFields = { name: Buffer; email: Buffer; date: number; body: Buffer };
+function oracleCommitter(repo: string, commits: { oid: string; encoding: string | null }[]): Map<string, CommitterFields> {
+  const found = new Map<string, CommitterFields>();
+  const groups = Map.groupBy(commits, (c) => c.encoding ?? "UTF-8");
+  for (const [encoding, group] of groups) {
+    const oids = group.map((c) => c.oid);
+    const out = git(repo, ["log", "--no-walk=unsorted", `--encoding=${encoding}`, "-z", "--format=%H%x00%cn%x00%ce%x00%ct%x00%b", ...oids]);
+    const fields: Buffer[] = [];
+    for (let at = 0; at < out.length; ) {
+      const nul = out.indexOf(0, at);
+      fields.push(out.subarray(at, nul));
+      at = nul + 1;
+    }
+    expect(fields.length).toBe(5 * oids.length);
+    for (let i = 0; i < fields.length; i += 5) {
+      found.set(fields[i]!.toString("latin1"), { name: fields[i + 1]!, email: fields[i + 2]!, date: Number(fields[i + 3]!.toString("latin1")), body: fields[i + 4]! });
+    }
+  }
+  return found;
+}
+
+// Contract §5 "History message body": the decoded text ends at the last whole UTF-8 character within the bound.
+function oracleBody(raw: Buffer): { body: string; bodyCut: boolean } {
+  const text = Buffer.from(new TextDecoder("utf-8", { ignoreBOM: true }).decode(raw), "utf8");
+  if (text.length <= HISTORY_BODY_BYTES) return { body: text.toString("utf8"), bodyCut: false };
+  let end = HISTORY_BODY_BYTES;
+  while ((text[end]! & 0xc0) === 0x80) end--;
+  return { body: text.subarray(0, end).toString("utf8"), bodyCut: true };
+}
+
+const validBytes = (bytes: Buffer) => validUtf8(bytes.toString("latin1"));
+
 // Contract §3 "HistoryPage result" row fields from the raw object. Invalid UTF-8 decodes to U+FFFD. The subject is Git's first paragraph joined by spaces.
-function oracleRow(oid: string, parents: string[], raw: Buffer, shallow: boolean): Row {
+function oracleRow(oid: string, parents: string[], raw: Buffer, shallow: boolean, committer: CommitterFields): Row {
   const split = raw.indexOf("\n\n");
   const headers = raw.subarray(0, split).toString("latin1").split("\n");
   const latin = (name: string) => headers.find((l) => l.startsWith(`${name} `))?.slice(name.length + 1) ?? null;
@@ -113,7 +148,7 @@ function oracleRow(oid: string, parents: string[], raw: Buffer, shallow: boolean
   const rawSubject = raw.subarray(split + 2).toString("latin1").split(/\n[ \t]*\n/)[0]!;
   const rawName = rawAuthor.slice(0, rawAuthor.lastIndexOf("<"));
   const rawEmail = rawAuthor.slice(rawAuthor.lastIndexOf("<") + 1, rawAuthor.lastIndexOf(">"));
-  const invalidUtf8 = ![rawSubject, rawName, rawEmail].every(validUtf8);
+  const invalidUtf8 = ![rawSubject, rawName, rawEmail].every(validUtf8) || ![committer.name, committer.email, committer.body].every(validBytes);
   const author = header("author")!;
   const email = author.slice(author.lastIndexOf("<") + 1, author.lastIndexOf(">"));
   const name = author.slice(0, author.lastIndexOf("<")).trimEnd();
@@ -121,14 +156,28 @@ function oracleRow(oid: string, parents: string[], raw: Buffer, shallow: boolean
   const encoding = header("encoding");
   const message = decode(raw.subarray(split + 2));
   const subject = message.split(/\n[ \t]*\n/)[0]!.split("\n").map((l) => l.trim()).join(" ").trim();
-  return { oid, parents, subject, author: { name, email }, date, encoding, shallow, invalidUtf8 };
+  return {
+    oid,
+    parents,
+    subject,
+    author: { name, email },
+    date,
+    encoding,
+    shallow,
+    invalidUtf8,
+    committer: { name: decode(committer.name), email: decode(committer.email) },
+    committerDate: committer.date,
+    ...oracleBody(committer.body),
+  };
 }
 
 function oracleRows(repo: string, tip: string): Row[] {
   const traversal = oracleTraversal(repo, tip);
   const raws = rawCommits(repo, traversal.map((r) => r.oid));
   const shallow = shallowFile(repo);
-  return traversal.map((r, i) => oracleRow(r.oid, r.parents, raws[i]!, shallow.has(r.oid)));
+  const encodingOf = (raw: Buffer) => raw.subarray(0, raw.indexOf("\n\n")).toString("latin1").split("\n").find((l) => l.startsWith("encoding "))?.slice("encoding ".length) ?? null;
+  const committers = oracleCommitter(repo, traversal.map((r, i) => ({ oid: r.oid, encoding: encodingOf(raws[i]!) })));
+  return traversal.map((r, i) => oracleRow(r.oid, r.parents, raws[i]!, shallow.has(r.oid), committers.get(r.oid)!));
 }
 
 const parentLines = (raw: Buffer) => raw.toString("latin1").slice(0, raw.indexOf("\n\n")).split("\n").filter((l) => l.startsWith("parent ")).map((l) => l.slice(7));
@@ -291,6 +340,121 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
           head: { state: "unborn", target: "refs/heads/main" },
           completeness: "complete",
         });
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("committer and message body (contract §3 \"HistoryPage result\", §5 \"History message body\")", () => {
+  const ROW_TASK = "T341";
+
+  // A commit on top of the F19 linear tip, from the raw object text. Returns the repository and the new commit ID.
+  function oneCommit(name: string, text: (tree: string, parent: string) => Buffer): { repo: string; oid: string } {
+    const built = buildF19(gitPath(), name, "linear");
+    const repo = repoOf(built);
+    const tip = built.facts.notes.tip as string;
+    const tree = git(repo, ["rev-parse", `${tip}^{tree}`]).toString("utf8").trim();
+    const oid = git(repo, ["hash-object", "-t", "commit", "-w", "--stdin"], text(tree, tip)).toString("utf8").trim();
+    git(repo, ["update-ref", "refs/heads/main", oid, tip]);
+    return { repo, oid };
+  }
+
+  test("the contract §5 body bound is 16 KiB", () => {
+    expect(HISTORY_BODY_BYTES).toBe(16 * 1024);
+  });
+
+  caseTest(
+    ROW_TASK,
+    "a committer other than the author gives its own name, email, and time, and the body is the message after the subject paragraph",
+    ["shell-double"],
+    () =>
+      withService("t341-committer", async (service) => {
+        const author = `${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> 1767225604 +0000`;
+        const committer = "Commit Ter <commit.ter@arbareto.invalid> 1767229204 +0100";
+        // Git `pretty.c` `format_subject`: the subject ends at the first blank line. `skip_blank_lines` then skips the blank lines before the body.
+        const message = "first line\nsecond line\n\n  \n\nbody line 1\n\nbody line 2\n";
+        const { repo, oid } = oneCommit("t341-committer", (tree, parent) =>
+          Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${author}\ncommitter ${committer}\n\n${message}`, "utf8"),
+        );
+        const row = (await history(service, repo)).result!.rows[0]!;
+        expect(row).toEqual(oracleRows(repo, oid)[0]!);
+        expect({ oid: row.oid, subject: row.subject, committer: row.committer, committerDate: row.committerDate, body: row.body, bodyCut: row.bodyCut, date: row.date }).toEqual({
+          oid,
+          subject: "first line second line",
+          committer: { name: "Commit Ter", email: "commit.ter@arbareto.invalid" },
+          committerDate: 1767229204,
+          body: "body line 1\n\nbody line 2\n",
+          bodyCut: false,
+          date: 1767225604,
+        });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    ROW_TASK,
+    "a 20 KiB body gives at most 16 KiB that ends at a UTF-8 character boundary with bodyCut true, and the read starts no added Git process",
+    ["shell-double"],
+    () =>
+      withService("t341-body-cut", async (service) => {
+        const ident = `${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> 1767225604 +0000`;
+        // U+20AC takes 3 bytes, and 16,384 is not a multiple of 3. So the bound falls inside a character.
+        const body = "€".repeat(Math.ceil((20 * 1024) / 3));
+        const { repo, oid } = oneCommit("t341-body-cut", (tree, parent) => Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${ident}\ncommitter ${ident}\n\nlong body\n\n${body}`, "utf8"));
+        const { repositoryId, generation } = await service.register(repo);
+        const first = service.runner.calls.length;
+        const response = await service.readHistory(repositoryId, generation);
+        expect({ state: response.state, code: response.code }).toEqual({ state: "succeeded", code: undefined });
+        const row = response.result!.rows[0]!;
+        expect(row.oid).toBe(oid);
+        const bytes = Buffer.byteLength(row.body);
+        expect(bytes).toBeLessThanOrEqual(HISTORY_BODY_BYTES);
+        expect(bytes).toBe(HISTORY_BODY_BYTES - (HISTORY_BODY_BYTES % 3));
+        expect(body.startsWith(row.body)).toBe(true);
+        expect(row.bodyCut).toBe(true);
+        expect(row.invalidUtf8).toBe(false);
+        expect(row).toEqual(oracleRows(repo, oid)[0]!);
+        // Contract §3: the fields come from the `cat-file --batch-command -Z` object. The read runs only its listing and its held steps, each once.
+        const expected = [configListArgs(), hooksPathArgs(), headTargetArgs(), headOidArgs(), shallowPathArgs(), revListArgs(oid, "sha1"), batchCommandArgs()].map((a) => a.join(" "));
+        const ran = service.runner.calls.slice(first).filter((c) => c.refused === undefined).map((c) => c.arguments.join(" "));
+        expect(ran.toSorted()).toEqual(expected.toSorted());
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    ROW_TASK,
+    "bytes that are not valid UTF-8 in only the committer name, the committer email, or the body give invalidUtf8 and replacement characters",
+    ["shell-double"],
+    () =>
+      withService("t341-invalid-utf8", async (service) => {
+        const built = buildF19(gitPath(), "t341-invalid-utf8", "linear");
+        const repo = repoOf(built);
+        const tip = built.facts.notes.tip as string;
+        const tree = git(repo, ["rev-parse", `${tip}^{tree}`]).toString("utf8").trim();
+        const ident = (name: string, email: string) => `${name} <${email}> 1767225604 +0000`;
+        const valid = ident(FIXED_IDENTITY.name, FIXED_IDENTITY.email);
+        // Each commit holds one ISO-8859-1 byte in one field. No commit has an encoding header.
+        const shapes: [committer: string, message: string][] = [
+          [ident("Jos\xe9", FIXED_IDENTITY.email), "name\n"],
+          [ident(FIXED_IDENTITY.name, "jos\xe9@arbareto.invalid"), "email\n"],
+          [valid, "body\n\nCaf\xe9\n"],
+        ];
+        let parent = tip;
+        const oids: string[] = [];
+        for (const [committer, message] of shapes) {
+          const raw = Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${valid}\ncommitter ${committer}\n\n${message}`, "latin1");
+          parent = git(repo, ["hash-object", "-t", "commit", "-w", "--stdin"], raw).toString("utf8").trim();
+          oids.unshift(parent);
+        }
+        git(repo, ["update-ref", "refs/heads/main", parent, tip]);
+        const rows = (await history(service, repo)).result!.rows.slice(0, 3);
+        expect(rows.map((r) => ({ oid: r.oid, invalidUtf8: r.invalidUtf8, committer: r.committer, body: r.body }))).toEqual([
+          { oid: oids[0]!, invalidUtf8: true, committer: FIXED_IDENTITY, body: "Caf�\n" },
+          { oid: oids[1]!, invalidUtf8: true, committer: { name: FIXED_IDENTITY.name, email: "jos�@arbareto.invalid" }, body: "" },
+          { oid: oids[2]!, invalidUtf8: true, committer: { name: "Jos�", email: FIXED_IDENTITY.email }, body: "" },
+        ]);
+        expect(rows).toEqual(oracleRows(repo, parent).slice(0, 3));
       }),
     TIMEOUT_MS,
   );

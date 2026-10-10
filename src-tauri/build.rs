@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "read_workspace",
     "read_entries",
     "read_history",
+    "read_refs",
     "read_comparison",
     "read_trust",
     "approve_trust",

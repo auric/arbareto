@@ -544,3 +544,32 @@ describe("unfinished mutations and release effects (contract §6 \"Registration 
     TIMEOUT_MS,
   );
 });
+
+describe("readKind (contract §3 `readWorkspace`, §8 \"Change check\")", () => {
+  caseTest(
+    "T356",
+    'a check "changes" read without a hint gives readKind retained and starts no Git process, and a full read gives readKind full',
+    ["shell-double"],
+    async () => {
+      const service = await openService({ git: gitPath(), name: "t356-read-kind", watchHints: false });
+      try {
+        const repo = join(buildF02(gitPath(), "t356-read-kind").root, "repo");
+        const { repositoryId } = await service.register(repo);
+        const kind = async (check: "full" | "changes") => {
+          const before = service.runner.calls.length;
+          const response = await service.readWorkspace(repositoryId, { refresh: false, check });
+          expect(response.state).toBe("succeeded");
+          return { readKind: (response.result as { readKind?: unknown }).readKind, runs: service.runner.calls.length - before };
+        };
+        // Contract §8 "New candidates": the first listing can name candidates that its earlier tuple did not hold. So the second full read makes the compared tuple.
+        expect((await kind("full")).readKind).toBe("full");
+        expect((await kind("full")).readKind).toBe("full");
+        expect(await kind("changes")).toEqual({ readKind: "retained", runs: 0 });
+        expect((await kind("full")).readKind).toBe("full");
+      } finally {
+        await service.dispose();
+      }
+    },
+    TIMEOUT_MS,
+  );
+});

@@ -97,6 +97,7 @@ function snapshot(generation: number, entries: ChangeEntry[], fields: Partial<Wo
   return {
     generation,
     snapshotId: crypto.randomUUID(),
+    readKind: "full",
     identity: { worktreeRoot: "C:\\repo", gitDirectory: "C:\\repo\\.git", commonDirectory: "C:\\repo\\.git", indexPath: "C:\\repo\\.git\\index", objectFormat: "sha1", refFormat: "files" },
     head: { state: "branch", target: "refs/heads/main", oid: HEAD_A },
     operationState: "normal",
@@ -118,7 +119,7 @@ function page(generation: number, head: string): HistoryPage {
     scope: "current-checkout",
     head: { state: "branch", target: "refs/heads/main", oid: head },
     shallowFingerprint: null,
-    rows: [{ oid: head, parents: [], subject: "First", author: { name: "A", email: "a@example.com" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false }],
+    rows: [{ oid: head, parents: [], subject: "First", author: { name: "A", email: "a@example.com" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.com" }, committerDate: 1_700_000_000, body: "", bodyCut: false }],
     boundaries: { page: [], shallow: [] },
     completeness: { state: "complete" },
   };

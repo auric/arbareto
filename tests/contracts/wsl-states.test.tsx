@@ -51,6 +51,7 @@ function snapshot(root: string, location: Location): WorkspaceSnapshot {
   return {
     generation: 1,
     snapshotId: crypto.randomUUID(),
+    readKind: "full",
     identity: { worktreeRoot: root, gitDirectory: `${root}\\.git`, commonDirectory: `${root}\\.git`, indexPath: `${root}\\.git\\index`, objectFormat: "sha1", refFormat: "files" },
     head: { state: "branch", target: "refs/heads/main", oid: "1".repeat(40) },
     operationState: "normal",

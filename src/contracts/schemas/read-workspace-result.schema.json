@@ -236,6 +236,8 @@
                     "RECORDED_REQUEST_IDS",
                     "RECOVERY_MARKERS_PER_HANDSHAKE",
                     "RECOVERY_MARKER_BYTES",
+                    "REF_LISTING_BYTES",
+                    "REF_LISTING_RECORDS",
                     "REGISTERED_DEADLINE_CAP_MS",
                     "REGISTERED_WORKSPACES",
                     "REGISTER_VERSION_BYTES",
@@ -843,6 +845,13 @@
           ],
           "additionalProperties": false,
           "title": "RecoveryStatement"
+        },
+        "readKind": {
+          "type": "string",
+          "enum": [
+            "full",
+            "retained"
+          ]
         }
       },
       "required": [
@@ -858,7 +867,8 @@
         "submoduleNotice",
         "entryCount",
         "entries",
-        "cursor"
+        "cursor",
+        "readKind"
       ],
       "additionalProperties": false,
       "title": "WorkspaceSnapshot"
@@ -950,6 +960,8 @@
                     "RECORDED_REQUEST_IDS",
                     "RECOVERY_MARKERS_PER_HANDSHAKE",
                     "RECOVERY_MARKER_BYTES",
+                    "REF_LISTING_BYTES",
+                    "REF_LISTING_RECORDS",
                     "REGISTERED_DEADLINE_CAP_MS",
                     "REGISTERED_WORKSPACES",
                     "REGISTER_VERSION_BYTES",

@@ -181,6 +181,19 @@ export function objectCheckArgs(): string[] {
   return read("cat-file", "--batch-check");
 }
 
+// Contract §3 "References result": the one fixed array. It names no pathspec, so it carries no `--literal-pathspecs`.
+export function refsArgs(): string[] {
+  return [
+    NO_LAZY_FETCH,
+    "--no-optional-locks",
+    "for-each-ref",
+    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)",
+    "refs/heads",
+    "refs/remotes",
+    "refs/tags",
+  ];
+}
+
 // A path is relative to the worktree root, where Git runs (research R3). An argv item cannot hold NUL, and an empty pathspec matches every path.
 function pathItem(path: string): string {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) throw new TypeError("path refused");

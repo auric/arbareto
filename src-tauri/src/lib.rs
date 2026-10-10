@@ -92,6 +92,7 @@ pub fn run() {
             ipc::read_workspace,
             ipc::read_entries,
             ipc::read_history,
+            ipc::read_refs,
             ipc::read_comparison,
             ipc::read_trust,
             ipc::approve_trust,

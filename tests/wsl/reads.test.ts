@@ -87,6 +87,45 @@ describe("WSL reads (T208)", () => {
     CASE_TIMEOUT_MS,
   );
 
+  // T356: the F33 shapes in one distro copy. The entries equal the distro Git's own listing with the contract §3 "References result" format.
+  wslTest(
+    "an F33 copy in a distro: readRefs gives the entries of the distro Git's for-each-ref",
+    NEEDS,
+    async (host) => {
+      const f21 = buildF21(host);
+      const repo = f21.repo;
+      const bare = `${repo.dir}-remote.git`;
+      distroGit(repo, ["clone", "-q", "--bare", repo.dir, bare]);
+      distroGit(repo, ["remote", "add", "origin", bare]);
+      distroGit(repo, ["fetch", "-q", "origin"]);
+      distroGit(repo, ["remote", "set-head", "origin", "main"]);
+      distroGit(repo, ["branch", "--set-upstream-to=origin/main", "main"]);
+      distroGit(repo, ["branch", "feature/a/b"]);
+      distroGit(repo, ["branch", "gone"]);
+      distroGit(repo, ["config", "branch.gone.remote", "origin"]);
+      distroGit(repo, ["config", "branch.gone.merge", "refs/heads/gone"]);
+      distroGit(repo, ["tag", "light"]);
+      distroGit(repo, ["tag", "-a", "-m", "annotated", "ann"]);
+      distroGit(repo, ["-c", "advice.nestedTag=false", "tag", "-a", "-m", "nested", "nested", "ann"]);
+      distroGit(repo, ["tag", "-a", "-m", "tree", "treetag", "HEAD^{tree}"]);
+      const { s } = setup(host);
+      const w = await register(s, f21.paths[1]!);
+      const response = await read(s, w, "readRefs", {}, true);
+      expect(response).toMatchObject({ state: "succeeded" });
+      const format = "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)";
+      const own = distroGit(repo, ["for-each-ref", format, "refs/heads", "refs/remotes", "refs/tags"]).split("\n").filter((l) => l !== "").map((l) => l.split("\0"));
+      const prefix = /^refs\/(?:heads|remotes|tags)\//;
+      const empty = (value: string) => (value === "" ? null : value);
+      const result = response.result as { refs: { name: string; objectId: string; objectType: string; peeledId: string | null; peeledType: string | null; symref: string | null; upstream: string | null }[]; current: unknown };
+      expect(result.refs.map(({ name, objectId, objectType, peeledId, peeledType, symref, upstream }) => [name, objectId, objectType, peeledId, peeledType, symref, upstream])).toEqual(
+        own.map(([refname, objectId, objectType, peeledId, peeledType, symref, upstream]) => [refname!.replace(prefix, ""), objectId, objectType, empty(peeledId!), empty(peeledType!), empty(symref!), empty(upstream!)]),
+      );
+      const head = own.find((fields) => fields[7] === "*");
+      expect(result.current).toEqual(head === undefined ? null : { name: head[0]!.replace(prefix, ""), objectId: head[1] });
+    },
+    CASE_TIMEOUT_MS,
+  );
+
   wslTest(
     "F21 comparisons equal the distro Git's own diff hunks",
     NEEDS,

@@ -861,6 +861,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       entryCount: entries.length,
       entries: [] as ChangeEntry[],
       cursor: crypto.randomUUID() as string | null,
+      // Contract §3 `readWorkspace`: this request ran the full read. A late read also gives `full`.
+      readKind: "full" as const,
     };
     const pageLimit: Completeness = { state: "limited", code: "OUTPUT_LIMIT", reason: "STATUS_PAGE_BYTES" };
     // The first page carries the final completeness. Only a complete result can become `pageLimit`.
@@ -947,7 +949,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
         if (facts !== null && "stop" in facts) return { result: facts.stop };
         const sameWorking = working !== null && st.bound.size === bound.length && bound.every((key) => kept.working.get(key) === working.get(key));
         const same = facts !== null && sameWorking && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
-        if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st, t.workspace) } };
+        if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st, t.workspace), readKind: "retained" } };
       }
       if (t.refresh) st.refreshing++;
       let running = t.refresh;

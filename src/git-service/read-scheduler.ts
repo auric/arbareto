@@ -19,7 +19,8 @@ export interface ReadJob<O, S> {
   repositoryId: string;
   // The registry signal of the operation. Only `cancel` aborts it.
   signal: AbortSignal;
-  // A selection read: a new read with the same key in the same workspace cancels each unfinished one (contract §5 "Pending reads").
+  // A superseding read: a new read with the same key in the same workspace cancels each unfinished one (contract §5 "Pending reads").
+  // `readComparison` and `readRefs` use their operation names as keys.
   selection?: string;
   // The read work under `operationId`. It never rejects.
   run(signal: AbortSignal): Promise<O>;

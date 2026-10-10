@@ -17,6 +17,7 @@ export const OPERATION_NAMES = [
   "readWorkspace",
   "readEntries",
   "readHistory",
+  "readRefs",
   "readComparison",
   "readTrust",
   "approveTrust",

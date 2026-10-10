@@ -7,6 +7,7 @@ import { createCipheriv } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import * as LIMITS from "../../src/contracts/limits";
 import { ATTRIBUTION_EVIDENCE_RECORDS, COMPARED_RAW_VERSION_BYTES, WHOLE_FILE_STAGE_INPUT_BYTES } from "../../src/contracts/limits";
 import { NATIVE } from "../../src/contracts/native-path";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureDir, fixturePath, ownedGit, type OwnedGitOptions } from "./fixture-root";
@@ -2204,4 +2205,100 @@ export function buildF30(git: string, name: string, variant: F30Variant): Built 
   }
   facts.notes.oracle = null;
   return { id: "F30", variant, root, facts };
+}
+
+// `limit-at-bound` holds exactly the record bound. It is a T356 edge case, not a plan.md F33 copy.
+export type F33Variant = "base" | "detached" | "unborn" | "reftable" | "limit-records" | "limit-bytes" | "limit-at-bound";
+// F33 limit copies: the tag count above the contract §5 "Reference listing" record bound, and the long tag names that pass its byte bound below the record bound.
+export const F33_LIMIT_TAGS = 10_001;
+export const F33_BYTE_TAGS = 9_000;
+export const F33_BYTE_TAG_NAME = 440;
+// The loose ref file whose name breaks git-check-ref-format(1) rule 3 (`..`).
+export const F33_BROKEN_REF = "refs/heads/bad..name";
+
+// Appends lightweight tags to a `packed-refs` file that `pack-refs --all` wrote. The names sort after every packed ref, so the file stays sorted.
+export function appendPackedTags(repoDir: string, oid: string, names: readonly string[]): void {
+  const path = join(repoDir, ".git", "packed-refs");
+  if (!readFileSync(path, "latin1").startsWith("# pack-refs with: ")) throw new Error(`${path} has no pack-refs header`);
+  appendFileSync(path, names.map((name) => `${oid} refs/tags/${name}\n`).join(""));
+}
+
+// The research R2 canaries in one repository: command-valued programs, filters, diff drivers, signing programs, a configured hook, and every hook event.
+// The attributes assign the drivers, and each tracked file is stat-dirty. Git starts the signing programs without a shell, so their paths stay unquoted.
+function r2Canaries(root: string, facts: Facts, r: Repo): void {
+  // `ls-files` reads the index, so it runs before `core.fsmonitor` exists.
+  const tracked = run(r, ["ls-files", "-z"]).split("\0").filter((p) => p !== "");
+  const quoted = (name: string, tail = "exit 1\n") => canary(root, facts, name, tail);
+  const bare = (name: string) => quoted(name).slice(1, -1);
+  const keys: [string, string][] = [
+    ["core.fsmonitor", quoted("fsmonitor")],
+    ["filter.cc.clean", quoted("filter-clean")],
+    ["filter.cc.smudge", quoted("filter-smudge")],
+    ["filter.pp.process", quoted("filter-process")],
+    ["diff.tc.textconv", quoted("textconv")],
+    ["gpg.program", bare("gpg-program")],
+    ["gpg.openpgp.program", bare("gpg-openpgp-program")],
+    ["gpg.x509.program", bare("gpg-x509-program")],
+    ["gpg.ssh.program", bare("gpg-ssh-program")],
+    ["gpg.ssh.defaultKeyCommand", quoted("gpg-ssh-defaultKeyCommand")],
+    ["hook.canary.command", quoted("hook-configured")],
+    ["hook.canary.event", "pre-commit"],
+  ];
+  for (const [key, value] of keys) run(r, ["config", key, value]);
+  const gitDir = join(r.dir, ".git");
+  put(gitDir, "info/attributes", "* filter=cc diff=tc\n*.md filter=pp\n");
+  const hook = quoted("hook");
+  for (const event of F29_HOOK_EVENTS) hookScript(gitDir, event, `${hook} ${event} "$@"\nexit 1\n`);
+  const now = Date.now() / 1000;
+  for (const path of tracked) utimesSync(join(r.dir, path), now, now);
+}
+
+// F33 (SC-019): a clone of a local bare remote with branches, remote-tracking branches, tags, and the research R2 canaries.
+// Fixed identities and times make the object IDs of every variant equal, so the reftable copy names the same objects.
+export function buildF33(git: string, name: string, variant: F33Variant): Built {
+  if (variant === "reftable") requireReftable(git);
+  const root = start(name);
+  const facts = newFacts();
+  const seed = init(git, join(root, "seed"));
+  put(seed.dir, "a.txt", "one\n");
+  add(seed, "a.txt");
+  const first = commit(seed, "one");
+  run(seed, ["branch", "other"]);
+  put(seed.dir, "a.txt", "two\n");
+  add(seed, "a.txt");
+  const second = commit(seed, "two");
+  const top: Repo = { git, dir: root, pre: [] };
+  run(top, ["clone", "-q", "--bare", "seed", "remote.git"]);
+  run(top, ["clone", "-q", ...(variant === "reftable" ? ["--ref-format=reftable"] : []), "remote.git", "clone"]);
+  const c: Repo = { git, dir: join(root, "clone"), pre: [] };
+  lineEndings(c);
+  run(c, ["branch", "feature/a/b"]);
+  run(c, ["branch", "café"]);
+  run(c, ["branch", "gone"]);
+  run(c, ["config", "branch.gone.remote", "origin"]);
+  run(c, ["config", "branch.gone.merge", "refs/heads/gone"]);
+  run(c, ["tag", "light"]);
+  run(c, ["tag", "-a", "-m", "annotated", "ann", first]);
+  run(c, ["-c", "advice.nestedTag=false", "tag", "-a", "-m", "nested", "nested", "ann"]);
+  run(c, ["tag", "-a", "-m", "tree", "treetag", `${second}^{tree}`]);
+  if (variant !== "reftable") put(c.dir, `.git/${F33_BROKEN_REF}`, `${second}\n`);
+  if (variant === "detached") run(c, ["checkout", "-q", "--detach"]);
+  if (variant === "unborn") run(c, ["symbolic-ref", "HEAD", "refs/heads/newborn"]);
+  if (variant === "limit-records" || variant === "limit-bytes" || variant === "limit-at-bound") {
+    run(c, ["pack-refs", "--all"]);
+    const pad = (i: number) => String(i).padStart(5, "0");
+    const listed = run(c, ["for-each-ref", "--format=x", "refs/heads", "refs/remotes", "refs/tags"]).split("\n").length - 1;
+    const tags = (count: number) => Array.from({ length: count }, (_, i) => `zz/t${pad(i)}`);
+    const names =
+      variant === "limit-records"
+        ? tags(F33_LIMIT_TAGS)
+        : variant === "limit-at-bound"
+          ? tags(LIMITS.REF_LISTING_RECORDS - listed)
+          : Array.from({ length: F33_BYTE_TAGS }, (_, i) => `zz/${"n".repeat(F33_BYTE_TAG_NAME)}${pad(i)}`);
+    appendPackedTags(c.dir, second, names);
+  }
+  normalizeIndex(c);
+  r2Canaries(root, facts, c);
+  facts.notes.commits = { first, second };
+  return { id: "F33", variant, root, facts };
 }

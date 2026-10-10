@@ -214,6 +214,7 @@ describe("recovery row lifetime in the workbench", () => {
   const snapshot = (fields: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot => ({
     generation: 1,
     snapshotId: crypto.randomUUID(),
+    readKind: "full",
     identity: { worktreeRoot: "C:\\repo", gitDirectory: "C:\\repo\\.git", commonDirectory: "C:\\repo\\.git", indexPath: "C:\\repo\\.git\\index", objectFormat: "sha1", refFormat: "files" },
     head: { state: "branch", target: "refs/heads/main", oid: OID },
     operationState: "normal",

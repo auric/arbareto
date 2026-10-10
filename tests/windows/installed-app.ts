@@ -10,7 +10,7 @@ import { FIXED_IDENTITY, ownedPath, removedByT043 } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { ownTree, processCreationTime } from "../git/win32";
 
-export type RefusalCode = "ENTRY_INVALID" | "OUTSIDE_LOCALAPPDATA" | "BAD_ROOT" | "ANOTHER_INSTANCE" | "PROFILE_NOT_ISOLATED";
+export type RefusalCode = "ENTRY_INVALID" | "OUTSIDE_LOCALAPPDATA" | "BAD_ROOT" | "ANOTHER_INSTANCE";
 
 export class InstalledAppRefusal extends Error {
   constructor(
@@ -91,17 +91,24 @@ export function findInstalledApp(read: () => UninstallEntry | null = readUninsta
 
 export interface AppEnv {
   env: Record<string, string>;
-  set: Record<string, string>;
+  set: { HOME: string; XDG_CONFIG_HOME: string; GIT_CONFIG_GLOBAL: string; ARBARETO_PROFILE_ROOT: string };
   removed: string[];
 }
 
-// T151 isolation: Git configuration only. `USERPROFILE` stays, and no `GIT_CONFIG_NOSYSTEM` applies, so system configuration stays active.
+// `USERPROFILE` stays, and no `GIT_CONFIG_NOSYSTEM` applies, so system configuration stays active.
+// `ARBARETO_PROFILE_ROOT` (T360, src-tauri/src/profile.rs) must name an existing folder, or the app exits with code 2.
 export function appEnv(root: string, noIdentity: boolean, base: Record<string, string | undefined> = process.env): AppEnv {
   if (!isAbsolute(root) || !existsSync(root) || !statSync(root).isDirectory()) throw new InstalledAppRefusal("BAD_ROOT", `not an existing absolute folder: ${root}`);
   const owned = realpathSync.native(root);
   const home = ownedPath(owned, "home");
-  const set = { HOME: home, XDG_CONFIG_HOME: ownedPath(owned, "home", ".config"), GIT_CONFIG_GLOBAL: ownedPath(owned, "home", ".gitconfig") };
+  const set = {
+    HOME: home,
+    XDG_CONFIG_HOME: ownedPath(owned, "home", ".config"),
+    GIT_CONFIG_GLOBAL: ownedPath(owned, "home", ".gitconfig"),
+    ARBARETO_PROFILE_ROOT: ownedPath(owned, "profile"),
+  };
   mkdirSync(set.XDG_CONFIG_HOME, { recursive: true });
+  mkdirSync(set.ARBARETO_PROFILE_ROOT, { recursive: true });
   writeFileSync(set.GIT_CONFIG_GLOBAL, noIdentity ? "[user]\n\tuseConfigOnly = true\n" : `[user]\n\tname = ${FIXED_IDENTITY.name}\n\temail = ${FIXED_IDENTITY.email}\n`);
   const env: Record<string, string> = {};
   const removed: string[] = [];
@@ -202,12 +209,11 @@ export function waitExit(owned: OwnedProcess, ms = WAIT_MS): Promise<number | nu
   return Promise.race([owned.exited, Bun.sleep(ms).then(() => null)]);
 }
 
-// Two instances share one WebView2 user-data folder (identifier `io.github.auric.arbareto`).
-// The app reads its settings and WebView2 data only from the Windows known folders (src-tauri/src/lib.rs `app_config_dir`, `app_data_dir`). No contract defines an override.
-export function startInstalledApp(app: InstalledApp, records: ProcessRecord[] = processRecords()): OwnedProcess {
+// An instance without the override uses the default WebView2 user-data folder (identifier `io.github.auric.arbareto`), so any other instance refuses the start.
+export function startInstalledApp(app: InstalledApp, env: AppEnv, records: ProcessRecord[] = processRecords()): OwnedProcess {
   const others = records.filter((r) => fold(r.name) === fold(app.mainBinaryName));
   if (others.length > 0) throw new InstalledAppRefusal("ANOTHER_INSTANCE", `${app.mainBinaryName} runs as PID ${others.map((r) => r.pid).join(", ")}`);
-  throw new InstalledAppRefusal("PROFILE_NOT_ISOLATED", `the app has no profile override, so a start writes %APPDATA%\\${tauri.identifier} and %LOCALAPPDATA%\\${tauri.identifier} of the real user`);
+  return spawnOwned([app.exe], env.set.ARBARETO_PROFILE_ROOT, env.env);
 }
 
 if (import.meta.main) {
@@ -228,8 +234,10 @@ if (import.meta.main) {
     printEnv(result);
     if (GIT === null) console.log("SKIP system configuration: Git executable absent");
     else printSystemConfig(GIT, result.env);
-    const owned = startInstalledApp(found.app);
+    const owned = startInstalledApp(found.app, result);
     console.log(`STARTED ${owned.pid}`);
+    // A Bun 1.4.2 child ends when the Bun process exits, so the launcher stays until the app exits.
+    console.log(`EXITED ${await owned.exited}`);
   } catch (error) {
     if (!(error instanceof InstalledAppRefusal)) throw error;
     console.log(`REFUSED ${error.message}`);

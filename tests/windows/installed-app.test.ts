@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { FIXED_IDENTITY, fixtureDir, useFixtureRoot } from "../git/fixture-root";
@@ -77,7 +77,9 @@ describe.skipIf(process.platform !== "win32")("T151 installed-app helper", () =>
     const base = { USERPROFILE: "C:\\Users\\real", HOME: "C:\\Users\\real", Path: "C:\\bin", GIT_CONFIG_PARAMETERS: "'a.b'='c'", git_author_name: "x", GIT_DIR: "d", GIT_TEST_X: "1", GIT_CONFIG_NOSYSTEM: "1", EMAIL: "e" };
     const result = appEnv(root, false, base);
     const home = join(root, "home");
-    expect(result.env).toEqual({ USERPROFILE: "C:\\Users\\real", Path: "C:\\bin", HOME: home, XDG_CONFIG_HOME: join(home, ".config"), GIT_CONFIG_GLOBAL: join(home, ".gitconfig") });
+    const profile = join(root, "profile");
+    expect(result.env).toEqual({ USERPROFILE: "C:\\Users\\real", Path: "C:\\bin", HOME: home, XDG_CONFIG_HOME: join(home, ".config"), GIT_CONFIG_GLOBAL: join(home, ".gitconfig"), ARBARETO_PROFILE_ROOT: profile });
+    expect(statSync(profile).isDirectory()).toBe(true);
     expect(result.removed.sort()).toEqual(["EMAIL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_TEST_X", "git_author_name"]);
     expect(readFileSync(join(home, ".gitconfig"), "utf8")).toContain(`email = ${FIXED_IDENTITY.email}`);
     appEnv(root, true, base);
@@ -96,12 +98,34 @@ describe.skipIf(process.platform !== "win32")("T151 installed-app helper", () =>
   const app: InstalledApp = { exe: "C:\\fake\\arbareto.exe", mainBinaryName: "arbareto.exe", sha256: "0" };
 
   test("a start refuses while another instance runs, from process records", () => {
-    expect(refusal(() => startInstalledApp(app, [record(7, 1, "Arbareto.EXE", "1")]))).toBe("ANOTHER_INSTANCE");
+    const env = appEnv(fixtureDir("instance"), false, {});
+    expect(refusal(() => startInstalledApp(app, env, [record(7, 1, "Arbareto.EXE", "1")]))).toBe("ANOTHER_INSTANCE");
+    expect(readdirSync(env.set.ARBARETO_PROFILE_ROOT)).toEqual([]);
   });
 
-  test("a start refuses when the app cannot isolate its profile", () => {
-    expect(refusal(() => startInstalledApp(app, [record(7, 1, "bun.exe", "1")]))).toBe("PROFILE_NOT_ISOLATED");
-  });
+  test(
+    "a start runs the exe in the profile folder with the owned environment",
+    async () => {
+      const root = fixtureDir("start");
+      const stand = join(root, "stand-in.exe");
+      writeFileSync(join(root, "stand-in.ts"), 'require("node:fs").writeFileSync("started.json", JSON.stringify({ cwd: process.cwd(), env: process.env }));\n');
+      const build = Bun.spawnSync([process.execPath, "build", "--compile", join(root, "stand-in.ts"), "--outfile", stand], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      expect(build.exitCode).toBe(0);
+      const env = appEnv(root, true, { ...process.env, GIT_AUTHOR_NAME: "x" });
+      const owned = startInstalledApp({ ...app, exe: stand, mainBinaryName: "stand-in.exe" }, env, []);
+      try {
+        expect(await waitExit(owned)).toBe(0);
+      } finally {
+        owned.stop();
+      }
+      const seen = JSON.parse(readFileSync(join(root, "profile", "started.json"), "utf8"));
+      expect(seen.cwd).toBe(join(root, "profile"));
+      expect(seen.env.ARBARETO_PROFILE_ROOT).toBe(join(root, "profile"));
+      expect(seen.env.GIT_CONFIG_GLOBAL).toBe(join(root, "home", ".gitconfig"));
+      expect(seen.env.GIT_AUTHOR_NAME).toBeUndefined();
+    },
+    TEST_TIMEOUT_MS,
+  );
 
   test("descendants follow parent links and drop a child older than its parent", () => {
     const records = [record(10, 1, "arbareto.exe", "100"), record(11, 10, "arbareto-git.exe", "110"), record(12, 11, "git.exe", "120"), record(13, 10, "reused.exe", "50"), record(14, 99, "other.exe", "130")];

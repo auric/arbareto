@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+import { useRef, type RefObject } from "react";
+import type { Environment } from "../../contracts/envelope";
+import type { Notices } from "../build/notices";
+import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { dialogSize, type Size } from "../layout/profiles";
+
+// plan.md "About window" and "Dialog sizes". The mount passes the `bun run build:notices` output (T130) as `notices`.
+
+// plan.md "About window" Overview row.
+const SCOPE_LINE = "This test build covers opening repositories, status, diffs, hunk and file staging, local commits, submodule updates, and one history page.";
+// NOTICE.md lines 3, 7, and 9.
+const COPYRIGHT = "Copyright (c) 2026 Ihor Lifanov";
+const PERMISSION =
+  "Arbareto is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.";
+const NO_WARRANTY =
+  "Arbareto is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.";
+
+type OverviewProps = { scope: Environment["platformScope"]; build: Environment["buildIdentity"]; /** notices.json `repositoryUrl`. */ repositoryUrl: string };
+
+/** The Overview panel. `build.commit` carries the `-dirty` suffix when it applies (contract `buildIdentity`). */
+export function AboutOverview({ scope, build, repositoryUrl }: OverviewProps) {
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="font-heading font-semibold">Arbareto</p>
+      <p>
+        Build: {build.version} <span className="font-mono break-all">{build.commit}</span>
+      </p>
+      {build.signing === "unsigned" && <p>Unsigned local test package</p>}
+      {scope === "other" && <p>Unqualified platform</p>}
+      <p>{SCOPE_LINE}</p>
+      <p>{COPYRIGHT}</p>
+      <p>Arbareto by Ihor Lifanov</p>
+      <p>{PERMISSION}</p>
+      <p>{NO_WARRANTY}</p>
+      <p>License: AGPL-3.0-or-later. The License tab shows the full text.</p>
+      <p>
+        Corresponding Source: <span className="font-mono break-all">{repositoryUrl}</span> at commit{" "}
+        <span className="font-mono break-all">{build.commit}</span>
+      </p>
+    </div>
+  );
+}
+
+export type AboutDialogProps = Omit<OverviewProps, "repositoryUrl"> & {
+  notices: Notices;
+  open: boolean;
+  /** The main window client size in DIPs. */
+  client: Size;
+  /** The Help menu button. */
+  finalFocus: RefObject<HTMLElement | null> | (() => HTMLElement | null);
+  onClose(): void;
+};
+
+// Each panel is the only scrolling region and one Tab stop (plan.md "Dialog sizes").
+const PANEL = "min-h-0 overflow-y-auto px-4 py-2 focus-visible:ring-[3px] focus-visible:ring-ring/50";
+
+export function AboutDialog({ open, scope, build, notices, client, finalFocus, onClose }: AboutDialogProps) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  const size = dialogSize("about", client);
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent
+        showCloseButton={false}
+        initialFocus={heading}
+        finalFocus={finalFocus}
+        className="flex max-w-none flex-col gap-0 p-0 sm:max-w-none"
+        style={{ width: size.width, height: size.height }}
+      >
+        <DialogTitle ref={heading} tabIndex={-1} className="px-4 py-3">
+          About Arbareto
+        </DialogTitle>
+        <Tabs defaultValue="overview" className="min-h-0 flex-1 gap-0">
+          <TabsList variant="line" className="shrink-0 px-2">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="license">License</TabsTrigger>
+            <TabsTrigger value="notices">Third-party notices</TabsTrigger>
+          </TabsList>
+          <TabsContent value="overview" tabIndex={0} className={PANEL}>
+            <AboutOverview scope={scope} build={build} repositoryUrl={notices.repositoryUrl} />
+          </TabsContent>
+          <TabsContent value="license" tabIndex={0} className={PANEL}>
+            <pre className="font-mono break-words whitespace-pre-wrap select-text">{`${notices.project.license}\n\n${notices.project.notice}`}</pre>
+          </TabsContent>
+          <TabsContent value="notices" tabIndex={0} className={PANEL}>
+            {notices.groups.map((group) => (
+              <section key={group.license} className="mb-4">
+                <h3 className="font-heading font-semibold">{group.license}</h3>
+                {group.packages.map((p) => (
+                  <div key={`${p.name}@${p.version ?? ""}`} className="mt-2">
+                    <h4 className="font-semibold">{p.version === undefined ? p.name : `${p.name} ${p.version}`}</h4>
+                    {p.files.map((file) => (
+                      <pre key={file.name} className="font-mono break-words whitespace-pre-wrap select-text">
+                        {file.text}
+                      </pre>
+                    ))}
+                  </div>
+                ))}
+              </section>
+            ))}
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+}

@@ -4,7 +4,7 @@
 // T222: `reviewSubmodules` and the `submoduleNotice` of `readWorkspace` (contract §12 "Discovery notice", "Review reads", "Plan", "Refusals", "Trust").
 // `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T229 registers `reviewSubmodules`, and T231 registers `updateSubmodules`.
 
-import { describe, expect, setSystemTime } from "bun:test";
+import { describe, expect } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES } from "../../src/contracts/limits";
@@ -749,19 +749,22 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
 
   todoCase(TASK, `a token older than APPROVAL_LIFETIME_MS on an injected clock gives APPROVAL_EXPIRED, and no update step starts ${TOKEN}`, SHELL, () => {
     const b = buildF27(gitPath(), "t222-token-expired", "base");
-    return withFixture(b, "t222-token-expired", async (service) => {
-      const { repositoryId, r } = await reviewed(service, b);
-      expect(typeof r.token).toBe("string");
-      await underTestSubmodule("submodule-update");
-      const from = service.runner.calls.length;
-      // Bun `setSystemTime` moves `Date.now()` only. Timers and `performance.now()` keep running.
-      setSystemTime(new Date(Date.now() + APPROVAL_LIFETIME_MS + 1));
-      try {
+    // The approval lifetime runs on the monotonic service clock (T110 decision G5). The case moves that clock.
+    let elapsed = 0;
+    const approvalClock = () => performance.now() + elapsed;
+    return withFixture(
+      b,
+      "t222-token-expired",
+      async (service) => {
+        const { repositoryId, r } = await reviewed(service, b);
+        expect(typeof r.token).toBe("string");
+        await underTestSubmodule("submodule-update");
+        const from = service.runner.calls.length;
+        elapsed = APPROVAL_LIFETIME_MS + 1;
         const response = await updateSubmodules(service, repositoryId, r);
         expect({ code: response.code, steps: updateSteps(service, from).length }).toEqual({ code: "APPROVAL_EXPIRED", steps: 0 });
-      } finally {
-        setSystemTime();
-      }
-    });
+      },
+      { approvalClock },
+    );
   });
 });

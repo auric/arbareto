@@ -283,7 +283,8 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
       expect([...service.runner.markers.values()].map((m) => m.operationId)).toEqual([response.operationId!]);
       const refreshed = await service.readWorkspace(repositoryId, { refresh: true, check: "full" });
       expect(outcome(refreshed)).toEqual(SUCCEEDED);
-      expect(resultsOf(refreshed).map((row) => row.path).sort()).toEqual(r.rows.map((row) => row.path).sort());
+      // The run adds the found row `mid/leaf` after the `mid` clone (data-model §9 `submoduleResults`).
+      expect(resultsOf(refreshed).map((row) => row.path).sort()).toEqual([...r.rows.map((row) => row.path), "mid/leaf"].sort());
       await until(() => mutationFrames(service, response.operationId!).includes("resolved"), "resolved frame");
     });
   }, LONG_TIMEOUT_MS);
@@ -315,7 +316,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   for (const mode of ["http", "https"] as const) {
     for (const user of [false, true]) {
       const needs: Capability[] = mode === "https" ? [...SHELL, "openssl"] : SHELL;
-      todoCase(TASK, `loopback 401 ${mode}${user ? " with u@" : ""}: the update fails within 10 seconds, the server counted a request, and the row carries a redacted outputTail and the clone remedy ${NEEDS}`, needs, async () => {
+      todoCase(TASK, `loopback 401 ${mode}${user ? " with u@" : ""}: the update fails within 10 seconds, the server counted a request, and the row carries registered, a redacted outputTail, and the clone remedy, and the outcome is failed-with-effects ${NEEDS}`, needs, async () => {
         await update();
         const name = `t224-401-${mode}${user ? "-user" : ""}`;
         const tls = mode === "https" ? loopbackCertificate(gitOpenssl(gitPath())!, fixtureDir(`${name}-tls`)) : undefined;
@@ -332,7 +333,14 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
             expect(service.responseAt.get(requestId)! - sentAt).toBeLessThanOrEqual(LOOPBACK_MS);
             expect(server.requests()).toBeGreaterThanOrEqual(1);
             const row = resultOf(response, "web");
-            expect({ state: row.state, tail: typeof row.outputTail, remedy: row.remedy }).toEqual({ state: "failed", tail: "string", remedy: { command: cloneRemedy(w.sup.dir, "web"), text: STEP_TEXT.clone } });
+            // research.md R14 S37 case C: the failed clone step registers the row, so the outcome has an effect.
+            expect({ outcome: outcome(response), state: row.state, registered: row.registered, tail: typeof row.outputTail, remedy: row.remedy }).toEqual({
+              outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" },
+              state: "failed",
+              registered: true,
+              tail: "string",
+              remedy: { command: cloneRemedy(w.sup.dir, "web"), text: STEP_TEXT.clone },
+            });
             if (user) expect({ redacted: row.outputTail!.includes("<redacted>"), user: row.outputTail!.includes("u@127.0.0.1") }).toEqual({ redacted: true, user: false });
           });
         } finally {
@@ -362,7 +370,7 @@ describe("prompts without a console (contract §12 \"Environment and console\", 
   // Windows OpenSSH reads `~/.ssh` from the account profile, not from `HOME` or `USERPROFILE`, so a `core.sshCommand` without arguments cannot name a fixture key.
   // That case needs the key as the default identity of the account. The test never writes `~/.ssh`.
   for (const withArguments of [false, true]) {
-    todoCase(TASK, `SSH passphrase key through a core.sshCommand ${withArguments ? "with arguments: the double reports stalled, getOperation returns the fetch command in stallRemedy, no progress event carries it, and the step ends at a test-injected 5-second inactivity limit" : "without arguments: the update fails without a wait"} ${NEEDS}`, [...SHELL, "openssh", "ssh-server", "ssh-key"], async () => {
+    todoCase(TASK, `SSH passphrase key through a core.sshCommand ${withArguments ? "with arguments: the double reports stalled, getOperation returns the fetch command in stallRemedy, no progress event carries it, and the step ends at a test-injected 5-second inactivity limit" : "without arguments: the update fails without a wait"} ${withArguments ? "(needs T256)" : NEEDS}`, [...SHELL, "openssh", "ssh-server", "ssh-key"], async () => {
       await update();
       const name = `t224-ssh-key-${withArguments ? "args" : "plain"}`;
       const ssh = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "OpenSSH", "ssh.exe").replaceAll("\\", "/");

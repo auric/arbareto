@@ -18,7 +18,7 @@ import { NATIVE } from "../contracts/native-path";
 import { batchCommandArgs, headOidArgs, headRefExistsArgs, headTargetArgs, isObjectId, isRefName, objectCheckArgs, revListArgs, shallowPathArgs, type ObjectFormat } from "./commands";
 import type { ReadInstallation } from "./snapshot";
 import { createCollector, isChannelPath, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
-import { HEADER_BYTES, parseCommitObjects, parseTraversal, type CommitObject, type CommitObjects, type Traversal } from "./history-parser";
+import { boundedBody, HEADER_BYTES, isSpace, messageBody, parseCommitObjects, parseTraversal, type CommitObject, type CommitObjects, type Traversal } from "./history-parser";
 import { contextOf, encodedBytes, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { Completeness, Head, LimitName } from "./snapshot";
@@ -88,8 +88,6 @@ const limited = (reason: LimitName): Completeness => ({ state: "limited", code: 
 const lossy = new TextDecoder("utf-8", { ignoreBOM: true });
 const exact = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const isStop = (value: unknown): value is Stop => typeof value === "object" && value !== null && ("stop" in value || "failed" in value);
-// Git `ctype.c` `sane_ctype`: `isspace` holds TAB, LF, CR, and SPACE only.
-const isSpace = (byte: number) => byte === 0x09 || byte === 0x0a || byte === 0x0d || byte === 0x20;
 const isDigit = (byte: number) => byte >= 0x30 && byte <= 0x39;
 // The `encoding` label shows no C0 control, DEL, or C1 control.
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
@@ -154,22 +152,25 @@ const sameShallow = (a: Shallow, b: Shallow) => a.kind === b.kind && (a.kind !==
 
 const join = (parts: readonly Uint8Array[]) => Buffer.concat(parts.flatMap((part, i) => (i === 0 ? [part] : [Buffer.from(" "), part])));
 
-// Git `pretty.c` `parse_commit_header`: the header ends at the first empty line, and the last `author` line counts. A NUL byte ends the buffer.
-function commitText(content: Uint8Array): { author: Uint8Array | null; message: Uint8Array } {
+// Git `pretty.c` `parse_commit_header`: the header ends at the first empty line, and the last `author` and `committer` lines count. A NUL byte ends the buffer.
+function commitText(content: Uint8Array): { author: Uint8Array | null; committer: Uint8Array | null; message: Uint8Array } {
   const nul = content.indexOf(0);
   const buffer = nul === -1 ? content : content.subarray(0, nul);
-  const prefix = Buffer.from("author ");
+  const authorPrefix = Buffer.from("author ");
+  const committerPrefix = Buffer.from("committer ");
   let author: Uint8Array | null = null;
+  let committer: Uint8Array | null = null;
   let at = 0;
   while (at < buffer.length) {
     const lf = buffer.indexOf(LF, at);
     const end = lf === -1 ? buffer.length : lf;
     if (end === at) break;
     const line = Buffer.from(buffer.buffer, buffer.byteOffset + at, end - at);
-    if (line.subarray(0, prefix.length).equals(prefix)) author = line.subarray(prefix.length);
+    if (line.subarray(0, authorPrefix.length).equals(authorPrefix)) author = line.subarray(authorPrefix.length);
+    else if (line.subarray(0, committerPrefix.length).equals(committerPrefix)) committer = line.subarray(committerPrefix.length);
     at = end + 1;
   }
-  return { author, message: buffer.subarray(Math.min(at, buffer.length)) };
+  return { author, committer, message: buffer.subarray(Math.min(at, buffer.length)) };
 }
 
 // Git `pretty.c` `skip_blank_lines` and `format_subject`: the first paragraph, each line without trailing white space, joined by one space.
@@ -213,10 +214,12 @@ function identOf(line: Uint8Array): { name: Uint8Array; email: Uint8Array; date:
 // Contract §3 "HistoryPage result" row fields. The parents come from the traversal, never from the raw headers.
 // `shallow`: the shallow file lists the commit. `invalidUtf8` checks the raw bytes, before the lossy decode.
 function rowOf(oid: string, parents: readonly string[], object: CommitObject, shallow: boolean): HistoryRow | null {
-  const { author, message } = commitText(object.content);
+  const { author, committer, message } = commitText(object.content);
   const ident = author === null ? null : identOf(author);
-  if (ident === null) return null;
+  const committed = committer === null ? null : identOf(committer);
+  if (ident === null || committed === null) return null;
   const subject = subjectOf(message);
+  const body = messageBody(message);
   return {
     oid,
     parents: [...parents],
@@ -225,7 +228,10 @@ function rowOf(oid: string, parents: readonly string[], object: CommitObject, sh
     date: ident.date,
     encoding: object.encoding === null ? null : object.encoding.replace(CONTROLS, ""),
     shallow,
-    invalidUtf8: !isUtf8(subject) || !isUtf8(ident.name) || !isUtf8(ident.email),
+    invalidUtf8: [subject, ident.name, ident.email, committed.name, committed.email, body].some((bytes) => !isUtf8(bytes)),
+    committer: { name: lossy.decode(committed.name), email: lossy.decode(committed.email) },
+    committerDate: committed.date,
+    ...boundedBody(lossy.decode(body)),
   };
 }
 
@@ -270,6 +276,27 @@ export async function captureHead(runner: GitRunner, t: ProcessTarget): Promise<
   if (existsStop !== null) return existsStop;
   const found = exists as Ran;
   return found.exit.exitCode === REF_MISSING_STATUS && found.stdout.bytes === 0 ? { state: "unborn", target } : { failed: "GIT_FAILED" };
+}
+
+// Contract §7 "Shared listing": the listing of a `readWorkspace` of the request generation, after the tuple recheck. Otherwise an own listing.
+// `readHistory` and `readRefs` use it.
+export async function sharedListing(
+  { trust, listingTuple }: Pick<HistoryReaderOptions, "trust" | "listingTuple">,
+  t: Pick<ReadHistoryTarget, "operationId" | "signal" | "workspace" | "generation">,
+): Promise<ListingOutcome> {
+  const w = t.workspace;
+  // Contract §11 "Trust and environment": a WSL repository never shares a trust listing.
+  const tuple = w.wsl === undefined ? await listingTuple(w, t.operationId, t.signal) : null;
+  if (tuple !== null && typeof tuple === "object") return { ok: false, stop: tuple.stop };
+  const shared = tuple === null ? null : await trust.shared.reuse(w.repositoryId, t.generation, tuple, t.signal);
+  if (shared !== null) {
+    // The tuple is read again after the shared listing ends, so an edit during that listing also forces an own listing.
+    const again = await listingTuple(w, t.operationId, t.signal);
+    if (again !== null && typeof again === "object") return { ok: false, stop: again.stop };
+    if (again === tuple) return { ok: true, listing: shared };
+  }
+  if (t.signal.aborted) return { ok: false, stop: "canceled" };
+  return trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
 }
 
 export function createHistoryReader({ runner, trust, listingTuple, markUnavailable }: HistoryReaderOptions) {
@@ -338,22 +365,7 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
     return { head, shallow, traversal, objects, failedStep, shallowChanged: !sameShallow(shallow, again) };
   }
 
-  // Contract §7 "Shared listing": the listing of a `readWorkspace` of the request generation, after the tuple recheck. Otherwise an own listing.
-  async function listingFor(t: ReadHistoryTarget): Promise<ListingOutcome> {
-    const w = t.workspace;
-    // Contract §11 "Trust and environment": a WSL repository never shares a trust listing.
-    const tuple = w.wsl === undefined ? await listingTuple(w, t.operationId, t.signal) : null;
-    if (tuple !== null && typeof tuple === "object") return { ok: false, stop: tuple.stop };
-    const shared = tuple === null ? null : await trust.shared.reuse(w.repositoryId, t.generation, tuple, t.signal);
-    if (shared !== null) {
-      // The tuple is read again after the shared listing ends, so an edit during that listing also forces an own listing.
-      const again = await listingTuple(w, t.operationId, t.signal);
-      if (again !== null && typeof again === "object") return { ok: false, stop: again.stop };
-      if (again === tuple) return { ok: true, listing: shared };
-    }
-    if (t.signal.aborted) return { ok: false, stop: "canceled" };
-    return trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
-  }
+  const listingFor = (t: ReadHistoryTarget) => sharedListing({ trust, listingTuple }, t);
 
   // Contract §7 "Missing objects": `cat-file --batch-check` on the history commit IDs. The service never parses the Git message.
   async function objectCheck(t: ProcessTarget, oids: readonly string[]): Promise<"missing" | "present" | "failed" | "canceled" | "deadline"> {

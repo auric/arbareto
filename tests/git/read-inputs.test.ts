@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, spyOn, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REGISTERED_WORKSPACES } from "../../src/contracts/limits";
 import { probeGit } from "../../src/git-service/git-installation";
@@ -25,6 +25,7 @@ printOrigin("../../src/git-service/watch.ts", import.meta.dir);
 
 const TASK = "T072";
 const RELEASE_TASK = "T321";
+const RECENT_TASK = "T343";
 const TIMEOUT_MS = 120_000;
 const ALTERNATING_TIMEOUT_MS = 600_000;
 // Task T075 and spec SC-007: a hint within 2 seconds.
@@ -415,6 +416,50 @@ describe("unfinished mutations and release effects (contract §6 \"Registration 
     TIMEOUT_MS,
   );
 
+  // Contract §3 `openRecentRepository`: the shell forwards an open as `restoreWorkspace`, so every check of `restoreWorkspace` applies.
+  caseTest(
+    RECENT_TASK,
+    "with an unfinished mutation in a registered workspace, an open of another common directory gives BUSY, sends no release, and the workspace stays",
+    ["shell-double"],
+    () =>
+      withBusySeam("t343-busy-open", async (service, seam) => {
+        const git = gitPath();
+        const { repositoryId } = await service.register(join(buildF02(git, "t343-busy-open").root, "repo"));
+        const other = join(buildF06(git, "t343-busy-open-other").root, "repo");
+        seam.busy.add(repositoryId);
+        const response = await service.restoreWorkspace(other);
+        expect({ state: response.state, code: response.code, releases: seam.releases }).toEqual({ state: "failed", code: "BUSY", releases: [] });
+        const read = await codeAndSpawns(service, () => service.readWorkspace(repositoryId));
+        expect({ state: read.state, ran: read.runs > 0 }).toEqual({ state: "succeeded", ran: true });
+      }),
+    TIMEOUT_MS,
+  );
+
+  // Contract §3: the shell stores the recent entry from `worktreeRoot` and `worktreeKey` of the result.
+  caseTest(
+    RECENT_TASK,
+    "chooseRepository and restoreWorkspace results carry the Git-resolved worktreeRoot beside the worktreeKey",
+    ["shell-double"],
+    () =>
+      withService("t343-worktree-root", async (service) => {
+        const repo = join(buildF02(gitPath(), "t343-worktree-root").root, "repo");
+        mkdirSync(join(repo, "sub"));
+        const chosen = await service.chooseRepository(join(repo, "sub"));
+        const restored = await service.restoreWorkspace(repo);
+        const { repositoryId } = chosen.result as { repositoryId: string };
+        const read = await service.readWorkspace(repositoryId);
+        // The root that Git resolved, in the form of the workspace identity.
+        const root = (read.result as { identity: { worktreeRoot: string } }).identity.worktreeRoot;
+        expect(realpathSync.native(root)).toBe(realpathSync.native(repo));
+        for (const response of [chosen, restored]) {
+          expect(response.state).toBe("succeeded");
+          expect(Object.keys(response.result as object).toSorted()).toEqual(["generation", "repositoryId", "worktreeKey", "worktreeRoot"]);
+          expect((response.result as { worktreeRoot: string }).worktreeRoot).toBe(root);
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
   caseTest(
     RELEASE_TASK,
     "a release stops the watchers of the released workspace: an external change there gives no hint",
@@ -496,6 +541,35 @@ describe("unfinished mutations and release effects (contract §6 \"Registration 
         const page = reader.readEntries(repositoryId, generation, snapshotId, cursor);
         expect({ page, runs: service.runner.calls.length - before }).toEqual({ page: { ok: false, code: "UNKNOWN_TARGET" }, runs: 0 });
       }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("readKind (contract §3 `readWorkspace`, §8 \"Change check\")", () => {
+  caseTest(
+    "T356",
+    'a check "changes" read without a hint gives readKind retained and starts no Git process, and a full read gives readKind full',
+    ["shell-double"],
+    async () => {
+      const service = await openService({ git: gitPath(), name: "t356-read-kind", watchHints: false });
+      try {
+        const repo = join(buildF02(gitPath(), "t356-read-kind").root, "repo");
+        const { repositoryId } = await service.register(repo);
+        const kind = async (check: "full" | "changes") => {
+          const before = service.runner.calls.length;
+          const response = await service.readWorkspace(repositoryId, { refresh: false, check });
+          expect(response.state).toBe("succeeded");
+          return { readKind: (response.result as { readKind?: unknown }).readKind, runs: service.runner.calls.length - before };
+        };
+        // Contract §8 "New candidates": the first listing can name candidates that its earlier tuple did not hold. So the second full read makes the compared tuple.
+        expect((await kind("full")).readKind).toBe("full");
+        expect((await kind("full")).readKind).toBe("full");
+        expect(await kind("changes")).toEqual({ readKind: "retained", runs: 0 });
+        expect((await kind("full")).readKind).toBe("full");
+      } finally {
+        await service.dispose();
+      }
+    },
     TIMEOUT_MS,
   );
 });

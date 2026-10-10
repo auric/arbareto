@@ -3,6 +3,7 @@
 
 // Contract §3 "HistoryPage result" and §5 history bounds. Pure parsers of untrusted Git output.
 
+import { HISTORY_BODY_BYTES } from "../contracts/envelope";
 import { HISTORY_COMMIT_OBJECT_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_PARENTS_PER_PAGE, HISTORY_STREAM_BYTES, HISTORY_STREAM_ROWS } from "../contracts/limits";
 import type { ObjectFormat } from "./commands";
 import type { Completeness, LimitName } from "./snapshot";
@@ -22,6 +23,45 @@ const OBJECT_MISSING: Completeness = { state: "limited", code: "OBJECT_MISSING" 
 const limited = (reason: LimitName): Completeness => ({ state: "limited", code: "OUTPUT_LIMIT", reason });
 
 const latin1 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
+
+// Git `ctype.c` `sane_ctype`: `isspace` holds TAB, LF, CR, and SPACE only.
+export const isSpace = (byte: number) => byte === 0x09 || byte === 0x0a || byte === 0x0d || byte === 0x20;
+
+// Git `pretty.c` `get_one_line`: a line includes its LF. The last line can have none.
+const lineEnd = (text: Uint8Array, at: number) => {
+  const lf = text.indexOf(LF, at);
+  return lf === -1 ? text.length : lf + 1;
+};
+// Git `pretty.c` `is_blank_line`: only white space.
+const isBlank = (text: Uint8Array, at: number, end: number) => text.subarray(at, end).every(isSpace);
+// Git `pretty.c` `skip_blank_lines`.
+function skipBlankLines(text: Uint8Array, at: number): number {
+  while (at < text.length) {
+    const end = lineEnd(text, at);
+    if (!isBlank(text, at, end)) break;
+    at = end;
+  }
+  return at;
+}
+
+// Git `pretty.c` `parse_commit_message` (`%b`): skip blank lines, then the subject paragraph with its ending blank line (`format_subject`), then blank lines.
+export function messageBody(message: Uint8Array): Uint8Array {
+  let at = skipBlankLines(message, 0);
+  while (at < message.length) {
+    const end = lineEnd(message, at);
+    const blank = isBlank(message, at, end);
+    at = end;
+    if (blank) break;
+  }
+  return message.subarray(skipBlankLines(message, at));
+}
+
+// Contract §5 "History message body": WHATWG `encodeInto` writes only whole characters, so `read` ends at a character boundary.
+const bodyBuffer = new Uint8Array(HISTORY_BODY_BYTES);
+export function boundedBody(text: string): { body: string; bodyCut: boolean } {
+  const { read } = new TextEncoder().encodeInto(text, bodyBuffer);
+  return read === text.length ? { body: text, bodyCut: false } : { body: text.slice(0, read), bodyCut: true };
+}
 
 export interface TraversalRow {
   oid: string;

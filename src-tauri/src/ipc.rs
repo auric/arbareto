@@ -20,14 +20,18 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 22] = [
+pub const OPERATIONS: [&str; 26] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
     "restoreWorkspace",
+    "listRecentRepositories",
+    "openRecentRepository",
+    "removeRecentRepository",
     "readWorkspace",
     "readEntries",
     "readHistory",
+    "readRefs",
     "readComparison",
     "readTrust",
     "approveTrust",
@@ -46,13 +50,19 @@ pub const OPERATIONS: [&str; 22] = [
 ];
 
 /// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
-const NATIVE_FIRST: [&str; 5] = [
+const NATIVE_FIRST: [&str; 8] = [
     "requestClose",
     "chooseGit",
     "chooseRepository",
     "restoreWorkspace",
     "dismissRecoveryMarker",
+    "listRecentRepositories",
+    "openRecentRepository",
+    "removeRecentRepository",
 ];
+
+/// Contract §3 "Recent repositories": the shell answers these itself and never forwards them.
+const RECENT_ANSWERS: [&str; 2] = ["listRecentRepositories", "removeRecentRepository"];
 
 /// Pinned Tauri serves the bundled frontend on Windows at this host (manager/mod.rs:335-338, webview/mod.rs:1966-1974).
 const LOCAL_HOST: &str = "tauri.localhost";
@@ -93,10 +103,27 @@ pub struct Prepared {
     pub path: Option<PathBuf>,
 }
 
+/// A native step that ends the request before the forward.
+#[derive(Debug, PartialEq)]
+pub enum Ended {
+    /// The renderer gets `rejected` with the code.
+    Rejected(&'static str),
+    /// The renderer gets `failed` with the code and the result (contract §9).
+    Failed(&'static str, Value),
+}
+
+impl From<&'static str> for Ended {
+    fn from(code: &'static str) -> Ended {
+        Ended::Rejected(code)
+    }
+}
+
 /// The native steps of a native-first operation (contract §3). Both steps can show a dialog, so they block.
 pub trait NativeFirst: Send + Sync {
     /// Runs before the forward. `Ok(None)` is a canceled dialog.
-    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, &'static str>;
+    fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, Ended>;
+    /// Answers a `RECENT_ANSWERS` operation with its result. It reads no folder and starts no process.
+    fn answer(&self, operation: &str, payload: &Value) -> Result<Value, &'static str>;
     /// Runs after the service response of a forwarded request. It returns the response for the renderer.
     fn finish(&self, operation: &str, prepared: &Prepared, response: Value) -> Value;
     /// Decides `requestClose` without a service session. A close decision ends the application.
@@ -279,6 +306,18 @@ impl Ipc {
             if let Err(code) = schema::native_first(&strict) {
                 return reject(code);
             }
+            // Contract §3: the list and the removal need no service session.
+            if RECENT_ANSWERS.contains(&operation) {
+                let Some(native) = self.native() else {
+                    return reject("SERVICE_UNAVAILABLE");
+                };
+                return match native.answer(operation, &strict["payload"]) {
+                    Ok(result) => Submitted::Answer(
+                        json!({ "requestId": request_id, "state": "succeeded", "result": result }),
+                    ),
+                    Err(code) => reject(code),
+                };
+            }
             envelope = strict;
         }
         // The requestId is reserved before any native dialog shows.
@@ -316,7 +355,12 @@ impl Ipc {
                 return rejected("SERVICE_UNAVAILABLE");
             };
             match native.prepare(operation, &envelope["payload"]) {
-                Err(code) => return rejected(code),
+                Err(Ended::Rejected(code)) => return rejected(code),
+                Err(Ended::Failed(code, result)) => {
+                    return answer(
+                        json!({ "requestId": request_id, "state": "failed", "code": code, "result": result }),
+                    );
+                }
                 Ok(None) => {
                     return answer(
                         json!({ "requestId": request_id, "state": "canceled", "code": "CANCELED" }),
@@ -324,6 +368,10 @@ impl Ipc {
                 }
                 Ok(Some(native)) => {
                     envelope["payload"] = native.payload.clone();
+                    // Contract §3 `openRecentRepository`: the service gets the request as `restoreWorkspace`.
+                    if operation == "openRecentRepository" {
+                        envelope["operation"] = json!("restoreWorkspace");
+                    }
                     prepared = Some(native);
                     public_request_body(&envelope.to_string())
                 }
@@ -445,6 +493,51 @@ pub async fn restore_workspace(
 }
 
 #[tauri::command]
+pub async fn list_recent_repositories(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(
+        webview,
+        &ipc,
+        "listRecentRepositories",
+        request.body().clone(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn open_recent_repository(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(
+        webview,
+        &ipc,
+        "openRecentRepository",
+        request.body().clone(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_recent_repository(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(
+        webview,
+        &ipc,
+        "removeRecentRepository",
+        request.body().clone(),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn read_workspace(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
@@ -469,6 +562,15 @@ pub async fn read_history(
     request: Request<'_>,
 ) -> Result<Value, &'static str> {
     call(webview, &ipc, "readHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_refs(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readRefs", request.body().clone()).await
 }
 
 #[tauri::command]
@@ -642,7 +744,7 @@ mod tests {
         (Ipc::new(sink), frames)
     }
 
-    type Prepare = Box<dyn Fn() -> Result<Option<Prepared>, &'static str> + Send + Sync>;
+    type Prepare = Box<dyn Fn() -> Result<Option<Prepared>, Ended> + Send + Sync>;
 
     /// Counts each native step. `prepare` answers as the test sets it. Each close request gets Stay open.
     struct FakeNative {
@@ -652,9 +754,17 @@ mod tests {
     }
 
     impl NativeFirst for FakeNative {
-        fn prepare(&self, _: &str, _: &Value) -> Result<Option<Prepared>, &'static str> {
+        fn prepare(&self, _: &str, _: &Value) -> Result<Option<Prepared>, Ended> {
             *self.prepares.lock().expect("prepares") += 1;
             (self.prepare)()
+        }
+
+        fn answer(&self, operation: &str, payload: &Value) -> Result<Value, &'static str> {
+            *self.prepares.lock().expect("prepares") += 1;
+            match payload.get("entryId") {
+                Some(_) => Err("UNKNOWN_TARGET"),
+                None => Ok(json!({ "operation": operation, "entries": [] })),
+            }
         }
 
         fn finish(&self, _: &str, _: &Prepared, response: Value) -> Value {
@@ -1006,6 +1116,75 @@ mod tests {
         );
     }
 
+    /// Contract §3 `openRecentRepository`: the shell forwards it as `restoreWorkspace` with the native payload.
+    #[test]
+    fn an_open_of_a_recent_entry_forwards_as_restore_workspace() {
+        let (ipc, frames, _native) = connected(Box::new(|| {
+            Ok(Some(Prepared {
+                payload: json!({ "bootstrapId": OPERATION_ID }),
+                path: None,
+            }))
+        }));
+        let open = request("openRecentRepository", json!({ "entryId": OPERATION_ID }));
+        assert_eq!(send(&ipc, &open), Outcome::Forwarded);
+        let frames = frames.lock().expect("frames");
+        let frame: Value = serde_json::from_str(&frames[0]).expect("frame");
+        assert_eq!(
+            frame,
+            json!({ "kind": "public", "request": request("restoreWorkspace", json!({ "bootstrapId": OPERATION_ID })) })
+        );
+    }
+
+    /// Contract §9: a not-found Windows folder ends `failed` before any forward.
+    #[test]
+    fn a_failed_native_step_answers_failed_with_its_result_and_forwards_nothing() {
+        let result = json!({ "reason": "absent", "path": "C:\\gone" });
+        let failed = result.clone();
+        let (ipc, frames, _native) = connected(Box::new(move || {
+            Err(Ended::Failed("REPOSITORY_UNAVAILABLE", failed.clone()))
+        }));
+        let open = request("openRecentRepository", json!({ "entryId": OPERATION_ID }));
+        assert_eq!(
+            send(&ipc, &open),
+            Outcome::Answer(
+                json!({ "requestId": REQUEST_ID, "state": "failed", "code": "REPOSITORY_UNAVAILABLE", "result": result })
+            )
+        );
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0, "no request waits for a response");
+    }
+
+    /// Contract §3: the shell answers the list and a removal itself, also without a service session.
+    #[test]
+    fn the_recent_list_and_a_removal_are_answered_natively_and_never_forwarded() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        ipc.set_session(None);
+        assert_eq!(
+            send(&ipc, &request("listRecentRepositories", json!({}))),
+            Outcome::Answer(
+                json!({ "requestId": REQUEST_ID, "state": "succeeded", "result": { "operation": "listRecentRepositories", "entries": [] } })
+            )
+        );
+        assert_eq!(
+            send(
+                &ipc,
+                &request("removeRecentRepository", json!({ "entryId": OPERATION_ID }))
+            ),
+            rejected("UNKNOWN_TARGET")
+        );
+        assert_eq!(
+            send(
+                &ipc,
+                &request("removeRecentRepository", json!({ "path": "C:\\repo" }))
+            ),
+            rejected("INVALID_REQUEST"),
+            "the generated type refuses another field"
+        );
+        assert_eq!(*native.prepares.lock().expect("prepares"), 2);
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0);
+    }
+
     #[test]
     fn a_prepared_request_above_1_mib_gets_frame_limit_and_leaves_no_pending_request() {
         let (ipc, frames, _native) = connected(Box::new(|| {
@@ -1035,7 +1214,8 @@ mod tests {
 
     #[test]
     fn a_repeated_request_id_is_refused_before_any_native_dialog() {
-        let (ipc, frames, native) = connected(Box::new(|| Err("UNSUPPORTED_REPOSITORY")));
+        let (ipc, frames, native) =
+            connected(Box::new(|| Err(Ended::Rejected("UNSUPPORTED_REPOSITORY"))));
         assert_eq!(
             send(&ipc, &request("getEnvironment", json!({}))),
             Outcome::Forwarded

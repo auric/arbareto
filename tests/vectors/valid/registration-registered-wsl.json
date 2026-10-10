@@ -1,0 +1,6 @@
+{
+  "schema": "registration-result",
+  "expected": "valid",
+  "platform": "windows",
+  "text": "{\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000010\",\"generation\":0,\"worktreeKey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"worktreeRoot\":\"\\\\\\\\wsl.localhost\\\\Ubuntu-24.04\\\\home\\\\me\\\\repo\"}"
+}

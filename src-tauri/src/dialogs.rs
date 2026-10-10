@@ -85,7 +85,7 @@ pub trait Native {
     fn program_files(&self) -> Option<PathBuf>;
 }
 
-/// The native step of `chooseGit`, `chooseRepository`, and `restoreWorkspace`.
+/// The native step of `chooseGit`, `chooseRepository`, `restoreWorkspace`, and `openRecentRepository`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Chosen {
     /// The shell answers `canceled`, and no frame reaches the service.
@@ -94,6 +94,8 @@ pub enum Chosen {
     Context { bootstrap_id: String, path: PathBuf },
     /// The shell cannot read the identity of the selected path. The renderer gets `rejected` with the code.
     Refused(&'static str),
+    /// The identity open of a stored Windows root failed with `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND` (contract §3 "Recent repositories").
+    Absent(PathBuf),
 }
 
 /// A path whose identity the shell cannot read is refused with the code of that read (contract §6 "Registration bootstrap").
@@ -149,6 +151,20 @@ pub fn restore_workspace(settings: &Settings, contexts: &Contexts, now: Instant)
         .map_or(Chosen::Canceled, |path| {
             context(contexts, ContextKind::RepositoryDiscovery, path, now)
         })
+}
+
+/// Creates a `repositoryDiscovery` context for the stored root of a recent entry.
+/// A WSL root reads no identity and starts no process at creation (gaps.md W1).
+pub fn open_recent(path: PathBuf, contexts: &Contexts, now: Instant) -> Chosen {
+    match context(
+        contexts,
+        ContextKind::RepositoryDiscovery,
+        path.clone(),
+        now,
+    ) {
+        Chosen::Refused(_) if is_absent(&path) => Chosen::Absent(path),
+        chosen => chosen,
+    }
 }
 
 /// The probed candidate of a `register` request with `confirm: true`.
@@ -224,7 +240,7 @@ pub fn confirm_git(
                 executable_path: path,
             },
             // The `register` reply has no refusal form.
-            Chosen::Canceled | Chosen::Refused(_) => Registered::Declined,
+            Chosen::Canceled | Chosen::Refused(_) | Chosen::Absent(_) => Registered::Declined,
         },
         _ => Registered::Declined,
     }
@@ -1315,6 +1331,7 @@ pub(crate) mod tests {
             last_repository: Some(repository),
             window: None,
             wsl_gits: Vec::new(),
+            recent: Vec::new(),
         };
         assert_eq!(
             restore_workspace(&settings, &contexts, Instant::now()),
@@ -1343,6 +1360,7 @@ pub(crate) mod tests {
             last_repository: Some(folder(&fixture, "repo")),
             window: None,
             wsl_gits: Vec::new(),
+            recent: Vec::new(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -1370,6 +1388,7 @@ pub(crate) mod tests {
             last_repository: None,
             window: None,
             wsl_gits: Vec::new(),
+            recent: Vec::new(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -1398,6 +1417,7 @@ pub(crate) mod tests {
             last_repository: None,
             window: None,
             wsl_gits: Vec::new(),
+            recent: Vec::new(),
         };
         assert_eq!(
             startup_context(&settings, &contexts, Instant::now()),
@@ -1416,6 +1436,7 @@ pub(crate) mod tests {
             last_repository: Some(folder(&fixture, "repo")),
             window: None,
             wsl_gits: Vec::new(),
+            recent: Vec::new(),
         };
         assert_eq!(startup_context(&settings, &contexts, Instant::now()), None);
     }
@@ -1430,11 +1451,66 @@ pub(crate) mod tests {
             last_repository: Some(repository.clone()),
             window: None,
             wsl_gits: Vec::new(),
+            recent: Vec::new(),
         };
         let chosen = restore_workspace(&settings, &contexts, Instant::now());
         assert_eq!(
             context(&contexts, &chosen),
             (ContextKind::RepositoryDiscovery, repository)
+        );
+    }
+
+    // ---- Recent repositories (contract §3 "Recent repositories") ----
+
+    #[test]
+    fn an_open_binds_a_discovery_context_to_the_stored_root() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let repository = folder(&fixture, "repo");
+        let chosen = open_recent(repository.clone(), &contexts, Instant::now());
+        assert_eq!(
+            context(&contexts, &chosen),
+            (ContextKind::RepositoryDiscovery, repository)
+        );
+    }
+
+    #[test]
+    fn an_open_of_a_not_found_windows_folder_gives_absent() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        // `ERROR_FILE_NOT_FOUND` for the folder, `ERROR_PATH_NOT_FOUND` for a missing parent.
+        for missing in [fixture.path("gone"), fixture.path("gone\\deeper")] {
+            assert_eq!(
+                open_recent(missing.clone(), &contexts, Instant::now()),
+                Chosen::Absent(missing)
+            );
+        }
+        // `ERROR_INVALID_NAME` is no not-found fact, so the open keeps the refusal code.
+        assert_eq!(
+            open_recent(fixture.path("bad?name"), &contexts, Instant::now()),
+            Chosen::Refused("UNSUPPORTED_REPOSITORY")
+        );
+    }
+
+    /// No WSL process runs: a WSL root binds a context without an identity read (gaps.md W1).
+    #[test]
+    fn an_open_of_a_wsl_root_binds_a_context_without_an_identity_read() {
+        let contexts = Contexts::new(SESSION);
+        let root = PathBuf::from(r"\\wsl.localhost\NoSuchDistro-T343\home\me\repo");
+        let chosen = open_recent(root.clone(), &contexts, Instant::now());
+        let Chosen::Context { bootstrap_id, .. } = &chosen else {
+            panic!("a context: {chosen:?}");
+        };
+        let bound = contexts
+            .get(bootstrap_id, Instant::now())
+            .expect("live context");
+        assert_eq!(
+            (bound.kind, bound.path, bound.identity),
+            (
+                ContextKind::RepositoryDiscovery,
+                root,
+                crate::bootstrap::ContextIdentity::Wsl
+            )
         );
     }
 }

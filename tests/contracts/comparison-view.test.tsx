@@ -32,7 +32,7 @@ async function show(node: ReactNode): Promise<HTMLElement> {
   return host;
 }
 const text = (host: HTMLElement) => (host.textContent ?? "").replace(/\s+/g, " ").trim();
-const buttons = (host: HTMLElement) => [...host.querySelectorAll("button")].map((b) => b.textContent);
+const buttons = (host: HTMLElement) => [...host.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent);
 const noop = () => {};
 
 const entry: ChangeEntry = { entryId: crypto.randomUUID(), category: "unstaged", path: "src/big.bin", pathBytes: Buffer.from("src/big.bin").toString("base64") } as ChangeEntry;

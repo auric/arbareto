@@ -4,7 +4,7 @@
 import { describe, expect } from "bun:test";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { batchCommandArgs, configListArgs, discoveryLayoutArgs, discoveryProfiles, hooksPathArgs, revListArgs, shallowPathArgs, statusArgs } from "../../src/git-service/commands";
+import { batchCommandArgs, configListArgs, discoveryLayoutArgs, discoveryProfiles, hooksPathArgs, refsArgs, revListArgs, shallowPathArgs, statusArgs } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { copyPerfFixture, ensurePerfFixture, PERF_L, PERF_M, type PerfFacts, type PerfSpec } from "../windows/perf-fixtures";
 import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
@@ -229,7 +229,7 @@ function statFacts(paths: readonly string[]): Map<string, string> {
 
 const factChanges = (a: Map<string, string>, b: Map<string, string>) => [...a].filter(([path, fact]) => b.get(path) !== fact).map(([path, fact]) => `${path}: ${fact} -> ${b.get(path)}`);
 
-const KINDS = ["discovery", "trust listing", 'readWorkspace check "full"', 'no-change readWorkspace check "changes"', "readHistory with its own trust listing", "readHistory with a shared trust listing"] as const;
+const KINDS = ["discovery", "trust listing", 'readWorkspace check "full"', 'no-change readWorkspace check "changes"', "readHistory with its own trust listing", "readHistory with a shared trust listing", "readRefs with its own trust listing", "readRefs with a shared trust listing"] as const;
 type Kind = (typeof KINDS)[number];
 
 // The subcommand and its arguments, without the global options. An object ID prints as `<oid>`.
@@ -288,6 +288,10 @@ for (const spec of [PERF_M, PERF_L]) {
             await withService(`t192-${key}-own-${run}`, async (service) => {
               const { repositoryId, generation } = await service.register(repo);
               own = await readFacts(service, () => service.readHistory(repositoryId, generation));
+              // T357: no `readWorkspace` listing exists, so `readRefs` runs its own listing.
+              const ownRefs = await readFacts(service, () => service.request("readRefs", {}, { repositoryId, repositoryGeneration: generation }));
+              expect(sortedArgs(ownRefs.calls)).toEqual([configListArgs().join(" "), hooksPathArgs().join(" "), refsArgs().join(" ")].sort());
+              add("readRefs with its own trust listing", ownRefs);
             });
             add("readHistory with its own trust listing", own);
             await withService(`t192-${key}-shared-${run}`, async (service) => {
@@ -303,6 +307,9 @@ for (const spec of [PERF_M, PERF_L]) {
               const shared = await readFacts(service, () => service.readHistory(repositoryId, full.result.generation));
               const after = statFacts(tuplePaths);
               add("readHistory with a shared trust listing", shared);
+              const sharedRefs = await readFacts(service, () => service.request("readRefs", {}, { repositoryId, repositoryGeneration: full.result.generation }));
+              const afterRefs = statFacts(tuplePaths);
+              add("readRefs with a shared trust listing", sharedRefs);
               // Contract §7 "Shared listing": any tuple difference or unknown fact requires an own listing.
               // Blind spot: a `stat` failure inside the service is not visible to the test.
               const differences = [
@@ -319,6 +326,13 @@ for (const spec of [PERF_M, PERF_L]) {
                 console.log(`OBSERVATION ${TASK}: fixture ${fixture} run ${run}: tuple facts differ, so readHistory runs its own listing: ${differences.join("; ")}`);
                 expect(listings).toEqual({ ownListing: 2, sharedListing: 2 });
               }
+              // T357: `readRefs` follows the same shared listing rule. Its only own process is the `for-each-ref` step.
+              const refsDifferences = [...differences, ...factChanges(after, afterRefs).map((d) => `during readRefs: ${d}`)];
+              if (refsDifferences.length === 0) expect(sortedArgs(sharedRefs.calls)).toEqual([refsArgs().join(" ")]);
+              else {
+                console.log(`OBSERVATION ${TASK}: fixture ${fixture} run ${run}: tuple facts differ, so readRefs runs its own listing: ${refsDifferences.join("; ")}`);
+                expect(sharedRefs.calls.filter((c) => isListing(c.arguments)).length).toBe(2);
+              }
               // Contract §7 "Held history steps": each history step runs once.
               for (const args of [shallowPathArgs(), revListArgs(facts.tip, full.result.identity.objectFormat), batchCommandArgs()]) expect({ args, runs: countOf(shared.calls, args) }).toEqual({ args, runs: 1 });
               const changeCalls = service.runner.fileFactCalls.length;
@@ -327,7 +341,7 @@ for (const spec of [PERF_M, PERF_L]) {
               const unknown = [
                 ...differences,
                 ...service.runner.fileFactCalls.slice(changeCalls).filter((c) => c.facts.some((f) => f.kind === "error")).map((c) => `fileFacts error in ${c.operationId}: ${JSON.stringify(c.facts)}, NTSTATUS ${JSON.stringify(c.statuses?.map((s) => (s === null ? null : `0x${s.toString(16)}`)))}`),
-                ...factChanges(after, statFacts(tuplePaths)).map((d) => `during the "changes" read: ${d}`),
+                ...factChanges(afterRefs, statFacts(tuplePaths)).map((d) => `during the "changes" read: ${d}`),
               ];
               if (unknown.length === 0) {
                 expect(changes.calls.length).toBe(0);

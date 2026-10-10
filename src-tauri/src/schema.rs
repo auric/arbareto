@@ -838,8 +838,11 @@ mod tests {
 
     /// The vector schemas that the shell reads into no generated type. The renderer and the service check them.
     /// The shell writes process, mutation, and trust replies and never reads them. It reads only the `requestId` of a response.
-    /// The shell forwards the registration, trust, workspace, entries, history, and operation results in `Response.result` and reads no field of them.
-    const NOT_READ: [&str; 14] = [
+    /// The shell forwards the registration, trust, workspace, entries, history, reference, and operation results in `Response.result` and reads no field of them.
+    const NOT_READ: [&str; 18] = [
+        "service-envelope",
+        "open-recent-repository-result",
+        "recent-repositories-result",
         "process-reply",
         "mutation-reply",
         "trust-reply",
@@ -852,6 +855,7 @@ mod tests {
         "read-workspace-result",
         "read-entries-result",
         "read-history-result",
+        "read-refs-result",
         "read-comparison-result",
         "operation-result",
     ];
@@ -948,7 +952,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 101 } else { 96 },
+            if cfg!(windows) { 108 } else { 103 },
             "shell-read vectors"
         );
     }

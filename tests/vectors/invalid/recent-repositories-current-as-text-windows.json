@@ -1,0 +1,9 @@
+{
+  "schema": "recent-repositories-result",
+  "expected": "INVALID_REQUEST",
+  "platform": "windows",
+  "repair": {
+    "entries.0.current": true
+  },
+  "text": "{\"entries\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000100\",\"path\":\"C:\\\\repo\",\"location\":{\"kind\":\"native\"},\"openedAt\":\"2026-10-11T10:00:00.000000000Z\",\"current\":\"true\"}]}"
+}

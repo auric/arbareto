@@ -1,0 +1,5 @@
+{
+  "schema": "read-refs-result",
+  "expected": "valid",
+  "text": "{\"completeness\":{\"state\":\"failed\",\"code\":\"TRUST_REQUIRED\"}}"
+}

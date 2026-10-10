@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { act, createRef, useState, type Dispatch, type SetStateAction } from "react";
+import { act, createRef, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 
@@ -60,8 +60,8 @@ afterEach(async () => {
   for (const unmount of unmounts.splice(0)) await unmount();
 });
 
-type Fields = Omit<Props, "bridge" | "onFocusMessageField" | "onClearMessage" | "onRefresh" | "ref">;
-const BASE: Fields = { operation: null, worktreeRoot: ROOT, head: HEAD, trusted: false, mode: "history", modalOpen: false, refusal: null };
+type Fields = Omit<Props, "bridge" | "onFocusMessageField" | "onClearMessage" | "onRefresh" | "ref" | "commitPanel">;
+const BASE: Fields = { operation: null, worktreeRoot: ROOT, head: HEAD, trusted: false, panel: "commit", modalOpen: false, refusal: null };
 
 async function mount(fields: Partial<Fields> = {}, stallRemedy?: unknown) {
   const double = bridgeDouble(stallRemedy);
@@ -70,19 +70,30 @@ async function mount(fields: Partial<Fields> = {}, stallRemedy?: unknown) {
   let set!: Dispatch<SetStateAction<Fields>>;
   function Harness() {
     const [props, setProps] = useState<Fields>({ ...BASE, ...fields });
+    const commitPanel = useRef<HTMLDivElement>(null);
     set = setProps;
     return (
       <>
         <button type="button" data-double="history-row">
           History row
         </button>
-        <textarea data-double="message" />
+        {/* The docked commit panel: the file lists, the comparison, and the tray with the message field and Commit. */}
+        <div ref={commitPanel} data-double="commit-panel">
+          <button type="button" data-double="file-row">
+            File row
+          </button>
+          <textarea data-double="message" />
+          <button type="button" data-double="commit">
+            Commit (Ctrl+Enter)
+          </button>
+        </div>
         <div role="dialog" data-double="dialog">
           <button type="button">Dialog button</button>
         </div>
         <OperationStatus
           {...props}
           ref={handle}
+          commitPanel={commitPanel}
           bridge={double.bridge}
           onFocusMessageField={() => document.querySelector<HTMLTextAreaElement>('[data-double="message"]')!.focus()}
           onClearMessage={() => void cleared.push(1)}
@@ -641,23 +652,25 @@ describe("focus at the commit outcome (Confirm row)", () => {
     ["rejected", "STATE_UNKNOWN", {}],
   ];
 
-  test("the decision: Changes gives the message field, History with focus on Cancel gives the area heading, and a dialog keeps focus", () => {
-    expect(outcomeFocus("changes", false, true)).toBe("message-field");
-    expect(outcomeFocus("changes", false, false)).toBe("message-field");
-    expect(outcomeFocus("history", false, true)).toBe("area-heading");
-    expect(outcomeFocus("history", false, false)).toBe("stay");
-    for (const mode of ["changes", "history"] as const) for (const cancel of [true, false]) expect(outcomeFocus(mode, true, cancel)).toBe("stay");
+  test("the decision: the commit panel takes focus from Commit, Cancel, or the panel; the details take it only from Cancel; a dialog keeps it", () => {
+    expect(outcomeFocus("commit", false, "cancel")).toBe("message-field");
+    expect(outcomeFocus("commit", false, "panel")).toBe("message-field");
+    expect(outcomeFocus("commit", false, "other")).toBe("stay");
+    expect(outcomeFocus("details", false, "cancel")).toBe("area-heading");
+    expect(outcomeFocus("details", false, "panel")).toBe("stay");
+    expect(outcomeFocus("details", false, "other")).toBe("stay");
+    for (const panel of ["commit", "details"] as const) for (const from of ["cancel", "panel", "other"] as const) expect(outcomeFocus(panel, true, from)).toBe("stay");
   });
 
   for (const [state, code, result] of OUTCOMES) {
     const name = `${state}${code === undefined ? "" : ` ${code}`}`;
-    test(`${name}: from Cancel, Changes focuses the message field, and History opens the area and focuses its heading`, async () => {
-      for (const mode of ["changes", "history"] as const) {
+    test(`${name}: from Cancel, the commit panel focuses the message field, and the details open the area and focus its heading`, async () => {
+      for (const panel of ["commit", "details"] as const) {
         const op = running();
-        const view = await mount({ operation: op, mode });
+        const view = await mount({ operation: op, panel });
         await focus(button("Cancel"));
         await view.update({ operation: respond(op, state, { ...result, lingeringDescendants: 0 }, code) });
-        if (mode === "changes") expect(document.activeElement).toBe(double("message"));
+        if (panel === "commit") expect(document.activeElement).toBe(double("message"));
         else {
           expect(text(areaHeading())).toBe("Commit details");
           expect(document.activeElement).toBe(areaHeading() as HTMLElement);
@@ -666,10 +679,30 @@ describe("focus at the commit outcome (Confirm row)", () => {
       }
     });
 
-    test(`${name}: focus in an open dialog stays there in both modes`, async () => {
-      for (const mode of ["changes", "history"] as const) {
+    test(`${name}: with the commit panel docked, focus on Commit or inside the panel moves to the message field`, async () => {
+      for (const from of ["commit", "file-row"]) {
         const op = running();
-        const view = await mount({ operation: op, mode, modalOpen: true });
+        const view = await mount({ operation: op, panel: "commit" });
+        await focus(double(from));
+        await view.update({ operation: respond(op, state, { ...result, lingeringDescendants: 0 }, code) });
+        expect(document.activeElement).toBe(double("message"));
+        await unmounts.pop()!();
+      }
+    });
+
+    test(`${name}: with the commit details docked, the area opens, and focus outside Cancel stays`, async () => {
+      const op = running();
+      const view = await mount({ operation: op, panel: "details" });
+      await focus(double("history-row"));
+      await view.update({ operation: respond(op, state, { ...result, lingeringDescendants: 0 }, code) });
+      expect(text(areaHeading())).toBe("Commit details");
+      expect(document.activeElement).toBe(double("history-row"));
+    });
+
+    test(`${name}: focus in an open dialog stays there with either panel docked`, async () => {
+      for (const panel of ["commit", "details"] as const) {
+        const op = running();
+        const view = await mount({ operation: op, panel, modalOpen: true });
         const inside = double("dialog").querySelector("button")!;
         await focus(inside);
         await view.update({ operation: respond(op, state, { ...result, lingeringDescendants: 0 }, code) });
@@ -679,13 +712,24 @@ describe("focus at the commit outcome (Confirm row)", () => {
     });
   }
 
-  test("with focus on a History row, a HOOK_FAILED result keeps that focus, and the area opens", async () => {
+  test("with the commit panel docked and focus on a History row, a commit outcome keeps that focus", async () => {
     const op = running();
-    const view = await mount({ operation: op, mode: "history" });
+    const view = await mount({ operation: op, panel: "commit" });
     await focus(double("history-row"));
-    await view.update({ operation: respond(op, "failed", { outputTail: TAIL, remedy: HOOK_REMEDY, lingeringDescendants: 0 }, "HOOK_FAILED") });
+    await view.update({ operation: respond(op, "succeeded", { commitOid: OID, lingeringDescendants: 0 }) });
     expect(document.activeElement).toBe(double("history-row"));
-    expect(text(areaHeading())).toBe("Commit details");
+  });
+
+  test("with focus on a History row, a HOOK_FAILED result keeps that focus, and the area opens", async () => {
+    for (const panel of ["commit", "details"] as const) {
+      const op = running();
+      const view = await mount({ operation: op, panel });
+      await focus(double("history-row"));
+      await view.update({ operation: respond(op, "failed", { outputTail: TAIL, remedy: HOOK_REMEDY, lingeringDescendants: 0 }, "HOOK_FAILED") });
+      expect(document.activeElement).toBe(double("history-row"));
+      expect(text(areaHeading())).toBe("Commit details");
+      await unmounts.pop()!();
+    }
   });
 });
 

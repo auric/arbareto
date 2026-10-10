@@ -23,6 +23,7 @@ import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from ".
 import { createSessionLog, type DiagnosticCause } from "./log";
 import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
+import { createRefsReader, type RefsOutcome } from "./refs";
 import { createRecovery } from "./recovery";
 import { createRegistrations, dismissMarker, type DismissalOutcome, type RegistrationOutcome, type Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
@@ -38,8 +39,8 @@ export type { Handshake } from "../contracts/channel";
 
 type Fields = Record<string, unknown>;
 
-// Contract §3 without the shell-only `requestClose` and `currentSession`.
-type ServiceOperation = Exclude<OperationName, "requestClose" | "currentSession">;
+// Contract §3 without the shell-only operations. The shell forwards `openRecentRepository` as `restoreWorkspace`.
+type ServiceOperation = Exclude<OperationName, "requestClose" | "currentSession" | "listRecentRepositories" | "openRecentRepository" | "removeRecentRepository">;
 type Handler<K extends ServiceOperation> = (request: Extract<ServiceRequest, { operation: K }>) => void;
 
 export interface SessionOptions {
@@ -142,6 +143,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     reconciling: (w) => exclusion.running(w.commonIdentity).some((operationId) => registry.get(operationId)?.state === "reconciling"),
   });
   const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
+  const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
@@ -332,7 +334,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -394,6 +396,25 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       async (t) =>
         (await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } },
       { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } } satisfies HistoryOutcome,
+    );
+  };
+
+  // Contract §3 `readRefs`. The generation decides at acceptance as for `readHistory`. Contract §5 "Pending reads": a new `readRefs` cancels each unfinished one of its workspace.
+  const readRefs: Handler<"readRefs"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readRefs", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    scheduleRead(
+      request,
+      (t) => refs.readRefs({ ...t, installation, workspace, generation: request.repositoryGeneration }),
+      async (t) =>
+        (await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } },
+      { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } } satisfies RefsOutcome,
+      "readRefs",
     );
   };
 
@@ -529,6 +550,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readWorkspace,
     readEntries,
     readHistory,
+    readRefs,
     readComparison,
     readTrust: (request) => {
       const workspace = workspaceOf(request.repositoryId);

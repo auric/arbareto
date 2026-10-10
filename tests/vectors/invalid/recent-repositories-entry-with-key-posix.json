@@ -1,0 +1,9 @@
+{
+  "schema": "recent-repositories-result",
+  "expected": "INVALID_REQUEST",
+  "platform": "posix",
+  "repair": {
+    "entries.0.worktreeKey": null
+  },
+  "text": "{\"entries\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000100\",\"path\":\"/repo\",\"location\":{\"kind\":\"native\"},\"openedAt\":\"2026-10-11T10:59:00.000000000Z\",\"worktreeKey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"current\":false}]}"
+}

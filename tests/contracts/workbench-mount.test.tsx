@@ -50,6 +50,7 @@ function snapshot(fields: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
   return {
     generation: 1,
     snapshotId: crypto.randomUUID(),
+    readKind: "full",
     identity: { worktreeRoot: "C:\\repo", gitDirectory: "C:\\repo\\.git", commonDirectory: "C:\\repo\\.git", indexPath: "C:\\repo\\.git\\index", objectFormat: "sha1", refFormat: "files" },
     head: { state: "branch", target: "refs/heads/main", oid: HEAD },
     operationState: "normal",
@@ -69,7 +70,7 @@ const PAGE: HistoryPage = {
   scope: "current-checkout",
   head: { state: "branch", target: "refs/heads/main", oid: HEAD },
   shallowFingerprint: null,
-  rows: [{ oid: HEAD, parents: [], subject: "First", author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false }],
+  rows: [{ oid: HEAD, parents: [], subject: "First", author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.invalid" }, committerDate: 1_700_000_000, body: "", bodyCut: false }],
   boundaries: { page: [], shallow: [] },
   completeness: { state: "complete" },
 };
@@ -367,7 +368,7 @@ describe("comparison mount", () => {
 });
 
 describe("history selection", () => {
-  const row = (oid: string) => ({ oid, parents: [], subject: `Commit ${oid.slice(0, 4)}`, author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false });
+  const row = (oid: string) => ({ oid, parents: [], subject: `Commit ${oid.slice(0, 4)}`, author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.invalid" }, committerDate: 1_700_000_000, body: "", bodyCut: false });
   const [first, second] = ["1".repeat(40), "2".repeat(40)];
   const pageOf = (...oids: string[]): HistoryPage => ({ ...PAGE, head: { state: "branch", target: "refs/heads/main", oid: oids[0]! }, rows: oids.map(row) });
   const selected = (host: HTMLElement) => host.querySelector('[role="option"][aria-selected="true"]')?.textContent ?? null;
@@ -411,7 +412,7 @@ describe("repository menu", () => {
     await settle();
     await resolve(latest(double, "revokeTrust"), succeeded({ endedProcesses: 0 }));
     expect(text()).toContain("Trust revoked.");
-    await act(async () => item("Open repository").click());
+    await act(async () => item("Open folder… (Ctrl+O)").click());
     await settle();
     await resolve(latest(double, "chooseRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64) }));
     await openMenu();

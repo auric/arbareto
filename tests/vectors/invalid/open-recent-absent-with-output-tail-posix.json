@@ -1,0 +1,9 @@
+{
+  "schema": "open-recent-repository-result",
+  "expected": "INVALID_REQUEST",
+  "platform": "posix",
+  "repair": {
+    "outputTail": null
+  },
+  "text": "{\"reason\":\"absent\",\"path\":\"/repo\",\"text\":\"Arbareto cannot find this folder: /repo.\",\"remedy\":{\"text\":\"Remove it from the list, or open the folder from its new place.\"},\"outputTail\":\"fatal\"}"
+}

@@ -1,5 +1,8 @@
 {
   "schema": "registration-result",
   "expected": "INVALID_REQUEST",
+  "repair": {
+    "reason": "distro-missing"
+  },
   "text": "{\"reason\":\"no-git\",\"text\":\"Install Git 2.55.0 or later in Ubuntu-24.04.\"}"
 }

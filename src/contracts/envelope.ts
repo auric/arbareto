@@ -6,7 +6,7 @@ import { DamagedMarker, LinuxPath, TRUST_BOUNDS, UtcTime } from "./channel";
 import { ERROR_CODES, TERMINAL_STATES, WSL_UNAVAILABLE_REASONS, type ErrorCode } from "./errors";
 import { FILE_ACTION_REASONS } from "./file-action";
 import * as limits from "./limits";
-import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REGISTERED_WORKSPACES } from "./limits";
+import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REF_LISTING_RECORDS, REGISTERED_WORKSPACES } from "./limits";
 import {
   ChannelPath,
   Count,
@@ -68,6 +68,8 @@ const ReadWorkspace = op("readWorkspace", { ...repository, repositoryGeneration:
 // Contract §3 fixes no cursor form. The service issues each cursor, so it is a contract §2 identifier.
 const ReadEntries = op("readEntries", snapshot, z.strictObject({ snapshotId: Identifier, cursor: Identifier }));
 const ReadHistory = op("readHistory", snapshot, empty());
+// Contract §3 `readRefs`: no renderer ref, pattern, or format.
+const ReadRefs = op("readRefs", snapshot, empty());
 const ReadComparison = op("readComparison", { ...snapshot, selectionId: Identifier }, z.strictObject({ snapshotId: Identifier, entryId: Identifier }));
 const ReadTrust = op("readTrust", repository, empty());
 const ApproveTrust = op("approveTrust", snapshot, z.strictObject({ fingerprint: Fingerprint, approve: z.literal(true) }));
@@ -93,15 +95,23 @@ const ChooseGit = op("chooseGit", {}, empty());
 const ChooseRepository = op("chooseRepository", {}, empty());
 const RestoreWorkspace = op("restoreWorkspace", {}, empty());
 const DismissRecoveryMarker = op("dismissRecoveryMarker", {}, z.strictObject({ markerId: Identifier }));
+// Contract §3 "Recent repositories": the renderer sends back only an `entryId` that the shell issued.
+const ListRecentRepositories = op("listRecentRepositories", {}, empty());
+const OpenRecentRepository = op("openRecentRepository", {}, z.strictObject({ entryId: Identifier }));
+const RemoveRecentRepository = op("removeRecentRepository", {}, z.strictObject({ entryId: Identifier }));
 
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
   ChooseGit,
   ChooseRepository,
   RestoreWorkspace,
+  ListRecentRepositories,
+  OpenRecentRepository,
+  RemoveRecentRepository,
   ReadWorkspace,
   ReadEntries,
   ReadHistory,
+  ReadRefs,
   ReadComparison,
   ReadTrust,
   ApproveTrust,
@@ -122,7 +132,15 @@ export type RendererRequest = z.infer<typeof RendererEnvelope>;
 export type RequestOf<K extends OperationName> = Extract<RendererRequest, { operation: K }>;
 
 // Contract §1 step 6: the shell reads these renderer envelopes into its generated types.
-export const NativeFirstEnvelope = z.discriminatedUnion("operation", [ChooseGit, ChooseRepository, RestoreWorkspace, DismissRecoveryMarker]);
+export const NativeFirstEnvelope = z.discriminatedUnion("operation", [
+  ChooseGit,
+  ChooseRepository,
+  RestoreWorkspace,
+  DismissRecoveryMarker,
+  ListRecentRepositories,
+  OpenRecentRepository,
+  RemoveRecentRepository,
+]);
 
 // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
 export const ServiceEnvelope = z.discriminatedUnion("operation", [
@@ -133,6 +151,7 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   ReadWorkspace,
   ReadEntries,
   ReadHistory,
+  ReadRefs,
   ReadComparison,
   ReadTrust,
   ApproveTrust,
@@ -232,7 +251,8 @@ export const ChooseGitResult = z.union([
 // Contract §3 `chooseRepository` and `restoreWorkspace`: both operations share this result. The response `code` names each refusal.
 // `path`, `remedy`, and `outputTail` follow contract §6 "Registration bootstrap". `limit` follows contract §9 `WORKSPACE_LIMIT`.
 export const RegistrationResult = z.union([
-  z.strictObject({ repositoryId: Identifier, generation: Generation, worktreeKey: Fingerprint }).meta({ title: "Registered" }),
+  // `worktreeRoot` is the Git-resolved worktree root, and for WSL its UNC identity path.
+  z.strictObject({ repositoryId: Identifier, generation: Generation, worktreeKey: Fingerprint, worktreeRoot: ChannelPath }).meta({ title: "Registered" }),
   z
     .strictObject({
       path: z.string().optional(),
@@ -257,6 +277,36 @@ export const RegistrationResult = z.union([
 export type RegistrationResult = z.infer<typeof RegistrationResult>;
 export const ChooseRepositoryResult = RegistrationResult;
 export const RestoreWorkspaceResult = RegistrationResult;
+
+// Contract §9: the shell refuses an `openRecentRepository` of a not-found Windows folder with `REPOSITORY_UNAVAILABLE`.
+export const RecentAbsent = z
+  .strictObject({ reason: z.literal("absent"), path: ChannelPath, text: z.string(), remedy: z.strictObject({ text: z.string() }) })
+  .meta({ title: "RecentAbsent" });
+// Contract §3 `openRecentRepository`: the result of `restoreWorkspace`, or the shell refusal above.
+export const OpenRecentRepositoryResult = z.union([RegistrationResult, RecentAbsent]).meta({ title: "OpenRecentRepositoryResult" });
+
+// Contract §5 "Recent repositories": the native settings hold at most 20 entries. It is no output bound, so `limits.ts` does not list it.
+const RECENT_REPOSITORIES = 20;
+// Contract §3 `listRecentRepositories` and `removeRecentRepository`: newest `openedAt` first. The shell checks no folder.
+// `location` comes from the contract §11 route rule of the stored path, never from a renderer guess.
+export const RecentRepositoriesResult = z.strictObject({
+  entries: z
+    .array(
+      z.strictObject({
+        entryId: Identifier,
+        path: ChannelPath,
+        location: z.discriminatedUnion("kind", [
+          z.strictObject({ kind: z.literal("native") }).meta({ title: "RecentNativeLocation" }),
+          z.strictObject({ kind: z.literal("wsl"), distro: DistroName }).meta({ title: "RecentWslLocation" }),
+        ]),
+        openedAt: UtcTime,
+        // The shell sets it from `worktreeKey` equality with the open workspace. The key stays out of the entry.
+        current: z.boolean(),
+      }),
+    )
+    .max(RECENT_REPOSITORIES),
+});
+export type RecentRepositoriesResult = z.infer<typeof RecentRepositoriesResult>;
 
 // Git `config.c` `config_scope_name`: the scopes that `config list --show-scope` prints.
 export const ConfigScope = z.enum(["system", "global", "local", "worktree", "command", "submodule", "unknown"]);
@@ -443,6 +493,8 @@ export const WorkspaceSnapshot = z
     entries: z.array(ChangeEntry),
     cursor: Identifier.nullable(),
     recovery: RecoveryStatement.optional(),
+    // Contract §3 `readWorkspace`: `retained` when the change check returned the last snapshot without a Git process.
+    readKind: z.enum(["full", "retained"]),
   })
   .refine((r) => r.completeness.state !== "failed" && (r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount))
   .meta({ title: "WorkspaceSnapshot" });
@@ -464,9 +516,15 @@ export type Completeness = z.infer<typeof Completeness>;
 export const ReadEntriesResult = z.strictObject({ entries: z.array(ChangeEntry).min(1), cursor: Identifier.nullable() }).meta({ title: "ReadEntriesResult" });
 export type ReadEntriesResult = z.infer<typeof ReadEntriesResult>;
 
+// Contract §5 "History message body" and "Reference result". Neither is an OUTPUT_LIMIT reason, so `limits.ts` does not list them.
+// A cut body sets `bodyCut`. A `readRefs` result above its bound gives reason REF_LISTING_BYTES.
+export const HISTORY_BODY_BYTES = 16 * 1024;
+export const REF_RESULT_BYTES = 8 * 1024 * 1024;
+
 // Contract §3 "HistoryPage result" and data-model §4 "History page". `parents` holds the effective parents in Git order.
 // `date` is the author time in seconds (Git `ident.c` `split_ident_line`). `encoding` is the `encoding` header value without control characters, or null.
-// `shallow` is true when the shallow file lists the commit. `invalidUtf8` is true when the raw subject, author name, or author email bytes are not valid UTF-8.
+// `shallow` is true when the shallow file lists the commit. `invalidUtf8` is true when the raw subject, author, committer, or body bytes are not valid UTF-8.
+// `committerDate` is the committer time in seconds. `body` holds at most the contract §5 "History message body" bound, and `bodyCut` marks a cut body.
 export const HistoryRow = z
   .strictObject({
     oid: ObjectId,
@@ -477,6 +535,14 @@ export const HistoryRow = z
     encoding: z.string().regex(/^[^\u0000-\u001f\u007f-\u009f]*$/).nullable(),
     shallow: z.boolean(),
     invalidUtf8: z.boolean(),
+    committer: z.strictObject({ name: z.string(), email: z.string() }),
+    committerDate: Count,
+    // zod `max` counts UTF-16 units, which never exceed UTF-8 bytes. The refinement checks the byte bound.
+    body: z
+      .string()
+      .max(HISTORY_BODY_BYTES)
+      .refine((b) => new TextEncoder().encode(b).length <= HISTORY_BODY_BYTES),
+    bodyCut: z.boolean(),
   })
   .meta({ title: "HistoryRow" });
 
@@ -507,6 +573,46 @@ export const ReadHistoryResult = z.union([HistoryPage, HistoryRefusal]).meta({ t
 export type HistoryRow = z.infer<typeof HistoryRow>;
 export type HistoryPage = z.infer<typeof HistoryPage>;
 export type HistoryRefusal = z.infer<typeof HistoryRefusal>;
+
+// Contract §3 "References result" and data-model §4 "Reference list". `name` has no kind prefix. An empty Git field gives null.
+// `commitId` is `objectId` for a commit, `peeledId` for a tag that Git peels to a commit, and otherwise null.
+export const RefEntry = z
+  .strictObject({
+    kind: z.enum(["branch", "remote", "tag"]),
+    name: z.string(),
+    invalidUtf8: z.boolean(),
+    objectId: ObjectId,
+    objectType: z.enum(["commit", "tag", "tree", "blob"]),
+    peeledId: ObjectId.nullable(),
+    peeledType: z.enum(["commit", "tree", "blob"]).nullable(),
+    symref: z.string().nullable(),
+    upstream: z.string().nullable(),
+    upstreamPresent: z.boolean(),
+    commitId: ObjectId.nullable(),
+  })
+  .meta({ title: "RefEntry" });
+
+// Contract §3 `readRefs`: the complete list in Git's `refname` order, and the branch that `%(HEAD)` marks.
+export const RefList = z
+  .strictObject({
+    generation: Generation,
+    refs: z.array(RefEntry).max(REF_LISTING_RECORDS),
+    current: z.strictObject({ name: z.string(), objectId: ObjectId }).meta({ title: "CurrentBranch" }).nullable(),
+    completeness: Completeness,
+  })
+  .refine((r) => r.completeness.state === "complete")
+  .meta({ title: "RefList" });
+
+// Contract §3 `readRefs` without a list: a refused gate, a failed read, or a §5 bound. Contract §9: an OUTPUT_LIMIT result keeps no records.
+export const RefsRefusal = z
+  .strictObject({ completeness: Completeness, remedy: Remedy.optional() })
+  .refine((r) => r.completeness.state === "failed" || (r.completeness.state === "limited" && r.completeness.code === "OUTPUT_LIMIT"))
+  .meta({ title: "RefsRefusal" });
+
+export const ReadRefsResult = z.union([RefList, RefsRefusal]).meta({ title: "ReadRefsResult" });
+export type RefEntry = z.infer<typeof RefEntry>;
+export type RefsResult = z.infer<typeof RefList>;
+export type RefsRefusal = z.infer<typeof RefsRefusal>;
 
 // Data-model §5 "Support decision". `src/git-service/support.ts` `SUPPORT_REASONS` holds the same list.
 const SupportValue = z.enum(["supported", "binary", "encoding", "size", "rename", "mode", "type", "symlink", "submodule", "LFS", "filter", "state", "line-endings", "index-flag", "path"]);

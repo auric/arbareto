@@ -23,18 +23,23 @@ describeGit("fixture builders: F15, F17 to F20, and the 401 server", (git) => {
   describe("cases", () => {
     const { check, builtRepos, filemodeTest } = fixtureChecks(git);
 
-    for (const variant of ["base", "reflog-records", "reflog-bytes"] as const) {
-      test(`F20 ${variant}`, () =>
-        check(`F20 ${variant}`, (n) => F.buildF20(git, n, variant), (g, b) => {
-          const repo = join(b.root, "repo");
-          expectHunks(g, repo, b);
-          if (variant === "base") return;
-          const reflog = b.facts.notes.reflog as { ref: string; records: number; bytes: number };
-          const records = git1(g, repo, ["reflog", "show", "--format=%H", reflog.ref]).toString().split("\n").length - 1;
-          expect(records).toBe(reflog.records);
-          if (variant === "reflog-records") expect([records > ATTRIBUTION_EVIDENCE_RECORDS, reflog.bytes < ATTRIBUTION_EVIDENCE_BYTES]).toEqual([true, true]);
-          else expect([records < ATTRIBUTION_EVIDENCE_RECORDS, reflog.bytes > ATTRIBUTION_EVIDENCE_BYTES]).toEqual([true, true]);
-        }), TIMEOUT);
+    for (const refFormat of ["files", "reftable"] as const) {
+      for (const variant of ["base", "reflog-records", "reflog-bytes"] as const) {
+        test(`F20 ${variant} ${refFormat}`, () =>
+          check(`F20 ${variant} ${refFormat}`, (n) => F.buildF20(git, n, variant, refFormat), (g, b) => {
+            const repo = join(b.root, "repo");
+            expectHunks(g, repo, b);
+            expect(git1(g, repo, ["rev-parse", "--show-ref-format"]).toString().trim()).toBe(refFormat);
+            if (variant === "base") return;
+            // Contract §8 "Commit attribution read": the caps count the printed records and bytes of this read.
+            F.inflateHeadReflog(repo, variant, refFormat);
+            const out = git1(g, repo, ["log", "-g", "-z", "--date=raw", "--no-show-signature", "--no-decorate", "--no-color", "--format=%H%x00%gd%x00%gn%x00%ge%x00%gs", "HEAD", "--"]);
+            const records = out.filter((byte) => byte === 0).length / 5;
+            console.log(`F20 ${variant} ${refFormat}: ${records} records, ${out.length} bytes`);
+            if (variant === "reflog-records") expect([records > ATTRIBUTION_EVIDENCE_RECORDS, out.length < ATTRIBUTION_EVIDENCE_BYTES]).toEqual([true, true]);
+            else expect([records < ATTRIBUTION_EVIDENCE_RECORDS, out.length > ATTRIBUTION_EVIDENCE_BYTES]).toEqual([true, true]);
+          }), TIMEOUT);
+      }
     }
 
     test("F15", () =>

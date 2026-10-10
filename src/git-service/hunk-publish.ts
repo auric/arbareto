@@ -4,17 +4,17 @@
 // T110: `applyHunk`, research R3 steps 1 to 5 and 11 to 14, contract §2, §4 "Hunk eligibility and publication", §5, §8, and §9. The Windows path.
 // Only `publish()` of the owned index lock writes the canonical index. A WSL comparison gets no hunk approval (T214 adds the WSL path).
 
-import { unlink } from "node:fs/promises";
+import { lstat, unlink } from "node:fs/promises";
 import { basename } from "node:path";
 import type { Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
 import type { ApprovalKey, Approvals, ComparisonBinding, HunkApproval } from "./approvals";
-import { attributeArgs, objectCheckArgs } from "./commands";
+import { attributeArgs, isRefName, objectCheckArgs, refPathArgs } from "./commands";
 import type { ComparisonReader, RetainedComparison } from "./comparison";
 import { hunkEligibility, IndexFormatError, rawIndexEntries, type HunkRefusalReason, type ObjectFormat } from "./eligibility";
 import type { Entered, Exclusion, NotEntered } from "./exclusion";
-import { createCollector, type Collector, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, isChannelPath, type Collector, type GitExit, type GitRunner } from "./git-runner";
 import { captureHead } from "./history";
 import { prepareCandidate, type Candidate, type CandidateFailure } from "./hunk-candidate";
 import { createIndexLock, type IndexLock, type LockResult, type PublishResult } from "./index-lock";
@@ -393,6 +393,46 @@ export async function removeOwned(paths: readonly string[], processesEnded: bool
 // Contract §8 "Observed locks": the Git-resolved form of the lock path. An owned file in the folder of the index gets the same folder text.
 export const besideIndex = (w: Pick<Workspace, "indexPath">, path: string) => `${w.indexPath.slice(0, w.indexPath.length - basename(w.indexPath).length)}${basename(path)}`;
 
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+// Contract §8 "Observed locks": the existing files of the lock set, in the Git-resolved form. `head` names the current branch; a detached HEAD has no branch ref lock.
+export async function observedLocks(ctx: ObserveContext, head: Head | null): Promise<string[] | Failure | Stop> {
+  const w = ctx.workspace;
+  const paths = [`${w.indexPath}.lock`, `${w.gitDirectory}/HEAD.lock`];
+  if (w.refFormat === "reftable") paths.push(...[...new Set([w.gitDirectory, w.commonDirectory])].map((dir) => `${dir}/reftable/tables.list.lock`));
+  else {
+    paths.push(`${w.commonDirectory}/packed-refs.lock`);
+    if (head !== null && head.state !== "detached") {
+      if (!isRefName(head.target)) return { code: "GIT_FAILED" };
+      const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+      const step = await stepOf(ctx, refPathArgs(head.target), out);
+      if (!("exit" in step)) return step;
+      if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
+      const raw = out.take();
+      const malformed: Failure = { code: "MALFORMED_GIT_OUTPUT" };
+      if (out.limited || raw.length === 0 || raw[raw.length - 1] !== 0x0a) return malformed;
+      let ref: string;
+      try {
+        ref = UTF8.decode(raw.subarray(0, -1));
+      } catch {
+        return malformed;
+      }
+      if (ref.includes("\n") || !isChannelPath(ref)) return malformed;
+      paths.push(`${ref}.lock`);
+    }
+  }
+  const found = await Promise.all(
+    paths.map((path) =>
+      lstat(path).then(
+        () => true,
+        (error: unknown) => (isMissing(error) ? false : null),
+      ),
+    ),
+  );
+  if (found.includes(null)) return { code: "GIT_FAILED" };
+  return paths.filter((_, i) => found[i]);
+}
+
 // Contract §7 "Missing objects": with a promisor remote, a missing index blob gives OBJECT_MISSING without publication. `oid`: the index object ID of the entry.
 export async function missingObject(ctx: ObserveContext, listing: PolicyFacts["listing"] | null, oid: string | undefined, check: "object-missing" | "git-failed"): Promise<Refusal | Stop> {
   const { workspace: w, signal } = ctx;
@@ -469,6 +509,24 @@ export interface PublicationReconciliation {
   working: (ctx: ObserveContext) => Promise<Fact<boolean>>;
 }
 
+// The terminal event of one reconciliation. `known`: the outcome is not `unknown`, so `resolved` follows. `result` holds no `foreign`.
+interface Decision {
+  event: Parameters<OperationRegistry["apply"]>[1];
+  result?: Record<string, unknown>;
+  cause: DiagnosticCause | undefined;
+  known: boolean;
+}
+
+// Contract §8: a failed observation gives `unknown`. The marker and the retained digests stay.
+function unknownOf(failed: Failure | Stop, refusal: Refusal | null): Decision {
+  const code = "code" in failed ? failed.code : "DEADLINE";
+  const event = "code" in failed ? { type: "reconciliation-read-failed" as const, code } : { type: "reconciliation-read-deadline" as const };
+  return { event, cause: diagnosticCause(code, refusal, undefined), known: false };
+}
+
+// Contract §8 "Observed locks": `applyHunk` and `applyFile` name at most 6 files.
+const PUBLICATION_FOREIGN_CAP = 6;
+
 // Research R3 step 14 and contract §8: the reconciliation of an `applyHunk` or `applyFile` publication.
 export async function reconcilePublication(r: PublicationReconciliation): Promise<void> {
   const { registry, operationId, run, ending, binding, foreign } = r;
@@ -483,20 +541,29 @@ export async function reconcilePublication(r: PublicationReconciliation): Promis
   const refusal = "code" in ending ? ending : null;
   foreign.push(...(refusal?.foreign ?? []));
   await r.releaseOwned(r.rec.last === 0);
-  const extra = () => (foreign.length > 0 ? { foreign } : undefined);
 
   const failedRead = [observed.head, observed.index, observed.operationState, working].find((f) => !("value" in f)) as Failure | Stop | undefined;
-  if (failedRead !== undefined) {
-    // Contract §8: a failed observation gives `unknown`. The marker and the retained digests stay.
-    const code = "code" in failedRead ? failedRead.code : "DEADLINE";
-    const event = "code" in failedRead ? { type: "reconciliation-read-failed" as const, code } : { type: "reconciliation-read-deadline" as const };
-    registry.apply(operationId, event, extra(), diagnosticCause(code, refusal, undefined));
-    return;
+  let decision = failedRead !== undefined ? unknownOf(failedRead, refusal) : classifyPublication(r, observed, (working as { value: boolean }).value, refusal, canceled, deadline);
+  if (decision.event.type !== "intended-effects-confirmed") {
+    const locks = await observedLocks(quiet, "value" in observed.head ? observed.head.value : binding.head);
+    if (Array.isArray(locks)) {
+      for (const path of locks) if (foreign.length < PUBLICATION_FOREIGN_CAP && !foreign.includes(path)) foreign.push(path);
+    } else if (decision.known) decision = unknownOf(locks, refusal);
   }
+  const result = { ...decision.result, ...(foreign.length > 0 ? { foreign } : {}) };
+  registry.apply(operationId, decision.event, Object.keys(result).length > 0 ? result : undefined, decision.cause);
+  if (!decision.known) return;
+  // Contract §6: `resolved` follows a known outcome.
+  r.runner.resolved(r.markerId);
+  r.retained.delete(operationId);
+}
+
+// Contract §8 and §9: the outcome of a reconciliation whose reads all succeeded.
+function classifyPublication(r: PublicationReconciliation, observed: StateObservation, workingFiles: boolean, refusal: Refusal | null, canceled: boolean, deadline: boolean): Decision {
+  const { registry, operationId, run, binding } = r;
   const head = (observed.head as { value: Head }).value;
   const digest = (observed.index as { value: IndexFacts }).value.digest;
   const operationState = (observed.operationState as { value: OperationState }).value;
-  const workingFiles = (working as { value: boolean }).value;
   const effectsWith = (index: boolean) => ({
     head: !Bun.deepEquals(head, binding.head, true),
     index,
@@ -510,26 +577,19 @@ export async function reconcilePublication(r: PublicationReconciliation): Promis
   const cause = diagnosticCause(null, refusal, registry.get(operationId)!.cause);
   if (viaDigest || run.published) {
     const effects = effectsWith(!viaDigest);
-    if (Object.values(effects).some(Boolean)) registry.apply(operationId, { type: "differing-effects" }, { effects, ...extra() }, cause);
-    else registry.apply(operationId, { type: "intended-effects-confirmed" }, extra(), cause);
-  } else if (run.publishing && changed) {
-    // `publish()` threw, and the index matches neither retained digest. Contract §9 "publish without a typed result" gives `unknown`.
-    registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, extra(), "GIT_FAILED");
-    return;
-  } else if (changed && (deadline || r.unexpected || (STEP_CAUSES as readonly unknown[]).includes(refusal?.cause))) {
-    // Contract §8: an execution failure with observed changes is failed-with-effects. A checkpoint code never is. Contract §9: a deadline keeps its reason.
-    registry.apply(operationId, { type: "failed-with-effects" }, { effects: effectsWith(true), ...extra() }, cause);
-  } else if (canceled) {
-    registry.apply(operationId, { type: "no-effects", observed: "canceled" }, extra(), cause);
-  } else {
-    const { code, cause: _cause, foreign: _foreign, ...fields }: Partial<Refusal> = refusal ?? {};
-    const result = { ...fields, ...extra() };
-    const reason = code === "OUTPUT_LIMIT" ? fields.reason : undefined;
-    registry.apply(operationId, { type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) }, Object.keys(result).length > 0 ? result : undefined, cause);
+    if (Object.values(effects).some(Boolean)) return { event: { type: "differing-effects" }, result: { effects }, cause, known: true };
+    return { event: { type: "intended-effects-confirmed" }, cause, known: true };
   }
-  // Contract §6: `resolved` follows a known outcome.
-  r.runner.resolved(r.markerId);
-  r.retained.delete(operationId);
+  // `publish()` threw, and the index matches neither retained digest. Contract §9 "publish without a typed result" gives `unknown`.
+  if (run.publishing && changed) return { event: { type: "reconciliation-read-failed", code: "GIT_FAILED" }, cause: "GIT_FAILED", known: false };
+  // Contract §8: an execution failure with observed changes is failed-with-effects. A checkpoint code never is. Contract §9: a deadline keeps its reason.
+  if (changed && (deadline || r.unexpected || (STEP_CAUSES as readonly unknown[]).includes(refusal?.cause))) {
+    return { event: { type: "failed-with-effects" }, result: { effects: effectsWith(true) }, cause, known: true };
+  }
+  if (canceled) return { event: { type: "no-effects", observed: "canceled" }, cause, known: true };
+  const { code, cause: _cause, foreign: _foreign, ...fields }: Partial<Refusal> = refusal ?? {};
+  const reason = code === "OUTPUT_LIMIT" ? fields.reason : undefined;
+  return { event: { type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) }, result: fields, cause, known: true };
 }
 
 export interface HunkPublisherOptions {

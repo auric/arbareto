@@ -4,12 +4,13 @@
 // Deterministic builders of the plan.md fixture matrix (T066). Facts come from the construction, never from `src/git-service/`.
 
 import { createCipheriv } from "node:crypto";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ATTRIBUTION_EVIDENCE_RECORDS, COMPARED_RAW_VERSION_BYTES, WHOLE_FILE_STAGE_INPUT_BYTES } from "../../src/contracts/limits";
 import { NATIVE } from "../../src/contracts/native-path";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureDir, fixturePath, ownedGit, type OwnedGitOptions } from "./fixture-root";
+import { GIT } from "./git-binary";
 import { indexEntries, sha256 } from "./git-oracle";
 
 export class CapabilitySkip extends Error {
@@ -936,6 +937,7 @@ function blobSha1(content: string): string {
 
 // F12: a commit that triggers automatic maintenance, and SSH signing without `user.signingKey`.
 // "gc-auto": local `gc.auto=1`. Git estimates the loose count from `objects/17` and runs gc above (gc.auto + 255) / 256 objects there (builtin/gc.c `too_many_loose_objects`).
+// The default `geometric` maintenance strategy has no `gc` task, so the local `maintenance.strategy=gc` makes the commit run `gc --auto` (research R4 "T113 probes" P3).
 // "ssh-signing": `gpg.format=ssh`, `commit.gpgsign=true`, and a local `gpg.ssh.defaultKeyCommand` canary.
 export function buildF12(git: string, name: string, variant: F12Variant): Built {
   const root = start(name);
@@ -948,6 +950,7 @@ export function buildF12(git: string, name: string, variant: F12Variant): Built 
     const [folder] = run(r, ["rev-parse", "--git-path", "objects/17"]).trimEnd().split("\n");
     facts.notes.gcAuto = { threshold: 1, looseIn17: readdirSync(resolve(r.dir, folder!)).length };
     run(r, ["config", "gc.auto", "1"]);
+    run(r, ["config", "maintenance.strategy", "gc"]);
   } else {
     run(r, ["config", "gpg.format", "ssh"]);
     run(r, ["config", "commit.gpgsign", "true"]);
@@ -1084,24 +1087,35 @@ export function buildF16StageInput(git: string, name: string): Built {
 }
 
 export type F20Variant = "base" | "reflog-records" | "reflog-bytes";
+export type RefFormat = "files" | "reftable";
 
-// F20: the changed base for late writes and competing commits, and reflog evidence above one contract §5 attribution bound each.
-// "reflog-records": more than 10,000 records below 4 MiB. "reflog-bytes": 64 records above 4 MiB.
-// Git `refs/files-backend.c` writes each reflog record as "<old> <new> <committer> <time> <zone>\t<message>\n".
-export function buildF20(git: string, name: string, variant: F20Variant): Built {
+// F20: the changed base for late writes and competing commits. `inflateHeadReflog` adds the reflog evidence of a variant inside the attribution window.
+// "reftable": Git's own `refs migrate` converts the built repository (research R4 "T113 probes").
+export function buildF20(git: string, name: string, variant: F20Variant, refFormat: RefFormat = "files"): Built {
+  if (refFormat === "reftable") requireReftable(git);
   const root = start(name);
   const facts = newFacts();
   const r = changedRepo(git, root, facts);
-  if (variant !== "base") {
-    const base = rev(r, "HEAD");
-    const [log] = run(r, ["rev-parse", "--git-path", "logs/refs/heads/main"]).trimEnd().split("\n");
-    const count = variant === "reflog-records" ? ATTRIBUTION_EVIDENCE_RECORDS : 64;
-    const message = variant === "reflog-records" ? "reset: moving to HEAD" : `reset: ${"r".repeat(70_000)}`;
-    const record = (i: number) => `${base} ${base} ${IDENT} ${FIXED_EPOCH + i} +0000\t${message}\n`;
-    writeFileSync(resolve(r.dir, log!), readFileSync(resolve(r.dir, log!), "utf8") + lines(count, record));
-    facts.notes.reflog = { ref: "refs/heads/main", records: count + 1, bytes: lstatSync(resolve(r.dir, log!)).size };
-  }
+  if (refFormat === "reftable") run(r, ["refs", "migrate", "--ref-format=reftable"]);
   return { id: "F20", variant, root, facts };
+}
+
+// The F20 evidence above one contract §5 attribution bound each, as no-op records of the current HEAD OID at the end of the HEAD log.
+// "reflog-records": 10,000 records below 4 MiB. "reflog-bytes": 2,500 records above 4 MiB. Its 2,000-byte messages stay below the reftable trim of 2,048 bytes.
+// Record times stay within the last 90 days, so automatic maintenance does not expire them.
+// Git `refs/files-backend.c` writes each record as "<old> <new> <committer> <time> <zone>\t<message>\n". A `reftable` log gets no file write: `refs migrate` converts it to `files` and back.
+export function inflateHeadReflog(repo: string, variant: F20Variant, refFormat: RefFormat): void {
+  if (variant === "base") return;
+  if (GIT === null) throw new Error("Git executable absent");
+  const r: Repo = { git: GIT, dir: repo, pre: [] };
+  if (refFormat === "reftable") run(r, ["refs", "migrate", "--ref-format=files"]);
+  const head = rev(r, "HEAD");
+  const [log] = run(r, ["rev-parse", "--git-path", "logs/HEAD"]).trimEnd().split("\n");
+  const count = variant === "reflog-records" ? ATTRIBUTION_EVIDENCE_RECORDS : 2_500;
+  const message = variant === "reflog-records" ? "reset: moving to HEAD" : `reset: ${"r".repeat(1_993)}`;
+  const now = Math.floor(Date.now() / 1000);
+  appendFileSync(resolve(repo, log!), lines(count, (i) => `${head} ${head} ${IDENT} ${now - count + i} +0000\t${message}\n`));
+  if (refFormat === "reftable") run(r, ["refs", "migrate", "--ref-format=reftable"]);
 }
 
 // The PowerShell quote characters (about_Quoting_Rules). `"` is not valid in a Windows name, so it has no folder.

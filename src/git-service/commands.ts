@@ -298,6 +298,13 @@ export function commitTreeArgs(oid: string, objectFormat: ObjectFormat): string[
   return read("ls-tree", "-r", "-z", treeItem(oid, objectFormat));
 }
 
+// T113, contract §8 "Commit attribution read": the HEAD log, five NUL-ended fields per record, newest first. Only the preflight tip read passes a count.
+export function reflogArgs(count?: number): string[] {
+  if (count !== undefined && !(Number.isSafeInteger(count) && count > 0)) throw new TypeError("count refused");
+  const limit = count === undefined ? [] : ["-n", String(count)];
+  return read("log", ...limit, "-g", "-z", "--date=raw", "--no-show-signature", "--no-decorate", "--no-color", "--format=%H%x00%gd%x00%gn%x00%ge%x00%gs", "HEAD", "--");
+}
+
 // T082 and the T283 record in research R2: the second call of the two-call discovery form. It holds the `rev-parse` options of profiles 2 to 7 in T082 order.
 // Run it only after the first profile gives no refusal. `--path-format=absolute` stays in effect for the later path options, as in the separate profiles.
 export function discoveryLayoutArgs(): string[] {

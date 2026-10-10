@@ -115,6 +115,10 @@ pub fn run() {
                 && let Some(service) = app.try_state::<Arc<Service>>()
             {
                 service.close();
+                if service.relaunch() {
+                    app.cleanup_before_exit();
+                    tauri::process::restart(&app.env());
+                }
             }
         });
 }
@@ -190,7 +194,7 @@ fn start(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             (Err(_), None) => {
                 std::thread::spawn(move || {
                     Dialogs::new(handle.clone()).confirm(&dialogs::service_stopped());
-                    handle.exit(0);
+                    service::quit(&handle);
                 });
             }
         }

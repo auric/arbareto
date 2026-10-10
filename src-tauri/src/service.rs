@@ -88,6 +88,8 @@ pub struct Service {
     /// The count of service exits. A dialog result from before an exit changes nothing.
     exits: AtomicU64,
     closing: AtomicBool,
+    /// Set before the main window goes, so `RunEvent::Exit` always sees it.
+    relaunch: AtomicBool,
 }
 
 impl Service {
@@ -140,6 +142,7 @@ impl Service {
             handshake: Mutex::new(None),
             exits: AtomicU64::new(0),
             closing: AtomicBool::new(false),
+            relaunch: AtomicBool::new(false),
         });
         let native: Weak<Service> = Arc::downgrade(&service);
         let native: Weak<dyn NativeFirst> = native;
@@ -303,11 +306,8 @@ impl Service {
         match decision {
             Decision::Close => {
                 self.close();
-                if relaunch {
-                    self.app.request_restart();
-                } else {
-                    self.app.exit(0);
-                }
+                self.relaunch.store(relaunch, Ordering::SeqCst);
+                quit(&self.app);
             }
             Decision::StayOpen => {
                 if let Some(window) = self.app.get_webview_window(MAIN_WINDOW) {
@@ -562,9 +562,28 @@ impl Service {
 
     /// Application close: the operation Jobs, then the lingering Jobs, then the service Job (contract §6 "Lingering Jobs").
     pub fn close(&self) {
-        self.closing.store(true, Ordering::SeqCst);
+        if self.closing.swap(true, Ordering::SeqCst) {
+            return;
+        }
         close::shut_down(self);
         self.jobs.shutdown();
+    }
+
+    /// True when `RunEvent::Exit` must start the application again.
+    pub fn relaunch(&self) -> bool {
+        self.relaunch.load(Ordering::SeqCst)
+    }
+}
+
+/// Ends the event loop through the destruction of the main window.
+/// Chromium unregisters its window class at process exit. A live WebView2 window makes this fail with error 1412.
+/// `destroy` emits no `CloseRequested`. The loop ends when the last window is gone.
+pub fn quit(app: &AppHandle) {
+    let destroyed = app
+        .get_webview_window(MAIN_WINDOW)
+        .is_some_and(|window| window.destroy().is_ok());
+    if !destroyed {
+        app.exit(0);
     }
 }
 

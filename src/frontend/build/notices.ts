@@ -89,28 +89,35 @@ export function npmClosure(lock: BunLock, cssImported: string[]): { packages: Np
 
 const parentDir = (file: string) => file.slice(0, Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\")));
 
-/** The normal-dependency closure of the `arbareto` workspace member. Proc-macro crates and their dependencies run only at build time. */
-export function cargoClosure(metadata: CargoMetadata): Crate[] {
-  const byId = new Map(metadata.packages.map((p) => [p.id, p]));
-  const nodes = new Map(metadata.resolve.nodes.map((n) => [n.id, n]));
-  const root = metadata.packages.find((p) => p.name === "arbareto" && metadata.workspace_members.includes(p.id));
-  if (!root) throw new Error("cargo metadata holds no arbareto workspace member");
-  const seen = new Set<string>([root.id]);
-  const stack = [root.id];
-  for (let id = stack.pop(); id !== undefined; id = stack.pop()) {
-    for (const dep of nodes.get(id)?.deps ?? []) {
-      const target = byId.get(dep.pkg);
-      if (!target || seen.has(dep.pkg) || !dep.dep_kinds.some((k) => k.kind === null)) continue;
-      if (target.targets.some((t) => t.kind.includes("proc-macro"))) continue;
-      seen.add(dep.pkg);
-      stack.push(dep.pkg);
+/**
+ * The crates in `cargo tree -e normal,no-proc-macro --prefix none` output, without workspace members, joined to `cargo metadata` by name and version.
+ * `cargo metadata` unifies features across build and normal dependencies, so its resolve graph also holds build-only crates.
+ */
+export function cargoShipped(tree: string, metadata: CargoMetadata): { crates: Crate[]; problems: string[] } {
+  const crates = new Map<string, Crate>();
+  const problems: string[] = [];
+  for (const line of tree.split(/\r?\n/)) {
+    if (line === "") continue;
+    const match = /^(\S+) v(\S+)(?: .*)?$/.exec(line);
+    if (!match) {
+      problems.push(`cargo tree line is not "<name> v<version>": ${line}`);
+      continue;
+    }
+    const [, name, version] = match as unknown as [string, string, string];
+    const found = metadata.packages.filter((p) => p.name === name && p.version === version);
+    const p = found[0];
+    if (found.length !== 1 || !p) problems.push(`cargo ${name} ${version}: cargo metadata holds ${found.length} packages`);
+    else if (!metadata.workspace_members.includes(p.id) && !crates.has(p.id)) {
+      crates.set(p.id, { name, version, license: p.license ?? undefined, licenseFile: p.license_file ?? undefined, dir: parentDir(p.manifest_path) });
     }
   }
-  seen.delete(root.id);
-  return [...seen].map((id) => {
-    const p = byId.get(id) as CargoPackage;
-    return { name: p.name, version: p.version, license: p.license ?? undefined, licenseFile: p.license_file ?? undefined, dir: parentDir(p.manifest_path) };
-  });
+  return { crates: [...crates.values()], problems };
+}
+
+/** The `third-party-licenses` folder key for one exact ecosystem, name, and version, when that folder exists. */
+export function vendoredKey(keys: ReadonlySet<string>, ecosystem: "npm" | "cargo" | "runtime", name: string, version: string): string | undefined {
+  const key = `${ecosystem}/${name}@${version}`;
+  return keys.has(key) ? key : undefined;
 }
 
 // No npm or Cargo manifest field names the licence file of a package (cargo `license_file` is empty for every shipped crate).
@@ -171,8 +178,10 @@ export function inventory(shipped: Shipped[], repositoryUrl: string, project: No
   return { notices, problems, code: problems.length === 0 ? 0 : 1 };
 }
 
-async function readLicenseFiles(dir: string, named: string | undefined): Promise<LicenseFile[]> {
-  const names = named !== undefined ? [named] : licenseFileNames([...new Bun.Glob("*").scanSync({ cwd: dir, onlyFiles: true, dot: true })]);
+/** `named` undefined: the licence file names at `dir`. `named` null: every file at `dir`. */
+async function readLicenseFiles(dir: string, named: string | undefined | null): Promise<LicenseFile[]> {
+  const all = [...new Bun.Glob("*").scanSync({ cwd: dir, onlyFiles: true, dot: true })];
+  const names = named === null ? all.sort() : named !== undefined ? [named] : licenseFileNames(all);
   return Promise.all(names.map(async (name) => ({ name, text: await Bun.file(`${dir}/${name}`).text() })));
 }
 
@@ -186,10 +195,20 @@ async function main(): Promise<number> {
     ["cargo", "metadata", "--manifest-path", "src-tauri/Cargo.toml", "--format-version", "1", "--locked", "--offline", "--filter-platform", "x86_64-pc-windows-msvc"],
     { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "inherit", timeout: 120_000 },
   );
-  if (cargo.exitCode !== 0) {
-    console.error(`cargo metadata failed with exit code ${cargo.exitCode}`);
+  // T149 uses this command as the oracle for the linked crate set.
+  const tree = Bun.spawnSync(
+    ["cargo", "tree", "-e", "normal,no-proc-macro", "--target", "x86_64-pc-windows-msvc", "--prefix", "none", "--locked", "--offline", "--manifest-path", "src-tauri/Cargo.toml"],
+    { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "inherit", timeout: 120_000 },
+  );
+  if (cargo.exitCode !== 0 || tree.exitCode !== 0) {
+    console.error(`cargo metadata exit code ${cargo.exitCode}, cargo tree exit code ${tree.exitCode}`);
     return 1;
   }
+  // Each folder third-party-licenses/<ecosystem>/<name>@<version> holds the texts that one package release does not carry. research.md R10 records their sources.
+  const vendored = `${root}/third-party-licenses`;
+  const vendoredKeys = new Set([...new Bun.Glob("**/*").scanSync({ cwd: vendored, onlyFiles: true })].map((file) => parentDir(file).replaceAll("\\", "/")));
+  const filesOf = async (packageFiles: LicenseFile[], key: string | undefined) =>
+    packageFiles.length > 0 || key === undefined ? packageFiles : readLicenseFiles(`${vendored}/${key}`, null);
   const { packages, problems: npmProblems } = npmClosure(lock, cssPackages(css));
   const shipped: Shipped[] = [];
   const problems = [...npmProblems];
@@ -197,17 +216,23 @@ async function main(): Promise<number> {
     const dir = `${root}/node_modules/${p.path.join("/node_modules/")}`;
     const installed = (await Bun.file(`${dir}/package.json`).json()) as { version?: string; license?: unknown };
     if (installed.version !== p.version) problems.push(`npm ${p.name}: node_modules holds ${String(installed.version)}, bun.lock holds ${p.version}`);
-    shipped.push({ name: p.name, version: p.version, license: typeof installed.license === "string" ? installed.license : undefined, files: await readLicenseFiles(dir, undefined) });
+    const files = await filesOf(await readLicenseFiles(dir, undefined), vendoredKey(vendoredKeys, "npm", p.name, p.version));
+    shipped.push({ name: p.name, version: p.version, license: typeof installed.license === "string" ? installed.license : undefined, files });
   }
-  for (const c of cargoClosure(JSON.parse(cargo.stdout.toString()) as CargoMetadata)) {
-    shipped.push({ name: c.name, version: c.version, license: c.license, files: await readLicenseFiles(c.dir, c.licenseFile) });
+  const cargoSet = cargoShipped(tree.stdout.toString(), JSON.parse(cargo.stdout.toString()) as CargoMetadata);
+  problems.push(...cargoSet.problems);
+  for (const c of cargoSet.crates) {
+    const files = await filesOf(await readLicenseFiles(c.dir, c.licenseFile), vendoredKey(vendoredKeys, "cargo", c.name, c.version));
+    shipped.push({ name: c.name, version: c.version, license: c.license, files });
   }
   // Tauri bundler 2.10.0 nsis/mod.rs:81-86: the NSIS toolset folder is `dirs::cache_dir()/tauri/NSIS`, which is %LOCALAPPDATA% on Windows.
   const nsis = `${process.env.LOCALAPPDATA ?? ""}/tauri/NSIS`;
   const nsisCopying = process.env.LOCALAPPDATA !== undefined && (await Bun.file(`${nsis}/COPYING`).exists());
   shipped.push({ name: "NSIS", license: "zlib/libpng, bzip2, CPL-1.0", files: nsisCopying ? await readLicenseFiles(nsis, "COPYING") : [] });
-  // research.md R7 and R9 name these notices. This build has no offline source for their texts, so each one stays a refusal.
-  shipped.push({ name: "Bun runtime linked components (JavaScriptCore, WebKit)", version: Bun.version, license: undefined, files: [] });
+  // research.md R7: Bun is MIT, and it statically links LGPL-2 JavaScriptCore and WebKit and other libraries. Its LICENSE.md lists them.
+  const bunKey = vendoredKey(vendoredKeys, "runtime", "bun", Bun.version);
+  shipped.push({ name: "Bun runtime and linked components", version: Bun.version, license: "MIT, LGPL-2.0 (JavaScriptCore, WebKit), and linked-library licences", files: await filesOf([], bunKey) });
+  // research.md R9 names no source for these notices, so this entry stays a refusal.
   shipped.push({ name: "Shiki grammars, themes, and Oniguruma WASM", license: undefined, files: [] });
 
   const project = { license: await Bun.file(`${root}/LICENSE`).text(), notice: await Bun.file(`${root}/NOTICE.md`).text() };

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { cargoClosure, cssPackages, inventory, licenseFileNames, npmClosure, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
+import { cargoShipped, cssPackages, inventory, licenseFileNames, npmClosure, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/frontend/build/notices.ts", import.meta.dir);
@@ -97,11 +97,37 @@ describe("npm shipped set (T130)", () => {
   });
 });
 
-describe("Cargo shipped set (T130)", () => {
-  test("the set holds the normal, non-proc-macro closure of arbareto", () => {
-    const crates = cargoClosure(METADATA);
+// `cargo tree -e normal,no-proc-macro --prefix none` form: "<name> v<version>", then an optional source and a "(*)" repeat marker.
+const TREE = "arbareto v0.1.0 (C:\\src\\src-tauri)\ntauri v2.12.0\nserde v1.0.228\nserde v1.0.228 (*)\n";
+
+describe("Cargo shipped set (T130, T338)", () => {
+  test("the set holds the cargo tree crates without arbareto, with the cargo metadata licence and folder", () => {
+    const { crates, problems } = cargoShipped(TREE, METADATA);
+    expect(problems).toEqual([]);
     expect(crates.map((c) => `${c.name}@${c.version} ${c.license}`).sort()).toEqual(["serde@1.0.228 MIT OR Apache-2.0", "tauri@2.12.0 Apache-2.0 OR MIT"]);
     expect(crates.find((c) => c.name === "tauri")?.dir).toBe("C:\\cargo\\tauri-2.12.0");
+  });
+
+  test("a line of another form and a crate without one cargo metadata package are problems", () => {
+    const { crates, problems } = cargoShipped("tauri v2.12.0\n├── serde v1.0.228\nunknown v9.9.9\n", METADATA);
+    expect(crates.map((c) => c.name)).toEqual(["tauri"]);
+    expect(problems).toEqual(['cargo tree line is not "<name> v<version>": ├── serde v1.0.228', "cargo unknown 9.9.9: cargo metadata holds 0 packages"]);
+  });
+});
+
+describe("vendored licence texts (T338)", () => {
+  const KEYS = new Set(["npm/lru_map@0.4.1", "cargo/alloc-stdlib@0.3.0"]);
+
+  test("a vendored folder applies only to its exact ecosystem, name, and version", () => {
+    expect(vendoredKey(KEYS, "npm", "lru_map", "0.4.1")).toBe("npm/lru_map@0.4.1");
+    expect(vendoredKey(KEYS, "cargo", "alloc-stdlib", "0.3.0")).toBe("cargo/alloc-stdlib@0.3.0");
+  });
+
+  test("a version or ecosystem mismatch finds no folder, so the package stays a refusal", () => {
+    expect(vendoredKey(KEYS, "npm", "lru_map", "0.4.2")).toBeUndefined();
+    expect(vendoredKey(KEYS, "cargo", "lru_map", "0.4.1")).toBeUndefined();
+    const result = inventory([{ name: "lru_map", version: "0.4.2", license: "MIT", files: [] }], REPO, PROJECT);
+    expect(result.problems).toEqual(["lru_map 0.4.2: no licence text"]);
   });
 });
 

@@ -56,7 +56,7 @@ export function selectEntry(view: ViewContext, entry: { category: Category; path
 
 /**
  * Keeps a surviving anchor. Otherwise it takes the surviving row nearest to the anchor position in `before`, with offset 0.
- * plan.md names no tie rule. On equal distance, the following row wins, so the rows below the anchor keep their place.
+ * On equal distance, the following row wins, so the rows below the anchor keep their place.
  */
 export function anchorFallback(anchor: Anchor, before: readonly string[], after: readonly string[]): Anchor | null {
   const surviving = new Set(after);

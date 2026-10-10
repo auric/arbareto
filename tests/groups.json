@@ -34,6 +34,7 @@
     "tests/contracts/native-path.test.ts",
     "tests/contracts/native-runner.test.ts",
     "tests/contracts/notice-band.test.tsx",
+    "tests/contracts/notices.test.ts",
     "tests/contracts/operation-registry.test.ts",
     "tests/contracts/operation-states.test.ts",
     "tests/contracts/platform-label.test.tsx",

@@ -1,3 +1,3 @@
-The agent skills animate, review-animations, and animation-vocabulary in .claude/skills/ come from https://github.com/emilkowalski/skills.
+The agent skills animate, review-animations, animation-vocabulary, and find-animation-opportunities in .claude/skills/ come from https://github.com/emilkowalski/skills.
 The LICENSE file in this folder applies to them.
 skills-lock.json records the source paths and content hashes.

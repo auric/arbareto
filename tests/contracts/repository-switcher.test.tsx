@@ -17,8 +17,14 @@ const { RepositorySwitcher, BUSY_TEXT, NO_MATCH_TEXT } = await import("../../src
 const NATIVE = "D:\\work\\clients\\sample-app";
 const OTHER = "C:\\src\\Tools";
 const WSL = "\\\\wsl.localhost\\Ubuntu-26.04\\home\\me\\kernel";
-const entry = (path: string, location: { kind: "native" } | { kind: "wsl"; distro: string } = { kind: "native" }) => ({ entryId: crypto.randomUUID(), path, location, openedAt: "2026-10-10T08:00:00Z" });
-const ENTRIES = [entry(NATIVE), entry(OTHER), entry(WSL, { kind: "wsl", distro: "Ubuntu-26.04" })];
+const entry = (path: string, location: { kind: "native" } | { kind: "wsl"; distro: string } = { kind: "native" }, current = false) => ({
+  entryId: crypto.randomUUID(),
+  path,
+  location,
+  openedAt: "2026-10-10T08:00:00Z",
+  current,
+});
+const ENTRIES = [entry(NATIVE, { kind: "native" }, true), entry(OTHER), entry(WSL, { kind: "wsl", distro: "Ubuntu-26.04" })];
 const succeeded = (result: unknown) => ({ requestId: crypto.randomUUID(), state: "succeeded", result });
 const failed = (code: string, result: unknown) => ({ requestId: crypto.randomUUID(), state: "failed", code, result });
 const ABSENT = { reason: "absent", path: OTHER, text: `Arbareto cannot find this folder: ${OTHER}.`, remedy: { text: "Remove it from the list, or open the folder from its new place." } };
@@ -172,6 +178,13 @@ describe("recent list", () => {
 
   test("the current entry carries aria-current", async () => {
     await openWith();
+    expect(option("sample-app").getAttribute("aria-current")).toBe("true");
+    expect(option("Tools").hasAttribute("aria-current")).toBe(false);
+  });
+
+  // Contract §3 `listRecentRepositories`: the shell sets `current` from the worktree key. The path text is no identity.
+  test("aria-current follows the shell `current` flag, not the path text", async () => {
+    await openWith(ENTRIES, { worktreeRoot: OTHER });
     expect(option("sample-app").getAttribute("aria-current")).toBe("true");
     expect(option("Tools").hasAttribute("aria-current")).toBe(false);
   });

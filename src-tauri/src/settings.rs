@@ -156,7 +156,8 @@ pub fn recent_root(settings: &Settings, entry_id: &str) -> Option<PathBuf> {
 }
 
 /// The `listRecentRepositories` result. It reads no folder and starts no process.
-pub fn recent_list(settings: &Settings) -> Value {
+/// `current` is the `worktreeKey` of the open workspace. The path text is no identity.
+pub fn recent_list(settings: &Settings, current: Option<&str>) -> Value {
     let entries: Vec<Value> = settings
         .recent
         .iter()
@@ -166,6 +167,7 @@ pub fn recent_list(settings: &Settings) -> Value {
                 "path": entry.worktree_root.to_string_lossy(),
                 "location": location(&entry.worktree_root),
                 "openedAt": entry.opened_at,
+                "current": current == Some(entry.worktree_key.as_str()),
             })
         })
         .collect();
@@ -2139,13 +2141,31 @@ mod tests {
             .map(|e| e.entry_id.as_str())
             .collect();
         assert_eq!(
-            recent_list(&settings),
+            recent_list(&settings, Some(&key(1))),
             json!({ "entries": [
-                { "entryId": ids[0], "path": wsl, "location": { "kind": "wsl", "distro": "Ubuntu-24.04" }, "openedAt": at(2) },
-                { "entryId": ids[1], "path": "C:\\src\\repo", "location": { "kind": "native" }, "openedAt": at(1) },
+                { "entryId": ids[0], "path": wsl, "location": { "kind": "wsl", "distro": "Ubuntu-24.04" }, "openedAt": at(2), "current": false },
+                { "entryId": ids[1], "path": "C:\\src\\repo", "location": { "kind": "native" }, "openedAt": at(1), "current": true },
             ] })
         );
-        assert_eq!(recent_list(&Settings::default()), json!({ "entries": [] }));
+        let currents = |current: Option<&str>| -> Vec<Value> {
+            let list = recent_list(&settings, current);
+            list["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .map(|e| e["current"].clone())
+                .collect()
+        };
+        assert_eq!(
+            currents(None),
+            [json!(false), json!(false)],
+            "no open workspace"
+        );
+        assert_eq!(currents(Some(&key(3))), [json!(false), json!(false)]);
+        assert_eq!(
+            recent_list(&Settings::default(), None),
+            json!({ "entries": [] })
+        );
     }
 
     #[test]

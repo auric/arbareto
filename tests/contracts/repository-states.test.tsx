@@ -176,7 +176,7 @@ describe("repository states", () => {
     const settle = () => act(async () => await new Promise((resolve) => setImmediate(resolve)));
 
     test("it reads the recent list once and shows each entry with its name and path only, and no branch text", async () => {
-      const page = startPage([{ entryId: crypto.randomUUID(), path: PATH, location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z" }]);
+      const page = startPage([{ entryId: crypto.randomUUID(), path: PATH, location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }]);
       const host = await show(page.node);
       await settle();
       expect(page.calls).toEqual(["listRecentRepositories"]);

@@ -61,6 +61,8 @@ pub struct Stores {
     /// A frame walk holds a clone until its reply (contract §6 "Walks").
     pub markers: Arc<Markers>,
     pub trust: Arc<Trust>,
+    /// The `worktreeKey` of the last succeeded registration. `None` without an open workspace.
+    pub current: Mutex<Option<String>>,
 }
 
 /// The compiled Git service, its Job, and the frame routes of its pipes (contract §1 and §6).
@@ -547,6 +549,8 @@ impl Service {
             .stores
             .get()
             .map(|stores| {
+                // The service exit released every workspace.
+                *lock(&stores.current) = None;
                 stores.markers.service_exited();
                 stores
                     .markers
@@ -727,7 +731,10 @@ fn answer(stores: &Stores, operation: &str, payload: &Value) -> Result<Value, &'
         }
         let _ = settings::save(&stores.settings_path, &settings);
     }
-    Ok(settings::recent_list(&settings))
+    Ok(settings::recent_list(
+        &settings,
+        lock(&stores.current).as_deref(),
+    ))
 }
 
 /// The native step before the forward (contract §3). `Ok(None)` is a canceled dialog.
@@ -877,6 +884,7 @@ fn remember(stores: &Stores, operation: &str, response: &Value) {
     else {
         return;
     };
+    *lock(&stores.current) = Some(key.to_string());
     let Ok(opened_at) = settings::utc_now() else {
         return;
     };
@@ -1168,6 +1176,7 @@ mod tests {
                     settings: Mutex::new(Settings::default()),
                     markers: Arc::new(Markers::open(&fixture.path("recovery"))),
                     trust: Arc::new(Trust::open(&fixture.path("trust"))),
+                    current: Mutex::new(None),
                 },
                 contexts,
                 requests,
@@ -1604,6 +1613,61 @@ mod tests {
         );
     }
 
+    /// Contract §3 `listRecentRepositories`: `current` comes from the key of the last succeeded registration.
+    #[test]
+    fn the_list_marks_the_entry_of_the_open_workspace_by_its_key_not_its_path_text() {
+        let shell = Shell::new();
+        let other = "f".repeat(64);
+        let repository = shell.folder("repo");
+        shell.remember(&shell.folder("other"), &other);
+        let picked = Fake {
+            folder: Some(repository.clone()),
+            ..Fake::default()
+        };
+        let prepared = shell
+            .prepare(&picked, "chooseRepository", json!({}))
+            .expect("prepare")
+            .expect("a context");
+        let root = repository.to_string_lossy().replace('\\', "/");
+        shell.finish(
+            &picked,
+            "chooseRepository",
+            &prepared,
+            registered(&root, KEY),
+        );
+        let currents = || -> Vec<(String, Value)> {
+            let list = answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list");
+            list["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .map(|e| {
+                    (
+                        e["path"].as_str().expect("path").to_string(),
+                        e["current"].clone(),
+                    )
+                })
+                .filter(|(_, current)| *current == json!(true))
+                .collect()
+        };
+        assert_eq!(currents(), [(root.clone(), json!(true))], "only one entry");
+        // A failed registration keeps the open workspace.
+        let failed =
+            json!({ "requestId": CALL, "state": "failed", "code": "REPOSITORY_UNAVAILABLE" });
+        shell.finish(&picked, "chooseRepository", &prepared, failed);
+        assert_eq!(currents(), [(root.clone(), json!(true))]);
+        // The same folder under another path text keeps its key, so it stays current.
+        let backslashes = root.replace('/', "\\");
+        shell.finish(
+            &picked,
+            "chooseRepository",
+            &prepared,
+            registered(&backslashes, KEY),
+        );
+        assert_eq!(currents(), [(backslashes, json!(true))]);
+        assert_eq!(shell.recent().len(), 2);
+    }
+
     #[test]
     fn the_list_and_a_removal_answer_natively_and_a_removal_changes_no_repository_file() {
         let shell = Shell::new();
@@ -1611,8 +1675,16 @@ mod tests {
         std::fs::write(repository.join("file.txt"), "keep").expect("file");
         shell.remember(&repository, KEY);
         let list = answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list");
-        assert_eq!(list, settings::recent_list(&lock(&shell.stores.settings)));
+        assert_eq!(
+            list,
+            settings::recent_list(&lock(&shell.stores.settings), None)
+        );
         assert_eq!(list["entries"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            list["entries"][0]["current"],
+            json!(false),
+            "no open workspace"
+        );
         let unknown = json!({ "entryId": "0f0f0f0f-0000-4000-8000-0000000000ff" });
         assert_eq!(
             answer(&shell.stores, "removeRecentRepository", &unknown),

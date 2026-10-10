@@ -130,7 +130,13 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     environment,
     configFiles: (gitInstallationId) => (git?.ok && git.installation.gitInstallationId === gitInstallationId ? git.installation.configFiles : undefined),
   });
-  const reader = createWorkspaceReader({ runner, trust, readRawIndex, unknown: (w) => recovery.unknown(w) });
+  const reader = createWorkspaceReader({
+    runner,
+    trust,
+    readRawIndex,
+    unknown: (w) => recovery.unknown(w),
+    reconciling: (w) => exclusion.running(w.commonIdentity).some((operationId) => registry.get(operationId)?.state === "reconciling"),
+  });
   const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.

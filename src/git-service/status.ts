@@ -760,7 +760,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     let eligibility: HunkEligibility | null = null;
     if (raw !== "over") {
       try {
-        eligibility = hunkEligibility(reuse ? { link: lastParse.sharedIndex?.hash ?? null } : rawIndex, w.objectFormat, lst);
+        eligibility = hunkEligibility(reuse ? { link: lastParse.sharedIndex?.hash ?? null } : rawIndex, w.objectFormat, lst, w.wsl !== undefined);
       } catch (error) {
         if (error instanceof IndexFormatError) return refusal("MALFORMED_GIT_OUTPUT");
         throw error;

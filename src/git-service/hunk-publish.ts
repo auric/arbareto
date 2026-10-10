@@ -1,31 +1,47 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T110: `applyHunk`, research R3 steps 1 to 5 and 11 to 14, contract §2, §4 "Hunk eligibility and publication", §5, §8, and §9. The Windows path.
-// Only `publish()` of the owned index lock writes the canonical index. A WSL comparison gets no hunk approval (T214 adds the WSL path).
+// T110: `applyHunk`, research R3 steps 1 to 5 and 11 to 14, contract §2, §4 "Hunk eligibility and publication", §5, §8, and §9.
+// Only `publish()` of the owned index lock writes the canonical index.
+// T214: a WSL repository locks, publishes, and removes owned files inside the distro (contract §4 "WSL index publication").
 
 import { lstat, unlink } from "node:fs/promises";
 import { basename } from "node:path";
 import { RECOVERY_FOREIGN_CAP, type Response, type ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
+import { wslIdentityPath } from "../contracts/wsl-route";
 import type { ApprovalKey, Approvals, ComparisonBinding, HunkApproval } from "./approvals";
 import { attributeArgs, isRefName, objectCheckArgs, refPathArgs } from "./commands";
 import type { ComparisonReader, RetainedComparison } from "./comparison";
 import { hunkEligibility, IndexFormatError, rawIndexEntries, type HunkRefusalReason, type ObjectFormat } from "./eligibility";
 import type { Entered, Exclusion, NotEntered } from "./exclusion";
-import { createCollector, isChannelPath, type Collector, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, isChannelPath, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
 import { captureHead } from "./history";
 import { prepareCandidate, type Candidate, type CandidateFailure } from "./hunk-candidate";
-import { createIndexLock, type IndexLock, type LockResult, type PublishResult } from "./index-lock";
+import { createIndexLock, type LockResult, type PublishResult } from "./index-lock";
 import { STEP_CAUSES, type DiagnosticCause } from "./log";
 import type { OperationRegistry } from "./operations";
 import { contextOf, isMissing, objectCheckInput, objectCheckOutcome, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
-import { readWorkingVersion, type ChangeSnapshot, type Head, type LimitName, type OperationState, type ReadInstallation, type WorkingBound, type WorkingVersion } from "./snapshot";
+import { readWorkingVersion, type ChangeSnapshot, type Head, type LimitName, type OperationState, type RawIndexPart, type ReadInstallation, type WorkingBound, type WorkingVersion } from "./snapshot";
 import { hasPromisor, OBJECT_MISSING_REMEDY, policyOf, readRawIndex, type WorkspaceReader } from "./status";
 import { parseAttributes } from "./support";
 import type { Trust, TrustListing } from "./trust";
+import {
+  processEnd,
+  removeCandidate,
+  wslIndexDigest,
+  wslIndexOf,
+  wslLock,
+  wslWhole,
+  type WslContext,
+  type WslIndexFacts,
+  type WslLockResult,
+  type WslPublishResult,
+  type WslRemoved,
+  type WslWhole,
+} from "./wsl-files";
 
 // Contract §4 "Split index".
 export const SPLIT_INDEX_TEXT = "Git's split index is on for this repository. Arbareto stages hunks and files only with a full index. Stage this change in a terminal.";
@@ -36,6 +52,8 @@ export const PROFILE_TEXTS: Record<HunkRefusalReason, string> = {
   "index-change-hook": "This repository registers a post-index-change hook. Arbareto does not stage hunks and files while such a registration exists, also a disabled one. Stage this change in a terminal.",
   "executable-monitor": "The core.fsmonitor setting starts a program for this repository. Arbareto does not stage hunks and files while that setting starts a program. Stage this change in a terminal.",
   "unqualified-monitor": "This repository uses the built-in fsmonitor daemon of Git. Arbareto has not qualified that daemon for staging hunks and files. Stage this change in a terminal.",
+  // Contract §4 "WSL index publication".
+  "shared-repository": "This repository sets core.sharedRepository. Arbareto stages hunks and files in a WSL repository only without it. Stage this change in a terminal.",
 };
 // Contract §4 "Windows lock ownership".
 export const FILE_ID_TEXT = "This volume gives the index lock no unique file ID. Stage this change in a terminal.";
@@ -82,13 +100,17 @@ const stepFailed = (cause?: DiagnosticCause): Refusal => ({ code: "GIT_FAILED", 
 export const refusalOf = (f: Failure): Refusal =>
   f.reason === DIAGNOSTIC_LIMIT.reason ? { ...f, cause: "OUTPUT_LIMIT" } : f.reason === "file-id" ? { ...f, remedy: { text: WORKING_FILE_ID_TEXT } } : f.code === "GIT_FAILED" ? stepFailed() : f;
 const profileRefusal = (reason: HunkRefusalReason): Refusal => ({ code: "UNSUPPORTED_HUNK_PROFILE", reason, remedy: { text: PROFILE_TEXTS[reason] } });
+// Contract §4 "WSL index publication": acceptance refuses from the listing of the comparison, so no Git process starts.
+export const SHARED_REPOSITORY = { code: "UNSUPPORTED_HUNK_PROFILE", result: { reason: "shared-repository", remedy: { text: PROFILE_TEXTS["shared-repository"] } } } as const;
 
 export const isStop = (f: unknown): f is Stop => typeof f === "object" && f !== null && "stop" in f;
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const sameVersion = (a: WorkingVersion, b: WorkingVersion) => Buffer.compare(a.path, b.path) === 0 && Bun.deepEquals({ ...a, path: null }, { ...b, path: null }, true);
 
 // Contract §9 "Lingering count": the sentences need a nonzero count, and "Revoke trust also ends them." needs a current trust ID.
-export function lockRefusal(locked: Exclude<LockResult, { ok: true }>, lingering: number | null, trustId: boolean): Refusal {
+// A WSL `lock` walk that stopped or failed leaves the lock to reconciliation (contract §4 "Stopped or failed `lock`").
+export function lockRefusal(locked: Exclude<LockResult | WslLockResult, { ok: true }>, lingering: number | null, trustId: boolean): Refusal | Stop {
+  if (!("ok" in locked)) return "stop" in locked ? { stop: locked.stop } : refusalOf(locked);
   if ("code" in locked) {
     const extra = lingering !== null && lingering > 0 ? ` ${lingeringSentence(lingering)}${trustId ? ` ${REVOKE_TEXT}` : ""}` : "";
     return { code: "LOCKED", path: locked.path, remedy: { text: `${locked.remedy.text}${extra}` } };
@@ -128,11 +150,13 @@ export function candidateRefusal(f: CandidateFailure): Refusal | Stop | { check:
   }
 }
 
-// Research R3 step 13. Every result but `published` leaves the canonical index unchanged.
-export function publishRefusal(r: Exclude<PublishResult, { published: true }>, lockPath: string): Refusal {
+// Research R3 step 13. Every result but `published` leaves the canonical index unchanged. A WSL `replace-failed` can still have renamed.
+export function publishRefusal(r: Exclude<PublishResult | WslPublishResult, { published: true }>, lockPath: string): Refusal {
   switch (r.reason) {
     case "notOwned":
       return { ...STALE, path: lockPath };
+    case "mismatch":
+      return STALE;
     case "time":
     case "publish-time":
       return stepFailed("publish-time");
@@ -162,6 +186,9 @@ export interface ObserveContext {
   installation: ReadInstallation;
 }
 
+// The context of a publication. Its runner also sends the `wslFiles` walks of a WSL repository.
+export type PublishContext = ObserveContext & { runner: GitRunner & WslRunner };
+
 export interface PolicyFacts {
   listing: Pick<TrustListing, "entries" | "hooks">;
   gate: "TRUST_REQUIRED" | "TRUST_CHANGED" | null;
@@ -181,7 +208,7 @@ export interface IndexFacts {
 
 export interface StateObservation {
   head: Fact<Head>;
-  index: Fact<IndexFacts>;
+  index: Fact<IndexFacts | WslIndexFacts>;
   operationState: Fact<OperationState>;
   // Null when the binding holds no working version. `changed`: the read found the file above the bound, or replaced twice (`readWorkingVersion`).
   working: Fact<WorkingVersion> | { changed: true } | null;
@@ -217,7 +244,7 @@ export async function observePolicy(ctx: ObserveContext, path: Uint8Array | null
   const listing = listed.listing;
   const gate = trust.gate(w, listing, installation, kind);
   // `check-attr` reads the index, so a command-valued `core.fsmonitor` would run. `checkpointRefusal` gives the profile refusal before it reads the attributes.
-  const attributes = path !== null && gate === null && hunkEligibility({ link: null }, w.objectFormat, listing).eligible ? await attributesOf(ctx, path) : null;
+  const attributes = path !== null && gate === null && hunkEligibility({ link: null }, w.objectFormat, listing, w.wsl !== undefined).eligible ? await attributesOf(ctx, path) : null;
   return { listing, gate, policyFingerprint: policyOf(trust, w, listing, installation), attributes };
 }
 
@@ -243,17 +270,39 @@ export async function workingOf(w: Workspace, path: Uint8Array, bound: WorkingBo
   return { code: c.state === "failed" ? c.code : "GIT_FAILED" };
 }
 
-// Research R3 steps 5, 11, and 14: HEAD, the raw canonical index, the operation state, and the bound working version.
-export async function observeState(ctx: ObserveContext, path: Uint8Array, bindsWorking: boolean): Promise<StateObservation> {
+const UTF8_PATH = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// Contract §4 "Binding": the whole working file. A WSL repository takes its digest inside the distro, so no working-file byte crosses.
+export async function wholeWorking(ctx: PublishContext, path: Uint8Array): Promise<Fact<WorkingVersion | WslWhole> | { changed: true }> {
+  const w = ctx.workspace;
+  return w.wsl === undefined ? workingOf(w, path, "WHOLE_FILE_STAGE_INPUT_BYTES") : wslWhole(ctx, UTF8_PATH.decode(path).split("/"));
+}
+
+// True: the whole working file differs from the binding. A null binding means an absent file (a tracked deletion).
+export function differs(bound: { size: number; sha256: string } | null, read: Fact<WorkingVersion | WslWhole> | { changed: true }): Fact<boolean> {
+  if ("changed" in read) return { value: true };
+  if (!("value" in read)) return read;
+  const v = read.value;
+  const whole: WslWhole = typeof v === "string" || !("exists" in v) ? v : !v.exists ? "absent" : v.type === "file" ? { size: v.size, sha256: v.rawDigest } : "other";
+  const same = whole === "absent" ? bound === null : whole !== "other" && bound !== null && whole.size === bound.size && whole.sha256 === bound.sha256;
+  return { value: !same };
+}
+
+// Contract §4 "WSL index publication": a WSL repository compares the `indexDigest` result with the bound digest.
+export const canonicalIndex = (ctx: PublishContext, bound: RawIndexPart): Promise<Fact<IndexFacts | WslIndexFacts>> =>
+  ctx.workspace.wsl === undefined ? indexOf(ctx.workspace) : wslIndexOf(ctx, bound);
+
+// Research R3 steps 5, 11, and 14: HEAD, the canonical index, the operation state, and the bound working version.
+export async function observeState(ctx: ObserveContext, path: Uint8Array, bindsWorking: boolean, index: Promise<Fact<IndexFacts | WslIndexFacts>> = indexOf(ctx.workspace)): Promise<StateObservation> {
   const t = { operationId: ctx.operationId, signal: ctx.signal, workspace: ctx.workspace };
-  const [captured, index, working] = await Promise.all([
+  const [captured, indexed, working] = await Promise.all([
     settled(ctx.signal, captureHead(ctx.runner, t)),
-    settled(ctx.signal, indexOf(ctx.workspace)),
+    settled(ctx.signal, index),
     bindsWorking ? settled(ctx.signal, workingOf(ctx.workspace, path)) : null,
   ]);
   const head: Fact<Head> = isStop(captured) || "code" in captured ? captured : "failed" in captured ? failureOf(captured.failed) : { value: captured };
-  const operationState = "value" in index ? stateFact(await settled(ctx.signal, ctx.reader.operationState(t, index.value.unmerged))) : index;
-  return { head, index, operationState, working };
+  const operationState = "value" in indexed ? stateFact(await settled(ctx.signal, ctx.reader.operationState(t, indexed.value.unmerged))) : indexed;
+  return { head, index: indexed, operationState, working };
 }
 
 function stateFact(state: Awaited<ReturnType<WorkspaceReader["operationState"]>> | Stop | Failure): Fact<OperationState> {
@@ -265,7 +314,7 @@ function stateFact(state: Awaited<ReturnType<WorkspaceReader["operationState"]>>
 export type CheckpointBinding = Pick<ComparisonBinding, "head" | "index" | "working" | "attributes" | "policyFingerprint" | "operationState">;
 
 // Contract §4 and §9. The first match wins. A stop wins over every refusal, and a deadline over a cancel.
-export function checkpointRefusal(binding: CheckpointBinding, policy: PolicyObservation, state: StateObservation, objectFormat: ObjectFormat): Refusal | Stop | null {
+export function checkpointRefusal(binding: CheckpointBinding, policy: PolicyObservation, state: StateObservation, objectFormat: ObjectFormat, wsl = false): Refusal | Stop | null {
   const attributes = "listing" in policy ? policy.attributes : null;
   const stops = [policy, attributes, state.head, state.index, state.operationState, state.working].filter(isStop);
   if (stops.length > 0) return stops.some((s) => s.stop === "deadline") ? DEADLINE : CANCELED;
@@ -275,7 +324,7 @@ export function checkpointRefusal(binding: CheckpointBinding, policy: PolicyObse
   if (!("value" in state.index)) return refusalOf(state.index as Failure);
   let eligibility;
   try {
-    eligibility = hunkEligibility(state.index.value.raw, objectFormat, policy.listing);
+    eligibility = hunkEligibility(state.index.value.raw, objectFormat, policy.listing, wsl);
   } catch (error) {
     if (error instanceof IndexFormatError) return { code: "MALFORMED_GIT_OUTPUT" };
     throw error;
@@ -348,7 +397,8 @@ export function hunkApprovals(c: RetainedComparison, s: ChangeSnapshot, w: Works
 // ---- Execution ----
 
 // Keeps the `activeDescendants` count of the last exit reply (contract §6 "Lingering Jobs"). Null: no exit reply since the start or the last `reset`.
-export function recording(runner: GitRunner): GitRunner & { readonly last: number | null; reset(): void } {
+export type Recording<R extends GitRunner> = R & { readonly last: number | null; reset(): void };
+export function recording<R extends GitRunner>(runner: R): Recording<R> {
   let last: number | null = null;
   return {
     ...runner,
@@ -390,18 +440,44 @@ export async function removeOwned(paths: readonly string[], processesEnded: bool
   return foreign;
 }
 
+// Contract §11 "Paths and file access": a metadata-only `lstat` through UNC. Any failure but a missing file names the path.
+const present = (path: string) => lstat(path).then(
+  () => true,
+  (error: unknown) => !isMissing(error),
+);
+const settledRemove = (r: WslRemoved | Failure | Stop) => r === "removed" || r === "notOwned";
+
+// Contract §4 "WSL index publication": removals run inside the distro, only after the process-end fact. A candidate goes only by its verified digest.
+// A file that stays goes into `foreign` when `lstat` finds it. Without `removable`, both files go into `foreign`. True: ownership stays unknown.
+async function releaseWsl(ctx: WslContext, lock: HeldLock | null, candidatePath: string | null, verified: string | null, removable: boolean, foreign: string[]): Promise<boolean> {
+  let unknown = !removable;
+  if (lock !== null && !settledRemove(removable ? await lock.release() : "remove-failed")) {
+    unknown = true;
+    foreign.push(lock.path);
+  }
+  if (candidatePath !== null) {
+    const r = removable && verified !== null ? await removeCandidate(ctx, basename(candidatePath), verified) : "notOwned";
+    if (!settledRemove(r)) unknown = true;
+    if (!removable || !settledRemove(r) || (r === "notOwned" && (await present(candidatePath)))) foreign.push(candidatePath);
+    if (await present(`${candidatePath}.lock`)) foreign.push(`${candidatePath}.lock`);
+  }
+  return unknown;
+}
+
 // Contract §8 "Observed locks": the Git-resolved form of the lock path. An owned file in the folder of the index gets the same folder text.
 export const besideIndex = (w: Pick<Workspace, "indexPath">, path: string) => `${w.indexPath.slice(0, w.indexPath.length - basename(w.indexPath).length)}${basename(path)}`;
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 // Contract §8 "Observed locks": the existing files of the lock set, in the Git-resolved form. `head` names the current branch; a detached HEAD has no branch ref lock.
+// Contract §11 "Paths and file access": a WSL path is the UNC form of the Git-resolved path, with `\` separators.
 export async function observedLocks(ctx: ObserveContext, head: Head | null): Promise<string[] | Failure | Stop> {
   const w = ctx.workspace;
-  const paths = [`${w.indexPath}.lock`, `${w.gitDirectory}/HEAD.lock`];
-  if (w.refFormat === "reftable") paths.push(...[...new Set([w.gitDirectory, w.commonDirectory])].map((dir) => `${dir}/reftable/tables.list.lock`));
+  const sep = w.wsl === undefined ? "/" : "\\";
+  const paths = [`${w.indexPath}.lock`, `${w.gitDirectory}${sep}HEAD.lock`];
+  if (w.refFormat === "reftable") paths.push(...[...new Set([w.gitDirectory, w.commonDirectory])].map((dir) => `${dir}${sep}reftable${sep}tables.list.lock`));
   else {
-    paths.push(`${w.commonDirectory}/packed-refs.lock`);
+    paths.push(`${w.commonDirectory}${sep}packed-refs.lock`);
     if (head !== null && head.state !== "detached") {
       if (!isRefName(head.target)) return { code: "GIT_FAILED" };
       const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
@@ -411,13 +487,15 @@ export async function observedLocks(ctx: ObserveContext, head: Head | null): Pro
       const raw = out.take();
       const malformed: Failure = { code: "MALFORMED_GIT_OUTPUT" };
       if (out.limited || raw.length === 0 || raw[raw.length - 1] !== 0x0a) return malformed;
-      let ref: string;
+      let line: string;
       try {
-        ref = UTF8.decode(raw.subarray(0, -1));
+        line = UTF8.decode(raw.subarray(0, -1));
       } catch {
         return malformed;
       }
-      if (ref.includes("\n") || !isChannelPath(ref)) return malformed;
+      // Linux Git prints a Linux path. A name without a UNC form is malformed here.
+      const ref = w.wsl === undefined ? line : wslIdentityPath(w.wsl.distro, line);
+      if (ref === null || line.includes("\n") || !isChannelPath(ref)) return malformed;
       paths.push(`${ref}.lock`);
     }
   }
@@ -458,13 +536,22 @@ export interface RetainedPublication {
   repositoryId: string;
   before: string | null;
   candidate: string | null;
+  // WSL: the token of the `lock` request (contract §4 "Lock token"). Recovery removes nothing with it (contract §8).
+  token?: string;
 }
 
 export type Ending = Refusal | Stop | { published: true };
 
+// The owned lock that reconciliation removes. A WSL lock without a `lock` reply removes by its token alone.
+export interface HeldLock {
+  path: string;
+  release(): Promise<WslRemoved | Failure | Stop>;
+}
+
 // The owned files and the progress of one publication.
 export interface PublicationRun {
-  lock: IndexLock | null;
+  lock: HeldLock | null;
+  // The verified candidate. Its digest is the one that a WSL `remove` names (contract §4 "WSL index publication").
   candidate: Candidate | null;
   // The Git-resolved form (`besideIndex`).
   candidatePath: string | null;
@@ -498,16 +585,17 @@ export interface PublicationReconciliation {
   markerId: string;
   rec: ReturnType<typeof recording>;
   // Its `runner` is `rec`.
-  ctx: ObserveContext;
+  ctx: PublishContext;
   path: Uint8Array;
   binding: Pick<CheckpointBinding, "head" | "index" | "operationState">;
   run: PublicationRun;
   ending: Ending;
   unexpected: boolean;
   foreign: string[];
-  releaseOwned: (processesEnded: boolean) => Promise<void>;
+  // True: a WSL `remove` left the ownership unknown.
+  releaseOwned: (processesEnded: boolean) => Promise<boolean>;
   // True: the working file differs from the binding.
-  working: (ctx: ObserveContext) => Promise<Fact<boolean>>;
+  working: (ctx: PublishContext) => Promise<Fact<boolean>>;
 }
 
 // The terminal event of one reconciliation. `known`: the outcome is not `unknown`, so `resolved` follows. `result` holds no `foreign`.
@@ -525,25 +613,59 @@ function unknownOf(failed: Failure | Stop, refusal: Refusal | null): Decision {
   return { event, cause: diagnosticCause(code, refusal, undefined), known: false };
 }
 
+// Contract §4 "WSL index publication": after publication, a digest equal to a retained digest reads no index bytes.
+// Neither retained index holds an entry above stage 0: acceptance refused a conflicted index, and step 6 verified the candidate.
+async function wslIndexAfter(ctx: WslContext, bound: RawIndexPart, candidate: string | null): Promise<Fact<IndexFacts | WslIndexFacts>> {
+  const read = await wslIndexDigest(ctx);
+  if (!("value" in read)) return read;
+  const part = read.value.index;
+  const digest = part.kind === "digest" ? part.sha256 : null;
+  if (part.kind === "error" || part.kind === "bound" || (digest !== bound.rawIndexDigest && digest !== candidate)) return wslIndexOf(ctx, bound);
+  return { value: { raw: { link: digest === bound.rawIndexDigest ? (bound.sharedIndex?.hash ?? null) : null }, digest, unmerged: false, reply: read.value } };
+}
+
+// Contract §4 "Process end": no fact, or a `remove` that leaves ownership unknown, gives `unknown`.
+const OWNERSHIP_UNKNOWN: Failure = { code: "GIT_FAILED" };
+
 // Research R3 step 14 and contract §8: the reconciliation of an `applyHunk` or `applyFile` publication.
 export async function reconcilePublication(r: PublicationReconciliation): Promise<void> {
   const { registry, operationId, run, ending, binding, foreign } = r;
+  const wsl = r.ctx.workspace.wsl !== undefined;
   const deadline = isStop(ending) && ending.stop === "deadline";
   const canceled = enterReconciling(registry, operationId, deadline, run.executionLast);
   // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
-  // Only an exit reply of these reads is a fresh process-end fact for the owned candidate.
+  // Outside WSL, only an exit reply of these reads is a fresh process-end fact for the owned candidate.
   r.rec.reset();
   const quiet = { ...r.ctx, signal: new AbortController().signal };
-  const [observed, working] = await Promise.all([observeState(quiet, r.path, false), settled(quiet.signal, r.working(quiet))]);
-
   const refusal = "code" in ending ? ending : null;
   foreign.push(...(refusal?.foreign ?? []));
-  await r.releaseOwned(r.rec.last === 0);
+  const observe = (index?: Promise<Fact<IndexFacts | WslIndexFacts>>) => Promise.all([observeState(quiet, r.path, false, index), settled(quiet.signal, r.working(quiet))] as const);
 
-  const failedRead = [observed.head, observed.index, observed.operationState, working].find((f) => !("value" in f)) as Failure | Stop | undefined;
-  let decision = failedRead !== undefined ? unknownOf(failedRead, refusal) : classifyPublication(r, observed, (working as { value: boolean }).value, refusal, canceled, deadline);
+  let observed: StateObservation | null = null;
+  let working: Fact<boolean> | null = null;
+  let lost = false;
+  if (!wsl) {
+    [observed, working] = await observe();
+    await r.releaseOwned(r.rec.last === 0);
+  } else {
+    // Contract §4 "Process end": a stopped walk can still change files, so nothing decides and nothing is removed before this fact.
+    let decides = (await processEnd(quiet)) === "fact";
+    if (decides) {
+      [observed, working] = await observe(wslIndexAfter(quiet, binding.index, run.candidate?.digest ?? null));
+      const index = observed.index;
+      // A published candidate replaced the index with the lock, so no owned lock remains.
+      if ("value" in index && run.publishStarted && index.value.digest === run.candidate?.digest) run.lock = null;
+      // Contract §4 "Outcome after a stopped walk": an `index` part `absent`, `bound`, or `error` decides nothing, so the owned files stay foreign.
+      decides = "value" in index && !(index.value.digest === null && run.publishStarted && !run.published);
+    }
+    lost = await r.releaseOwned(decides);
+  }
+
+  const failedRead = observed === null || working === null ? OWNERSHIP_UNKNOWN : ([observed.head, observed.index, observed.operationState, working].find((f) => !("value" in f)) as Failure | Stop | undefined);
+  let decision =
+    failedRead !== undefined ? unknownOf(failedRead, refusal) : lost ? unknownOf(OWNERSHIP_UNKNOWN, refusal) : classifyPublication(r, observed!, (working as { value: boolean }).value, refusal, canceled, deadline);
   if (decision.event.type !== "intended-effects-confirmed") {
-    const locks = await observedLocks(quiet, "value" in observed.head ? observed.head.value : binding.head);
+    const locks = await observedLocks(quiet, observed !== null && "value" in observed.head ? observed.head.value : binding.head);
     if (Array.isArray(locks)) {
       for (const path of locks) if (foreign.length < RECOVERY_FOREIGN_CAP && !foreign.includes(path)) foreign.push(path);
     } else if (decision.known) decision = unknownOf(locks, refusal);
@@ -560,7 +682,7 @@ export async function reconcilePublication(r: PublicationReconciliation): Promis
 function classifyPublication(r: PublicationReconciliation, observed: StateObservation, workingFiles: boolean, refusal: Refusal | null, canceled: boolean, deadline: boolean): Decision {
   const { registry, operationId, run, binding } = r;
   const head = (observed.head as { value: Head }).value;
-  const digest = (observed.index as { value: IndexFacts }).value.digest;
+  const digest = (observed.index as { value: IndexFacts | WslIndexFacts }).value.digest;
   const operationState = (observed.operationState as { value: OperationState }).value;
   const effectsWith = (index: boolean) => ({
     head: !Bun.deepEquals(head, binding.head, true),
@@ -591,7 +713,7 @@ function classifyPublication(r: PublicationReconciliation, observed: StateObserv
 }
 
 export interface HunkPublisherOptions {
-  runner: GitRunner;
+  runner: GitRunner & WslRunner;
   trust: Trust;
   reader: Pick<WorkspaceReader, "operationState">;
   comparisons: Pick<ComparisonReader, "get">;
@@ -610,8 +732,8 @@ export interface PublicationStores {
 }
 
 export interface PublicationSession {
-  ctx: ObserveContext;
-  rec: ReturnType<typeof recording>;
+  ctx: PublishContext;
+  rec: Recording<PublishContext["runner"]>;
   run: PublicationRun;
   path: Uint8Array;
 }
@@ -625,7 +747,7 @@ export interface PublicationSteps<A extends Admission> {
   // The steps between the owned lock and `publish()`. Null: `run.candidate` goes to `publish()`.
   prepare(a: A, s: PublicationSession): Promise<Refusal | Stop | null>;
   // True: the working file differs from the binding.
-  working(a: A, ctx: ObserveContext, path: Uint8Array): Promise<Fact<boolean>>;
+  working(a: A, ctx: PublishContext, path: Uint8Array): Promise<Fact<boolean>>;
 }
 
 type PublicationRequest = Extract<ServiceRequest, { operation: "applyHunk" | "applyFile" }>;
@@ -657,16 +779,18 @@ async function publish<A extends Admission>(o: HunkPublisherOptions & Publicatio
   if (!entered.ok) return notEntered(registry, operationId, entered);
   const marker = entered;
   const rec = recording(o.runner);
-  const ctx: ObserveContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
+  const ctx: PublishContext = { runner: rec, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
   const run: PublicationRun = { lock: null, candidate: null, candidatePath: null, publishing: false, publishStarted: false, published: false, executionLast: 0, listing: null };
   const foreign: string[] = [];
   // Owned files. `release` removes the lock only while the path names the owned file (contract §4). Each path is handled once.
-  const releaseOwned = async (processesEnded: boolean) => {
+  const releaseOwned = async (processesEnded: boolean): Promise<boolean> => {
     const { lock, candidatePath } = run;
     run.lock = null;
     run.candidatePath = null;
+    if (w.wsl !== undefined) return releaseWsl(ctx, lock, candidatePath, run.candidate?.digest ?? null, processesEnded, foreign);
     if (lock !== null && (await lock.release().catch(() => "remove-failed" as const)) === "remove-failed") foreign.push(lock.path);
     if (candidatePath !== null) foreign.push(...(await removeOwned([candidatePath, `${candidatePath}.lock`], processesEnded)));
+    return false;
   };
   const extra = () => (foreign.length > 0 ? { foreign } : undefined);
   try {
@@ -683,17 +807,33 @@ async function publish<A extends Admission>(o: HunkPublisherOptions & Publicatio
       }
       // Research R3 step 4 and contract §4 "File staging" step 2.
       if (signal.aborted) return CANCELED;
-      const locked = await createIndexLock(w.indexPath);
-      if (!locked.ok) {
-        let count: number | null = null;
-        if ("code" in locked) {
-          const answer = await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null);
-          count = typeof answer === "number" ? answer : null;
+      const refuse = async (locked: Exclude<LockResult | WslLockResult, { ok: true }>) => {
+        const answer = "ok" in locked && "code" in locked ? await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null) : null;
+        return lockRefusal(locked, typeof answer === "number" ? answer : null, o.trust.currentTrustId(w) !== undefined);
+      };
+      let publishVia: (c: Candidate) => Promise<PublishResult | WslPublishResult | Failure | Stop>;
+      if (w.wsl !== undefined) {
+        // Contract §4 "Process end": this run starts the anchor of the operation before `lock`.
+        if ((await processEnd(ctx)) === "noFact") return stepFailed();
+        if (signal.aborted) return CANCELED;
+        const locked = await wslLock(ctx);
+        if ("unknown" in locked) {
+          run.lock = { path: locked.unknown.path, release: locked.unknown.removeByToken };
+          kept.token = locked.unknown.token;
         }
-        return lockRefusal(locked, count, o.trust.currentTrustId(w) !== undefined);
+        if (!("ok" in locked) || !locked.ok) return refuse(locked);
+        const lock = locked.lock;
+        run.lock = lock;
+        kept.token = lock.token;
+        publishVia = (c) => lock.publish(basename(c.path), c.digest, signal);
+      } else {
+        const locked = await createIndexLock(w.indexPath);
+        if (!locked.ok) return refuse(locked);
+        const lock = locked.lock;
+        run.lock = lock;
+        publishVia = (c) => lock.publish(c.bytes, c.mtimeNs);
       }
-      const lock = locked.lock;
-      run.lock = lock;
+      const lockPath = run.lock.path;
       const refused = await p.prepare(a, { ctx, rec, run, path });
       if (refused !== null) return refused;
       const candidate = run.candidate!;
@@ -702,10 +842,18 @@ async function publish<A extends Admission>(o: HunkPublisherOptions & Publicatio
       registry.progress(operationId, "publication");
       run.publishing = true;
       run.publishStarted = true;
-      const result = await lock.publish(candidate.bytes, candidate.mtimeNs);
+      const result = await publishVia(candidate);
+      // A WSL refusal is no typed result, so `publishing` stays set (contract §9 "publish without a typed result").
+      if (!isStop(result) && !("published" in result)) return refusalOf(result);
       run.publishing = false;
-      if (!result.published) return publishRefusal(result, lock.path);
+      if (isStop(result)) return result;
+      if (!result.published) {
+        // Contract §4 "WSL index publication": after `notOwned`, no owned lock remains at the path.
+        if (result.reason === "notOwned") run.lock = null;
+        return publishRefusal(result, lockPath);
+      }
       run.published = true;
+      run.lock = null;
       await o.hunkCheckpoint?.({ step: 13, operationId });
       return { published: true };
     };
@@ -768,6 +916,7 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     const hunk = c.hunks.find((h) => h.hunkId === hunkId);
     if (hunk === undefined) return { code: "UNKNOWN_TARGET" };
     if (direction !== directionOf(c)) return { code: "INVALID_REQUEST" };
+    if (c.sharedRepository) return SHARED_REPOSITORY;
     const accepted = o.approvals.accept(key);
     if (!accepted.ok) return { code: "code" in accepted ? accepted.code : "UNKNOWN_TARGET" };
     const approval = accepted.approval;
@@ -782,11 +931,18 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
   // Research R3 steps 5 to 12 under the lock.
   async function prepare({ approval: { binding }, comparison: c, hunk }: Admitted, { ctx, rec, run, path }: PublicationSession): Promise<Refusal | Stop | null> {
     const { workspace: w, signal, operationId } = ctx;
+    const wsl = w.wsl !== undefined;
     const checkpoint = async (step: 5 | 11): Promise<Refusal | Stop | null> => {
       const policy = await observePolicy(ctx, path);
       if ("listing" in policy) run.listing = policy.listing;
-      const refused = checkpointRefusal(binding, policy, await observeState(ctx, path, binding.working !== null), w.objectFormat);
+      const refused = checkpointRefusal(binding, policy, await observeState(ctx, path, binding.working !== null, canonicalIndex(ctx, binding.index)), w.objectFormat, wsl);
       if (refused !== null) return refused;
+      // A WSL read folds no working version, so the whole-file digest of the comparison decides last (contract §4 "Binding", §9).
+      if (wsl && c.scope !== "head-to-index") {
+        const read = differs(c.working, await settled(signal, wholeWorking(ctx, path)));
+        if (!("value" in read)) return isStop(read) ? read : refusalOf(read);
+        if (read.value) return STALE;
+      }
       await o.hunkCheckpoint?.({ step, operationId });
       return signal.aborted ? CANCELED : null;
     };
@@ -808,8 +964,9 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     return checkpoint(11);
   }
 
-  // Contract §8: the bound working version, else no working-file effect.
-  async function working({ approval: { binding } }: Admitted, ctx: ObserveContext, path: Uint8Array): Promise<Fact<boolean>> {
+  // Contract §8: the bound working version, else no working-file effect. A WSL comparison binds the whole-file digest.
+  async function working({ approval: { binding }, comparison: c }: Admitted, ctx: PublishContext, path: Uint8Array): Promise<Fact<boolean>> {
+    if (ctx.workspace.wsl !== undefined) return c.scope === "head-to-index" ? { value: false } : differs(c.working, await wholeWorking(ctx, path));
     if (binding.working === null) return { value: false };
     const read = await workingOf(ctx.workspace, path);
     if ("changed" in read) return { value: true };

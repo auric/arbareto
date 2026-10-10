@@ -412,17 +412,20 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const { operationId } = registry.start("readComparison", request.requestId);
       return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
     }
-    // Data-model §6: the hunk and file approvals of a succeeded comparison, issued before its response. A WSL comparison issues none until T214.
+    // Data-model §6: the hunk and file approvals of a succeeded comparison, issued before its response.
     // A working-file comparison issues hunk approvals only after its working version joins the read observation (data-model §4 `workingVersions`).
     // A working version above the compared bound cannot join it. Its file approval relies on the whole-file digests of steps 3 and 7.
+    // A WSL read folds no working version. Its hunk checkpoints compare the whole-file digest that a `stage` file action binds (contract §4 "Binding").
     // `fact`: the contract §8 "Change check" fact of the entry path, taken before the comparison reads the working file.
     const path = new Uint8Array(Buffer.from(found.entry.pathBytes, "base64"));
     const issue = (o: ReadResult, fact: string | null): ReadResult => {
       const id = o.result === "succeeded" ? (o.value as { comparisonId?: unknown } | undefined)?.comparisonId : undefined;
-      const c = typeof id === "string" && workspace.wsl === undefined ? comparisons.get(id) : undefined;
+      const c = typeof id === "string" ? comparisons.get(id) : undefined;
       if (c === undefined || workspace.generation !== c.generation) return o;
       const v = c.workingVersion;
-      const bound = c.scope === "head-to-index" || (v !== null && reader.bind(request.repositoryId, c.generation, v, Buffer.compare(v.path, path) === 0 ? fact : null));
+      const bound =
+        c.scope === "head-to-index" ||
+        (workspace.wsl !== undefined ? c.fileAction.direction === "stage" : v !== null && reader.bind(request.repositoryId, c.generation, v, Buffer.compare(v.path, path) === 0 ? fact : null));
       if (bound) for (const approval of hunkApprovals(c, found.snapshot, workspace)) approvals.issue(approval);
       const file = bound || c.workingVersion === null ? fileApproval(c, found.snapshot, workspace) : null;
       if (file !== null) approvals.issue(file);

@@ -143,6 +143,12 @@
                     "type": "null"
                   }
                 ]
+              },
+              "shallow": {
+                "type": "boolean"
+              },
+              "invalidUtf8": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -151,7 +157,9 @@
               "subject",
               "author",
               "date",
-              "encoding"
+              "encoding",
+              "shallow",
+              "invalidUtf8"
             ],
             "additionalProperties": false,
             "title": "HistoryRow"

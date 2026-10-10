@@ -442,6 +442,7 @@ export type ReadEntriesResult = z.infer<typeof ReadEntriesResult>;
 
 // Contract §3 "HistoryPage result" and data-model §4 "History page". `parents` holds the effective parents in Git order.
 // `date` is the author time in seconds (Git `ident.c` `split_ident_line`). `encoding` is the `encoding` header value without control characters, or null.
+// `shallow` is true when the shallow file lists the commit. `invalidUtf8` is true when the raw subject, author name, or author email bytes are not valid UTF-8.
 export const HistoryRow = z
   .strictObject({
     oid: ObjectId,
@@ -450,6 +451,8 @@ export const HistoryRow = z
     author: z.strictObject({ name: z.string(), email: z.string() }),
     date: Count,
     encoding: z.string().regex(/^[^\u0000-\u001f\u007f-\u009f]*$/).nullable(),
+    shallow: z.boolean(),
+    invalidUtf8: z.boolean(),
   })
   .meta({ title: "HistoryRow" });
 

@@ -1,0 +1,5 @@
+{
+  "schema": "operation-result",
+  "expected": "valid",
+  "text": "{\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000256\",\"operation\":\"commit\",\"state\":\"running\",\"phase\":\"commit-handoff\",\"stalled\":true,\"stallRemedy\":{\"command\":\"& 'C:/Git/cmd/git.exe' --no-lazy-fetch -C 'C:/repo' hook run --ignore-missing pre-commit\",\"text\":\"This command runs only the pre-commit hook and does not commit. It cannot repeat a prompt from another hook or from signing.\"}}"
+}

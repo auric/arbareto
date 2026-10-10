@@ -320,10 +320,14 @@ mod tests {
                 "Escape activates no button"
             );
         }
-        assert_eq!(
-            confirmation(Dialog::ServiceStopped).text,
-            "Git service stopped."
-        );
+        // plan.md "Required visible states", Component stopped.
+        for (dialog, text) in [
+            (Dialog::ServiceStopped, "Git service stopped."),
+            (Dialog::RendererExited, "The window stopped."),
+            (Dialog::BrowserExited, "The window browser process stopped."),
+        ] {
+            assert_eq!(confirmation(dialog).text, text, "{dialog:?}");
+        }
     }
 
     #[test]

@@ -125,6 +125,23 @@
     "stalled": {
       "type": "boolean"
     },
+    "stallRemedy": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        },
+        "text": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
     "endProcesses": {
       "type": "boolean"
     },

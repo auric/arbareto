@@ -204,6 +204,8 @@ describe("categories (data-model §5)", () => {
           entries: [],
           head: { state: "unborn", target: "refs/heads/main" },
         });
+        // T339 (a): data-model §2 `location`. The renderer reads it instead of the identity path.
+        expect(result.location).toEqual({ kind: "native" });
       }),
     TIMEOUT_MS,
   );

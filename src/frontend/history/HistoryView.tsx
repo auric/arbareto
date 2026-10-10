@@ -11,7 +11,7 @@ import { shrinkInOrder, type Part } from "../lib/fit";
 import { AncestryCell, LANE_SPACING } from "./AncestryCell";
 import { BOUNDARY_TEXT, layoutHistory, type Cell, type Layout } from "./lanes";
 
-// plan.md "History graph design", "Long text", "Keyboard and focus" (Roles, File/history list), "Compact token system" (selection marker, badges), and "Required visible states".
+// plan.md "History graph design", "Long text", "Keyboard and focus" (Roles, History list), "Compact token system" (selection marker, badges), and "Required visible states".
 
 export { SCOPE_TEXT };
 export const LIMIT_TEXT: Record<NonNullable<Layout["limit"]>["reached"], string> = {
@@ -21,8 +21,6 @@ export const LIMIT_TEXT: Record<NonNullable<Layout["limit"]>["reached"], string>
 const NO_SELECTION = "Select a commit to see its details";
 const NO_FILES = "Changed files are not shown in this version.";
 const NO_COMMITS = "No commits yet";
-// plan.md "Chosen layout, sizes, and DPI": the constrained History list region minimum.
-const CONSTRAINED_LIST_MIN = 220;
 
 const shortId = (oid: string) => oid.slice(0, 12);
 // Git ref names: a local branch is `refs/heads/<name>` (git-check-ref-format(1)).
@@ -184,12 +182,14 @@ export type HistoryViewProps = {
   profile: Profile;
   /** The Windows text size factor. */
   textScale?: number;
+  /** The list region minimum of `historyFit` (plan.md "Constrained sizes"). The default is the profile minimum. */
+  listMin?: number;
   /** The author time format. Tests pin its time zone and locale. */
   dateFormat?: Intl.DateTimeFormat;
 };
 
 /** The History list and the "Selected commit" inspector, stacked. */
-export function HistoryView({ page, entries, selectedOid, onSelect, density, profile, textScale = 1, dateFormat = LOCAL_DATE }: HistoryViewProps) {
+export function HistoryView({ page, entries, selectedOid, onSelect, density, profile, textScale = 1, listMin: fitted, dateFormat = LOCAL_DATE }: HistoryViewProps) {
   const ids = { scope: useId(), limit: useId(), inspector: useId() };
   const rows = page?.rows ?? [];
   const layout = useMemo(() => (page === null ? null : layoutHistory(page)), [page]);
@@ -239,7 +239,8 @@ export function HistoryView({ page, entries, selectedOid, onSelect, density, pro
     elements.current.get(oid)?.scrollIntoView({ block: "nearest" });
   }
 
-  const listMin = profile === "constrained" ? CONSTRAINED_LIST_MIN : metrics(density, textScale).historyListMin;
+  const m = metrics(density, textScale);
+  const listMin = fitted ?? (profile === "constrained" ? m.constrainedListMin : m.historyListMin);
   const head = page?.head ?? null;
 
   return (
@@ -255,7 +256,7 @@ export function HistoryView({ page, entries, selectedOid, onSelect, density, pro
           aria-labelledby={ids.scope}
           aria-describedby={limit === undefined ? undefined : ids.limit}
           className="overflow-y-auto px-1"
-          style={profile === "constrained" ? { height: listMin } : { flex: "1 1 0", minHeight: listMin }}
+          style={{ flex: "1 1 0", minHeight: listMin }}
           onKeyDown={onKeyDown}
         >
           {layout !== null && head !== null
@@ -311,7 +312,7 @@ export function HistoryView({ page, entries, selectedOid, onSelect, density, pro
             : null}
         </div>
       )}
-      <section aria-labelledby={ids.inspector} className="shrink-0 overflow-auto border-t border-divider p-2">
+      <section aria-labelledby={ids.inspector} className="overflow-auto border-t border-divider p-2" style={{ flex: "0 1 auto", minHeight: m.reducedPaneMin }}>
         <h2 id={ids.inspector} className="font-semibold">
           Selected commit
         </h2>

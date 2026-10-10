@@ -17,6 +17,8 @@ export const MARKER_FAILED_REMEDY = "Arbareto could not save its recovery record
 export interface MutationEntry {
   operationId: string;
   kind: MutationStarted["kind"];
+  // Only `applyHunk` and `applyFile` carry it (contract §6 "Mutation frames").
+  direction?: MutationStarted["direction"];
   workspace: Pick<Workspace, "repositoryId" | "worktreeRoot" | "commonDirectory" | "commonIdentity">;
 }
 
@@ -56,7 +58,14 @@ export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "c
     };
     let reply;
     try {
-      reply = await runner.started({ operationId: entry.operationId, repositoryId: w.repositoryId, kind: entry.kind, worktreeRoot: w.worktreeRoot, commonDirectory: w.commonDirectory });
+      reply = await runner.started({
+        operationId: entry.operationId,
+        repositoryId: w.repositoryId,
+        kind: entry.kind,
+        ...(entry.direction === undefined ? {} : { direction: entry.direction }),
+        worktreeRoot: w.worktreeRoot,
+        commonDirectory: w.commonDirectory,
+      });
     } catch (error) {
       if (error instanceof RunnerRefusal) return refuse({ ok: false, code: error.code });
       slots.delete(slot);

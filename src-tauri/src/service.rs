@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::bootstrap::{Contexts, PhysicalIdentity};
-use crate::close::{self, Decision, Owner, Running};
+use crate::close::{self, Decision, Mutation, Owner, Running};
 use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered, WslProposal};
 use crate::env_sanitize::sanitize;
 use crate::framing::{FrameError, read_frame, write_frame};
@@ -823,11 +823,13 @@ fn mutation(
         MutationRequest::Started {
             operation_id,
             kind,
+            direction,
             worktree_root,
             common_directory,
             ..
         } => {
             let call_id = call_id.ok_or(MutationCode::InvalidRequest)?;
+            let mutation = Mutation::of(kind, direction).ok_or(MutationCode::InvalidRequest)?;
             let common = PathBuf::from(common_directory.as_str());
             // A service exit after the frame read changes the epoch, and the late finish then takes no mutex.
             let epoch = markers.epoch();
@@ -836,7 +838,6 @@ fn mutation(
                 Arc::clone(running),
                 call_id.to_string(),
             );
-            let started_kind = kind;
             let (operation, kind) = (operation_id.to_string(), kind.to_string());
             let worktree = PathBuf::from(worktree_root.as_str());
             requests.frame_walk(
@@ -855,7 +856,7 @@ fn mutation(
                     let (reply, marked) =
                         self::started(&markers, requests, &started, &call, epoch, identity);
                     if marked {
-                        running.started(&operation, started_kind);
+                        running.started(&operation, mutation);
                     }
                     reply
                 },
@@ -989,8 +990,6 @@ fn renderer_marker(marker: &Marker) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::schema::mutation_request::StartedKind;
 
     use crate::bootstrap::tests::Hold;
     use crate::dialogs::tests::{Fake, Press};
@@ -1513,19 +1512,42 @@ mod tests {
     fn a_mutation_counts_as_running_from_its_marker_reply_to_ended() {
         let shell = Shell::new();
         assert!(shell.started(FIRST, &shell.fixture.path("gone")).is_some());
-        assert!(shell.running.kinds().is_empty(), "a failure reply");
+        assert!(shell.running.mutations().is_empty(), "a failure reply");
         let worktree = shell.folder("repo");
         shell.folder("repo\\.git");
         assert!(shell.started(SECOND, &worktree).expect("reply")["markerId"].is_string());
-        assert_eq!(shell.running.kinds(), [StartedKind::Commit]);
+        assert_eq!(shell.running.mutations(), [Mutation::Commit]);
         assert_eq!(
             shell.started(THIRD, &worktree),
             Some(json!({ "type": "started", "callId": CALL, "busy": true }))
         );
         assert_eq!(shell.ended(THIRD), None);
-        assert_eq!(shell.running.kinds(), [StartedKind::Commit], "a busy reply");
+        assert_eq!(
+            shell.running.mutations(),
+            [Mutation::Commit],
+            "a busy reply"
+        );
         assert_eq!(shell.ended(SECOND), None);
-        assert!(shell.running.kinds().is_empty(), "ended");
+        assert!(shell.running.mutations().is_empty(), "ended");
+    }
+
+    /// T339 (d): the close prompt names an unstage by the direction of the `started` frame (contract §6 "Mutation frames").
+    #[test]
+    fn a_hunk_action_counts_as_running_with_its_direction_and_needs_one() {
+        let shell = Shell::new();
+        let worktree = shell.folder("repo");
+        shell.folder("repo\\.git");
+        let mut frame = started_frame(CALL, FIRST, &worktree);
+        frame["kind"] = json!("applyHunk");
+        assert_eq!(
+            shell.mutation(frame.clone()),
+            Some(reply::mutation_refused(CALL, MutationCode::InvalidRequest)),
+            "no direction"
+        );
+        frame["direction"] = json!("unstage");
+        let returned = shell.mutation(frame);
+        assert!(shell.answer("mutation", CALL, returned).expect("reply")["markerId"].is_string());
+        assert_eq!(shell.running.mutations(), [Mutation::HunkUnstaging]);
     }
 
     #[test]

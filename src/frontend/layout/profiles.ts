@@ -50,6 +50,9 @@ export function metrics(density: Density, textScale: number) {
     // The constrained comparison region grows through its heading and toolbar, as the narrow minimum does.
     constrainedRegionMin: 220 + 2 * g,
     historyListMin: 240,
+    constrainedListMin: 220,
+    // One pane heading and one row: the smallest constrained pane.
+    reducedPaneMin: bar + row,
     splitter: SPLITTER,
   };
 }
@@ -118,8 +121,21 @@ export function paneBounds(kind: PaneKind, input: PaneInput): Bounds {
   return { min: m.workingChangesMin, max, default: clamp(128, m.workingChangesMin, max) };
 }
 
-export type ClampInput = { client: Size; textScale: number; density: Density; bandRows: number; statusArea: number; fileBand: number; tray: number };
-export type ClampResult = { fileBand?: number; tray: number; comparison: number };
+export type FitInput = { client: Size; textScale: number; density: Density; bandRows: number; statusArea: number };
+export type ClampInput = FitInput & { fileBand: number; tray: number };
+/** `scrolls` is true only when the constrained work area cannot hold the reduced pane minima. */
+export type ClampResult = { fileBand?: number; tray: number; comparison: number; scrolls?: boolean };
+
+/** The constrained pane height: the work area less the band rows and the status area. A size without a plan.md header row count takes two rows. */
+function constrainedContent(input: FitInput, m: Metrics): number {
+  let rows = 2;
+  try {
+    rows = headerRows(input.client.width, input.textScale);
+  } catch (error) {
+    if (!(error instanceof UnmeasuredLayoutError)) throw error;
+  }
+  return input.client.height - fixedRows(m, rows) - input.bandRows * m.bandRow - input.statusArea;
+}
 
 /**
  * Clamps the remembered sizes to the space that the profile leaves.
@@ -132,8 +148,12 @@ export function clampPanes(input: ClampInput): ClampResult {
   const bandMin = m.workingChangesMin;
   const bandMax = Math.max(160, bandMin);
   if (profile === "constrained") {
-    // The work area scrolls, so only the bounds apply.
-    return { fileBand: clamp(input.fileBand, bandMin, bandMax), tray: Math.max(input.tray, m.trayMin), comparison: m.constrainedRegionMin };
+    // plan.md "Constrained sizes": no splitter, so remembered sizes do not apply. The file band shrinks first, then the tray, then the comparison.
+    const content = constrainedContent(input, m);
+    const fileBand = clamp(content - m.constrainedRegionMin - m.trayMin, m.reducedPaneMin, bandMin);
+    const tray = clamp(content - m.constrainedRegionMin - fileBand, m.reducedPaneMin, m.trayMin);
+    const comparison = Math.max(m.reducedPaneMin, content - fileBand - tray);
+    return { fileBand, tray, comparison, scrolls: fileBand + tray + comparison > content };
   }
   const workArea = workAreaHeight(client, textScale, density);
   const trayBounds = paneBounds("tray", { width: client.width, available: workArea, density, textScale });
@@ -151,6 +171,15 @@ export function clampPanes(input: ClampInput): ClampResult {
   fileBand = clamp(room - need - tray, bandMin, fileBand);
   tray = clamp(room - need - fileBand, m.trayMin, tray);
   return { fileBand, tray, comparison: Math.max(need, room - fileBand - tray) };
+}
+
+/** plan.md "Constrained sizes" for History: the inspector keeps the reduced pane minimum, and the list shrinks from 220 DIPs to one row. */
+export function historyFit(input: FitInput): { listMin: number; scrolls: boolean } {
+  const m = metrics(input.density, input.textScale);
+  if (chooseProfile(input.client, input.textScale, input.density) !== "constrained") return { listMin: m.historyListMin, scrolls: false };
+  const content = constrainedContent(input, m);
+  const listMin = clamp(content - m.paneHeading - m.reducedPaneMin, m.row, m.constrainedListMin);
+  return { listMin, scrolls: m.paneHeading + listMin + m.reducedPaneMin > content };
 }
 
 /** Arrow keys move 8 DIPs, Shift+Arrow 32, and Home/End reach the bounds. Other keys keep the value. */

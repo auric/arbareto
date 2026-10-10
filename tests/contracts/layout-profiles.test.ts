@@ -9,6 +9,7 @@ import {
   clampPanes,
   dialogSize,
   headerRows,
+  historyFit,
   layoutFloor,
   metrics,
   overflowScroll,
@@ -168,6 +169,8 @@ describe("density metrics and section minima", () => {
       expect(m.narrowComparisonMin).toBe(220);
       expect(m.constrainedRegionMin).toBe(220);
       expect(m.historyListMin).toBe(240);
+      expect(m.constrainedListMin).toBe(220);
+      expect(m.reducedPaneMin).toBe(both(58, 70)(density));
       expect(m.splitter).toBe(8);
     }
   });
@@ -255,6 +258,56 @@ describe("clamping", () => {
           }
         }
       }
+    }
+  });
+});
+
+// plan.md "Constrained sizes": the panes keep their minima, then shrink toward the reduced pane minimum. The work area scrolls only when the reduced minima do not fit.
+describe("constrained sizes", () => {
+  const input = (width: number, height: number, textScale: number, density: Density, bandRows = 0) => ({ client: { width, height }, textScale, density, bandRows, statusArea: 0 });
+
+  test("Changes: the file band and the tray keep their minima, and the comparison takes the rest; remembered sizes do not apply", () => {
+    for (const [width, height, scale, density, bandRows, expected] of [
+      [960, 640, TEXT_100, "compact", 0, { fileBand: 102, tray: 144, comparison: 290, scrolls: false }],
+      [960, 640, TEXT_100, "comfortable", 0, { fileBand: 118, tray: 160, comparison: 246, scrolls: false }],
+      [960, 640, TEXT_100, "compact", 2, { fileBand: 102, tray: 144, comparison: 226, scrolls: false }],
+      // The file band shrinks first, then the tray, then the comparison.
+      [1280, 800, TEXT_225, "compact", 0, { fileBand: 134.5, tray: 166.5, comparison: 265, scrolls: false }],
+      [720, 480, TEXT_100, "compact", 0, { fileBand: 58, tray: 58, comparison: 220, scrolls: false }],
+      [720, 480, TEXT_100, "comfortable", 0, { fileBand: 70, tray: 70, comparison: 180, scrolls: false }],
+      [720, 480, TEXT_100, "compact", 2, { fileBand: 58, tray: 58, comparison: 156, scrolls: false }],
+      // Three reduced minima exceed the 246 and 220 DIP work areas.
+      [720, 480, TEXT_225, "compact", 0, { fileBand: 103, tray: 103, comparison: 103, scrolls: true }],
+      [720, 480, TEXT_225, "comfortable", 0, { fileBand: 120, tray: 120, comparison: 120, scrolls: true }],
+    ] as const) {
+      expect(chooseProfile({ width, height }, scale, density)).toBe("constrained");
+      for (const remembered of [{ fileBand: 128, tray: 192 }, { fileBand: 160, tray: 400 }]) {
+        const result = clampPanes({ ...input(width, height, scale, density, bandRows), ...remembered });
+        expect(result.fileBand).toBeCloseTo(expected.fileBand, 6);
+        expect(result.tray).toBeCloseTo(expected.tray, 6);
+        expect(result.comparison).toBeCloseTo(expected.comparison, 6);
+        expect(result.scrolls).toBe(expected.scrolls);
+      }
+    }
+  });
+
+  test("History: the inspector keeps the reduced pane minimum, and the list keeps 220 DIPs, then shrinks to one row", () => {
+    for (const [width, height, scale, density, bandRows, expected] of [
+      [720, 480, TEXT_100, "compact", 0, { listMin: 220, scrolls: false }],
+      [720, 480, TEXT_100, "compact", 2, { listMin: 182, scrolls: false }],
+      [720, 480, TEXT_225, "compact", 0, { listMin: 88.5, scrolls: false }],
+      [720, 480, TEXT_225, "comfortable", 0, { listMin: 59, scrolls: true }],
+    ] as const) {
+      const result = historyFit(input(width, height, scale, density, bandRows));
+      expect(result.listMin).toBeCloseTo(expected.listMin, 6);
+      expect(result.scrolls).toBe(expected.scrolls);
+    }
+  });
+
+  test("the wide and narrow profiles never scroll the work area, and the History list keeps 240 DIPs", () => {
+    for (const density of DENSITIES) {
+      expect(clampPanes({ ...input(1280, 800, TEXT_100, density, 2), statusArea: metrics(density, TEXT_100).statusAreaMin, fileBand: 128, tray: 192 }).scrolls).toBeFalsy();
+      expect(historyFit(input(1280, 800, TEXT_100, density, 2))).toEqual({ listMin: 240, scrolls: false });
     }
   });
 });

@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::close::Mutation;
 use crate::process_requests::{Code, path};
 use crate::settings::{TRUST_RECORD_BYTES, utc_time};
 use crate::wsl::WslIdentity;
@@ -87,12 +88,18 @@ pub fn native_first(
     }
 }
 
-/// A `mutation` frame body (contract §6 "Mutation frames").
+/// A `mutation` frame body (contract §6 "Mutation frames"). JSON Schema has no rule that ties `direction` to `kind`.
 pub fn mutation_request(
     value: &Value,
 ) -> Result<mutation_request::MutationRequest, mutation_reply::RefusedCode> {
     let request = typed(value).ok_or(INVALID)?;
     paths(value, &["worktreeRoot", "commonDirectory"])?;
+    if let mutation_request::MutationRequest::Started {
+        kind, direction, ..
+    } = &request
+    {
+        Mutation::of(*kind, *direction).ok_or(INVALID)?;
+    }
     Ok(request)
 }
 
@@ -194,9 +201,12 @@ pub fn handshake(value: &Value) -> Result<handshake::Handshake, Code> {
 }
 
 /// A progress event with exactly the contract §2 fields and nonnegative counters.
+/// Only phase `wsl-starting` carries `distro` (contract §11 "Distro start").
 pub fn progress(value: &Value) -> bool {
-    typed::<progress::Progress>(value)
-        .is_some_and(|event| event.counters.values().all(|count| *count >= 0))
+    typed::<progress::Progress>(value).is_some_and(|event| {
+        event.counters.values().all(|count| *count >= 0)
+            && (event.phase == Some(progress::ProgressPhase::WslStarting)) == event.distro.is_some()
+    })
 }
 
 /// The `process`, `mutation`, and `trust` refused codes are one contract §6 list. typify gives each schema its own enum.
@@ -828,8 +838,8 @@ mod tests {
 
     /// The vector schemas that the shell reads into no generated type. The renderer and the service check them.
     /// The shell writes process, mutation, and trust replies and never reads them. It reads only the `requestId` of a response.
-    /// The shell forwards the registration, trust, workspace, entries, and history results in `Response.result` and reads no field of them.
-    const NOT_READ: [&str; 13] = [
+    /// The shell forwards the registration, trust, workspace, entries, history, and operation results in `Response.result` and reads no field of them.
+    const NOT_READ: [&str; 14] = [
         "process-reply",
         "mutation-reply",
         "trust-reply",
@@ -843,6 +853,7 @@ mod tests {
         "read-entries-result",
         "read-history-result",
         "read-comparison-result",
+        "operation-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -937,7 +948,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 95 } else { 90 },
+            if cfg!(windows) { 101 } else { 96 },
             "shell-read vectors"
         );
     }

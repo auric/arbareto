@@ -15,7 +15,7 @@ export type Registration = { repositoryId: string; generation: number; worktreeK
 
 /** The bridge operations that this module calls. `createBridge` in `bridge.ts` provides them. */
 export type RequestBridge = {
-  restoreWorkspace(): Promise<BridgeResponse>;
+  restoreWorkspace(onProgress?: OnProgress): Promise<BridgeResponse>;
   readWorkspace(target: { repositoryId: string }, payload: { refresh: boolean; check: Check }, onProgress?: OnProgress): Promise<BridgeResponse>;
   readEntries(target: Target, payload: { snapshotId: string; cursor: string }): Promise<BridgeResponse>;
   readHistory(target: Target): Promise<BridgeResponse>;
@@ -100,15 +100,9 @@ const comparisonFields = (value: unknown): ComparisonFields | null =>
   isObject(value) && typeof value.comparisonId === "string" && typeof value.snapshotId === "string" && Array.isArray(value.hunks) ? (value as ComparisonFields) : null;
 const sameHead = (a: Head, b: Head) => a.state === b.state && (a as { target?: string }).target === (b as { target?: string }).target && (a as { oid?: string }).oid === (b as { oid?: string }).oid;
 
-// Contract §11 "Route": a WSL identity is one normalized UNC path, `\\wsl.localhost\<listed distro>\…` (`wslIdentityPath`).
-// "Paths and file access": a Windows repository under a WSL prefix gets `mixed-location`, so a Windows identity never starts with it.
-const WSL_IDENTITY_PREFIX = "\\\\wsl.localhost\\";
-
-/** The distro of a WSL workspace, else null. */
+/** The distro of a WSL workspace, else null (data-model §2 `location`). */
 export function wslDistro(workspace: WorkspaceSnapshot | null): string | null {
-  const root = workspace?.identity.worktreeRoot;
-  if (root === undefined || !root.startsWith(WSL_IDENTITY_PREFIX)) return null;
-  return root.slice(WSL_IDENTITY_PREFIX.length).split("\\")[0] || null;
+  return workspace?.location.kind === "wsl" ? workspace.location.distro : null;
 }
 
 const browserClock: Clock = {

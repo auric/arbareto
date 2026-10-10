@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { z } from "zod";
-import { DamagedMarker, TRUST_BOUNDS, UtcTime } from "./channel";
+import { DamagedMarker, LinuxPath, TRUST_BOUNDS, UtcTime } from "./channel";
 import { ERROR_CODES, TERMINAL_STATES, WSL_UNAVAILABLE_REASONS, type ErrorCode } from "./errors";
 import { FILE_ACTION_REASONS } from "./file-action";
 import * as limits from "./limits";
@@ -10,6 +10,8 @@ import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, 
 import {
   ChannelPath,
   Count,
+  Direction,
+  DistroName,
   Fingerprint,
   Identifier,
   isOperationName,
@@ -25,7 +27,7 @@ import {
 } from "./operations";
 import { ATTRIBUTION_REASONS, OPERATION_STATES } from "./outcome";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "./strict-json";
-import { SubmoduleRowResult } from "./submodules";
+import { StallRemedy, SubmoduleRowResult } from "./submodules";
 
 const ErrorCodeSchema = z.enum(ERROR_CODES as [ErrorCode, ...ErrorCode[]]);
 
@@ -50,7 +52,6 @@ function op<N extends OperationName, T extends z.ZodRawShape, P extends z.ZodTyp
     .meta({ title: `${title}Request` });
 }
 
-const Direction = z.enum(["stage", "unstage"]);
 // Git 2.55.0 rejects a `commit -F` message that holds only U+0020, U+0009, U+000A, and U+000D. U+000B, U+000C, U+00A0, and U+3000 commit.
 // zod `max` counts code points, which never exceed UTF-8 bytes. The refinement checks the contract §5 byte bound.
 const CommitMessage = z
@@ -409,6 +410,14 @@ export const RecoveryStatement = z
   .meta({ title: "RecoveryStatement" });
 export type RecoveryStatement = z.infer<typeof RecoveryStatement>;
 
+// Data-model §2 `location`: the native route, or a WSL distro by its listed name with the approved Git of that distro (contract §11 "Git per distro").
+export const WorkspaceLocation = z
+  .discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("native") }).meta({ title: "NativeLocation" }),
+    z.strictObject({ kind: z.literal("wsl"), distro: DistroName, git: z.strictObject({ path: LinuxPath, version: Text.min(1) }) }).meta({ title: "WslLocation" }),
+  ])
+  .meta({ title: "WorkspaceLocation" });
+
 // Contract §3 `readWorkspace` with a retained snapshot: the summary, `entryCount`, the first page, and the cursor of the next page or null.
 export const WorkspaceSnapshot = z
   .strictObject({
@@ -427,6 +436,7 @@ export const WorkspaceSnapshot = z
     recoveryState: RecoveryState,
     completeness: Completeness,
     hunkEligibility: HunkEligibility,
+    location: WorkspaceLocation,
     // Contract §12 "Discovery notice": `count` has no bound. `paths` holds the first display paths in index order, within the §5 submodule review bound.
     submoduleNotice: z.strictObject({ count: Count, paths: z.array(z.string()).max(limits.SUBMODULE_REVIEW_SUBMODULES), filter: z.enum(["applied", "skipped"]) }),
     entryCount: Count,
@@ -559,20 +569,24 @@ export type Comparison = z.infer<typeof Comparison>;
 export type ComparisonHunk = z.infer<typeof ComparisonHunk>;
 
 // Contract §3 `cancel` and `getOperation`: the current or retained state of an issued operation (data-model §7).
-export const OperationResult = z.strictObject({
-  operationId: Identifier,
-  operation: z.enum(OPERATION_NAMES),
-  state: z.enum(OPERATION_STATES),
-  phase: Phase.optional(),
-  code: ErrorCodeSchema.optional(),
-  cause: z.string().optional(),
-  reason: z.string().optional(),
-  stalled: z.boolean().optional(),
-  endProcesses: z.boolean().optional(),
-  lingering: z.boolean().optional(),
-  lingeringDescendants: Count.optional(),
-  rowId: Identifier.optional(),
-});
+// Contract §6 "Activity and stall notice": `stallRemedy` exists only while `stalled` is true.
+export const OperationResult = z
+  .strictObject({
+    operationId: Identifier,
+    operation: z.enum(OPERATION_NAMES),
+    state: z.enum(OPERATION_STATES),
+    phase: Phase.optional(),
+    code: ErrorCodeSchema.optional(),
+    cause: z.string().optional(),
+    reason: z.string().optional(),
+    stalled: z.boolean().optional(),
+    stallRemedy: StallRemedy.optional(),
+    endProcesses: z.boolean().optional(),
+    lingering: z.boolean().optional(),
+    lingeringDescendants: Count.optional(),
+    rowId: Identifier.optional(),
+  })
+  .refine((r) => r.stallRemedy === undefined || r.stalled === true);
 
 // Contract §3 `currentSession`: plan.md "Windows text size" gives the factor range.
 export const SessionResult = z.strictObject({ sessionId: Identifier, textScale: z.number().min(1).max(2.25) });

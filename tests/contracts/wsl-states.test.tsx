@@ -15,6 +15,7 @@ const { createRoot } = await import("react-dom/client");
 const { Workbench } = await import("../../src/frontend/app/Workbench");
 const { RepositoryMenu } = await import("../../src/frontend/app/RepositoryMenu");
 const { RepositoryRefused, WslStarting, WSL_START_CANCELED_TEXT } = await import("../../src/frontend/app/RepositoryStates");
+type Location = WorkspaceSnapshot["location"];
 const { Menubar } = await import("../../src/frontend/components/ui/menubar");
 
 // tasks.md T216. plan.md "Header layout" and "Required visible states" (WSL location, Starting WSL distro, Repository refused). Contract §9 and §11.
@@ -42,7 +43,11 @@ const REGISTRATION = { repositoryId: crypto.randomUUID(), generation: 1, worktre
 const succeeded = (result: unknown) => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", repositoryGeneration: 1, result });
 // Contract §11 "Route": a WSL identity is the normalized UNC path with the `\\wsl.localhost\` prefix and the listed distro spelling.
 const wslRoot = (distro: string) => `\\\\wsl.localhost\\${distro}\\home\\tester\\repo`;
-function snapshot(root: string): WorkspaceSnapshot {
+const DISTRO_GIT = { path: "/usr/bin/git", version: "2.55.0" };
+// Data-model §2 `location`: the service states it, and the renderer never derives it from the identity path.
+const wslAt = (distro: string): Location => ({ kind: "wsl", distro, git: DISTRO_GIT });
+const NATIVE: Location = { kind: "native" };
+function snapshot(root: string, location: Location): WorkspaceSnapshot {
   return {
     generation: 1,
     snapshotId: crypto.randomUUID(),
@@ -52,6 +57,7 @@ function snapshot(root: string): WorkspaceSnapshot {
     recoveryState: "ready",
     completeness: { state: "complete" },
     hunkEligibility: { eligible: true },
+    location,
     submoduleNotice: { count: 0, paths: [], filter: "applied" },
     entryCount: 0,
     entries: [],
@@ -82,7 +88,7 @@ async function show(node: ReactNode): Promise<HTMLElement> {
 
 const Empty = () => null;
 // Mounts the workbench, restores one registration, and answers its first full read with a snapshot at `root`.
-async function workbench(root: string, textScale = 1) {
+async function workbench(root: string, location: Location, textScale = 1) {
   const double = bridgeDouble();
   const host = await show(
     <Workbench
@@ -94,16 +100,40 @@ async function workbench(root: string, textScale = 1) {
       HistoryView={Empty}
     />,
   );
-  await act(async () => double.pending("readWorkspace").resolve(succeeded(snapshot(root))));
+  await act(async () => double.pending("readWorkspace").resolve(succeeded(snapshot(root, location))));
   await settle();
   return { ...double, host };
 }
+const wslWorkbench = (distro: string, textScale = 1) => workbench(wslRoot(distro), wslAt(distro), textScale);
 
 const badge = (host: ParentNode) => host.querySelector<HTMLElement>("header [data-slot='wsl-badge']");
 
+async function openRepositoryMenu(host: HTMLElement): Promise<string> {
+  const trigger = [...host.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => text(e) === "Repository")!;
+  await act(async () => trigger.focus());
+  await act(async () => trigger.click());
+  await settle();
+  return text(document.querySelector('[data-slot="menubar-content"]')!);
+}
+
 describe("WSL location", () => {
+  // T339 (a): data-model §2 `location`.
+  test("the snapshot location decides the badge, never the identity path", async () => {
+    expect(text(badge((await workbench(wslRoot(DISTRO), wslAt("Other-Distro"))).host)!)).toContain("WSL: Other-Distro");
+    expect(badge((await workbench(wslRoot(DISTRO), NATIVE)).host)).toBeNull();
+  });
+
+  // T339 (c): the snapshot location carries the approved distro Git.
+  test("the workbench repository menu shows the distro Git path and version of the location", async () => {
+    const menu = await openRepositoryMenu((await wslWorkbench(DISTRO)).host);
+    const label = menu.indexOf(`WSL: ${DISTRO}`);
+    expect(label).toBeGreaterThanOrEqual(0);
+    expect(menu.indexOf(`Git: ${DISTRO_GIT.path}`)).toBeGreaterThan(label);
+    expect(menu.indexOf(`Version ${DISTRO_GIT.version}`)).toBeGreaterThan(label);
+  });
+
   test("a WSL workspace shows the outline badge WSL: <distro> after the path, as text", async () => {
-    const { host } = await workbench(wslRoot(DISTRO));
+    const { host } = await wslWorkbench(DISTRO);
     const found = badge(host);
     expect(found).not.toBeNull();
     expect(text(found!)).toContain(`WSL: ${DISTRO}`);
@@ -115,19 +145,19 @@ describe("WSL location", () => {
   });
 
   test("a Windows workspace shows no WSL badge", async () => {
-    const { host } = await workbench("C:\\repo");
+    const { host } = await workbench("C:\\repo", NATIVE);
     expect(badge(host)).toBeNull();
     expect(text(host.querySelector("header")!)).not.toContain("WSL:");
   });
 
   test("the header badge has the fixed 160 DIP width times the text factor, at factors 1 and 2.25", async () => {
-    expect(badge((await workbench(wslRoot(DISTRO), 1)).host)!.style.width).toBe("160px");
-    expect(badge((await workbench(wslRoot(DISTRO), 2.25)).host)!.style.width).toBe("360px");
+    expect(badge((await wslWorkbench(DISTRO, 1)).host)!.style.width).toBe("160px");
+    expect(badge((await wslWorkbench(DISTRO, 2.25)).host)!.style.width).toBe("360px");
   });
 
   test("a 30-character distro name gets an end ellipsis, WSL: stays whole, and the accessible name holds the full label", async () => {
     expect(LONG_DISTRO).toHaveLength(30);
-    const found = badge((await workbench(wslRoot(LONG_DISTRO))).host)!;
+    const found = badge((await wslWorkbench(LONG_DISTRO)).host)!;
     const label = found.querySelector(".sr-only");
     expect(label?.textContent).toBe(`WSL: ${LONG_DISTRO}`);
     const visible = [...found.querySelectorAll<HTMLElement>("[aria-hidden='true']")];
@@ -137,14 +167,7 @@ describe("WSL location", () => {
   });
 
   test("the repository menu shows the full WSL: <distro> label", async () => {
-    const { host } = await workbench(wslRoot(LONG_DISTRO));
-    const trigger = [...host.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => text(e) === "Repository")!;
-    await act(async () => trigger.focus());
-    await act(async () => trigger.click());
-    await settle();
-    const menu = document.querySelector('[data-slot="menubar-content"]');
-    expect(menu).not.toBeNull();
-    expect(text(menu!)).toContain(`WSL: ${LONG_DISTRO}`);
+    expect(await openRepositoryMenu((await wslWorkbench(LONG_DISTRO)).host)).toContain(`WSL: ${LONG_DISTRO}`);
   });
 
   test("the repository menu shows the label above the distro Git path and version", async () => {
@@ -199,6 +222,100 @@ describe("Starting WSL distro", () => {
 
   test("the canceled text is the plan.md sentence", () => {
     expect(WSL_START_CANCELED_TEXT).toBe("WSL start canceled. The distro can keep starting.");
+  });
+});
+
+// T218 and T339 (b): the workbench mounts WslStarting for phase `wsl-starting` of a registration or restore (contract §11 "Distro start").
+describe("Starting WSL distro in the workbench", () => {
+  const OPERATION = crypto.randomUUID();
+  const starting = (requestId: string) => ({ requestId, operationId: OPERATION, state: "running", phase: "wsl-starting", counters: {}, distro: DISTRO });
+  const accepted = (requestId: string) => ({ requestId, operationId: OPERATION, state: "accepted", counters: {} });
+  const area = (host: ParentNode) => host.querySelector("[data-slot='status-area']")!;
+  const statusBar = (host: ParentNode) => host.querySelector("footer [role='status']")!;
+  const button = (host: ParentNode, label: string) => [...host.querySelectorAll("button")].find((b) => text(b) === label);
+  const STARTING_TEXT = `Starting WSL distro ${DISTRO}…`;
+
+  async function mount(props: Record<string, unknown> = {}) {
+    const double = bridgeDouble();
+    const host = await show(<Workbench bridge={double.bridge as never} ChangesPane={Empty} ComparisonView={Empty} HistoryView={Empty} {...props} />);
+    return { ...double, host };
+  }
+
+  async function startOpen() {
+    const mounted = await mount();
+    await act(async () => button(mounted.host.querySelector("header")!, "Open repository")!.click());
+    const call = mounted.pending("chooseRepository");
+    const onProgress = call.args[0] as (event: unknown) => void;
+    const requestId = crypto.randomUUID();
+    await act(async () => onProgress(accepted(requestId)));
+    expect(text(area(mounted.host))).toBe("");
+    await act(async () => onProgress(starting(requestId)));
+    await settle();
+    expect(text(area(mounted.host))).toContain(STARTING_TEXT);
+    return { ...mounted, call };
+  }
+
+  test("chooseRepository in phase wsl-starting shows the distro name with Cancel in the status region", async () => {
+    const { host } = await startOpen();
+    expect(text(area(host))).toContain(STARTING_TEXT);
+    expect(button(area(host), "Cancel")).toBeDefined();
+    // plan.md "Status area": the status bar text is the live region, so the start is one announced event.
+    expect(text(statusBar(host))).toBe(STARTING_TEXT);
+  });
+
+  test("Cancel cancels the registration operation, focus returns to Open repository, and canceled shows the plan.md text", async () => {
+    const { host, call, pending } = await startOpen();
+    await act(async () => button(area(host), "Cancel")!.click());
+    expect(pending("cancel").args[0]).toEqual({ operationId: OPERATION });
+    expect(document.activeElement).toBe(button(host.querySelector("header")!, "Open repository")!);
+    await act(async () => call.resolve({ requestId: crypto.randomUUID(), operationId: OPERATION, state: "canceled", code: "CANCELED" }));
+    await settle();
+    expect(text(area(host))).not.toContain(STARTING_TEXT);
+    expect(text(statusBar(host))).toBe(WSL_START_CANCELED_TEXT);
+    expect(text(host.querySelector("header")!)).toContain("No repository");
+  });
+
+  test("a start deadline removes the state and shows the DEADLINE error with Open repository", async () => {
+    const { host, call } = await startOpen();
+    await act(async () => call.resolve({ requestId: crypto.randomUUID(), operationId: OPERATION, state: "failed", code: "DEADLINE" }));
+    await settle();
+    expect(text(area(host))).not.toContain(STARTING_TEXT);
+    expect(text(statusBar(host))).not.toContain(STARTING_TEXT);
+    const alert = host.querySelector("[role='alert']")!;
+    expect(text(alert)).toContain("DEADLINE");
+    expect(button(alert, "Open repository")).toBeDefined();
+  });
+
+  test("the restore at page start shows the state from its progress events, and its response removes it", async () => {
+    let resolve: (response: unknown) => void = () => {};
+    const restored = new Promise((r) => (resolve = r));
+    const requestId = crypto.randomUUID();
+    const { host } = await mount({ restored, restoreProgress: (listener: (event: unknown) => void) => listener(starting(requestId)) });
+    expect(text(area(host))).toContain(STARTING_TEXT);
+    await act(async () => resolve({ ...succeeded(REGISTRATION), operationId: OPERATION }));
+    await settle();
+    expect(text(area(host))).not.toContain(STARTING_TEXT);
+  });
+
+  test("the restore after a service-session event shows the state too", async () => {
+    const double = bridgeDouble();
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const render = (session: number) => root.render(<Workbench bridge={double.bridge as never} session={session} ChangesPane={Empty} ComparisonView={Empty} HistoryView={Empty} />);
+    unmounts.push(async () => {
+      await act(async () => root.unmount());
+      host.remove();
+    });
+    await act(async () => render(0));
+    await act(async () => render(1));
+    await settle();
+    const call = double.pending("restoreWorkspace");
+    const requestId = crypto.randomUUID();
+    await act(async () => (call.args[0] as (event: unknown) => void)(starting(requestId)));
+    expect(text(area(host))).toContain(STARTING_TEXT);
+    await act(async () => call.resolve({ requestId, operationId: OPERATION, state: "failed", code: "DEADLINE" }));
+    await settle();
+    expect(text(area(host))).not.toContain(STARTING_TEXT);
   });
 });
 

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T230: `updateSubmodules`, contract §12 "Update protocol", "Trust", "Progress", "Deadlines and Cancel", and "Reconciliation and outcome".
-// T233: a WSL workspace runs the same protocol through contract §11 (§12 "WSL repositories"). The admission reads memory only. T256 adds the stall notice.
+// T233: a WSL workspace runs the same protocol through contract §11 (§12 "WSL repositories"). The admission reads memory only.
 
 import { lstat, readdir } from "node:fs/promises";
 import type { Response, ServiceRequest } from "../contracts/envelope";
@@ -41,6 +41,7 @@ import { contextOf, isMissing } from "./read-steps";
 import { listingOf, reconcileUpdate, rowKeys, type RetainedUpdate, type RetainedUpdateRow, type RowKeys, type UpdatePhase, type UpdateRowRead } from "./reconcile";
 import type { Workspace } from "./registration";
 import type { Head, ReadInstallation } from "./snapshot";
+import { trackStall } from "./stall";
 import { parseIndexListing, type WorkspaceReader } from "./status";
 import { displayPath } from "./status-parser";
 import { defaultRemote, fallbackRemote, SubmoduleUrlError } from "./submodule-remote";
@@ -256,8 +257,6 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
   const retained = new Map<string, RetainedUpdate>();
   // Contract §2: the workspace of each operation that consumed a review token.
   const owners = new Map<string, string>();
-  // The remedy request of the running step of each operation. T256 shows it with the stall notice.
-  const running = new Map<string, SubmoduleRemedyRequest>();
 
   // Contract §12 "Update protocol" step 2: the review reads again with the retained row IDs.
   // A changed listing or trust view decides first, then the read gate and the read failures, then the digests.
@@ -467,9 +466,14 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
 
     // One update process: the `network` policy, the contract §5 limits, and the operation signal. `fail` records the row failure of a nonzero exit.
     const step = async (r: RunRow, args: string[], phase: SubmoduleProgressPhase, remedy: SubmoduleRemedyRequest, firstFetch = false) => {
-      running.set(operationId, remedy);
-      progress.report(phase, counters(r));
-      const stderr = stepStderr((percent) => progress.report(phase, counters(r, percent)));
+      let last = counters(r);
+      const report = (now: typeof last) => progress.report(phase, (last = now));
+      report(last);
+      const stderr = stepStderr((percent) => report(counters(r, percent)));
+      const stall = trackStall(registry, operationId, () => report(last), () => {
+        const built = buildSubmoduleRemedy(remedy);
+        return built.command === null ? { text: built.text } : { command: built.command, text: built.text };
+      });
       const fail = () => void (r.facts.phase.failedStep = { firstFetch, outputTail: stderr.outputTail(), remedy: buildSubmoduleRemedy(remedy) });
       let exit: GitExit;
       try {
@@ -482,6 +486,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
           stdout: createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }),
           stderr,
           signal,
+          onActivity: stall.onActivity,
         });
       } catch (error) {
         // A `run` with an aborted signal throws before its start request.
@@ -491,7 +496,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
         fail();
         throw new Halted("refused");
       } finally {
-        running.delete(operationId);
+        stall.end();
       }
       lastDescendants = exit.activeDescendants;
       if (exit.deadline !== undefined) throw new Halted({ deadline: exit.deadline });
@@ -824,7 +829,6 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
       if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, undefined, "GIT_FAILED");
     } finally {
-      running.delete(operationId);
       // The registry sent `ended` with the terminal response, so this only frees the exclusion slot.
       marker.end(false);
     }
@@ -847,7 +851,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     void execute(w, installation, gitPath, gitVersion, operationId, signal, key, admitted);
   }
 
-  return { updateSubmodules, retained, owners, runningStep: (operationId: string) => running.get(operationId) };
+  return { updateSubmodules, retained, owners };
 }
 
 export type SubmoduleUpdater = ReturnType<typeof createSubmoduleUpdater>;

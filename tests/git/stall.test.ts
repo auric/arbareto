@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T255: the stall notice of a commit and of submodule update steps (contract §6 "Activity and stall notice", §12 "Remedies", data-model §7 `stallRemedy`).
-// `src/git-service/stall.ts` comes with T256. T112 and T230 wire it into `commit.ts` and `submodule-update.ts`, and T231 registers the update.
+// T256 wires `src/git-service/stall.ts` into `commit.ts` and `submodule-update.ts`.
 // The double sends the activity events that a test injects (`BunRunner.activity`), as the shell does for a call with `stallMs`.
 
 import { describe, expect } from "bun:test";
@@ -12,16 +12,15 @@ import { printOrigin } from "../origin";
 import type { CallMatch } from "./bun-runner";
 import { serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildChanged, buildF27 } from "./fixtures";
-import { approve, barrier, commitCalls, commitPayload, gitPath, hookRemedy, isCommitCall, outcome, putHook, repoOf, reviewOk, shortDeadline, SUCCEEDED, todoCase, until, valuesOf, withService } from "./hunk-harness";
-import type { Capability, Service } from "./service-harness";
+import { approve, barrier, commitCalls, commitPayload, gitPath, hookRemedy, isCommitCall, outcome, putHook, repoOf, reviewOk, shortDeadline, SUCCEEDED, TIMEOUT_MS, until, valuesOf, withService } from "./hunk-harness";
+import { caseTest, type Capability, type Service } from "./service-harness";
 import { checkoutRemedy, cloneRemedy, commandOf, fetchRemedy, gitLocation, miniWorld, reviewSubmodules, sendUpdate, STEP_TEXT, superOf, underTestSubmodule, updateSteps, withFixture } from "./submodule-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
 const TASK = "T255";
-const COMMIT_NEEDS = "(needs T256)";
-const UPDATE_NEEDS = "(needs T256/T231)";
 const SHELL: Capability[] = ["shell-double"];
+const real = (name: string, needs: readonly Capability[], fn: () => Promise<void>) => caseTest(TASK, name, needs, fn, TIMEOUT_MS);
 // Contract §6 "Activity and stall notice": the commit stall text.
 const COMMIT_STALL_TEXT = "This command runs only the pre-commit hook and does not commit. It cannot repeat a prompt from another hook or from signing.";
 // A marker that a hook writes to stderr. No log and no event may hold it.
@@ -29,7 +28,7 @@ const HOOK_MARKER = "ARBARETO-T255-HOOK-MARKER";
 
 useFixtureRoot();
 
-// Prints the ORIGIN line of `stall.ts` and loads it. Before T256, the module is missing, and this throws.
+// Prints the ORIGIN line of `stall.ts` and loads it.
 async function underTestStall(): Promise<void> {
   const module = "stall";
   printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -57,7 +56,7 @@ async function stallAndClear(service: Service, requestId: string, match: CallMat
 describe("commit (contract §6 \"Activity and stall notice\")", () => {
   for (const name of ["t255-commit", "t255-commit-“refused"]) {
     const refused = name.includes("“");
-    todoCase(TASK, `F09${refused ? " under a folder name with U+201C" : ""}: a stalled commit sets the stalled flag and stallRemedy ${refused ? "with the text only" : "with the pre-commit hook command"}, and the next active event clears both ${COMMIT_NEEDS}`, SHELL, async () => {
+    real(`F09${refused ? " under a folder name with U+201C" : ""}: a stalled commit sets the stalled flag and stallRemedy ${refused ? "with the text only" : "with the pre-commit hook command"}, and the next active event clears both`, SHELL, async () => {
       await underTestStall();
       const built = buildChanged(gitPath(), name, "F09");
       const repo = repoOf(built);
@@ -70,7 +69,7 @@ describe("commit (contract §6 \"Activity and stall notice\")", () => {
         const requestId = service.send("commit", commitPayload(r, "stall\n"), { repositoryId, repositoryGeneration: r.read.generation });
         await gate.reached();
         try {
-          await stallAndClear(service, requestId, isCommitCall, refused ? { text: COMMIT_STALL_TEXT } : { command: hookRemedy(repo), text: COMMIT_STALL_TEXT });
+          await stallAndClear(service, requestId, isCommitCall, refused ? { text: COMMIT_STALL_TEXT } : { command: hookRemedy(r.read.identity.worktreeRoot), text: COMMIT_STALL_TEXT });
         } finally {
           gate.release();
         }
@@ -82,7 +81,7 @@ describe("commit (contract §6 \"Activity and stall notice\")", () => {
     });
   }
 
-  todoCase(TASK, `F09: the notice changes no deadline; a stalled commit still ends at a test-injected deadline with DEADLINE ${COMMIT_NEEDS}`, SHELL, async () => {
+  real(`F09: the notice changes no deadline; a stalled commit still ends at a test-injected deadline with DEADLINE`, SHELL, async () => {
     await underTestStall();
     const name = "t255-commit-deadline";
     const built = buildChanged(gitPath(), name, "F09");
@@ -123,7 +122,7 @@ describe("submodule update steps (contract §12 \"Remedies\")", () => {
   ] as const;
 
   for (const { step, match, remedy } of STEPS) {
-    todoCase(TASK, `F27 behind-fetch: a stalled ${step} step sets the stalled flag and stallRemedy with the step command, the next active event clears both, and every update request carries the 15-second stall threshold ${UPDATE_NEEDS}`, SHELL, async () => {
+    real(`F27 behind-fetch: a stalled ${step} step sets the stalled flag and stallRemedy with the step command, the next active event clears both, and every update request carries the 15-second stall threshold`, SHELL, async () => {
       await underTestStall();
       await underTestSubmodule("submodule-update");
       const name = `t255-${step}`;
@@ -149,7 +148,7 @@ describe("submodule update steps (contract §12 \"Remedies\")", () => {
     });
   }
 
-  todoCase(TASK, `a clone step of a submodule path with U+201C: stallRemedy holds the clone text without a command ${UPDATE_NEEDS}`, SHELL, async () => {
+  real(`a clone step of a submodule path with U+201C: stallRemedy holds the clone text without a command`, SHELL, async () => {
     await underTestStall();
     await underTestSubmodule("submodule-update");
     const name = "t255-refused";

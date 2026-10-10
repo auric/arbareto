@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T229: contract §12 "Review reads", "Plan", "Refusals", and "Trust", and data-model §6 "Submodule review" and §9.
+// T230: the update repeats these reads through `observe` (contract §12 "Update protocol" steps 2, 3, and 6).
 // Inside a submodule, the review starts only the `submodule*Args` reads of `commands.ts`.
 
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import type { FileFact } from "../contracts/channel";
 import type { ErrorCode } from "../contracts/errors";
 import {
   APPROVAL_LIFETIME_MS,
@@ -19,7 +21,7 @@ import {
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { buildRefusalRemedy, redactUrlUserInfo, type SubmoduleAction, type SubmodulePlanRow, type SubmoduleProgram, type SubmoduleRefusalReason } from "../contracts/submodules";
-import type { Approvals } from "./approvals";
+import type { Approvals, SubmoduleBinding } from "./approvals";
 import {
   activeSetArgs,
   gitlinkPatchArgs,
@@ -44,10 +46,10 @@ import {
   type SubmoduleLocation,
 } from "./commands";
 import { unquote } from "./diff-parser";
-import { commandLineUnits, createCollector, type GitRunner } from "./git-runner";
+import { commandLineUnits, createCollector, type GitRunner, type WalkStop } from "./git-runner";
 import { isMissing, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
-import type { ChangeSnapshot, Completeness, ReadInstallation } from "./snapshot";
+import type { ChangeSnapshot, Completeness, Head, IndexEntry, ReadInstallation } from "./snapshot";
 import { displayPath } from "./status-parser";
 import { defaultRemote, resolveGitmodulesUrl, SubmoduleUrlError } from "./submodule-remote";
 import {
@@ -60,6 +62,7 @@ import {
   requestFacts,
   valueShown,
   type ConfigEntry,
+  type FactEntry,
   type FileState,
   type ServiceEnvironment,
   type Trust,
@@ -143,25 +146,39 @@ export type SubmoduleReviewOutcome =
   | { result: "canceled" }
   | { result: "deadline" };
 
-export interface SubmoduleReviewTarget {
+export interface ObserveTarget {
   operationId: string;
   signal: AbortSignal;
   workspace: Workspace;
   installation: ReadInstallation;
+}
+
+export interface SubmoduleReviewTarget extends ObserveTarget {
   snapshot: ChangeSnapshot;
 }
 
-// The review that T230 revalidates. `review` and `programs` are the inputs of the binding digests.
+// The superproject facts of an observation: a snapshot for the review, or `captureHead` and `ls-files -z --stage` for the update.
+export interface SuperprojectInput {
+  head: Head;
+  indexEntries: readonly Pick<IndexEntry, "path" | "stage" | "mode" | "oid">[];
+}
+
+// The review that T230 revalidates. `review` and `programs` are the inputs of the binding digests. `fingerprint` is the superproject listing fingerprint.
 export interface RetainedSubmoduleReview {
   repositoryId: string;
   issuedAt: number;
   value: SubmoduleReviewValue;
+  fingerprint: string;
   review: unknown;
   programs: unknown;
 }
 
-class Stop {
-  constructor(readonly outcome: SubmoduleReviewOutcome) {}
+// `path`: the folder of a failed folder read (contract §12 "Update protocol", read failures).
+type Failure = { code: ErrorCode; path?: string };
+export type SubmoduleFact<T> = { value: T } | Failure | WalkStop;
+
+class Halt {
+  constructor(readonly fact: Failure | WalkStop) {}
 }
 
 const NUL = 0x00;
@@ -170,7 +187,8 @@ const TAB = 0x09;
 const latin1 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const sha256 = (value: unknown) => new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex");
-const failed = (code: ErrorCode, path?: string) => new Stop({ result: "failed", code, ...(path === undefined ? {} : { value: { path } }) });
+const failed = (code: ErrorCode, path?: string) => new Halt({ code, ...(path === undefined ? {} : { path }) });
+const emptyModules = (): Gitmodules => ({ byName: new Map(), nameOf: new Map() });
 
 // NUL-terminated records. Bytes after the last NUL belong to no record.
 function records(bytes: Uint8Array): Uint8Array[] {
@@ -308,8 +326,11 @@ function parseTree(bytes: Uint8Array, objectFormat: ObjectFormat): { gitlinks: {
   return { gitlinks, gitmodules };
 }
 
+// The Git directory, the hooks folder, and the `config list` entries of one submodule Git directory.
+type RepoConfig = Pick<Repo, "gitDir" | "hooks" | "entries">;
+
 // One submodule Git directory that the review reads.
-interface Repo {
+export interface Repo {
   location: SubmoduleLocation;
   head: string | null;
   headRef: string | null;
@@ -323,6 +344,8 @@ interface Repo {
 // One level of rows: the superproject, or an initialized or reused submodule.
 interface Level {
   worktree: string;
+  // `worktree` as `rev-parse --show-toplevel` prints it.
+  gitWorktree: string;
   components: string[];
   prefix: Uint8Array;
   // The folder that holds the kept Git directories of this level.
@@ -331,20 +354,41 @@ interface Level {
   depth: number;
   parentRowId: string | null;
   parentPath: string | null;
-  // The active pathspec matches of the superproject. Null: `submodule.active` is unset. Undefined: a nested level computes no active set.
-  active?: Set<string> | null;
+  // The active pathspec matches of the parent. Null: `submodule.active` is unset. Undefined: a nested review level computes no active set.
+  active?: ReadonlySet<string> | null;
 }
 
-interface Pending {
+// One plan row with its read facts. `worktree` and `parentWorktree` are native paths for reads and remedies.
+// `gitWorktree` and `parentGitWorktree` are the same folders in Git's `rev-parse --show-toplevel` form for step commands.
+export interface ObservedRow {
   row: SubmodulePlanRow;
+  // The row has no retained row ID (data-model §9 "Row result").
+  found: boolean;
   worktree: string;
+  gitWorktree: string;
   pathBytes: Uint8Array;
   // The path below its parent worktree, for the remedy commands.
   localPath: Uint8Array;
   parentWorktree: string;
+  parentGitWorktree: string;
   repo: Repo | null;
   writes: boolean;
   unknownNested: boolean;
+}
+
+// One program list entry. `owner`, `identity`, and the program digest form the confirmed-entry match of contract §12 "Trust".
+export interface ProgramEntry {
+  program: SubmoduleProgram;
+  owner: string;
+  identity: unknown[];
+}
+
+// The rows, refusals, kept Git directories without a row, and program entries of one `top` or `level` read.
+export interface Observed {
+  rows: ObservedRow[];
+  refusals: SubmoduleRefusal[];
+  rowless: Repo[];
+  programs: ProgramEntry[];
 }
 
 export interface SubmoduleReviewerOptions {
@@ -361,52 +405,75 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     for (const [token, r] of retained) if (now() - r.issuedAt > APPROVAL_LIFETIME_MS) retained.delete(token);
   };
 
+  // Contract §3 `reviewSubmodules`: one observation, then the token.
   async function reviewSubmodules(t: SubmoduleReviewTarget): Promise<SubmoduleReviewOutcome> {
-    try {
-      return await review(t);
-    } catch (error) {
-      if (error instanceof Stop) return error.outcome;
-      throw error;
-    }
-  }
-
-  async function review(t: SubmoduleReviewTarget): Promise<SubmoduleReviewOutcome> {
-    const { snapshot: s, workspace: w, installation } = t;
-    const objectFormat = w.objectFormat;
+    const { snapshot: s, workspace: w } = t;
     if (s.indexFingerprint === null || s.policyFingerprint === null) {
       const c = s.completeness;
       return c.state === "limited" ? { result: "limited", code: c.code, value: { completeness: c } } : { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
     }
+    const o = observe(t);
+    const read = await o.top({ head: s.head, indexEntries: s.indexEntries });
+    if ("stop" in read) return { result: read.stop };
+    if (!("value" in read)) return { result: "failed", code: read.code, ...(read.path === undefined ? {} : { value: { path: read.path } }) };
+    const { binding, fingerprint, review, programs } = o.binding()!;
+    const submoduleReviewToken = crypto.randomUUID();
+    approvals.issue({ kind: "submodule", reviewToken: submoduleReviewToken, repositoryId: w.repositoryId, snapshotId: s.snapshotId, generation: s.generation, binding });
+    prune();
+    const value = {
+      generation: s.generation,
+      rows: read.value.rows.map((p) => p.row),
+      programs: read.value.programs.map((e) => e.program),
+      refusals: read.value.refusals,
+      submoduleReviewToken,
+    };
+    retained.set(submoduleReviewToken, { repositoryId: w.repositoryId, issuedAt: now(), value, fingerprint, review, programs });
+    return { result: "succeeded", value };
+  }
 
-    // Contract §3: trust gating follows the read rule of §7, before any Git process inside a submodule.
-    const listed = await trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
-    if (!listed.ok) return "stop" in listed ? { result: listed.stop } : { result: "failed", code: listed.code };
-    const superListing = listed.listing;
-    const gate = trust.gate(w, superListing, installation, "reads");
-    if (gate !== null) return { result: "failed", code: gate };
+  // One run of the review reads. `rowIds` maps base64 path bytes to retained row IDs. A row without one gets a new ID and `found`.
+  function observe(t: ObserveTarget, rowIds?: ReadonlyMap<string, string>) {
+    const { workspace: w, installation } = t;
+    const objectFormat = w.objectFormat;
 
     // The values that the token binds besides the plan, in read order.
     const observed: unknown[] = [];
+    const programInputs: unknown[] = [];
+    let cachedListing: TrustListing | null = null;
+
+    // Contract §3: trust gating follows the read rule of §7, before any Git process inside a submodule.
+    const superTrust = async (): Promise<TrustListing> => {
+      if (cachedListing === null) {
+        const r = await trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
+        if (!r.ok) throw new Halt("stop" in r ? { stop: r.stop } : { code: r.code });
+        cachedListing = r.listing;
+      }
+      const gate = trust.gate(w, cachedListing, installation, "reads");
+      if (gate !== null) throw failed(gate);
+      return cachedListing;
+    };
 
     const git = async (args: string[], options: { max?: number; input?: Uint8Array } = {}) => {
       const out = createCollector({ maxBytes: options.max ?? DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
       const step = await runRead(runner, t, args, out, options.input);
-      if (t.signal.aborted) throw new Stop({ result: "canceled" });
+      if (t.signal.aborted) throw new Halt({ stop: "canceled" });
       if ("refused" in step) throw failed(step.refused);
-      if (step.exit.deadline !== undefined) throw new Stop({ result: "deadline" });
+      if (step.exit.deadline !== undefined) throw new Halt({ stop: "deadline" });
       if (step.exit.diagnosticLimit) throw failed("OUTPUT_LIMIT");
       return { code: step.exit.exitCode, out: out.take(), limited: out.limited };
     };
 
-    const facts = async (files: { root: "worktreeRoot"; path: string[] }[]) => {
+    const fileFacts = async (files: FactEntry[], digest: boolean) => {
       if (files.length === 0) return [];
-      const reply = await requestFacts(runner, t.operationId, w, false, files, t.signal);
-      if (t.signal.aborted) throw new Stop({ result: "canceled" });
-      if (!Array.isArray(reply)) throw "stop" in reply ? new Stop({ result: reply.stop }) : failed(reply.code);
+      const reply = await requestFacts(runner, t.operationId, w, digest, files, t.signal);
+      if (t.signal.aborted) throw new Halt({ stop: "canceled" });
+      if (!Array.isArray(reply)) throw new Halt("stop" in reply ? { stop: reply.stop } : { code: reply.code });
       if (reply.some((fact) => fact.kind === "error")) throw failed("REPOSITORY_UNAVAILABLE");
-      // A link before the last component means that no entry exists at the path. The walk never follows a link.
-      return reply.map((fact, i) => fact.kind !== "absent" && (fact.kind !== "link" || fact.component === files[i]!.path.length));
+      return reply;
     };
+    // A link before the last component means that no entry exists at the path. The walk never follows a link.
+    const entryExists = (fact: FileFact, path: readonly string[]) => fact.kind !== "absent" && (fact.kind !== "link" || fact.component === path.length);
+    const facts = async (files: FactEntry[]) => (await fileFacts(files, false)).map((fact, i) => entryExists(fact, files[i]!.path));
 
     // Contract §12 "Update protocol", read failures: a failed review read ends the review with GIT_FAILED.
     const readGitmodules = async (args: string[]): Promise<Gitmodules | "limit"> => {
@@ -417,6 +484,23 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       if (parsed === null) throw failed("MALFORMED_GIT_OUTPUT");
       observed.push({ gitmodules: sha256(Buffer.from(r.out).toString("base64")) });
       return parsed;
+    };
+
+    const readConfig = async (location: SubmoduleLocation): Promise<RepoConfig> => {
+      const gitDirRead = await git(submoduleGitDirArgs(location));
+      const gitDir = gitDirRead.code === 0 ? oneLine(gitDirRead.out) : null;
+      if (gitDir === null) throw failed("GIT_FAILED");
+      const hooksRead = await git(submoduleHooksPathArgs(location));
+      const hooksText = hooksRead.code === 0 ? oneLine(hooksRead.out) : null;
+      if (hooksText === null) throw failed("GIT_FAILED");
+      // Git prints the hooks path relative to the folder where it ran: the `-C` folder, or the worktree root with `--git-dir`.
+      const hooks = resolve("worktree" in location ? location.worktree : w.worktreeRoot, hooksText);
+      const config = await git(submoduleConfigListArgs(location), { max: TRUST_INPUT_BYTES });
+      if (config.limited) throw failed("OUTPUT_LIMIT");
+      if (config.code !== 0) throw failed("GIT_FAILED");
+      const entries = parseConfigListing(config.out, false);
+      if (entries === null) throw failed("MALFORMED_GIT_OUTPUT");
+      return { gitDir, hooks, entries };
     };
 
     // `rev-parse --verify -q HEAD`. A nonzero exit leads to `symbolic-ref -q HEAD` and `show-ref --exists`; only exit 2 means no commit.
@@ -438,19 +522,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         if (exists.code !== 2) throw failed("GIT_FAILED");
         head = null;
       }
-      const gitDirRead = await git(submoduleGitDirArgs(location));
-      const gitDir = gitDirRead.code === 0 ? oneLine(gitDirRead.out) : null;
-      if (gitDir === null) throw failed("GIT_FAILED");
-      const hooksRead = await git(submoduleHooksPathArgs(location));
-      const hooksText = hooksRead.code === 0 ? oneLine(hooksRead.out) : null;
-      if (hooksText === null) throw failed("GIT_FAILED");
-      // Git prints the hooks path relative to the folder where it ran: the `-C` folder, or the worktree root with `--git-dir`.
-      const hooks = resolve("worktree" in location ? location.worktree : w.worktreeRoot, hooksText);
-      const config = await git(submoduleConfigListArgs(location), { max: TRUST_INPUT_BYTES });
-      if (config.limited) throw failed("OUTPUT_LIMIT");
-      if (config.code !== 0) throw failed("GIT_FAILED");
-      const entries = parseConfigListing(config.out, false);
-      if (entries === null) throw failed("MALFORMED_GIT_OUTPUT");
+      const { gitDir, hooks, entries } = await readConfig(location);
       let refHeld: boolean | null = null;
       if (head !== null) {
         const refs = await git(submoduleHeadRefArgs(location));
@@ -512,8 +584,15 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     const gitPath = installation.selectedPath;
     // The worktree root in the native form of the remedy commands.
     const root = resolve(w.worktreeRoot);
-    const rows: Pending[] = [];
+    // A folder below the worktree root in Git's form. `worktreeRoot` is the `rev-parse --show-toplevel` text, which ends with `/` only at a file system root.
+    const gitForm = (components: readonly string[]) => (w.worktreeRoot.endsWith("/") ? w.worktreeRoot : `${w.worktreeRoot}/`) + components.join("/");
+    // `rows` and `refusals` hold every `top` and `level` read of this observation.
+    const rows: ObservedRow[] = [];
     const refusals: { refusal: SubmoduleRefusal; late: boolean }[] = [];
+    const ordered = (from: number) => {
+      const list = refusals.slice(from);
+      return [...list.filter((r) => !r.late), ...list.filter((r) => r.late)].map((r) => r.refusal);
+    };
     let limited = false;
     const refuse = (reason: SubmoduleRefusalReason, path: string, text: string, remedy: SubmoduleRefusal["remedy"], row?: SubmodulePlanRow) => {
       refusals.push({ refusal: { code: "UNSUPPORTED_SUBMODULE", reason, path, text, remedy }, late: reason === "update-mode" || reason === "gitdir-config" || reason === "limit" });
@@ -542,48 +621,6 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       if (counted > SUBMODULE_REVIEW_SUBMODULES) refuseLimit();
       return !limited;
     };
-
-    // ---- Superproject reads ----
-    if (setsGitdir(superListing.entries)) refuseGitdir(root, root);
-    const gitlinks = s.indexEntries.filter((e) => e.stage === 0 && e.mode === "160000");
-    observed.push({ head: s.head, gitlinks: gitlinks.map((e) => [Buffer.from(e.path).toString("base64"), e.oid]) });
-    let superModules: Gitmodules = { byName: new Map(), nameOf: new Map() };
-    if (gitlinks.length > 0) {
-      const [worktreeEntry] = await facts([{ root: "worktreeRoot", path: [".gitmodules"] }]);
-      const source = await gitmodulesSource(worktreeEntry!, s.indexEntries, objectFormat, async () => {
-        const r = await git(objectCheckArgs(), { input: new TextEncoder().encode("HEAD:.gitmodules\n") });
-        if (r.code !== 0) throw failed("GIT_FAILED");
-        const line = oneLine(r.out);
-        if (line === "HEAD:.gitmodules missing") return false;
-        const found = line === null ? null : /^(\S+) (?:blob|tree|commit|tag) [0-9]+$/.exec(line);
-        if (found === null || !isObjectId(found[1]!, objectFormat)) throw failed("MALFORMED_GIT_OUTPUT");
-        return true;
-      });
-      observed.push({ gitmodulesSource: source });
-      if (Array.isArray(source)) {
-        const read = await readGitmodules(source);
-        if (read === "limit") refuseLimit();
-        else superModules = read;
-      }
-    }
-
-    // Contract §12 "Plan", active set: with `submodule.active` set, Git's own matcher decides through `ls-files`.
-    const pathspecs = superListing.entries.filter((e) => e.key === "submodule.active" && e.value !== null && e.value !== "").map((e) => e.value!);
-    let active: Set<string> | null = null;
-    if (superListing.entries.some((e) => e.key === "submodule.active")) {
-      active = new Set();
-      if (pathspecs.length > 0 && gitlinks.length > 0) {
-        const r = await git(activeSetArgs(pathspecs), { max: STATUS_LISTING_BYTES });
-        if (r.limited) throw failed("OUTPUT_LIMIT");
-        if (r.code !== 0) throw failed("GIT_FAILED");
-        for (const record of records(r.out)) {
-          const tab = record.indexOf(TAB);
-          if (tab < 0 || !/^[0-7]{6} \S+ [0-3]$/.test(latin1(record.subarray(0, tab)))) throw failed("MALFORMED_GIT_OUTPUT");
-          if (latin1(record.subarray(0, 7)) === "160000 ") active.add(latin1(record.subarray(tab + 1)));
-        }
-      }
-      observed.push({ active: [...active] });
-    }
 
     // Contract §12 "Review reads": the top-level checked-out commits from `diff-files -p`, with C-quote unquoting of `+++ b/<path>`.
     const headsOf = async (paths: Uint8Array[]): Promise<Map<string, string>> => {
@@ -627,7 +664,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
 
     const writing: ReadonlySet<SubmoduleAction> = new Set(["clone", "reuse", "checkout", "fetch-checkout"]);
 
-    async function level(lv: Level, links: { path: Uint8Array; oid: string | null }[], modules: Gitmodules): Promise<void> {
+    // `recurse`: the review reads every nested level. The update reads one level at a time (contract §12 "Update protocol" step 6).
+    async function readRows(lv: Level, links: { path: Uint8Array; oid: string | null }[], modules: Gitmodules, recurse: boolean): Promise<void> {
       recordUrls(lv, links, modules);
       if (lv.depth >= SUBMODULE_REVIEW_NESTING_LEVELS) {
         if (links.length > 0) refuseLimit();
@@ -642,7 +680,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       let next = 0;
       const initialized = entries.map((e) => (e.components === null ? false : dotGit[next++]!));
       const topHeads = lv.depth === 0 ? await headsOf(entries.filter((e, i) => initialized[i] && e.components !== null).map((e) => e.link.path)) : null;
-      const nested: [Pending, Repo][] = [];
+      const nested: [ObservedRow, Repo][] = [];
 
       for (const [i, { link, components }] of entries.entries()) {
         // The index bounds the top-level rows, so each of them gets its refusals. Nested levels stop at the bound.
@@ -661,9 +699,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         const configUrl = nameText === null ? undefined : lastValue(lv.config, submoduleKey(nameText, "url"));
         const gitmodulesUrl = module?.url === undefined ? null : utf8.decode(Buffer.from(module.url, "latin1"));
         const url = configUrl?.value ?? gitmodulesUrl;
+        const key = Buffer.from(pathBytes).toString("base64");
+        const retainedId = rowIds?.get(key);
         const row: SubmodulePlanRow = {
-          rowId: crypto.randomUUID(),
-          pathBytes: Buffer.from(pathBytes).toString("base64"),
+          rowId: retainedId ?? crypto.randomUUID(),
+          pathBytes: key,
           path: display,
           name: nameText ?? "",
           depth: lv.depth,
@@ -677,7 +717,20 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           refusal: null,
         };
         const worktree = components === null ? lv.worktree : join(w.worktreeRoot, ...components);
-        const pending: Pending = { row, worktree, pathBytes, localPath: link.path, parentWorktree: lv.worktree, repo: null, writes: false, unknownNested: false };
+        const gitWorktree = components === null ? lv.gitWorktree : gitForm(components);
+        const pending: ObservedRow = {
+          row,
+          found: rowIds !== undefined && retainedId === undefined,
+          worktree,
+          gitWorktree,
+          pathBytes,
+          localPath: link.path,
+          parentWorktree: lv.worktree,
+          parentGitWorktree: lv.gitWorktree,
+          repo: null,
+          writes: false,
+          unknownNested: false,
+        };
         rows.push(pending);
         if (components === null || nameText === null && name !== null) {
           refuse("path", display, REFUSAL_TEXTS.path(display), null, row);
@@ -782,34 +835,50 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         const local = target !== null && (await present(repo.location, target));
         const commit = local ? target : repo.head;
         if (!local) pending.unknownNested = true;
-        if (commit === null) continue;
-        const tree = await git(submoduleTreeArgs(repo.location, commit, objectFormat), { max: STATUS_LISTING_BYTES });
-        if (tree.limited) throw failed("OUTPUT_LIMIT");
-        if (tree.code !== 0) throw failed("GIT_FAILED");
-        const parsed = parseTree(tree.out, objectFormat);
-        if (parsed === null) throw failed("MALFORMED_GIT_OUTPUT");
-        observed.push({ tree: commit, gitlinks: parsed.gitlinks.map((g) => [Buffer.from(g.path).toString("base64"), g.oid]) });
-        if (parsed.gitlinks.length === 0) continue;
-        let childModules: Gitmodules = { byName: new Map(), nameOf: new Map() };
-        if (parsed.gitmodules) {
-          const read = await readGitmodules(submoduleGitmodulesBlobArgs(repo.location, commit, objectFormat));
-          if (read === "limit") {
-            refuseLimit();
-            continue;
-          }
-          childModules = read;
-        }
-        const parts = componentsOf(pending.pathBytes)!;
-        await level(
-          { worktree: pending.worktree, components: parts, prefix: pending.pathBytes, modules: join(repo.gitDir, "modules"), config: repo.entries, depth: lv.depth + 1, parentRowId: pending.row.rowId, parentPath: pending.row.path },
-          parsed.gitlinks.map((g) => ({ path: g.path, oid: local ? g.oid : null })),
-          childModules,
+        if (!recurse || commit === null) continue;
+        const tree = await treeOf(repo.location, commit);
+        if (tree === null || tree.gitlinks.length === 0) continue;
+        await readRows(
+          childLevel(pending, repo, undefined),
+          tree.gitlinks.map((g) => ({ path: g.path, oid: local ? g.oid : null })),
+          tree.modules,
+          true,
         );
       }
     }
 
+    const childLevel = (parent: ObservedRow, repo: RepoConfig, active: ReadonlySet<string> | null | undefined): Level => ({
+      worktree: parent.worktree,
+      gitWorktree: parent.gitWorktree,
+      components: componentsOf(parent.pathBytes)!,
+      prefix: parent.pathBytes,
+      modules: join(repo.gitDir, "modules"),
+      config: repo.entries,
+      depth: parent.row.depth + 1,
+      parentRowId: parent.row.rowId,
+      parentPath: parent.row.path,
+      ...(active === undefined ? {} : { active }),
+    });
+
+    // The gitlinks and the `.gitmodules` of a submodule commit. Null: the `.gitmodules` listing passed its bound.
+    const treeOf = async (location: SubmoduleLocation, commit: string): Promise<{ gitlinks: { path: Uint8Array; oid: string }[]; modules: Gitmodules } | null> => {
+      const tree = await git(submoduleTreeArgs(location, commit, objectFormat), { max: STATUS_LISTING_BYTES });
+      if (tree.limited) throw failed("OUTPUT_LIMIT");
+      if (tree.code !== 0) throw failed("GIT_FAILED");
+      const parsed = parseTree(tree.out, objectFormat);
+      if (parsed === null) throw failed("MALFORMED_GIT_OUTPUT");
+      observed.push({ tree: commit, gitlinks: parsed.gitlinks.map((g) => [Buffer.from(g.path).toString("base64"), g.oid]) });
+      if (parsed.gitlinks.length === 0 || !parsed.gitmodules) return { gitlinks: parsed.gitlinks, modules: emptyModules() };
+      const read = await readGitmodules(submoduleGitmodulesBlobArgs(location, commit, objectFormat));
+      if (read === "limit") {
+        refuseLimit();
+        return null;
+      }
+      return { gitlinks: parsed.gitlinks, modules: read };
+    };
+
     // Contract §12 "Plan": the action of a row with a HEAD commit, its notes, and the remotes of a fetching row.
-    async function plan(pending: Pending, repo: Repo, target: string | null): Promise<void> {
+    async function plan(pending: ObservedRow, repo: Repo, target: string | null): Promise<void> {
       const { row } = pending;
       if (repo.head === null) return;
       if (target !== null && repo.head === target) {
@@ -851,7 +920,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     }
 
     // The unredacted parent URL of a row. A relative `.gitmodules` URL resolves as Git's `resolve_relative_url` does. Null: Git cannot resolve it.
-    function rawUrl(pending: Pending): string | null {
+    function rawUrl(pending: ObservedRow): string | null {
       return urlsByPath.get(`${pending.parentWorktree}\0${latin1(pending.localPath)}`) ?? null;
     }
 
@@ -873,7 +942,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         else if (written !== undefined) {
           try {
             const text = utf8.decode(Buffer.from(written, "latin1"));
-            urlsByPath.set(key, resolveGitmodulesUrl(text, { listing: lv.config, headRef: null }, lv.worktree, "windows"));
+            urlsByPath.set(key, resolveGitmodulesUrl(text, { listing: lv.config, headRef: null }, lv.gitWorktree, "windows"));
           } catch (error) {
             if (!(error instanceof SubmoduleUrlError) && !(error instanceof TypeError)) throw error;
           }
@@ -882,57 +951,58 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     };
     const urlsByPath = new Map<string, string>();
 
-    const modulesRead = await git(modulesPathArgs());
-    const modules = modulesRead.code === 0 ? oneLine(modulesRead.out) : null;
-    if (modules === null) throw failed("GIT_FAILED");
-    const top: Level = { worktree: root, components: [], prefix: new Uint8Array(), modules, config: superListing.entries, depth: 0, parentRowId: null, parentPath: null, active };
-    await level(top, gitlinks.map((e) => ({ path: e.path, oid: e.oid })), superModules);
-
     // ---- Kept Git directories (contract §12 "Review reads") ----
     const fold = (path: string) => NATIVE.fold(resolve(path));
-    const known = new Set<string>();
-    for (const p of rows) if (p.repo !== null) known.add(fold(p.repo.gitDir));
-    const keptDirs: string[] = [];
-    const visited = new Set<string>();
-    const walk = async (folder: string): Promise<void> => {
-      let names;
-      try {
-        names = await readdir(folder, { withFileTypes: true });
-      } catch (error) {
-        if (isMissing(error)) return;
-        throw failed("REPOSITORY_UNAVAILABLE", folder);
+    const knownOf = (list: readonly ObservedRow[]) => new Set(list.flatMap((p) => (p.repo === null ? [] : [fold(p.repo.gitDir)])));
+    // `descend`: the walk also enters the `modules` folder of each kept Git directory.
+    const keptBelow = async (folders: readonly string[], descend: boolean): Promise<string[]> => {
+      const keptDirs: string[] = [];
+      const visited = new Set<string>();
+      const walk = async (folder: string): Promise<void> => {
+        let names;
+        try {
+          names = await readdir(folder, { withFileTypes: true });
+        } catch (error) {
+          if (isMissing(error)) return;
+          throw failed("REPOSITORY_UNAVAILABLE", folder);
+        }
+        for (const entry of names.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+          if (!entry.isDirectory()) continue;
+          const child = join(folder, entry.name);
+          if (visited.has(fold(child))) continue;
+          visited.add(fold(child));
+          if (!count()) return;
+          const r = await git(submoduleGitDirArgs({ gitDir: child }));
+          observed.push({ walk: child, accepted: r.code === 0 });
+          if (r.code === 0) {
+            keptDirs.push(child);
+            if (descend) await walk(join(child, "modules"));
+          } else await walk(child);
+          if (limited) return;
+        }
+      };
+      for (const folder of folders) {
+        if (limited) break;
+        await walk(folder);
       }
-      for (const entry of names.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
-        if (!entry.isDirectory()) continue;
-        const child = join(folder, entry.name);
-        if (visited.has(fold(child))) continue;
-        visited.add(fold(child));
-        if (!count()) return;
-        const r = await git(submoduleGitDirArgs({ gitDir: child }));
-        observed.push({ walk: child, accepted: r.code === 0 });
-        if (r.code === 0) {
-          keptDirs.push(child);
-          await walk(join(child, "modules"));
-        } else await walk(child);
-        if (limited) return;
-      }
+      return keptDirs;
     };
-    await walk(modules);
-    for (const p of rows) if (p.repo !== null && !limited) await walk(join(p.repo.gitDir, "modules"));
-    const rowless: Repo[] = [];
-    for (const dir of keptDirs) {
-      if (known.has(fold(dir))) continue;
-      const repo = await readRepo({ gitDir: dir });
-      if (known.has(fold(repo.gitDir))) continue;
-      known.add(fold(repo.gitDir));
-      rowless.push(repo);
-      refuseUnsaved(dir, repo, null);
-      if (setsGitdir(repo.entries)) refuseGitdir(dir, root);
-    }
+    // The kept Git directories that no row holds. Each gets its refusals once.
+    const rowlessOf = async (keptDirs: readonly string[], known: Set<string>): Promise<Repo[]> => {
+      const rowless: Repo[] = [];
+      for (const dir of keptDirs) {
+        if (known.has(fold(dir))) continue;
+        const repo = await readRepo({ gitDir: dir });
+        if (known.has(fold(repo.gitDir))) continue;
+        known.add(fold(repo.gitDir));
+        rowless.push(repo);
+        refuseUnsaved(dir, repo, null);
+        if (setsGitdir(repo.entries)) refuseGitdir(dir, root);
+      }
+      return rowless;
+    };
 
     // ---- Programs (contract §12 "Trust") ----
-    const programs: SubmoduleProgram[] = [];
-    const programInputs: unknown[] = [superListing.fingerprint];
     const relativeEntries = relativePathEntries(environment.PATH ?? environment.Path);
     const stateValue = (state: FileState | null): SubmoduleProgram["digest"] => (state === null ? "unchecked" : state.kind === "digest" ? state.digest : state.kind);
     const shown = (entry: ConfigEntry, text: string) => {
@@ -952,47 +1022,56 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       }
       return out;
     };
-    const superRelative = relativeValues(superListing, new Set(["system", "global", "command"]));
-    const ownerKey = (owner: { rowId: string } | { gitDirectory: string }) => ("rowId" in owner ? owner.rowId : owner.gitDirectory);
-    const add = (owner: { rowId: string } | { gitDirectory: string }, seen: Set<string>, program: Omit<SubmoduleProgram, "rowId" | "gitDirectory">, identity: unknown) => {
-      const key = sha256([ownerKey(owner), identity]);
-      if (seen.has(key)) return;
-      seen.add(key);
-      programs.push({ ...owner, ...program } as SubmoduleProgram);
-      programInputs.push([ownerKey(owner), identity, program.digest]);
-    };
-    const unchecked = (owner: { rowId: string } | { gitDirectory: string }, seen: Set<string>, values: ReturnType<typeof relativeValues>, base: string | null, copy = "") => {
-      for (const v of values) {
-        const program = base === null ? v.program : resolve(base, v.program);
-        add(owner, seen, { key: v.key, scope: v.entry.scope, origin: redactUrlUserInfo(v.entry.origin), program: shown(v.entry, program), digest: "unchecked" }, [
-          copy,
-          v.key,
-          Buffer.from(v.entry.originBytes).toString("base64"),
-          Buffer.from(v.entry.keyValueBytes).toString("base64"),
-        ]);
-      }
-    };
+    const OUTER_SCOPES: ReadonlySet<string> = new Set(["system", "global", "command"]);
 
-    const listRepo = async (owner: { rowId: string } | { gitDirectory: string }, repo: Pick<Repo, "entries" | "hooks"> & { gitDir: string | null }, root: string | null, writes: boolean, unknownNested: boolean) => {
+    // The entries of one Git directory, or of a `clone` row before its clone. `owner` keys the entries in the binding.
+    // A row ID is random, so `owner` holds the row path bytes or the Git directory instead.
+    const listPrograms = async (
+      superListing: TrustListing,
+      holder: { rowId: string } | { gitDirectory: string },
+      owner: string,
+      repo: Pick<Repo, "entries" | "hooks"> & { gitDir: string | null },
+      root: string | null,
+      writes: boolean,
+      unknownNested: boolean,
+    ): Promise<{ owner: string; fingerprint: string; entries: ProgramEntry[] }> => {
       const listed = await listSubmoduleTrust(runner, { operationId: t.operationId, signal: t.signal, workspace: w }, environment, repo.entries, repo.hooks, { root: root ?? w.worktreeRoot, gitDirectory: repo.gitDir });
-      if (!listed.ok) throw "stop" in listed ? new Stop({ result: listed.stop }) : failed(listed.code);
+      if (!listed.ok) throw new Halt("stop" in listed ? { stop: listed.stop } : { code: listed.code });
       const listing = listed.listing;
-      programInputs.push([ownerKey(owner), listing.fingerprint]);
+      const superRelative = relativeValues(superListing, OUTER_SCOPES);
+      const entries: ProgramEntry[] = [];
       const seen = new Set<string>();
+      const add = (program: Omit<SubmoduleProgram, "rowId" | "gitDirectory">, identity: unknown[]) => {
+        const key = JSON.stringify(identity);
+        if (seen.has(key)) return;
+        seen.add(key);
+        entries.push({ program: { ...holder, ...program } as SubmoduleProgram, owner, identity });
+      };
+      const unchecked = (values: ReturnType<typeof relativeValues>, base: string | null, copy = "") => {
+        for (const v of values) {
+          const program = base === null ? v.program : resolve(base, v.program);
+          add({ key: v.key, scope: v.entry.scope, origin: redactUrlUserInfo(v.entry.origin), program: shown(v.entry, program), digest: "unchecked" }, [
+            copy,
+            v.key,
+            Buffer.from(v.entry.originBytes).toString("base64"),
+            Buffer.from(v.entry.keyValueBytes).toString("base64"),
+          ]);
+        }
+      };
       // A kept Git directory without a row has no known worktree, so its relative values stay unchecked.
       const relative = writes || root === null ? relativeValues(listing, null) : [];
       const relativeEntrySet = new Set(relative.map((v) => v.entry));
-      unchecked(owner, seen, relative, root);
-      if (writes || root === null) unchecked(owner, seen, superRelative, root);
+      unchecked(relative, root);
+      if (writes || root === null) unchecked(superRelative, root);
       if (unknownNested) {
-        unchecked(owner, seen, relative, root, "nested");
-        unchecked(owner, seen, superRelative, root, "nested");
+        unchecked(relative, root, "nested");
+        unchecked(superRelative, root, "nested");
       }
       for (const [i, integration] of listing.integrations.entries()) {
         if (!integration.repositoryControlled || relativeEntrySet.has(integration.entry)) continue;
         const program = integration.program.kind === "path" ? resolve(root ?? w.worktreeRoot, integration.program.text) : integration.program.kind === "bare" ? integration.program.name : "";
         const entry = integration.entry;
-        add(owner, seen, { key: integration.key, scope: entry.scope, origin: redactUrlUserInfo(entry.origin), program: shown(entry, program), digest: stateValue(listing.files.integrations[i] ?? null) }, [
+        add({ key: integration.key, scope: entry.scope, origin: redactUrlUserInfo(entry.origin), program: shown(entry, program), digest: stateValue(listing.files.integrations[i] ?? null) }, [
           "integration",
           Buffer.from(entry.originBytes).toString("base64"),
           Buffer.from(entry.keyValueBytes).toString("base64"),
@@ -1000,11 +1079,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       }
       const hooksRelative = relative.some((v) => v.key === "core.hooksPath");
       if (!hooksRelative && listing.hooksOutside && listing.hooksDirectory !== null) {
-        add(owner, seen, { key: "core.hooksPath", scope: "hooks", origin: listing.hooksDirectory, program: listing.hooksDirectory, digest: "unchecked" }, ["hooks-outside", listing.hooksDirectory]);
+        add({ key: "core.hooksPath", scope: "hooks", origin: listing.hooksDirectory, program: listing.hooksDirectory, digest: "unchecked" }, ["hooks-outside", listing.hooksDirectory]);
       }
       if (!hooksRelative) {
         for (const [j, hook] of listing.hooks.folder.entries()) {
-          add(owner, seen, { key: hook.event, scope: "hooks", origin: hook.path, program: hook.path, digest: stateValue(listing.files.folder[j] ?? null) }, ["hook", hook.path]);
+          add({ key: hook.event, scope: "hooks", origin: hook.path, program: hook.path, digest: stateValue(listing.files.folder[j] ?? null) }, ["hook", hook.path]);
         }
       }
       const integrations = new Set(listing.integrations.map((i) => i.entry));
@@ -1012,52 +1091,150 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         if ((entry.scope !== "local" && entry.scope !== "worktree") || gitWritten(entry) || integrations.has(entry)) continue;
         if (entry.key === "core.hookspath") continue;
         // Contract §7 names no program for this entry, so it has no program file.
-        add(owner, seen, { key: entry.key, scope: entry.scope, origin: redactUrlUserInfo(entry.origin), program: "", digest: "absent" }, [
+        add({ key: entry.key, scope: entry.scope, origin: redactUrlUserInfo(entry.origin), program: "", digest: "absent" }, [
           "entry",
           Buffer.from(entry.originBytes).toString("base64"),
           Buffer.from(entry.keyValueBytes).toString("base64"),
         ]);
       }
+      return { owner, fingerprint: listing.fingerprint, entries };
+    };
+    // A null `repo`: contract §12 "Trust", a `clone` row before its clone sees only the system, global, and command entries.
+    const rowPrograms = (superListing: TrustListing, p: ObservedRow, repo: RepoConfig | null) => {
+      const owner = JSON.stringify(["row", p.row.pathBytes]);
+      if (repo !== null) return listPrograms(superListing, { rowId: p.row.rowId }, owner, repo, p.worktree, p.writes, p.unknownNested);
+      const outer = superListing.entries.filter((e) => OUTER_SCOPES.has(e.scope));
+      return listPrograms(superListing, { rowId: p.row.rowId }, owner, { entries: outer, hooks: null, gitDir: null }, p.worktree, true, true);
+    };
+    // `bind`: the entries enter the binding inputs.
+    const programsOfAll = async (superListing: TrustListing, list: readonly ObservedRow[], rowless: readonly Repo[], bind: boolean): Promise<ProgramEntry[]> => {
+      const lists = [];
+      for (const p of list) if (p.repo !== null || p.row.action === "clone") lists.push(await rowPrograms(superListing, p, p.repo));
+      for (const repo of rowless) lists.push(await listPrograms(superListing, { gitDirectory: repo.gitDir }, JSON.stringify(["dir", repo.gitDir]), repo, null, false, false));
+      if (bind) for (const l of lists) programInputs.push([l.owner, l.fingerprint], ...l.entries.map((e) => [e.owner, e.identity, e.program.digest]));
+      return lists.flatMap((l) => l.entries);
     };
 
-    for (const p of rows) {
-      const action = p.row.action;
-      if (p.repo !== null) await listRepo({ rowId: p.row.rowId }, p.repo, p.worktree, p.writes, p.unknownNested);
-      // Contract §12 "Trust": before its clone, a `clone` row sees only the system, global, and command entries.
-      else if (action === "clone") {
-        const outer = superListing.entries.filter((e) => e.scope === "system" || e.scope === "global" || e.scope === "command");
-        await listRepo({ rowId: p.row.rowId }, { entries: outer, hooks: null, gitDir: null }, p.worktree, true, true);
+    const attempt = async <T>(read: () => Promise<T>): Promise<SubmoduleFact<T>> => {
+      try {
+        return { value: await read() };
+      } catch (error) {
+        if (error instanceof Halt) return error.fact;
+        throw error;
       }
-    }
-    for (const repo of rowless) await listRepo({ gitDirectory: repo.gitDir }, repo, null, false, false);
-
-    // ---- Token ----
-    const ordered = [...refusals.filter((r) => !r.late), ...refusals.filter((r) => r.late)].map((r) => r.refusal);
-    const value = {
-      generation: s.generation,
-      rows: rows.map((p) => p.row),
-      programs,
-      refusals: ordered,
     };
-    const reviewInput = { observed, rows: value.rows.map((r) => ({ ...r, rowId: undefined })), refusals: ordered, urls: [...urlsByPath] };
-    const view = trust.view(w, superListing, installation);
-    const submoduleReviewToken = crypto.randomUUID();
-    approvals.issue({
-      kind: "submodule",
-      reviewToken: submoduleReviewToken,
-      repositoryId: w.repositoryId,
-      snapshotId: s.snapshotId,
-      generation: s.generation,
-      binding: { review: sha256(reviewInput), programs: sha256(programInputs), trust: { state: view.state, trustId: view.trustId ?? null } },
-    });
-    prune();
-    const full = { ...value, submoduleReviewToken };
-    retained.set(submoduleReviewToken, { repositoryId: w.repositoryId, issuedAt: now(), value: full, review: reviewInput, programs: programInputs });
-    return { result: "succeeded", value: full };
+
+    // Contract §12 "Review reads" from the superproject: the rows at every depth, the kept Git directories, and the programs.
+    function top(input: SuperprojectInput): Promise<SubmoduleFact<Observed>> {
+      return attempt(async () => {
+        const superListing = await superTrust();
+        programInputs.push(superListing.fingerprint);
+        if (setsGitdir(superListing.entries)) refuseGitdir(root, root);
+        const gitlinks = input.indexEntries.filter((e) => e.stage === 0 && e.mode === "160000");
+        const head = input.head;
+        observed.push({ head: [head.state, "target" in head ? head.target : null, "oid" in head ? head.oid : null], gitlinks: gitlinks.map((e) => [Buffer.from(e.path).toString("base64"), e.oid]) });
+        let superModules = emptyModules();
+        if (gitlinks.length > 0) {
+          const path = [".gitmodules"];
+          const [file] = (await fileFacts([{ root: "worktreeRoot", path }], true)) as [FileFact];
+          // Contract §12 "Update protocol" step 2: the token binds the SHA-256 of the worktree file. A file above the §5 bound has no digest.
+          observed.push({ gitmodulesFile: file.kind === "file" ? [file.digest ?? null, file.bound ?? null] : file });
+          if (file.kind === "file" && file.bound !== undefined) refuseLimit();
+          const source = await gitmodulesSource(entryExists(file, path), input.indexEntries, objectFormat, async () => {
+            const r = await git(objectCheckArgs(), { input: new TextEncoder().encode("HEAD:.gitmodules\n") });
+            if (r.code !== 0) throw failed("GIT_FAILED");
+            const line = oneLine(r.out);
+            if (line === "HEAD:.gitmodules missing") return false;
+            const found = line === null ? null : /^(\S+) (?:blob|tree|commit|tag) [0-9]+$/.exec(line);
+            if (found === null || !isObjectId(found[1]!, objectFormat)) throw failed("MALFORMED_GIT_OUTPUT");
+            return true;
+          });
+          observed.push({ gitmodulesSource: source });
+          if (Array.isArray(source)) {
+            const read = await readGitmodules(source);
+            if (read === "limit") refuseLimit();
+            else superModules = read;
+          }
+        }
+
+        // Contract §12 "Plan", active set: with `submodule.active` set, Git's own matcher decides through `ls-files`.
+        const pathspecs = superListing.entries.filter((e) => e.key === "submodule.active" && e.value !== null && e.value !== "").map((e) => e.value!);
+        let active: Set<string> | null = null;
+        if (superListing.entries.some((e) => e.key === "submodule.active")) {
+          active = new Set();
+          if (pathspecs.length > 0 && gitlinks.length > 0) {
+            const r = await git(activeSetArgs(pathspecs), { max: STATUS_LISTING_BYTES });
+            if (r.limited) throw failed("OUTPUT_LIMIT");
+            if (r.code !== 0) throw failed("GIT_FAILED");
+            for (const record of records(r.out)) {
+              const tab = record.indexOf(TAB);
+              if (tab < 0 || !/^[0-7]{6} \S+ [0-3]$/.test(latin1(record.subarray(0, tab)))) throw failed("MALFORMED_GIT_OUTPUT");
+              if (latin1(record.subarray(0, 7)) === "160000 ") active.add(latin1(record.subarray(tab + 1)));
+            }
+          }
+          observed.push({ active: [...active] });
+        }
+
+        const modulesRead = await git(modulesPathArgs());
+        const modules = modulesRead.code === 0 ? oneLine(modulesRead.out) : null;
+        if (modules === null) throw failed("GIT_FAILED");
+        const topLevel: Level = { worktree: root, gitWorktree: w.worktreeRoot, components: [], prefix: new Uint8Array(), modules, config: superListing.entries, depth: 0, parentRowId: null, parentPath: null, active };
+        await readRows(topLevel, gitlinks.map((e) => ({ path: e.path, oid: e.oid })), superModules, true);
+        const kept = await keptBelow([modules, ...rows.flatMap((p) => (p.repo === null ? [] : [join(p.repo.gitDir, "modules")]))], true);
+        const rowless = await rowlessOf(kept, knownOf(rows));
+        const programs = await programsOfAll(superListing, rows, rowless, true);
+        return { rows: [...rows], refusals: ordered(0), rowless, programs };
+      });
+    }
+
+    // Contract §12 "Update protocol" step 6: one nested level of `parent` from the tree of `commit`, with its programs.
+    // `active` is the active set of that level ("Plan"). The kept-directory walk stays in the `modules` folder of `parent`.
+    function level(parent: ObservedRow, commit: string, active: ReadonlySet<string> | null): Promise<SubmoduleFact<Observed>> {
+      return attempt(async () => {
+        const superListing = await superTrust();
+        const location = { worktree: parent.worktree };
+        const config = await readConfig(location);
+        const firstRow = rows.length;
+        const firstRefusal = refusals.length;
+        if (setsGitdir(config.entries)) refuseGitdir(parent.row.path, parent.parentWorktree, parent.localPath);
+        const tree = await treeOf(location, commit);
+        if (tree !== null) await readRows(childLevel(parent, config, active), tree.gitlinks, tree.modules, false);
+        const list = rows.slice(firstRow);
+        const rowless = await rowlessOf(await keptBelow([join(config.gitDir, "modules")], false), knownOf(list));
+        const programs = await programsOfAll(superListing, list, rowless, false);
+        return { rows: list, refusals: ordered(firstRefusal), rowless, programs };
+      });
+    }
+
+    // Contract §12 "Trust", program re-check: the entries of one row from new `config list` and hooks reads. A null `location`: a row before its clone.
+    function programsOf(row: ObservedRow, location: SubmoduleLocation | null): Promise<SubmoduleFact<ProgramEntry[]>> {
+      return attempt(async () => {
+        const superListing = await superTrust();
+        return (await rowPrograms(superListing, row, location === null ? null : await readConfig(location))).entries;
+      });
+    }
+
+    // The token binding of the reads so far. Null before the trust listing.
+    function binding() {
+      if (cachedListing === null) return null;
+      const view = trust.view(w, cachedListing, installation);
+      // Row IDs are random. `pathBytes` and `depth` identify each row and its parent.
+      const review = {
+        observed,
+        rows: rows.map((p) => ({ ...p.row, rowId: undefined, parentRowId: undefined })),
+        refusals: ordered(0),
+        urls: [...urlsByPath].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      };
+      const bound: SubmoduleBinding = { review: sha256(review), programs: sha256(programInputs), trust: { state: view.state, trustId: view.trustId ?? null } };
+      return { binding: bound, fingerprint: cachedListing.fingerprint, review, programs: programInputs };
+    }
+
+    return { top, level, programsOf, binding };
   }
 
   return {
     reviewSubmodules,
+    observe,
     retained: (token: string): RetainedSubmoduleReview | undefined => retained.get(token),
     // Contract §6 "Registration reuse and release".
     release(repositoryId: string): void {

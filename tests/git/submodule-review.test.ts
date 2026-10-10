@@ -4,11 +4,12 @@
 // T222: `reviewSubmodules` and the `submoduleNotice` of `readWorkspace` (contract §12 "Discovery notice", "Review reads", "Plan", "Refusals", "Trust").
 // `src/git-service/submodule-review.ts` and the notice of `src/git-service/status.ts` come with T229. T229 registers `reviewSubmodules`, and T231 registers `updateSubmodules`.
 
-import { describe, expect } from "bun:test";
+import { describe, expect, spyOn } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES } from "../../src/contracts/limits";
 import { redactUrlUserInfo, type SubmoduleAction } from "../../src/contracts/submodules";
+import * as approvalsModule from "../../src/git-service/approvals";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
@@ -726,6 +727,35 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
       },
     },
   };
+
+  // Research R14 S39: a preflight reviews again, so an unchanged repository must give equal digests. The case records each issued binding.
+  reviewCase(`F27 base: two reviews give equal review and programs digests`, async () => {
+    const b = buildF27(gitPath(), "t222-token-stable", "base");
+    const bindings: approvalsModule.SubmoduleBinding[] = [];
+    const create = approvalsModule.createApprovals;
+    const spy = spyOn(approvalsModule, "createApprovals").mockImplementation((now) => {
+      const store = create(now);
+      const issue = store.issue;
+      store.issue = (approval) => {
+        if (approval.kind === "submodule") bindings.push(approval.binding);
+        return issue(approval);
+      };
+      return store;
+    });
+    try {
+      await withFixture(b, "t222-token-stable", async (service) => {
+        const { repositoryId, r } = await reviewed(service, b);
+        const again = await reviewSubmodules(service, repositoryId);
+        expect({ rows: r.rows.length, tokens: [typeof r.token, typeof again.token] }).toEqual({ rows: 2, tokens: ["string", "string"] });
+        expect(bindings.map((x) => ({ review: x.review, programs: x.programs }))).toEqual([
+          { review: bindings[0]!.review, programs: bindings[0]!.programs },
+          { review: bindings[0]!.review, programs: bindings[0]!.programs },
+        ]);
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   for (const [what, { variant, change }] of Object.entries(CHANGES)) {
     todoCase(TASK, `a change of ${what} after the review makes updateSubmodules give STALE_REVIEW, and no update step starts ${TOKEN}`, SHELL, () => {

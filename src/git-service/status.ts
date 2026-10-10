@@ -102,6 +102,8 @@ export interface WorkspaceReaderOptions {
   workingVersion?: ReadWorkingVersionOptions;
   // Test seam only. Production never sets it.
   readRawIndex?: typeof readRawIndex;
+  // Contract §8 (T114): true while recovery blocks the workspace.
+  unknown?(w: Workspace): boolean;
 }
 
 // Contract §5 "Status page": each page holds whole entries. `starts[i]` is the first entry of page i, and `cursors[i]` names page i from 1 on.
@@ -384,7 +386,7 @@ export function policyOf(trust: Trust, w: Workspace, listing: TrustListing, inst
   return policyFingerprint({ ...input, git: installation });
 }
 
-export function createWorkspaceReader({ runner, trust, workingVersion = {}, readRawIndex: readIndex = readRawIndex }: WorkspaceReaderOptions) {
+export function createWorkspaceReader({ runner, trust, workingVersion = {}, readRawIndex: readIndex = readRawIndex, unknown }: WorkspaceReaderOptions) {
   const snapshots = createSnapshotStore<StatusSnapshot>();
   const states = new Map<string, WorkspaceState>();
   const stateOfWorkspace = (repositoryId: string): WorkspaceState => {
@@ -599,7 +601,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     };
   }
 
-  function recoveryOf(st: WorkspaceState): RecoveryState {
+  // Data-model §2: `unknown` takes precedence over every other value.
+  function recoveryOf(st: WorkspaceState, w: Workspace): RecoveryState {
+    if (unknown?.(w)) return "unknown";
     if (st.unavailable) return "unavailable";
     return st.refreshing > 0 ? "refreshing" : "ready";
   }
@@ -618,7 +622,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       finish();
       if (outcome.result === "failed") st.unavailable = outcome.code === "REPOSITORY_UNAVAILABLE";
       else if (outcome.result !== "canceled" && outcome.result !== "deadline") st.unavailable = false;
-      if ("value" in outcome) outcome.value.recoveryState = recoveryOf(st);
+      if ("value" in outcome) outcome.value.recoveryState = recoveryOf(st, w);
       return { kind: "done", outcome };
     };
     const refusal = (code: ErrorCode, text?: string): Attempt =>
@@ -846,7 +850,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       identity: { worktreeRoot: w.worktreeRoot, gitDirectory: w.gitDirectory, commonDirectory: w.commonDirectory, indexPath: w.indexPath, objectFormat: w.objectFormat, refFormat: w.refFormat },
       head,
       operationState,
-      recoveryState: recoveryOf(st),
+      recoveryState: recoveryOf(st, w),
       completeness,
       hunkEligibility: eligibility,
       submoduleNotice: submodules.notice,
@@ -939,7 +943,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
         if (facts !== null && "stop" in facts) return { result: facts.stop };
         const sameWorking = working !== null && st.bound.size === bound.length && bound.every((key) => kept.working.get(key) === working.get(key));
         const same = facts !== null && sameWorking && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
-        if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st) } };
+        if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st, t.workspace) } };
       }
       if (t.refresh) st.refreshing++;
       let running = t.refresh;
@@ -1022,8 +1026,11 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       if (t.signal.aborted || "refused" in step || step.exit.deadline !== undefined || step.exit.diagnosticLimit || step.exit.exitCode === null || step.exit.exitCode === 0) return null;
       const st = stateOfWorkspace(t.workspace.repositoryId);
       st.unavailable = true;
-      return { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" }, recoveryState: recoveryOf(st) } };
+      return { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" }, recoveryState: recoveryOf(st, t.workspace) } };
     },
+
+    // Data-model §2 `recoveryState` now, for a result that recovery changed.
+    recoveryState: (w: Workspace): RecoveryState => recoveryOf(stateOfWorkspace(w.repositoryId), w),
 
     // Contract §7 "Shared listing": `readHistory` reads this tuple again before it reuses a listing.
     listingTuple: (w: Workspace, operationId: string, signal: AbortSignal): Promise<string | WalkStop | null> => listingTuple(runner, w, stateOfWorkspace(w.repositoryId), operationId, signal),

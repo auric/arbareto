@@ -6,7 +6,7 @@
 
 import { lstat, unlink } from "node:fs/promises";
 import { basename } from "node:path";
-import type { Response, ServiceRequest } from "../contracts/envelope";
+import { RECOVERY_FOREIGN_CAP, type Response, type ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
 import type { ApprovalKey, Approvals, ComparisonBinding, HunkApproval } from "./approvals";
@@ -221,7 +221,7 @@ export async function observePolicy(ctx: ObserveContext, path: Uint8Array | null
   return { listing, gate, policyFingerprint: policyOf(trust, w, listing, installation), attributes };
 }
 
-async function indexOf(w: Workspace): Promise<Fact<IndexFacts>> {
+export async function indexOf(w: Workspace): Promise<Fact<IndexFacts>> {
   const raw = await readRawIndex(w.indexPath);
   if (raw === "unavailable") return { code: "GIT_FAILED" };
   if (raw === "over") return { code: "OUTPUT_LIMIT", reason: "MUTATION_RAW_INDEX_BYTES" };
@@ -453,10 +453,11 @@ export async function missingObject(ctx: ObserveContext, listing: PolicyFacts["l
 }
 
 // Contract §5 "Retained comparison data" and §8: the raw digests that reconciliation compares with the canonical index.
+// `candidate`: null until `publish()` gets the verified candidate. Without it, only `before` can match.
 export interface RetainedPublication {
   repositoryId: string;
   before: string | null;
-  candidate: string;
+  candidate: string | null;
 }
 
 export type Ending = Refusal | Stop | { published: true };
@@ -524,9 +525,6 @@ function unknownOf(failed: Failure | Stop, refusal: Refusal | null): Decision {
   return { event, cause: diagnosticCause(code, refusal, undefined), known: false };
 }
 
-// Contract §8 "Observed locks": `applyHunk` and `applyFile` name at most 6 files.
-const PUBLICATION_FOREIGN_CAP = 6;
-
 // Research R3 step 14 and contract §8: the reconciliation of an `applyHunk` or `applyFile` publication.
 export async function reconcilePublication(r: PublicationReconciliation): Promise<void> {
   const { registry, operationId, run, ending, binding, foreign } = r;
@@ -547,7 +545,7 @@ export async function reconcilePublication(r: PublicationReconciliation): Promis
   if (decision.event.type !== "intended-effects-confirmed") {
     const locks = await observedLocks(quiet, "value" in observed.head ? observed.head.value : binding.head);
     if (Array.isArray(locks)) {
-      for (const path of locks) if (foreign.length < PUBLICATION_FOREIGN_CAP && !foreign.includes(path)) foreign.push(path);
+      for (const path of locks) if (foreign.length < RECOVERY_FOREIGN_CAP && !foreign.includes(path)) foreign.push(path);
     } else if (decision.known) decision = unknownOf(locks, refusal);
   }
   const result = { ...decision.result, ...(foreign.length > 0 ? { foreign } : {}) };
@@ -674,6 +672,9 @@ async function publish<A extends Admission>(o: HunkPublisherOptions & Publicatio
   try {
     registry.apply(operationId, { type: "marker-recorded" });
     o.owners.set(operationId, request.repositoryId);
+    // Contract §5: the digests stay until reconciliation succeeds, so recovery can compare them.
+    const kept: RetainedPublication = { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: null };
+    retained.set(operationId, kept);
 
     const steps = async (): Promise<Ending> => {
       if (!o.approvals.consume(key, operationId)) {
@@ -696,8 +697,8 @@ async function publish<A extends Admission>(o: HunkPublisherOptions & Publicatio
       const refused = await p.prepare(a, { ctx, rec, run, path });
       if (refused !== null) return refused;
       const candidate = run.candidate!;
-      // Research R3 step 13 and contract §4 step 8. Contract §5: the digests stay until reconciliation succeeds.
-      retained.set(operationId, { repositoryId: w.repositoryId, before: binding.index.rawIndexDigest, candidate: candidate.digest });
+      // Research R3 step 13 and contract §4 step 8.
+      kept.candidate = candidate.digest;
       registry.progress(operationId, "publication");
       run.publishing = true;
       run.publishStarted = true;

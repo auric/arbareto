@@ -76,6 +76,26 @@ const registered = (w: Workspace): RegistrationOutcome => ({ ok: true, result: {
 export type DismissalOutcome = { ok: true } | { ok: false; code: ErrorCode; result?: { remedy: { text: string } } };
 const dismissalRefused: DismissalOutcome = { ok: false, code: "STATE_UNKNOWN", result: { remedy: { text: DISCOVERY_REMEDIES.dismissalRefused } } };
 
+// Contract §6 "Dismissal", Windows marker rule. Allowed when discovery in the marker context gives REPOSITORY_UNAVAILABLE, also the merged refusal,
+// or when the resolved common-directory identity differs from the marker.
+export async function dismissMarker(runner: GitRunner, target: RegistrationTarget, marker: { commonIdentity: PhysicalIdentity }): Promise<DismissalOutcome> {
+  const { operationId, bootstrapId, installation, signal } = target;
+  const { gitInstallationId } = installation;
+  const stopped = (code: ErrorCode): DismissalOutcome => (code === "DEADLINE" || code === "CANCELED" ? { ok: false, code } : dismissalRefused);
+  try {
+    const discovered = await discoverRepository(runner, { operationId, bootstrapId, gitInstallationId, gitSelectedPath: installation.selectedPath, signal });
+    if (!discovered.ok) return discovered.refusal.code === "REPOSITORY_UNAVAILABLE" ? { ok: true } : stopped(discovered.refusal.code);
+    const context: ProcessContext = { contextKind: "repositoryDiscovery", bootstrapId, gitInstallationId };
+    const found = await requestIdentities(runner, operationId, context, [discovered.repository.commonDirectory], signal);
+    if (!found.ok) return "stop" in found ? stopped(found.stop === "deadline" ? "DEADLINE" : "CANCELED") : dismissalRefused;
+    return sameIdentity(found.identities[0]!, marker.commonIdentity) ? dismissalRefused : { ok: true };
+  } catch (error) {
+    if (error instanceof RunnerRefusal) return { ok: false, code: error.code };
+    if (signal.aborted) return { ok: false, code: "CANCELED" };
+    throw error;
+  }
+}
+
 // Contract §6 "Dismissal", WSL marker rule and decision W13. Allowed when `wslDistros` does not list the distro of the path,
 // when the §11 probe reports the path `absent`, when discovery call 1 gives the merged refusal, or when the common-directory identity differs from the marker.
 // A dismissal shows no Git confirmation, so discovery runs only with the approved session Git of the distro, unchanged since its probe.

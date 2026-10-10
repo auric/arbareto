@@ -85,7 +85,7 @@ async function listingOf<T>(ctx: ObserveContext, args: string[], parse: (bytes: 
 }
 
 // The `parent` headers of one commit object. Contract §5 "History commit object" bounds the read.
-async function parentsOf(ctx: ObserveContext, oid: string): Promise<Fact<string[]>> {
+export async function parentsOf(ctx: ObserveContext, oid: string): Promise<Fact<string[]>> {
   const out = createCollector({ maxBytes: HISTORY_COMMIT_OBJECT_BYTES + HEADER_BYTES + 2 });
   const step = await stepOf(ctx, batchCommandArgs(), out, new TextEncoder().encode(`contents ${oid}\0`));
   if (!("exit" in step)) return step;

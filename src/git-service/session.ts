@@ -20,10 +20,11 @@ import { createFilePublisher, fileApproval } from "./file-publish";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createHistoryReader, type HistoryOutcome } from "./history";
 import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from "./hunk-publish";
-import { createSessionLog } from "./log";
+import { createSessionLog, type DiagnosticCause } from "./log";
 import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
-import { createRegistrations, type RegistrationOutcome, type Workspace } from "./registration";
+import { createRecovery } from "./recovery";
+import { createRegistrations, dismissMarker, type DismissalOutcome, type RegistrationOutcome, type Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
 import { createSubmoduleReviewer } from "./submodule-review";
 import { createWorkspaceReader, type ReadOutcome, type WorkspaceReaderOptions } from "./status";
@@ -62,9 +63,9 @@ export interface SessionOptions {
   approvalClock?: () => number;
 }
 
-// The outcome forms of the reads that `read-scheduler.ts` runs.
+// The outcome forms of the reads that `read-scheduler.ts` runs. `cause` goes only into the session log entry (contract §8).
 type ReadResult =
-  | { result: "succeeded" | "limited" | "failed"; code?: ErrorCode; value?: unknown }
+  | { result: "succeeded" | "limited" | "failed"; code?: ErrorCode; value?: unknown; cause?: DiagnosticCause }
   | { result: "canceled" }
   | { result: "deadline" };
 
@@ -129,7 +130,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     environment,
     configFiles: (gitInstallationId) => (git?.ok && git.installation.gitInstallationId === gitInstallationId ? git.installation.configFiles : undefined),
   });
-  const reader = createWorkspaceReader({ runner, trust, readRawIndex });
+  const reader = createWorkspaceReader({ runner, trust, readRawIndex, unknown: (w) => recovery.unknown(w) });
   const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
@@ -137,17 +138,23 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const reviews = createCommitReviewer({ runner, trust, approvals, now: approvalClock });
   const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
-  const exclusion = createExclusion({ started: (frame) => runner.started(frame), ended: () => {}, closeJob: () => {} });
+  // A release of a workspace with an unfinished mutation gives BUSY, so the workspace of a settled mutation is still registered.
+  const exclusion = createExclusion(
+    { started: (frame) => runner.started(frame), ended: () => {}, closeJob: () => {} },
+    { blocked: (w) => recovery.blocked(w), settled: (entry, markerId) => recovery.settled(entry, markerId, registrations.get(entry.workspace.repositoryId)?.worktreeIdentity) },
+  );
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   // Contract §5 and §8: both publishers keep their retained digests and approval owners in one store, because recovery (T114) reads it.
   const files = createFilePublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   const committer = createCommitter({ runner, trust, reader, reviews, approvals, registry, exclusion, respond });
+  const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
   const registrations = createRegistrations({
     runner,
     unfinishedMutation: (repositoryId) => exclusion.holds(repositoryId),
     onRegister: (w) => {
+      recovery.register(w);
       // Contract §11 "Change polling": a WSL workspace gets no watcher.
       if (watchHints && w.wsl === undefined) watchers.set(w.repositoryId, watchWorkspace([w.worktreeRoot, w.gitDirectory, w.commonDirectory], (lost) => reader.hint(w.repositoryId, lost)));
     },
@@ -161,6 +168,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       submoduleReviews.release(workspace.repositoryId);
       approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
       trust.release(workspace);
+      recovery.release(workspace);
     },
   });
 
@@ -307,7 +315,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       registry.apply(operationId, { type: "cancel" });
       return void registry.apply(operationId, { type: "processes-stopped" });
     }
-    registry.apply(operationId, { type: "read-complete", result: outcome.result, ...(outcome.code === undefined ? {} : { code: outcome.code }) }, outcome.value);
+    registry.apply(operationId, { type: "read-complete", result: outcome.result, ...(outcome.code === undefined ? {} : { code: outcome.code }) }, outcome.value, outcome.cause);
   };
 
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
@@ -343,17 +351,20 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     if (request.payload.refresh) approvals.invalidate((a) => a.repositoryId === request.repositoryId);
     scheduleRead(
       request,
-      (t) =>
-        reader.readWorkspace({
+      async (t) => {
+        const outcome = await reader.readWorkspace({
           ...t,
           installation,
           workspace,
           refresh: request.payload.refresh,
           check: request.payload.check,
           ...(request.repositoryGeneration === undefined ? {} : { requestGeneration: request.repositoryGeneration }),
-        }),
+        });
+        // Contract §8: only a refresh performs recovery reconciliation, inside the read slot and its deadline.
+        return request.payload.refresh ? recovery.refresh({ ...t, workspace, installation }, outcome) : outcome;
+      },
       (t) => reader.recheck({ ...t, workspace }),
-      { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" }, recoveryState: "ready" } } satisfies ReadOutcome,
+      { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" }, recoveryState: reader.recoveryState(workspace) } } satisfies ReadOutcome,
     );
   };
 
@@ -459,6 +470,38 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     );
   };
 
+  // Contract §6 "Dismissal". A payload without `bootstrapId` starts no Git process. The result states that the outcome stays unknown.
+  // The marker stays in recovery: the shell deletes its file only after the native confirmation.
+  const dismissRecoveryMarker: Handler<"dismissRecoveryMarker"> = (request) => {
+    const { markerId, bootstrapId } = request.payload;
+    const h = handshake as Handshake;
+    const marker = h.markers.find((m) => m.markerId === markerId);
+    if (marker === undefined && !h.damagedMarkers.some((m) => m.markerId === markerId)) return reject(request.requestId, "UNKNOWN_TARGET");
+    let discover: ((target: { operationId: string; signal: AbortSignal }) => Promise<DismissalOutcome>) | null = null;
+    if (bootstrapId !== undefined) {
+      // Contract §6: the shell sends a damaged marker without a context, so a damaged marker has no stored identity to compare.
+      if (marker === undefined) return reject(request.requestId, "INVALID_REQUEST");
+      // T115 wires the WSL marker form.
+      if ("distroGuid" in marker.commonIdentity) return reject(request.requestId, "SERVICE_UNAVAILABLE");
+      if (!git?.ok) return reject(request.requestId, gitCode());
+      const installation = git.installation;
+      discover = (t) => dismissMarker(runner, { ...t, bootstrapId, installation }, marker);
+    }
+    const { operationId, signal } = registry.start("dismissRecoveryMarker", request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    const finish = (outcome: DismissalOutcome) => {
+      if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
+      if (outcome.ok) return registry.apply(operationId, { type: "read-complete", result: "succeeded" }, { outcome: "unknown" });
+      if (outcome.code === "CANCELED") {
+        registry.apply(operationId, { type: "cancel" });
+        return registry.apply(operationId, { type: "processes-stopped" });
+      }
+      registry.apply(operationId, { type: "read-complete", result: "failed", code: outcome.code }, outcome.result);
+    };
+    if (discover === null) return void finish({ ok: true });
+    discover({ operationId, signal }).then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
+  };
+
   // `undefined`: a later task adds the handler. The request then gets SERVICE_UNAVAILABLE.
   const handlers: { [K in ServiceOperation]: Handler<K> | undefined } = {
     getEnvironment: (request) => {
@@ -496,7 +539,18 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     revokeTrust: (request) => {
       const workspace = workspaceOf(request.repositoryId);
-      trustOperation(request, () => trust.acceptRevoke(workspace, request.payload.trustId), (t) => trust.revokeTrust({ ...t, workspace }));
+      trustOperation(
+        request,
+        () => trust.acceptRevoke(workspace, request.payload.trustId),
+        (t) => {
+          // Contract §6 "Lingering Jobs": a revoke after `started` sets `endProcesses` on the `ended` frame of each unfinished mutation of that common directory.
+          for (const operationId of exclusion.running(workspace.commonIdentity)) {
+            const state = registry.get(operationId)?.state;
+            if (state === "running" || state === "cancel-requested" || state === "reconciling") registry.apply(operationId, { type: "revoke-trust" });
+          }
+          return trust.revokeTrust({ ...t, workspace });
+        },
+      );
     },
     applyHunk: (request) => {
       const workspace = workspaceOf(request.repositoryId);
@@ -527,7 +581,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
         respond({ requestId: request.requestId, state: "succeeded", result: view });
       }),
     getOperation: (request) => operationTarget(request, (view) => respond({ requestId: request.requestId, state: "succeeded", result: view })),
-    dismissRecoveryMarker: undefined,
+    dismissRecoveryMarker,
   };
 
   function receiveHandshake(frame: Fields) {
@@ -539,6 +593,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     if (Object.keys(frame).length === 2 && !version && parsed.success) {
       handshake = parsed.data;
       trust.loadRecords(handshake.trustRecords);
+      recovery.load(handshake);
       sessionId = crypto.randomUUID();
       reply({ sessionId });
       const saved = handshake.savedGit;

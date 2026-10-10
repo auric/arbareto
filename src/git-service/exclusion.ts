@@ -26,18 +26,27 @@ export type NotEntered =
   | { ok: false; code: "BUSY"; remedy?: { text: string } }
   | { ok: false; code: "RECOVERY_MARKER_FAILED"; failure: MarkerFailure; folder: string; remedy: { text: string } }
   | { ok: false; code: "DEADLINE" }
+  | { ok: false; code: "STATE_UNKNOWN" }
   | { ok: false; code: RefusedCode };
 
-type Slot = Pick<Workspace, "repositoryId" | "commonIdentity">;
+// Contract §8 and §9 (T114): `blocked` refuses entry with STATE_UNKNOWN. `settled` records the outcome before the slot frees.
+export interface RecoveryGate {
+  blocked(w: MutationEntry["workspace"]): boolean;
+  settled(entry: MutationEntry, markerId: string): void;
+}
 
-export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "closeJob">) {
+type Slot = Pick<Workspace, "repositoryId" | "commonIdentity"> & { operationId: string };
+
+export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "closeJob">, gate?: RecoveryGate) {
   // Contract §5: one mutation per common repository. A slot lives from `enter` to `end` or to a refusal.
   const slots = new Set<Slot>();
 
   async function enter(entry: MutationEntry): Promise<Entered | NotEntered> {
     const w = entry.workspace;
+    // Contract §9: the refusal comes before `started`, so no approval, lock, or Git process follows.
+    if (gate?.blocked(w)) return { ok: false, code: "STATE_UNKNOWN" };
     if ([...slots].some((s) => sameIdentity(s.commonIdentity, w.commonIdentity))) return { ok: false, code: "BUSY" };
-    const slot: Slot = { repositoryId: w.repositoryId, commonIdentity: w.commonIdentity };
+    const slot: Slot = { repositoryId: w.repositoryId, commonIdentity: w.commonIdentity, operationId: entry.operationId };
     slots.add(slot);
     // Contract §6: a reply without a marker ID holds no mutex and no marker, so the service sends `closeJob`, not `ended`.
     const refuse = (result: NotEntered): NotEntered => {
@@ -64,6 +73,7 @@ export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "c
         if (ended) return;
         ended = true;
         runner.ended(entry.operationId, endProcesses);
+        gate?.settled(entry, reply.markerId);
         slots.delete(slot);
       },
     };
@@ -73,6 +83,8 @@ export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "c
     enter,
     // Contract §6 "Registration reuse and release" `unfinishedMutation`: a mutation of this workspace holds its slot.
     holds: (repositoryId: string): boolean => [...slots].some((s) => s.repositoryId === repositoryId),
+    // The operation IDs that hold a slot of this common-directory identity.
+    running: (commonIdentity: Workspace["commonIdentity"]): string[] => [...slots].filter((s) => sameIdentity(s.commonIdentity, commonIdentity)).map((s) => s.operationId),
   };
 }
 

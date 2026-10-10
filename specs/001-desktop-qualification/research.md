@@ -2451,6 +2451,24 @@ Design choices of this record:
 
 **Limit (T105, 2026-10-08)**: a WSL comparison sets `diskPath` to the index path bytes (`src/git-service/comparison.ts`). Linux name lookup is exact, so a found file has the index name. A folder with the ext4 `casefold` attribute looks up names without letter case. The service does not detect such a folder. So a letter-case difference there gets no `path` refusal (contract §11 "Paths and file access"). No probe ran with a `casefold` folder.
 
+### WSL mutation probes (T214 WP0, 2026-10-10)
+
+**Method**: Windows 11, Git for Windows 2.56.0.windows.1, test distro `Ubuntu-26.04` with Git 2.55.0, warm (the host detection had started the distro). The probes ran from the worktree `D:\dev\rozvio-l1` at `66610af` as scratch tests outside `tests/`. P2 and P3 ran through the test double `tests/git/bun-runner.ts` on a fresh F21 copy in the owned fixture folder. They did not run the Rust shell. The user Git configuration kept its SHA-256 `958958de…6bdd4`.
+
+**Commands** (the scratch files lie outside the repository):
+
+- P1: `bun test <scratch>/p1.test.ts` from the worktree root. Exit 0, 1 pass.
+- P2 and P3: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 bun test <scratch>/p2.test.ts` from the worktree root. The probe case passed. The process exit was 1, from an `EBUSY` in the scratch file's hook order: the fixture-root `afterAll` ran before the runner disposal. The leftover Windows fixture folder was removed by hand.
+
+**Results**:
+
+- P1 (U1). `withFsCalls` of `tests/git/service-harness.ts` spies on the `node:fs/promises` namespace. It recorded both `open` calls that `src/git-service/hunk-candidate.ts` makes through its named import: the canonical index in `copy` and the candidate in `readCandidate`. So the UNC `open` check of `tests/wsl/mutations.test.ts` sees the candidate read of the §4 `link` check, and its filter must skip names that start with `arbareto-candidate-`.
+- P2 (U2). Two `run` calls of `["--no-lazy-fetch","version"]` with the `mutation` policy gave exit 0 and `activeDescendants` 0. The first started the anchor.
+- P2 (U3). `wslFiles` `candidate` gave a `candidate` reply with equal index and candidate digests. `apply --cached` with the UNC candidate path as `indexFile` gave exit 0. `ls-files --stage` with that candidate as `GIT_INDEX_FILE` showed the blob of the working `multi.txt` (`e9ebb14a`). The canonical index kept `ce94570e`. The double maps the UNC path to the Linux path, as the shell does (`process_requests.rs`). No packaged run verified the shell mapping.
+- P3 (R1). The `version` runs took 226 ms (with the anchor start) and 183 ms. The `candidate` walk took 186 ms, and `apply --cached` took 194 ms. So each WSL step costs about 180 to 230 ms, and the first `version` run adds about that much to each WSL mutation. plan.md has no WSL mutation budget.
+
+**Remaining risk (G12)**: a write-then-restore of a working file during the comparison diff can bind a hunk that Git read from the version in between. The `digest` results before and after the diff are equal, so no check sees the change.
+
 Sources: [WSL basic commands](https://learn.microsoft.com/windows/wsl/basic-commands), [WSLENV](https://learn.microsoft.com/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl-with-wslenv), [wsl.conf](https://learn.microsoft.com/windows/wsl/wsl-config#wslconf), [systemd in WSL](https://learn.microsoft.com/windows/wsl/systemd), [background tasks](https://devblogs.microsoft.com/commandline/background-task-support-in-wsl/), Git Extensions source clone (PathUtil.cs, GitExecutor.cs, GitStatusMonitor.cs), git-config(1) `maintenance.autoDetach`, pid_namespaces(7).
 
 ## R14. Submodule initialization and update

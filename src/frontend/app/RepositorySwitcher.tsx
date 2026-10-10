@@ -26,8 +26,6 @@ type Absent = { reason: "absent"; path: string; text: string; remedy: { text: st
 
 export type RecentListProps = {
   bridge: RecentBridge;
-  /** The worktree root of the open workspace. Its entry carries `aria-current`. */
-  current?: string | null;
   /** A mutation runs: the entries and Open folder stay disabled with `BUSY_TEXT`. */
   busy: boolean;
   /** Runs `chooseRepository`. */
@@ -83,7 +81,7 @@ const entryName = (e: Entry) => [folderName(e.path), e.path, ...(e.location.kind
 const isAbsent = (result: unknown): result is Absent => typeof result === "object" && result !== null && (result as { reason?: unknown }).reason === "absent";
 
 /** The filter, Open folder, and the recent entries. One combobox with `aria-activedescendant` over one listbox. */
-export function RecentList({ bridge, current = null, busy, onOpenFolder, onOpened, onClose, popup = false }: RecentListProps) {
+export function RecentList({ bridge, busy, onOpenFolder, onOpened, onClose, popup = false }: RecentListProps) {
   const ids = { list: useId(), busy: useId(), option: useId() };
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [listCode, setListCode] = useState<string | null>(null);
@@ -195,7 +193,7 @@ export function RecentList({ bridge, current = null, busy, onOpenFolder, onOpene
             aria-disabled={busy || undefined}
             aria-describedby={busy ? ids.busy : undefined}
             aria-label={entry === null ? undefined : entryName(entry)}
-            aria-current={entry !== null && entry.path === current ? "true" : undefined}
+            aria-current={entry?.current ? "true" : undefined}
             className={`list-row flex min-w-0 items-center gap-2 px-2 ${index === active ? "bg-hover" : ""} ${busy ? "text-muted-text" : ""}`}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
@@ -249,7 +247,7 @@ export function RecentList({ bridge, current = null, busy, onOpenFolder, onOpene
   );
 }
 
-export type RepositorySwitcherProps = Omit<RecentListProps, "current" | "onClose" | "popup"> & {
+export type RepositorySwitcherProps = Omit<RecentListProps, "onClose" | "popup"> & {
   /** The worktree root of the open workspace, or null. */
   worktreeRoot: string | null;
   open: boolean;
@@ -299,7 +297,7 @@ export function RepositorySwitcher({ worktreeRoot, open, onOpenChange, ...list }
       </Tooltip>
       {/* plan.md "Dialog sizes": at most 480 DIPs wide and 60% of the client height, inside the client area less 16 DIPs on each side. */}
       <PopoverContent align="start" className="max-h-[min(60vh,calc(100vh-32px))] w-[min(480px,calc(100vw-32px))]">
-        {open ? <RecentList {...list} current={worktreeRoot} popup onClose={() => onOpenChange(false)} /> : null}
+        {open ? <RecentList {...list} popup onClose={() => onOpenChange(false)} /> : null}
       </PopoverContent>
     </Popover>
   );

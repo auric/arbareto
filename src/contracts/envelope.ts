@@ -296,6 +296,8 @@ export const RecentRepositoriesResult = z.strictObject({
           z.strictObject({ kind: z.literal("wsl"), distro: DistroName }).meta({ title: "RecentWslLocation" }),
         ]),
         openedAt: UtcTime,
+        // The shell sets it from `worktreeKey` equality with the open workspace. The key stays out of the entry.
+        current: z.boolean(),
       }),
     )
     .max(RECENT_REPOSITORIES),

@@ -181,6 +181,7 @@ fn start(app: &mut App, root: Option<&Path>) -> Result<(), Box<dyn std::error::E
                 settings: Mutex::new(settings),
                 markers: Arc::new(Markers::open(&data.join("recovery"))),
                 trust: Arc::new(Trust::open(&data.join("trust"))),
+                current: Mutex::new(None),
             },
         ),
         None => Err(lifecycle::Event::StartFailed),

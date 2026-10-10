@@ -124,7 +124,7 @@ export const SCOPE_LINE =
   "This test build covers opening repositories, recent repositories, status, diffs, hunk and file staging, local commits, submodule updates, one history page, and a read-only reference list.";
 
 /** plan.md "Required visible states", No repository: the recent list with its filter, Open folder, and the static line. No branch per entry. */
-export function StartPage(props: Omit<RecentListProps, "current" | "onClose" | "popup">) {
+export function StartPage(props: Omit<RecentListProps, "onClose" | "popup">) {
   return (
     <section aria-label="Start page" className="flex min-h-0 max-w-[480px] flex-col gap-4 p-4">
       <RecentList {...props} />

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
-import { bundleProblems } from "./src/frontend/highlight/guard";
+import { bundleProblems } from "./src/frontend/highlight/guard.ts";
 
 const root = fileURLToPath(new URL("./src/frontend", import.meta.url));
 const highlight = (file: string) => fileURLToPath(new URL(`./src/frontend/highlight/${file}`, import.meta.url));

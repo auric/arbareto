@@ -3,6 +3,7 @@
     "strict": true,
     "target": "esnext",
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "module": "esnext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",

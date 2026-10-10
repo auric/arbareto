@@ -4,7 +4,7 @@
 // research.md R9: the bundle check that vite.config.ts runs on the page build and the worker build.
 // It reads the Rolldown module ids of each chunk and the emitted text. File names of chunks are not a contract.
 
-import { LANGUAGES, THEMES } from "./set";
+import { LANGUAGES, THEMES } from "./set.ts";
 
 const GRAMMAR = /[\\/]node_modules[\\/](?:@shikijs[\\/]langs[\\/]dist|shiki[\\/]dist[\\/]langs)[\\/]([^\\/]+)\.mjs$/;
 const THEME = /[\\/]node_modules[\\/](?:@shikijs[\\/]themes[\\/]dist|shiki[\\/]dist[\\/]themes)[\\/]([^\\/]+)\.mjs$/;

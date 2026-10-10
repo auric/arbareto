@@ -9,7 +9,7 @@ import { DEFAULT_PREFERENCES, readPreferences, writePreferences, type Preference
 printOrigin("../../src/frontend/state/preferences.ts", import.meta.dir);
 
 // plan.md "Compact token system" and "Chosen layout, sizes, and DPI": the wide file lane is 240 to 400 DIPs, 280 by default.
-const DEFAULTS: Preferences = { theme: "system", density: "compact", panes: { fileLane: 280 } };
+const DEFAULTS: Preferences = { theme: "system", darkPalette: "graphite", density: "compact", panes: { fileLane: 280 } };
 
 class MemoryStorage {
   readonly items = new Map<string, string>();
@@ -47,7 +47,7 @@ const keysDeep = (value: unknown): string[] =>
   value !== null && typeof value === "object" ? Object.entries(value).flatMap(([key, inner]) => [key, ...keysDeep(inner)]) : [];
 
 describe("preferences", () => {
-  test("the documented defaults: System theme, Compact density, 280 DIP file lane", () => {
+  test("the documented defaults: System theme, Graphite dark palette, Compact density, 280 DIP file lane", () => {
     expect(DEFAULT_PREFERENCES).toEqual(DEFAULTS);
     expect(readPreferences(new MemoryStorage())).toEqual(DEFAULTS);
   });
@@ -56,8 +56,10 @@ describe("preferences", () => {
     for (const theme of ["system", "light", "dark"] as const) {
       for (const density of ["compact", "comfortable"] as const) {
         for (const fileLane of [240, 333, 400]) {
-          const value: Preferences = { theme, density, panes: { fileLane } };
-          expect(readPreferences(stored(value))).toEqual(value);
+          for (const darkPalette of ["graphite", "ink", "warm"] as const) {
+            const value: Preferences = { theme, darkPalette, density, panes: { fileLane } };
+            expect(readPreferences(stored(value))).toEqual(value);
+          }
         }
       }
     }
@@ -65,25 +67,35 @@ describe("preferences", () => {
 
   test("an invalid theme reads as System and keeps the other values", () => {
     for (const theme of ["purple", "", "System", "DARK", 1, null, undefined, {}]) {
-      expect(readPreferences(stored({ theme: theme as never, density: "comfortable", panes: { fileLane: 300 } }))).toEqual({ theme: "system", density: "comfortable", panes: { fileLane: 300 } });
+      expect(readPreferences(stored({ darkPalette: "graphite", theme: theme as never, density: "comfortable", panes: { fileLane: 300 } }))).toEqual({ darkPalette: "graphite", theme: "system", density: "comfortable", panes: { fileLane: 300 } });
     }
+  });
+
+  // plan.md "Dark palettes": an unknown or missing palette reads as Graphite.
+  test("an unknown or missing dark palette reads as Graphite and keeps the other values", () => {
+    for (const darkPalette of ["purple", "", "Ink", "WARM", "warm dark", 1, null, undefined, {}]) {
+      expect(readPreferences(stored({ theme: "dark", darkPalette: darkPalette as never, density: "comfortable", panes: { fileLane: 300 } }))).toEqual({ theme: "dark", darkPalette: "graphite", density: "comfortable", panes: { fileLane: 300 } });
+    }
+    const storage = new MemoryStorage();
+    storage.setItem("arbareto.preferences.v1", JSON.stringify({ theme: "dark", density: "compact", panes: { fileLane: 280 } }));
+    expect(readPreferences(storage).darkPalette).toBe("graphite");
   });
 
   test("an invalid density reads as Compact; Comfortable is the only other value", () => {
     for (const density of ["spacious", "cozy", "Comfortable", "", 0, null]) {
-      expect(readPreferences(stored({ theme: "dark", density: density as never, panes: { fileLane: 300 } }))).toEqual({ theme: "dark", density: "compact", panes: { fileLane: 300 } });
+      expect(readPreferences(stored({ darkPalette: "graphite", theme: "dark", density: density as never, panes: { fileLane: 300 } }))).toEqual({ darkPalette: "graphite", theme: "dark", density: "compact", panes: { fileLane: 300 } });
     }
   });
 
   test("an out-of-range or non-numeric pane proportion reads as its default", () => {
     for (const fileLane of [239, 401, -1, 0, Number.NaN, Number.POSITIVE_INFINITY, 1e9, "300", null]) {
-      expect(readPreferences(stored({ theme: "light", density: "comfortable", panes: { fileLane: fileLane as never } }))).toEqual({ theme: "light", density: "comfortable", panes: { fileLane: 280 } });
+      expect(readPreferences(stored({ darkPalette: "graphite", theme: "light", density: "comfortable", panes: { fileLane: fileLane as never } }))).toEqual({ darkPalette: "graphite", theme: "light", density: "comfortable", panes: { fileLane: 280 } });
     }
   });
 
   test("garbage in every stored value reads as the defaults", () => {
     for (const garbage of ["", "{", "null", "[]", "\u0000", "undefined", '{"theme":"dark"']) {
-      const storage = stored({ theme: "dark", density: "comfortable", panes: { fileLane: 300 } });
+      const storage = stored({ darkPalette: "graphite", theme: "dark", density: "comfortable", panes: { fileLane: 300 } });
       expect(storage.items.size).toBeGreaterThan(0);
       for (const key of storage.items.keys()) storage.items.set(key, garbage);
       expect(readPreferences(storage)).toEqual(DEFAULTS);
@@ -92,13 +104,13 @@ describe("preferences", () => {
 
   test("a throwing storage read gives the defaults, and a throwing write throws nothing", () => {
     expect(readPreferences(throwing)).toEqual(DEFAULTS);
-    expect(() => writePreferences(throwing, { theme: "dark", density: "comfortable", panes: { fileLane: 300 } })).not.toThrow();
+    expect(() => writePreferences(throwing, { darkPalette: "graphite", theme: "dark", density: "comfortable", panes: { fileLane: 300 } })).not.toThrow();
   });
 
   test("the module exports no mode, trust, approval, or operation field", () => {
     for (const name of Object.keys(preferencesModule)) expect(name).not.toMatch(FORBIDDEN);
     expect(keysDeep(DEFAULT_PREFERENCES).filter((key) => FORBIDDEN.test(key))).toEqual([]);
-    expect(keysDeep(readPreferences(stored({ theme: "dark" }))).filter((key) => FORBIDDEN.test(key))).toEqual([]);
+    expect(keysDeep(readPreferences(stored({ darkPalette: "graphite", theme: "dark" }))).filter((key) => FORBIDDEN.test(key))).toEqual([]);
   });
 
   test("an extra stored mode or trust field never reaches the read result", () => {

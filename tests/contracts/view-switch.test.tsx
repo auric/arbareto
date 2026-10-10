@@ -90,6 +90,7 @@ afterEach(async () => {
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
   document.documentElement.removeAttribute("data-density");
+  document.documentElement.removeAttribute("data-dark-palette");
 });
 
 // Let the injected responses settle and React commit.
@@ -169,6 +170,34 @@ describe("View menu choices", () => {
       expect(selectedEntry()).toHaveLength(1);
       expect(mounts.changes).toBe(w.counts.changes);
     }
+  });
+
+  // plan.md "Dark palettes": the "Dark palette" radio group of the View menu.
+  test("Graphite, Ink, and Warm dark from the View menu each set the root palette attribute at once, keep the selected entry, and send no bridge request", async () => {
+    const w = await openChanges();
+    const group = [...document.querySelectorAll('[role="menuitemradio"]')];
+    expect(group).toHaveLength(0);
+    for (const [label, value] of [["Ink", "ink"], ["Warm dark", "warm"], ["Graphite", null]] as const) {
+      const before = w.double.calls.length;
+      await choose(label);
+      expect(document.documentElement.getAttribute("data-dark-palette")).toBe(value);
+      expect(selectedEntry()).toHaveLength(1);
+      expect(w.double.calls.slice(before)).toEqual([]);
+    }
+    const stored = JSON.parse(localStorage.getItem("arbareto.preferences.v1")!);
+    expect(stored.darkPalette).toBe("graphite");
+  });
+
+  test("the View menu labels the palette group Dark palette with three radio items", async () => {
+    await openChanges();
+    const menubar = document.querySelector('[role="menubar"]')!;
+    const view = named('[role="menuitem"]', "View", menubar).filter((e) => text(e) === "View")[0]!;
+    await act(async () => view.focus());
+    await click(view);
+    const labels = [...document.querySelectorAll('[role="menuitemradio"]')].map((e) => text(e));
+    expect(labels).toEqual(expect.arrayContaining(["Graphite", "Ink", "Warm dark"]));
+    expect(document.body.textContent).toContain("Dark palette");
+    await press(document.activeElement!, "Escape");
   });
 
   test("a theme or density choice sends no bridge request", async () => {

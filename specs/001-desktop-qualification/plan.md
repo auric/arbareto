@@ -414,34 +414,62 @@ Windows text size. Interface text follows the Windows Text size setting, from 10
 
 #### Compact token system
 
-Use eight base roles per theme. These values are proposals for rendered qualification, not screenshots or a completed accessibility audit.
+Use eight base roles per theme. These values are proposals for rendered qualification, not screenshots or a completed accessibility audit. The Dark column holds Graphite, the default dark palette. "Dark palettes" below holds Ink and Warm dark.
 
-| Role | Dark | Light | Use |
+| Role | Dark (Graphite) | Light | Use |
 | --- | --- | --- | --- |
-| Canvas | `#17181C` | `#F4F5F7` | Workspace and inactive regions. |
-| Surface | `#202228` | `#FFFFFF` | Editors, menus, and dialogs. |
-| Text | `#E8E9ED` | `#20242C` | Primary labels and readable content. |
-| Muted text | `#ABB0BB` | `#576171` | Secondary metadata and explicit disabled reasons. |
-| Divider | `#343740` | `#DDE0E6` | Decorative pane separators, section rules, and splitters at rest. |
-| Control border | `#687487` | `#778294` | Inputs, buttons, focusable boundaries, and splitters on hover or drag. |
-| Accent | `#8CB4F8` | `#245CB5` | Active context, focus, and the single primary review action. |
-| Hover fill | `#242833` | `#EBECEF` | Neutral pointer hover on rows and buttons; differs in hue from the blue-tinted Selected row fill. |
+| Canvas | `#191B1F` | `#F4F5F7` | Workspace and inactive regions. |
+| Surface | `#26292F` | `#FFFFFF` | Editors, menus, and dialogs. |
+| Text | `#DADDE3` | `#20242C` | Primary labels and readable content. |
+| Muted text | `#9EA4AF` | `#576171` | Secondary metadata and explicit disabled reasons. |
+| Divider | `#353A42` | `#DDE0E6` | Decorative pane separators, section rules, and splitters at rest. |
+| Control border | `#6E7682` | `#778294` | Inputs, buttons, focusable boundaries, and splitters on hover or drag. |
+| Accent | `#7AA7F0` | `#245CB5` | Active context, focus, and the single primary review action. |
+| Hover fill | `#31353C` | `#EBECEF` | Neutral pointer hover on rows and buttons; differs in hue from the blue-tinted Selected row fill. |
 
-| Semantic role | Dark text / fill | Light text / fill | Non-color cue |
+| Semantic role | Dark (Graphite) text / fill | Light text / fill | Non-color cue |
 | --- | --- | --- | --- |
-| Added | `#8DD5A5` / `#183026` | `#17613B` / `#E9F5ED` | Plus marker and Added label. |
-| Removed/error | `#F0A4AB` / `#38232B` | `#9F2636` / `#FCECEE` | Minus marker or error icon, with explicit text. |
-| Warning/stale | `#E6C479` / `#332D1E` | `#765500` / `#FFF4D4` | Warning icon and actionable explanation. |
-| Selected row | Text / `#2B3C54` | Text / `#DCE8FA` | The selection marker, a short Accent bar at the left edge of the row (below). Also the scope label and the accessible selected state. |
+| Added | `#7FD19B` / `#1C3326` | `#17613B` / `#E9F5ED` | Plus marker and Added label. |
+| Removed/error | `#F09999` / `#3D2328` | `#9F2636` / `#FCECEE` | Minus marker or error icon, with explicit text. |
+| Warning/stale | `#E2C06E` / `#3A321C` | `#765500` / `#FFF4D4` | Warning icon and actionable explanation. |
+| Selected row | Text / `#2B3A50` | Text / `#DCE8FA` | The selection marker, a short Accent bar at the left edge of the row (below). Also the scope label and the accessible selected state. |
 | Selected hunk | Accent bar on Surface | Accent bar on Surface | A 3 DIP left bar beside the hunk lines and the visible label "Selected hunk" in the hunk header. |
+
+Dark palettes. The user approved three dark palettes on 2026-10-11. Graphite is the default. Ink is a deeper blue-gray, and Warm dark has a slight warm tint. Each palette holds the same 19 roles: the eight base roles, the six semantic text and fill roles, Selected row, and the four lane roles. The light values stay the same for every palette.
+
+| Role | Graphite | Ink | Warm dark |
+| --- | --- | --- | --- |
+| Canvas | `#191B1F` | `#171C24` | `#1B1A18` |
+| Surface | `#26292F` | `#232B37` | `#292724` |
+| Text | `#DADDE3` | `#D5DCE6` | `#DCD8D0` |
+| Muted text | `#9EA4AF` | `#A6B0BF` | `#ABA69C` |
+| Divider | `#353A42` | `#343F4F` | `#3B3833` |
+| Control border | `#6E7682` | `#6A7A95` | `#7A746C` |
+| Accent | `#7AA7F0` | `#6FA8FF` | `#8AAEE8` |
+| Hover fill | `#31353C` | `#2E3744` | `#34312D` |
+| Selected row | `#2B3A50` | `#29405F` | `#2E3745` |
+| Added text / fill | `#7FD19B` / `#1C3326` | `#7BD49A` / `#1A3328` | `#8CCB94` / `#213020` |
+| Removed/error text / fill | `#F09999` / `#3D2328` | `#F3979B` / `#3E2229` | `#EE9C92` / `#3E2622` |
+| Warning/stale text / fill | `#E2C06E` / `#3A321C` | `#E5BF63` / `#3A3020` | `#E0BF73` / `#3A3222` |
+| Lane Teal / Sky | `#34AFA4` / `#88CEEF` | `#35AEA1` / `#80CCEE` | `#45AA9B` / `#95C7DF` |
+| Lane Violet / Magenta | `#9F86E6` / `#F0A3D2` | `#9E89EE` / `#EDA0CF` | `#A58ED6` / `#E4A3C4` |
+
+- The approved mockup used these role names one to one, so no role is derived. Two lane values differ from the mockup to keep the 30° lane rule of "History graph design": Sky in each palette (mockup `#8BCDF2`, `#8CC8F5`, and `#96C6E0`) and Ink Teal (mockup `#36AE9F`). Each moved only in OKLCH hue, with its lightness and chroma kept. The shadcn variables of `index.css` keep their plan.md mapping to the roles above.
+- Setting. Theme stays System, Light, or Dark. A second setting, Dark palette, takes Graphite, Ink, or Warm dark, with Graphite as the default. System follows the Windows light or dark mode and uses the chosen palette when dark. Light ignores the palette. The page stores the palette in the webview preference record beside the theme. An unknown or missing value reads as Graphite.
+- View menu. After the Theme group, a "Dark palette" radio group holds "Graphite", "Ink", and "Warm dark". The items follow the menu keyboard rules of "Keyboard and focus". A choice applies at once, without a transition, and sends no Git request.
+- One root attribute selects the palette: `data-dark-palette` is absent for Graphite, and `ink` or `warm` otherwise. Forced colors and reduced motion stay as defined above.
+- Numeric check, 2026-10-11, W3C formula of `tests/windows/contrast.ts`. Every pair passes in all three palettes. Minimum values across the palettes: Text on Canvas 12.24:1, Text on Surface 10.33:1, Muted text on Surface 5.82:1, Accent on Surface and Surface on Accent 5.92:1, Control border on Surface 3.18:1, Text on Selected row 7.63:1, Muted text on Selected row 4.60:1, Added text on fill 7.35:1, Removed text on fill 6.51:1, Warning text on fill 7.15:1, Text on Warning fill 8.91:1, lanes on Surface 4.88:1, lanes on Canvas, Surface, and Selected row 3.65:1 (Ink Violet on Selected row), Accent on Selected row 4.38:1. Divider on Surface is decorative: 1.27:1 to 1.34:1.
+- Lane rule. Every dark lane stays at least 30° in OKLCH hue from Accent, Added, Removed/error, and Warning. The smallest gaps are 30.4° (Graphite Sky to Accent), 30.3° (Ink Sky to Accent), and 30.7° (Warm dark Sky to Accent); Ink Teal to Added is 30.5°. The smallest OKLab lane distances are 0.150 (Graphite), 0.146 (Ink), and 0.124 (Warm dark).
+- Syntax colors. The shipped `github-dark` theme draws on the palette Surface and on the Added and Removed fills. Its comment color `#6A737D` reaches only 2.81:1 to 3.09:1 there. The `github-dark` loader replaces it with `#959DA5`, the theme's own `descriptionForeground`, which reaches at least 4.93:1 on all nine backgrounds. The `markup.changed` rule brings its own background `#C24E00`, and its foreground `#FFAB70` reaches only 2.58:1 there; the loader sets that foreground to `#FFFFFF`, which reaches 4.79:1. The other rules with their own background reach at least 5.51:1. The theme stays MIT-licensed and keeps its name.
+- Evidence. Graphite carries the full screenshot set of "Screenshot review during implementation". Ink and Warm dark each get the numeric pair check (T361) and one capture, UI-22.
 
 Keep action blue distinct from added/removed semantics. Do not color entire panes to indicate status. The primary accent button uses Surface as its text color.
 
 The selected hunk shape differs from the focus outline. The focus outline surrounds the focused element on all four sides. The selected-hunk bar marks only the left edge, and its label names the state in text. Both can appear together.
 
-The selection marker carries the selected state of a list row without the fill. It is 2 DIPs wide, and 16 DIPs high compact or 20 comfortable. It sits vertically centered at the left edge of the row, with 1 DIP corners. The Selected row fill reaches only 1.59:1 dark and 1.13:1 light against Canvas. Accent on the Selected row fill reaches 5.33:1 dark and 5.18:1 light (2026-10-01 numeric check). Every selected option draws the marker: file-list rows and History rows. Hover and focus never draw it. The marker differs from the selected-hunk bar by place and shape. The marker is a short bar on a list row. The hunk bar is 3 DIPs wide and runs beside every line of its hunk.
+The selection marker carries the selected state of a list row without the fill. It is 2 DIPs wide, and 16 DIPs high compact or 20 comfortable. It sits vertically centered at the left edge of the row, with 1 DIP corners. The Selected row fill reaches only 1.45:1 to 1.62:1 dark and 1.13:1 light against Canvas. Accent on the Selected row fill reaches at least 4.38:1 dark (2026-10-11 numeric check) and 5.18:1 light (2026-10-01 numeric check). Every selected option draws the marker: file-list rows and History rows. Hover and focus never draw it. The marker differs from the selected-hunk bar by place and shape. The marker is a short bar on a list row. The hunk bar is 3 DIPs wide and runs beside every line of its hunk.
 
-Controls on a Selected row fill draw no Control border. Control border on the dark Selected row is 2.36:1, below the 3:1 non-text threshold. Such a control keeps its text label and the focus outline.
+Controls on a Selected row fill draw no Control border. Control border on the dark Selected row stays below the 3:1 non-text threshold. Such a control keeps its text label and the focus outline.
 
 Use a two-DIP focus outline with a two-DIP offset. Reserve enough space to prevent clipping. Do not remove outlines inside Pierre's shadow root.
 
@@ -449,9 +477,9 @@ Hover never selects, focuses, or activates, and it never carries the only copy o
 
 Disabled controls use Muted text and a Divider border, with no Accent; they are exempt from the 3:1 control threshold. Every disabled mutation control keeps its visible reason text. Use Base UI `focusableWhenDisabled` for these controls.
 
-The numeric sRGB check passed 30 selected token pairs, including text on the Selected row and Hover fill. Minimum normal-text contrast was 5.06:1 (muted text on the light Selected row); control-border contrast was at least 3.36:1. The focus/accent contrast on selected fills was at least 5.18:1. Control border on the Selected row fill is outside that set, because the rule above forbids it. The selected-hunk bar (Accent on Surface) is 7.57:1 dark and 6.42:1 light, from the 2026-09-30 numeric check.
+The 2026-09-30 numeric sRGB check passed 30 selected token pairs of the light theme and the earlier dark values, including text on the Selected row and Hover fill. Its light minimum normal-text contrast was 5.06:1 (muted text on the light Selected row). The dark palettes have their own check in "Dark palettes". Control border on the Selected row fill is outside that set, because the rule above forbids it. The selected-hunk bar (Accent on Surface) is at least 5.92:1 dark (2026-10-11) and 6.42:1 light (2026-09-30).
 
-Dividers are decorative and need no 3:1 contrast. For information, divider contrast is 1.49:1 on Canvas and 1.34:1 on Surface (dark), and 1.21:1 and 1.32:1 (light). A keyboard-focused splitter shows the focus ring. Qualify splitter discoverability in the rendered accessibility review.
+Dividers are decorative and need no 3:1 contrast. For information, divider contrast is 1.49:1 to 1.60:1 on Canvas and 1.27:1 to 1.34:1 on Surface (dark palettes), and 1.21:1 on Canvas and 1.32:1 on Surface (light). A keyboard-focused splitter shows the focus ring. Qualify splitter discoverability in the rendered accessibility review.
 
 These calculations do not qualify syntax palettes, composited overlays, or rendered focus. T158 measures them and every token pair in installed-build captures with `tests/windows/contrast.ts` (T179). Text needs 4.5:1, and non-text parts need 3:1. Respect forced colors and reduced motion.
 
@@ -486,7 +514,7 @@ Use 4/8/12/16 DIP spacing, 4 DIP control corners, and square pane boundaries. Av
 
 Soft-wrap the message without inserting line breaks into its value. Use unified diffs in this slice, preserving code lines with horizontal scrolling. Turn code ligatures off (`font-variant-ligatures: none`) in diffs and object IDs, so literal operators stay visible.
 
-Default Theme to System, with explicit Light and Dark choices. Default density to Compact, with Comfortable as the option (constitution VII). Put theme, density, and Reset pane sizes in a small View menu. Use no animated page entrances or shimmering placeholders.
+Default Theme to System, with explicit Light and Dark choices. Default the dark palette to Graphite, with Ink and Warm dark as options ("Dark palettes"). Default density to Compact, with Comfortable as the option (constitution VII). Put theme, dark palette, density, and Reset pane sizes in a small View menu. Use no animated page entrances or shimmering placeholders.
 
 Icons. Icons come from `@hugeicons/react` with `@hugeicons/core-free-icons` (licence per T191). An icon is 16 DIPs, uses `currentColor`, and keeps its DIP size at every text size. An icon-only button has an accessible name, and `aria-keyshortcuts` when a key exists. Its tooltip names the action and the key, as in "Refresh (F5)". The tooltip opens on hover and on keyboard focus, closes on Escape, and never holds the only copy of information. A text button and a menu item show their keys as text, as in "Commit (Ctrl+Enter)". The mockup icons are stand-ins. The shared component `IconButton` in `src/frontend/components/icon-button.tsx` draws each icon-only row button. It sets the accessible name and `aria-keyshortcuts`, and its tooltip holds the name and the key text. The icon-only buttons of this feature are Refresh, Commit (icon and count), Copy path, Previous hunk, Next hunk, Copy commit ID, Copy message, and Show references. The Commit tooltip reads "Commit: <n> working changes, <m> staged". It has no key, because Ctrl+Space toggles some IMEs.
 
@@ -721,14 +749,14 @@ Use 12 DIP lane spacing compact and 14 DIPs comfortable, with 12 DIP side paddin
 
 Give each new lane a color that differs from its left neighbor, right neighbor, and originating lane. Four colors always satisfy this rule. Git Extensions uses the same behavior.
 
-| Lane role | Dark | Light |
+| Lane role | Dark (Graphite; Ink and Warm dark in "Dark palettes") | Light |
 | --- | --- | --- |
-| Teal | `#4BB9B2` | `#06726E` |
-| Sky | `#80D2F0` | `#00516B` |
-| Violet | `#B59AE7` | `#724AAB` |
-| Magenta | `#F7A6DF` | `#993582` |
+| Teal | `#34AFA4` | `#06726E` |
+| Sky | `#88CEEF` | `#00516B` |
+| Violet | `#9F86E6` | `#724AAB` |
+| Magenta | `#F0A3D2` | `#993582` |
 
-These decorative lane colors stay at least 30° in OKLCH hue from Accent, Added, Removed/error, and Warning. The smallest gap is 31.3° (light Sky to Accent). Every lane pair in one theme has an OKLab distance of at least 0.10. The near pairs teal/sky and violet/magenta differ in lightness to meet it. The minimum distance is 0.101 (light Violet to Magenta). Lane colors are supplementary; lane position and accessible parent text carry identity. All 24 stroke/background pairs, against Canvas, Surface, and Selected row, exceed 3:1 numerically; the minimum is 4.66:1. The 2026-09-30 numeric check computed these values. Rendered contrast remains unverified.
+These decorative lane colors stay at least 30° in OKLCH hue from Accent, Added, Removed/error, and Warning. The smallest light gap is 31.3° (light Sky to Accent). Every lane pair in one theme has an OKLab distance of at least 0.10. The near pairs teal/sky and violet/magenta differ in lightness to meet it. The minimum light distance is 0.101 (light Violet to Magenta). Lane colors are supplementary; lane position and accessible parent text carry identity. The light stroke/background pairs, against Canvas, Surface, and Selected row, exceed 3:1 numerically; the minimum is 4.66:1 (2026-09-30 numeric check). "Dark palettes" holds the 2026-10-11 dark values. Rendered contrast remains unverified.
 
 **Interaction and responsive behavior:**
 
@@ -834,6 +862,7 @@ Record build, fixture, theme, density, client size, OS/runtime, and scale for ea
 | UI-19 | F21 "WSL: <distro>" label in the toolbar row and the repository menu. An F21 copy in a dedicated test distro with a 30-character name shows the fixed-width badge with an end ellipsis. The toolbar keeps its row count, and the repository menu shows the full name. F22 "Starting WSL distro <name>…" with Cancel, and the canceled text. Focus after Cancel returns to the repository switcher. F23, F24, and F26 refusals with their reasons and remedies. | 1280×800, dark/compact, 100%; 960×640, light/comfortable, 150%. |
 | UI-20 | The switcher open with a filter text, a WSL entry with its label, the busy state during a mutation, and the "Arbareto cannot find this folder" refusal with Remove from list. The tooltips of Refresh and Previous hunk on keyboard focus. Icon buttons in a Windows contrast theme. The native title text in the taskbar. | 1280×800, dark/compact, 100%; 720×480, light/comfortable, 200%. |
 | UI-21 | F33 references sidebar: Branches with the current mark and an upstream, a missing upstream, Remotes with `origin/HEAD`, and Tags with annotated and nested tags. The filter with a match and without one. Chips on rows, the "+<n>" chip, and a selected entry that docks its commit. The F33 limit copy with its refusal text. The constrained profile with the collapsed section and its toggle. | 1280×800, dark/compact, 100%; 960×640, light/comfortable, 150%. |
+| UI-22 | One capture each of the Ink and Warm dark palettes: F02 in the commit panel with a selected hunk, the history list with chips, and the references sidebar. The numeric pair check of "Dark palettes" covers the other states. | 1280×800, compact, 100%. |
 
 State coverage. "Required visible states" has 31 rows, and each maps to at least one capture:
 

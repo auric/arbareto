@@ -89,6 +89,7 @@
     "tests/git/fixtures-f29a.test.ts",
     "tests/git/fixtures-f29b.test.ts",
     "tests/git/fixtures-f30.test.ts",
+    "tests/git/fixtures-f32.test.ts",
     "tests/git/fixtures-repos.test.ts",
     "tests/git/fixtures-state.test.ts",
     "tests/git/fixtures-worktree.test.ts",

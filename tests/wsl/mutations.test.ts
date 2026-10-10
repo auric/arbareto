@@ -5,9 +5,10 @@
 // The T214 routes of `hunk-publish.ts`, `file-publish.ts`, and `commit.ts` come with T214. The oracle is the distro Git in a disposable copy.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { dirname } from "node:path";
+import { dirname, win32 } from "node:path";
 import type { WslFileResult, WslFilesCall } from "../../src/contracts/channel";
 import type { WalkStop } from "../../src/git-service/git-runner";
+import { STEP_FAILED_TEXT } from "../../src/git-service/hunk-publish";
 import { readRawIndex } from "../../src/git-service/status";
 import { printOrigin } from "../origin";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
@@ -39,7 +40,7 @@ afterEach(async () => {
   runners = [];
 }, CASE_TIMEOUT_MS);
 
-type Module = "hunk-publish" | "file-publish" | "commit";
+type Module = "hunk-publish" | "file-publish" | "commit" | "recovery";
 // Prints the ORIGIN line of each module under test and loads it. Before its task, a module is missing, and this throws.
 async function underTest(...modules: Module[]): Promise<void> {
   for (const module of modules) {
@@ -48,15 +49,15 @@ async function underTest(...modules: Module[]): Promise<void> {
   }
 }
 
-// A todo case of a module that does not exist yet. A missing capability skips it and names the capability, as `wslTest` does.
-function wslTodo(name: string, needs: readonly WslCapability[], body: (host: WslHost) => Promise<void>, extra: { capability: string; present: boolean } | null = null): void {
+// A WSL case with an optional extra capability. A missing capability skips it and names the capability, as `wslTest` does.
+function wslCase(name: string, needs: readonly WslCapability[], body: (host: WslHost) => Promise<void>, extra: { capability: string; present: boolean } | null = null): void {
   const missing = missingCapability(needs) ?? (extra !== null && !extra.present ? extra.capability : null);
   if (missing !== null) {
     console.log(`SKIP ${missing}: ${name}`);
     test.skip(`${name} (SKIP: ${missing})`, () => {});
     return;
   }
-  test.todo(name, () => body(wslHost()!), CASE_TIMEOUT_MS);
+  test(name, () => body(wslHost()!), CASE_TIMEOUT_MS);
 }
 
 // ---- The double with a `wslFiles` log ----
@@ -186,11 +187,18 @@ const workingDigests = (r: WslRepo) =>
     .split("\n")
     .filter((l) => l !== "")
     .sort();
-// The owned files that remain in the Git directory (contract §8: `index.lock` and the `arbareto-candidate-` prefix).
+// Contract §8: the fixed name prefix of candidate files.
+const CANDIDATE_PREFIX = "arbareto-candidate-";
+// The owned files that remain in the Git directory (contract §8: `index.lock` and the candidate prefix).
 const ownedLeftovers = (r: WslRepo) =>
   inDistro(r.host.distro, ["/usr/bin/ls", "-A", "--", `${r.dir}/.git`])
     .split("\n")
-    .filter((n) => n === "index.lock" || n.startsWith("arbareto-candidate-"));
+    .filter((n) => n === "index.lock" || n.startsWith(CANDIDATE_PREFIX));
+// Contract §11 "Paths and file access": every WSL result path has the UNC form of the Git-resolved path.
+const uncBeside = (read: Read, name: string) => `${read.identity.gitDirectory}\\${name}`;
+const uncLock = (read: Read) => uncBeside(read, "index.lock");
+const pathOf = (response: PublicResponse) => (response.result as { path?: string } | undefined)?.path;
+const foreignOf = (response: PublicResponse) => (response.result as { foreign?: string[] } | undefined)?.foreign;
 
 // gitformat-commit: header lines, one empty line, then the message bytes. The dates differ per run.
 function commitFacts(r: WslRepo): { tree: string; parents: string[]; body: string } {
@@ -225,7 +233,7 @@ function checkPublication(files: FilesEntry[], indexFiles: { operationId: string
 }
 
 describe("WSL mutations equal the distro Git (T213)", () => {
-  wslTodo(
+  wslCase(
     `applyHunk stages as git add -p does in a copy; the lock, candidate, and publication run through wslFiles, and working files stay ${HUNK}`,
     NEEDS,
     async (host) => {
@@ -248,7 +256,7 @@ describe("WSL mutations equal the distro Git (T213)", () => {
     ["stage", "multi.txt", "unstaged", ["--literal-pathspecs", "add", "--", "multi.txt"]],
     ["unstage", "other-a.txt", "staged", ["--literal-pathspecs", "restore", "--staged", "--", "other-a.txt"]],
   ] as const) {
-    wslTodo(
+    wslCase(
       `applyFile ${direction} of ${path} equals git ${command[1]} in a copy; the lock, candidate, and publication run through wslFiles, and working files stay ${FILE}`,
       NEEDS,
       async (host) => {
@@ -268,7 +276,7 @@ describe("WSL mutations equal the distro Git (T213)", () => {
     );
   }
 
-  wslTodo(
+  wslCase(
     `commit gives the tree, parent, and message of git commit in a copy, and the pre-commit hook runs as the Linux user ${COMMIT}`,
     NEEDS,
     async (host) => {
@@ -284,7 +292,7 @@ describe("WSL mutations equal the distro Git (T213)", () => {
       const id = await register(s, repo);
       await approve(s, id);
       expect(outcome(await commit(s, id, message))).toEqual(SUCCEEDED);
-      expect({ commit: commitFacts(repo), index: stagedIndex(repo), files: workingDigests(repo) }).toEqual({ commit: commitFacts(oracle), index: stagedIndex(oracle), files });
+      expect({ commit: commitFacts(repo), index: stagedIndex(repo), files: workingDigests(repo), leftovers: ownedLeftovers(repo) }).toEqual({ commit: commitFacts(oracle), index: stagedIndex(oracle), files, leftovers: [] });
       expect(content(host, log)).toBe(inDistro(host.distro, ["/usr/bin/id", "-u"]));
     },
   );
@@ -299,7 +307,7 @@ describe("core.sharedRepository (contract §4 \"WSL index publication\", §9)", 
   const unset = (r: WslRepo, scope: Scope) => distroGit(r, ["config", `--${scope}`, "--unset", "core.sharedRepository"]);
 
   for (const scope of ["local", "global", "worktree"] satisfies Scope[]) {
-    wslTodo(
+    wslCase(
       `core.sharedRepository at ${scope} scope makes readWorkspace report shared-repository and refuses applyHunk and applyFile with UNSUPPORTED_HUNK_PROFILE; the index keeps its bytes, no owned lock or candidate remains, and no config process starts; without the key, the same request publishes ${BOTH}`,
       NEEDS,
       async (host) => {
@@ -366,7 +374,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
   }
 
   for (const after of [true, false]) {
-    wslTodo(
+    wslCase(
       after
         ? `a deadline after Perl created and wrote the lock: no remove or indexDigest decision comes before the process-end fact, and remove with the token then gives removed ${FILE}`
         : `a deadline before the lock create: after the process-end fact, remove with the token gives notOwned ${FILE}`,
@@ -386,12 +394,12 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
         const remove = decisions.find((f) => f.request.mode === "remove");
         expect({ token: remove?.request.mode === "remove" ? remove.request.token : null, reply: remove?.reply }).toEqual({ token, reply: [{ kind: after ? "removed" : "notOwned" }] });
         expect({ lock: exists(host, lockPath(repo)), index: sha256(host, indexPath(repo)), files: workingDigests(repo) }).toEqual({ lock: false, index, files });
-        console.log(`OBSERVATION ${TASK}: lock walk stopped ${after ? "after" : "before"} the create: outcome ${response.state} ${response.code ?? ""}`);
+        expect(outcome(response)).toEqual({ state: "failed", code: "DEADLINE" });
       },
     );
   }
 
-  wslTodo(
+  wslCase(
     `a publish walk stopped by a deadline after the rename is decided from indexDigest after the process-end fact, and the index equals git add in a copy ${FILE}`,
     NEEDS,
     async (host) => {
@@ -408,7 +416,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
       const { decisions } = checkOrder(runner, log, response.operationId!, at.stop);
       expect(decisions.map((f) => f.request.mode)).toContain("indexDigest");
       expect({ index: sha256(host, indexPath(repo)), entries: stagedIndex(repo) }).toEqual({ index: expected, entries: stagedIndex(oracle) });
-      console.log(`OBSERVATION ${TASK}: publish walk stopped after the rename: outcome ${response.state} ${response.code ?? ""}`);
+      expect(["succeeded", "completed-with-effects"]).toContain(response.state);
     },
   );
 
@@ -421,7 +429,7 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
     "the same inode and other content": (r: WslRepo) => void inDistro(r.host.distro, ["/usr/bin/dd", `of=${lockPath(r)}`, "conv=notrunc", "status=none"], { input: Buffer.from("x".repeat(64)) }),
   };
   for (const [swap, change] of Object.entries(SWAPS)) {
-    wslTodo(
+    wslCase(
       `a lock with ${swap} gives publish notOwned with no rename ${FILE}`,
       NEEDS,
       async (host) => {
@@ -437,22 +445,219 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
         };
         const { s, files: log } = setup(host, swapLock);
         const id = await register(s, repo);
-        const response = await applyFile(s, id, await compare(s, id, "multi.txt", "unstaged"), "stage");
+        const c = await compare(s, id, "multi.txt", "unstaged");
+        const response = await applyFile(s, id, c, "stage");
         const publish = log.filter((f) => f.request.operationId === response.operationId && f.request.mode === "publish");
         expect(publish.map((f) => f.reply)).toEqual([[{ kind: "notOwned" }]]);
         expect({ sha: sha256(host, indexPath(repo)), inode: inode(host, indexPath(repo)) }).toEqual(index);
         // `remove` with the `lock` reply checks the device and inode, so a copy at another inode stays. The original inode never returns.
         const lockAfter = exists(host, lockPath(repo)) ? inode(host, lockPath(repo)) : null;
         expect({ swap, sameLock: lockAfter === lockInode }).toEqual({ swap, sameLock: swap !== "another inode" });
-        expect({ swap, state: response.state, code: response.code }).toEqual({ swap, state: "failed", code: "STALE_SELECTION" });
-        console.log(`OBSERVATION ${TASK}: publish with ${swap}: lock after ${lockAfter === null ? "absent" : lockAfter === lockInode ? "kept" : "other inode"}`);
+        expect({ swap, state: response.state, code: response.code, path: pathOf(response) }).toEqual({ swap, state: "failed", code: "STALE_SELECTION", path: uncLock(c.read) });
       },
     );
   }
+
+  // ---- Contract §4 "Outcome after a stopped walk" rows ----
+
+  const causeOf = (s: WslSession, operationId: string) => s.session.log.entries().find((e) => e.operationId === operationId)?.cause;
+  const remedyOf = (response: PublicResponse) => (response.result as { remedy?: unknown } | undefined)?.remedy;
+  const STEP_FAILED = { text: STEP_FAILED_TEXT };
+  const ofMode = (files: FilesEntry[], operationId: string, mode: WslFilesCall["mode"]) => files.filter((f) => f.request.operationId === operationId && f.request.mode === mode);
+  // The lock identity of the `lock` reply and the token of its request.
+  function lockOf(files: FilesEntry[], operationId: string): { identity: { device: string; inode: string } | null; token: string } {
+    const [entry] = ofMode(files, operationId, "lock");
+    if (entry?.request.mode !== "lock") throw new Error("no lock request");
+    const [reply] = Array.isArray(entry.reply) ? entry.reply : [];
+    return { identity: reply?.kind === "lock" ? { device: reply.device, inode: reply.inode } : null, token: entry.request.token };
+  }
+  // Each lock `remove`: the lock form names the identity, and the token-only form names none.
+  const lockRemoves = (files: FilesEntry[], operationId: string) =>
+    ofMode(files, operationId, "remove").flatMap((f) => (f.request.mode === "remove" && f.request.token !== undefined ? [{ lock: f.request.lock ?? null, token: f.request.token, reply: f.reply }] : []));
+
+  for (const ending of ["cancel", "error"] as const) {
+    wslCase(
+      ending === "cancel"
+        ? `a lock walk stopped by cancel after the create gives canceled after the process-end fact and a token-only remove that gives removed ${FILE}`
+        : `a lock reply error after the create gives GIT_FAILED with cause lock-create after the process-end fact and a token-only remove that gives removed ${FILE}`,
+      NEEDS,
+      async (host) => {
+        await underTest("file-publish");
+        const { repo } = buildF21(host);
+        const index = sha256(host, indexPath(repo));
+        const files = workingDigests(repo);
+        const at = { stop: Number.POSITIVE_INFINITY };
+        const held: { s: WslSession | null } = { s: null };
+        const stopLock: Stop = async (request, forward) => {
+          if (request.mode !== "lock" || at.stop !== Number.POSITIVE_INFINITY) return forward();
+          await forward();
+          if (ending === "cancel") held.s!.request("cancel", { operationId: request.operationId });
+          at.stop = performance.now();
+          return ending === "cancel" ? { stop: "canceled" } : [{ kind: "error", component: 0, code: "io-error" }];
+        };
+        const { runner, s, files: log } = setup(host, stopLock);
+        held.s = s;
+        const id = await register(s, repo);
+        const response = await applyFile(s, id, await compare(s, id, "multi.txt", "unstaged"), "stage");
+        const operationId = response.operationId!;
+        checkOrder(runner, log, operationId, at.stop);
+        const { token } = lockOf(log, operationId);
+        expect(lockRemoves(log, operationId)).toEqual([{ lock: null, token, reply: [{ kind: "removed" }] }]);
+        if (ending === "cancel") expect({ ...outcome(response), foreign: foreignOf(response) }).toEqual({ state: "canceled", code: "CANCELED", foreign: undefined });
+        else expect({ ...outcome(response), cause: causeOf(s, operationId), remedy: remedyOf(response), foreign: foreignOf(response) }).toEqual({ state: "failed", code: "GIT_FAILED", cause: "lock-create", remedy: STEP_FAILED, foreign: undefined });
+        expect({ lock: exists(host, lockPath(repo)), index: sha256(host, indexPath(repo)), files: workingDigests(repo), leftovers: ownedLeftovers(repo) }).toEqual({ lock: false, index, files, leftovers: [] });
+      },
+    );
+  }
+
+  for (const reply of ["time", "bound"] as const) {
+    wslCase(
+      reply === "time"
+        ? `a candidate time above the canonical time gives GIT_FAILED with cause candidate-time, no Git step uses the candidate, the lock is removed, and the unverified candidate is foreign ${FILE}`
+        : `a candidate reply bound gives OUTPUT_LIMIT with reason MUTATION_RAW_INDEX_BYTES, no Git step uses a candidate, and the lock is removed ${FILE}`,
+      NEEDS,
+      async (host) => {
+        await underTest("file-publish");
+        const { repo } = buildF21(host);
+        const index = sha256(host, indexPath(repo));
+        const fake: Stop = async (request, forward) => {
+          if (request.mode !== "candidate") return forward();
+          // Perl checks the size bound before it creates the candidate, so a `bound` reply leaves no candidate.
+          if (reply === "bound") return [{ kind: "bound" }];
+          const real = await forward();
+          const first = Array.isArray(real) ? real[0] : undefined;
+          if (first?.kind !== "candidate") return real;
+          return [{ ...first, candidate: { ...first.candidate, mtime: (BigInt(first.index.mtime) + 1n).toString() } }];
+        };
+        const { s, files: log, indexFiles } = setup(host, fake);
+        const id = await register(s, repo);
+        const c = await compare(s, id, "multi.txt", "unstaged");
+        const response = await applyFile(s, id, c, "stage");
+        const operationId = response.operationId!;
+        const [copy] = ofMode(log, operationId, "candidate");
+        const name = copy?.request.mode === "candidate" ? copy.request.candidate : "";
+        const { identity, token } = lockOf(log, operationId);
+        expect(lockRemoves(log, operationId)).toEqual([{ lock: identity, token, reply: [{ kind: "removed" }] }]);
+        expect(indexFiles.filter((f) => f.operationId === operationId)).toEqual([]);
+        const result = { ...outcome(response), reason: (response.result as { reason?: string } | undefined)?.reason, cause: causeOf(s, operationId), remedy: remedyOf(response), foreign: foreignOf(response) };
+        if (reply === "time") expect(result).toEqual({ state: "failed", code: "GIT_FAILED", reason: undefined, cause: "candidate-time", remedy: STEP_FAILED, foreign: [uncBeside(c.read, name)] });
+        else expect({ ...result, cause: undefined, remedy: undefined }).toEqual({ state: "failed", code: "OUTPUT_LIMIT", reason: "MUTATION_RAW_INDEX_BYTES", cause: undefined, remedy: undefined, foreign: undefined });
+        expect({ lock: exists(host, lockPath(repo)), index: sha256(host, indexPath(repo)), leftovers: ownedLeftovers(repo) }).toEqual({ lock: false, index, leftovers: reply === "time" ? [name] : [] });
+      },
+    );
+  }
+
+  wslCase(
+    `a candidate changed before publish gives publish mismatch and STALE_SELECTION, nothing is published, and the lock form of remove gives removed ${FILE}`,
+    NEEDS,
+    async (host) => {
+      await underTest("file-publish");
+      const { repo } = buildF21(host);
+      const index = { sha: sha256(host, indexPath(repo)), inode: inode(host, indexPath(repo)) };
+      const change: Stop = async (request, forward) => {
+        if (request.mode === "publish") writeLinux(host, `${repo.dir}/.git/${request.candidate}`, "changed candidate\n");
+        return forward();
+      };
+      const { s, files: log } = setup(host, change);
+      const id = await register(s, repo);
+      const response = await applyFile(s, id, await compare(s, id, "multi.txt", "unstaged"), "stage");
+      const operationId = response.operationId!;
+      expect(ofMode(log, operationId, "publish").map((f) => f.reply)).toEqual([[{ kind: "mismatch" }]]);
+      const { identity, token } = lockOf(log, operationId);
+      expect(lockRemoves(log, operationId)).toEqual([{ lock: identity, token, reply: [{ kind: "removed" }] }]);
+      expect({ ...outcome(response), lock: exists(host, lockPath(repo)), sha: sha256(host, indexPath(repo)), inode: inode(host, indexPath(repo)) }).toEqual({ state: "failed", code: "STALE_SELECTION", lock: false, ...index });
+    },
+  );
+
+  wslCase(
+    `a publish reply error is a failed replace step: after the process-end fact, indexDigest shows the before digest, the lock form of remove gives removed, and the outcome is GIT_FAILED with the step remedy ${FILE}`,
+    NEEDS,
+    async (host) => {
+      await underTest("file-publish");
+      const { repo } = buildF21(host);
+      const index = sha256(host, indexPath(repo));
+      const at = { stop: Number.POSITIVE_INFINITY };
+      const fail: Stop = async (request, forward) => {
+        if (request.mode !== "publish") return forward();
+        at.stop = performance.now();
+        return [{ kind: "error", component: 0, code: "io-error" }];
+      };
+      const { runner, s, files: log } = setup(host, fail);
+      const id = await register(s, repo);
+      const response = await applyFile(s, id, await compare(s, id, "multi.txt", "unstaged"), "stage");
+      const operationId = response.operationId!;
+      const { decisions } = checkOrder(runner, log, operationId, at.stop);
+      expect(decisions.map((f) => f.request.mode)).toContain("indexDigest");
+      const { identity, token } = lockOf(log, operationId);
+      expect(lockRemoves(log, operationId)).toEqual([{ lock: identity, token, reply: [{ kind: "removed" }] }]);
+      expect({ ...outcome(response), cause: causeOf(s, operationId), remedy: remedyOf(response), foreign: foreignOf(response) }).toEqual({ state: "failed", code: "GIT_FAILED", cause: "replace", remedy: STEP_FAILED, foreign: undefined });
+      expect({ lock: exists(host, lockPath(repo)), index: sha256(host, indexPath(repo)), leftovers: ownedLeftovers(repo) }).toEqual({ lock: false, index, leftovers: [] });
+    },
+  );
+
+  wslCase(
+    `a closeJob during publish gives unknown with the lock and the candidate in foreign and keeps the marker; a refresh then states indexMatch not-published, sends resolved, and removes nothing ${FILE}`,
+    NEEDS,
+    async (host) => {
+      await underTest("file-publish", "recovery");
+      const { repo } = buildF21(host);
+      const index = sha256(host, indexPath(repo));
+      const held: { runner: BunRunner | null } = { runner: null };
+      // A `closeJob` stops the walk before Perl runs and makes the operation ID inactive (contract §6 "Channel frames").
+      const close: Stop = async (request, forward) => {
+        if (request.mode !== "publish") return forward();
+        held.runner!.closeJob(request.operationId);
+        return { stop: "canceled" };
+      };
+      const { runner, s, files: log } = setup(host, close);
+      held.runner = runner;
+      const id = await register(s, repo);
+      const c = await compare(s, id, "multi.txt", "unstaged");
+      const response = await applyFile(s, id, c, "stage");
+      const operationId = response.operationId!;
+      const [copy] = ofMode(log, operationId, "candidate");
+      const name = copy?.request.mode === "candidate" ? copy.request.candidate : "";
+      const { token } = lockOf(log, operationId);
+      const markerId = runner.frames.find((f) => f.type === "started" && f.operationId === operationId)?.markerId;
+      const resolvedFrames = () => runner.frames.filter((f) => f.type === "resolved" && f.markerId === markerId).length;
+      expect({ ...outcome(response), foreign: [...(foreignOf(response) ?? [])].sort(), resolved: resolvedFrames(), removes: ofMode(log, operationId, "remove") }).toEqual({
+        state: "unknown",
+        code: "STATE_UNKNOWN",
+        foreign: [uncLock(c.read), uncBeside(c.read, name)].sort(),
+        resolved: 0,
+        removes: [],
+      });
+      const kept = { lock: content(host, lockPath(repo)), leftovers: ownedLeftovers(repo).sort(), index: sha256(host, indexPath(repo)) };
+      expect(kept).toEqual({ lock: token, leftovers: ["index.lock", name].sort(), index });
+      const refreshed = await s.response(s.request("readWorkspace", { refresh: true, check: "full" }, { repositoryId: id }));
+      expect({ ...outcome(refreshed), recovery: (refreshed.result as { recovery?: unknown } | undefined)?.recovery, resolved: resolvedFrames() }).toEqual({ ...SUCCEEDED, recovery: { outcome: "unknown", indexMatch: "not-published" }, resolved: 1 });
+      expect({ lock: content(host, lockPath(repo)), leftovers: ownedLeftovers(repo).sort(), index: sha256(host, indexPath(repo)) }).toEqual(kept);
+    },
+  );
+
+  wslCase(
+    `a working-file change after the comparison gives applyHunk STALE_SELECTION, the external bytes stay, and nothing is published ${HUNK}`,
+    NEEDS,
+    async (host) => {
+      await underTest("hunk-publish");
+      const { repo } = buildF21(host);
+      const index = sha256(host, indexPath(repo));
+      const external = "external change\n";
+      const write: Stop = async (request, forward) => {
+        const reply = await forward();
+        if (request.mode === "lock") writeLinux(host, `${repo.dir}/multi.txt`, external);
+        return reply;
+      };
+      const { s } = setup(host, write);
+      const id = await register(s, repo);
+      const response = await applyHunk(s, id, await compare(s, id, "multi.txt", "unstaged"), "stage");
+      expect({ ...outcome(response), index: sha256(host, indexPath(repo)), file: content(host, `${repo.dir}/multi.txt`), leftovers: ownedLeftovers(repo) }).toEqual({ state: "failed", code: "STALE_SELECTION", index, file: external, leftovers: [] });
+    },
+  );
 });
 
 describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs\", §9)", () => {
-  wslTodo(
+  wslCase(
     `no step reads working-file or index bytes through UNC while the index digest is unchanged ${BOTH}`,
     NEEDS,
     async (host) => {
@@ -464,12 +669,14 @@ describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs
         const c = await compare(s, id, path, category);
         const reads = seam.rawReads;
         const { value, calls } = await withFsCalls(() => (op === "applyHunk" ? applyHunk(s, id, c, "stage") : applyFile(s, id, c, "unstage")));
-        expect({ op, ...outcome(value), opens: calls.filter((call) => call.name === "open" && call.path.startsWith("\\\\")), rawReads: seam.rawReads - reads }).toEqual({ op, ...SUCCEEDED, opens: [], rawReads: 0 });
+        // The §4 `link` check reads the candidate through UNC.
+        const opens = calls.filter((call) => call.name === "open" && call.path.startsWith("\\\\") && !win32.basename(call.path).startsWith(CANDIDATE_PREFIX));
+        expect({ op, ...outcome(value), opens, rawReads: seam.rawReads - reads }).toEqual({ op, ...SUCCEEDED, opens: [], rawReads: 0 });
       }
     },
   );
 
-  wslTodo(
+  wslCase(
     `a held index.lock gives LOCKED for applyFile and applyHunk, and the lock keeps its bytes ${BOTH}`,
     NEEDS,
     async (host) => {
@@ -481,13 +688,12 @@ describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs
       const id = await register(s, repo);
       const c = await compare(s, id, "multi.txt", "unstaged");
       for (const response of [await applyFile(s, id, c, "stage"), await applyHunk(s, id, await compare(s, id, "multi.txt", "unstaged"), "stage")]) {
-        expect({ code: response.code, lock: content(host, lockPath(repo)), index: sha256(host, indexPath(repo)) }).toEqual({ code: "LOCKED", lock: "foreign lock\n", index });
-        console.log(`OBSERVATION ${TASK}: LOCKED path ${JSON.stringify(valuesOf(response.result, "path"))}`);
+        expect({ code: response.code, path: pathOf(response), lock: content(host, lockPath(repo)), index: sha256(host, indexPath(repo)) }).toEqual({ code: "LOCKED", path: uncLock(c.read), lock: "foreign lock\n", index });
       }
     },
   );
 
-  wslTodo(
+  wslCase(
     `a post-commit hook's setsid child gives lingeringDescendants 1 from the anchor ${COMMIT}`,
     NEEDS,
     async (host) => {
@@ -503,7 +709,7 @@ describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs
   );
 
   const shell = Bun.which("pwsh") ?? Bun.which("powershell");
-  wslTodo(
+  wslCase(
     `each WSL remedy command, run in PowerShell, gives the index of the distro's own command in a copy ${FILE}`,
     NEEDS,
     async (host) => {

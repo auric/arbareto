@@ -371,9 +371,10 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
   }
 
   // The Windows interval poll. A WSL workspace polls through `armPoll` instead (contract §11 "Change polling").
+  // Without a snapshot, the location is unknown, and contract §11 forbids `changes` for WSL.
   function tick() {
     if (!repository || !focused || pendingReads > 0 || paging !== null || wsl()) return;
-    readWorkspace(false, fullDue ? "full" : "changes");
+    readWorkspace(false, fullDue || state.workspace === null ? "full" : "changes");
   }
 
   function onFocus(next: boolean) {

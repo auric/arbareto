@@ -342,3 +342,33 @@ describe("Windows workspace", () => {
     o.requests.dispose();
   });
 });
+
+describe("no workspace snapshot", () => {
+  // Without a snapshot, the location is unknown. Contract §11 "Change polling" forbids `check: "changes"` for a WSL workspace.
+  test("after the first full read fails, each interval poll sends check: full, until a snapshot arrives", async () => {
+    const double = bridgeDouble();
+    const time = clockDouble();
+    const focus = focusDouble(true);
+    const requests = createRequests({ bridge: double.bridge, clock: time.clock, focus: focus.focus });
+    requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
+    await flush();
+    double.last("readWorkspace").resolve({ requestId: crypto.randomUUID(), state: "failed", code: "REPOSITORY_UNAVAILABLE" });
+    succeeded(double.last("readHistory"), PAGE);
+    await flush();
+    await time.advance(1000);
+    expect(double.of("readWorkspace")).toHaveLength(2);
+    expect(double.last("readWorkspace").payload).toEqual({ refresh: false, check: "full" });
+    double.last("readWorkspace").resolve({ requestId: crypto.randomUUID(), state: "failed", code: "REPOSITORY_UNAVAILABLE" });
+    await flush();
+    await time.advance(1000);
+    expect(double.of("readWorkspace")).toHaveLength(3);
+    expect(double.last("readWorkspace").payload).toEqual({ refresh: false, check: "full" });
+    // Control: after a Windows snapshot arrives, the interval poll sends check: changes.
+    succeeded(double.last("readWorkspace"), snapshot(1, WINDOWS_ROOT, [entry("a.txt")]));
+    await flush();
+    await time.advance(1000);
+    expect(double.of("readWorkspace")).toHaveLength(4);
+    expect(double.last("readWorkspace").payload).toEqual({ refresh: false, check: "changes" });
+    requests.dispose();
+  });
+});

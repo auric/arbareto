@@ -4,8 +4,9 @@
 // T100: cancellation, reconciliation, recovery markers, service restart, deadlines, and lingering Jobs of mutations (contract §5, §6, §8). `recovery.ts` comes with T114.
 
 import { describe, expect } from "bun:test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { RECOVERY_FOREIGN_CAP, WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { FIXTURE_ROOT, fixtureDir, useFixtureRoot } from "./fixture-root";
 import { buildChanged, buildF07, buildF12, buildF14, buildF20, inflateHeadReflog, put, type Built } from "./fixtures";
 import { rawIndexDigest, refState } from "./git-oracle";
@@ -41,7 +42,7 @@ import {
   shortDeadline,
   shQuote,
   SUCCEEDED,
-  todoCase,
+  TIMEOUT_MS,
   treeOf,
   underTest,
   until,
@@ -50,7 +51,7 @@ import {
   type Marker,
   type Review,
 } from "./hunk-harness";
-import { openService, type Capability, type HunkCheckpoint, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, openService, type Capability, type HunkCheckpoint, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T100";
 const NEEDS = "(needs T114/T115)";
@@ -68,7 +69,9 @@ const FAILED_DEADLINE = { state: "failed", code: "DEADLINE" };
 const DISMISS_REMEDY = "Open this repository and use Refresh.";
 const MARKER_REMEDY = "Arbareto could not save its recovery record. Free disk space or restore write access to this folder, then try again.";
 
-type Recovery = { outcome: string; attribution?: { result: string; reason?: string }; indexMatch?: string };
+// The contract §8 recovery statement of a read. The strict schema fails on a wrong result shape.
+const recoveryOf = (read: ServiceResponse) => WorkspaceSnapshot.parse(read.result).recovery;
+const NO_REQUEST = { result: "unknown", reason: "no-retained-request" } as const;
 
 // Sends a commit and returns its request ID and operation ID before the outcome.
 async function startCommit(service: Service, repositoryId: string, r: Review, message: string) {
@@ -105,7 +108,7 @@ async function markerFor(name: string, repo: string, kind: Marker["kind"] = "com
 const gitFiles = (repo: string) => (readdirSync(gitDirOf(repo), { recursive: true }) as string[]).map(String).sort();
 
 describe("cancellation and reconciliation (contract §8)", () => {
-  todoCase(TASK, `F13: cancellation near commit completion reports the created commit as succeeded and never claims rollback ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F13: cancellation near commit completion reports the created commit as succeeded and never claims rollback ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-cancel-late" }, async (service) => {
       const built = buildChanged(gitPath(), "t100-cancel-late", "F13");
       const repo = repoOf(built);
@@ -124,9 +127,10 @@ describe("cancellation and reconciliation (contract §8)", () => {
       const after = refState(gitPath(), repo);
       expect({ parent: gitText(repo, ["rev-parse", "HEAD^"]).trim(), tree: treeOf(repo, "HEAD"), commitOid: one<string>(response.result, "commitOid") }).toEqual({ parent: before.headOid!, tree: reviewedTree, commitOid: after.headOid! });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `F13: an interrupted commit passes through reconciling and reports its exact effects ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F13: an interrupted commit passes through reconciling and reports its exact effects ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-interrupted" }, async (service) => {
       const built = buildChanged(gitPath(), "t100-interrupted", "F13");
       const repo = repoOf(built);
@@ -141,13 +145,14 @@ describe("cancellation and reconciliation (contract §8)", () => {
       const response = await service.response(requestId);
       expect(progressStates(service, requestId)).toContain("reconciling");
       expect(outcome(response)).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
-      expect(one<object>(response.result, "effects")).toEqual({ head: false, index: true, workingFiles: true, operationState: false });
+      expect(one<object>(response.result, "effects")).toEqual({ head: false, index: true, workingFiles: false, operationState: false });
       expect(refState(gitPath(), repo)).toEqual(head);
       gate.release();
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `a reconciliation read past its deadline gives unknown, keeps the marker, sends no resolved, and blocks further mutations in the workspace ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `a reconciliation read past its deadline gives unknown, keeps the marker, sends no resolved, and blocks further mutations in the workspace ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-reconcile-deadline" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-reconcile-deadline", "F09"));
       await underTest("recovery");
@@ -160,13 +165,20 @@ describe("cancellation and reconciliation (contract §8)", () => {
       expect(mutationFrames(service, response.operationId!)).toEqual(["started", "ended"]);
       expect([...service.runner.markers.values()].map((m) => m.operationId)).toEqual([response.operationId!]);
       expect(outcome(await stageHunk(service, repositoryId))).toEqual(STATE_UNKNOWN);
-      expect(outcome(await refresh(service, repositoryId))).toEqual(SUCCEEDED);
+      // Contract §8: the refresh runs one attribution attempt from the retained preflight tip. The window holds only the request commit.
+      const refreshed = await refresh(service, repositoryId);
+      expect({ ...outcome(refreshed), recoveryState: refreshed.result?.recoveryState, recovery: recoveryOf(refreshed) }).toEqual({
+        ...SUCCEEDED,
+        recoveryState: "ready",
+        recovery: { outcome: "unknown", attribution: { result: "identified", commitOid: refState(gitPath(), repo).headOid! } },
+      });
       await until(() => mutationFrames(service, response.operationId!).length === 3, "resolved frame");
       expect(mutationFrames(service, response.operationId!)).toEqual(["started", "ended", "resolved"]);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `cancel during reconciling while the F14 child runs: reconciliation completes with its observed outcome, lingeringDescendants is 0, ended sets endProcesses, and the child ends within 5 seconds ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `cancel during reconciling while the F14 child runs: reconciliation completes with its observed outcome, lingeringDescendants is 0, ended sets endProcesses, and the child ends within 5 seconds ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-cancel-reconciling" }, async (service) => {
       const repo = repoOf(buildF14(gitPath(), "t100-cancel-reconciling", "lingering"));
       await underTest("recovery");
@@ -186,9 +198,10 @@ describe("cancellation and reconciliation (contract §8)", () => {
       expect(endedFrame(service, operationId)!.endProcesses).toBe(true);
       await until(() => service.runner.liveRecorded() === 0, "child end", END_MS);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `interrupt and close during reconciling sends no terminal response, the marker stays, and the next handshake makes that workspace unknown ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `interrupt and close during reconciling sends no terminal response, the marker stays, and the next handshake makes that workspace unknown ${NEEDS}`, SHELL, async () => {
     const name = "t100-interrupt-close";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     let leftover: Marker[] = [];
@@ -210,13 +223,14 @@ describe("cancellation and reconciliation (contract §8)", () => {
     expect(leftover.length).toBe(1);
     await withService({ name: `${name}-next`, markers: leftover }, async (service) => {
       const { repositoryId } = await service.register(repo);
-      expect((await readOk(service, repositoryId)).recoveryState).toBe("unknown");
+      const read = await readOk(service, repositoryId);
+      expect({ recoveryState: read.recoveryState, recovery: WorkspaceSnapshot.parse(read).recovery }).toEqual({ recoveryState: "unknown", recovery: undefined });
     });
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("lost responses and tokens (contract §2, data-model §6)", () => {
-  todoCase(TASK, `after a lost response, getOperation returns the retained terminal state and never retries ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `after a lost response, getOperation returns the retained terminal state and never retries ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-lost" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-lost", "F09"));
       await underTest("recovery");
@@ -227,9 +241,10 @@ describe("lost responses and tokens (contract §2, data-model §6)", () => {
       const state = await service.getOperation(operationId);
       expect({ state: (state.result as { state?: string }).state, runs: service.runner.calls.length - from, commits: commitCalls(service).length }).toEqual({ state: first.state, runs: 0, commits: 1 });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `after a lost commit response, the same requestId gives INVALID_REQUEST, and a new requestId gets succeeded with the first operationId; neither retry starts a Git process ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `after a lost commit response, the same requestId gives INVALID_REQUEST, and a new requestId gets succeeded with the first operationId; neither retry starts a Git process ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-retry" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-retry", "F09"));
       await underTest("recovery");
@@ -246,10 +261,11 @@ describe("lost responses and tokens (contract §2, data-model §6)", () => {
       expect(fresh.result).toEqual((await service.getOperation(operationId)).result);
       expect({ runs: service.runner.calls.length - from, commits: commitCalls(service).length }).toEqual({ runs: 0, commits: 1 });
     }),
+    TIMEOUT_MS,
   );
 
   // Data-model §6: "Tokens expire on refresh, relevant state change, service restart, or successful consumption." Contract §9 gives UNKNOWN_TARGET.
-  todoCase(TASK, `a new service session invalidates all tokens: a commit with an earlier review token gives UNKNOWN_TARGET and cannot replay ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a new service session invalidates all tokens: a commit with an earlier review token gives UNKNOWN_TARGET and cannot replay ${NEEDS}`, SHELL, async () => {
     const repo = repoOf(buildChanged(gitPath(), "t100-new-session", "F09"));
     await underTest("recovery");
     const service = await openService({ git: gitPath(), name: "t100-new-session" });
@@ -260,7 +276,9 @@ describe("lost responses and tokens (contract §2, data-model §6)", () => {
     try {
       const restored = await next.restoreWorkspace(repo);
       const id = (restored.result as { repositoryId: string }).repositoryId;
-      expect(outcome(await refresh(next, id))).toEqual(SUCCEEDED);
+      // Contract §8 "Service restart": a restart block without a marker needs only a complete snapshot.
+      const refreshed = await refresh(next, id);
+      expect({ ...outcome(refreshed), recoveryState: refreshed.result?.recoveryState, recovery: recoveryOf(refreshed) }).toEqual({ ...SUCCEEDED, recoveryState: "ready", recovery: { outcome: "none" } });
       const read = await readOk(next, id);
       const from = next.runner.calls.length;
       const response = await next.request("commit", commitPayload(r, "replay\n"), { repositoryId: id, repositoryGeneration: read.generation });
@@ -269,7 +287,7 @@ describe("lost responses and tokens (contract §2, data-model §6)", () => {
     } finally {
       await next.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("automatic maintenance (contract §4, research.md R4)", () => {
@@ -292,7 +310,7 @@ describe("automatic maintenance (contract §4, research.md R4)", () => {
     return { argv: (start?.argv as string[] | undefined) ?? null, waits: childExitAt >= 0 && childExitAt < exitAt, durationMs: childExitAt >= 0 ? Number(events[childExitAt]!.t_rel) * 1000 : null, outlives, files: gitFiles(copy) };
   }
 
-  todoCase(TASK, `F12 gc.auto=1: report whether git commit waits for automatic maintenance, how long it runs, and whether it outlives the commit; the service outcome reports the created commit and counts a lingering maintenance process ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F12 gc.auto=1: report whether git commit waits for automatic maintenance, how long it runs, and whether it outlives the commit; the service outcome reports the created commit and counts a lingering maintenance process ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-gc-auto" }, async (service) => {
       const repo = repoOf(buildF12(gitPath(), "t100-gc-auto", "gc-auto"));
       const oracle = maintenanceOracle(repo, "t100-gc-auto-oracle");
@@ -314,7 +332,7 @@ describe("automatic maintenance (contract §4, research.md R4)", () => {
   );
 
   // `git gc --auto` runs the `pre-auto-gc` hook before it collects (githooks(5)), so the hook barrier holds the commit inside maintenance.
-  todoCase(TASK, `F12 gc.auto=1: a 20-second injected deadline that fires during maintenance reconciles from observed state and reports the created commit; report the files that the interruption leaves ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F12 gc.auto=1: a 20-second injected deadline that fires during maintenance reconciles from observed state and reports the created commit; report the files that the interruption leaves ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-gc-deadline" }, async (service) => {
       const built = buildF12(gitPath(), "t100-gc-deadline", "gc-auto");
       const repo = repoOf(built);
@@ -341,7 +359,7 @@ describe("automatic maintenance (contract §4, research.md R4)", () => {
 });
 
 describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
-  todoCase(TASK, `the applyHunk mutation frames arrive as started, ended, then resolved, and started precedes the lock creation ${HUNK}`, SHELL, async () => {
+  caseTest(TASK, `the applyHunk mutation frames arrive as started, ended, then resolved, and started precedes the lock creation ${HUNK}`, SHELL, async () => {
     const name = "t100-hunk-frames";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const lock = gitPathOf(repo, "index.lock");
@@ -358,9 +376,9 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
       expect(mutationFrames(service, response.operationId!)).toEqual(["started", "ended", "resolved"]);
       expect(seen).toEqual([{ lock: false, runs: 0 }]);
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `a leftover marker in the startup handshake makes the matching workspace unknown; its recovery refresh reports no-retained-request, resolves the marker, and enables mutations ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a leftover marker in the startup handshake makes the matching workspace unknown; its recovery refresh reports no-retained-request, resolves the marker, and enables mutations ${NEEDS}`, SHELL, async () => {
     const name = "t100-leftover";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const marker = await markerFor(name, repo);
@@ -370,14 +388,13 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
       expect((await readOk(service, repositoryId)).recoveryState).toBe("unknown");
       expect(outcome(await stageHunk(service, repositoryId))).toEqual(STATE_UNKNOWN);
       const refreshed = await refresh(service, repositoryId);
-      expect(outcome(refreshed)).toEqual(SUCCEEDED);
-      expect(one<Recovery>(refreshed.result, "recovery").attribution).toEqual({ result: "unknown", reason: "no-retained-request" });
+      expect({ ...outcome(refreshed), recoveryState: refreshed.result?.recoveryState, recovery: recoveryOf(refreshed) }).toEqual({ ...SUCCEEDED, recoveryState: "ready", recovery: { outcome: "unknown", attribution: NO_REQUEST } });
       expect(service.runner.frames.filter((f) => f.type === "resolved").map((f) => f.markerId)).toEqual([marker.markerId]);
       expect(outcome(await stageHunk(service, repositoryId))).toEqual(SUCCEEDED);
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `an injected failed marker write gives RECOVERY_MARKER_FAILED with its failure class, folder, and remedy, and no lock or Git process appears ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `an injected failed marker write gives RECOVERY_MARKER_FAILED with its failure class, folder, and remedy, and no lock or Git process appears ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-marker-failed" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-marker-failed", "F09"));
       await underTest("recovery");
@@ -394,10 +411,11 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
       });
       expect({ runs: service.runner.calls.length - from, lock: existsSync(gitPathOf(repo, "index.lock")) }).toEqual({ runs: 0, lock: false });
     }),
+    TIMEOUT_MS,
   );
 
   // Contract §5 "Recovery markers": above 64 marker files, every mutation stays blocked. The 64 loaded markers name other folders.
-  todoCase(TASK, `a handshake that reports the marker limit makes every mutation give STATE_UNKNOWN, also in a fixture without a marker ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a handshake that reports the marker limit makes every mutation give STATE_UNKNOWN, also in a fixture without a marker ${NEEDS}`, SHELL, async () => {
     const name = "t100-marker-limit";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const elsewhere = (i: number) => join(FIXTURE_ROOT, "t100-elsewhere", `m${i}`);
@@ -415,9 +433,9 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
       expect(outcome(await stageHunk(service, repositoryId))).toEqual(STATE_UNKNOWN);
       expect(outcome(await commit(service, repositoryId, await reviewOk(service, repositoryId), "limit\n"))).toEqual(STATE_UNKNOWN);
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `opening another repository while a commit runs gives BUSY, and both linked worktree registrations stay ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `opening another repository while a commit runs gives BUSY, and both linked worktree registrations stay ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-open-busy" }, async (service) => {
       const built = buildF07(gitPath(), "t100-open-busy");
       const other = repoOf(buildChanged(gitPath(), "t100-open-busy-other", "F09"));
@@ -437,9 +455,10 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
       await readOk(service, a.repositoryId);
       await readOk(service, b.repositoryId);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `an applyHunk left unknown recovers without an attribution step, and its refresh reports published from the retained digests ${HUNK}`, SHELL, async () => {
+  caseTest(TASK, `an applyHunk left unknown recovers without an attribution step, and its refresh reports published from the retained digests ${HUNK}`, SHELL, async () => {
     const name = "t100-hunk-unknown";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const oracle = scriptedPatch(repo, `${name}-oracle`, "add", "multi.txt", ["y", "n"]);
@@ -455,18 +474,40 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
       const { repositoryId } = await service.register(repo);
       expect(outcome(await stageHunk(service, repositoryId))).toEqual({ state: "unknown", code: "STATE_UNKNOWN" });
       const refreshed = await refresh(service, repositoryId);
-      expect(outcome(refreshed)).toEqual(SUCCEEDED);
-      expect({ indexMatch: one<Recovery>(refreshed.result, "recovery").indexMatch, attribution: valuesOf(refreshed.result, "attribution") }).toEqual({ indexMatch: "published", attribution: [] });
+      expect({ ...outcome(refreshed), recoveryState: refreshed.result?.recoveryState, recovery: recoveryOf(refreshed) }).toEqual({ ...SUCCEEDED, recoveryState: "ready", recovery: { outcome: "unknown", indexMatch: "published" } });
       expect(blobOf(repo, "multi.txt")).toBe(blobOf(oracle, "multi.txt"));
     });
-  });
+  }, TIMEOUT_MS);
+
+  // Contract §8 "Service restart": without an ownership record, every lock of the "Observed locks" set and every candidate file is foreign. The list holds the locks first, then the candidates in byte order of their names.
+  caseTest(TASK, `a leftover marker with a HEAD.lock and 6 candidate files: the recovery refresh names ${RECOVERY_FOREIGN_CAP} foreign files with the lock first, counts 7, and removes nothing ${NEEDS}`, SHELL, async () => {
+    const name = "t100-foreign-cap";
+    const repo = repoOf(buildChanged(gitPath(), name, "F09"));
+    const marker = await markerFor(name, repo);
+    await underTest("recovery");
+    await withService({ name, markers: [marker] }, async (service) => {
+      const { repositoryId } = await service.register(repo);
+      expect((await readOk(service, repositoryId)).recoveryState).toBe("unknown");
+      const lock = gitPathOf(repo, "HEAD.lock");
+      const candidates = Array.from({ length: 6 }, (_, i) => join(dirname(gitPathOf(repo, "index")), `arbareto-candidate-${i}`));
+      for (const path of [lock, ...candidates]) writeFileSync(path, "foreign\n");
+      const refreshed = await refresh(service, repositoryId);
+      const recovery = recoveryOf(refreshed);
+      expect({ ...outcome(refreshed), recoveryState: refreshed.result?.recoveryState, recovery: { ...recovery, foreign: recovery?.foreign?.map((p) => resolve(p)) } }).toEqual({
+        ...SUCCEEDED,
+        recoveryState: "ready",
+        recovery: { outcome: "unknown", attribution: NO_REQUEST, foreign: [lock, ...candidates].slice(0, RECOVERY_FOREIGN_CAP), foreignTotal: 7 },
+      });
+      expect([lock, ...candidates].filter((path) => !existsSync(path))).toEqual([]);
+    });
+  }, TIMEOUT_MS);
 });
 
 describe("dismissal (contract §6 \"Dismissal\")", () => {
   const dismiss = (service: Service, markerId: string, path?: string) =>
     service.request("dismissRecoveryMarker", path === undefined ? { markerId } : { markerId, bootstrapId: service.runner.addContext("repositoryDiscovery", path) });
 
-  todoCase(TASK, `dismissRecoveryMarker is allowed for a marker whose worktree path Git reports unavailable, and the result states that the outcome stays unknown ${NEEDS}`, [...SHELL, "no-enclosing-repository"], async () => {
+  caseTest(TASK, `dismissRecoveryMarker is allowed for a marker whose worktree path Git reports unavailable, and the result states that the outcome stays unknown ${NEEDS}`, [...SHELL, "no-enclosing-repository"], async () => {
     const name = "t100-dismiss-unavailable";
     const plain = fixtureDir(`${name}-plain`);
     put(plain, "file.txt", "plain\n");
@@ -474,11 +515,24 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
     await underTest("recovery");
     await withService({ name, markers: [marker] }, async (service) => {
       const response = await dismiss(service, marker.markerId, plain);
-      expect({ ...outcome(response), outcome: valuesOf(response.result, "outcome") }).toEqual({ ...SUCCEEDED, outcome: ["unknown"] });
+      expect({ ...outcome(response), result: response.result }).toEqual({ ...SUCCEEDED, result: { outcome: "unknown" } });
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `dismissRecoveryMarker is allowed for a marker whose resolved common-directory identity differs ${NEEDS}`, SHELL, async () => {
+  // Contract §6 "Dismissal": a payload without `bootstrapId` allows the dismissal, and the service runs no discovery. A damaged marker takes this form.
+  caseTest(TASK, `dismissRecoveryMarker with only a markerId is allowed, states that the outcome stays unknown, and starts no Git process ${NEEDS}`, SHELL, async () => {
+    const name = "t100-dismiss-no-context";
+    const gone = join(fixtureDir(name), "gone");
+    const marker: Marker = { markerId: crypto.randomUUID(), kind: "commit", startedAt: new Date().toISOString(), worktreeRoot: gone, commonDirectory: join(gone, ".git"), commonIdentity: { volumeSerial: "f".repeat(16), fileId: "e".repeat(32) } };
+    await underTest("recovery");
+    await withService({ name, markers: [marker] }, async (service) => {
+      const from = service.runner.calls.length;
+      const response = await dismiss(service, marker.markerId);
+      expect({ ...outcome(response), result: response.result, runs: service.runner.calls.length - from }).toEqual({ ...SUCCEEDED, result: { outcome: "unknown" }, runs: 0 });
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, `dismissRecoveryMarker is allowed for a marker whose resolved common-directory identity differs ${NEEDS}`, SHELL, async () => {
     const name = "t100-dismiss-other";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const real = await markerFor(name, repo);
@@ -487,11 +541,11 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
     await underTest("recovery");
     await withService({ name, markers: [marker] }, async (service) => {
       const response = await dismiss(service, marker.markerId, repo);
-      expect({ ...outcome(response), outcome: valuesOf(response.result, "outcome") }).toEqual({ ...SUCCEEDED, outcome: ["unknown"] });
+      expect({ ...outcome(response), result: response.result }).toEqual({ ...SUCCEEDED, result: { outcome: "unknown" } });
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `dismissRecoveryMarker for an available matching repository gives STATE_UNKNOWN with the remedy "${DISMISS_REMEDY}" ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `dismissRecoveryMarker for an available matching repository gives STATE_UNKNOWN with the remedy "${DISMISS_REMEDY}" ${NEEDS}`, SHELL, async () => {
     const name = "t100-dismiss-matching";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     const marker = await markerFor(name, repo);
@@ -500,11 +554,11 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
       const response = await dismiss(service, marker.markerId, repo);
       expect({ code: response.code, text: (response.result as { remedy?: { text?: string } } | undefined)?.remedy?.text }).toEqual({ code: "STATE_UNKNOWN", text: DISMISS_REMEDY });
     });
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("service restart (contract §8 \"Service restart\")", () => {
-  todoCase(TASK, `after a handshake with restarted true and no marker, restoreWorkspace gives an unknown workspace; applyHunk and commit give STATE_UNKNOWN, also after a refresh false read; a refresh true read states that no outcome is pending, and a hunk stage then succeeds ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `after a handshake with restarted true and no marker, restoreWorkspace gives an unknown workspace; applyHunk and commit give STATE_UNKNOWN, also after a refresh false read; a refresh true read states that no outcome is pending, and a hunk stage then succeeds ${NEEDS}`, SHELL, async () => {
     const repo = repoOf(buildChanged(gitPath(), "t100-restart", "F09"));
     await underTest("recovery");
     const service = await openService({ git: gitPath(), name: "t100-restart" });
@@ -518,16 +572,16 @@ describe("service restart (contract §8 \"Service restart\")", () => {
       expect(outcome(await stageHunk(next, id))).toEqual(STATE_UNKNOWN);
       expect(outcome(await commit(next, id, await reviewOk(next, id), "restart\n"))).toEqual(STATE_UNKNOWN);
       const refreshed = await refresh(next, id);
-      expect({ ...outcome(refreshed), recovery: one<Recovery>(refreshed.result, "recovery").outcome, recoveryState: refreshed.result!.recoveryState }).toEqual({ ...SUCCEEDED, recovery: "none", recoveryState: "ready" });
+      expect({ ...outcome(refreshed), recovery: recoveryOf(refreshed), recoveryState: refreshed.result?.recoveryState }).toEqual({ ...SUCCEEDED, recovery: { outcome: "none" }, recoveryState: "ready" });
       expect(outcome(await stageHunk(next, id))).toEqual(SUCCEEDED);
     } finally {
       await next.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 });
 
 describe("deadlines (contract §5 \"Deadline outcomes\")", () => {
-  todoCase(TASK, `an applyHunk Git step past a short deadline closes the Job, passes through reconciling, and ends failed with DEADLINE; the canonical index bytes stay, and the owned lock is gone ${HUNK}`, SHELL, async () => {
+  caseTest(TASK, `an applyHunk Git step past a short deadline closes the Job, passes through reconciling, and ends failed with DEADLINE; the canonical index bytes stay, and the owned lock is gone ${HUNK}`, SHELL, async () => {
     const name = "t100-hunk-deadline";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     let deadline: { arm(): void } | null = null;
@@ -545,9 +599,9 @@ describe("deadlines (contract §5 \"Deadline outcomes\")", () => {
       expect({ ...outcome(response), reconciling: progressStates(service, requestId).includes("reconciling") }).toEqual({ ...FAILED_DEADLINE, reconciling: true });
       expect({ index: rawIndexDigest(gitPath(), repo), lock: existsSync(gitPathOf(repo, "index.lock")) }).toEqual({ index, lock: false });
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `a commit preflight read past a short deadline ends failed with DEADLINE through reconciling; no commit process starts, and the review token stays unconsumed ${NEEDS}`, SHELL, async () => {
+  caseTest(TASK, `a commit preflight read past a short deadline ends failed with DEADLINE through reconciling; no commit process starts, and the review token stays unconsumed ${NEEDS}`, SHELL, async () => {
     const name = "t100-preflight-deadline";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));
     let deadline: { arm(): void } | null = null;
@@ -564,9 +618,9 @@ describe("deadlines (contract §5 \"Deadline outcomes\")", () => {
       const again = await commit(service, repositoryId, r, "preflight\n");
       expect({ ...outcome(again), replay: again.operationId === operationId }).toEqual({ ...SUCCEEDED, replay: false });
     });
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `a bootstrap probe past a short deadline gives DEADLINE and registers nothing ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `a bootstrap probe past a short deadline gives DEADLINE and registers nothing ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-bootstrap-deadline" }, async (service) => {
       const repo = repoOf(buildChanged(gitPath(), "t100-bootstrap-deadline", "F09"));
       await underTest("recovery");
@@ -574,6 +628,7 @@ describe("deadlines (contract §5 \"Deadline outcomes\")", () => {
       const response = await service.chooseRepository(repo);
       expect({ ...outcome(response), repositoryIds: valuesOf(response.result, "repositoryId") }).toEqual({ ...FAILED_DEADLINE, repositoryIds: [] });
     }),
+    TIMEOUT_MS,
   );
 });
 
@@ -588,7 +643,7 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
     return { built, repo, gate };
   }
 
-  todoCase(TASK, `a commit that leaves the F14 child running ends unknown through attribution evidence above 4 MiB, and its recovery refresh succeeds while the child still runs ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `a commit that leaves the F14 child running ends unknown through attribution evidence above 4 MiB, and its recovery refresh succeeds while the child still runs ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-linger-unknown" }, async (service) => {
       const { built, repo, gate } = lingeringBigReflog("t100-linger-unknown");
       await underTest("recovery");
@@ -603,11 +658,17 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
       expect(outcome(response)).toEqual({ state: "unknown", code: "STATE_UNKNOWN" });
       expect(service.runner.liveRecorded()).toBe(1);
       const refreshed = await refresh(service, repositoryId);
-      expect({ ...outcome(refreshed), recoveryState: refreshed.result!.recoveryState, live: service.runner.liveRecorded() }).toEqual({ ...SUCCEEDED, recoveryState: "ready", live: 1 });
+      expect({ ...outcome(refreshed), recoveryState: refreshed.result?.recoveryState, recovery: recoveryOf(refreshed), live: service.runner.liveRecorded() }).toEqual({
+        ...SUCCEEDED,
+        recoveryState: "ready",
+        recovery: { outcome: "unknown", attribution: { result: "unknown", reason: "evidence-limit" } },
+        live: 1,
+      });
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `after an F14 commit, revokeTrust ends the lingering child within 5 seconds and returns count 1 ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `after an F14 commit, revokeTrust ends the lingering child within 5 seconds and returns count 1 ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-revoke-after" }, async (service) => {
       const repo = repoOf(buildF14(gitPath(), "t100-revoke-after", "lingering"));
       await underTest("recovery");
@@ -619,9 +680,10 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
       expect({ ...outcome(revoked), ended: revoked.result?.endedProcesses }).toEqual({ ...SUCCEEDED, ended: 1 });
       await until(() => service.runner.liveRecorded() === 0, "child end", END_MS);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `a revoke during a running commit cancels nothing, ended sets endProcesses, and the child ends ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `a revoke during a running commit cancels nothing, ended sets endProcesses, and the child ends ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-revoke-during" }, async (service) => {
       const built = buildF14(gitPath(), "t100-revoke-during", "lingering");
       const repo = repoOf(built);
@@ -640,9 +702,10 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
       expect(endedFrame(service, operationId)!.endProcesses).toBe(true);
       await until(() => service.runner.liveRecorded() === 0, "child end", END_MS);
     }),
+    TIMEOUT_MS,
   );
 
-  todoCase(TASK, `a lingering child from an earlier service session also ends at revoke ${NEEDS}`, [...SHELL, "restart-keeps-lingering"], async () => {
+  caseTest(TASK, `a lingering child from an earlier service session also ends at revoke ${NEEDS}`, [...SHELL, "restart-keeps-lingering"], async () => {
     const name = "t100-revoke-restart";
     const repo = repoOf(buildF14(gitPath(), name, "lingering"));
     await underTest("recovery");
@@ -658,9 +721,9 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
     } finally {
       await next.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `F14 ref lock: the next commit gives GIT_FAILED with the observed lock path, and the lock stays; after the child removes its lock and exits, a refresh and a new commit succeed ${NEEDS}`, SHELL, () =>
+  caseTest(TASK, `F14 ref lock: the next commit gives GIT_FAILED with the observed lock path, and the lock stays; after the child removes its lock and exits, a refresh and a new commit succeed ${NEEDS}`, SHELL, () =>
     withService({ name: "t100-ref-lock" }, async (service) => {
       const built = buildChanged(gitPath(), "t100-ref-lock", "F09");
       const repo = repoOf(built);
@@ -676,11 +739,15 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
       const head = refState(gitPath(), repo).headOid;
       const failed = await commit(service, repositoryId, await reviewOk(service, repositoryId), "second\n");
       expect({ ...outcome(failed), head: refState(gitPath(), repo).headOid, lock: existsSync(lock) }).toEqual({ state: "failed", code: "GIT_FAILED", head, lock: true });
-      expect(valuesOf(failed.result, "foreign").flat()).toContain(lock);
+      // The service names the lock in the form of Git's absolute `--git-path` output, which uses `/` on Windows. `resolve` gives one form for both.
+      expect(valuesOf(failed.result, "foreign").flat().map((path) => resolve(String(path)))).toContain(lock);
       gate.release();
       await until(() => !existsSync(lock), "lock removal");
-      expect(outcome(await refresh(service, repositoryId))).toEqual(SUCCEEDED);
+      // A `failed` outcome is known, so the workspace is not blocked, and the refresh states no recovery.
+      const refreshed = await refresh(service, repositoryId);
+      expect({ ...outcome(refreshed), recovery: recoveryOf(refreshed) }).toEqual({ ...SUCCEEDED, recovery: undefined });
       expect(outcome(await commit(service, repositoryId, await reviewOk(service, repositoryId), "third\n"))).toEqual(SUCCEEDED);
     }),
+    TIMEOUT_MS,
   );
 });

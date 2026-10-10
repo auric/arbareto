@@ -7,6 +7,7 @@
 import { describe, expect, spyOn } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { APPROVAL_LIFETIME_MS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { fixtureEnv, serviceEnv, useFixtureRoot } from "./fixture-root";
@@ -34,9 +35,7 @@ import {
   subcommand,
   SUCCEEDED,
   TIMEOUT_MS,
-  todoCase,
   until,
-  valuesOf,
   withService,
   type Comparison,
   type Direction,
@@ -73,7 +72,8 @@ const TAIL_LINES = 100;
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 
 type Result = Refusal & { reason?: string; outputTail?: string };
-type Recovery = { outcome: string; attribution?: { result: string; reason?: string }; indexMatch?: string };
+// The contract §8 recovery statement of a read. The strict schema fails on a wrong result shape.
+const recoveryOf = (read: ServiceResponse) => WorkspaceSnapshot.parse(read.result).recovery;
 
 const code = (response: ServiceResponse) => response.code;
 const sharedIndexFiles = (repo: string) => readdirSync(gitDirOf(repo)).filter((name) => name.startsWith("sharedindex.")).sort();
@@ -753,7 +753,7 @@ describe("races and outcomes (contract §5, §8)", () => {
   // Contract §8: an `applyFile` left `unknown` runs no attribution step. The refresh compares the canonical index with the retained candidate and pre-publication digests.
   type Match = "published" | "not-published" | "neither";
   for (const match of ["published", "not-published", "neither"] satisfies Match[]) {
-    todoCase(TASK, `an applyFile left unknown recovers from its retained digests, and its refresh reports ${match} with no attribution step ${RECOVERY}`, SHELL, () => {
+    caseTest(TASK, `an applyFile left unknown recovers from its retained digests, and its refresh reports ${match} with no attribution step ${RECOVERY}`, SHELL, () => {
       const name = `t197-unknown-${match}`;
       return withObserver(name, async (service, hooks) => {
         const repo = changed(name);
@@ -772,13 +772,17 @@ describe("races and outcomes (contract §5, §8)", () => {
         if (match === "neither") writeFileSync(gitPathOf(repo, "index"), index);
         const expected = match === "published" ? indexEntries(gitPath(), oracle) : match === "not-published" ? before.entries : indexEntries(gitPath(), repo);
         const refreshed = await refresh(service, repositoryId);
-        expect(outcome(refreshed)).toEqual(SUCCEEDED);
-        expect({ indexMatch: one<Recovery>(refreshed.result, "recovery").indexMatch, attribution: valuesOf(refreshed.result, "attribution"), entries: indexEntries(gitPath(), repo) }).toEqual({ indexMatch: match, attribution: [], entries: expected });
+        expect({ ...outcome(refreshed), recoveryState: refreshed.result?.recoveryState, recovery: recoveryOf(refreshed), entries: indexEntries(gitPath(), repo) }).toEqual({
+          ...SUCCEEDED,
+          recoveryState: "ready",
+          recovery: { outcome: "unknown", indexMatch: match },
+          entries: expected,
+        });
       });
-    });
+    }, TIMEOUT_MS);
   }
 
-  todoCase(TASK, `after a handshake with restarted true, applyFile gives STATE_UNKNOWN, also after a refresh false read, until a refresh true read ${RECOVERY}`, SHELL, async () => {
+  caseTest(TASK, `after a handshake with restarted true, applyFile gives STATE_UNKNOWN, also after a refresh false read, until a refresh true read ${RECOVERY}`, SHELL, async () => {
     const repo = changed("t197-restart");
     await underTest();
     const service = await openService({ git: gitPath(), name: "t197-restart" });
@@ -792,14 +796,16 @@ describe("races and outcomes (contract §5, §8)", () => {
       expect(outcome(await refused(next, repo, stage))).toEqual({ state: "rejected", code: "STATE_UNKNOWN" });
       expect(outcome(await next.readWorkspace(id, { refresh: false, check: "full" }))).toEqual(SUCCEEDED);
       expect(outcome(await refused(next, repo, stage))).toEqual({ state: "rejected", code: "STATE_UNKNOWN" });
-      expect(outcome(await refresh(next, id))).toEqual(SUCCEEDED);
+      // Contract §8 "Service restart": a restart block without a marker needs only a complete snapshot.
+      const refreshed = await refresh(next, id);
+      expect({ ...outcome(refreshed), recoveryState: refreshed.result?.recoveryState, recovery: recoveryOf(refreshed) }).toEqual({ ...SUCCEEDED, recoveryState: "ready", recovery: { outcome: "none" } });
       expect(outcome(await stage())).toEqual(SUCCEEDED);
     } finally {
       await next.dispose();
     }
-  });
+  }, TIMEOUT_MS);
 
-  todoCase(TASK, `the applyFile mutation frames arrive as started, ended, then resolved ${RECOVERY}`, SHELL, () =>
+  caseTest(TASK, `the applyFile mutation frames arrive as started, ended, then resolved ${RECOVERY}`, SHELL, () =>
     withService({ name: "t197-frames" }, async (service) => {
       const repo = changed("t197-frames");
       await underTest();
@@ -809,5 +815,6 @@ describe("races and outcomes (contract §5, §8)", () => {
       await until(() => mutationFrames(service, response.operationId!).length === 3, "mutation frames");
       expect(mutationFrames(service, response.operationId!)).toEqual(["started", "ended", "resolved"]);
     }),
+    TIMEOUT_MS,
   );
 });

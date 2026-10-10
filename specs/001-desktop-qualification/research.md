@@ -906,6 +906,13 @@ Capture sources: [DuplicateOutput](https://learn.microsoft.com/windows/win32/api
 
 **UI Automation driver (T153, T240, T241).** `tauri-driver` and `msedgedriver` are absent (inventory above). The test-only driver `tests/windows/uia.ts` uses UI Automation instead. Microsoft Learn states that a Win32 app shows WebView2 in the accessibility tree as a child of its parent window. It states that Microsoft Edge exposes ARIA roles, states, and properties through UI Automation. It also states that UI Automation does not connect processes that different users start. So the driver runs under the measurement account. T241 confirms each control name on the reference host with the driver and `inspect.exe`. When a name does not resolve, the T241 keyboard fallback covers T153, T167, T181, and T245. C7 then stays `unverified`.
 
+**T240 driver observations, 2026-10-11.** The T240 run of `tests/windows/uia.test.ts` against the installed app gave these facts. They are not qualification evidence.
+
+- WebView2 web content appears in UI Automation only after the first UI Automation request. It appeared 1.4 to 5.8 seconds after the start.
+- The web elements belong to the process `msedgewebview2.exe`, not to the app process. So `waitFocus` checks the process of the top-level window.
+- The folder picker and the Git task dialog are descendants of the main window.
+- A `role="status"` region has an empty Name and LiveSetting Polite. So `findLiveRegions` finds the status regions by LiveSetting.
+
 Driver sources: [WebView2 accessibility tree](https://learn.microsoft.com/microsoft-edge/webview2/concepts/overview-features-apis#rendering-webview2-using-composition), [ARIA and UI Automation in Microsoft Edge](https://learn.microsoft.com/microsoft-edge/accessibility/build/aria-and-ui-automation), [UI Automation overview](https://learn.microsoft.com/windows/win32/winauto/uiauto-uiautomationoverview).
 
 Use the same capture method for baseline and candidate. An elevated trace collector does not qualify elevated application behavior. Run the application and installer as a standard user.
@@ -2211,6 +2218,12 @@ The user approved a redesign after a mockup review (spec Clarifications, 2026-10
 | The change plan proposed a 60% dock default. At 1280×800 compact it leaves 9 diff rows, below the 18 rows of C8. | Reviewer default: one remembered height for each panel. The commit panel keeps three history rows; the commit details take 40% (plan.md "Dock region", "C8 rows"). |
 
 The register grows to 73 rows: SC-018, SC-019, F33, UI-20, and UI-21. These corrections have not received runtime verification.
+
+**T356 probes, 2026-10-11.** The probes used Git 2.56.0.windows.1 on the F33 copies of `tests/git/refs.test.ts`. They are not qualification evidence.
+
+- A tag of a tag peels to the commit: `%(*objectname)` gives the commit ID, not the inner tag ID.
+- Git leaves out a loose ref with a broken name, `refs/heads/bad..name`. It prints only a stderr warning and exits 0.
+- On Windows, MSYS maps the byte `\001` in a file name to U+F001.
 
 ## R12. History graph component and data decision
 

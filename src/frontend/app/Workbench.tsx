@@ -441,12 +441,13 @@ class AboutBoundary extends Component<{ onClose(): void; children: ReactNode }, 
 export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit, onEnvironment, textScale = 1, drafts: givenDrafts }: WorkbenchProps) {
   // plan.md "Required visible states", Recovery statement: the statement stays until the next `refresh: true` read or another repository.
   const [recovery, setRecovery] = useState<{ repositoryId: string; statement: RecoveryStatement } | null>(null);
-  // Contract §11 "Distro start": a registration or restore in phase `wsl-starting`, until its response. No event marks the probe end.
-  const [starting, setStarting] = useState<{ distro: string; operationId: string } | null>(null);
+  // Contract §11 "Distro start": a registration, restore, or marker dismissal in phase `wsl-starting`, until its response. No event marks the probe end.
+  // Contract §11 defines Cancel only for a registration or restore, so a dismissal start has no Cancel.
+  const [starting, setStarting] = useState<{ distro: string; operationId: string; cancelable: boolean } | null>(null);
   // The operation that the WslStarting Cancel canceled.
   const canceledStart = useRef<string | null>(null);
   const onStart: OnProgress = (event) => {
-    if (event.phase === "wsl-starting" && event.distro !== undefined) setStarting({ distro: event.distro, operationId: event.operationId });
+    if (event.phase === "wsl-starting" && event.distro !== undefined) setStarting({ distro: event.distro, operationId: event.operationId, cancelable: true });
   };
   const endStart = (response: BridgeResponse) => {
     setStarting((current) => (current !== null && current.operationId === response.operationId ? null : current));
@@ -481,7 +482,17 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     onEnvironment?.(response);
   }
   // Contract §6 "Dismissal": the outcome stays unknown, and the next environment read shows the remaining markers.
-  const dismissMarker = (markerId: string) => void bridge.dismissRecoveryMarker({ markerId }).then(readEnvironment);
+  // The start state of a dismissal ends with the response of that dismissal.
+  async function dismissMarker(markerId: string) {
+    let operationId: string | null = null;
+    await bridge.dismissRecoveryMarker({ markerId }, (event) => {
+      if (event.phase !== "wsl-starting" || event.distro === undefined) return;
+      operationId = event.operationId;
+      setStarting({ distro: event.distro, operationId, cancelable: false });
+    });
+    setStarting((current) => (current !== null && current.operationId === operationId ? null : current));
+    await readEnvironment();
+  }
   const state = useSyncExternalStore(requests.subscribe, requests.state, requests.state);
   const [preferences, setPreferences] = useState(storedPreferences);
   const client = useClientSize();
@@ -1066,7 +1077,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       <div ref={sections} data-profile={profile} className="flex h-dvh flex-col overflow-clip bg-canvas text-text" onFocus={onSectionFocus}>
         {markers ? (
           <div data-slot="recovery-markers" className="max-h-[40dvh] shrink-0 overflow-y-auto border-b border-divider p-2">
-            <RecoveryMarkers environment={environment} onDismissMarker={dismissMarker} />
+            <RecoveryMarkers environment={environment} onDismissMarker={(markerId) => void dismissMarker(markerId)} />
           </div>
         ) : null}
         <header data-section="header" className="flex flex-wrap items-center gap-x-2 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
@@ -1247,7 +1258,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           )}
           {/* plan.md "Status area": T138 fills this slot. */}
           <div data-slot="status-area" data-section={starting === null ? undefined : "statusRegion"} className="shrink-0 overflow-y-auto" style={{ maxHeight: statusAreaMax }}>
-            {starting === null ? null : <WslStarting name={starting.distro} operationId={starting.operationId} cancel={cancelStart} />}
+            {starting === null ? null : <WslStarting name={starting.distro} operationId={starting.operationId} cancel={starting.cancelable ? cancelStart : undefined} />}
           </div>
         </main>
 

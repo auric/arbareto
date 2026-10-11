@@ -271,6 +271,27 @@ describe("Starting WSL distro in the workbench", () => {
     expect(text(area(host))).not.toContain(STARTING_TEXT);
   });
 
+  // Contract §11 "Distro start": a marker dismissal in a stopped distro reports phase `wsl-starting`. Contract §11 defines Cancel only for a registration or restore.
+  test("a marker dismissal in phase wsl-starting shows the state without Cancel, and its response removes it", async () => {
+    const marker = { markerId: crypto.randomUUID(), kind: "commit", startedAt: "2026-10-01T10:00:00Z", worktreeRoot: `\\\\wsl.localhost\\${DISTRO}\\home\\me\\repo` };
+    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), signing: "unsigned" }, platformScope: "qualification-target", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [marker], damagedMarkers: [] };
+    const { host, pending } = await mount({ environment });
+    await settle();
+    await act(async () => button(host, "Dismiss")!.click());
+    const call = pending("dismissRecoveryMarker");
+    expect(call.args[0]).toEqual({ markerId: marker.markerId });
+    const requestId = crypto.randomUUID();
+    await act(async () => (call.args[1] as (event: unknown) => void)(starting(requestId)));
+    await settle();
+    expect(text(area(host))).toContain(STARTING_TEXT);
+    expect(text(statusBar(host))).toBe(STARTING_TEXT);
+    expect(button(area(host), "Cancel")).toBeUndefined();
+    await act(async () => call.resolve({ requestId, operationId: OPERATION, state: "succeeded", result: {} }));
+    await settle();
+    expect(text(area(host))).not.toContain(STARTING_TEXT);
+    expect(pending("getEnvironment")).toBeDefined();
+  });
+
   test("the restore after a service-session event shows the state too", async () => {
     const double = bridgeDouble();
     const host = document.body.appendChild(document.createElement("div"));

@@ -400,6 +400,17 @@ The graph covers at most 100 commits reachable from the captured checkout. Label
 
 Clamp restored window bounds to the current work area before showing the window. Report an insufficient work area if no supported client size fits. Store pane sizes in logical units, not physical pixels. Constrained layouts must not overwrite remembered wide-pane proportions.
 
+Stored pane bounds (T364). The preferences file keeps six pane sizes in DIPs. The bounds hold every density and every text size from 100% to 225%:
+
+- `fileLane`: 240–400 ("Chosen layout, sizes, and DPI"). Default 280.
+- `sidebar`: 180–420 ("References sidebar"). Default 240.
+- `fileBand`: 102–218, the Working changes minimum from compact at 100% text to comfortable at 225% text. Default `null`.
+- `tray`: at least 144, the tray minimum. Default `null`.
+- `commitDock`: at least 424, the `dockBounds("commit")` minimum. Default `null`.
+- `detailsDock`: at least 58, the `dockBounds("details")` minimum. Default `null`.
+- The height panes `tray`, `commitDock`, and `detailsDock` have no stored maximum. Only a finite value passes. The layout clamps each stored size to the current window.
+- A `null` height pane means the layout default. A missing value or a value outside its bounds reads as the default.
+
 After DPI, density, or font changes, remeasure virtual rows and restore a valid scroll anchor. Do not remount the editor or replace its text selection. Reflow must never activate a hunk or commit action.
 
 Windows text size. Interface text follows the Windows Text size setting, from 100% to 225% (FR-035, research R7 "Windows text size"). Windows scales only text there, not the whole interface, so Arbareto scales only text too:
@@ -784,6 +795,7 @@ These decorative lane colors stay at least 30° in OKLCH hue from Accent, Added,
 
 | State | Presentation and behavior |
 | --- | --- |
+| Boot view (T363) | The loading, unavailable, and facts states share one frame. A header row shows "Arbareto" at the header height. Below it, a scrolling main area holds one centered panel on Surface. The panel is at most 640 DIPs wide, with 16 DIP padding and 12 DIP gaps. The environment facts are one definition list with Muted text labels. The "Unsigned local test package" and "Unqualified platform" lines use the Warning/stale text color. The blocked line is bold. Select Git stands beside it as the primary button. |
 | No repository (start page) | The start page shows the recent list with its filter, Open folder… (Ctrl+O), and one static line: "This test build covers opening repositories, recent repositories, status, diffs, hunk and file staging, local commits, submodule updates, one history page, and a read-only reference list." An empty list reads "No recent repositories. Open a folder to start." No clone button, no sample entry, no dashboard, and no branch per entry. The status bar reads "No repository open" and the Git version. The window title reads "Arbareto". |
 | Repository refused | Name the refusal reason and show a copyable remedy. Keep the current workspace unchanged. Offer Open folder and the repository switcher, and never offer repair, configuration changes, or lock removal. A discovery `REPOSITORY_UNAVAILABLE` shows the selected folder, the remedy "Run `git status` in this folder", and Git's output tail as plain text, without Copy command (contract §6 "Registration bootstrap"). WSL refusals show the contract §9 texts for `WSL_UNAVAILABLE`. Its reasons are `wsl-missing`, `distro-missing`, `not-wsl2`, `no-user-manager`, `no-setsid`, `no-coreutils`, and `start-failed`. They also show `GIT_UNSUPPORTED` with reason `version`, `windows-git`, or `no-fs-uuid`. `UNSUPPORTED_REPOSITORY` shows reasons `wsl-path`, `mixed-location`, and `no-fs-uuid`. The `GIT_UNSUPPORTED` `no-fs-uuid` text comes from contract §11 "Git per distro", and the other one from contract §9. The version text names the found and the required version. Each refusal shows the Removed/error icon, its reason text, and its remedy. A command remedy gets Copy command. |
 | WSL location | The toolbar row shows the text label "WSL: <distro>" after the repository switcher, in both densities and themes. The label is text, never color alone. It is an outline badge like the HEAD badge, 8 DIPs after the switcher. It has the fixed width of "Header layout". It uses Text color and a 1 DIP Control border outline. Forced colors draw it in CanvasText. The status bar Git segment repeats the distro name. |

@@ -875,7 +875,17 @@ OBSERVATION T192: R6 Git processes per read: fixture L without commit-graph: rea
 - Median read wall on M, own and shared listing: 83.6 ms and 68.7 ms with a commit-graph file, 89.4 ms and 67.0 ms without it.
 - Median read wall on L, own and shared listing: 161.4 ms and 142.1 ms with a commit-graph file, 147.2 ms and 140.5 ms without it.
 - Median response bytes: 9127 on M and 70951 on L.
-- The T192 lines follow verbatim.
+
+Control mutation, 2026-10-11, worktree `D:\dev\rozvio-l6` at main `eec348d`:
+
+- A first edit let `parseRefs` in `src/git-service/refs-parser.ts` pass a record of 7 or 8 fields. `bun test tests/git/refs.test.ts` stayed green: 18 pass, 0 fail. The HEAD check still refused the record, because the eighth field was absent.
+- The second edit added the missing HEAD field `" "` to a seven-field record before the field count check. So the parser accepted the record.
+- The same command then exited 1: 17 pass, 1 fail. The case "each broken record rule gives failed with MALFORMED_GIT_OUTPUT and no records" failed at `refs.test.ts:338`. Its "a record holds seven fields" entry gave `succeeded`.
+- The undo restored the file. Its SHA-256 `a30b65d7ffddbfe2c403b3420e6c1654941e74e979bd3337cea06f6ba9522c71` matched the copy before the edit, and `git status --short` was empty.
+- The same command then exited 0: 18 pass, 0 fail.
+- Both runs printed `git version 2.56.0.windows.1` at `C:\Git\ucrt64\bin\git.exe`. Both printed 14 `ORIGIN` lines under `D:\dev\rozvio-l6\src`, with `refs-parser.ts`, `refs.ts`, `commands.ts`, `git-runner.ts`, and `session.ts` under `src\git-service`.
+
+The T192 `readRefs` lines follow verbatim.
 
 ```text
 OBSERVATION T192: R6 Git processes per read: fixture M with commit-graph: readRefs with its own trust listing: 20 reads, Git process count 3, median read wall 83.6 ms, median response bytes 9127; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 62.5 ms, median wall 83.0 ms, max wall 109.0 ms; config list --show-scope --show-origin -z: 20 runs, median CPU 46.9 ms, median wall 60.7 ms, max wall 84.7 ms; rev-parse --git-path hooks: 20 runs, median CPU 46.9 ms, median wall 60.7 ms, max wall 81.6 ms

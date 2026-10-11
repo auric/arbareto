@@ -491,7 +491,7 @@ No mutation, hook, cancellation, or Windows test has run. Those checks remain re
 
 Sources: [index lock release](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/commit.c#L482-L494), [post-hook index read](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/commit.c#L1101-L1135), [HEAD capture](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/builtin/commit.c#L1815-L1844), [reference update](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/sequencer.c#L1259-L1295), [transaction hook phases](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/refs.c#L2698-L2739), [configured hook ordering](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/hook.c#L546-L550).
 
-**T112 method, 2026-10-09.** T112 sets no trace2 event target, and `src/contracts/git-environment.json` gets no `mutation-trace2` policy. So every commit failure gives `GIT_FAILED`, never `HOOK_FAILED` or `SIGNING_FAILED`. The T091 events can identify a failing hook or signer, but no defined reader receives them. Pinned Git accepts only stderr, one file-descriptor digit, or an absolute file or directory path as an event target. A build with Unix sockets also accepts an `af_unix:` socket ([trace2 target](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/trace2/tr2_dst.c#L312-L356)). Stderr also carries hook output, so a hook can print a line that looks like an event. Contract §6 gives a Git process only stdin, stdout, and stderr, so no other descriptor exists. The contract defines no owned target file or socket, no reader, no bound, and no cleanup for one. This is the recorded reason of each commit `GIT_FAILED`. The §9 output tail still shows the Git and hook output.
+**T112 method, 2026-10-09.** T112 sets no trace2 event target, and `src/contracts/git-environment.json` gets no `mutation-trace2` policy. So every commit failure gives `GIT_FAILED`, never `HOOK_FAILED` or `SIGNING_FAILED`. The T091 events can identify a failing hook or signer, but no defined reader receives them. Pinned Git accepts only stderr, one file-descriptor digit, or an absolute file or directory path as an event target. A build with Unix sockets also accepts an `af_unix:` socket ([trace2 target](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/trace2/tr2_dst.c#L312-L356)). Stderr also carries hook output, so a hook can print a line that looks like an event. Contract §6 gives a Git process only stdin, stdout, and stderr, so no other descriptor exists. The contract defines no owned target file or socket, no reader, no bound, and no cleanup for one. This is the recorded reason of each commit `GIT_FAILED`. The §9 output tail still shows the Git and hook output. So the `HOOK_FAILED` and `SIGNING_FAILED` classification stays `unverified` for this reason (T117).
 
 **T113 probes, 2026-10-10.** The probes used Git 2.56.0.windows.1, built from commit `49d759b6`, in throwaway repositories with an owned `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM=1`. Each probe ran on the `files` and the `reftable` ref formats. The two formats gave equal results unless a line names one. These probes are not qualification evidence.
 
@@ -867,6 +867,25 @@ OBSERVATION T192: R6 Git processes per read: fixture L without commit-graph: rea
 OBSERVATION T192: R6 Git processes per read: fixture L without commit-graph: no-change readWorkspace check "changes": 20 reads, Git process count 0, median read wall 9.5 ms, median response bytes 11538; per process: none
 OBSERVATION T192: R6 Git processes per read: fixture L without commit-graph: readHistory with its own trust listing: 20 reads, Git process count 7, median read wall 626.7 ms, median response bytes 24156; per process: symbolic-ref -q HEAD: 20 runs, median CPU 46.9 ms, median wall 56.7 ms, max wall 71.8 ms; rev-parse --verify -q HEAD: 20 runs, median CPU 46.9 ms, median wall 57.8 ms, max wall 66.0 ms; rev-parse --git-path shallow: 20 runs, median CPU 46.9 ms, median wall 58.8 ms, max wall 69.6 ms; config list --show-scope --show-origin -z: 20 runs, median CPU 46.9 ms, median wall 60.5 ms, max wall 73.6 ms; rev-parse --git-path hooks: 20 runs, median CPU 46.9 ms, median wall 54.5 ms, max wall 69.0 ms; rev-list --parents --max-count=100 --date-order <oid>: 20 runs, median CPU 500.0 ms, median wall 506.2 ms, max wall 1078.2 ms; cat-file --batch-command -Z: 20 runs, median CPU 46.9 ms, median wall 49.8 ms, max wall 69.2 ms
 OBSERVATION T192: R6 Git processes per read: fixture L without commit-graph: readHistory with a shared trust listing: 20 reads, Git process count 5, median read wall 634.9 ms, median response bytes 24156; per process: symbolic-ref -q HEAD: 20 runs, median CPU 46.9 ms, median wall 75.2 ms, max wall 100.7 ms; rev-parse --verify -q HEAD: 20 runs, median CPU 46.9 ms, median wall 70.7 ms, max wall 106.7 ms; rev-parse --git-path shallow: 20 runs, median CPU 46.9 ms, median wall 65.9 ms, max wall 97.2 ms; rev-list --parents --max-count=100 --date-order <oid>: 20 runs, median CPU 484.4 ms, median wall 501.4 ms, max wall 530.2 ms; cat-file --batch-command -Z: 20 runs, median CPU 31.3 ms, median wall 49.8 ms, max wall 70.0 ms
+```
+
+**T357 `readRefs` observations, 2026-10-11.** These T192 records come from full run 3 at main `2102871` (R10 "T117 batch 3 verification"). The host ran Git `2.56.0.windows.1`. These are observations; no budget applies here.
+
+- `readRefs` starts 3 Git processes with its own trust listing: `for-each-ref`, `config list`, and `rev-parse --git-path hooks`. With a shared listing, it starts only `for-each-ref`.
+- Median read wall on M, own and shared listing: 83.6 ms and 68.7 ms with a commit-graph file, 89.4 ms and 67.0 ms without it.
+- Median read wall on L, own and shared listing: 161.4 ms and 142.1 ms with a commit-graph file, 147.2 ms and 140.5 ms without it.
+- Median response bytes: 9127 on M and 70951 on L.
+- The T192 lines follow verbatim.
+
+```text
+OBSERVATION T192: R6 Git processes per read: fixture M with commit-graph: readRefs with its own trust listing: 20 reads, Git process count 3, median read wall 83.6 ms, median response bytes 9127; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 62.5 ms, median wall 83.0 ms, max wall 109.0 ms; config list --show-scope --show-origin -z: 20 runs, median CPU 46.9 ms, median wall 60.7 ms, max wall 84.7 ms; rev-parse --git-path hooks: 20 runs, median CPU 46.9 ms, median wall 60.7 ms, max wall 81.6 ms
+OBSERVATION T192: R6 Git processes per read: fixture M with commit-graph: readRefs with a shared trust listing: 20 reads, Git process count 1, median read wall 68.7 ms, median response bytes 9127; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 62.5 ms, median wall 67.9 ms, max wall 115.8 ms
+OBSERVATION T192: R6 Git processes per read: fixture M without commit-graph: readRefs with its own trust listing: 20 reads, Git process count 3, median read wall 89.4 ms, median response bytes 9127; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 62.5 ms, median wall 86.2 ms, max wall 135.3 ms; config list --show-scope --show-origin -z: 20 runs, median CPU 46.9 ms, median wall 60.8 ms, max wall 125.2 ms; rev-parse --git-path hooks: 20 runs, median CPU 46.9 ms, median wall 61.1 ms, max wall 113.1 ms
+OBSERVATION T192: R6 Git processes per read: fixture M without commit-graph: readRefs with a shared trust listing: 20 reads, Git process count 1, median read wall 67.0 ms, median response bytes 9127; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 62.5 ms, median wall 66.3 ms, max wall 111.4 ms
+OBSERVATION T192: R6 Git processes per read: fixture L with commit-graph: readRefs with its own trust listing: 20 reads, Git process count 3, median read wall 161.4 ms, median response bytes 70951; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 156.3 ms, median wall 160.2 ms, max wall 338.1 ms; config list --show-scope --show-origin -z: 20 runs, median CPU 46.9 ms, median wall 59.6 ms, max wall 131.9 ms; rev-parse --git-path hooks: 20 runs, median CPU 46.9 ms, median wall 58.6 ms, max wall 154.7 ms
+OBSERVATION T192: R6 Git processes per read: fixture L with commit-graph: readRefs with a shared trust listing: 20 reads, Git process count 1, median read wall 142.1 ms, median response bytes 70951; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 125.0 ms, median wall 141.0 ms, max wall 195.3 ms
+OBSERVATION T192: R6 Git processes per read: fixture L without commit-graph: readRefs with its own trust listing: 20 reads, Git process count 3, median read wall 147.2 ms, median response bytes 70951; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 140.6 ms, median wall 146.1 ms, max wall 193.6 ms; config list --show-scope --show-origin -z: 20 runs, median CPU 46.9 ms, median wall 52.8 ms, max wall 69.1 ms; rev-parse --git-path hooks: 20 runs, median CPU 46.9 ms, median wall 50.1 ms, max wall 63.3 ms
+OBSERVATION T192: R6 Git processes per read: fixture L without commit-graph: readRefs with a shared trust listing: 20 reads, Git process count 1, median read wall 140.5 ms, median response bytes 70951; per process: for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD) refs/heads refs/remotes refs/tags: 20 runs, median CPU 125.0 ms, median wall 138.9 ms, max wall 220.9 ms
 ```
 
 Git Extensions `v7.2.1` resolves to `0aea2d6df4c120806c46f1797ba6a45f5d14b345`. Its Windows release includes x64 MSI and portable artifacts. Its release notes require .NET Desktop `10.0.9` or later `10.x` and recommend Git `2.53.0` or later.
@@ -1768,6 +1787,91 @@ These are refusals. They do not fail the hunk and file staging correctness gate.
 - `fail`: the same fixture, untracked `u-noeol.txt`. Refused by the folder signal; the read equals the blob.
 
 The `core.safecrlf=true` cases of the first probe are not refused. The re-probe with the `git add -p` oracle of FR-010 found the read equal (R3).
+
+**T117 batch 3 verification, 2026-10-11.** Full run 3 used main `2102871` in the main checkout `D:\dev\rozvio`. Every command exited with code 0.
+
+- `bunx --bun tsc --noEmit` printed nothing. `export-schemas.ts --check` found the schema files current, and the build passed.
+- `bun run test:all` with 6 workers and the WSL distro `Ubuntu-26.04` reported 134 of 134 files. Parallel step: 121 files, 4384 pass, 36 skip, 4 todo, 0 fail. Serial step: 13 files, 244 pass, 6 skip, 0 fail.
+- `tests/wsl/registration.test.ts` on `Ubuntu-24.04` with Git `2.43.0`: 34 pass, 4 skip, 0 fail. `bun test tests/windows`: 70 pass, 1 skip, 0 fail.
+- `cargo test`: 433 passed, 3 ignored. Clippy and `cargo fmt --check` printed no finding.
+- Each of the 58 Git blocks printed `C:\Git\ucrt64\bin\git.exe` and `git version 2.56.0.windows.1`, built from commit `49d759b698127791a5f3f2759c69b983846711dd`. No test skipped for an absent Git.
+- 1177 `ORIGIN` lines, all under `D:\dev\rozvio`. 1175 point into `src`, 723 of them into `src\git-service`. One names `node_modules\@pierre\diffs\package.json`, and one names `src` itself. 8 `GLOBAL_ORIGIN` lines point to the fixture home `.gitconfig` under the temporary directory.
+- The 4 todo cases name T146, T148, and T236. These are batch 4 tasks, so no `test.todo` case names a batch 3 task.
+- T196 stage time: `update-index` of 536,870,912 bytes on F16 took 15843.6 ms.
+
+Control mutation, 2026-10-11, worktree `D:\dev\rozvio-l6` at main `60db4f0`:
+
+- The edit changed `applyCachedArgs` in `src/git-service/commands.ts` from `apply --cached` to `apply --index`.
+- `bun test tests/git/hunk-stage.test.ts` exited 1: 0 pass, 8 fail. The first failure at `hunk-stage.test.ts:60` got state `failed` with `GIT_FAILED`, not `succeeded`.
+- The undo restored the file. Its SHA-256 `edfcccc71b67862e3ada2722cff555ed7683e1428329d8e7b028df1ef5680295` matched the copy before the edit, and `git status --short` was empty.
+- The same command then exited 0: 8 pass, 0 fail.
+- Both runs printed `git version 2.56.0.windows.1` at `C:\Git\ucrt64\bin\git.exe`. Both printed 17 `ORIGIN` lines under `D:\dev\rozvio-l6\src`, 8 of them for `src\git-service\hunk-publish.ts`.
+
+Skips. Each capability skip is `unverified`:
+
+| Capability | Skipped cases | Status |
+| --- | --- | --- |
+| `distro-git-below-2.55` | 2 F24 cases in `registration.test.ts` on `Ubuntu-26.04`. The `Ubuntu-24.04` run did not skip them and had 0 failures. | unverified |
+| `distro-git-2.55` | 4 registration cases on `Ubuntu-24.04` | unverified |
+| `two-test-distros` | T252: identity and `worktreeKey` across both distro start orders | unverified |
+| `other-account-owner` | T308: dubious ownership through the service. One F15 subcase in a passing test. | unverified |
+| `disposable-volume` | T096: F15 full volume. One F15 subcase in a passing test. | unverified |
+| `fifo` | T304: a FIFO gives `other` without a hang | unverified |
+| `restart-keeps-lingering` | T100: a lingering child from an earlier service session ends at revoke | unverified |
+| `ssh-server` | 3 T224 SSH cases: unknown host key, and a passphrase key through `core.sshCommand` with and without arguments | unverified |
+| installed app | 1 `tests/windows` case: no uninstall entry `HKCU\...\Uninstall\Arbareto` | unverified |
+| other platform | 29 golden vectors, 2 POSIX trust cases, and 1 Linux-only pipe case in `bun-runner.test.ts`. These are platform skips, not capability skips. | not applicable on Windows |
+
+Earlier runs of this batch:
+
+- Run 1 at `667a1df`: the lane palette test failed, because it did not expect the Graphite dark lane values of T361. Commit `45be610` fixed the test. The F27 stall case failed under load, because the 10 s wait ended before the held checkout step. Commit `fa2b311` makes the wait end at the step or the response.
+- Run 2 at `f89768d`: the commit preflight deadline case at `mutation-lifecycle.test.ts:635` failed under load. The exit continuation ran before the due 1 ms deadline timer. Commit `fa2b311` makes the runner double end the call with the injected deadline when it passed before the exit.
+
+Batch 3 `OBSERVATION` lines, verbatim. T093 and T094 hold the F03 and F10 observations:
+
+```text
+OBSERVATION T093: Bun 1.4.2 readFileSync of the 275-unit relative path returned the written bytes
+OBSERVATION T093: Bun readdirSync of collide/ gives ["Name.txt"] for index paths collide/Name.txt and collide/name.txt
+OBSERVATION T093: Bun realpathSync.native of a.txt gives on-disk name "A.txt"
+OBSERVATION T094: git version 2.56.0.windows.1 apply --cached kept the flags of unrelated entries (F10 flags): before [{"path":"conflict.txt","intentToAdd":false,"assumeUnchanged":false,"skipWorktree":true},{"path":"ita.txt","intentToAdd":true,"assumeUnchanged":false,"skipWorktree":false},{"path":"keep.txt","intentToAdd":false,"assumeUnchanged":true,"skipWorktree":false}] after [{"path":"conflict.txt","intentToAdd":false,"assumeUnchanged":false,"skipWorktree":true},{"path":"ita.txt","intentToAdd":true,"assumeUnchanged":false,"skipWorktree":false},{"path":"keep.txt","intentToAdd":false,"assumeUnchanged":true,"skipWorktree":false}]
+OBSERVATION T196: F04 autocrlf-false crlf.txt eol {"index":"crlf","working":"crlf","attr":""} proof A
+OBSERVATION T196: F04 autocrlf-false lf.txt eol {"index":"lf","working":"lf","attr":""} proof A
+OBSERVATION T196: F04 autocrlf-false mixed.txt eol {"index":"mixed","working":"mixed","attr":""} proof A
+OBSERVATION T196: F04 autocrlf-true crlf.txt eol {"index":"lf","working":"crlf","attr":""} proof A
+OBSERVATION T196: F04 autocrlf-true lf.txt eol {"index":"lf","working":"lf","attr":""} proof B
+OBSERVATION T196: F04 autocrlf-true mixed.txt eol {"index":"lf","working":"mixed","attr":""} proof B
+OBSERVATION T196: F04 autocrlf-input crlf.txt eol {"index":"lf","working":"crlf","attr":""} proof B
+OBSERVATION T196: F04 autocrlf-input lf.txt eol {"index":"lf","working":"lf","attr":""} proof A
+OBSERVATION T196: F04 autocrlf-input mixed.txt eol {"index":"lf","working":"mixed","attr":""} proof B
+OBSERVATION T196: F04 eol-crlf crlf.txt eol {"index":"lf","working":"crlf","attr":"text=auto"} proof A
+OBSERVATION T196: F04 eol-crlf lf.txt eol {"index":"lf","working":"lf","attr":"text=auto"} proof B
+OBSERVATION T196: F04 eol-crlf mixed.txt eol {"index":"lf","working":"mixed","attr":"text=auto"} proof B
+OBSERVATION T196: F04 attributes auto/crlf.txt eol {"index":"lf","working":"crlf","attr":"text=auto"} proof B
+OBSERVATION T196: F04 attributes auto/lf.txt eol {"index":"lf","working":"lf","attr":"text=auto"} proof A
+OBSERVATION T196: F04 attributes auto/mixed.txt eol {"index":"lf","working":"mixed","attr":"text=auto"} proof B
+OBSERVATION T196: F04 attributes binary/crlf.txt eol {"index":"crlf","working":"crlf","attr":"-text"} proof A
+OBSERVATION T196: F04 attributes binary/lf.txt eol {"index":"lf","working":"lf","attr":"-text"} proof A
+OBSERVATION T196: F04 attributes binary/mixed.txt eol {"index":"mixed","working":"mixed","attr":"-text"} proof A
+OBSERVATION T196: F04 attributes crlf/crlf.txt eol {"index":"lf","working":"crlf","attr":"text"} proof B
+OBSERVATION T196: F04 attributes crlf/lf.txt eol {"index":"lf","working":"lf","attr":"text"} proof A
+OBSERVATION T196: F04 attributes crlf/mixed.txt eol {"index":"lf","working":"mixed","attr":"text"} proof B
+OBSERVATION T196: F04 attributes eol/crlf.txt eol {"index":"lf","working":"crlf","attr":"text eol=crlf"} proof A
+OBSERVATION T196: F04 attributes eol/lf.txt eol {"index":"lf","working":"lf","attr":"text eol=crlf"} proof B
+OBSERVATION T196: F04 attributes eol/mixed.txt eol {"index":"lf","working":"mixed","attr":"text eol=crlf"} proof B
+OBSERVATION T196: F04 attributes text/crlf.txt eol {"index":"lf","working":"crlf","attr":"text"} proof B
+OBSERVATION T196: F04 attributes text/lf.txt eol {"index":"lf","working":"lf","attr":"text"} proof A
+OBSERVATION T196: F04 attributes text/mixed.txt eol {"index":"lf","working":"mixed","attr":"text"} proof B
+OBSERVATION T196: F04 stage-index-crlf f.txt proof A (research R3 probe 7 expects A)
+OBSERVATION T196: F04 stage-mixed-over-lf f.txt proof B (research R3 probe 7 expects B)
+OBSERVATION T196: F04 stage-ident f.txt proof B (research R3 probe 7 expects B)
+OBSERVATION T196: F16 update-index of 536,870,912 bytes took 15843.624700000044 ms; git version 2.56.0.windows.1
+OBSERVATION T100: git version 2.56.0.windows.1 git commit with local gc.auto=1 started ["git","maintenance","run","--auto","--quiet","--detach"] and waited for it (trace2 child_exit before exit)
+OBSERVATION T100: git version 2.56.0.windows.1 automatic maintenance ran 972.371 ms (trace2 child_exit t_rel)
+OBSERVATION T100: git version 2.56.0.windows.1 a maintenance process did not outlive the commit process
+OBSERVATION T100: a commit deadline during automatic maintenance left these new Git-directory files outside objects and logs: []
+OBSERVATION T232: the F31 sleeping hook reached stalled 15085 ms after its checkout step started (threshold 15000 ms)
+OBSERVATION T233: the F31 read hook reached stalled 3038 ms after its checkout step started (injected limit 3000 ms)
+```
 
 ### Batch reviews
 

@@ -1898,6 +1898,99 @@ OBSERVATION T233: the F31 read hook reached stalled 3038 ms after its checkout s
 - Remedy and quoting cases (unsaved-commits and checkout remedies in PowerShell, detach note, rows without a command, fetch remedy): the cases check texts and commands, not an update result.
 - F30 silent-hook deadlines, SSH cases, stall, and BUSY: the cases check a deadline, a step, or a notice. The F27 and F30 oracle cases cover their fixtures.
 
+### Scenario records
+
+This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.
+
+Column contents:
+
+- Build: application revision and package digest.
+- Profile and package: release profile, and unsigned or signed package status.
+- Environment: dependency versions, Git path and version, WebView2 version, OS revision, architecture, installer prerequisites, hardware, display scales, Defender status, and power mode.
+- Fixtures: fixture IDs with seed or digest.
+- Steps: reproduction steps and measurement method.
+- Actual result: run count and individual observations.
+- Mutation assertions: exact index, working-file, reference, and operation-state assertions.
+- Evidence: raw evidence location and digest.
+- Retest: retest result.
+
+| ID | Result | Build | Profile and package | Environment | Fixtures | Steps | Actual result | Mutation assertions | Evidence | Failure cause | Attempted remedy | Retest | Remaining blocker | Decision impact |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| SC-001 | `unverified` | | | | | | | | | | | | | |
+| SC-002 | `unverified` | | | | | | | | | | | | | |
+| SC-003 | `unverified` | | | | | | | | | | | | | |
+| SC-004 | `unverified` | | | | | | The `HOOK_FAILED` and `SIGNING_FAILED` classification is `unverified` (R4 "T112 method, 2026-10-09", T117). Every commit failure gives `GIT_FAILED`. | | | | | | The contract defines no trace2 event target, reader, bound, or cleanup for the service (R4). | |
+| SC-005 | `unverified` | | | | | | | | | | | | | |
+| SC-006 | `unverified` | | | | | | | | | | | | | |
+| SC-007 | `unverified` | | | | | | | | | | | | | |
+| SC-008 | `unverified` | | | | | | | | | | | | | |
+| SC-009 | `unverified` | | | | | | | | | | | | | |
+| SC-010 | `unverified` | | | | | | | | | | | | | |
+| SC-011 | `unverified` | | | | | | | | | | | | | |
+| SC-012 | `unverified` | | | | | | | | | | | | | |
+| SC-013 | `unverified` | | | | | | | | | | | | | |
+| SC-014 | `unverified` | | | | | | | | | | | | | |
+| SC-015 | `unverified` | | | | | | | | | | | | | |
+| SC-016 | `unverified` | | | | | | | | | | | | | |
+| SC-017 | `unverified` | | | | | | | | | | | | | |
+| SC-018 | `unverified` | | | | | | | | | | | | | |
+| SC-019 | `unverified` | | | | | | | | | | | | | |
+| F01 | `unverified` | | | | | | | | | | | | | |
+| F02 | `unverified` | | | | | | | | | | | | | |
+| F03 | `unverified` | | | | | | | | | | | | | |
+| F04 | `unverified` | | | | | | | | | | | | | |
+| F05 | `unverified` | | | | | | | | | | | | | |
+| F06 | `unverified` | | | | | | | | | | | | | |
+| F07 | `unverified` | | | | | | | | | | | | | |
+| F08 | `unverified` | | | | | | | | | | | | | |
+| F09 | `unverified` | | | | | | | | | | | | | |
+| F10 | `unverified` | | | | | | | | | | | | | |
+| F11 | `unverified` | | | | | | | | | | | | | |
+| F12 | `unverified` | | | | | | | | | | | | | |
+| F13 | `unverified` | | | | | | | | | | | | | |
+| F14 | `unverified` | | | | | | | | | | | | | |
+| F15 | `unverified` | | | | | | | | | | | | | |
+| F16 | `unverified` | | | | | | | | | | | | | |
+| F17 | `unverified` | | | | | | | | | | | | | |
+| F18 | `unverified` | | | | | | | | | | | | | |
+| F19 | `unverified` | | | | | | | | | | | | | |
+| F20 | `unverified` | | | | | | | | | | | | | |
+| F21 | `unverified` | | | | | | | | | | | | | |
+| F22 | `unverified` | | | | | | | | | | | | | |
+| F23 | `unverified` | | | | | | | | | | | | | |
+| F24 | `unverified` | | | | | | | | | | | | | |
+| F25 | `unverified` | | | | | | | | | | | | | |
+| F26 | `unverified` | | | | | | | | | | | | | |
+| F27 | `unverified` | | | | | | | | | | | | | |
+| F28 | `unverified` | | | | | | | | | | | | | |
+| F29 | `unverified` | | | | | | | | | | | | | |
+| F30 | `unverified` | | | | | | | | | | | | | |
+| F31 | `unverified` | | | | | | | | | | | | | |
+| F32 | `unverified` | | | | | | | | | | | | | |
+| F33 | `unverified` | | | | | | | | | | | | | |
+| UI-01 | `unverified` | | | | | | | | | | | | | |
+| UI-02 | `unverified` | | | | | | | | | | | | | |
+| UI-03 | `unverified` | | | | | | | | | | | | | |
+| UI-04 | `unverified` | | | | | | | | | | | | | |
+| UI-05 | `unverified` | | | | | | | | | | | | | |
+| UI-06 | `unverified` | | | | | | | | | | | | | |
+| UI-07 | `unverified` | | | | | | | | | | | | | |
+| UI-08 | `unverified` | | | | | | | | | | | | | |
+| UI-09 | `unverified` | | | | | | | | | | | | | |
+| UI-10 | `unverified` | | | | | | | | | | | | | |
+| UI-11 | `unverified` | | | | | | | | | | | | | |
+| UI-12 | `unverified` | | | | | | | | | | | | | |
+| UI-13 | `unverified` | | | | | | | | | | | | | |
+| UI-14 | `unverified` | | | | | | | | | | | | | |
+| UI-15 | `unverified` | | | | | | | | | | | | | |
+| UI-16 | `unverified` | | | | | | | | | | | | | |
+| UI-17 | `unverified` | | | | | | | | | | | | | |
+| UI-18 | `unverified` | | | | | | | | | | | | | |
+| UI-19 | `unverified` | | | | | | | | | | | | | |
+| UI-20 | `unverified` | | | | | | | | | | | | | |
+| UI-21 | `unverified` | | | | | | | | | | | | | |
+| UI-22 | `unverified` | | | | | | | | | | | | | |
+
 ### Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here (plan.md, Constitution Check). A record names the batch, the reviewer, the reviewed scope, and the findings. It also names the causes, corrections, and unverified claims. T116 records the batch 3 review here. One review runs per batch; no automatic review loop runs.

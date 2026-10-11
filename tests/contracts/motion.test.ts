@@ -5,8 +5,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { buttonVariants } from "../../src/frontend/components/ui/button";
+
+// tests/dom.ts: Base UI must first evaluate with a DOM, so the button module comes after registerDom().
+registerDom();
+const { buttonVariants } = await import("../../src/frontend/components/ui/button");
 
 const CSS_PATH = printOrigin("../../src/frontend/index.css", import.meta.dir);
 const TABS_PATH = printOrigin("../../src/frontend/components/ui/tabs.tsx", import.meta.dir);

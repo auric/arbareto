@@ -233,7 +233,10 @@ describe("marker dismissal start", () => {
 
 describe("no network request", () => {
   test("no frontend source opens a network API", async () => {
-    const network = /\b(fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\b/;
+    // A network API used as an identifier or by bracket access. A quote, a hyphen, or a word character next to a bare name marks a contract string or another name.
+    const network = /(?<![\w"'`-])(fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)(?![\w"'`-])|\[\s*["'`](fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)["'`]\s*\]/;
+    for (const source of ["fetch(url)", "window.fetch(url)", "const f = fetch;", "new WebSocket(u)", 'globalThis["fetch"]', "window['fetch']", "self[`fetch`]"]) expect({ source, hit: network.test(source) }).toEqual({ source, hit: true });
+    for (const source of ['"fetch"', "'fetch-checkout'", "--no-lazy-fetch"]) expect({ source, hit: network.test(source) }).toEqual({ source, hit: false });
     const sources = await Array.fromAsync(new Bun.Glob("src/frontend/**/*.{ts,tsx,html}").scan({ cwd: `${import.meta.dir}/../..` }));
     expect(sources.length).toBeGreaterThan(0);
     for (const path of sources) expect({ path, hit: network.exec(await Bun.file(`${import.meta.dir}/../../${path}`).text())?.[0] }).toEqual({ path, hit: undefined });

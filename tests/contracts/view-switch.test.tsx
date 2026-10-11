@@ -274,7 +274,6 @@ describe("View menu choices", () => {
   });
 
   // T148 cases: they need T145 and T146. The composer is the real T146 tray, so its message field is the only textarea.
-  const NEEDS = "(needs T148)";
   async function withDraft() {
     const w = await openChanges();
     expect(document.querySelectorAll("textarea")).toHaveLength(1);
@@ -290,7 +289,7 @@ describe("View menu choices", () => {
     return { ...w, field };
   }
 
-  test.todo(`a theme or density choice keeps the draft text, the caret offset, and the selected hunk ${NEEDS}`, async () => {
+  test(`a theme or density choice keeps the draft text, the caret offset, and the selected hunk`, async () => {
     const w = await withDraft();
     for (const c of CHOICES) {
       await act(async () => w.field.focus());
@@ -301,7 +300,7 @@ describe("View menu choices", () => {
     }
   });
 
-  test.todo(`after the menu closes, the reported focus target is the message field again ${NEEDS}`, async () => {
+  test(`after the menu closes, the reported focus target is the message field again`, async () => {
     const w = await withDraft();
     for (const c of CHOICES) {
       await act(async () => w.field.focus());
@@ -310,7 +309,7 @@ describe("View menu choices", () => {
     }
   });
 
-  test.todo(`a theme or density choice keeps the component key of the composer, so it does not remount ${NEEDS}`, async () => {
+  test(`a theme or density choice keeps the component key of the composer, so it does not remount`, async () => {
     const w = await withDraft();
     for (const c of CHOICES) {
       await choose(c.path);

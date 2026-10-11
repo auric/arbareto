@@ -36,6 +36,9 @@ export function SaveFailedNotice() {
   return <p role="status">{SAVE_FAILED_TEXT}</p>;
 }
 
+// Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
+export const isTrustReport = (value: unknown): value is TrustReport => typeof value === "object" && value !== null && typeof (value as { fingerprint?: unknown }).fingerprint === "string";
+
 /** Contract §7 "Mutation trust": commit review shows the dialog first only when commit needs an approval that the workspace lacks. */
 export function trustBeforeReview(report: TrustReport): boolean {
   return report.approvalRequired.commit && report.state !== "approved";

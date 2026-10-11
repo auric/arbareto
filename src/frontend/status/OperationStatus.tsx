@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref, type RefObject } from "react";
+import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { WarningIcon } from "../app/NoticeBand";
 import { CopyButton } from "../app/RepositoryStates";
@@ -50,8 +50,29 @@ export type OperationStatusProps = {
   onRefresh(): void;
   /** The plan.md "Status area" maximum in DIPs (`statusAreaHeight`). */
   areaMaxHeight?: number;
+  /** A workbench status text in its own live element before the operation text: "No repository open", "Refreshing…", "State unknown", a WSL start, or a notice. An outcome never hides it. */
+  notice?: ReactNode;
+  /** The end of the status bar, outside every live region: the Git segment. */
+  children?: ReactNode;
   ref?: Ref<StatusRegionHandle>;
 };
+
+/** Sends one mutation and reports its start, each progress event, and its terminal response as one `StatusOperation`. */
+export async function trackOperation(
+  kind: StatusOperation["kind"],
+  direction: StatusOperation["direction"],
+  send: (onProgress: (event: ProgressEvent) => void) => Promise<BridgeResponse>,
+  report?: (op: StatusOperation) => void,
+): Promise<BridgeResponse> {
+  let op: StatusOperation = { requestId: crypto.randomUUID(), kind, direction, progress: null, response: null };
+  report?.(op);
+  const response = await send((event) => {
+    op = { ...op, progress: event };
+    report?.(op);
+  });
+  report?.({ ...op, response });
+  return response;
+}
 
 type Outcome = {
   commitOid?: string;
@@ -184,7 +205,7 @@ function readStallRemedy(response: BridgeResponse): StallRemedy | null {
 type Area = { requestId: string; open: boolean; forStall: boolean };
 type Stall = { requestId: string; remedy: StallRemedy | null; ending: boolean };
 
-export function OperationStatus({ bridge, operation: op, worktreeRoot, head, trusted, panel, commitPanel, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, areaMaxHeight, ref }: OperationStatusProps) {
+export function OperationStatus({ bridge, operation: op, worktreeRoot, head, trusted, panel, commitPanel, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, areaMaxHeight, notice: workbenchNotice, children, ref }: OperationStatusProps) {
   const [area, setArea] = useState<Area | null>(null);
   const [stall, setStall] = useState<Stall | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -375,7 +396,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
           <div tabIndex={0} aria-labelledby={headingId} className="min-h-0 overflow-auto" style={{ gridArea: "content" }}>
             {line === null || liveText === "" ? null : <p>{lineNode(line)}</p>}
             {notice === null ? null : (
-              <div ref={noticeRef} className="flex gap-2">
+              <div ref={noticeRef} data-slot="stall-notice" className="flex gap-2">
                 <WarningIcon />
                 <div>
                   <p>{STALL_NOTICE}</p>
@@ -433,6 +454,11 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
         </section>
       ) : null}
       <footer ref={footerRef} className="flex items-center gap-2 border-t border-divider px-2" style={{ minHeight: "var(--h-status-bar)" }}>
+        {workbenchNotice === undefined ? null : (
+          <span role="status" className="min-w-0 shrink truncate">
+            {workbenchNotice}
+          </span>
+        )}
         <span ref={textRef} role="status" tabIndex={-1} className={cn("min-w-0 flex-1 truncate", refusal !== null && "sr-only")}>
           {/* A line with a code is one added element, so the outcome stays one live-node change. */}
           <span>{line === null ? null : line.code === undefined ? plain(line) : <span>{lineNode(line)}</span>}</span>
@@ -462,6 +488,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
             Cancel
           </Button>
         ) : null}
+        {children}
       </footer>
     </div>
   );

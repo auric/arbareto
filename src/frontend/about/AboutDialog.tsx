@@ -93,7 +93,7 @@ export function AboutDialog({ open, scope, build, notices, client, finalFocus, o
                     <h4 className="font-semibold">{p.version === undefined ? p.name : `${p.name} ${p.version}`}</h4>
                     {p.files.map((file) => (
                       <pre key={file.name} className="font-mono break-words whitespace-pre-wrap select-text">
-                        {file.text}
+                        {notices.texts[file.text]}
                       </pre>
                     ))}
                   </div>

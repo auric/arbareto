@@ -20,6 +20,7 @@
     "tests/contracts/boot-view.test.tsx",
     "tests/contracts/bridge.test.ts",
     "tests/contracts/commit-details.test.tsx",
+    "tests/contracts/commit-tray.test.tsx",
     "tests/contracts/comparison-view.test.tsx",
     "tests/contracts/dark-palettes.test.ts",
     "tests/contracts/diff-parser.test.ts",

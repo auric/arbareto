@@ -13,7 +13,7 @@ import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { psQuote, valuesOf } from "../git/hunk-harness";
 import { withFsCalls, type FsCall } from "../git/service-harness";
-import { commandOf, objectsWith } from "../git/submodule-harness";
+import { commandOf, objectsWith, oracleExcept } from "../git/submodule-harness";
 import type { SubmoduleRowResult } from "../../src/contracts/submodules";
 import { buildF31, distroGit, distroSubmoduleOracle, distroSubmoduleState, globalConfig, startSession, type F31, type WslSession } from "./fixtures";
 import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_EXE, wslTest, type WslCapability, type WslHost } from "./wsl-host";
@@ -87,7 +87,15 @@ const rowOf = (result: unknown, path: string) => objectsWith<SubmoduleRowResult>
 const operationOf = (s: WslSession, requestId: string) => s.progressOf(requestId)[0]?.operationId;
 const headOf = (f: F31, path: string) => distroGit({ host: f.sup.host, dir: `${f.sup.dir}/${path}` }, ["rev-parse", "HEAD"]).trim();
 const readCanary = (f: F31) => inDistro(f.sup.host.distro, ["/usr/bin/cat", "--", f.canary]);
-const tmpPacks = (f: F31, name: string) => inDistro(f.sup.host.distro, ["/usr/bin/find", `${f.sup.dir}/.git/modules/${name}/objects/pack`, "-name", "tmp_pack_*"], { allowExit: [0, 1] }).trim();
+// Git's own update in a copy runs the hooks and programs of `f`, so the case removes their canary file before the service run.
+function oracleOf(f: F31): ReturnType<typeof distroSubmoduleOracle> {
+  const oracle = distroSubmoduleOracle(f.sup, `${f.root}/oracle`);
+  inDistro(f.sup.host.distro, ["/usr/bin/rm", "-f", "--", f.canary]);
+  return oracle;
+}
+const expectOracle = (f: F31, oracle: ReturnType<typeof distroSubmoduleOracle>, except?: Parameters<typeof oracleExcept>[1]) =>
+  expect({ oracle: oracle.exitCode, state: distroSubmoduleState(f.sup) }).toEqual({ oracle: 0, state: oracleExcept(oracle, except) });
+const tmpPacks =(f: F31, name: string) => inDistro(f.sup.host.distro, ["/usr/bin/find", `${f.sup.dir}/.git/modules/${name}/objects/pack`, "-name", "tmp_pack_*"], { allowExit: [0, 1] }).trim();
 
 async function until(condition: () => boolean, what: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -139,9 +147,11 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
   wslCase("F31 tty: the post-checkout hook cannot open /dev/tty, and it sees GIT_TERMINAL_PROMPT=0", async (host) => {
     await underTest();
     const f = buildF31(host, "tty");
+    const oracle = oracleOf(f);
     const { s } = setup(host);
     const response = await s.response(sendUpdate(s, await prepare(s, f)));
     expect(response.state).toBe("succeeded");
+    expectOracle(f, oracle);
     const fields = /^prompt=(\S+) tty=(\d+)\n$/.exec(readCanary(f));
     expect({ prompt: fields?.[1], ttyFailed: fields !== null && fields[2] !== "0" }).toEqual({ prompt: "0", ttyFailed: true });
   });
@@ -163,6 +173,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
   wslCase("F31 silent-fetch: the fetch of the 300 MB blob completes under a test-injected 2-second inactivity limit, because the anchor CPU-time sum changes", async (host) => {
     await underTest();
     const f = buildF31(host, "silent-fetch");
+    const oracle = oracleOf(f);
     const { runner, s } = setup(host);
     const p = await prepare(s, f);
     runner.inject.limits = { inactivityMs: SHORT_INACTIVITY_MS };
@@ -171,19 +182,23 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     const fetches = runner.calls.slice(from).filter((c) => commandOf(c.arguments)[0] === "fetch");
     expect({ state: response.state, fetches: fetches.length > 0, deadlines: fetches.map((c) => c.exit?.deadline ?? null) }).toEqual({ state: "succeeded", fetches: true, deadlines: fetches.map(() => null) });
     expect(headOf(f, "big")).toBe(f.recorded.big!);
+    expectOracle(f, oracle);
   });
 
   wslCase("F31 uploadpack: the fetch step runs with GIT_PROTOCOL_FROM_USER=0 inside the distro", async (host) => {
     await underTest();
     const f = buildF31(host, "uploadpack");
+    const oracle = oracleOf(f);
     const { s } = setup(host);
     const response = await s.response(sendUpdate(s, await prepare(s, f)));
     expect({ state: response.state, canary: readCanary(f), head: headOf(f, "solo") }).toEqual({ state: "succeeded", canary: "0\n", head: f.recorded.solo! });
+    expectOracle(f, oracle);
   });
 
   wslCase("F31 prune: a row whose HEAD only a pruned remote-tracking ref holds ends refused with unsaved-commits, and its HEAD stays", async (host) => {
     await underTest();
     const f = buildF31(host, "prune");
+    const oracle = oracleOf(f);
     const { s } = setup(host);
     const response = await s.response(sendUpdate(s, await prepare(s, f)));
     const rows = rowOf(response.result, "solo");
@@ -193,6 +208,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     const head = f.heads.solo!;
     const save = `& ${psQuote(WSL_EXE)} --distribution ${psQuote(host.distro)} --cd / --exec ${psQuote(host.probe.paths.git!)} --no-lazy-fetch -C ${psQuote(`${f.sup.dir}/solo`)} --git-dir=.git branch ${psQuote(`arbareto-saved-${head.slice(0, 12)}`)} ${psQuote(head)}`;
     expect(rows[0]?.remedy?.command).toBe(save);
+    expectOracle(f, oracle, { heads: { solo: f.heads.solo! } });
   });
 
   // Contract §11 "Paths and file access": Git gets Linux paths, and the service reads submodule folders only as UNC metadata.
@@ -201,6 +217,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     const f = buildF31(host, "tty");
     // `solo` is one commit behind its recorded commit, which `deinit` counts as a local modification.
     distroGit(f.sup, ["submodule", "deinit", "-q", "-f", "--", "solo"]);
+    const oracle = oracleOf(f);
     const { runner, s } = setup(host);
     const unc = (linux: string) => uncPath(host, linux);
     // A rooted path without a drive or a UNC prefix is a Linux path that reached a Windows file call.
@@ -224,6 +241,7 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     const values = runner.calls.flatMap((c) => c.arguments.flatMap((a, i) => (a === "-C" ? [c.arguments[i + 1]!] : /^--(?:git-dir|work-tree)=/.test(a) ? [a.slice(a.indexOf("=") + 1)] : [])));
     expect(values.filter((v) => v !== ".git" && !v.startsWith("/"))).toEqual([]);
     expect(values).toContain(`${modules}/solo`);
+    expectOracle(f, oracle);
   });
 
   wslCase("F31 sleep: the sleeping hook sends stalled within 20 seconds through the anchor CPU-time sum, getOperation returns the WSL checkout command in stallRemedy, no progress event holds it, and Cancel ends it", async (host) => {

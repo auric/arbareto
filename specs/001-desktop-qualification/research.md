@@ -1889,6 +1889,15 @@ OBSERVATION T232: the F31 sleeping hook reached stalled 15085 ms after its check
 OBSERVATION T233: the F31 read hook reached stalled 3038 ms after its checkout step started (injected limit 3000 ms)
 ```
 
+**T117 submodule cases without a comparison, 2026-10-11.** These update cases compare no submodule state with Git's own update in a copy:
+
+- F30 child-hook (`submodule-lifecycle.test.ts`, Cancel during reconciling and lingering child) and F31 linger (`tests/wsl/submodules.test.ts`): the cases check process ends. The F27 oracle cases cover the update result.
+- Loopback 401 (`submodule-lifecycle.test.ts`): the remote is a test server that answers every request with 401. The case checks the failed row, `registered`, the redacted tail, and the remedy.
+- Invalid `.git` folder at the clone check and at the level read (T231): the test writes the folder during the run, and the outcome is unknown. Git's own update has no defined result for that folder.
+- Admission refusals (T231 bad payload, foreign snapshot, old generation): no Git process starts, so the cases check that no process starts.
+- Remedy and quoting cases (unsaved-commits and checkout remedies in PowerShell, detach note, rows without a command, fetch remedy): the cases check texts and commands, not an update result.
+- F30 silent-hook deadlines, SSH cases, stall, and BUSY: the cases check a deadline, a step, or a notice. The F27 and F30 oracle cases cover their fixtures.
+
 ### Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here (plan.md, Constitution Check). A record names the batch, the reviewer, the reviewed scope, and the findings. It also names the causes, corrections, and unverified claims. T116 records the batch 3 review here. One review runs per batch; no automatic review loop runs.

@@ -12,7 +12,7 @@ import { SUBMODULE_PROGRESS_PHASES, SubmoduleProgress } from "../../src/contract
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
-import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
+import { fileSha256, rawIndexDigest, refState, submoduleState, workingFileDigests, type SubmoduleUpdateResult } from "./git-oracle";
 import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf } from "./hunk-harness";
 import { caseTest, once, withFsCalls, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
 import {
@@ -24,11 +24,13 @@ import {
   fetchRemedy,
   fixtureGit,
   gitLocation,
+  globalEnv,
   invalidGitFolder,
   miniGit,
   miniWorld,
   moduleDirOf,
   NOTES,
+  oracleExcept,
   oracleOf,
   q,
   ranCanaries,
@@ -103,6 +105,11 @@ const FETCH = ["fetch", "--progress", "--no-recurse-submodules"];
 const subsOf = (b: Built) => b.facts.notes.submodules as Record<string, { name: string; url: string; recorded: string; head: string | null }>;
 const headOf = (b: Built, dir: string) => fixtureGit(b, dir, ["rev-parse", "--verify", "-q", "HEAD"], [0, 1]).trim() || null;
 const keptOf = (b: Built, path: string) => resolve(b.root, (b.facts.notes.kept as Record<string, string>)[path]!);
+// Contract §12 "Scope": the state after the run equals Git's own update in the copy, with the `except` values, and that update exited `exit`.
+const expectOracle = (b: Built, oracle: SubmoduleUpdateResult, exit: number, except?: Parameters<typeof oracleExcept>[1]) => expect({ oracle: oracle.exitCode, state: stateOf(b) }).toEqual({ oracle: exit, state: oracleExcept(oracle, except) });
+// The F29 monitor canaries run on an index read in `mid` or `leaf`. The `-c` value reaches the nested commands of `stateOf`.
+const DISARM = ["-c", "core.fsmonitor=false"];
+const f29State = (b: Built) => stateOf(b, superOf(b), DISARM);
 
 describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () => {
   const VARIANTS: F27Variant[] = ["base", "behind-present", "behind-fetch", "deinit-kept", "update-none", "literal-paths", "kept-remote", "spaces", "unreachable-target", "headless-kept"];
@@ -187,7 +194,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
       const fetch = calls.findIndex((c) => at(sup, c.arguments) === "solo" && commandOf(c.arguments)[0] === "fetch");
       const checkout = calls.findIndex((c) => cmd(c) === CHECKOUT("solo").join(" "));
       expect({ fetch: fetch >= 0, before: fetch < checkout }).toEqual({ fetch: true, before: true });
-      expect(stateOf(b).heads).toEqual(oracle.heads);
+      expectOracle(b, oracle, 0);
     });
   });
 
@@ -202,13 +209,14 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
       expect(steps.map(cmd)).toEqual([CHECKOUT("solo").join(" "), FETCH.join(" "), [...FETCH, "--", "good", target].join(" "), CHECKOUT("solo").join(" ")]);
       const names = callsSince(service, from).filter((c) => at(sup, c.arguments) === "solo" && commandOf(c.arguments).slice(0, 4).join(" ") === "remote get-url --all --");
       expect(names.map((c) => commandOf(c.arguments)[4]).sort()).toEqual(["good", "origin"]);
-      expect(stateOf(b).heads).toEqual(oracle.heads);
+      expectOracle(b, oracle, 0);
     });
   });
 
   updateCase(`F27 kept-remote: the first fetch from the missing origin fails, the fallback fetch reaches the target, the row states moved, and the outcome is succeeded`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-first-fetch", "kept-remote");
     const sup = superOf(b);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-first-fetch", async (service) => {
       const { response, from } = await updated(service, sup);
       const first = callsSince(service, from).find((c) => at(sup, c.arguments) === "solo" && cmd(c) === FETCH.join(" "))!;
@@ -221,6 +229,7 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
         fetched: true,
         connected: true,
       });
+      expectOracle(b, oracle, 0);
     });
   });
 
@@ -228,18 +237,22 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
     const b = buildF27(gitPath(), "t223-literal", "literal-paths");
     const sup = superOf(b);
     const target = subsOf(b)["sub[1]"]!.recorded;
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-literal", async (service) => {
       await update();
       const { repositoryId, r } = await reviewedOk(service, sup);
       // Index order puts `sub1` before `sub[1]`. Holds the `sub[1]` clone step and moves `sub1`, which a plain `sub[1]` pathspec checks out again (probe S8).
       const release = service.runner.holdStart((c) => c.arguments.includes(":(literal)sub[1]"));
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => service.runner.calls.some((c) => c.arguments.includes(":(literal)sub[1]")), "sub[1] clone step");
+      // The held step blocks the update. A response first means that the step never started.
+      await until(() => service.runner.calls.some((c) => c.arguments.includes(":(literal)sub[1]")) || service.responseAt.has(requestId), "sub[1] clone step", TIMEOUT_MS);
+      expect(service.runner.calls.some((c) => c.arguments.includes(":(literal)sub[1]"))).toBe(true);
       expect(headOf(b, join(sup, "sub1"))).toBe(subsOf(b).sub1!.recorded);
       fixtureGit(b, join(sup, "sub1"), ["checkout", "-q", "--detach", target]);
       release();
       const response = await service.response(requestId);
       expect({ "sub[1]": resultOf(response, "sub[1]").newCommit, sub1: headOf(b, join(sup, "sub1")) }).toEqual({ "sub[1]": target, sub1: target });
+      expectOracle(b, oracle, 0, { heads: { sub1: target } });
     });
   });
 
@@ -265,6 +278,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     const sup = superOf(b);
     const program = put(b.root, "programs/diff.sh", "#!/bin/sh\nexit 0\n").replaceAll("\\", "/");
     fixtureGit(b, sup, ["config", "diff.external", `'${program}'`]);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-stored-approval", async (service) => {
       await update();
       const { repositoryId } = await service.register(sup);
@@ -275,17 +289,20 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
       expect(outcome(await updateSubmodules(service, repositoryId, r))).toEqual({ state: "succeeded", code: undefined });
       expect(fixtureGit(b, sup, ["config", "--local", "--get", "submodule.solo.url"]).trim()).not.toBe("");
       expect((await service.readTrust(repositoryId)).result!.state).toBe("approved");
+      expectOracle(b, oracle, 0);
     });
   });
 
   updateCase(`F29 base: confirmRun goes out before any update process; a declined reply ends canceled with CANCELED, no update process, and no canary run`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-declined", "base");
+    const before = f29State(b);
     return withFixture(b, "t223-declined", async (service) => {
       service.runner.inject.confirmRun = "declined";
       const { response, from } = await updated(service, superOf(b));
       expect(confirmRuns(service)).toHaveLength(1);
       expect(confirmRuns(service)[0]!.callsBefore).toBeLessThanOrEqual(service.runner.calls.length);
       expect({ outcome: outcome(response), steps: updateSteps(service, from).length, canaries: ranCanaries(b) }).toEqual({ outcome: { state: "canceled", code: "CANCELED" }, steps: 0, canaries: [] });
+      expect(f29State(b)).toEqual(before);
     });
   });
 
@@ -336,6 +353,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
 
   updateCase(`F29 relative-hooks: confirmRun goes out with the unchecked count, which includes the reuse row; a declined reply runs no canary`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-relative-declined", "relative-hooks");
+    const before = f29State(b);
     return withFixture(b, "t223-relative-declined", async (service) => {
       service.runner.inject.confirmRun = "declined";
       const { r } = await updated(service, superOf(b));
@@ -343,6 +361,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
       expect(unchecked.some((p) => "rowId" in p && p.rowId === rowOf(r, "hk-reuse").rowId)).toBe(true);
       expect(confirmRuns(service)[0]!.uncheckedCount).toBe(unchecked.length);
       expect(ranCanaries(b)).toEqual([]);
+      expect(f29State(b)).toEqual(before);
     });
   });
 
@@ -377,8 +396,13 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
       "t223-recheck-head",
       async (service) => {
         // The `solo` HEAD is its root commit, so the case moves it to the recorded commit.
-        const { response, from, r, repositoryId } = await recheck(service, sup, () => void fixtureGit(b, join(sup, "solo"), ["checkout", "-q", "--detach", subsOf(b).solo!.recorded]));
+        let moved: ReturnType<typeof stateOf> | undefined;
+        const { response, from, r, repositoryId } = await recheck(service, sup, () => {
+          fixtureGit(b, join(sup, "solo"), ["checkout", "-q", "--detach", subsOf(b).solo!.recorded]);
+          moved = stateOf(b);
+        });
         expect({ outcome: outcome(response), steps: updateSteps(service, from).length }).toEqual({ outcome: { state: "failed", code: "STALE_REVIEW" }, steps: 0 });
+        expect(stateOf(b)).toEqual(moved!);
         expect(mutationFrames(service, response.operationId!).at(-1)).toBe("resolved");
         // A repeated request with the consumed token returns this operation.
         const again = await updateSubmodules(service, repositoryId, r);
@@ -396,12 +420,14 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     envHook(b);
     const sup = superOf(b);
     const program = put(b.root, "programs/diff.sh", "#!/bin/sh\nexit 0\n").replaceAll("\\", "/");
+    const before = stateOf(b);
     return withFixture(
       b,
       "t223-recheck-trust",
       async (service) => {
         const { response, from } = await recheck(service, sup, () => void fixtureGit(b, sup, ["config", "diff.external", `'${program}'`]));
         expect({ outcome: outcome(response), steps: updateSteps(service, from).length }).toEqual({ outcome: { state: "failed", code: "TRUST_CHANGED" }, steps: 0 });
+        expect(stateOf(b)).toEqual(before);
         expect(mutationFrames(service, response.operationId!).at(-1)).toBe("resolved");
       },
       { watchHints: false },
@@ -411,30 +437,42 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
   updateCase(`re-check: without a change, the re-check passes, and the update runs`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-recheck-none", "behind-present");
     envHook(b);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-recheck-none", async (service) => {
       const { response } = await recheck(service, superOf(b), () => {});
       expect(outcome(response)).toEqual({ state: "succeeded", code: undefined });
       expect(resultOf(response, "solo").state).toBe("moved");
+      expectOracle(b, oracle, 0);
     });
   });
 
   updateCase(`F29 nested-programs: the nested row ends refused with programs, and the added fsmonitor canary never runs`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-nested-programs", "nested-programs");
+    const before = f29State(b);
+    const pre = copySuper(b, "pre-update");
     return withFixture(b, "t223-nested-programs", async (service) => {
       const { response } = await updated(service, superOf(b));
       const leaf = resultOf(response, "mid/leaf");
       expect({ state: leaf.state, reason: leaf.reason, text: leaf.text, command: leaf.remedy?.command ?? null }).toEqual({ state: "refused", reason: "programs", text: TEXTS.programs("mid/leaf"), command: null });
       expect(canaryLines(b, "added-fsmonitor")).toEqual([]);
+      // Git's own update runs the canaries, so the oracle runs after the canary checks.
+      const oracle = oracleOf(b, "oracle-copy", pre);
+      expect({ oracle: oracle.exitCode, state: f29State(b) }).toEqual({ oracle: 0, state: oracleExcept(oracle, { keep: before, rows: [["mid/leaf"]] }) });
     });
   });
 
   updateCase(`F29 row-programs: the second row ends refused with programs, and the changed hook never runs`, SHELL, () => {
     const b = buildF29(gitPath(), "t223-row-programs", "row-programs");
+    const before = f29State(b);
+    const pre = copySuper(b, "pre-update");
     return withFixture(b, "t223-row-programs", async (service) => {
       const { response } = await updated(service, superOf(b));
       const solo = resultOf(response, "solo");
       expect({ state: solo.state, reason: solo.reason }).toEqual({ state: "refused", reason: "programs" });
       expect(canaryLines(b, "solo-hook").filter((l) => l.startsWith("solo-hook post-checkout"))).toEqual([]);
+      // Git's own update runs the canaries, so the oracle runs after the canary checks.
+      const oracle = oracleOf(b, "oracle-copy", pre);
+      expect({ oracle: oracle.exitCode, state: f29State(b) }).toEqual({ oracle: 0, state: oracleExcept(oracle, { keep: before, rows: [["solo", "solo"]] }) });
     });
   });
 
@@ -442,6 +480,9 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     const b = buildF27(gitPath(), "t223-fetch-program", "unreachable-target");
     const sup = superOf(b);
     const ran = join(b.root, "hook-ran.txt");
+    // Git's own update runs the hook, so the oracle runs before the hook exists.
+    const oracle = oracleOf(b, "oracle-copy");
+    const head = headOf(b, join(sup, "solo"))!;
     const hook = put(moduleDirOf(b, sup, "solo"), "hooks/post-checkout", `#!/bin/sh\n: > '${ran.replaceAll("\\", "/")}'\n`);
     return withFixture(b, "t223-fetch-program", async (service) => {
       await update();
@@ -449,7 +490,9 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
       const release = service.runner.holdStart(once((c) => isAt(sup, "solo")(c) && commandOf(c.arguments)[0] === "fetch"));
       const from = service.runner.calls.length;
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => callsSince(service, from).some((c) => isAt(sup, "solo")(c) && commandOf(c.arguments)[0] === "fetch"), "first fetch");
+      // The held step blocks the update. A response first means that the step never started.
+      await until(() => callsSince(service, from).some((c) => isAt(sup, "solo")(c) && commandOf(c.arguments)[0] === "fetch") || service.responseAt.has(requestId), "first fetch", TIMEOUT_MS);
+      expect(callsSince(service, from).some((c) => isAt(sup, "solo")(c) && commandOf(c.arguments)[0] === "fetch")).toBe(true);
       writeFileSync(hook, `${readFileSync(hook, "utf8")}# changed\n`);
       release();
       const response = await service.response(requestId);
@@ -462,6 +505,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
         ran: false,
       });
       expect({ outcome: outcome(response), mid: resultOf(response, "mid").state }).toEqual({ outcome: { state: "completed-with-effects", code: "COMPLETED_WITH_EFFECTS" }, mid: "cloned" });
+      expectOracle(b, oracle, 0, { heads: { solo: head } });
     });
   });
 
@@ -476,6 +520,8 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
     const checkpoint = (c: SubmoduleCheckpoint) => {
       if (c.point === "nested-active-set" && c.path === "mid") fixtureGit(b, b.root, ["config", "--file", config, "core.fsmonitor", `${monitor} changed`]);
     };
+    const before = f29State(b);
+    const pre = copySuper(b, "pre-update");
     return withFixture(
       b,
       "t223-nested-active",
@@ -484,6 +530,9 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
         expect(callsSince(service, from).filter((c) => isAt(sup, "mid")(c) && commandOf(c.arguments)[0] === "ls-files").map((c) => c.arguments)).toEqual([]);
         expect(resultOf(response, "mid/leaf")).toEqual(expect.objectContaining({ state: "refused", reason: "programs" }));
         expect(resultOf(response, "mid").state).toBe("moved");
+        // Git's own update runs the canaries, so the oracle runs after the canary checks. It stops after the `ext` clone fails twice, before the `mid` checkout.
+        const oracle = oracleOf(b, "oracle-copy", pre);
+        expect({ oracle: oracle.exitCode, state: f29State(b) }).toEqual({ oracle: 1, state: oracleExcept(oracle, { keep: before, rows: [["mid/leaf"]], heads: { mid: subsOf(b).mid!.recorded } }) });
       },
       { submoduleCheckpoint: checkpoint },
     );
@@ -495,6 +544,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
   for (const variant of ["update-command", "remote-name"] as const) {
     updateCase(`F28 ${variant}: updateSubmodules refuses with UNSUPPORTED_SUBMODULE, no update process starts, and the canary never runs`, SHELL, () => {
       const b = buildF28(gitPath(), `t223-refuse-${variant}`, variant);
+      const before = stateOf(b);
       return withFixture(b, `t223-refuse-${variant}`, async (service) => {
         await update();
         const { repositoryId } = await service.register(superOf(b));
@@ -502,6 +552,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
         const from = service.runner.calls.length;
         const response = await updateSubmodules(service, repositoryId, r);
         expect({ code: response.code, steps: updateSteps(service, from).length, canaries: ranCanaries(b) }).toEqual({ code: "UNSUPPORTED_SUBMODULE", steps: 0, canaries: [] });
+        expect(stateOf(b)).toEqual(before);
       });
     });
   }
@@ -509,6 +560,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
   updateCase(`F28 folder: updateSubmodules refuses with folder-not-empty, no process starts, and the modified and the untracked file keep their bytes`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-folder", "folder");
     const folder = b.facts.notes.folder as { path: string; files: Record<string, string> };
+    const before = stateOf(b);
     return withFixture(b, "t223-folder", async (service) => {
       await update();
       const { repositoryId } = await service.register(superOf(b));
@@ -517,6 +569,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
       const response = await updateSubmodules(service, repositoryId, r);
       expect({ code: response.code, reasons: refusalsOf(response).map((x) => x.reason), steps: updateSteps(service, from).length }).toEqual({ code: "UNSUPPORTED_SUBMODULE", reasons: ["folder-not-empty"], steps: 0 });
       expect(Object.fromEntries(Object.keys(folder.files).map((f) => [f, fileSha256(join(superOf(b), folder.path, f))]))).toEqual(folder.files);
+      expect(stateOf(b)).toEqual(before);
     });
   });
 
@@ -526,9 +579,11 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     const moved = join(b.root, "moved-solo");
     renameSync(join(sup, "solo"), moved);
     const bytes = workingFileDigests(moved);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-moved-folder", async (service) => {
       await updated(service, sup);
       expect({ head: headOf(b, join(sup, "solo")), moved: workingFileDigests(moved) }).toEqual({ head: subsOf(b).solo!.recorded, moved: bytes });
+      expectOracle(b, oracle, 0);
     });
   });
 
@@ -536,6 +591,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     const b = buildF28(gitPath(), "t223-prune", "prune");
     const sup = superOf(b);
     const prune = b.facts.notes.prune as { head: string; ref: string };
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-prune", async (service) => {
       const { response, from } = await updated(service, sup);
       const row = resultOf(response, "solo");
@@ -543,14 +599,17 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
       expect({ head: headOf(b, join(sup, "solo")), ref: prune.ref in refState(gitPath(), join(sup, "solo")).refs }).toEqual({ head: prune.head, ref: false });
       expect(callsSince(service, from).filter((c) => cmd(c) === CHECKOUT("solo").join(" ")).length).toBe(0);
       expect({ outcome: outcome(response), mid: resultOf(response, "mid").state }).toEqual({ outcome: { state: "completed-with-effects", code: "COMPLETED_WITH_EFFECTS" }, mid: "cloned" });
+      expectOracle(b, oracle, 0, { heads: { solo: prune.head } });
     });
   });
 
   updateCase(`F28 keep: without fetch.prune, the row moves to its recorded commit`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-keep", "keep");
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-keep", async (service) => {
       const { response } = await updated(service, superOf(b));
       expect({ state: resultOf(response, "solo").state, newCommit: resultOf(response, "solo").newCommit }).toEqual({ state: "moved", newCommit: subsOf(b).solo!.recorded });
+      expectOracle(b, oracle, 0);
     });
   });
 
@@ -569,6 +628,8 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
       const checkpoint = (c: SubmoduleCheckpoint) => {
         if (c.point === "folder-check" && c.path === "solo") writeFileSync(added, "added after the preflight\n");
       };
+      const before = stateOf(b);
+      const oracle = oracleOf(b, "oracle-copy");
       return withFixture(
         b,
         name,
@@ -579,6 +640,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
           expect(callsSince(service, from).filter((c) => c.arguments.includes(":(literal)solo") || isAt(sup, "solo")(c)).map((c) => c.arguments)).toEqual([]);
           expect(readFileSync(added, "utf8")).toBe("added after the preflight\n");
           expect(resultOf(response, "mid").state).toBe("cloned");
+          expectOracle(b, oracle, 0, { keep: before, rows: [["solo", subsOf(b).solo!.name]] });
         },
         { submoduleCheckpoint: checkpoint },
       );
@@ -601,17 +663,27 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
   updateCase(`F27 kept-remote: Cancel after the connect step leaves the row connected, and the outcome is failed-with-effects, not canceled`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-connect-cancel", "kept-remote");
     const sup = superOf(b);
+    // Git's own connect step in a copy: the step command that the row runs first.
+    const copy = copySuper(b, "connect-copy");
+    const connect = Bun.spawnSync([gitPath(), "--no-lazy-fetch", "-c", "fetch.recurseSubmodules=no", ...CHECKOUT("solo")], { cwd: copy, env: fixtureEnv(globalEnv(b)), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    expect(connect.exitCode).toBe(128);
+    const connected = stateOf(b, copy);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-connect-cancel", async (service) => {
       await update();
       const { repositoryId, r } = await reviewedOk(service, sup);
       const release = service.runner.holdStart(once((c) => isAt(sup, "solo")(c) && commandOf(c.arguments)[0] === "fetch"));
       const from = service.runner.calls.length;
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => callsSince(service, from).some((c) => isAt(sup, "solo")(c) && commandOf(c.arguments)[0] === "fetch"), "first fetch");
+      // The held step blocks the update. A response first means that the step never started.
+      await until(() => callsSince(service, from).some((c) => isAt(sup, "solo")(c) && commandOf(c.arguments)[0] === "fetch") || service.responseAt.has(requestId), "first fetch", TIMEOUT_MS);
+      expect(callsSince(service, from).some((c) => isAt(sup, "solo")(c) && commandOf(c.arguments)[0] === "fetch")).toBe(true);
       await service.cancel(await service.operationId(requestId));
       release();
       const response = await service.response(requestId);
       expect({ outcome: outcome(response), connected: resultOf(response, "solo").connected }).toEqual({ outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" }, connected: true });
+      // The rows before `solo` end as in Git's own update. The `solo` row ends as after Git's own connect step.
+      expectOracle(b, oracle, 0, { keep: connected, rows: [["solo", "solo"]] });
     });
   });
 
@@ -620,6 +692,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
       const b = buildF29(gitPath(), `t223-${variant}`, variant);
       const sup = superOf(b);
       const path = b.facts.notes.gitdirConfig as string | undefined;
+      const before = f29State(b);
       return withFixture(b, `t223-${variant}`, async (service) => {
         await update();
         const { repositoryId } = await service.register(sup);
@@ -629,6 +702,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
         const refusal = refusalsOf(response).find((x) => x.reason === "gitdir-config");
         expect({ code: response.code, text: refusal?.text, command: refusal?.remedy?.command ?? null }).toEqual({ code: "UNSUPPORTED_SUBMODULE", text: TEXTS.gitdirConfig, command: updateCommand(sup, path) });
         expect({ steps: updateSteps(service, from).length, confirmRuns: confirmRuns(service).length, canaries: ranCanaries(b) }).toEqual({ steps: 0, confirmRuns: 0, canaries: [] });
+        expect(f29State(b)).toEqual(before);
       });
     });
   }
@@ -694,6 +768,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     const blocked = b.facts.notes.blocked as { path: string; edited: string; moves: string };
     const head = headOf(b, join(sup, blocked.path));
     const edit = fileSha256(join(sup, blocked.path, blocked.edited));
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-blocked", async (service) => {
       const { response, from } = await updated(service, sup);
       expect(outcome(response)).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
@@ -702,15 +777,18 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
       expect(row.remedy).toEqual({ command: checkoutRemedy(sup, blocked.path), text: STEP_TEXT.checkout });
       expect(resultOf(response, blocked.moves).state).toBe("moved");
       expect(callsSince(service, from).filter((c) => cmd(c) === CHECKOUT(blocked.path).join(" ")).length).toBe(1);
+      expectOracle(b, oracle, 1);
     });
   });
 
   updateCase(`F28 unregistered-block: the row ends failed with registered, and the outcome is failed-with-effects`, SHELL, () => {
     const b = buildF28(gitPath(), "t223-registered", "unregistered-block");
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-registered", async (service) => {
       const { response } = await updated(service, superOf(b));
       const row = resultOf(response, "solo");
       expect({ state: row.state, registered: row.registered, outcome: outcome(response) }).toEqual({ state: "failed", registered: true, outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" } });
+      expectOracle(b, oracle, 1);
     });
   });
 
@@ -727,10 +805,12 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     const mid = fixtureGit(b, midSrc, ["rev-parse", "HEAD"]).trim();
     ownedGit(gitPath(), FIXTURE_ROOT, sup, ["update-index", "-z", "--index-info"], { input: Buffer.from(`160000 ${mid} 0\tmid\0`) });
     fixtureGit(b, sup, ["commit", "-q", "-m", "record mid"]);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-nested-registered", async (service) => {
       const { response } = await updated(service, sup);
       const leaf = resultOf(response, "mid/leaf");
       expect({ state: leaf.state, registered: leaf.registered, found: leaf.found }).toEqual({ state: "failed", registered: true, found: true });
+      expectOracle(b, oracle, 1);
     });
   });
 
@@ -740,6 +820,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     miniGit(w, join(w.sup.dir, "solo"), ["checkout", "-q", "--detach", w.solo.first]);
     const hook = put(resolve(w.sup.dir, miniGit(w, w.sup.dir, ["rev-parse", "--git-path", "modules/solo"]).trim()), "hooks/post-checkout", "#!/bin/sh\nexit 0\n");
     const sup = w.sup.dir;
+    const before = submoduleState(gitPath(), sup, w.env);
     return withMini(w, "t223-only-refused", async (service) => {
       await update();
       const { repositoryId, r } = await reviewedOk(service, sup);
@@ -752,7 +833,9 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
       });
       const from = service.runner.calls.length;
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => seen.size >= 3, "step 5 check");
+      // The held step blocks the update. A response first means that the step never started.
+      await until(() => seen.size >= 3 || service.responseAt.has(requestId), "step 5 check", TIMEOUT_MS);
+      expect(seen.size >= 3).toBe(true);
       writeFileSync(hook, "#!/bin/sh\nexit 1\n");
       release();
       const response = await service.response(requestId);
@@ -761,6 +844,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
         rows: [["solo", "refused", "programs"]],
         checkout: 0,
       });
+      expect(submoduleState(gitPath(), sup, w.env)).toEqual(before);
     });
   });
 
@@ -779,6 +863,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
         fixtureGit(b, sup, ["config", "--file", ".gitmodules", `submodule.ghost.${key}`, v!]);
       const keys = () => fixtureGit(b, sup, ["config", "--local", "--get-regexp", "^submodule\\."], [0, 1]);
       expect(keys()).toBe("");
+      const oracle = oracleOf(b, "oracle-copy");
       return withFixture(b, name, async (service) => {
         const { repositoryId, r } = await reviewedOk(service, sup);
         expect(r.rows.map((x) => [x.path, x.action]).sort()).toEqual([
@@ -795,6 +880,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
           ],
           keys: "",
         });
+        expectOracle(b, oracle, 128);
       });
     }, TIMEOUT_MS);
   }
@@ -826,6 +912,7 @@ describe("clone check, register step, and clone recursion (contract §12 \"Updat
         commit = headOf(b, solo)!;
         put(moduleDirOf(b, sup, "solo"), "hooks/post-checkout", `#!/bin/sh\n: > '${ran.replaceAll("\\", "/")}'\n`);
       };
+      const oracle = oracleOf(b, "oracle-copy");
       return withFixture(
         b,
         name,
@@ -836,6 +923,7 @@ describe("clone check, register step, and clone recursion (contract §12 \"Updat
             withCommit ? { state: "refused", reason: "unsaved-commits", text: TEXTS.foundFolder("solo", commit), command: null } : { state: "refused", reason: "changed-after-review", text: TEXTS.changedAfterReview("solo"), command: null },
           );
           expect({ steps: updateSteps(service, from).filter((c) => c.arguments.includes(":(literal)solo") || isAt(sup, "solo")(c)).length, ran: existsSync(ran), head: headOf(b, join(sup, "solo")) }).toEqual({ steps: 0, ran: false, head: commit });
+          expectOracle(b, oracle, 0, { heads: { solo: commit } });
         },
         { submoduleCheckpoint: checkpoint },
       );
@@ -850,8 +938,7 @@ describe("clone check, register step, and clone recursion (contract §12 \"Updat
       const { from } = await updated(service, sup);
       const solo = updateSteps(service, from).filter((c) => c.arguments.includes(":(literal)solo"));
       expect(solo.map((c) => commandOf(c.arguments))).toEqual([["submodule", "init", "--", ":(literal)solo"]]);
-      const keys = (k: Record<string, string[]>) => Object.fromEntries(Object.entries(k).filter(([key]) => key.startsWith("submodule.solo.")));
-      expect(keys(stateOf(b).keys)).toEqual(keys(oracle.keys));
+      expectOracle(b, oracle, 0);
     });
   });
 
@@ -859,9 +946,11 @@ describe("clone check, register step, and clone recursion (contract §12 \"Updat
     const b = buildF27(gitPath(), "t223-register-inactive", "update-none");
     const sup = superOf(b);
     fixtureGit(b, sup, ["config", "submodule.active", "mid"]);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-register-inactive", async (service) => {
       const { from } = await updated(service, sup);
       expect(updateSteps(service, from).filter((c) => c.arguments.includes(":(literal)solo")).map((c) => c.arguments)).toEqual([]);
+      expectOracle(b, oracle, 0);
     });
   });
 
@@ -878,14 +967,15 @@ describe("clone check, register step, and clone recursion (contract §12 \"Updat
       const leafStep = (c: { arguments: readonly string[] }) => c.arguments.includes(":(literal)leaf");
       const release = service.runner.holdStart(once(leafStep));
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => callsSince(service, from).some(leafStep), "first leaf step");
+      // The held step blocks the update. A response first means that the step never started.
+      await until(() => callsSince(service, from).some(leafStep) || service.responseAt.has(requestId), "first leaf step", TIMEOUT_MS);
+      expect(callsSince(service, from).some(leafStep)).toBe(true);
       expect(ranCanaries(b)).toEqual([]);
       release();
       await service.response(requestId);
       const clone = updateSteps(service, from).find((c) => c.arguments.includes(":(literal)mid"))!;
       expect(clone.arguments.slice(0, 3)).toEqual(["--no-lazy-fetch", "-c", "fetch.recurseSubmodules=no"]);
-      const oracle = oracleOf(b, "oracle-copy", pre);
-      expect(stateOf(b).heads).toEqual(oracle.heads);
+      expectOracle(b, oracleOf(b, "oracle-copy", pre), 0);
     });
   });
 });
@@ -907,6 +997,9 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
       const name = `t223-read-${i}`;
       const b = buildF27(gitPath(), name, variant);
       const sup = superOf(b);
+      const oracle = oracleOf(b, "oracle-copy");
+      // In kept-remote, the connect step checks out the HEAD of the kept folder.
+      const head = variant === "kept-remote" ? fixtureGit(b, sup, ["--git-dir", keptOf(b, "solo"), "rev-parse", "HEAD"]).trim() : headOf(b, join(sup, "solo"))!;
       return withFixture(b, name, async (service) => {
         await update();
         const { repositoryId, r } = await reviewedOk(service, sup);
@@ -918,6 +1011,7 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
         expect({ confirmRuns: confirmRuns(service).length, state: row.state, failedRead: row.failedRead, remedy: row.remedy }).toEqual({ confirmRuns: 1, state: "failed", failedRead, remedy: undefined });
         const failedAt = callsSince(service, from).findIndex((c) => c.exit?.exitCode === 128 && cmd(c) === command);
         expect(callsSince(service, from).slice(failedAt + 1).filter((c) => c.arguments.includes(":(literal)solo") || isAt(sup, "solo")(c)).filter((c) => commandOf(c.arguments)[0] !== "rev-parse" && commandOf(c.arguments)[0] !== "for-each-ref" && commandOf(c.arguments)[0] !== "config" && commandOf(c.arguments)[0] !== "symbolic-ref" && commandOf(c.arguments)[0] !== "show-ref").map(cmd)).toEqual([]);
+        expectOracle(b, oracle, 0, { heads: { solo: head } });
       });
     });
   }
@@ -927,6 +1021,8 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
     const sup = superOf(b);
     const folder = join(sup, "solo");
     let armed = false;
+    const before = stateOf(b);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(
       b,
       "t223-read-folder",
@@ -941,6 +1037,7 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
         );
         const row = resultOf(response, "solo");
         expect({ state: row.state, failedRead: row.failedRead }).toEqual({ state: "failed", failedRead: "folder" });
+        expectOracle(b, oracle, 0, { keep: before, rows: [["solo", subsOf(b).solo!.name]] });
       },
       { submoduleCheckpoint: (c) => void (c.point === "folder-check" && c.path === "solo" && (armed = true)) },
     );
@@ -949,6 +1046,7 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
   updateCase(`F27 behind-present: an injected rev-list exit 128 makes the row fetch, as Git's is_tip_reachable does`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-read-rev-list", "behind-present");
     const sup = superOf(b);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-read-rev-list", async (service) => {
       await update();
       service.runner.inject.exit = (call) => (commandOf(call.arguments)[0] === "rev-list" ? 128 : undefined);
@@ -957,12 +1055,15 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
       const from = service.runner.calls.length;
       await updateSubmodules(service, repositoryId, r);
       expect(callsSince(service, from).filter((c) => isAt(sup, "solo")(c) && cmd(c) === FETCH.join(" ")).length).toBe(1);
+      expectOracle(b, oracle, 0);
     });
   });
 
   updateCase(`F27 base: a failed level read of mid ends its listed nested row failed; the parent row keeps its state, and the outcome is failed-with-effects`, SHELL, () => {
     const b = buildF27(gitPath(), "t223-read-level", "base");
     const sup = superOf(b);
+    const before = stateOf(b);
+    const oracle = oracleOf(b, "oracle-copy");
     return withFixture(b, "t223-read-level", async (service) => {
       await update();
       const { repositoryId, r } = await reviewedOk(service, sup);
@@ -974,6 +1075,8 @@ describe("read failures (contract §12 \"Update protocol\" step 5)", () => {
         mid: "cloned",
         outcome: { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" },
       });
+      // The `leaf` keys live in the `mid` configuration, so the row has no superproject key.
+      expectOracle(b, oracle, 0, { keep: before, rows: [["mid/leaf"]] });
     });
   });
 });
@@ -1015,7 +1118,9 @@ describe("submodule repository targets (contract §12 \"Review reads\", \"Update
       const inMid = isAt(sup, "mid");
       const release = service.runner.holdStart(once(inMid));
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => callsSince(service, from).some(inMid), "mid level read");
+      // The held step blocks the update. A response first means that the step never started.
+      await until(() => callsSince(service, from).some(inMid) || service.responseAt.has(requestId), "mid level read", TIMEOUT_MS);
+      expect(callsSince(service, from).some(inMid)).toBe(true);
       rmSync(join(sup, "mid", ".git"));
       invalidGitFolder(join(sup, "mid"));
       expect(fixtureGit(b, join(sup, "mid"), ["rev-parse", "--absolute-git-dir"])).toBe(superGitDir(b));
@@ -1261,7 +1366,9 @@ describe("lifecycle (contract §12 \"Environment and console\", §6, §2)", () =
       service.runner.inject.stall = clone;
       const release = service.runner.holdStart(clone);
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => service.runner.calls.some(clone), "solo clone step");
+      // The held step blocks the update. A response first means that the step never started.
+      await until(() => service.runner.calls.some(clone) || service.responseAt.has(requestId), "solo clone step", TIMEOUT_MS);
+      expect(service.runner.calls.some(clone)).toBe(true);
       const operationId = await service.operationId(requestId);
       const remedy = valuesOf((await service.getOperation(operationId)).result, "stallRemedy")[0] as { command?: string; text: string };
       expect(remedy).toEqual({ command: cloneRemedy(sup, "solo"), text: STEP_TEXT.clone });
@@ -1280,7 +1387,9 @@ describe("lifecycle (contract §12 \"Environment and console\", §6, §2)", () =
       const second = await reviewSubmodules(service, repositoryId);
       const release = service.runner.holdStart(once((c) => c.arguments.includes(":(literal)mid")));
       const requestId = sendUpdate(service, repositoryId, r);
-      await until(() => service.runner.calls.some((c) => c.arguments.includes(":(literal)mid")), "mid clone step");
+      // The held step blocks the update. A response first means that the step never started.
+      await until(() => service.runner.calls.some((c) => c.arguments.includes(":(literal)mid")) || service.responseAt.has(requestId), "mid clone step", TIMEOUT_MS);
+      expect(service.runner.calls.some((c) => c.arguments.includes(":(literal)mid"))).toBe(true);
       expect((await updateSubmodules(service, repositoryId, second)).code).toBe("BUSY");
       release();
       const first = await service.response(requestId);

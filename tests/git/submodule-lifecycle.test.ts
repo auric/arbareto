@@ -24,11 +24,14 @@ import {
   globalEnv,
   miniWorld,
   moduleDirOf,
+  oracleExcept,
+  oracleOf,
   resultOf,
   resultsOf,
   reviewSubmodules,
   sendUpdate,
   STEP_TEXT,
+  stateOf,
   superOf,
   TEXTS,
   underTestSubmodule,
@@ -151,10 +154,13 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
       const moved = join(b.root, "big-moved");
       renameSync(join(sup, "big"), moved);
       const bytes = { ...workingFileDigests(moved), ".git": fileSha256(join(moved, ".git")) };
+      // Git's own update in a copy after the move. It also clones the 300 MB file.
+      const oracle = oracleOf(b, "oracle-copy");
       const next = await reviewSubmodules(service, repositoryId);
       // The update clones the 300 MB file, which takes longer than the default response wait.
       expect(outcome(await service.response(sendUpdate(service, repositoryId, next), LONG_TIMEOUT_MS))).toEqual(SUCCEEDED);
       expect(fixtureGit(b, join(sup, "big"), ["rev-parse", "HEAD"]).trim()).toBe(recorded);
+      expect({ oracle: oracle.exitCode, state: stateOf(b) }).toEqual({ oracle: 0, state: oracleExcept(oracle) });
       expect({ ...workingFileDigests(moved), ".git": fileSha256(join(moved, ".git")) }).toEqual(bytes);
     });
   }, LONG_TIMEOUT_MS);
@@ -192,6 +198,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
     packTransport(b);
     const sup = superOf(b);
     const head = (b.facts.notes.submodules as Record<string, { head: string }>).big!.head;
+    const before = stateOf(b);
     await withFixture(b, name, async (service) => {
       const { repositoryId, r } = await reviewedOk(service, sup);
       const modules = moduleDirOf(b, sup, "big");
@@ -208,6 +215,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
         fetched: true,
         head,
       });
+      expect(stateOf(b)).toEqual(before);
     });
   }, LONG_TIMEOUT_MS);
 
@@ -215,6 +223,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
     await update();
     const name = "t224-silent-fetch";
     const b = buildF30(gitPath(), name, "silent-fetch");
+    const before = stateOf(b);
     await withFixture(b, name, async (service) => {
       const { repositoryId, r } = await reviewedOk(service, superOf(b));
       // `big` is the first row in index order, so its fetch is the first update process.
@@ -227,6 +236,7 @@ describe("Cancel and deadlines (contract §12 \"Deadlines and Cancel\", research
       expect({ first: commandOf(steps[0]!.arguments)[0], exit: steps[0]!.exit?.deadline }).toEqual({ first: "fetch", exit: "inactivity" });
       expect(deadlineOf(response)).toEqual({ ...DEADLINE_FAILED, reasons: ["inactivity"] });
       expect(resultOf(response, "big").fetched).toBe(true);
+      expect(stateOf(b)).toEqual(before);
     });
   }, LONG_TIMEOUT_MS);
 });
@@ -277,6 +287,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
     await update();
     const name = "t224-reconcile-deadline";
     const b = buildF27(gitPath(), name, "base");
+    const oracle = oracleOf(b, "oracle-copy");
     await withFixture(b, name, async (service) => {
       const { repositoryId, r } = await reviewedOk(service, superOf(b));
       let requestId: string | undefined;
@@ -290,6 +301,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
       // The run adds the found row `mid/leaf` after the `mid` clone (data-model §9 `submoduleResults`).
       expect(resultsOf(refreshed).map((row) => row.path).sort()).toEqual([...r.rows.map((row) => row.path), "mid/leaf"].sort());
       await until(() => mutationFrames(service, response.operationId!).includes("resolved"), "resolved frame");
+      expect({ oracle: oracle.exitCode, state: stateOf(b) }).toEqual({ oracle: 0, state: oracleExcept(oracle) });
     });
   }, LONG_TIMEOUT_MS);
 
@@ -298,6 +310,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
     const name = "t224-restart";
     const b = buildF27(gitPath(), name, "base");
     const sup = superOf(b);
+    const oracle = oracleOf(b, "oracle-copy");
     const service = await openService({ git: gitPath(), name, environment: serviceEnv(globalEnv(b)) });
     await service.register(sup);
     const next = await service.restart();
@@ -308,6 +321,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
       expect(outcome(await updateSubmodules(next, id, await reviewSubmodules(next, id)))).toEqual(STATE_UNKNOWN);
       expect(outcome(await next.readWorkspace(id, { refresh: true, check: "full" }))).toEqual(SUCCEEDED);
       expect(outcome(await updateSubmodules(next, id, await reviewSubmodules(next, id)))).toEqual(SUCCEEDED);
+      expect({ oracle: oracle.exitCode, state: stateOf(b) }).toEqual({ oracle: 0, state: oracleExcept(oracle) });
     } finally {
       await next.dispose();
     }

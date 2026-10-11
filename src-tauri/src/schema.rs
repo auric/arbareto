@@ -202,10 +202,13 @@ pub fn handshake(value: &Value) -> Result<handshake::Handshake, Code> {
 
 /// A progress event with exactly the contract §2 fields and nonnegative counters.
 /// Only phase `wsl-starting` carries `distro` (contract §11 "Distro start").
+/// Only phases `fetch` and `update` carry `path`, and they always carry it (contract §2).
 pub fn progress(value: &Value) -> bool {
+    use progress::ProgressPhase::{Fetch, Update, WslStarting};
     typed::<progress::Progress>(value).is_some_and(|event| {
         event.counters.values().all(|count| *count >= 0)
-            && (event.phase == Some(progress::ProgressPhase::WslStarting)) == event.distro.is_some()
+            && (event.phase == Some(WslStarting)) == event.distro.is_some()
+            && matches!(event.phase, Some(Fetch | Update)) == event.path.is_some()
     })
 }
 
@@ -952,7 +955,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 108 } else { 103 },
+            if cfg!(windows) { 109 } else { 104 },
             "shell-read vectors"
         );
     }

@@ -135,7 +135,9 @@ describe("submodule update steps (contract §12 \"Remedies\")", () => {
         const release = service.runner.holdStart(match(sup));
         const requestId = sendUpdate(service, repositoryId, r);
         try {
-          await until(() => service.runner.calls.slice(from).some(match(sup)), `${step} step`);
+          // The held step blocks the update. A response first means that the step never started.
+          await until(() => service.runner.calls.slice(from).some(match(sup)) || service.responseAt.has(requestId), `${step} step`, TIMEOUT_MS);
+          expect(service.runner.calls.slice(from).some(match(sup))).toBe(true);
           await stallAndClear(service, requestId, match(sup), remedy(sup));
         } finally {
           release();
@@ -161,7 +163,8 @@ describe("submodule update steps (contract §12 \"Remedies\")", () => {
       const release = service.runner.holdStart(clone);
       const requestId = sendUpdate(service, repositoryId, r);
       try {
-        await until(() => service.runner.calls.some(clone), "clone step");
+        await until(() => service.runner.calls.some(clone) || service.responseAt.has(requestId), "clone step", TIMEOUT_MS);
+        expect(service.runner.calls.some(clone)).toBe(true);
         await stallAndClear(service, requestId, clone, { text: STEP_TEXT.clone });
       } finally {
         release();

@@ -5,7 +5,7 @@
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
 // T206 adds the contract §11 WSL process requests. T212 takes their types from the zod frames of `src/contracts/channel.ts`.
 
-import { mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
@@ -83,6 +83,8 @@ printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 // The shell polls a silent pipe every 10 ms (src-tauri/src/process_requests.rs `POLL`).
 const POLL_MS = 10;
 const DISPOSE_WAIT_MS = 10_000;
+// Upper bound of the wait for empty WSL Jobs. It stays far below the smallest WSL hook bound, 180 s.
+const WSL_JOB_WAIT_MS = 30_000;
 
 type Policy = { remove: string[]; removePrefixes: string[]; set: Record<string, string>; indexFileVariable: string | null };
 const POLICIES: Record<string, Policy> = policyFile.policies;
@@ -364,6 +366,9 @@ export function createBunRunner(options: BunRunnerOptions) {
   const running = new Map<string, Set<Subprocess>>();
   // The Job emulation of each spawned process outside WSL. `dispose` also ends the trees of ended roots.
   const trees = new Map<Subprocess, ReturnType<typeof ownTree>>();
+  // Accounting-only Jobs of the started `wsl.exe` processes. A live member holds the launch folder as its current directory.
+  // The double never ends these Jobs: the WSL end path is the scope kill.
+  const wslTrees: ReturnType<typeof ownTree>[] = [];
   const records = new Map<string, ProcessRecord>();
   const tags = new Map<string, string>();
   const markers = new Map<string, MutationStarted>();
@@ -546,6 +551,12 @@ export function createBunRunner(options: BunRunnerOptions) {
       stdout: "pipe",
       stderr: "ignore",
     });
+    try {
+      wslTrees.push(ownTree(proc.pid));
+    } catch (error) {
+      proc.kill();
+      throw error;
+    }
     const own = running.get(operationId) ?? new Set();
     running.set(operationId, own.add(proc as unknown as Subprocess));
     const reader = proc.stdout.getReader();
@@ -790,10 +801,12 @@ export function createBunRunner(options: BunRunnerOptions) {
       pipes.forEach(closePipe);
       throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED");
     }
-    // A WSL call keeps its own end path: a killed `wsl.exe` ends its scopes (contract §11).
+    // A WSL call keeps its own end path: a killed `wsl.exe` ends its scopes (contract §11). Its Job only counts the processes.
     let tree: ReturnType<typeof ownTree> | undefined;
     try {
-      tree = argv[0] === WSL_EXE ? undefined : ownTree(proc.pid);
+      const owned = ownTree(proc.pid);
+      if (argv[0] === WSL_EXE) wslTrees.push(owned);
+      else tree = owned;
     } catch (error) {
       proc.kill();
       pipes.forEach(closePipe);
@@ -1367,6 +1380,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       return hold(stdoutBarriers, match);
     },
     // Ends every recorded live process by PID and every running process, then waits a bounded time for their exits and the drains.
+    // Throws when a WSL Job still holds a process at the cap.
     // A killed anchor `wsl.exe` can leave a `wslhost.exe` that keeps the launch folder open. So each anchor first ends at count 0.
     async dispose(): Promise<void> {
       closing = true;
@@ -1391,16 +1405,12 @@ export function createBunRunner(options: BunRunnerOptions) {
       await Promise.race([Promise.all([...drains]), Bun.sleep(DISPOSE_WAIT_MS)]);
       for (const tree of trees.values()) tree.close();
       trees.clear();
-      // A child `wsl.exe` of an ended `wsl.exe` keeps the launch folder open for a short time. Windows refuses a folder rename while a process holds the folder.
-      for (const until = performance.now() + DISPOSE_WAIT_MS; performance.now() < until; await Bun.sleep(50)) {
-        try {
-          renameSync(launchDirectory, `${launchDirectory}-free`);
-        } catch {
-          continue;
-        }
-        renameSync(`${launchDirectory}-free`, launchDirectory);
-        break;
-      }
+      // A child `wsl.exe` and its `wslhost.exe` stay in the Job of the started `wsl.exe` and hold the launch folder until they exit.
+      const busy = () => wslTrees.filter((tree) => tree.active() !== 0);
+      for (const until = performance.now() + WSL_JOB_WAIT_MS; busy().length > 0 && performance.now() < until; ) await Bun.sleep(POLL_MS);
+      const live = busy().map((tree) => tree.pids() ?? "unknown");
+      for (const tree of wslTrees.splice(0)) tree.close();
+      if (live.length > 0) throw new Error(`WSL Jobs still hold processes ${JSON.stringify(live)} after ${WSL_JOB_WAIT_MS} ms in ${options.directory}`);
     },
   };
 }

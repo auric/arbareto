@@ -4,7 +4,7 @@
 // Shared steps of the batch 3 comparison, hunk, commit, and recovery tests (T093 to T100). The oracle shares no code with `src/git-service/`.
 // The modules under test do not exist before T105 and T110 to T114, so no test imports them at load.
 
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
 import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Handshake } from "../../src/contracts/channel";
@@ -14,7 +14,7 @@ import { FIXTURE_ROOT, fixtureDir, ownedGit, type OwnedGitOptions } from "./fixt
 import { put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import { indexEntries, operationMarkers, rawIndexDigest, workingFileDigests, type IndexEntry } from "./git-oracle";
-import { missingCapability, openService, type Capability, type ChangeEntry, type Envelope, type OpenOptions, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { openService, type ChangeEntry, type Envelope, type OpenOptions, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 export const TIMEOUT_MS = 120_000;
 
@@ -186,14 +186,6 @@ export function newSide(patch: Uint8Array): Buffer {
 
 export const blobOf = (repo: string, path: string) => indexEntries(gitPath(), repo).find((e) => e.path === path && e.stage === 0)?.oid ?? null;
 export const blobBytes = (repo: string, oid: string) => git(repo, ["cat-file", "blob", oid]);
-
-// A todo case of a module that does not exist yet. A missing capability skips it and names the capability (tasks.md "Test harness rules").
-export function todoCase(task: string, name: string, needs: readonly Capability[], fn: () => Promise<void>, timeoutMs = TIMEOUT_MS): void {
-  const missing = missingCapability(...needs);
-  if (GIT !== null && missing === null) return void test.todo(name, fn, timeoutMs);
-  console.log(GIT === null ? `SKIP ${task} ${name}: Git executable absent` : `SKIP ${task} ${name}: missing capability ${missing} (unverified)`);
-  test.skip(name, fn, timeoutMs);
-}
 
 // ---- Commit and recovery steps (T098 to T100). `commit-review.ts`, `commit.ts`, `reconcile.ts`, and `recovery.ts` come with T111 to T114. ----
 

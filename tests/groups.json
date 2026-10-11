@@ -38,6 +38,7 @@
     "tests/contracts/identity.test.ts",
     "tests/contracts/layout-profiles.test.ts",
     "tests/contracts/log.test.ts",
+    "tests/contracts/motion.test.ts",
     "tests/contracts/native-path.test.ts",
     "tests/contracts/native-runner.test.ts",
     "tests/contracts/notice-band.test.tsx",

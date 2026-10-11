@@ -804,8 +804,59 @@ describe("single view", () => {
   });
 });
 
+// plan.md "Motion": a popup that the keyboard opens shows at once. Base UI sets no `data-instant` for the Ctrl+R open, which has no trigger event.
+describe("switcher open motion", () => {
+  const popup = () => document.querySelector<HTMLElement>('[data-slot="popover-content"]');
+  test("a Ctrl+R open has data-instant, and a pointer open does not", async () => {
+    await mount(succeeded(REGISTRATION));
+    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", code: "KeyR", ctrlKey: true, bubbles: true, cancelable: true })));
+    await settle();
+    expect(popup()).not.toBeNull();
+    expect(popup()!.hasAttribute("data-instant")).toBe(true);
+    await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true })));
+    await settle();
+    expect(popup()).toBeNull();
+    const trigger = document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!;
+    // A pointer click carries `detail` 1. Base UI reads `detail` 0 as a keyboard click.
+    await act(async () => void trigger.dispatchEvent(new MouseEvent("click", { detail: 1, button: 0, bubbles: true, cancelable: true })));
+    await settle();
+    expect(popup()).not.toBeNull();
+    expect(popup()!.hasAttribute("data-instant")).toBe(false);
+  });
+});
+
 // plan.md "Switch repository": a switch never discards a draft. The draft store keeps each worktree's draft.
 describe("drafts across a switch", () => {
+  // T121 and T148: contract §2. A `service-session` event runs `restoreWorkspace` again and keeps the page.
+  test("after a `service-session` event, the Workbench keeps the composer text and the page does not reload", async () => {
+    const double = bridgeDouble();
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const restored = Promise.resolve(succeeded(REGISTRATION)) as never;
+    const render = (session: number) =>
+      act(async () => root.render(<Workbench bridge={double.bridge as never} restored={restored} session={session} ChangesPane={ChangesPaneMount} ComparisonView={ComparisonViewMount} HistoryView={HistoryViewMount} />));
+    unmounts.push(async () => {
+      await act(async () => root.unmount());
+      host.remove();
+    });
+    await render(0);
+    await settle();
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Unsent draft");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const header = document.querySelector("header");
+    const environments = double.calls.filter((c) => c.operation === "getEnvironment").length;
+    await render(1);
+    await settle();
+    expect(double.calls.filter((c) => c.operation === "getEnvironment").length).toBe(environments + 1);
+    await resolve(latest(double, "restoreWorkspace"), succeeded(REGISTRATION));
+    // The same Workbench tree stays mounted, so the page did not reload.
+    expect(document.querySelector("header")).toBe(header);
+    expect(document.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Unsent draft");
+  });
+
   test("an unsent message draft stays in the draft store after a switch through the repository switcher, and returns with its worktree", async () => {
     const double = await mount(succeeded(REGISTRATION));
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -922,6 +973,23 @@ describe("mounted staging and commit", () => {
     await settle();
     await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
   }
+
+  // T121 and T148: plan.md "Stored drafts". A suggested commit message stays until the user clears it.
+  test("the Clear message button of the status area clears the composer draft", async () => {
+    const { double } = await openCommitPanel();
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
+    await act(async () => button("Commit (Ctrl+Enter)").click());
+    await settle();
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
+    await resolve(latest(double, "reviewCommit"), succeeded({ reviewToken: crypto.randomUUID() }));
+    const effects = { head: true, index: true, workingFiles: false, operationState: false };
+    await resolve(latest(double, "commit"), { ...succeeded({ commitOid: "2".repeat(40), effects, lingeringDescendants: 0 }), state: "completed-with-effects" });
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    expect(field.value).toBe("Fix the parser");
+    await act(async () => button("Clear message").click());
+    await settle();
+    expect(field.value).toBe("");
+  });
 
   test("a read after the approval that returns the shown snapshot ends the gate, and reviewCommit names that snapshot", async () => {
     const { double, shown } = await openCommitPanel();

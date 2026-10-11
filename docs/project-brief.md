@@ -232,10 +232,14 @@ All URLs below were inspected as research sources; moving main branches may chan
 ## Later features
 
 - PuTTY support for SSH: plan it with the feature that adds fetch, push, and pull. Let the user choose plink or OpenSSH. Start Pageant and load the remote key on request, and launch PuTTYgen. Set `GIT_SSH` only for processes that Arbareto starts, and never change the user Git configuration. A plink host-key prompt must fail fast and offer an accept step. This needs an amendment of feature 001 FR-051.
-- Remote sync (feature 002): Fetch, Pull, Push, ahead and behind counts in the toolbar and the references sidebar, the push-rejected notice, Commit & push, and Clone. The status read already parses `# branch.upstream` and `# branch.ab`. PuTTY support stays as its own bullet.
+- Feature order after 001 (user decision, 2026-10-11): 002 is full history, and 003 is remote sync. Remote sync builds on the history graph. Feature 001 keeps its 100-commit first page.
+- Full history (feature 002): the user can scroll to every commit, and RAM stays bounded. Read history in pages with a cursor. Define an exact paging rule across merges. Bind each page to one captured HEAD and generation. Build graph lanes incrementally. Use a virtualized list that drops pages far off screen. Load commit bodies only for the details pane. Set a RAM budget.
+- Commit message filter (feature 002): Git searches the whole history with `rev-list --grep`, and `--fixed-strings` is the default. The matches come back through the same pages. Filter mode shows only the matches, with a reduced graph. Highlight mode shows the full graph, with Next match and Previous match. Author and content filters come later on the same mechanism.
+- Speed baseline for feature 002: compare matched work with Git Extensions, for a full scroll and for a message filter.
+- Remote sync (feature 003): Fetch, Pull, Push, ahead and behind counts in the toolbar and the references sidebar, the push-rejected notice, Commit & push, and Clone. The status read already parses `# branch.upstream` and `# branch.ab`. PuTTY support stays as its own bullet.
 - Branch operations: checkout, merge, rebase, reset, cherry-pick, revert, and tag creation. Add the branch and commit context menus, actions on the references sidebar entries, and "Contained in branches and tags". Add the conflict panel, its band actions (Resolve, Continue, Skip, Abort), and the step and resolved counts. Take the resolved state only from index records, never from file text.
-- Amend, with history rewriting: the Amend checkbox, the loaded last message, and a "not pushed yet" note from upstream data (002).
-- History inspection: the Changes and Files tabs of the commit details, historical diffs, branch filtering, history search, and a column header row.
+- Amend, with history rewriting: the Amend checkbox, the loaded last message, and a "not pushed yet" note from upstream data (003).
+- History inspection: the Changes and Files tabs of the commit details, historical diffs, branch filtering, author and content filters on the 002 filter mechanism, and a column header row.
 - Stash: the toolbar button, the Stashes group of the references sidebar, and "Stash staged".
 - Submodule and worktree management, with the Submodules and Worktrees groups of the references sidebar.
 - Settings and presets: Git configuration by scope (effective, local, global, system), and presets for diff tools, merge tools, and editors.

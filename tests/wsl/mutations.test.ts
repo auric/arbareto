@@ -5,7 +5,8 @@
 // The T214 routes of `hunk-publish.ts`, `file-publish.ts`, and `commit.ts` come with T214. The oracle is the distro Git in a disposable copy.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { dirname, win32 } from "node:path";
+import { rmdirSync } from "node:fs";
+import { dirname, join, win32 } from "node:path";
 import type { WslFileResult, WslFilesCall } from "../../src/contracts/channel";
 import type { WalkStop } from "../../src/git-service/git-runner";
 import { STEP_FAILED_TEXT } from "../../src/git-service/hunk-publish";
@@ -71,7 +72,8 @@ interface FilesEntry {
 
 // The double logs no `wslFiles` request and has no stop after the read (seam gap). The wrapper adds both before `startSession` copies the runner.
 function setup(host: WslHost, stop: Stop | null = null) {
-  const runner = createBunRunner({ git: GIT ?? "git", directory: fixtureDir(`runner-${crypto.randomUUID()}`), environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });
+  const directory = fixtureDir(`runner-${crypto.randomUUID()}`);
+  const runner = createBunRunner({ git: GIT ?? "git", directory, environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });
   runners.push(runner);
   const files: FilesEntry[] = [];
   const wslFiles = runner.wslFiles;
@@ -97,7 +99,7 @@ function setup(host: WslHost, stop: Stop | null = null) {
     if (transaction !== undefined) indexFiles.push({ operationId: call.operationId, indexFile: transaction.indexFile });
     return false;
   });
-  return { runner, s, files, seam, indexFiles };
+  return { runner, directory, s, files, seam, indexFiles };
 }
 
 const modesOf = (files: FilesEntry[], operationId: string) => files.filter((f) => f.request.operationId === operationId).map((f) => f.request.mode);
@@ -120,7 +122,7 @@ async function register(s: WslSession, r: WslRepo): Promise<string> {
 
 async function readWs(s: WslSession, repositoryId: string): Promise<Read> {
   const response = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }));
-  expect(response.state).toBe("succeeded");
+  expect(outcome(response)).toEqual(SUCCEEDED);
   return response.result as unknown as Read;
 }
 
@@ -764,11 +766,15 @@ describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs
       await underTest("commit");
       const { repo } = buildF21(host);
       writeLinux(host, `${repo.dir}/.git/hooks/post-commit`, `#!/bin/sh\n'${host.probe.paths.setsid}' /usr/bin/sleep 60 >/dev/null 2>&1 &\nexit 0\n`, "755");
-      const { s } = setup(host);
+      const { runner, directory, s } = setup(host);
       const id = await register(s, repo);
       await approve(s, id);
       const response = await commit(s, id, "T213 lingering\n");
       expect({ ...outcome(response), lingering: one<number>(response.result, "lingeringDescendants") }).toEqual({ ...SUCCEEDED, lingering: 1 });
+      // Windows refuses to remove a folder that a live process has as its current directory.
+      runners = runners.filter((r) => r !== runner);
+      await runner.dispose();
+      rmdirSync(join(directory, "launch"));
     },
   );
 

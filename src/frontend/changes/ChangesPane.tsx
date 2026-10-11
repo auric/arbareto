@@ -234,7 +234,7 @@ export function ChangesPane(props: ChangesPaneProps) {
           {stageBar}
         </div>
       )}
-      <section className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-divider ${sideBySide ? "border-l" : "border-t"}`}>
+      <section data-section="staged" className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-divider ${sideBySide ? "border-l" : "border-t"}`}>
         <CategoryList {...listProps("staged", "Staged")} level={2} />
       </section>
     </div>

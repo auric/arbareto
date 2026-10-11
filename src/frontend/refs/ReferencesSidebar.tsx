@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { CancelCircleIcon, SidebarLeftIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, SidebarLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
 import { IconButton } from "../components/icon-button";
@@ -58,73 +58,203 @@ export type ReferencesSidebarProps = {
   onRefresh(): void;
   /** The constrained profile: the section starts collapsed to its heading row with the Show references toggle. */
   collapsible?: boolean;
+  /** The open repository (its worktree key). The expansion lasts per repository for the window session. */
+  repository: string;
 };
 
-type Node = { id: string; level: 1 | 2; kind: Kind; entry?: RefEntry };
+// plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
+const sessionExpansion = new Map<string, ReadonlySet<string>>();
 
-export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCommit, onRefresh, collapsible = false }: ReferencesSidebarProps) {
+/** One tree node: a group, a folder of one `/` level, or an entry. Keys are unique within the tree. */
+type Tree = { key: string; label: string; count: number; children: Tree[]; entry?: RefEntry };
+type Row = { node: Tree; level: number; kind: Kind; parent: number };
+
+const groupKey = (kind: Kind) => `group:${kind}`;
+const folderKey = (kind: Kind, path: string) => `folder:${kind}:${path}`;
+
+/** Git's reference hierarchy (git-check-ref-format(1)): each `/` of a name starts one level. Folders keep the order of their first entry. */
+function buildGroup(kind: Kind, label: string, entries: readonly RefEntry[]): Tree {
+  const root: Tree = { key: groupKey(kind), label, count: 0, children: [] };
+  for (const entry of entries) {
+    const segments = entry.name.split("/");
+    let at = root;
+    root.count++;
+    for (let i = 0; i < segments.length - 1; i++) {
+      const key = folderKey(kind, segments.slice(0, i + 1).join("/"));
+      let folder = at.children.find((c) => c.key === key);
+      if (folder === undefined) {
+        folder = { key, label: segments[i]!, count: 0, children: [] };
+        at.children.push(folder);
+      }
+      folder.count++;
+      at = folder;
+    }
+    at.children.push({ key: `entry:${kind}:${entry.name}`, label: segments.at(-1)!, count: 1, children: [], entry });
+  }
+  return root;
+}
+
+/** plan.md: Branches open, Remotes and Tags closed, and the folders on the path to the current branch open. */
+function defaultExpansion(current: RefsResult["current"]): Set<string> {
+  const open = new Set([groupKey("branch")]);
+  const segments = current?.name.split("/") ?? [];
+  for (let i = 1; i < segments.length; i++) open.add(folderKey("branch", segments.slice(0, i).join("/")));
+  return open;
+}
+
+/** The node keys that hold a matching entry. They open while the filter has text. */
+function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: Set<string>): boolean {
+  if (tree.entry !== undefined) return matches(tree.entry);
+  let any = false;
+  for (const child of tree.children) if (matchingPaths(child, matches, open)) any = true;
+  if (any) open.add(tree.key);
+  return any;
+}
+
+export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCommit, onRefresh, collapsible = false, repository }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), notLoaded: useId() };
   const [query, setQuery] = useState("");
-  const [collapsed, setCollapsed] = useState<ReadonlySet<Kind>>(new Set());
+  // Null until the user changes the expansion: the default then follows the current branch of the newest result.
+  const [stored, setStored] = useState<{ repository: string; open: ReadonlySet<string> | null }>(() => ({ repository, open: sessionExpansion.get(repository) ?? null }));
+  if (stored.repository !== repository) setStored({ repository, open: sessionExpansion.get(repository) ?? null });
+  // Toggles while the filter has text change only this set. Clearing the filter drops it.
+  const [filtered, setFiltered] = useState<{ query: string; open: ReadonlySet<string> } | null>(null);
   // The toggle state lasts for the window session and is not stored (plan.md "References sidebar").
   const [shown, setShown] = useState(!collapsible);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const elements = useRef(new Map<string, HTMLElement>());
 
   const needle = query.toLowerCase();
   const matches = (entry: RefEntry) => entry.name.toLowerCase().includes(needle);
-  const groups = GROUPS.map((g) => {
-    const all = refs?.refs.filter((r) => r.kind === g.kind) ?? [];
-    return { ...g, all, shown: all.filter(matches) };
-  });
-  const nodes: Node[] = [];
-  groups.forEach((g, gi) => {
-    nodes.push({ id: `${ids.node}-g${gi}`, level: 1, kind: g.kind });
-    if (!collapsed.has(g.kind)) g.shown.forEach((entry, i) => nodes.push({ id: `${ids.node}-g${gi}-${i}`, level: 2, kind: g.kind, entry }));
-  });
-  const activeIndex = Math.max(0, nodes.findIndex((n) => n.id === activeId));
-  const anyMatch = groups.some((g) => g.shown.length > 0);
+  const groups = GROUPS.map((g) => ({ ...g, tree: buildGroup(g.kind, g.label, refs?.refs.filter((r) => r.kind === g.kind) ?? []) }));
+  const filterOpen = useMemo(() => {
+    if (needle === "") return null;
+    const open = new Set<string>();
+    for (const g of groups) matchingPaths(g.tree, matches, open);
+    return open;
+  }, [needle, refs]);
+  const open: ReadonlySet<string> = filterOpen !== null ? (filtered !== null && filtered.query === needle ? filtered.open : filterOpen) : (stored.open ?? defaultExpansion(refs?.current ?? null));
 
-  function focusNode(index: number) {
-    const node = nodes[Math.min(nodes.length - 1, Math.max(0, index))];
-    if (!node) return;
-    setActiveId(node.id);
-    elements.current.get(node.id)?.focus();
+  function toggle(key: string, next: boolean) {
+    const set = new Set(open);
+    if (next) set.add(key);
+    else set.delete(key);
+    if (filterOpen !== null) return setFiltered({ query: needle, open: set });
+    sessionExpansion.set(repository, set);
+    setStored({ repository, open: set });
   }
 
-  function setGroup(kind: Kind, open: boolean) {
-    setCollapsed((c) => {
-      const next = new Set(c);
-      if (open) next.delete(kind);
-      else next.add(kind);
-      return next;
-    });
+  // The visible rows in tree order. While the filter has text, only nodes that hold a match show.
+  const rows: Row[] = [];
+  const visit = (node: Tree, level: number, kind: Kind, parent: number) => {
+    if (filterOpen !== null && level > 1 && !(node.entry !== undefined ? matches(node.entry) : filterOpen.has(node.key))) return;
+    const index = rows.length;
+    rows.push({ node, level, kind, parent });
+    if (node.entry === undefined && open.has(node.key)) for (const child of node.children) visit(child, level + 1, kind, index);
+  };
+  for (const g of groups) if (filterOpen === null || filterOpen.has(g.tree.key)) visit(g.tree, 1, g.kind, -1);
+  const activeIndex = Math.max(0, rows.findIndex((r) => r.node.key === activeKey));
+  const anyMatch = filterOpen !== null && filterOpen.size > 0;
+
+  function focusRow(index: number) {
+    const row = rows[Math.min(rows.length - 1, Math.max(0, index))];
+    if (!row) return;
+    setActiveKey(row.node.key);
+    elements.current.get(row.node.key)?.focus();
   }
 
-  function activate(node: Node) {
-    const commit = node.entry?.commitId ?? null;
-    if (commit !== null && loaded.has(commit)) onSelectCommit(commit);
+  function activate(row: Row) {
+    const entry = row.node.entry;
+    if (entry === undefined) return toggle(row.node.key, !open.has(row.node.key));
+    if (entry.commitId !== null && loaded.has(entry.commitId)) onSelectCommit(entry.commitId);
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
     if (event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing) return;
-    const node = nodes[index]!;
-    const open = node.level === 1 && !collapsed.has(node.kind);
-    const parent = nodes.findLastIndex((n, i) => i <= index && n.level === 1);
+    const row = rows[index]!;
+    const branch = row.node.entry === undefined;
+    const isOpen = branch && open.has(row.node.key);
     const moves: Record<string, () => void> = {
-      ArrowDown: () => focusNode(index + 1),
-      ArrowUp: () => focusNode(index - 1),
-      Home: () => focusNode(0),
-      End: () => focusNode(nodes.length - 1),
-      ArrowRight: () => (node.level === 1 ? (open ? focusNode(index + 1) : setGroup(node.kind, true)) : undefined),
-      ArrowLeft: () => (node.level === 2 ? focusNode(parent) : setGroup(node.kind, false)),
-      Enter: () => activate(node),
+      ArrowDown: () => focusRow(index + 1),
+      ArrowUp: () => focusRow(index - 1),
+      Home: () => focusRow(0),
+      End: () => focusRow(rows.length - 1),
+      ArrowRight: () => (!branch ? undefined : isOpen ? focusRow(index + 1) : toggle(row.node.key, true)),
+      ArrowLeft: () => (isOpen ? toggle(row.node.key, false) : row.parent >= 0 ? focusRow(row.parent) : undefined),
+      Enter: () => activate(row),
     };
     const move = moves[event.key];
     if (move === undefined) return;
     event.preventDefault();
     move();
   }
+
+  const rowView = (row: Row, index: number) => {
+    const { node, level, kind } = row;
+    const common = {
+      ref: (element: HTMLElement | null) => void (element ? elements.current.set(node.key, element) : elements.current.delete(node.key)),
+      role: "treeitem",
+      "aria-level": level,
+      tabIndex: index === activeIndex ? 0 : -1,
+      onFocus: () => setActiveKey(node.key),
+      onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => onKeyDown(event, index),
+      onContextMenu: (event: { preventDefault(): void }) => event.preventDefault(),
+      onClick: () => activate(row),
+      style: { paddingLeft: 4 + (level - 1) * 12 },
+    };
+    const entry = node.entry;
+    if (entry === undefined) {
+      const expanded = open.has(node.key);
+      const group = level === 1;
+      return (
+        <div
+          key={node.key}
+          {...common}
+          aria-expanded={expanded}
+          aria-label={group ? `${node.label}, ${node.count}` : `${node.label}, folder, ${node.count}`}
+          className={`list-row flex min-w-0 items-center gap-1 pr-2 ${group ? "sticky top-0 z-[1] bg-surface font-semibold" : ""}`}
+        >
+          <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
+          <span aria-hidden="true" className="min-w-0 truncate">
+            {node.label}
+          </span>
+          <span aria-hidden="true" className="num ml-auto shrink-0 text-muted-text">
+            {node.count}
+          </span>
+        </div>
+      );
+    }
+    const noun = GROUPS.find((g) => g.kind === kind)!.noun;
+    const current = kind === "branch" && refs?.current !== null && refs?.current?.name === entry.name;
+    const upstream = upstreamText(entry);
+    const onPage = entry.commitId !== null && loaded.has(entry.commitId);
+    const name = entry.symref === null ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream])].join(", ") : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
+    return (
+      <div key={node.key} {...common} aria-label={name} aria-describedby={onPage ? undefined : ids.notLoaded} className="list-row flex min-w-0 items-center gap-2 pr-2">
+        {entry.symref === null ? (
+          <>
+            <span aria-hidden="true" className="min-w-0 shrink truncate">
+              {node.label}
+            </span>
+            {current ? (
+              <span aria-hidden="true" className="shrink-0 font-semibold">
+                Current
+              </span>
+            ) : null}
+            {upstream === null ? null : (
+              <span aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
+                {upstream}
+              </span>
+            )}
+          </>
+        ) : (
+          <span aria-hidden="true" className="min-w-0 truncate">
+            {node.label} → {shortRef(entry.symref)}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   const body = () => {
     if (failure !== null && refs === null)
@@ -140,67 +270,21 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
         </div>
       );
     if (refs === null) return <p className="p-2 text-muted-text">{LOADING}</p>;
+    // Each group wraps its rows, so its heading row sticks only while the group scrolls.
+    const byGroup = GROUPS.map((g) => rows.map((row, index) => ({ row, index })).filter(({ row }) => row.kind === g.kind));
     return (
       <>
         {unpaired === 0 ? null : <p className="px-2 text-muted-text">{unpaired === 1 ? UNPAIRED : STILL_UNPAIRED}</p>}
         <div role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
-          {nodes.map((node, index) => {
-            const tabIndex = index === activeIndex ? 0 : -1;
-            const common = {
-              id: node.id,
-              ref: (element: HTMLElement | null) => void (element ? elements.current.set(node.id, element) : elements.current.delete(node.id)),
-              role: "treeitem",
-              "aria-level": node.level,
-              tabIndex,
-              onFocus: () => setActiveId(node.id),
-              onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => onKeyDown(event, index),
-              onContextMenu: (event: { preventDefault(): void }) => event.preventDefault(),
-            };
-            if (node.level === 1) {
-              const group = groups.find((g) => g.kind === node.kind)!;
-              return (
-                <div key={node.id} {...common} aria-expanded={!collapsed.has(node.kind)} aria-label={`${group.label}, ${group.all.length}`} className="list-row flex items-center gap-2 px-1 font-semibold" onClick={() => setGroup(node.kind, collapsed.has(node.kind))}>
-                  <span aria-hidden="true">{group.label}</span>
-                  <span aria-hidden="true" className="num ml-auto text-muted-text">
-                    {group.all.length}
-                  </span>
-                </div>
-              );
-            }
-            const entry = node.entry!;
-            const group = groups.find((g) => g.kind === node.kind)!;
-            const current = entry.kind === "branch" && refs.current !== null && refs.current.name === entry.name;
-            const upstream = upstreamText(entry);
-            const onPage = entry.commitId !== null && loaded.has(entry.commitId);
-            const name = entry.symref === null ? [entry.name, group.noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream])].join(", ") : `${entry.name}, ${group.noun}, → ${shortRef(entry.symref)}`;
-            return (
-              <div key={node.id} {...common} aria-label={name} aria-describedby={onPage ? undefined : ids.notLoaded} className="list-row flex min-w-0 items-center gap-2 pr-1 pl-4" onClick={() => activate(node)}>
-                {entry.symref === null ? (
-                  <>
-                    <span aria-hidden="true" className="min-w-0 shrink truncate">
-                      {entry.name}
-                    </span>
-                    {current ? (
-                      <span aria-hidden="true" className="shrink-0 font-semibold">
-                        Current
-                      </span>
-                    ) : null}
-                    {upstream === null ? null : (
-                      <span aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
-                        {upstream}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <span aria-hidden="true" className="min-w-0 truncate">
-                    {entry.name} → {shortRef(entry.symref)}
-                  </span>
-                )}
+          {byGroup.map((list, i) =>
+            list.length === 0 ? null : (
+              <div key={GROUPS[i]!.kind} role="none" className="flex flex-col">
+                {list.map(({ row, index }) => rowView(row, index))}
               </div>
-            );
-          })}
+            ),
+          )}
         </div>
-        {groups.map((g) => (g.all.length === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null))}
+        {groups.map((g) => (g.tree.count === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null))}
         {needle !== "" && !anyMatch ? <p className="px-2 text-muted-text">{NO_MATCH}</p> : null}
         <span id={ids.notLoaded} hidden>
           {NOT_LOADED}
@@ -224,7 +308,10 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
             aria-label="Filter references"
             className="mx-2 mb-1 h-(--h-button) shrink-0 rounded-sm border border-control-border bg-surface px-2"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setFiltered(null);
+            }}
           />
           <div className="min-h-0 flex-1 overflow-y-auto">{body()}</div>
         </>

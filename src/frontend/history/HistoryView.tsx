@@ -212,12 +212,15 @@ function RowChips({ chips }: { chips: readonly RefEntry[] }) {
   const [count, setCount] = useState(chips.length);
   useLayoutEffect(() => {
     const copy = measure.current;
-    const cell = copy?.parentElement;
-    if (!copy || !cell || typeof ResizeObserver === "undefined") return;
+    // The label region sits in the subject cell. Its badges take their part of the half first.
+    const labels = copy?.parentElement;
+    const cell = labels?.parentElement;
+    if (!copy || !labels || !cell || typeof ResizeObserver === "undefined") return;
     const fit = () => {
       const parts = [...copy.children].map((c) => c.getBoundingClientRect().width);
       const plus = parts.pop() ?? 0;
-      setCount(fitChips(parts, cell.clientWidth / 2, plus));
+      const badges = [...labels.querySelectorAll(":scope > .badge")].reduce((sum, b) => sum + b.getBoundingClientRect().width, 0);
+      setCount(fitChips(parts, Math.max(0, cell.clientWidth / 2 - badges), plus));
     };
     fit();
     const observer = new ResizeObserver(fit);
@@ -403,16 +406,24 @@ export function HistoryView({ page, entries, selected, onSelect, density, profil
           rows.map((row, i) => (
             <div key={row.oid} data-oid={row.oid} {...optionProps(row.oid, i + 2, rowName(row, layout.cells[i]!, head, dateFormat, chips?.get(row.oid)))}>
               <AncestryCell cell={layout.cells[i]!} lanes={layout.lanes} spacing={spacing} rowHeight={rowHeight} selected={row.oid === selected} leadIn={i === 0} />
-              <span aria-hidden="true" className="relative flex min-w-0 flex-1 items-center gap-1 whitespace-nowrap">
-                {row.oid === head.oid ? (
-                  <>
-                    <span className="badge">HEAD</span>
-                    {head.state === "branch" ? <span className="badge">{branchName(head.target)}</span> : null}
-                  </>
+              {/* An 8 DIP gap separates the label region from the subject. */}
+              <span aria-hidden="true" className="flex min-w-0 flex-1 items-center gap-2 whitespace-nowrap">
+                {row.oid === head.oid || chips?.has(row.oid) ? (
+                  // plan.md "History graph design": the badges and chips take at most half of the subject cell and never draw past it.
+                  <span data-slot="row-labels" className="relative flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
+                    {row.oid === head.oid ? (
+                      <>
+                        <span className="badge shrink-0">HEAD</span>
+                        {head.state === "branch" ? (
+                          <span className="badge block max-w-[160px] min-w-0 shrink truncate" style={{ lineHeight: "calc(var(--h-badge) - 2px)" }}>
+                            {branchName(head.target)}
+                          </span>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {chips?.has(row.oid) ? <RowChips chips={chips.get(row.oid)!} /> : null}
+                  </span>
                 ) : null}
-                {chips?.has(row.oid) ? <RowChips chips={chips.get(row.oid)!} /> : null}
-                {/* An 8 DIP gap separates the last badge or chip from the subject. */}
-                {row.oid === head.oid || chips?.has(row.oid) ? <span className="w-1 shrink-0" /> : null}
                 <span className="min-w-0 truncate">{row.subject}</span>
               </span>
               {row.encoding === null ? null : (

@@ -304,3 +304,40 @@ describe("reference chips", () => {
     expect(fitChips([50, 50, 50], 20, 30)).toBe(0);
   });
 });
+
+// T362: very long reference names never push the labels into the ID column (plan.md "History graph design").
+describe("label region bound", () => {
+  const LONG = "feature/ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on";
+  const longPage = page([row(1, [])], { state: "branch", target: `refs/heads/${LONG}`, oid: oid(1) });
+  const longRefs = {
+    generation: 1,
+    refs: [
+      { kind: "branch" as const, name: LONG, invalidUtf8: false, objectId: oid(1), objectType: "commit" as const, peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId: oid(1) },
+      { kind: "remote" as const, name: `origin/${LONG}`, invalidUtf8: false, objectId: oid(1), objectType: "commit" as const, peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId: oid(1) },
+      { kind: "tag" as const, name: `release/${LONG}`, invalidUtf8: false, objectId: oid(1), objectType: "commit" as const, peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId: oid(1) },
+    ],
+    current: { name: LONG, objectId: oid(1) },
+    completeness: { state: "complete" as const },
+  };
+
+  test("the badges and chips share one label region that takes at most half of the subject cell and clips at its edge", async () => {
+    const host = await show(<HistoryView {...props} page={longPage} selected={null} refs={longRefs} />);
+    const option = commits(host)[0]!;
+    const labels = option.querySelector<HTMLElement>('[data-slot="row-labels"]')!;
+    expect(labels !== null).toBe(true);
+    expect(labels.className.split(/\s+/)).toEqual(expect.arrayContaining(["max-w-[50%]", "overflow-hidden", "min-w-0"]));
+    expect([...labels.querySelectorAll(".badge")].map((b) => b.textContent)).toEqual(["HEAD", LONG]);
+    expect(labels.querySelectorAll(".chip").length).toBeGreaterThan(0);
+    // The subject sits outside the label region and keeps its own ellipsis.
+    const subject = [...option.querySelectorAll<HTMLElement>("span")].find((s) => s.textContent === "Change 1")!;
+    expect(labels.contains(subject)).toBe(false);
+    expect(subject.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+  });
+
+  test("the current-branch badge name ends with an ellipsis beyond 160 DIPs, as a chip name does", async () => {
+    const host = await show(<HistoryView {...props} page={longPage} selected={null} refs={longRefs} />);
+    const badge = [...commits(host)[0]!.querySelectorAll<HTMLElement>(".badge")].find((b) => b.textContent === LONG)!;
+    expect(badge.className.split(/\s+/)).toEqual(expect.arrayContaining(["max-w-[160px]", "truncate"]));
+    expect(commits(host)[0]!.getAttribute("aria-label")!.startsWith(`HEAD, branch ${LONG}, remote-tracking: origin/${LONG}, tags: release/${LONG}, Change 1`)).toBe(true);
+  });
+});

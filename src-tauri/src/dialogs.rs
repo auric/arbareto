@@ -9,13 +9,21 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 use tauri::{AppHandle, Manager, WebviewWindow};
-use tauri_plugin_dialog::DialogExt;
-use windows::Win32::Foundation::{HWND, LPARAM, S_OK, WPARAM};
+use windows::Win32::Foundation::{ERROR_CANCELLED, HWND, LPARAM, S_OK, WPARAM};
 use windows::Win32::Storage::FileSystem::SearchPathW;
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
+    CoInitializeEx, CoTaskMemFree, CoUninitialize,
+};
 use windows::Win32::UI::Controls::{
     TASKDIALOG_BUTTON, TASKDIALOG_NOTIFICATIONS, TASKDIALOGCONFIG, TDF_ALLOW_DIALOG_CANCELLATION,
     TDF_POSITION_RELATIVE_TO_WINDOW, TDM_CLICK_BUTTON, TDN_CREATED, TDN_DESTROYED,
     TaskDialogIndirect,
+};
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+use windows::Win32::UI::Shell::{
+    FILEOPENDIALOGOPTIONS, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
+    SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{IDCANCEL, PostMessageW};
 use windows::core::{HRESULT, HSTRING, PCWSTR, w};
@@ -73,10 +81,10 @@ fn confirmation(text: String, accept: &'static str, extra: Option<Button>) -> Co
 
 /// The native pickers and confirmations. T183 injects them, so the tests run without a window.
 pub trait Native {
-    /// The dialog plugin executable picker. `None` is Cancel.
-    fn pick_executable(&self) -> Option<PathBuf>;
-    /// The dialog plugin folder picker. `None` is Cancel.
-    fn pick_folder(&self) -> Option<PathBuf>;
+    /// The executable picker. `Ok(None)` is Cancel. `Err` is a picker call failure.
+    fn pick_executable(&self) -> Result<Option<PathBuf>, &'static str>;
+    /// The folder picker. `Ok(None)` is Cancel. `Err` is a picker call failure.
+    fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str>;
     /// The button ID that `TaskDialogIndirect` returns. `None` is a call failure.
     fn confirm(&self, confirmation: &Confirmation) -> Option<i32>;
     /// `SearchPathW` for `git.exe` with the shell `PATH` value as `lpPath`.
@@ -106,10 +114,27 @@ fn context(contexts: &Contexts, kind: ContextKind, path: PathBuf, now: Instant) 
     }
 }
 
+/// A picker call failure is a refusal, not a Cancel.
+fn picked(
+    pick: Result<Option<PathBuf>, &'static str>,
+    contexts: &Contexts,
+    kind: ContextKind,
+    now: Instant,
+) -> Chosen {
+    match pick {
+        Ok(Some(path)) => context(contexts, kind, path, now),
+        Ok(None) => Chosen::Canceled,
+        Err(code) => Chosen::Refused(code),
+    }
+}
+
 fn pick_git(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
-    native.pick_executable().map_or(Chosen::Canceled, |path| {
-        context(contexts, ContextKind::GitProbe, path, now)
-    })
+    picked(
+        native.pick_executable(),
+        contexts,
+        ContextKind::GitProbe,
+        now,
+    )
 }
 
 /// Creates a `gitProbe` context for the contract §3 "Git proposal" candidate: the saved selected path,
@@ -138,9 +163,12 @@ pub fn choose_git(
 
 /// Opens the folder picker and creates a `repositoryDiscovery` context.
 pub fn choose_repository(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
-    native.pick_folder().map_or(Chosen::Canceled, |path| {
-        context(contexts, ContextKind::RepositoryDiscovery, path, now)
-    })
+    picked(
+        native.pick_folder(),
+        contexts,
+        ContextKind::RepositoryDiscovery,
+        now,
+    )
 }
 
 /// Creates a `repositoryDiscovery` context for the stored last repository.
@@ -455,6 +483,12 @@ impl Dialogs {
         self.app.get_webview_window(MAIN_WINDOW)
     }
 
+    fn owner_hwnd(&self) -> isize {
+        self.owner()
+            .and_then(|window| window.hwnd().ok())
+            .map_or(0, |hwnd| hwnd.0 as isize)
+    }
+
     /// Clicks Cancel in each open confirmation. A service exit closes each open trust dialog as Cancel (contract §6).
     pub fn cancel_open(&self) {
         for &hwnd in lock(&self.open).iter() {
@@ -489,21 +523,91 @@ unsafe extern "system" fn track(
     S_OK
 }
 
+/// The `rejected` code of a picker call that failed (contract §3).
+pub const PICKER_FAILED: &str = "PICKER_FAILED";
+
+/// Shows an `IFileOpenDialog` on a new STA thread. `owner` is the raw `HWND`, because `HWND` is not `Send`.
+fn pick(owner: isize, folders: bool) -> Result<Option<PathBuf>, &'static str> {
+    std::thread::spawn(move || {
+        // SAFETY: this new thread has no COM apartment yet. The dialog object needs an STA.
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
+            .ok()
+            .map_err(|error| failed("CoInitializeEx", error.code()))?;
+        let picked =
+            show(HWND(owner as _), folders).map_err(|(step, error)| failed(step, error.code()));
+        // SAFETY: `show` released every COM object, and the initialize call above succeeded.
+        unsafe { CoUninitialize() };
+        picked
+    })
+    .join()
+    .unwrap_or(Err(PICKER_FAILED))
+}
+
+/// Logs only the step and the HRESULT. A path can hold user data.
+fn failed(step: &str, code: HRESULT) -> &'static str {
+    eprintln!("Picker step {step} failed: HRESULT 0x{:08X}", code.0 as u32);
+    PICKER_FAILED
+}
+
+/// The name of the failed call.
+fn at(step: &'static str) -> impl Fn(windows::core::Error) -> (&'static str, windows::core::Error) {
+    move |error| (step, error)
+}
+
+/// Only `ERROR_CANCELLED` from `IModalWindow::Show` is Cancel.
+/// `FOS_FORCEFILESYSTEM` keeps the dialog open for an item without `SFGAO_FILESYSTEM`, such as Search Results.
+fn show(
+    owner: HWND,
+    folders: bool,
+) -> Result<Option<PathBuf>, (&'static str, windows::core::Error)> {
+    // SAFETY: the calling thread is in an STA, and `FileOpenDialog` is an in-process class.
+    let dialog: IFileOpenDialog =
+        unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }
+            .map_err(at("CoCreateInstance"))?;
+    let picks = if folders {
+        FOS_PICKFOLDERS
+    } else {
+        FILEOPENDIALOGOPTIONS(0)
+    };
+    // SAFETY: `dialog` is a live interface on this thread.
+    let options = unsafe { dialog.GetOptions() }.map_err(at("GetOptions"))?;
+    // SAFETY: `dialog` is a live interface on this thread.
+    unsafe { dialog.SetOptions(options | FOS_FORCEFILESYSTEM | picks) }
+        .map_err(at("SetOptions"))?;
+    if !folders {
+        let filter = [COMDLG_FILTERSPEC {
+            pszName: w!("Git"),
+            pszSpec: w!("*.exe"),
+        }];
+        // SAFETY: the dialog copies the filter strings, which are static.
+        unsafe { dialog.SetFileTypes(&filter) }.map_err(at("SetFileTypes"))?;
+    }
+    // SAFETY: `owner` is null or a window handle. A destroyed owner makes `Show` fail, and that failure is no memory access.
+    if let Err(error) = unsafe { dialog.Show(Some(owner)) } {
+        return if error.code() == ERROR_CANCELLED.to_hresult() {
+            Ok(None)
+        } else {
+            Err(("Show", error))
+        };
+    }
+    // SAFETY: `Show` succeeded, so the dialog holds one result item.
+    let item = unsafe { dialog.GetResult() }.map_err(at("GetResult"))?;
+    // SAFETY: on success the callee allocates the string with the COM allocator, so the caller frees it with `CoTaskMemFree`.
+    let name = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }.map_err(at("GetDisplayName"))?;
+    // SAFETY: `name` is a null-terminated string that lives until the free below.
+    let path = PathBuf::from(OsString::from_wide(unsafe { name.as_wide() }));
+    // SAFETY: the COM allocator allocated `name`, and nothing reads it after this call.
+    unsafe { CoTaskMemFree(Some(name.0 as _)) };
+    Ok(Some(path))
+}
+
 impl Native for Dialogs {
-    fn pick_executable(&self) -> Option<PathBuf> {
-        let mut picker = self.app.dialog().file().add_filter("Git", &["exe"]);
-        if let Some(owner) = self.owner() {
-            picker = picker.set_parent(&owner);
-        }
-        picker.blocking_pick_file()?.into_path().ok()
+    fn pick_executable(&self) -> Result<Option<PathBuf>, &'static str> {
+        pick(self.owner_hwnd(), false)
     }
 
-    fn pick_folder(&self) -> Option<PathBuf> {
-        let mut picker = self.app.dialog().file();
-        if let Some(owner) = self.owner() {
-            picker = picker.set_parent(&owner);
-        }
-        picker.blocking_pick_folder()?.into_path().ok()
+    fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str> {
+        pick(self.owner_hwnd(), true)
     }
 
     fn confirm(&self, confirmation: &Confirmation) -> Option<i32> {
@@ -620,6 +724,8 @@ pub(crate) mod tests {
         pub(crate) folder: Option<PathBuf>,
         pub(crate) search: Option<PathBuf>,
         pub(crate) program_files: Option<PathBuf>,
+        /// A picker call failure code. It overrides `executable` and `folder`.
+        pub(crate) pick_failure: Option<&'static str>,
         pub(crate) presses: RefCell<Vec<Press>>,
         pub(crate) calls: RefCell<Vec<&'static str>>,
     }
@@ -638,14 +744,14 @@ pub(crate) mod tests {
     }
 
     impl Native for Fake {
-        fn pick_executable(&self) -> Option<PathBuf> {
+        fn pick_executable(&self) -> Result<Option<PathBuf>, &'static str> {
             self.calls.borrow_mut().push("pick_executable");
-            self.executable.clone()
+            self.pick_failure.map_or(Ok(self.executable.clone()), Err)
         }
 
-        fn pick_folder(&self) -> Option<PathBuf> {
+        fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str> {
             self.calls.borrow_mut().push("pick_folder");
-            self.folder.clone()
+            self.pick_failure.map_or(Ok(self.folder.clone()), Err)
         }
 
         fn confirm(&self, confirmation: &Confirmation) -> Option<i32> {
@@ -858,6 +964,24 @@ pub(crate) mod tests {
             Chosen::Canceled
         );
         assert!(native.calls().contains(&"pick_folder"));
+    }
+
+    #[test]
+    fn a_failed_folder_pick_is_a_refusal_not_a_cancel() {
+        let contexts = Contexts::new(SESSION);
+        let native = Fake {
+            pick_failure: Some(PICKER_FAILED),
+            ..Fake::default()
+        };
+        assert_eq!(
+            choose_repository(&native, &contexts, Instant::now()),
+            Chosen::Refused(PICKER_FAILED)
+        );
+        assert_eq!(
+            choose_git(&native, None, &contexts, Instant::now()),
+            Chosen::Refused(PICKER_FAILED),
+            "a failed executable pick"
+        );
     }
 
     #[test]

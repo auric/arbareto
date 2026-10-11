@@ -58,6 +58,12 @@ describe("repository states", () => {
     expect(buttons(host)).toEqual(["Copy command", "Open repository"]);
   });
 
+  test("a shell PICKER_FAILED refusal without a result shows its code and the folder dialog text", async () => {
+    const host = await show(<states.RepositoryRefused code="PICKER_FAILED" result={undefined} onOpenRepository={noop} />);
+    for (const part of ["The repository did not open: PICKER_FAILED", states.PICKER_FAILED_TEXT]) expect(text(host)).toContain(part);
+    expect(buttons(host)).toEqual(["Open repository"]);
+  });
+
   test("Loading shows the placeholder without content, the Refreshing marker only for a user Refresh, and nothing for a poll", async () => {
     expect(text(await show(<states.Loading hasContent={false} refreshing={false} />))).toBe("Loading…");
     expect(text(await show(<states.Loading hasContent refreshing />))).toBe("Refreshing…");

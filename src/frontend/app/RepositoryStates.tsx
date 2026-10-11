@@ -88,9 +88,12 @@ function OutputTail({ text }: { text: string }) {
 
 const field = <T,>(value: unknown, name: string): T | undefined => (typeof value === "object" && value !== null ? ((value as Record<string, unknown>)[name] as T | undefined) : undefined);
 
+// The shell rejects a failed folder dialog call with `PICKER_FAILED` and no result.
+export const PICKER_FAILED_TEXT = "The folder dialog failed. Open the folder again.";
+
 /** A refused `chooseRepository` or `restoreWorkspace`. The current workspace stays unchanged. */
 export function RepositoryRefused({ code, result, onOpenRepository }: { code: ErrorCode; result: RegistrationResult | undefined; onOpenRepository(): void }) {
-  const text = field<string>(result, "text");
+  const text = field<string>(result, "text") ?? (code === "PICKER_FAILED" ? PICKER_FAILED_TEXT : undefined);
   return (
     <section role="alert" className="flex flex-col items-start gap-2 p-4">
       <p className="flex items-center gap-2">

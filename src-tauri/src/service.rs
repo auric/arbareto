@@ -1314,6 +1314,15 @@ mod tests {
             Ok(None),
             "a canceled picker"
         );
+        let failed = Fake {
+            pick_failure: Some(dialogs::PICKER_FAILED),
+            ..Fake::default()
+        };
+        assert_eq!(
+            shell.prepare(&failed, "chooseRepository", json!({})),
+            Err(Ended::Rejected("PICKER_FAILED")),
+            "a failed picker call"
+        );
         let repository = shell.folder("repo");
         let picked = Fake {
             folder: Some(repository.clone()),

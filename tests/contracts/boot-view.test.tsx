@@ -199,6 +199,36 @@ describe("Select Git result", () => {
   });
 });
 
+// Contract §11 "Distro start": a dismissal of a marker in a stopped distro reports phase `wsl-starting`. The boot view has no Cancel for it.
+describe("marker dismissal start", () => {
+  test("a wsl-starting event shows the start text in a live region below the markers, without Cancel, until the dismissal ends", async () => {
+    const marker = { markerId: crypto.randomUUID(), kind: "commit" as const, startedAt: "2026-10-02T10:00:00Z", worktreeRoot: "\\\\wsl.localhost\\Ubuntu-26.04\\home\\me\\repo" };
+    let progress: ((event: never) => void) | undefined;
+    let end: () => void = () => {};
+    const onDismissMarker = (_: string, onProgress?: unknown) => {
+      progress = onProgress as (event: never) => void;
+      return new Promise<void>((resolve) => (end = resolve));
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<BootView state="facts" environment={environment({ markers: [marker] })} onSelectGit={async () => CANCELED} onDismissMarker={onDismissMarker} />));
+      await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Dismiss")!.click());
+      await act(async () => progress!({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "running", phase: "wsl-starting", counters: {}, distro: "Ubuntu-26.04" } as never));
+      const live = host.querySelector('[role="status"]')!;
+      expect(live.textContent).toBe("Starting WSL distro Ubuntu-26.04…");
+      // The live region follows the marker list.
+      expect(host.querySelector("ul")!.compareDocumentPosition(live) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Cancel")).toBe(false);
+      await act(async () => end());
+      expect(host.querySelector('[role="status"]')!.textContent).toBe("");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+});
+
 describe("no network request", () => {
   test("no frontend source opens a network API", async () => {
     const network = /\b(fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\b/;

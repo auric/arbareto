@@ -6,7 +6,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button";
 import type { Environment } from "../../contracts/envelope";
-import type { BridgeResponse, createBridge } from "../bridge";
+import { wslStartingText } from "../app/RepositoryStates";
+import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 
 // Contract §3 `getEnvironment`. A type-only import keeps zod out of the renderer bundle.
 export type { Environment };
@@ -14,7 +15,7 @@ export type { Environment };
 export type BootProps =
   | { state: "loading" }
   | { state: "unavailable"; code: string; session?: boolean }
-  | { state: "facts"; environment: Environment; onSelectGit: () => Promise<BridgeResponse>; onDismissMarker: (markerId: string) => void };
+  | { state: "facts"; environment: Environment; onSelectGit: () => Promise<BridgeResponse>; onDismissMarker: (markerId: string, onProgress?: OnProgress) => unknown };
 
 const GIT_BLOCKED: Record<string, string> = {
   GIT_UNAVAILABLE: "Git unavailable",
@@ -39,7 +40,10 @@ export function bootActions(bridge: Pick<Bridge, "chooseGit" | "dismissRecoveryM
       if (response.state === "succeeded") reload();
       return response;
     },
-    onDismissMarker: (markerId: string) => void bridge.dismissRecoveryMarker({ markerId }).then(reload),
+    onDismissMarker: async (markerId: string, onProgress?: OnProgress) => {
+      await bridge.dismissRecoveryMarker({ markerId }, onProgress);
+      reload();
+    },
   };
 }
 
@@ -86,6 +90,8 @@ function GitRefused({ response }: { response: BridgeResponse }) {
 export function BootView(props: BootProps) {
   const facts = props.state === "facts";
   const [refused, setRefused] = useState<BridgeResponse | null>(null);
+  // Contract §11 "Distro start": a dismissal in phase `wsl-starting`, until the response of that dismissal. It has no Cancel.
+  const [starting, setStarting] = useState<{ distro: string; operationId: string } | null>(null);
   useEffect(() => {
     if (facts) markBootView();
   }, [facts]);
@@ -108,6 +114,16 @@ export function BootView(props: BootProps) {
   }
 
   const env = props.environment;
+  const onDismissMarker = props.onDismissMarker;
+  async function dismiss(markerId: string) {
+    let operationId: string | null = null;
+    await onDismissMarker(markerId, (event) => {
+      if (event.phase !== "wsl-starting" || event.distro === undefined) return;
+      operationId = event.operationId;
+      setStarting({ distro: event.distro, operationId });
+    });
+    setStarting((current) => (current !== null && current.operationId === operationId ? null : current));
+  }
   const onSelectGit = props.onSelectGit;
   async function selectGit() {
     setRefused(null);
@@ -144,7 +160,8 @@ export function BootView(props: BootProps) {
         {blocked !== undefined && env.path !== undefined && <Fact label="Path">{env.path}</Fact>}
       </dl>
       {/* A direct call keeps the marker buttons in the BootView element tree. RecoveryMarkers uses no hooks. */}
-      {RecoveryMarkers({ environment: env, onDismissMarker: props.onDismissMarker })}
+      {RecoveryMarkers({ environment: env, onDismissMarker: (markerId) => void dismiss(markerId) })}
+      <p role="status">{starting === null ? null : wslStartingText(starting.distro)}</p>
     </Frame>
   );
 }

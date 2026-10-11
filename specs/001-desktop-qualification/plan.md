@@ -400,7 +400,7 @@ The graph covers at most 100 commits reachable from the captured checkout. Label
 
 Clamp restored window bounds to the current work area before showing the window. Report an insufficient work area if no supported client size fits. Store pane sizes in logical units, not physical pixels. Constrained layouts must not overwrite remembered wide-pane proportions.
 
-Stored pane bounds (T364). The preferences file keeps six pane sizes in DIPs. The bounds hold every density and every text size from 100% to 225%:
+Stored pane bounds (T364). Webview storage keeps six pane sizes in DIPs. The bounds hold every density and every text size from 100% to 225%:
 
 - `fileLane`: 240–400 ("Chosen layout, sizes, and DPI"). Default 280.
 - `sidebar`: 180–420 ("References sidebar"). Default 240.

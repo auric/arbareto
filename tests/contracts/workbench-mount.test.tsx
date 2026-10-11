@@ -440,6 +440,47 @@ describe("submodule update mount", () => {
     expect(document.activeElement === bandButton()).toBe(false);
   });
 
+  // plan.md "Status area", Cancel sender. The `cancel` senders in src/frontend: the status-bar Cancel (OperationStatus),
+  // the WslStarting Cancel (only during a `wsl-starting` phase), and the poll cancel of a user read (requests.ts, only the poll operationId).
+  // The review dialog Cancel and Escape call `onCancel`, which sends no `cancel`.
+  test("T369: while an update runs, only the status-bar Cancel sends cancel with its operationId", async () => {
+    const OP = crypto.randomUUID();
+    const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
+    await act(async () => bandButton()!.click());
+    await settle();
+    await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
+    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
+    await settle();
+    const update = latest(double, "updateSubmodules");
+    const onProgress = update.args[2] as (event: unknown) => void;
+    const cancels = () => double.calls.filter((c) => c.operation === "cancel" && (c.args[0] as { operationId?: string }).operationId === OP);
+    await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: OP, state: "accepted", counters: {} }));
+    await settle();
+    // Before acceptance, the dialog stays open, and its Escape and Cancel stay active.
+    await act(async () => void dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true })));
+    await settle();
+    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Cancel")!.click());
+    await settle();
+    expect(cancels()).toHaveLength(0);
+    await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: OP, state: "running", phase: "preflight", counters: {}, stalled: false }));
+    await settle();
+    expect(dialog()).toBeNull();
+    // A user read can cancel only a poll. Refresh and F5 start user reads.
+    await act(async () => document.querySelector<HTMLElement>('header button[aria-label="Refresh"]')!.click());
+    await settle();
+    await act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "F5", code: "F5", bubbles: true, cancelable: true })));
+    await settle();
+    await act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true })));
+    await settle();
+    expect(cancels()).toHaveLength(0);
+    await act(async () => footerButton("Cancel")!.click());
+    await settle();
+    expect(cancels().map((c) => c.args[0])).toEqual([{ operationId: OP }]);
+    expect(double.calls.filter((c) => c.operation === "cancel")).toHaveLength(1);
+  });
+
   for (const [width, height, profile] of [[1600, 900, "wide"], [960, 900, "narrow"], [720, 480, "constrained"]] as const) {
     test(`at ${width}x${height} (${profile}), F6 visits the header, the band, the references, the history list, the commit panel sections, and wraps`, async () => {
       await sized(width, height, async () => {

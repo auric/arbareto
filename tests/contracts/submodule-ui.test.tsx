@@ -475,11 +475,42 @@ describe("submodule review", () => {
     await settle();
     const text0 = "Submodule review did not complete: DEADLINE";
     expect(text(dialog())).toContain(text0);
+    // T369: the failure text after a user action is an alert, as the Select Git failure is.
+    expect([...dialog()!.querySelectorAll('[role="alert"]')].map(text)).toEqual([text0]);
     const start = button("Start update", dialog()!);
     expect(start.getAttribute("aria-disabled")).toBe("true");
     expect(describedText(start)).toContain(text0);
     await click(start);
     expect(t.of("updateSubmodules")).toHaveLength(1);
+  });
+
+  test("T369: a rejection other than APPROVAL_EXPIRED shows Update submodules did not start: <code> as an alert in the dialog, keeps Start update enabled, and a new Start clears the text", async () => {
+    const t = await mountReview();
+    await click(button("Start update", dialog()!));
+    await acceptedEvent(t.of("updateSubmodules")[0]!);
+    await answer(t.of("updateSubmodules")[0]!, { state: "rejected", code: "REPOSITORY_CHANGED" });
+    await settle();
+    expect(dialog()).not.toBeNull();
+    const shown = () => [...dialog()!.querySelectorAll("p")].filter((p) => text(p).startsWith("Update submodules did not start"));
+    expect(shown().map(text)).toEqual(["Update submodules did not start: REPOSITORY_CHANGED"]);
+    expect(shown()[0]!.getAttribute("role")).toBe("alert");
+    expect([...shown()[0]!.querySelectorAll("code")].map(text)).toEqual(["REPOSITORY_CHANGED"]);
+    // Contract §9: only APPROVAL_EXPIRED makes a new review.
+    expect(t.of("reviewSubmodules")).toHaveLength(0);
+    const start = button("Start update", dialog()!);
+    expect(start.getAttribute("aria-disabled")).not.toBe("true");
+    await click(start);
+    expect(t.of("updateSubmodules")).toHaveLength(2);
+    expect(t.of("updateSubmodules")[1]!.payload).toEqual(t.of("updateSubmodules")[0]!.payload);
+    expect(shown()).toHaveLength(0);
+  });
+
+  test("T369: an expired token shows no Update submodules did not start text", async () => {
+    const t = await mountReview();
+    await click(button("Start update", dialog()!));
+    await answer(t.of("updateSubmodules")[0]!, { state: "rejected", code: "APPROVAL_EXPIRED" });
+    await settle();
+    expect(text(dialog())).not.toContain("did not start");
   });
 
   test("Escape and Cancel after Start update and before acceptance keep the dialog open", async () => {

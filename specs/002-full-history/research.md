@@ -27,6 +27,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - Git documents no unique order (rev-list-options.adoc:916). Repeatability across two processes is an experiment fact only. **documented** (the gap) and **experiment** (the repeatability)
   - Without a commit-graph, the first row waits for a walk of the whole graph: about 1 s at 200,000 commits, 48 ms with a commit-graph. **experiment**
   - rev-list reads revisions from stdin with `--stdin` (git-rev-list(1)). **documented**
+  - With equal commit dates, the stdin order of the start points decides the order of the tied rows. A shuffled or a reversed stdin gave the same rows in another order. So the start points must go to Git in ascending lowercase hex. **experiment** (Git 2.56.0.windows.1, T003 equal-dates fixture)
 - **Alternatives considered**:
   - A cursor that restarts from the parents not yet sent. It gives another valid order, so the order changes inside a view. Rejected. **experiment**
   - `--skip` pages for every scroll. Each page walks again. Rejected for scrolling; kept only for a resume.
@@ -46,7 +47,8 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 
 - **Decision**: The service runs the lane layout as a pure step `layoutStep(lanes, row)`. It stores a checkpoint every 256 rows. The cell of row i comes from the checkpoint at ⌊i/256⌋·256.
 - **Rationale**:
-  - The 001 layout (`lanes.ts`) can run page by page with equal results, when it carries the output lane array and the set of sent OIDs. This is a proof from the code. No test has shown it. **unverified** (P0.3 tests it)
+  - The 001 layout (`lanes.ts`) can run row by row with equal results, when the state carries the output lane array and the lane count. This is a proof from the code. No test has shown it. **unverified** (P0.3 tests it)
+  - The state needs no set of sent OIDs. With `--date-order`, no parent comes before its children (git-rev-list(1)), so such a set changes no cell. The topology table checks duplicate rows and repeated parents (data-model §3, T012). **documented**
   - A complete walk lists every effective parent later. So the 001 "outside page" branch never runs (`lanes.ts:50-110`, `lanes.ts:52-55, 84-102`). **documented** (code)
   - The page-wide width limit of 001 must become a rule for each row. **documented** (code)
 - **Alternatives considered**: Layout in the renderer. Rejected, because renderer work then grows with the history (R8).
@@ -60,13 +62,19 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - `--graph --grep` breaks lines at parents that do not match. The application must build the reduced graph itself. **experiment**
   - `-F` on a PCRE2 build wraps the text in `\Q…\E` (grep.c:527-546). A backslash followed by `E` breaks literal matching, with or without `-i`. **documented** (code) and **experiment**
   - Case folding of non-ASCII text needs a UTF-8 locale and UTF-8 log output (grep.c:325-326, revision.c:3214). **documented** (code)
+  - On Git 2.56.0.windows.1, the probe also folded case with `LC_ALL=C`. **experiment** (T004)
+  - This Git install (`C:\Git`) has no `share/locale` folder and no `git.mo` file. `git version --build-options` reports `gettext: enabled`. **experiment**
+  - The link between the missing locale files and the folding under `LC_ALL=C` is not shown. **unverified**
+  - The search keeps `LC_ALL=C.UTF-8` for Git builds that have locale files.
   - `-F -i` folds Cyrillic, Ukrainian є ї ґ і, and ß against ẞ, never against "SS", under those settings. **experiment**
-  - `--fixed-strings` overrides `grep.patternType`. **unverified**
-  - The `-c` value comes after an inherited `GIT_CONFIG_PARAMETERS`, so it wins. **unverified**
+  - `--fixed-strings` overrides `grep.patternType=perl` in the global configuration. With that setting, `--grep=probe.` matched 15 of 15 probe commits without `--fixed-strings` and 0 with it. **experiment** (Git 2.56.0.windows.1, T004)
+  - The `-c` value comes after an inherited `GIT_CONFIG_PARAMETERS`, so it wins. With an inherited `i18n.logOutputEncoding=ISO-8859-1`, `config --get` gave `ISO-8859-1` alone and `UTF-8` with `-c`. The probe runs gave the contract matches. **experiment** (Git 2.56.0.windows.1, T004)
   - FR-023 for the rest of Unicode rests on PCRE2 caseless matching. **unverified**
   - `git version --build-options` does not report PCRE2. No Git signal tells whether Git uses PCRE2. This is a contract gap. The probe covers only the probed cases. **experiment**
   - The Windows command line caps a pattern near 32,767 characters. The plan sets 1,024 UTF-8 bytes. **documented** (Win32 command line limit)
-  - `init --template=` copies nothing, and an explicit `--git-dir` gets no ownership refusal. **unverified** (P0.5 tests both)
+  - `init --bare --template=` copies nothing. It writes only `HEAD` and `config`. A marker file in `GIT_TEMPLATE_DIR` and the default template files do not appear. **experiment** (Git 2.56.0.windows.1, T004)
+  - An explicit `--git-dir` gets no ownership refusal. With `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, discovery exits 128, and `--git-dir` exits 0. The probe runs then give the contract matches. **experiment** (Git 2.56.0.windows.1, T004)
+  - `fs.rm` with `recursive` and `force` removes the probe folder after the probe runs. **experiment** (Bun 1.4.2, T004)
 - **Alternatives considered**:
   - A filter over loaded rows. Wrong answers in a long history (spec US2). Rejected.
   - A message index. FR-044 forbids it.
@@ -170,7 +178,7 @@ These stay **unverified** until the named step runs:
 - Git peak memory during load and search: P0.4.
 - About 48 bytes per commit in the service, and the service CPU during the drain: P3 and P8.
 - The `save_commit_buffer` recollection: P0.4.
-- `init --template=` copies nothing; an explicit `--git-dir` skips the ownership check: P0.5.
+- `init --template=` copies nothing; an explicit `--git-dir` skips the ownership check: P0.5 showed both on Git 2.56.0.windows.1 (R4, **experiment**).
 - `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: P3.
 - The maximum layout height in WebView2: P6.
 - `IsHungAppWindow` covers the Tauri main window: P8.

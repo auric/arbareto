@@ -130,11 +130,20 @@ describe("result, progress, and response schemas", () => {
   });
 
   test("a progress event holds exactly the contract §2 fields", () => {
-    const event = { requestId: id(), operationId: id(), state: "running", phase: "fetch", counters: { index: 1 }, stalled: false };
+    const event = { requestId: id(), operationId: id(), state: "running", phase: "fetch", path: "libs/sub", counters: { index: 1 }, stalled: false };
     expect(ProgressEvent.safeParse(event).success).toBe(true);
     for (const bad of [{ ...event, command: "git fetch" }, { ...event, state: "succeeded" }, { ...event, counters: { index: -1 } }, { ...event, counters: { index: 1.5 } }]) {
       expect(ProgressEvent.safeParse(bad).success).toBe(false);
     }
+  });
+
+  // T367: contract §2 and §12 "Progress".
+  test("only phase fetch or update carries path, and those phases always carry it", () => {
+    const event = { requestId: id(), operationId: id(), state: "running", phase: "fetch", path: "mid/leaf", counters: { rowIndex: 1, rowCount: 2 }, stalled: false };
+    for (const good of [event, { ...event, phase: "update" }]) expect(ProgressEvent.safeParse(good).success).toBe(true);
+    const { path: _path, ...without } = event;
+    const bad = [without, { ...without, phase: "update" }, { ...event, phase: "commit-handoff" }, { ...event, phase: "preflight" }, { ...event, phase: undefined }, { ...event, phase: "wsl-starting", distro: "Ubuntu" }];
+    for (const value of bad) expect(ProgressEvent.safeParse(value).success).toBe(false);
   });
 
   // T339 (b): contract §2 and §11 "Distro start".

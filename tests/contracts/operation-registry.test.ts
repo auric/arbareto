@@ -54,7 +54,7 @@ function finishCommit(ops: Ops): string {
   return operationId;
 }
 
-const PROGRESS_FIELDS = ["requestId", "operationId", "state", "phase", "counters", "stalled"];
+const PROGRESS_FIELDS = ["requestId", "operationId", "state", "phase", "counters", "stalled", "distro", "path"];
 
 describe("operation registry", () => {
   test("start sends the accepted event before any transition", () => {
@@ -118,7 +118,7 @@ describe("operation registry", () => {
     const { ops } = registry();
     const { operationId } = ops.start("updateSubmodules", crypto.randomUUID());
     ops.apply(operationId, { type: "marker-recorded" });
-    for (const phase of ["fetch", "update"]) expect(() => ops.progress(operationId, phase as never)).not.toThrow();
+    for (const phase of ["fetch", "update"]) expect(() => ops.progress(operationId, phase as never, {}, undefined, "libs/sub")).not.toThrow();
     for (const phase of ["submodule-fetch", "submodule-update", "running"]) expect(() => ops.progress(operationId, phase as never)).toThrow();
   });
 
@@ -144,9 +144,10 @@ describe("operation registry", () => {
       const id = ops.start(name, crypto.randomUUID()).operationId;
       ops.apply(id, { type: "marker-recorded" });
       ops.apply(id, { type: "stall" });
-      ops.progress(id, name === "commit" ? "commit-handoff" : "update");
+      const path = name === "commit" ? undefined : "libs/sub";
+      ops.progress(id, name === "commit" ? "commit-handoff" : "update", {}, undefined, path);
       ops.apply(id, { type: "activity" });
-      ops.progress(id, name === "commit" ? "commit-handoff" : "update");
+      ops.progress(id, name === "commit" ? "commit-handoff" : "update", {}, undefined, path);
     }
     const events = progress();
     for (const event of events) {

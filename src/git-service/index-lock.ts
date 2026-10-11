@@ -77,8 +77,7 @@ async function removeByToken(handle: FileHandle, path: string): Promise<boolean>
   }
 }
 
-// `testFileId` is a test seam only. Production never sets it. It replaces the file ID of the held handle.
-export async function createIndexLock(indexPath: string, testFileId?: bigint): Promise<LockResult> {
+export async function createIndexLock(indexPath: string): Promise<LockResult> {
   // Git `lockfile.h` LOCK_SUFFIX. The lock lies in the folder of the index, so on the same volume.
   const path = `${indexPath}.lock`;
   let handle: FileHandle;
@@ -92,7 +91,7 @@ export async function createIndexLock(indexPath: string, testFileId?: bigint): P
   // The identity of the open handle. NTFS file IDs hold a sequence number, so a recreated lock gets another ID.
   // The handle shares delete access, so another writer can still remove or replace the name. Each step compares the path with this identity.
   const own = await handle.stat({ bigint: true });
-  if (NO_FILE_ID.includes(testFileId ?? own.ino)) return { ok: false, reason: "file-id", path, removed: await removeByToken(handle, path) };
+  if (noFileId(own.ino)) return { ok: false, reason: "file-id", path, removed: await removeByToken(handle, path) };
   let live = true;
   const close = async () => {
     if (!live) return;

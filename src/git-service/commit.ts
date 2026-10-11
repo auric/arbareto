@@ -23,12 +23,11 @@ import {
   enterReconciling,
   failureOf,
   isStop,
-  lingeringSentence,
+  lingeringText,
   notEntered,
   observePolicy,
   observeState,
   recording,
-  REVOKE_TEXT,
   settled,
   type Fact,
   type Failure,
@@ -67,9 +66,6 @@ const DEADLINE: Stop = { stop: "deadline" };
 const STALE: Refusal = { code: "STALE_REVIEW" };
 const EMPTY = new Uint8Array(0);
 
-// Contract §9 "Lingering count": the sentences need a nonzero count, and "Revoke trust also ends them." needs a current trust ID.
-const lingering = (count: number | null, trustId: boolean) => (count !== null && count > 0 ? ` ${lingeringSentence(count)}${trustId ? ` ${REVOKE_TEXT}` : ""}` : "");
-
 // Contract §9: a GIT_FAILED before handoff carries no remedy. The diagnostic bound names OUTPUT_LIMIT as the cause.
 const refusalOf = (f: Failure): Refusal => (f.reason === "UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION" ? { ...f, cause: "OUTPUT_LIMIT" } : f);
 
@@ -95,7 +91,7 @@ export function wslCommitRemedy(w: Pick<Workspace, "worktreeRoot"> & { wsl: WslG
 
 // `values`: the text of each value kind, for the refused-value text.
 function hookRemedy(built: RemedyCommand, values: Record<string, string>, count: number | null, trustId: boolean, otherLocks: boolean): { text: string; command: string | null } {
-  const extra = `${otherLocks ? ` ${OTHER_LOCKS_TEXT}` : ""}${lingering(count, trustId)}`;
+  const extra = `${otherLocks ? ` ${OTHER_LOCKS_TEXT}` : ""}${lingeringText(count, trustId)}`;
   if (built.command !== null) return { text: `${HOOK_REMEDY_TEXT}${extra}`, command: built.command };
   return { text: `${REFUSED_TEXT}${values[built.refused] ?? ""}${extra}`, command: null };
 }
@@ -282,14 +278,18 @@ export function createCommitter(o: CommitterOptions) {
         if (signal.aborted) return CANCELED;
         const result = await wslLock(ctx);
         if ("unknown" in result) unknownLock = result.unknown;
-        if (!("ok" in result)) return "stop" in result ? { stop: result.stop } : refusalOf(result);
+        if (!("ok" in result)) {
+          if ("stop" in result) return { stop: result.stop };
+          const { unknown: _unknown, ...failure } = result;
+          return refusalOf(failure);
+        }
         locked = result;
       } else locked = await createIndexLock(w.indexPath);
       if (locked.ok) held = locked.lock;
       else {
         if ("code" in locked) {
           const answer = await o.runner.lingeringCount(operationId, w.commonDirectory).catch(() => null);
-          const text = `${locked.remedy.text}${lingering(typeof answer === "number" ? answer : null, o.trust.currentTrustId(w) !== undefined)}`;
+          const text = `${locked.remedy.text}${lingeringText(typeof answer === "number" ? answer : null, o.trust.currentTrustId(w) !== undefined)}`;
           return { code: "LOCKED", path: locked.path, remedy: { text } };
         }
         if (locked.reason === "create-failed") return { code: "GIT_FAILED", cause: "lock-create" };
@@ -380,7 +380,7 @@ export function createCommitter(o: CommitterOptions) {
       const remedy = (count: number | null, otherLocks: boolean, gitFailed: boolean) => {
         if (gitFailed && w.wsl !== undefined) return wslCommitRemedy({ worktreeRoot: w.worktreeRoot, wsl: w.wsl }, count, trustId(), otherLocks);
         if (gitFailed) return installation.selectedPath === null ? null : commitRemedy(installation.selectedPath, w.worktreeRoot, count, trustId(), otherLocks);
-        return otherLocks ? { text: `${OTHER_LOCKS_TEXT}${lingering(count, trustId())}` } : null;
+        return otherLocks ? { text: `${OTHER_LOCKS_TEXT}${lingeringText(count, trustId())}` } : null;
       };
       await reconcileCommit({ registry, runner: o.runner, retained, operationId, markerId: marker.markerId, ctx, review: a.review, binding, tip: kept.tip, exit, outputTail: tail.outputTail(), foreign, remedy });
     } catch {

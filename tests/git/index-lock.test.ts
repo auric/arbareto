@@ -7,7 +7,7 @@
 import { describe, expect, spyOn } from "bun:test";
 import { existsSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
-import { createIndexLock, LOCKED_REMEDY } from "../../src/git-service/index-lock";
+import { createIndexLock, fileIdSeam, LOCKED_REMEDY } from "../../src/git-service/index-lock";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { buildF02, put } from "./fixtures";
@@ -184,7 +184,12 @@ describe("index lock (T107)", () => {
       [],
       async () => {
         const { repo, index, lockPath, before } = setup(`t107-file-id-${name.replace(" ", "-")}`);
-        expect(await createIndexLock(index, id)).toEqual({ ok: false, reason: "file-id", path: lockPath, removed: true });
+        fileIdSeam.ino = () => id;
+        try {
+          expect(await createIndexLock(index)).toEqual({ ok: false, reason: "file-id", path: lockPath, removed: true });
+        } finally {
+          delete fileIdSeam.ino;
+        }
         expect(existsSync(lockPath)).toBe(false);
         expect(repoState(repo)).toEqual(before);
       },

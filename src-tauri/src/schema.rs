@@ -291,15 +291,15 @@ pub mod reply {
         })
     }
 
-    /// `exit_code` `None` encodes as `null`.
+    /// `exit_code` and `active_descendants` `None` encode as `null`.
     pub fn exit(
         call_id: &str,
         exit_code: Option<u32>,
-        active_descendants: u32,
+        active_descendants: Option<u32>,
         deadline: Option<p::ExitDeadline>,
     ) -> Value {
         encode(p::ProcessReply::Exit {
-            active_descendants: active_descendants.into(),
+            active_descendants: active_descendants.map(Into::into),
             call_id: field(call_id),
             deadline,
             exit_code,
@@ -1033,18 +1033,22 @@ mod tests {
                 reply::exit(
                     "0f0f0f0f-0000-4000-8000-000000000003",
                     Some(4_294_967_295),
-                    0,
+                    Some(0),
                     None,
                 ),
                 vector("process-exit-largest-code.json"),
             ),
             (
-                reply::exit(call, None, 2, Some(ExitDeadline::Deadline)),
+                reply::exit(call, None, Some(2), Some(ExitDeadline::Deadline)),
                 json!({ "type": "exit", "callId": call, "exitCode": null, "activeDescendants": 2, "deadline": "deadline" }),
             ),
             (
-                reply::exit(call, None, 0, Some(ExitDeadline::Inactivity)),
+                reply::exit(call, None, Some(0), Some(ExitDeadline::Inactivity)),
                 json!({ "type": "exit", "callId": call, "exitCode": null, "activeDescendants": 0, "deadline": "inactivity" }),
+            ),
+            (
+                reply::exit(call, Some(0), None, None),
+                json!({ "type": "exit", "callId": call, "exitCode": 0, "activeDescendants": null }),
             ),
             (
                 reply::activity(call, ActivityState::Stalled),

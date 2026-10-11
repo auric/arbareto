@@ -276,8 +276,9 @@ function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest
 
 interface WslAnchor {
   proc: Subprocess<"pipe", "pipe", "ignore">;
-  // The answer to one stdin line: the process count and the CPU-time sum of the operation scopes. A null sum is unknown.
-  ask(): Promise<[number, number | null] | null>;
+  // The answer to one stdin line: the process count and the CPU-time sum of the operation scopes. A null part is unknown.
+  ask(): Promise<[number | null, number | null] | null>;
+  // The newest answer with a known count (contract §11 "Process ownership").
   last: [number, number | null] | null;
   close(): void;
 }
@@ -550,7 +551,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     const reader = proc.stdout.getReader();
     const decoder = new TextDecoder();
     let buffered = "";
-    const waiting: ((line: [number, number | null] | null) => void)[] = [];
+    const waiting: ((line: [number | null, number | null] | null) => void)[] = [];
     // After the anchor stdout ends, no answer can come.
     let ended = false;
     const anchor: WslAnchor = {
@@ -558,7 +559,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       last: null,
       ask: () => {
         if (ended) return Promise.resolve(null);
-        const answer = new Promise<[number, number | null] | null>((resolve) => waiting.push(resolve));
+        const answer = new Promise<[number | null, number | null] | null>((resolve) => waiting.push(resolve));
         proc.stdin.write("\n");
         void proc.stdin.flush();
         return answer;
@@ -571,8 +572,13 @@ export function createBunRunner(options: BunRunnerOptions) {
         if (chunk.done) break;
         buffered += decoder.decode(chunk.value);
         for (let nl = buffered.indexOf("\n"); nl >= 0; nl = buffered.indexOf("\n")) {
-          const m = /^(\d+) (\d+|-)$/.exec(buffered.slice(0, nl));
+          const line = buffered.slice(0, nl);
+          const m = /^(\d+) (\d+|-)$/.exec(line);
           buffered = buffered.slice(nl + 1);
+          if (line === "- -") {
+            waiting.shift()?.([null, null]);
+            continue;
+          }
           if (!m) continue;
           anchor.last = [Number(m[1]), m[2] === "-" ? null : Number(m[2])];
           waiting.shift()?.(anchor.last);
@@ -900,7 +906,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     scan(call.operationId);
     return {
       exitCode: killed ? null : proc.exitCode,
-      activeDescendants: live((r) => r.operationId === call.operationId).length,
+      // Contract §6: a closed Job gives no count.
+      activeDescendants: killed ? null : live((r) => r.operationId === call.operationId).length,
       ...(expired ? { deadline: expired } : {}),
       ...(diagnostics.reached(call) ? { diagnosticLimit: true as const } : {}),
     };
@@ -962,7 +969,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     const exit = await execute(call, [WSL_EXE, ...args], launchDirectory, wslEnvironment(), recorded).finally(() => clearInterval(poll));
     await inject.afterWslExit?.(call);
     // The anchor count after the exit of an execution process becomes `activeDescendants`.
-    return anchor ? { ...exit, activeDescendants: (await anchor.ask())?.[0] ?? 0 } : exit;
+    // Without an answer, or with an unknown count, the exit carries no count (contract §6).
+    return anchor ? { ...exit, activeDescendants: (await anchor.ask())?.[0] ?? null } : exit;
   }
 
   const runner: GitRunner = {

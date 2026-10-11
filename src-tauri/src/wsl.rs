@@ -1354,8 +1354,14 @@ pub fn wsl_files_reply(output: Option<Output>, request: &FilesRequest) -> Vec<Fi
 
 // ---- The mutation anchor ----
 
-/// `<count> <CPU-time sum>`, both decimal. A `-` sum is unknown (contract §11 "Process ownership").
-pub fn parse_anchor_line(line: &str) -> Option<(u32, Option<u64>)> {
+/// One anchor answer: the process count and the CPU-time sum. `None` in a part is unknown.
+pub type Answer = (Option<u32>, Option<u64>);
+
+/// `<count> <CPU-time sum>`, both decimal, or `- -` for an unknown count. A `-` sum is unknown (contract §11 "Process ownership").
+pub fn parse_anchor_line(line: &str) -> Option<Answer> {
+    if line == "- -" {
+        return Some((None, None));
+    }
     let (count, sum) = line.split_once(' ')?;
     if !is_decimal(count) {
         return None;
@@ -1365,7 +1371,7 @@ pub fn parse_anchor_line(line: &str) -> Option<(u32, Option<u64>)> {
         sum if is_decimal(sum) => Some(sum.parse().ok()?),
         _ => return None,
     };
-    Some((count.parse().ok()?, sum))
+    Some((Some(count.parse().ok()?), sum))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1382,6 +1388,9 @@ const ANCHOR_LINE_BYTES: usize = 64;
 struct Answers {
     /// The count of answer lines. `exchange` waits for a change.
     lines: u64,
+    /// The newest answer line.
+    answer: Option<Answer>,
+    /// The newest answer with a known count. An unknown count keeps it (contract §11 "Process ownership").
     last: Option<(u32, Option<u64>)>,
     /// The stdout of the anchor reached end-of-file.
     closed: bool,
@@ -1445,7 +1454,10 @@ impl Anchor {
                 if let Some(answer) = answer {
                     let mut state = lock(state);
                     state.lines += 1;
-                    state.last = Some(answer);
+                    state.answer = Some(answer);
+                    if let (Some(count), sum) = answer {
+                        state.last = Some((count, sum));
+                    }
                     changed.notify_all();
                 }
                 line.clear();
@@ -1464,8 +1476,8 @@ impl Anchor {
         })
     }
 
-    /// Writes one line and waits for its answer.
-    pub fn exchange(&self) -> Option<(u32, Option<u64>)> {
+    /// Writes one line and waits for its answer. `None`: no new answer came.
+    pub fn exchange(&self) -> Option<Answer> {
         let _one = lock(&self.exchange);
         let (state, changed) = &*self.answers;
         let before = lock(state).lines;
@@ -1479,7 +1491,7 @@ impl Anchor {
         if state.lines == before {
             None
         } else {
-            state.last
+            state.answer
         }
     }
 
@@ -1537,14 +1549,9 @@ impl Mutation {
     }
 
     /// The anchor count after an execution process exits. It becomes `activeDescendants`.
-    pub fn after_exit(&self) -> u32 {
-        let Some(anchor) = self.anchor.as_ref() else {
-            return 0;
-        };
-        anchor
-            .exchange()
-            .or_else(|| anchor.last())
-            .map_or(0, |(count, _)| count)
+    /// `None`: no anchor, no answer to this exchange, or an unknown count. An earlier answer never replaces it (contract §11).
+    pub fn after_exit(&self) -> Option<u32> {
+        self.anchor.as_ref()?.exchange()?.0
     }
 
     /// One anchor line while a tracked process runs. The answer gives the CPU-time sum. `None` is an unknown sample (contract §6).
@@ -2588,19 +2595,29 @@ mod tests {
             "cpu.stat",
             "usage_usec",
             "sleep 1",
+            "count=-",
         ] {
             assert!(anchor.contains(needle), "{needle}");
         }
-        assert_eq!(parse_anchor_line("3 35440"), Some((3, Some(35440))));
-        assert_eq!(parse_anchor_line("0 0"), Some((0, Some(0))));
-        assert_eq!(parse_anchor_line("2 -"), Some((2, None)), "an unknown sum");
+        assert_eq!(parse_anchor_line("3 35440"), Some((Some(3), Some(35440))));
+        assert_eq!(parse_anchor_line("0 0"), Some((Some(0), Some(0))));
+        assert_eq!(
+            parse_anchor_line("2 -"),
+            Some((Some(2), None)),
+            "an unknown sum"
+        );
+        assert_eq!(
+            parse_anchor_line("- -"),
+            Some((None, None)),
+            "an unknown count"
+        );
         assert_eq!(
             parse_anchor_line("1 18446744073709551615"),
-            Some((1, Some(u64::MAX)))
+            Some((Some(1), Some(u64::MAX)))
         );
         for line in [
-            "", "3", "3 ", "a b", "3 4 5", "-1 2", "1 -2", " 1 2", "1  2", "- 2", "- -", "1 --",
-            "1 - ", "1 2-",
+            "", "3", "3 ", "a b", "3 4 5", "-1 2", "1 -2", " 1 2", "1  2", "- 2", "- - ", " - -",
+            "-  -", "--", "1 --", "1 - ", "1 2-",
         ] {
             assert_eq!(parse_anchor_line(line), None, "{line:?}");
         }
@@ -2630,6 +2647,7 @@ mod tests {
     /// With a third argument `long`, it lingers with one `LONG_LINE` line in place of those lines.
     /// With a third argument `banner`, it prints `banner text` and a 300 ms pause before its answer to the second stdin line.
     /// With a third argument `constant`, each answer holds the sum 500. With `unknown`, each answer holds the sum `-`.
+    /// With `unknown-count`, each answer is `- -`. With `once`, it exits after its first answer.
     /// A second argument `-` means no release file.
     #[test]
     #[ignore = "child process entry for re-executed tests"]
@@ -2658,13 +2676,17 @@ mod tests {
                 let _ = out.flush();
                 std::thread::sleep(Duration::from_millis(300));
             }
-            let sum = match mode {
-                Some("constant") => "500".to_string(),
-                Some("unknown") => "-".to_string(),
-                _ => (lines * 100).to_string(),
+            let answer = match mode {
+                Some("constant") => format!("{lines} 500"),
+                Some("unknown") => format!("{lines} -"),
+                Some("unknown-count") => "- -".to_string(),
+                _ => format!("{lines} {}", lines * 100),
             };
-            let _ = writeln!(out, "{lines} {sum}");
+            let _ = writeln!(out, "{answer}");
             let _ = out.flush();
+            if mode == Some("once") {
+                std::process::exit(0);
+            }
         }
         std::fs::write(file, lines.to_string()).expect("write line count");
         if let Some(release) = release {
@@ -2787,7 +2809,11 @@ mod tests {
                 mutation.anchor_running(),
                 "the anchor runs after process {n}"
             );
-            assert_eq!(mutation.after_exit(), n, "the count after process {n}");
+            assert_eq!(
+                mutation.after_exit(),
+                Some(n),
+                "the count after process {n}"
+            );
             assert_eq!(mutation.lingering_count(), n);
         }
         assert_eq!(starts, 1, "one anchor for the mutation");
@@ -2811,9 +2837,9 @@ mod tests {
     }
 
     #[test]
-    fn a_mutation_without_an_anchor_reports_zero_and_a_failed_start_is_refused() {
+    fn a_mutation_without_an_anchor_reports_no_count_and_a_failed_start_is_refused() {
         let mut mutation = Mutation::default();
-        assert_eq!(mutation.after_exit(), 0);
+        assert_eq!(mutation.after_exit(), None);
         let mut missing = stand_in_anchor(Path::new("unused"), None);
         missing.program = PathBuf::from(r"C:\arbareto-absent\wsl.exe");
         let job = Job::create().expect("Job");
@@ -2825,6 +2851,44 @@ mod tests {
         );
         assert!(!mutation.anchor_running());
         mutation.ended();
+    }
+
+    /// T116 B3-1, contract §11 "Process ownership": only the answer to the line after the exit counts.
+    #[test]
+    fn after_exit_without_a_new_answer_or_with_an_unknown_count_gives_no_count() {
+        let fixture = Fixture::new();
+        let job = Job::create().expect("Job");
+        let directory = std::env::temp_dir();
+        let start = |mode: &str| {
+            let mut command = stand_in_anchor(&fixture.path(&format!("lines-{mode}")), None);
+            command
+                .arguments
+                .extend(["-".to_string(), mode.to_string()]);
+            let mut mutation = Mutation::default();
+            mutation
+                .before_execution(|| Anchor::start(&command, job.handle(), &directory))
+                .expect("anchor");
+            mutation
+        };
+        // The stdout of this anchor ends after its first answer, so no later answer can come.
+        let once = start("once");
+        assert_eq!(once.after_exit(), Some(1));
+        let asked = Instant::now();
+        assert_eq!(once.after_exit(), None, "the earlier answer never counts");
+        assert!(
+            asked.elapsed() < PROBE_DEADLINE,
+            "the end of stdout ends the wait"
+        );
+        assert_eq!(once.lingering_count(), 1, "the last known count");
+        let unknown = start("unknown-count");
+        assert_eq!(unknown.after_exit(), None, "the answer `- -`");
+        assert_eq!(unknown.activity_sum(), None, "an unknown sample");
+        assert_eq!(unknown.lingering_count(), 0, "no known count");
+        unknown.ended();
+        assert!(
+            eventually(WAIT, || !unknown.anchor_running()),
+            "the anchor exits"
+        );
     }
 
     // ---- T211: the anchor in the operation Job ----
@@ -2928,7 +2992,7 @@ mod tests {
             })
             .expect("anchor");
         for n in 1..=3u32 {
-            assert_eq!(mutation.after_exit(), n);
+            assert_eq!(mutation.after_exit(), Some(n));
         }
         mutation.ended();
         // The stream keeps its order, so the last lingering line arrives after every other line.
@@ -2960,7 +3024,7 @@ mod tests {
             .before_execution(|| Anchor::start(&command, job.handle(), &directory))
             .expect("anchor");
         for n in 1..=3u32 {
-            assert_eq!(mutation.after_exit(), n);
+            assert_eq!(mutation.after_exit(), Some(n));
         }
         mutation.ended();
         assert!(
@@ -2994,21 +3058,21 @@ mod tests {
         mutation
             .before_execution(|| Anchor::start(&command, job.handle(), &directory))
             .expect("anchor");
-        assert_eq!(mutation.after_exit(), 1);
+        assert_eq!(mutation.after_exit(), Some(1));
         let anchor = mutation.anchor.clone().expect("anchor");
         let start = Instant::now();
         let answer = anchor.exchange();
         let elapsed = start.elapsed();
         assert_eq!(
             answer,
-            Some((2, Some(200))),
+            Some((Some(2), Some(200))),
             "the answer after the banner line"
         );
         assert!(
             elapsed < Duration::from_secs(2),
             "the answer ends the exchange: {elapsed:?}"
         );
-        assert_eq!(mutation.after_exit(), 3, "the counts stay in step");
+        assert_eq!(mutation.after_exit(), Some(3), "the counts stay in step");
         mutation.ended();
         std::fs::write(&release, "").expect("release");
         assert!(
@@ -3863,10 +3927,10 @@ mod tests {
         assert_eq!(out.stdout, b"started\n");
         let count = mutation.after_exit();
         println!(
-            "OBSERVATION T205: anchor count after the process exit {count}, last {:?}",
+            "OBSERVATION T205: anchor count after the process exit {count:?}, last {:?}",
             mutation.last()
         );
-        assert_eq!(count, 1, "the lingering sleep");
+        assert_eq!(count, Some(1), "the lingering sleep");
         drop(job);
         // Contract §11 "Process ownership": the Job close ends the scopes within 1 second (P1). The check allows 5 seconds.
         let list = |reference: &Reference| {
@@ -3895,5 +3959,55 @@ mod tests {
             left = list(&reference);
         }
         assert_eq!(left.trim(), "", "no scope of the operation remains");
+    }
+
+    /// T116 B3-2, contract §11 "Process ownership": the real anchor text with a failing `systemctl`, and with a shell
+    /// function in its place. The anchor calls `"$ctl"`, so a function of that name answers for `systemctl`.
+    /// `/root` exists, and the test user cannot read `/root/cgroup.procs` (EACCES, or ENOENT as root).
+    #[test]
+    fn the_real_anchor_prints_an_unknown_count_for_a_failed_listing_or_an_unreadable_cgroup_procs()
+    {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8000-{:012x}", std::process::id());
+        let cases: [(&str, Option<&str>, Answer); 3] = [
+            ("/usr/bin/false", None, (None, None)),
+            (
+                "stub",
+                Some("stub() { echo /../../../root; }"),
+                (None, None),
+            ),
+            (
+                "stub",
+                Some("stub() { echo /arbareto-absent-cgroup; }"),
+                (Some(0), Some(0)),
+            ),
+        ];
+        for (systemctl, stub, expected) in cases {
+            let installation = Installation {
+                systemctl: systemctl.to_string(),
+                ..inst.clone()
+            };
+            let mut command =
+                anchor_command(&installation, &operation, &environment).expect("anchor");
+            if let Some(stub) = stub {
+                let text = command
+                    .arguments
+                    .iter_mut()
+                    .find(|argument| **argument == texts().anchor)
+                    .expect("the anchor text");
+                *text = format!("{stub}\n{text}");
+            }
+            let job = Job::create().expect("Job");
+            let anchor =
+                Anchor::start(&command, job.handle(), &reference.directory).expect("anchor");
+            assert_eq!(anchor.exchange(), Some(expected), "{systemctl} {stub:?}");
+            drop(job);
+        }
     }
 }

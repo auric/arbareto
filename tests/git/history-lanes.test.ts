@@ -281,10 +281,10 @@ describe("lane palette (T124 index.css against the plan.md lane table)", () => {
   };
   const LANES = ["teal", "sky", "violet", "magenta"] as const;
   const PLAN = {
-    teal: { dark: "#4BB9B2", light: "#06726E" },
-    sky: { dark: "#80D2F0", light: "#00516B" },
-    violet: { dark: "#B59AE7", light: "#724AAB" },
-    magenta: { dark: "#F7A6DF", light: "#993582" },
+    teal: { dark: "#34AFA4", light: "#06726E" },
+    sky: { dark: "#88CEEF", light: "#00516B" },
+    violet: { dark: "#9F86E6", light: "#724AAB" },
+    magenta: { dark: "#F0A3D2", light: "#993582" },
   };
 
   test("the lane values equal the plan.md lane table", () => {

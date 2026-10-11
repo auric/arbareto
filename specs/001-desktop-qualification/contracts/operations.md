@@ -1449,7 +1449,9 @@ Do not classify repository state by parsing localized human status output. Use b
 - Verify that each admitted request gets one accepted event before its response, with the same `requestId`. Verify that a request rejected before admission gets no accepted event. Verify that no progress event follows the response of its `requestId`.
 - Verify that an idle WSL Git with an active anchor reaches `stalled` and `inactivity`. Job `IO_COUNTERS` that change each second never count.
 - Verify that unknown samples send no stall event and reach no inactivity limit. Verify that the next known sample restarts idle time at 0.
-- Verify that a WSL update after a Cancel or a deadline reconciles only after a process-end fact, and that the shell accepts that `run` after a `run` cancel.
+- Verify that a WSL update after a Cancel, a deadline, the §9 diagnostic `cancel` of a step, or a step `run` refused after its start request reconciles only after a process-end fact (§12 "WSL repositories"). Verify that the shell accepts that `run` after a `run` cancel.
+- Verify the §4 "Commit process end" rule. After a Cancel, the 120-second commit deadline, or the §9 diagnostic `cancel` of a WSL `commit`, no reconciliation read runs before the process-end fact. The same holds when the `commit` `run` failed after its start request without an `exit`. Without the fact at the 30-second deadline, the outcome is `unknown` with `GIT_FAILED`, and the recovery marker stays.
+- Verify that an anchor answer `- -` is an unknown count. The `exit` then carries `activeDescendants` `null`, and that `exit` is no process-end fact. The §6 lingering count keeps the earlier known count (§11 "Process ownership").
 - Verify that a WSL submodule path, name, or walk folder without an exact UNC form gives reason `path`, and a lock path without one gives `unknown`.
 - Verify that the WSL `diff-files` batches split under the measured `wsl.exe` command line.
 - Verify that shared TypeScript takes native path rules only from `src/contracts/native-path.ts`. A scan of the transpiled `src/` files checks this (`tests/git/portable-imports.test.ts`).

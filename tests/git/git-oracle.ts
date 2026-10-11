@@ -162,19 +162,19 @@ export function submoduleUpdateOracle(gitExe: string, superDir: string, copyDir:
   return { exitCode: update.exitCode, ...submoduleState(gitExe, copyDir, env) };
 }
 
-// The submodule HEADs, Git folders, and `submodule.*` keys of `superDir`, as `submoduleUpdateOracle` reads them after its update.
-export function submoduleState(gitExe: string, copyDir: string, env: Record<string, string>): Omit<SubmoduleUpdateResult, "exitCode"> {
+// The submodule HEADs, Git folders, and `submodule.*` keys of `superDir`, as `submoduleUpdateOracle` reads them after its update. `config` holds `-c` arguments, which also reach the nested Git commands.
+export function submoduleState(gitExe: string, copyDir: string, env: Record<string, string>, config: string[] = []): Omit<SubmoduleUpdateResult, "exitCode"> {
   const heads: Record<string, string> = {};
   const gitDirs: Record<string, string> = {};
   const script = 'printf "%s\\0%s\\0%s\\0" "$displaypath" "$(git rev-parse HEAD)" "$(git rev-parse --absolute-git-dir)"';
-  const fields = Buffer.from(git(gitExe, copyDir, ["submodule", "foreach", "--quiet", "--recursive", script], [0, 1, 128], [], env)).toString("utf8").split("\0");
+  const fields = Buffer.from(git(gitExe, copyDir, ["submodule", "foreach", "--quiet", "--recursive", script], [0, 1, 128], config, env)).toString("utf8").split("\0");
   for (let i = 0; i + 2 < fields.length; i += 3) {
     heads[fields[i]!] = fields[i + 1]!;
     gitDirs[fields[i]!] = relative(copyDir, fields[i + 2]!).replaceAll("\\", "/");
   }
   const keys: Record<string, string[]> = {};
   // `config -z`: each entry is "<key>\n<value>\0".
-  for (const entry of Buffer.from(git(gitExe, copyDir, ["config", "--local", "-z", "--get-regexp", "^submodule\\."], [0, 1], [], env)).toString("utf8").split("\0")) {
+  for (const entry of Buffer.from(git(gitExe, copyDir, ["config", "--local", "-z", "--get-regexp", "^submodule\\."], [0, 1], config, env)).toString("utf8").split("\0")) {
     if (entry === "") continue;
     const nl = entry.indexOf("\n");
     (keys[entry.slice(0, nl)] ??= []).push(entry.slice(nl + 1));

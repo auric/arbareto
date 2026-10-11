@@ -173,8 +173,30 @@ export const isUpdateStep = (args: readonly string[]) => {
 export const updateSteps = (service: Service, from = 0) => callsSince(service, from).filter((c) => isUpdateStep(c.arguments));
 
 // The oracle state of the fixture superproject after the service run, and Git's own update in a copy before it.
-export const stateOf = (b: Built, dir = superOf(b)) => submoduleState(gitPath(), dir, globalEnv(b));
+// `config` holds `-c` arguments, such as `core.fsmonitor=false` for the F29 monitor canaries.
+export const stateOf = (b: Built, dir = superOf(b), config: string[] = []) => submoduleState(gitPath(), dir, globalEnv(b), config);
 export const oracleOf = (b: Built, name: string, dir = superOf(b)): SubmoduleUpdateResult => submoduleUpdateOracle(gitPath(), dir, join(b.root, name), globalEnv(b));
+
+export type SubmoduleState = ReturnType<typeof stateOf>;
+// `submodule.<name>.<variable>`: the variable holds no dot (git-config(1) "Syntax").
+const keyName = (key: string) => key.slice("submodule.".length, key.lastIndexOf("."));
+
+// The expected state of a run: `oracle`, where each `[path, name]` row takes its HEAD, Git folder, and `submodule.<name>.*` keys from `keep`.
+// A value that `keep` lacks removes the entry. A row without a name keeps the keys. `heads` sets single HEADs last.
+export function oracleExcept(oracle: SubmoduleState, except: { keep?: SubmoduleState; rows?: readonly (readonly [path: string, name?: string])[]; heads?: Record<string, string> } = {}): SubmoduleState {
+  const out: SubmoduleState = { heads: { ...oracle.heads }, gitDirs: { ...oracle.gitDirs }, keys: { ...oracle.keys } };
+  for (const [path, name] of except.rows ?? []) {
+    for (const part of ["heads", "gitDirs"] as const) {
+      if (except.keep !== undefined && path in except.keep[part]) out[part][path] = except.keep[part][path]!;
+      else delete out[part][path];
+    }
+    if (name === undefined) continue;
+    for (const key of Object.keys(out.keys)) if (keyName(key) === name) delete out.keys[key];
+    for (const [key, values] of Object.entries(except.keep?.keys ?? {})) if (keyName(key) === name) out.keys[key] = values;
+  }
+  Object.assign(out.heads, except.heads);
+  return out;
+}
 
 // A copy of the superproject folder inside the fixture folder. Each submodule `.git` file and `core.worktree` is relative, so the copy stands alone.
 export function copySuper(b: Built, name: string): string {

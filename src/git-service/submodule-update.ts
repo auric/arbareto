@@ -35,7 +35,7 @@ import { createTailCollector } from "./discovery";
 import type { Entered, Exclusion, NotEntered } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
 import { captureHead } from "./history";
-import { enterReconciling, isStop, lingeringSentence, notEntered, REVOKE_TEXT, settled, stepOf, type ObserveContext, type Stop } from "./hunk-publish";
+import { enterReconciling, isStop, lingeringText, notEntered, settled, stepOf, type ObserveContext, type Stop } from "./hunk-publish";
 import type { OperationRegistry } from "./operations";
 import { contextOf, isMissing } from "./read-steps";
 import { listingOf, reconcileUpdate, rowKeys, type RetainedUpdate, type RetainedUpdateRow, type RowKeys, type UpdatePhase, type UpdateRowRead } from "./reconcile";
@@ -236,7 +236,8 @@ interface RunContext {
   gitVersion: string;
 }
 
-type RunEnd = { deadline: string | null; diagnosticLimit: boolean; lingeringDescendants: number };
+// `refused`: a refusal of a step start ended the run.
+type RunEnd = { deadline: string | null; diagnosticLimit: boolean; refused: boolean; lingeringDescendants: number };
 
 export interface SubmoduleUpdaterOptions {
   runner: GitRunner;
@@ -499,7 +500,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       } finally {
         stall.end();
       }
-      lastDescendants = exit.activeDescendants;
+      // Contract §6 "Lingering Jobs": the count never changes the outcome, so an exit without a count shows no lingering sentence.
+      lastDescendants = exit.activeDescendants ?? 0;
       if (exit.deadline !== undefined) throw new Halted({ deadline: exit.deadline });
       if (signal.aborted) throw new Halted("canceled");
       if (exit.diagnosticLimit) {
@@ -735,12 +737,12 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
 
     try {
       for (const p of read.rows) if (p.row.depth === 0) await visit({ p, parent: null, facts: facts.get(p.row.rowId)!, index: 0 });
-      return { deadline: null, diagnosticLimit: false, lingeringDescendants: lastDescendants };
+      return { deadline: null, diagnosticLimit: false, refused: false, lingeringDescendants: lastDescendants };
     } catch (error) {
       // A review read with an aborted signal throws before its start request, so a Cancel can end the run that way too.
       if (!(error instanceof Halted) && !signal.aborted) throw error;
       const cause = error instanceof Halted ? error.cause : "canceled";
-      return { deadline: typeof cause === "object" ? cause.deadline : null, diagnosticLimit: cause === "limit", lingeringDescendants: lastDescendants };
+      return { deadline: typeof cause === "object" ? cause.deadline : null, diagnosticLimit: cause === "limit", refused: cause === "refused", lingeringDescendants: lastDescendants };
     } finally {
       progress.stop();
     }
@@ -803,9 +805,8 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       retained.set(operationId, update);
       const end = await run({ ctx, observer: pre.observer, read: pre.read, update, facts, gitPath, gitVersion });
       const remedy = (count: number | null, otherLocks: boolean): SubmoduleUpdateRemedy | null => {
-        const parts = otherLocks ? [OTHER_LOCKS_TEXT] : [];
-        if (count !== null && count > 0) parts.push(lingeringSentence(count), ...(o.trust.currentTrustId(w) === undefined ? [] : [REVOKE_TEXT]));
-        return parts.length === 0 ? null : { text: parts.join(" ") };
+        const text = `${otherLocks ? OTHER_LOCKS_TEXT : ""}${lingeringText(count, o.trust.currentTrustId(w) !== undefined)}`.trimStart();
+        return text === "" ? null : { text };
       };
       await reconcileUpdate({
         registry,
@@ -820,6 +821,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
         deadline: end.deadline,
         lingeringDescendants: end.lingeringDescendants,
         diagnosticLimit: end.diagnosticLimit,
+        refused: end.refused,
         foreign: [],
         remedy,
       });

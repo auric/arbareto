@@ -108,6 +108,34 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     expect(distroSubmoduleState(f.sup)).toEqual({ heads: oracle.heads, gitDirs: oracle.gitDirs, keys: oracle.keys });
   });
 
+  // T116 B3-4, contract §12 "WSL repositories": after a refusal of a step `run` past its start, it is open whether Git ran.
+  wslCase("F31 refused: a refusal after the first step start sends the process-end version run before any other process", async (host) => {
+    await underTest();
+    const { RunnerRefusal } = await import("../../src/git-service/git-runner");
+    const f = buildF31(host, "base");
+    const runner = createBunRunner({ git: GIT ?? "git", directory: fixtureDir(`runner-${crypto.randomUUID()}`), environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });
+    runners.push(runner);
+    // The real step runs, and its reply then counts as malformed. `startSession` copies the runner, so the wrapper comes first.
+    const run = runner.run;
+    let refusedAt: number | null = null;
+    runner.run = async (call) => {
+      const exit = await run(call);
+      if (refusedAt !== null || call.environmentPolicy !== "network") return exit;
+      refusedAt = performance.now();
+      throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED");
+    };
+    const s = startSession(runner);
+    const requestId = sendUpdate(s, await prepare(s, f));
+    const response = await s.response(requestId);
+    const operationId = operationOf(s, requestId);
+    const next = runner.calls.find((c) => c.operationId === operationId && refusedAt !== null && c.at >= refusedAt);
+    expect({ refused: refusedAt !== null, state: response.state, next: next && { arguments: next.arguments, policy: next.environmentPolicy, count: next.exit?.activeDescendants } }).toEqual({
+      refused: true,
+      state: "failed-with-effects",
+      next: { arguments: ["--no-lazy-fetch", "version"], policy: "mutation", count: 0 },
+    });
+  });
+
   wslCase("F31 tty: the post-checkout hook cannot open /dev/tty, and it sees GIT_TERMINAL_PROMPT=0", async (host) => {
     await underTest();
     const f = buildF31(host, "tty");

@@ -64,6 +64,8 @@ export const STEP_FAILED_TEXT = "Arbareto could not finish this staging step. No
 // Contract §9 "Lingering count".
 export const REVOKE_TEXT = "Revoke trust also ends them.";
 export const lingeringSentence = (count: number) => `Arbareto still runs ${count === 1 ? "1 process" : `${count} processes`} that Git or a hook started in this repository. Closing Arbareto ends them.`;
+// Contract §9 "Lingering count": the sentences need a nonzero count, and "Revoke trust also ends them." needs a current trust ID. The text starts with a space.
+export const lingeringText = (count: number | null, trustId: boolean) => (count !== null && count > 0 ? ` ${lingeringSentence(count)}${trustId ? ` ${REVOKE_TEXT}` : ""}` : "");
 
 // The in-process checkpoint observer: after the research R3 step 5 revalidation, after the step 11 recheck, and after the step 13 publication. Production passes none.
 export interface HunkCheckpoint {
@@ -107,14 +109,14 @@ export const isStop = (f: unknown): f is Stop => typeof f === "object" && f !== 
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const sameVersion = (a: WorkingVersion, b: WorkingVersion) => Buffer.compare(a.path, b.path) === 0 && Bun.deepEquals({ ...a, path: null }, { ...b, path: null }, true);
 
-// Contract §9 "Lingering count": the sentences need a nonzero count, and "Revoke trust also ends them." needs a current trust ID.
 // A WSL `lock` walk that stopped or failed leaves the lock to reconciliation (contract §4 "Stopped or failed `lock`").
 export function lockRefusal(locked: Exclude<LockResult | WslLockResult, { ok: true }>, lingering: number | null, trustId: boolean): Refusal | Stop {
-  if (!("ok" in locked)) return "stop" in locked ? { stop: locked.stop } : refusalOf(locked);
-  if ("code" in locked) {
-    const extra = lingering !== null && lingering > 0 ? ` ${lingeringSentence(lingering)}${trustId ? ` ${REVOKE_TEXT}` : ""}` : "";
-    return { code: "LOCKED", path: locked.path, remedy: { text: `${locked.remedy.text}${extra}` } };
+  if (!("ok" in locked)) {
+    if ("stop" in locked) return { stop: locked.stop };
+    const { unknown: _unknown, ...failure } = locked;
+    return refusalOf(failure);
   }
+  if ("code" in locked) return { code: "LOCKED", path: locked.path, remedy: { text: `${locked.remedy.text}${lingeringText(lingering, trustId)}` } };
   if (locked.reason === "file-id") return { code: "UNSUPPORTED_HUNK_PROFILE", reason: "file-id", remedy: { text: FILE_ID_TEXT }, ...(locked.removed ? {} : { foreign: [locked.path] }) };
   return stepFailed("lock-create");
 }

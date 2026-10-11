@@ -99,7 +99,8 @@ export interface GitCall {
 // Contract §6: the exit reply follows the forwarded bytes. `deadline` names the expired limit.
 export interface GitExit {
   exitCode: number | null;
-  activeDescendants: number;
+  // Null: the shell has no count. Null is never a process-end fact.
+  activeDescendants: number | null;
   deadline?: "deadline" | "inactivity" | "ceiling";
   // Contract §5 "Total unexpected diagnostic output": the counted stderr reached 4 MiB, and the service sent `cancel`.
   diagnosticLimit?: true;

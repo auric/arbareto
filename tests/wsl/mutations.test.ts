@@ -369,6 +369,43 @@ describe("lock ownership and the process-end fact (contract §4 \"WSL index publ
     };
   }
 
+  // T116 B3-3, contract §4 "Commit process end": the Cancel closes the Job of the commit process while its hook runs.
+  wslCase(
+    `a commit canceled in its pre-commit hook starts no reconciliation process or walk before the process-end fact, and ends canceled without a commit`,
+    NEEDS,
+    async (host) => {
+      await underTest("commit");
+      const { repo } = buildF21(host);
+      const started = `${repo.dir}-hook.started`;
+      writeLinux(host, `${repo.dir}/.git/hooks/pre-commit`, `#!/bin/sh\n: > '${started}'\n/usr/bin/sleep 60\n`, "755");
+      const head = distroGit(repo, ["rev-parse", "HEAD"]);
+      const { runner, s, files } = setup(host);
+      const id = await register(s, repo);
+      await approve(s, id);
+      const read = await readWs(s, id);
+      const envelope = { repositoryId: id, repositoryGeneration: read.generation };
+      const review = await s.response(s.request("reviewCommit", { snapshotId: read.snapshotId }, envelope));
+      const reviewToken = (review.result as { reviewToken: string }).reviewToken;
+      const requestId = s.request("commit", { reviewToken, message: "T116 canceled\n", confirmFullScope: true }, envelope);
+      const deadline = Date.now() + 60_000;
+      while (!exists(host, started)) {
+        if (Date.now() > deadline) throw new Error("the pre-commit hook did not start within 60000 ms");
+        await Bun.sleep(200);
+      }
+      const operationId = s.progressOf(requestId)[0]!.operationId!;
+      s.request("cancel", { operationId });
+      const response = await s.response(requestId);
+      const committed = runner.calls.find((c) => c.operationId === operationId && subcommand(c.arguments) === "commit");
+      expect({ exitCode: committed?.exit?.exitCode, ended: committed?.durationMs !== undefined }).toEqual({ exitCode: null, ended: true });
+      const stopAt = committed!.at + committed!.durationMs!;
+      const facts = runner.calls.filter((c) => c.operationId === operationId && isFact(c) && c.at >= stopAt && c.exit?.activeDescendants === 0 && c.exit.exitCode !== null && c.durationMs !== undefined);
+      expect(facts.length).toBeGreaterThan(0);
+      const factEnd = Math.min(...facts.map((c) => c.at + c.durationMs!));
+      const early = [...runner.calls.filter((c) => c.operationId === operationId && c.at >= stopAt && c.at < factEnd && !isFact(c)).map((c) => c.arguments.join(" ")), ...files.filter((f) => f.request.operationId === operationId && f.at >= stopAt && f.at < factEnd).map((f) => f.request.mode)];
+      expect({ early, ...outcome(response), head: distroGit(repo, ["rev-parse", "HEAD"]) }).toEqual({ early: [], state: "canceled", code: "CANCELED", head });
+    },
+  );
+
   for (const after of [true, false]) {
     wslCase(
       after

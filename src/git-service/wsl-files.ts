@@ -193,13 +193,12 @@ export interface UnknownLock {
   removeByToken(): Promise<WslRemoved | Failure | Stop>;
 }
 
-// `path` is the UNC form of `index.lock`. A refusal starts no walk, so it leaves no lock.
+// `path` is the UNC form of `index.lock`. Every result after the request but `lock` and `locked` leaves the ownership unknown (contract §4 "Stopped or failed `lock`").
 export type WslLockResult =
   | { ok: true; lock: WslIndexLock }
   | { ok: false; code: "LOCKED"; path: string; remedy: { text: string } }
   | { ok: false; reason: "create-failed"; errno: string; path: string; unknown: UnknownLock }
-  | (Stop & { unknown: UnknownLock })
-  | Failure;
+  | ((Stop | Failure) & { unknown: UnknownLock });
 
 async function remove(ctx: WslContext, fields: Omit<Extract<Fields, { mode: "remove" }>, "mode" | "bound">): Promise<WslRemoved | Failure | Stop> {
   const r = await send(ctx, { mode: "remove", bound: INDEX_BOUND, ...fields }, LIVE);
@@ -231,7 +230,8 @@ export async function wslLock(ctx: WslContext): Promise<WslLockResult> {
   const path = `${ctx.workspace.indexPath}.lock`;
   const unknown: UnknownLock = { path, token, removeByToken: () => remove(ctx, { token }) };
   const r = await send(ctx, { mode: "lock", bound: INDEX_BOUND, token }, ctx.signal);
-  if (!isResult(r)) return "stop" in r ? { ...r, unknown } : r;
+  // A refusal and a malformed reply share one error type, so the service cannot tell whether the walk ran.
+  if (!isResult(r)) return { ...r, unknown };
   switch (r.kind) {
     case "lock": {
       const identity = { device: r.device, inode: r.inode };
@@ -251,7 +251,7 @@ export async function wslLock(ctx: WslContext): Promise<WslLockResult> {
     case "error":
       return { ok: false, reason: "create-failed", errno: r.code, path, unknown };
     default:
-      return UNFIT;
+      return { ...UNFIT, unknown };
   }
 }
 
@@ -300,8 +300,8 @@ export interface Clock {
 }
 const SYSTEM_CLOCK: Clock = { now: () => performance.now(), sleep: (ms) => Bun.sleep(ms) };
 
-// Contract §4 "Process end": `fact` when an `exit` reply carries `activeDescendants` 0. The runs repeat once per second, and the
-// §5 Git process deadline bounds them together. `noFact`: the deadline passed, or the runner refused the run (for example after `closeJob`).
+// Contract §4 "Process end": `fact` when an `exit` reply carries `activeDescendants` 0 and an `exitCode` that is not null. The runs repeat once
+// per second, and the §5 Git process deadline bounds them together. `noFact`: the deadline passed, or the runner refused the run (for example after `closeJob`).
 export async function processEnd(ctx: Pick<WslContext, "operationId" | "workspace"> & { runner: Pick<GitRunner, "run"> }, clock: Clock = SYSTEM_CLOCK): Promise<"fact" | "noFact"> {
   const start = clock.now();
   for (;;) {
@@ -325,7 +325,8 @@ export async function processEnd(ctx: Pick<WslContext, "operationId" | "workspac
       throw error;
     }
     if (exit.deadline !== undefined || exit.diagnosticLimit) return "noFact";
-    if (exit.activeDescendants === 0) return "fact";
+    // Contract §6: `exitCode` null means a Job close or no start, so its count is no fact.
+    if (exit.exitCode !== null && exit.activeDescendants === 0) return "fact";
     await clock.sleep(Math.max(0, began + POLL_MS - clock.now()));
   }
 }

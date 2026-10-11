@@ -415,7 +415,8 @@ export const ExitReply = z
     type: z.literal("exit"),
     ...call,
     exitCode: z.int().min(0).max(PROCESS_EXIT_CODE_MAX).nullable(),
-    activeDescendants: Count,
+    // Contract §6 "Channel frames": null when the shell has no count. Null is never a process-end fact.
+    activeDescendants: Count.nullable(),
     deadline: z.enum(["deadline", "inactivity", "ceiling"]).optional(),
   })
   .meta({ title: "Exit" });

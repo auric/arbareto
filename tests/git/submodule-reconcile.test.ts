@@ -4,6 +4,7 @@
 // T230: the `updateSubmodules` lock set (contract §8 "Observed locks") and the recovery row states (contract §8 "Recovery statement").
 // The lock and recovery cases run no Git process: a null HEAD reads no branch ref, and a row without a `.git` entry or a kept directory gets no Git read.
 // The `registered` case is the control for that flag as the only effect.
+// T116 adds the WSL process-end cases of the update and of the commit reconciliation (contract §4 "Commit process end", §12 "WSL repositories").
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -115,7 +116,7 @@ describe("process end before a WSL update reconciliation (contract §12 \"WSL re
       progress: () => {},
     };
   }
-  const reconcile = async (canceled: boolean, deadline: string | null, ctx: ObserveContext, reg: ReturnType<typeof registry>) => {
+  const reconcile = async (canceled: boolean, deadline: string | null, ctx: ObserveContext, reg: ReturnType<typeof registry>, halt: { diagnosticLimit?: boolean; refused?: boolean } = {}) => {
     const { reconcileUpdate } = (await underTest("reconcile")) as Reconcile;
     const trust = { listTrust: async () => ({ ok: false, code: "GIT_FAILED" }), gate: () => null };
     await reconcileUpdate({
@@ -130,6 +131,8 @@ describe("process end before a WSL update reconciliation (contract §12 \"WSL re
       canceled,
       deadline,
       lingeringDescendants: 0,
+      diagnosticLimit: halt.diagnosticLimit ?? false,
+      refused: halt.refused ?? false,
       foreign: [],
       remedy: () => null,
     });
@@ -150,8 +153,20 @@ describe("process end before a WSL update reconciliation (contract §12 \"WSL re
     let listed = 0;
     const trust = { listTrust: async () => (listed++, { ok: false, code: "OUTPUT_LIMIT" }), gate: () => null };
     const { reconcileUpdate } = (await underTest("reconcile")) as Reconcile;
-    await reconcileUpdate({ registry: reg as never, runner: ctx.runner as never, retained: new Map(), operationId: ctx.operationId, markerId: "m", ctx: { ...ctx, trust } as unknown as ObserveContext, update, head: { state: "detached", oid: TARGET } as never, canceled: false, deadline: "inactivity", lingeringDescendants: 0, foreign: [], remedy: () => null });
+    await reconcileUpdate({ registry: reg as never, runner: ctx.runner as never, retained: new Map(), operationId: ctx.operationId, markerId: "m", ctx: { ...ctx, trust } as unknown as ObserveContext, update, head: { state: "detached", oid: TARGET } as never, canceled: false, deadline: "inactivity", lingeringDescendants: 0, refused: false, foreign: [], remedy: () => null });
     expect({ runs, listed, last: reg.events.at(-1) }).toEqual({ runs: [{ arguments: ["--no-lazy-fetch", "version"], environmentPolicy: "mutation" }], listed: 1, last: { type: "reconciliation-read-failed", code: "OUTPUT_LIMIT" } });
+  });
+
+  // T116 B3-4: the §9 diagnostic cancel closes the Job, and a refusal after the start leaves open whether Git ran.
+  test.each([
+    ["the diagnostic limit", { diagnosticLimit: true }],
+    ["a refused step start", { refused: true }],
+  ] as const)("after %s, the version run comes first, and without its fact reconciliation fails with no read", async (_name, halt) => {
+    const runs: { arguments: string[]; environmentPolicy: string }[] = [];
+    const { ctx } = wslWorkspace(`process-end-${Object.keys(halt)[0]}`, runs, [new (await import("../../src/git-service/git-runner")).RunnerRefusal("UNKNOWN_TARGET")]);
+    const reg = registry("running");
+    await reconcile(false, null, ctx, reg, halt);
+    expect({ runs, last: reg.events.at(-1) }).toEqual({ runs: [{ arguments: ["--no-lazy-fetch", "version"], environmentPolicy: "mutation" }], last: { type: "reconciliation-read-failed", code: "GIT_FAILED" } });
   });
 
   test("control: a run that ends without Cancel or deadline sends no version run", async () => {
@@ -160,6 +175,65 @@ describe("process end before a WSL update reconciliation (contract §12 \"WSL re
     const reg = registry("running");
     await reconcile(false, null, ctx, reg);
     expect({ runs, last: reg.events.at(-1) }).toEqual({ runs: [], last: { type: "reconciliation-read-failed", code: "GIT_FAILED" } });
+  });
+});
+
+// T116 B3-3: contract §4 "Commit process end".
+describe("process end before a WSL commit reconciliation (contract §4 \"Commit process end\")", () => {
+  const VERSION = { arguments: ["--no-lazy-fetch", "version"], environmentPolicy: "mutation" };
+  async function reconcile(name: string, exit: { exitCode: number | null; activeDescendants: number | null } | null, exits: ({ exitCode: number; activeDescendants: number } | Error)[]) {
+    const { RunnerRefusal } = await import("../../src/git-service/git-runner");
+    const { reconcileCommit } = (await underTest("reconcile")) as Reconcile;
+    const runs: { arguments: string[]; environmentPolicy: string }[] = [];
+    // Each read after the queued exits gets a refusal, so reconciliation ends unknown without a Git process.
+    const { ctx } = wslWorkspace(name, runs, [...exits, ...Array.from({ length: 8 }, () => new RunnerRefusal("UNKNOWN_TARGET"))]);
+    const refusing = async () => {
+      throw new RunnerRefusal("UNKNOWN_TARGET");
+    };
+    let resolved = 0;
+    const runner = { ...ctx.runner, wslFiles: refusing, resolved: () => void resolved++, lingeringCount: async () => 0 };
+    const events: { type: string; code?: string }[] = [];
+    const results: unknown[] = [];
+    const registry = {
+      get: () => ({ state: "running", lingeringDescendants: 0 }),
+      apply: (_op: string, event: { type: string; code?: string }, result?: unknown) => void (events.push(event), results.push(result)),
+      progress: () => {},
+    };
+    await reconcileCommit({
+      registry: registry as never,
+      runner: runner as never,
+      retained: new Map(),
+      operationId: ctx.operationId,
+      markerId: "marker",
+      ctx: { ...ctx, runner, reader: { operationState: refusing } } as never,
+      review: {} as never,
+      binding: { head: { state: "unborn", target: "refs/heads/main" }, reviewedIndex: { rawIndexDigest: null, sharedIndex: null }, operationState: "normal" } as never,
+      tip: null,
+      exit: exit as never,
+      outputTail: "tail",
+      foreign: [],
+      remedy: () => null,
+    });
+    return { runs, last: events.at(-1), result: results.at(-1), resolved };
+  }
+
+  test.each([
+    ["a Job close (exitCode null)", { exitCode: null, activeDescendants: null }],
+    ["a refusal after the start (no exit)", null],
+  ] as const)("after %s, the version run comes first, and without its fact the outcome is unknown with the tail and the marker stays", async (_name, exit) => {
+    const { RunnerRefusal } = await import("../../src/git-service/git-runner");
+    const r = await reconcile(`commit-end-none-${exit === null}`, exit, [new RunnerRefusal("UNKNOWN_TARGET")]);
+    expect(r).toEqual({ runs: [VERSION], last: { type: "reconciliation-read-failed", code: "GIT_FAILED" }, result: { outputTail: "tail", lingeringDescendants: 0 }, resolved: 0 });
+  });
+
+  test("after a Job close, a count of 0 is the fact, and reconciliation reads follow", async () => {
+    const r = await reconcile("commit-end-fact", { exitCode: null, activeDescendants: null }, [{ exitCode: 0, activeDescendants: 0 }]);
+    expect({ first: r.runs[0], reads: r.runs.length > 1, versions: r.runs.filter((x) => Bun.deepEquals(x, VERSION)).length }).toEqual({ first: VERSION, reads: true, versions: 1 });
+  });
+
+  test("control: a commit process that exits by itself sends no version run", async () => {
+    const r = await reconcile("commit-end-plain", { exitCode: 0, activeDescendants: 0 }, []);
+    expect({ reads: r.runs.length > 0, versions: r.runs.filter((x) => Bun.deepEquals(x, VERSION)).length }).toEqual({ reads: true, versions: 0 });
   });
 });
 

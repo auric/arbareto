@@ -283,11 +283,24 @@ describe("wslLock (contract §4 \"Lock token\")", () => {
     expect(f.signals[1]!.aborted).toBe(false);
   });
 
-  test("locked gives LOCKED with the lock path, and a refusal leaves no lock", async () => {
+  test("locked gives LOCKED with the lock path and no unknown lock", async () => {
     const f = fake([[{ kind: "locked" }]]);
     expect(await wslLock(f.ctx)).toEqual({ ok: false, code: "LOCKED", path: `${f.ctx.workspace.indexPath}.lock`, remedy: { text: LOCKED_REMEDY } });
-    expect(await wslLock(fake([REFUSAL()]).ctx)).toEqual({ code: "UNKNOWN_TARGET" });
-    expect(await wslLock(fake([[{ kind: "removed" }]]).ctx)).toEqual(UNFIT);
+  });
+
+  // T116 B3-5: the service cannot tell whether such a walk ran, so the lock ownership stays unknown (contract §4 "Stopped or failed `lock`").
+  test.each([
+    ["a refusal", REFUSAL(), { code: "UNKNOWN_TARGET" }],
+    ["a result of another mode", [{ kind: "removed" }] as WslFileResult[], UNFIT],
+    ["a malformed reply", new RunnerRefusal("PROCESS_OWNERSHIP_FAILED"), UNFIT],
+  ] as const)("%s gives its failure and only the token-only form", async (_name, reply, expected) => {
+    const f = fake([reply as Reply, [{ kind: "notOwned" }]]);
+    const r = await wslLock(f.ctx);
+    expect(r).toMatchObject(expected);
+    if (!("unknown" in r)) throw new Error("no unknown lock");
+    expect(r.unknown.path).toBe(`${f.ctx.workspace.indexPath}.lock`);
+    expect(await r.unknown.removeByToken()).toBe("notOwned");
+    expect(f.body(1)).toEqual({ mode: "remove", bound: "MUTATION_RAW_INDEX_BYTES", token: (f.body(0) as { token: string }).token });
   });
 
   const locked = async (replies: Reply[]) => {
@@ -384,7 +397,7 @@ describe("removeCandidate (contract §4, the candidate form of remove)", () => {
 });
 
 describe("processEnd (contract §4 \"Process end\", decision G2)", () => {
-  const exit = (activeDescendants: number, extra: Partial<GitExit> = {}): GitExit => ({ exitCode: 0, activeDescendants, ...extra });
+  const exit = (activeDescendants: number | null, extra: Partial<GitExit> = {}): GitExit => ({ exitCode: 0, activeDescendants, ...extra });
   // A clock that moves only when the loop sleeps.
   function clock(): Clock & { slept: number[] } {
     let t = 0;
@@ -439,5 +452,22 @@ describe("processEnd (contract §4 \"Process end\", decision G2)", () => {
 
   test("a nonzero exit code with count 0 is the fact, because the contract keys the fact on the count alone", async () => {
     expect(await processEnd(fake([], [exit(0, { exitCode: 1 })]).ctx, clock())).toBe("fact");
+  });
+
+  // T116 B3-1: contract §6 `activeDescendants` null and `exitCode` null are no fact, and the run repeats.
+  test.each([
+    ["an exit without a count", exit(null)],
+    ["an exit with exitCode null and count 0, because a Job close ended the run or none started", exit(0, { exitCode: null })],
+  ])("%s is no fact, and the next run decides", async (_name, first) => {
+    const f = fake([], [first, exit(0)]);
+    const c = clock();
+    expect(await processEnd(f.ctx, c)).toBe("fact");
+    expect({ runs: f.runs.length, slept: c.slept }).toEqual({ runs: 2, slept: [1000] });
+  });
+
+  test("exits without a count until the 30-second Git process deadline give no fact", async () => {
+    const f = fake([], Array.from({ length: 40 }, () => exit(null)));
+    expect(await processEnd(f.ctx, clock())).toBe("noFact");
+    expect(f.runs).toHaveLength(GIT_PROCESS_DEADLINE_MS / 1000);
   });
 });

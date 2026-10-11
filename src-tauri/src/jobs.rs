@@ -672,6 +672,7 @@ impl Supervisor {
 
     /// The `activeDescendants` count after an execution process exits: the active process count from
     /// `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`, or the anchor count of a WSL mutation (contract §11 "Process ownership").
+    /// `None`: a closed Job, a failed query, or no fresh known anchor count. The exit reply then carries `null` (contract §6).
     pub fn active_processes(&self, operation_id: &str) -> Option<u32> {
         let (count, wsl) = {
             let state = self.shared.state();
@@ -680,7 +681,7 @@ impl Supervisor {
         };
         // The anchor answer can take up to the probe deadline, so the state lock is released first.
         if wsl.has_anchor() {
-            Some(wsl.after_exit())
+            wsl.after_exit()
         } else {
             count
         }

@@ -239,6 +239,12 @@ export async function reconcileCommit(r: CommitReconciliation): Promise<void> {
   const canceled = enterReconciling(registry, operationId, deadline, exit?.activeDescendants ?? 0);
   // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
   const q: PublishContext = { ...r.ctx, signal: new AbortController().signal };
+  // Contract §4 "Commit process end": after a Job close or a refusal after the start, Linux Git can still write. Nothing decides before the fact.
+  if (q.workspace.wsl !== undefined && (exit === null || exit.exitCode === null) && (await processEnd(q)) === "noFact") {
+    const lingering = registry.get(operationId)!.lingeringDescendants ?? 0;
+    registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, { outputTail: r.outputTail, lingeringDescendants: lingering, ...(foreign.length > 0 ? { foreign } : {}) }, "GIT_FAILED");
+    return;
+  }
   // Git exits 128 for the window read of an unborn HEAD. With an unborn reviewed HEAD, the window read waits for the observed HEAD.
   const [state, early] = await Promise.all([observeState(q, EMPTY, false, canonicalIndex(q, binding.reviewedIndex)), binding.head.state === "unborn" ? null : readWindow(q, r.tip)]);
   const head = "value" in state.head ? state.head.value : null;
@@ -559,6 +565,8 @@ export interface UpdateReconciliation {
   lingeringDescendants: number;
   // Contract §9: a step passed the §5 diagnostic bound, so the session log names OUTPUT_LIMIT as the cause.
   diagnosticLimit?: boolean;
+  // A refusal of a step start ended the run, so it is open whether Git ran.
+  refused: boolean;
   foreign: string[];
   // Contract §9: the operation remedy of a failed outcome. Null: no remedy.
   remedy: (lingering: number | null, otherLocks: boolean) => { text: string } | null;
@@ -575,7 +583,8 @@ export async function reconcileUpdate(r: UpdateReconciliation): Promise<void> {
   // Contract §8: a cancel never stops a reconciliation read, so these reads get a signal that never aborts.
   const q: ObserveContext = { ...r.ctx, signal: new AbortController().signal };
   // Contract §12 "WSL repositories": a closed Job is no process-end fact, so Linux Git can still write. Nothing decides before the fact.
-  if (q.workspace.wsl !== undefined && (r.canceled || deadline !== null) && (await processEnd(q)) === "noFact") {
+  const closed = r.canceled || deadline !== null || r.diagnosticLimit === true || r.refused;
+  if (q.workspace.wsl !== undefined && closed && (await processEnd(q)) === "noFact") {
     registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, { ...(deadline === null ? {} : { reason: deadline }), lingeringDescendants: registry.get(operationId)!.lingeringDescendants ?? 0 }, "GIT_FAILED");
     return;
   }

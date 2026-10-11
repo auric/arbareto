@@ -193,14 +193,14 @@ impl Reply {
 
     fn deadline(self, call_id: &str) -> Value {
         match self {
-            Reply::Start => reply::exit(call_id, None, 0, Some(ExitDeadline::Deadline)),
+            Reply::Start => reply::exit(call_id, None, Some(0), Some(ExitDeadline::Deadline)),
             Reply::Walk(deadline) | Reply::Frame(_, deadline) => deadline(call_id),
         }
     }
 
     /// The reply after a stop. Only a `run` start gets one.
     fn stopped(self, call_id: &str) -> Option<Value> {
-        matches!(self, Reply::Start).then(|| reply::exit(call_id, None, 0, None))
+        matches!(self, Reply::Start).then(|| reply::exit(call_id, None, Some(0), None))
     }
 }
 
@@ -1884,7 +1884,7 @@ impl ProcessRequests {
                     reply::output(&call_id, OutputStream::Stdout, &data),
                 );
             }
-            let active = me.jobs.active_processes(&operation_id).unwrap_or(0);
+            let active = me.jobs.active_processes(&operation_id);
             let deadline = ended.deadline.then_some(ExitDeadline::Deadline);
             me.send(
                 generation,
@@ -2451,7 +2451,7 @@ impl ProcessRequests {
             .calls
             .get(&run.call_id)
             .is_some_and(|call| call.closed);
-        let active = self.jobs.active_processes(&run.operation_id).unwrap_or(0);
+        let active = self.jobs.active_processes(&run.operation_id);
         let mut code = 0u32;
         // SAFETY: `process` owns the open process handle, and `code` is a live local.
         let read = unsafe { GetExitCodeProcess(process.0, &mut code) }.is_ok();
@@ -4865,6 +4865,12 @@ pub(crate) mod tests {
         harness.send(json!({ "type": "cancel", "callId": canceled }));
         let exit = harness.exit(&canceled, WAIT).expect("exit").1;
         assert_eq!(exit["exitCode"], Value::Null, "the Job close ended it");
+        // T116 B3-1: the closed Job gives no count, and a count of 0 would be a process-end fact (contract §6).
+        assert_eq!(
+            exit["activeDescendants"],
+            Value::Null,
+            "the closed Job has no count"
+        );
         let next = harness.run(&operation, &workspace, &["sleep", "10"]);
         let exit = harness.exit(&next, WAIT).expect("exit of the next run").1;
         assert_eq!(

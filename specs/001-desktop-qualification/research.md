@@ -1810,6 +1810,24 @@ Open items and reasons:
 
 Open items: the capability skips in R10 "T090 batch 2 verification" stay `unverified`.
 
+**Batch 3, 2026-10-11 (T116).** One independent subagent safety review checked batch 3 at main 9ccdfc2. An implementer fixed the findings on branch b2-l3. Each behavioral fix has a test, and one control mutation turned that test red. The test runs printed ORIGIN lines for the code under test. The WSL tests ran in Ubuntu-26.04.
+
+| Finding | Failure and cause | State and proof |
+| --- | --- | --- |
+| B3-1 (high) | `after_exit` gave an earlier anchor answer, or 0, when no new answer came. The Windows exit reply gave 0 for a failed or closed Job query. The test double did the same. `processEnd` took such a 0 as the process-end fact. | Fixed. `activeDescendants` is `null` without a count (contract §6, §11). `processEnd` needs count 0 and an `exitCode` that is not null (§4). Tests: `wsl::tests::after_exit_without_a_new_answer_or_with_an_unknown_count_gives_no_count`, `process_requests::tests::a_run_after_a_run_cancel_starts_in_a_new_job_of_the_same_operation`, and the `processEnd` cases in `tests/git/wsl-files.test.ts`. |
+| B3-2 (high) | The anchor printed count 0 when `systemctl --user show` failed or a listed `cgroup.procs` was unreadable. | Fixed. The anchor prints `- -`, and the shell gives no count (§11). An absent cgroup directory counts 0, because Linux removes only an empty cgroup. Test: `wsl::tests::the_real_anchor_prints_an_unknown_count_for_a_failed_listing_or_an_unreadable_cgroup_procs`. |
+| B3-3 (medium-high) | A WSL commit reconciled without the process-end fact after a Cancel, the commit deadline, the diagnostic cancel, or a refusal after the start. | Fixed. Contract §4 "Commit process end". Tests: the commit cases in `tests/git/submodule-reconcile.test.ts`, and the canceled pre-commit hook case in `tests/wsl/mutations.test.ts`. |
+| B3-4 (medium) | A WSL submodule update skipped the process-end run after the diagnostic cancel of a step or a refusal of a step start. | Fixed. Contract §12 "WSL repositories". Tests: the limit and refused cases in `tests/git/submodule-reconcile.test.ts`, and "F31 refused" in `tests/wsl/submodules.test.ts`. |
+| B3-5 (low) | A `lock` reply outside the contract form, and a refusal of the `lock` request, gave no unknown lock. So no token-only `remove` followed. | Fixed. Contract §4 "Stopped or failed `lock`". Test: the refusal and off-contract `wslLock` cases in `tests/git/wsl-files.test.ts`. |
+| B3-6 (lean) | `createIndexLock` had its own file ID test parameter and skipped `noFileId`. | Fixed. The file ID cases of `tests/git/index-lock.test.ts` use `fileIdSeam`. |
+| B3-7 (lean) | Three modules built the lingering text. | Fixed. `lingeringText` in `hunk-publish.ts`. This change keeps every text, and the text tests pass. No control mutation applies. |
+| Wrapper start race | Suspicion only. | Open, unverified. No reviewer proved it. |
+| `branch.<x>.remote` value that starts with `-` | Suspicion only. `defaultRemote` (`submodule-remote.ts`) can choose such a value. | Open, unverified. No reviewer proved it. |
+
+Open items and reasons:
+
+- An exit without a count gives the lingering count 0, so the outcome shows no lingering sentence. The count changes no outcome (contract §6 "Lingering Jobs").
+
 ### Dependency reviews
 
 After T003 and T006, each dependency change gets one record here (plan.md, Tool and runtime boundaries). A record names the task and each added, removed, or changed package. It gives the old and new resolved versions, the licence, the reason, the reviewer, and the findings. It also lists the qualification checks that ran again.

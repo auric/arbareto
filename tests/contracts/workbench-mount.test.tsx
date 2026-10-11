@@ -526,6 +526,14 @@ describe("trust", () => {
     await resolve(double.pending("readTrust"), succeeded(report("untrusted", false)));
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
+
+  test("T372: with TRUST_REQUIRED, a trust read above a report row bound shows its code and reason in the status bar", async () => {
+    const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readWorkspace"), { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code: "TRUST_REQUIRED" });
+    await resolve(double.pending("readTrust"), { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code: "OUTPUT_LIMIT", result: { reason: "TRUST_REPORT_ENTRIES" } });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect([...document.querySelectorAll('footer [role="status"]')].map((s) => s.textContent)).toContain("Trust review did not complete: OUTPUT_LIMIT TRUST_REPORT_ENTRIES");
+  });
 });
 
 // Contract §3 `getEnvironment` and §6 "Dismissal".

@@ -41,6 +41,9 @@ export const REF_LISTING_BYTES = 4 * MIB;
 export const GRAPH_LANES = 24;
 export const GRAPH_PATH_SEGMENTS = 4096;
 export const TRUST_INPUT_BYTES = 4 * MIB;
+// Contract §5 "Trust report rows": the `readTrust` report rows that the Trust dialog renders. Above either bound, `readTrust` refuses the whole report.
+export const TRUST_REPORT_ENTRIES = 4096;
+export const TRUST_REPORT_HOOKS = 256;
 export const TRUST_DIGEST_FILES = 64;
 export const TRUST_DIGEST_FILE_BYTES = 1 * MIB;
 export const TRUST_DIGEST_TOTAL_BYTES = 8 * MIB;

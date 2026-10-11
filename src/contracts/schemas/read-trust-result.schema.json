@@ -65,6 +65,7 @@
           "const": true
         },
         "entries": {
+          "maxItems": 4096,
           "type": "array",
           "items": {
             "type": "object",
@@ -102,6 +103,7 @@
           }
         },
         "hooks": {
+          "maxItems": 256,
           "type": "array",
           "items": {
             "anyOf": [
@@ -220,6 +222,23 @@
       ],
       "additionalProperties": false,
       "title": "TrustListingFailed"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "TRUST_REPORT_ENTRIES",
+            "TRUST_REPORT_HOOKS"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false,
+      "title": "TrustReportLimited"
     }
   ],
   "title": "ReadTrustResult"

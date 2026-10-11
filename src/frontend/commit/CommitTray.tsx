@@ -12,7 +12,7 @@ import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
 import type { createDrafts } from "../state/drafts";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
-import { isTrustReport, trustBeforeReview, type TrustReport } from "../trust/TrustDialog";
+import { isTrustReport, trustBeforeReview, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
 
 // plan.md "Task flow and command placement" (Compose a commit, Commit, Commit outcome) and "Keyboard and focus" (Message, Unavailable control).
 
@@ -101,7 +101,7 @@ export function CommitTray(props: CommitTrayProps) {
       // plan.md Commit row: the Trust dialog opens first when `commit` needs an approval that the workspace lacks.
       const trust = await bridge.readTrust({ repositoryId: target.repositoryId });
       if (trust.state !== "succeeded" || !isTrustReport(trust.result)) {
-        setNotice(codeText("Trust review did not complete: ", trust.code ?? trust.state));
+        setNotice(codeText("Trust review did not complete: ", trustFailureCode(trust)));
         return focusField();
       }
       if (trustBeforeReview(trust.result) && !(await props.requestTrust(trust.result))) return focusField();

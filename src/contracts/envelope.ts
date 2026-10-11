@@ -338,6 +338,10 @@ export const TrustHook = z.union([
   z.strictObject({ event: z.string().min(1), path: z.string().min(1), repositoryControlled: z.boolean() }).meta({ title: "FolderHook" }),
 ]);
 
+// Contract §5 "Trust report rows": an `OUTPUT_LIMIT` `readTrust` names the reached bound and carries no report.
+const TRUST_REPORT_BOUNDS = ["TRUST_REPORT_ENTRIES", "TRUST_REPORT_HOOKS"] as const;
+const TrustReportLimited = z.strictObject({ reason: z.enum(TRUST_REPORT_BOUNDS) }).meta({ title: "TrustReportLimited" });
+
 // Contract §3 `readTrust` and data-model §3. `bound` names the reached contract §7 "Program file digests" bound, which gives `persistence` `session`.
 // `inputLimited` marks a listing above the contract §5 "Effective configuration/trust input" bound. Only an approved or changed state carries a `trustId`.
 export const ReadTrustResult = z
@@ -352,12 +356,13 @@ export const ReadTrustResult = z
         approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean() }),
         bound: z.enum(TRUST_BOUNDS).optional(),
         inputLimited: z.literal(true).optional(),
-        entries: z.array(TrustEntry),
-        hooks: z.array(TrustHook),
+        entries: z.array(TrustEntry).max(limits.TRUST_REPORT_ENTRIES),
+        hooks: z.array(TrustHook).max(limits.TRUST_REPORT_HOOKS),
       })
       .refine((r) => (r.bound === undefined || r.persistence === "session") && ((r.state === "approved" || r.state === "changed") === (r.trustId !== undefined)))
       .meta({ title: "TrustReport" }),
     TrustListingFailed,
+    TrustReportLimited,
   ])
   .meta({ title: "ReadTrustResult" });
 

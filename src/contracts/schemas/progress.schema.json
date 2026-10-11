@@ -49,6 +49,10 @@
     "stalled": {
       "type": "boolean"
     },
+    "path": {
+      "type": "string",
+      "pattern": "^[^\\u0000]*$"
+    },
     "distro": {
       "type": "string",
       "minLength": 1,

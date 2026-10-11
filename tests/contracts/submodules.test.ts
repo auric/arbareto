@@ -196,7 +196,7 @@ describe("row result validator (data-model §9 'Row result', contract §12 'Reco
 
 describe("progress event validator (data-model §9 'Progress', contract §2 and §12 'Progress')", () => {
   // The row index names the row in the ordered row list; no row ID goes out.
-  const event = { requestId: REQUEST, operationId: OPERATION, state: "running", phase: "fetch", counters: { rowIndex: 2, rowCount: 5, percent: 45 }, stalled: false };
+  const event = { requestId: REQUEST, operationId: OPERATION, state: "running", phase: "fetch", path: "mid/leaf", counters: { rowIndex: 2, rowCount: 5, percent: 45 }, stalled: false };
   const accepted = [
     event,
     { ...event, phase: "update", counters: { rowIndex: 2, rowCount: 5 }, stalled: true },
@@ -210,6 +210,14 @@ describe("progress event validator (data-model §9 'Progress', contract §2 and 
 
   test("every accepted event is a contract §2 progress event", () => {
     for (const value of accepted) expect(ProgressEvent.safeParse(value).success).toBe(true);
+  });
+
+  test("carries the row path with the row result path schema (T365)", () => {
+    const { path: _, ...pathless } = event;
+    expect(SubmoduleProgress.safeParse(pathless).success).toBe(false);
+    expect(SubmoduleProgress.safeParse({ ...event, path: "sub\u0000x" }).success).toBe(false);
+    expect(SubmoduleProgress.safeParse({ ...event, path: 1 }).success).toBe(false);
+    expect(SubmoduleProgress.shape.path).toBe(SubmoduleRowResult.shape.path);
   });
 
   test("the row index lies within the row count", () => {

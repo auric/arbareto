@@ -113,8 +113,10 @@ export type SubmoduleRowResult = z.infer<typeof SubmoduleRowResult>;
 
 // Data-model §9 "Progress" and contract §12 "Progress": a contract §2 progress event. No Git text.
 // `rowIndex` is the `<i>` of "(<i> of <n>)" and names the row in the ordered row list. An absent `percent` means none.
+// `path` is the row path of the row result, also for a found nested row.
 export const SubmoduleProgress = ProgressFields.extend({
   phase: Phase.extract(SUBMODULE_PROGRESS_PHASES),
+  path: SubmoduleRowResult.shape.path,
   counters: z.strictObject({ rowIndex: Count, rowCount: Count, percent: Count.max(100).optional() }),
   stalled: z.boolean(),
 }).refine((event) => event.counters.rowIndex >= 1 && event.counters.rowIndex <= event.counters.rowCount);

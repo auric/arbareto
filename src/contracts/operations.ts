@@ -108,6 +108,8 @@ export const ProgressFields = z.strictObject({
   phase: Phase.optional(),
   counters: z.record(z.string(), Count),
   stalled: z.boolean().optional(),
+  // Contract §12 "Progress": only `updateSubmodules` events carry the row path.
+  path: Text.optional(),
 });
 // Contract §11 "Distro start": `distro` is the listed name of the starting distro.
 export const ProgressEvent = ProgressFields.extend({ distro: DistroName.optional() }).refine((e) => (e.phase === "wsl-starting") === (e.distro !== undefined));

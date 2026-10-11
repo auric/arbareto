@@ -175,20 +175,20 @@ function stepStderr(onPercent: (percent: number) => void): Collector & { outputT
 // Contract §12 "Progress": at most 4 events per second. The last report of a gap goes out at its end.
 function createProgress(registry: OperationRegistry, operationId: string) {
   let sentAt = Number.NEGATIVE_INFINITY;
-  let next: [SubmoduleProgressPhase, Record<string, number>] | null = null;
+  let next: [SubmoduleProgressPhase, Record<string, number>, string] | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const send = () => {
     timer = null;
     const state = registry.get(operationId)?.state;
     if (next === null || (state !== "running" && state !== "cancel-requested")) return;
-    const [phase, counters] = next;
+    const [phase, counters, path] = next;
     next = null;
     sentAt = performance.now();
-    registry.progress(operationId, phase, counters);
+    registry.progress(operationId, phase, counters, undefined, path);
   };
   return {
-    report(phase: SubmoduleProgressPhase, counters: Record<string, number>): void {
-      next = [phase, counters];
+    report(phase: SubmoduleProgressPhase, counters: Record<string, number>, path: string): void {
+      next = [phase, counters, path];
       if (timer !== null) return;
       const wait = sentAt + PROGRESS_GAP_MS - performance.now();
       if (wait <= 0) send();
@@ -469,7 +469,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     // One update process: the `network` policy, the contract §5 limits, and the operation signal. `fail` records the row failure of a nonzero exit.
     const step = async (r: RunRow, args: string[], phase: SubmoduleProgressPhase, remedy: SubmoduleRemedyRequest, firstFetch = false) => {
       let last = counters(r);
-      const report = (now: typeof last) => progress.report(phase, (last = now));
+      const report = (now: typeof last) => progress.report(phase, (last = now), r.p.row.path);
       report(last);
       const stderr = stepStderr((percent) => report(counters(r, percent)));
       const stall = trackStall(registry, operationId, () => report(last), () => {

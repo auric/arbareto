@@ -47,5 +47,7 @@ export default defineConfig({
   build: {
     outDir: fileURLToPath(new URL("./dist", import.meta.url)),
     emptyOutDir: true,
+    // The app loads its chunks from local disk, so the cost is parse time at startup (SC-006), not download. The budget sits above the 2026-10-11 main chunk (575.5 kB, about 75% react-dom and @base-ui/react).
+    chunkSizeWarningLimit: 650,
   },
 });

@@ -22,6 +22,12 @@ function bridgeDouble(answers: Record<string, unknown> = {}) {
 const ChangesPaneDouble = () => <div>changes pane double</div>;
 const ComparisonViewDouble = () => <div>comparison view double</div>;
 const HistoryViewDouble = () => <div>history view double</div>;
+// Docks the commit panel as a click on the Working directory row does.
+const SelectingHistoryView = ({ onSelectRow }: { onSelectRow(id: string): void }) => (
+  <button type="button" onClick={() => onSelectRow("working-directory")}>
+    Select Working directory
+  </button>
+);
 
 describe("View menu", () => {
   test("the menu bar holds the View menu, and rendering sends no bridge request", () => {
@@ -68,12 +74,13 @@ const registered = () => ({
   result: { repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "a".repeat(64) },
 });
 // index.css: `data-theme` absent means System, and `data-density` absent means Compact.
+// plan.md "Dark palettes": View ▸ Theme ▸ System, Light, and Dark ▸ Graphite, Ink, Warm dark. A palette choice selects Dark too.
 const CHOICES = [
-  { label: "Light", attribute: "data-theme", value: "light" },
-  { label: "Dark", attribute: "data-theme", value: "dark" },
-  { label: "System", attribute: "data-theme", value: null },
-  { label: "Comfortable", attribute: "data-density", value: "comfortable" },
-  { label: "Compact", attribute: "data-density", value: null },
+  { path: ["Theme", "Light"], attribute: "data-theme", value: "light" },
+  { path: ["Theme", "Dark", "Graphite"], attribute: "data-theme", value: "dark" },
+  { path: ["Theme", "System"], attribute: "data-theme", value: null },
+  { path: ["Comfortable"], attribute: "data-density", value: "comfortable" },
+  { path: ["Compact"], attribute: "data-density", value: null },
 ] as const;
 const DRAFT = "Fix the parser\n\nKeep the caret here.";
 const CARET = 9;
@@ -84,6 +91,7 @@ afterEach(async () => {
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
   document.documentElement.removeAttribute("data-density");
+  document.documentElement.removeAttribute("data-dark-palette");
 });
 
 // Let the injected responses settle and React commit.
@@ -109,38 +117,48 @@ async function press(target: Element, key: string) {
   await settle();
 }
 
-// Opens a repository, enters Changes, and selects an Unstaged entry with its shown comparison and hunk 2.
+// Opens a repository from the start page, docks the commit panel, and selects an Unstaged entry with its shown comparison and hunk 2.
 async function openChanges() {
   const double = bridgeDouble({ chooseRepository: registered() });
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  await act(async () => root.render(<Workbench bridge={double.bridge as never} ChangesPane={SelectingChangesPane} ComparisonView={HunkComparisonView} HistoryView={HistoryViewDouble} />));
+  await act(async () => root.render(<Workbench bridge={double.bridge as never} ChangesPane={SelectingChangesPane} ComparisonView={HunkComparisonView} HistoryView={SelectingHistoryView} />));
   unmounts.push(async () => {
     await act(async () => root.unmount());
     host.remove();
   });
-  const open = named("button", "Open repository");
-  expect(open.length).toBeGreaterThan(0);
-  await click(open[0]!);
-  await click(one('[role="tab"]', "Changes"));
+  await click(one('section[aria-label="Start page"] [role="option"]', "Open folder"));
+  await click(one("button", "Select Working directory"));
   await click(one("button", "Select src/a.ts"));
   await click(one("button", "Select hunk 2"));
   const field = document.querySelector("textarea");
   return { double, field, changes: document.querySelector('[data-double="changes"]'), comparison: document.querySelector('[data-double="comparison"]'), counts: { ...mounts } };
 }
 
-// Chooses one View menu item with the pointer, then closes the menu with Escape.
-async function choose(label: string) {
+// A menu item by its visible label. "System" also matches "System (dark: <palette>)".
+function menuItem(label: string): HTMLElement {
+  const menubar = document.querySelector('[role="menubar"]')!;
+  const found = [...document.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]')].filter(
+    (e) => !menubar.contains(e) && (text(e) === label || text(e).startsWith(`${label} (`) || text(e).startsWith(`${label}, `)),
+  );
+  expect(found.map(text)).toHaveLength(1);
+  return found[0]!;
+}
+
+async function openView() {
   const menubar = document.querySelector('[role="menubar"]');
   expect(menubar).not.toBeNull();
   const view = named('[role="menuitem"]', "View", menubar!).filter((e) => text(e) === "View");
   expect(view).toHaveLength(1);
   await act(async () => view[0]!.focus());
   await click(view[0]!);
-  const items = named('[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]', label).filter((e) => !menubar!.contains(e));
-  expect(items).toHaveLength(1);
-  await click(items[0]!);
-  if (document.activeElement && document.activeElement !== document.body) await press(document.activeElement, "Escape");
+}
+
+// Chooses one View menu item along its submenu path with the pointer, then closes the menus with Escape.
+async function choose(path: readonly string[]) {
+  await openView();
+  for (const label of path) await click(menuItem(label));
+  while (document.querySelector('[data-slot="menubar-content"], [data-slot="menubar-sub-content"]') && document.activeElement && document.activeElement !== document.body) await press(document.activeElement, "Escape");
 }
 
 const selectedEntry = () => named("span", "Selected Unstaged entry src/a.ts");
@@ -150,7 +168,7 @@ describe("View menu choices", () => {
   test("Light, Dark, and System from the View menu each change the root theme attribute and keep the selected entry", async () => {
     const w = await openChanges();
     for (const c of CHOICES.filter((c) => c.attribute === "data-theme")) {
-      await choose(c.label);
+      await choose(c.path);
       expect(document.documentElement.getAttribute("data-theme")).toBe(c.value);
       expect(selectedEntry()).toHaveLength(1);
       expect(mounts.changes).toBe(w.counts.changes);
@@ -160,18 +178,86 @@ describe("View menu choices", () => {
   test("Comfortable and Compact from the View menu each change the root density attribute and keep the selected entry", async () => {
     const w = await openChanges();
     for (const c of CHOICES.filter((c) => c.attribute === "data-density")) {
-      await choose(c.label);
+      await choose(c.path);
       expect(document.documentElement.getAttribute("data-density")).toBe(c.value);
       expect(selectedEntry()).toHaveLength(1);
       expect(mounts.changes).toBe(w.counts.changes);
     }
   });
 
+  // plan.md "Dark palettes": Theme ▸ Dark ▸ palette. A palette choice selects Dark and that palette in one step.
+  test("each palette under Dark selects the Dark theme and that palette in one step from any theme, keeps the selected entry, and sends no bridge request", async () => {
+    const w = await openChanges();
+    for (const [from, palette, value] of [[["Theme", "Light"], "Ink", "ink"], [["Theme", "System"], "Warm dark", "warm"], [["Theme", "Light"], "Graphite", null]] as const) {
+      await choose(from);
+      const before = w.double.calls.length;
+      await choose(["Theme", "Dark", palette]);
+      expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+      expect(document.documentElement.getAttribute("data-dark-palette")).toBe(value);
+      expect(selectedEntry()).toHaveLength(1);
+      expect(w.double.calls.slice(before)).toEqual([]);
+    }
+    const stored = JSON.parse(localStorage.getItem("arbareto.preferences.v1")!);
+    expect([stored.theme, stored.darkPalette]).toEqual(["dark", "graphite"]);
+  });
+
+  test("System names the palette it uses when Windows is dark, Light names none, and the Theme submenu holds no palette item outside Dark", async () => {
+    await openChanges();
+    await choose(["Theme", "Dark", "Ink"]);
+    await choose(["Theme", "Light"]);
+    await openView();
+    await click(menuItem("Theme"));
+    const theme = document.querySelectorAll<HTMLElement>('[data-slot="menubar-sub-content"]');
+    expect(theme).toHaveLength(1);
+    const labels = [...theme[0]!.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]')].map(text);
+    expect(labels).toEqual(["System (dark: Ink)", "Light", "Dark"]);
+    for (const palette of ["Graphite", "Ink", "Warm dark"]) expect(labels).not.toContain(palette);
+    // Exactly one of System, Light, and Dark is checked.
+    expect([...theme[0]!.querySelectorAll('[role="menuitemradio"][aria-checked="true"]')].map(text)).toEqual(["Light"]);
+    expect(menuItem("Dark").getAttribute("data-checked")).toBeNull();
+    await click(menuItem("Dark"));
+    const dark = document.querySelectorAll<HTMLElement>('[data-slot="menubar-sub-content"]');
+    expect(dark).toHaveLength(2);
+    expect([...dark[1]!.querySelectorAll('[role="menuitemradio"]')].map((e) => [text(e), e.getAttribute("aria-checked")])).toEqual([
+      ["Graphite", "false"],
+      ["Ink", "true"],
+      ["Warm dark", "false"],
+    ]);
+    await press(document.activeElement!, "Escape");
+  });
+
+  test("with the Dark theme, the Theme submenu checks Dark and no other item", async () => {
+    await openChanges();
+    await choose(["Theme", "Dark", "Warm dark"]);
+    await openView();
+    await click(menuItem("Theme"));
+    expect([...document.querySelectorAll('[data-slot="menubar-sub-content"] [role="menuitemradio"][aria-checked="true"]')]).toHaveLength(0);
+    expect(menuItem("Dark").getAttribute("data-checked")).toBe("true");
+    expect(text(menuItem("Dark"))).toBe("Dark, Warm dark");
+    await press(document.activeElement!, "Escape");
+  });
+
+  test("the submenus open with ArrowRight and close with ArrowLeft", async () => {
+    await openChanges();
+    await openView();
+    const theme = menuItem("Theme");
+    await act(async () => theme.focus());
+    await press(theme, "ArrowRight");
+    expect(document.querySelectorAll('[data-slot="menubar-sub-content"]')).toHaveLength(1);
+    const dark = menuItem("Dark");
+    await act(async () => dark.focus());
+    await press(dark, "ArrowRight");
+    expect(document.querySelectorAll('[data-slot="menubar-sub-content"]')).toHaveLength(2);
+    await press(document.activeElement!, "ArrowLeft");
+    expect(document.querySelectorAll('[data-slot="menubar-sub-content"]')).toHaveLength(1);
+    await press(document.activeElement!, "Escape");
+  });
+
   test("a theme or density choice sends no bridge request", async () => {
     const w = await openChanges();
     for (const c of CHOICES) {
       const before = w.double.calls.length;
-      await choose(c.label);
+      await choose(c.path);
       expect(w.double.calls.slice(before)).toEqual([]);
     }
   });
@@ -180,7 +266,7 @@ describe("View menu choices", () => {
     const w = await openChanges();
     expect(w.comparison).not.toBeNull();
     for (const c of CHOICES) {
-      await choose(c.label);
+      await choose(c.path);
       expect(mounts.comparison).toBe(w.counts.comparison);
       expect(w.comparison!.isConnected).toBe(true);
       expect(w.changes!.isConnected).toBe(true);
@@ -208,7 +294,7 @@ describe("View menu choices", () => {
     const w = await withDraft();
     for (const c of CHOICES) {
       await act(async () => w.field.focus());
-      await choose(c.label);
+      await choose(c.path);
       expect(w.field.value).toBe(DRAFT);
       expect([w.field.selectionStart, w.field.selectionEnd]).toEqual([CARET, CARET]);
       expect(selectedHunk()).toHaveLength(1);
@@ -219,7 +305,7 @@ describe("View menu choices", () => {
     const w = await withDraft();
     for (const c of CHOICES) {
       await act(async () => w.field.focus());
-      await choose(c.label);
+      await choose(c.path);
       expect(document.activeElement).toBe(w.field);
     }
   });
@@ -227,7 +313,7 @@ describe("View menu choices", () => {
   test.todo(`a theme or density choice keeps the component key of the composer, so it does not remount ${NEEDS}`, async () => {
     const w = await withDraft();
     for (const c of CHOICES) {
-      await choose(c.label);
+      await choose(c.path);
       expect(w.field.isConnected).toBe(true);
       expect(document.querySelector("textarea")).toBe(w.field);
     }

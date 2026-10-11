@@ -5,7 +5,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-/* Root attributes: data-theme="light" | "dark" (absent = System) and data-density="comfortable" (absent = Compact). */
+/* Root attributes: data-theme="light" | "dark" (absent = System), data-dark-palette="ink" | "warm" (absent = Graphite), and data-density="comfortable" (absent = Compact). */
 /* Every color token is light-dark(<light>, <dark>) with the plan.md values. */
 
 @custom-variant dark {
@@ -73,29 +73,29 @@
   color-scheme: light dark;
 
   /* Base roles (plan.md "Compact token system"). */
-  --canvas: light-dark(#F4F5F7, #17181C);
-  --surface: light-dark(#FFFFFF, #202228);
-  --text: light-dark(#20242C, #E8E9ED);
-  --muted-text: light-dark(#576171, #ABB0BB);
-  --divider: light-dark(#DDE0E6, #343740);
-  --control-border: light-dark(#778294, #687487);
-  --accent-role: light-dark(#245CB5, #8CB4F8);
-  --hover-fill: light-dark(#EBECEF, #242833);
+  --canvas: light-dark(#F4F5F7, #191B1F);
+  --surface: light-dark(#FFFFFF, #26292F);
+  --text: light-dark(#20242C, #DADDE3);
+  --muted-text: light-dark(#576171, #9EA4AF);
+  --divider: light-dark(#DDE0E6, #353A42);
+  --control-border: light-dark(#778294, #6E7682);
+  --accent-role: light-dark(#245CB5, #7AA7F0);
+  --hover-fill: light-dark(#EBECEF, #31353C);
 
   /* Semantic roles: text, then fill. */
-  --added: light-dark(#17613B, #8DD5A5);
-  --added-fill: light-dark(#E9F5ED, #183026);
-  --removed: light-dark(#9F2636, #F0A4AB);
-  --removed-fill: light-dark(#FCECEE, #38232B);
-  --warning: light-dark(#765500, #E6C479);
-  --warning-fill: light-dark(#FFF4D4, #332D1E);
-  --selected-row: light-dark(#DCE8FA, #2B3C54);
+  --added: light-dark(#17613B, #7FD19B);
+  --added-fill: light-dark(#E9F5ED, #1C3326);
+  --removed: light-dark(#9F2636, #F09999);
+  --removed-fill: light-dark(#FCECEE, #3D2328);
+  --warning: light-dark(#765500, #E2C06E);
+  --warning-fill: light-dark(#FFF4D4, #3A321C);
+  --selected-row: light-dark(#DCE8FA, #2B3A50);
 
   /* Lane roles (plan.md "History graph design"). */
-  --lane-teal: light-dark(#06726E, #4BB9B2);
-  --lane-sky: light-dark(#00516B, #80D2F0);
-  --lane-violet: light-dark(#724AAB, #B59AE7);
-  --lane-magenta: light-dark(#993582, #F7A6DF);
+  --lane-teal: light-dark(#06726E, #34AFA4);
+  --lane-sky: light-dark(#00516B, #88CEEF);
+  --lane-violet: light-dark(#724AAB, #9F86E6);
+  --lane-magenta: light-dark(#993582, #F0A3D2);
 
   /* shadcn variables used by src/frontend/components/ui. */
   --background: var(--canvas);
@@ -142,6 +142,52 @@
   --h-badge-base: 18px;
   --h-tray-min-base: 144px;
 }
+/* plan.md "Dark palettes": Ink. The light values stay unchanged. */
+:root[data-dark-palette="ink"] {
+  --canvas: light-dark(#F4F5F7, #171C24);
+  --surface: light-dark(#FFFFFF, #232B37);
+  --text: light-dark(#20242C, #D5DCE6);
+  --muted-text: light-dark(#576171, #A6B0BF);
+  --divider: light-dark(#DDE0E6, #343F4F);
+  --control-border: light-dark(#778294, #6A7A95);
+  --accent-role: light-dark(#245CB5, #6FA8FF);
+  --hover-fill: light-dark(#EBECEF, #2E3744);
+  --selected-row: light-dark(#DCE8FA, #29405F);
+  --added: light-dark(#17613B, #7BD49A);
+  --added-fill: light-dark(#E9F5ED, #1A3328);
+  --removed: light-dark(#9F2636, #F3979B);
+  --removed-fill: light-dark(#FCECEE, #3E2229);
+  --warning: light-dark(#765500, #E5BF63);
+  --warning-fill: light-dark(#FFF4D4, #3A3020);
+  --lane-teal: light-dark(#06726E, #35AEA1);
+  --lane-sky: light-dark(#00516B, #80CCEE);
+  --lane-violet: light-dark(#724AAB, #9E89EE);
+  --lane-magenta: light-dark(#993582, #EDA0CF);
+}
+
+/* plan.md "Dark palettes": Warm dark. The light values stay unchanged. */
+:root[data-dark-palette="warm"] {
+  --canvas: light-dark(#F4F5F7, #1B1A18);
+  --surface: light-dark(#FFFFFF, #292724);
+  --text: light-dark(#20242C, #DCD8D0);
+  --muted-text: light-dark(#576171, #ABA69C);
+  --divider: light-dark(#DDE0E6, #3B3833);
+  --control-border: light-dark(#778294, #7A746C);
+  --accent-role: light-dark(#245CB5, #8AAEE8);
+  --hover-fill: light-dark(#EBECEF, #34312D);
+  --selected-row: light-dark(#DCE8FA, #2E3745);
+  --added: light-dark(#17613B, #8CCB94);
+  --added-fill: light-dark(#E9F5ED, #213020);
+  --removed: light-dark(#9F2636, #EE9C92);
+  --removed-fill: light-dark(#FCECEE, #3E2622);
+  --warning: light-dark(#765500, #E0BF73);
+  --warning-fill: light-dark(#FFF4D4, #3A3222);
+  --lane-teal: light-dark(#06726E, #45AA9B);
+  --lane-sky: light-dark(#00516B, #95C7DF);
+  --lane-violet: light-dark(#724AAB, #A58ED6);
+  --lane-magenta: light-dark(#993582, #E4A3C4);
+}
+
 
 :root[data-theme="light"] {
   color-scheme: light;
@@ -289,6 +335,19 @@
     border-color: var(--control-border);
     color: var(--text);
   }
+  /* plan.md "Reference chips": local branches use Accent; remote and tag chips use Text for the name, icon, and outline. */
+  .chip {
+    height: var(--h-badge);
+    padding-inline: 4px;
+    border: 1px solid var(--text);
+    border-radius: 4px;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .chip[data-kind="branch"] {
+    border-color: var(--accent-role);
+    color: var(--accent-role);
+  }
 
   .boundary-continuation {
     stroke-width: var(--boundary-width);
@@ -332,11 +391,13 @@
     color: CanvasText;
   }
   .badge,
-  .badge-wsl {
+  .badge-wsl,
+  .chip,
+  .chip[data-kind="branch"] {
     color: CanvasText;
     border-color: CanvasText;
   }
-  .list-row[aria-selected="true"] :is(.badge, .badge-wsl) {
+  .list-row[aria-selected="true"] :is(.badge, .badge-wsl, .chip, .chip[data-kind="branch"]) {
     color: HighlightText;
     border-color: HighlightText;
   }

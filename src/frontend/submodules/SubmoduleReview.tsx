@@ -110,6 +110,8 @@ export function SubmoduleReview({ open, bridge, target, current, review, client,
   const [accepted, setAccepted] = useState(false);
   // The code of a failed new review after `APPROVAL_EXPIRED`. The token is then dead.
   const [rereadFailed, setRereadFailed] = useState<string | null>(null);
+  // The code of a rejection other than `APPROVAL_EXPIRED`. The token stays unconsumed (contract §12 "Update protocol" step 2), so Start update stays enabled.
+  const [rejected, setRejected] = useState<string | null>(null);
   const sent = useRef(false);
   const toStart = useRef(false);
   const size = dialogSize("updateSubmodules", client);
@@ -121,6 +123,7 @@ export function SubmoduleReview({ open, bridge, target, current, review, client,
     setReviewed(target);
     setAccepted(false);
     setRereadFailed(null);
+    setRejected(null);
     sent.current = false;
     toStart.current = false;
   }
@@ -133,6 +136,7 @@ export function SubmoduleReview({ open, bridge, target, current, review, client,
   async function start() {
     if (blocked || sent.current) return;
     sent.current = true;
+    setRejected(null);
     let seen = false;
     const response: BridgeResponse = await trackOperation(
       "updateSubmodules",
@@ -156,7 +160,7 @@ export function SubmoduleReview({ open, bridge, target, current, review, client,
         setValue(fresh.result as SubmoduleReviewValue);
         setReviewed(next);
       } else setRereadFailed(fresh.code ?? fresh.state);
-    }
+    } else if (response.state === "rejected") setRejected(response.code ?? response.state);
     sent.current = false;
   }
 
@@ -215,8 +219,13 @@ export function SubmoduleReview({ open, bridge, target, current, review, client,
             </div>
           ))}
           {rereadFailed === null ? null : (
-            <p id={`${reasonId}-reread`}>
+            <p id={`${reasonId}-reread`} role="alert">
               Submodule review did not complete: <code>{rereadFailed}</code>
+            </p>
+          )}
+          {rejected === null ? null : (
+            <p role="alert">
+              Update submodules did not start: <code>{rejected}</code>
             </p>
           )}
           {blockedReason === null ? null : <p id={`${reasonId}-busy`}>{blockedReason}</p>}

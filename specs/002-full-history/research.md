@@ -112,7 +112,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - `@tanstack/virtual-core` 3.17.11 builds a `Float64Array(count*2)` and an items array of `count`. It rebuilds them from index 0 whenever `count` changes (`node_modules/@tanstack/virtual-core/dist/esm/index.js:673-705`). A load that grows `count` to 1M rows repeats O(n) work in the renderer. **documented** (code)
   - The library has no fix for the maximum element height of the browser. **documented** (code)
   - Chromium's LayoutUnit maximum is about 33,554,431 px. 1M rows at the comfortable density need about 34M px. **unverified** in WebView2
-  - The fixed-height window computes the first row as `round(scrollTop / maxScrollTop · (total − visibleRows))`, with `maxScrollTop = min(total·rowHeight, MAX_LAYOUT_PX) − viewportHeight` (plan.md D6). Its work does not grow with the history.
+  - The fixed-height window maps the scroll range to a virtual offset: `virtualTop = scrollTop · (total·rowHeight − clientHeight) / (scrollHeight − clientHeight)`, and the first row is `floor(virtualTop / rowHeight)` (plan.md D6). Its work does not grow with the history.
 - **Alternatives considered**:
   - `@tanstack/react-virtual` for history. Rejected for the two facts above.
   - A new virtualizer package. Rejected: no new dependency (Constitution VIII), and a few lines of arithmetic cover the need.

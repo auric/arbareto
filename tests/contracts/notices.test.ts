@@ -169,7 +169,25 @@ describe("licence texts and inventory (T130)", () => {
       ["MIT", ["clsx", "react"]],
       ["MIT OR Apache-2.0", ["serde"]],
     ]);
-    expect(result.notices.groups[0]?.packages[1]?.files).toEqual([{ name: "LICENSE", text: "MIT License\nCopyright Meta" }]);
+    const files = result.notices.groups[0]?.packages[1]?.files ?? [];
+    expect(files.map((f) => [f.name, result.notices.texts[f.text]])).toEqual([["LICENSE", "MIT License\nCopyright Meta"]]);
+  });
+
+  test("byte-identical texts share one entry of the texts table, and texts that differ in one byte do not", () => {
+    const mit = "MIT License\nCopyright X\n";
+    const result = inventory(
+      [
+        { name: "a", version: "1.0.0", license: "MIT", files: [{ name: "LICENSE", text: mit }] },
+        { name: "b", version: "1.0.0", license: "MIT", files: [{ name: "LICENSE.md", text: mit }] },
+        { name: "c", version: "1.0.0", license: "MIT", files: [{ name: "LICENSE", text: `${mit} ` }] },
+      ],
+      REPO,
+      PROJECT,
+    );
+    const ids = result.notices.groups[0]!.packages.map((p) => p.files[0]!.text);
+    expect(ids[0]).toBe(ids[1]);
+    expect(ids[2]).not.toBe(ids[0]);
+    expect(result.notices.texts).toEqual([mit, `${mit} `]);
   });
 
   test("a shipped package without licence text gives a non-zero exit", () => {

@@ -133,7 +133,7 @@ const expectEnabled = (html: string, label: string) => {
 };
 
 describe("hunk selection", () => {
-  test.todo(`without a selection, Next hunk selects hunk 1 and Previous hunk selects hunk 3 ${NEEDS}`, async () => {
+  test(`without a selection, Next hunk selects hunk 1 and Previous hunk selects hunk 3`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
     const root = tree(() => HunkControls(s.props));
@@ -143,7 +143,7 @@ describe("hunk selection", () => {
     expect(s.double.calls).toEqual([]);
   });
 
-  test.todo(`with hunk 2 anchored after a hunk action, each of them selects hunk 2 ${NEEDS}`, async () => {
+  test(`with hunk 2 anchored after a hunk action, each of them selects hunk 2`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
     const root = tree(() => HunkControls({ ...s.props, anchoredHunk: s.id(2) }));
@@ -152,7 +152,7 @@ describe("hunk selection", () => {
     expect(s.selected).toEqual([s.id(2), s.id(2)]);
   });
 
-  test.todo(`with hunk 2 selected, Next hunk selects hunk 3 and Previous hunk selects hunk 1 ${NEEDS}`, async () => {
+  test(`with hunk 2 selected, Next hunk selects hunk 3 and Previous hunk selects hunk 1`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
     const props = { ...s.props, selectedHunk: s.id(2) };
@@ -166,7 +166,7 @@ describe("hunk selection", () => {
     expect(s.double.calls).toEqual([]);
   });
 
-  test.todo(`at hunk 3, Next hunk is disabled with the visible reason and stays focusable ${NEEDS}`, async () => {
+  test(`at hunk 3, Next hunk is disabled with the visible reason and stays focusable`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
     const html = renderToStaticMarkup(<HunkControls {...s.props} selectedHunk={s.id(3)} />);
@@ -174,7 +174,7 @@ describe("hunk selection", () => {
     expectEnabled(html, "Previous hunk");
   });
 
-  test.todo(`at hunk 1, Previous hunk is disabled with the visible reason and stays focusable ${NEEDS}`, async () => {
+  test(`at hunk 1, Previous hunk is disabled with the visible reason and stays focusable`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
     const html = renderToStaticMarkup(<HunkControls {...s.props} selectedHunk={s.id(1)} />);
@@ -182,7 +182,7 @@ describe("hunk selection", () => {
     expectEnabled(html, "Next hunk");
   });
 
-  test.todo(`in a one-hunk comparison with that hunk selected, both are disabled ${NEEDS}`, async () => {
+  test(`in a one-hunk comparison with that hunk selected, both are disabled`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup({}, 1);
     const html = renderToStaticMarkup(<HunkControls {...s.props} selectedHunk={s.id(1)} />);
@@ -192,7 +192,7 @@ describe("hunk selection", () => {
 });
 
 describe("toolbar layout", () => {
-  test.todo(`the controls are Previous hunk, Next hunk, and the hunk action, in that order, with no file-action slot ${NEEDS}`, async () => {
+  test(`the controls are Previous hunk, Next hunk, and the hunk action, in that order, with no file-action slot`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
     const html = renderToStaticMarkup(<HunkControls {...s.props} />);
@@ -201,7 +201,7 @@ describe("toolbar layout", () => {
     expect(tags(html, "button")).toHaveLength(3);
   });
 
-  test.todo(`Previous hunk and Next hunk are icon buttons with names, aria-keyshortcuts, and the key in the tooltip ${NEEDS}`, async () => {
+  test(`Previous hunk and Next hunk are icon buttons with names, aria-keyshortcuts, and the key in the tooltip`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
     const html = renderToStaticMarkup(<HunkControls {...s.props} selectedHunk={s.id(2)} />);
@@ -235,7 +235,7 @@ describe("toolbar layout", () => {
     }
   });
 
-  test.todo(`Staged shows Unstage selected hunk ${NEEDS}`, async () => {
+  test(`Staged shows Unstage selected hunk`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup({ category: "staged" } as Partial<Props>);
     const html = renderToStaticMarkup(<HunkControls {...s.props} />);
@@ -243,7 +243,7 @@ describe("toolbar layout", () => {
     expect(tags(html, "button").some((b) => b.text.includes("Stage selected hunk") && !b.text.includes("Unstage"))).toBe(false);
   });
 
-  test.todo(`the controls own one reason line after their buttons, on one line with an end ellipsis, and the disabled control takes it as its description ${NEEDS}`, async () => {
+  test(`the controls own one reason line after their buttons, on one line with an end ellipsis, and each disabled control takes only its own part as its description`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup({ comparison: comparison(0, "binary") } as Partial<Props>);
     const html = renderToStaticMarkup(<HunkControls {...s.props} />);
@@ -251,15 +251,32 @@ describe("toolbar layout", () => {
     expect(attr(action, "aria-disabled")).toBe("true");
     expect(attr(action, "disabled")).toBeUndefined();
     const reason = byId(html, attr(action, "aria-describedby")!);
-    expect(reason.text.trim()).not.toBe("");
+    expect(reason.text).toBe("Git reports binary content in this file");
     expect(reason.index).toBeGreaterThan(action.index);
-    expect(attr(reason, "class")?.split(/\s+/)).toContain("truncate");
+    const lines = tags(html, "p").filter((p) => attr(p, "data-slot") === "reason-line");
+    expect(lines).toHaveLength(1);
+    const line = lines[0]!;
+    expect(line.index).toBeLessThan(reason.index);
+    expect(attr(line, "class")?.split(/\s+/)).toContain("truncate");
     // The 18/20 DIP reason line height (plan.md density table, T124 token).
-    expect(reason.attrs).toContain("--h-reason-line");
+    expect(line.attrs).toContain("--h-reason-line");
+    // The action reason comes first, ". " joins the parts, and no text repeats.
+    expect(line.text).toBe("Git reports binary content in this file. No previous hunk. No next hunk.");
+    expect(byId(html, attr(button(html, "Next hunk"), "aria-describedby")!).text).toBe("No next hunk");
+  });
+
+  test(`a part with the text of an earlier part stays hidden and keeps the description of its control`, async () => {
+    const { HunkControls } = await hunkControls();
+    const s = setup({ blocked: "busy", reasons: [{ id: "file-reason", text: "A file action is running. Wait for its result." }] } as Partial<Props>);
+    const html = renderToStaticMarkup(<HunkControls {...s.props} />);
+    const visible = /<p[^>]*data-slot="reason-line"[^>]*>([\s\S]*?)<\/p>/.exec(html)![1]!.replace(/<span[^>]*hidden[^>]*>[^<]*<\/span>/g, "").replace(/<[^>]+>/g, "");
+    expect(visible).toBe("A file action is running. Wait for its result.");
+    expect(byId(html, "file-reason").text).toBe("A file action is running. Wait for its result");
+    expect(byId(html, "file-reason").attrs).toContain("hidden");
   });
 
   // plan.md "Hunk toolbar layout": the controls stay in the heading beside 120 DIPs of path text, else move to a row below it, else the hunk action moves to a second row.
-  test.todo(`the wrap function keeps the controls in the heading, then moves them to one row, then moves the hunk action to a second row ${NEEDS}`, async () => {
+  test(`the wrap function keeps the controls in the heading, then moves them to one row, then moves the hunk action to a second row`, async () => {
     const { wrapHunkToolbar } = await hunkControls();
     const widths = { previous: 24, next: 24, hunkAction: 152 };
     expect(wrapHunkToolbar(widths, { heading: 200, row: 400 })).toEqual({ heading: ["previous", "next", "hunkAction"], rows: [] });
@@ -349,19 +366,30 @@ describe("comparison heading", () => {
     expect(fitComparisonHeading({ ...parts, width: 100 })).toEqual({ folder: 20, file: 30, sides: 20, scope: 20 });
   });
 
-  // Alt+Up and Alt+Down reach the selection through the comparison pane and the T127 handler. The keys go to the focused hunk toolbar button.
-  test.todo(`at hunk 3, Alt+Down selects nothing, and at hunk 1, Alt+Up selects nothing ${NEEDS}`, async () => {
+  // Alt+Up and Alt+Down reach the selection through the comparison pane and the T127 handler. The test mounts the controls in a pane with that handler.
+  test(`at hunk 3, Alt+Down selects nothing, and at hunk 1, Alt+Up selects nothing`, async () => {
     const { HunkControls } = await hunkControls();
     const s = setup();
+    const { createShortcutHandler } = await import("../../src/frontend/keyboard/shortcuts");
     const host = document.body.appendChild(document.createElement("div"));
+    const stepRef: { current: ((direction: "next" | "previous") => void) | null } = { current: null };
+    const handle = createShortcutHandler();
+    const onKey = (event: KeyboardEvent) => {
+      const action = handle(event, { messageField: null, comparisonPane: host, modalOpen: false, menuOpen: false, commitEnabled: false });
+      if (action?.type === "selectHunk") stepRef.current?.(action.direction);
+    };
+    window.addEventListener("keydown", onKey);
     const root = createRoot(host);
     const alt = async (selected: number, label: string, key: "ArrowUp" | "ArrowDown") => {
-      await act(async () => root.render(<HunkControls {...s.props} selectedHunk={s.id(selected)} />));
+      await act(async () => root.render(<HunkControls {...s.props} stepRef={stepRef} selectedHunk={s.id(selected)} />));
       const found = [...host.querySelectorAll("button")].filter((b) => b.getAttribute("aria-label") === label);
       expect(found).toHaveLength(1);
       await act(async () => {
         found[0]!.focus();
-        found[0]!.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, altKey: true, bubbles: true, cancelable: true }));
+        // happy-dom reports AltGraph for every Alt key. A real Alt key has no AltGraph state (UI Events getModifierState).
+        const down = new KeyboardEvent("keydown", { key, code: key, altKey: true, bubbles: true, cancelable: true });
+        Object.defineProperty(down, "getModifierState", { value: () => false });
+        found[0]!.dispatchEvent(down);
         found[0]!.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, altKey: true, bubbles: true, cancelable: true }));
       });
     };
@@ -375,6 +403,7 @@ describe("comparison heading", () => {
       expect(s.selected).toEqual([s.id(3), s.id(1)]);
       expect(s.double.calls).toEqual([]);
     } finally {
+      window.removeEventListener("keydown", onKey);
       await act(async () => root.unmount());
       host.remove();
     }

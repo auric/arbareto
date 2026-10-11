@@ -10,7 +10,7 @@ import type { BridgeResponse } from "../bridge";
 import { IconButton } from "../components/icon-button";
 import { shrinkInOrder, type Part } from "../lib/fit";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
-import { mapHunks } from "./hunk-mapping";
+import { mapHunks, type HunkMapping } from "./hunk-mapping";
 
 // plan.md "Long text" (comparison heading), "Required visible states", and "Selection, scroll, and stored context".
 
@@ -65,8 +65,14 @@ export function ComparisonHeading({ path, scope, sides, controls }: { path: stri
   }, [path, scope, sides]);
 
   return (
-    <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-divider bg-surface px-2" style={{ height: "var(--h-pane-heading)" }}>
-      <h2 ref={heading} aria-label={[path, scope, sides].filter(Boolean).join(", ")} className="relative flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden whitespace-nowrap">
+    // plan.md "Hunk toolbar layout": flex wrap keeps the controls beside 120 DIPs of path text, else moves them to a row below, then splits that row.
+    <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-2 border-b border-divider bg-surface px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
+      <h2
+        ref={heading}
+        aria-label={[path, scope, sides].filter(Boolean).join(", ")}
+        className="relative flex min-w-0 flex-1 basis-[120px] items-baseline gap-2 overflow-hidden whitespace-nowrap"
+        style={{ height: "var(--h-pane-heading)", lineHeight: "var(--h-pane-heading)" }}
+      >
         <span className="flex min-w-0 font-semibold">
           {PARTS.slice(0, 2).map((name) => (
             <span key={name} data-part={name} className="truncate" style={{ maxWidth: widths?.[name] }}>
@@ -100,6 +106,12 @@ export type ComparisonViewProps = {
   onRefresh(): void;
   /** The No selection help line. */
   helpLine?: string;
+  /** The T145 hunk controls of a `Comparison` result. `displayFailed` is true when the display mapping disagrees (contract §4). */
+  controls?(comparison: Comparison, displayFailed: boolean): ReactNode;
+  /** The last own successful hunk action of this file: the acted hunk ordinal and the patch that it replaced. */
+  anchor?: { ordinal: number; patch: string } | null;
+  /** Content below the heading, such as a failed file action output (T202). */
+  notice?: ReactNode;
 };
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -114,13 +126,14 @@ function decode(base64: string): string | null {
 // plan.md "Selection, scroll, and stored context".
 export const RESET_NOTICE = "The file changed outside Arbareto. The view shows the new version.";
 
-type DiffProps = { comparison: Comparison; selectedHunk: string | null; onRefresh(): void; reset: boolean };
+type Mapped = { patch: string; mapping: HunkMapping } | null;
+type View = { key: string | null; anchored: number | null };
+type DiffProps = { mapped: Mapped; view: View; selectedHunk: string | null; onRefresh(): void; reset: boolean };
 
 /** A supported, complete comparison: the mapped diff, or `DISPLAY_MAPPING_FAILED` with every hunk action disabled. */
-function Diff({ comparison, selectedHunk, onRefresh, reset }: DiffProps) {
-  const patch = useMemo(() => decode(comparison.patch), [comparison.patch]);
-  const mapping = useMemo(() => (patch === null ? null : mapHunks(patch, comparison.hunks)), [patch, comparison.hunks]);
-  if (patch === null || mapping === null || !mapping.ok) return <ErrorState code="DISPLAY_MAPPING_FAILED" result={undefined} onRefresh={onRefresh} />;
+function Diff({ mapped, view, selectedHunk, onRefresh, reset }: DiffProps) {
+  if (mapped === null || !mapped.mapping.ok) return <ErrorState code="DISPLAY_MAPPING_FAILED" result={undefined} onRefresh={onRefresh} />;
+  const { patch, mapping } = mapped;
   const index = selectedHunk === null ? -1 : mapping.hunkIds.indexOf(selectedHunk);
   return (
     <>
@@ -130,8 +143,8 @@ function Diff({ comparison, selectedHunk, onRefresh, reset }: DiffProps) {
         </p>
       ) : null}
       <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
-        {/* The canonical patch is the key. A changed comparison remounts the view and resets its scroll. */}
-        <PatchView key={comparison.patch} patch={patch} selected={index < 0 ? null : mapping.file.hunks[index]!} />
+        {/* An external change remounts the view and resets its scroll. An own hunk action keeps the view and anchors it. */}
+        <PatchView key={view.key ?? undefined} patch={patch} selected={index < 0 ? null : mapping.file.hunks[index]!} anchor={view.anchored === null ? null : (mapping.file.hunks[view.anchored] ?? null)} />
       </Suspense>
     </>
   );
@@ -144,9 +157,9 @@ export const resultOf = (response: BridgeResponse | null): ReadComparisonResult 
 export const showsDiff = (result: ReadComparisonResult | null): boolean =>
   result !== null && "patch" in result && result.support === "supported" && result.completeness.state === "complete";
 
-function Body({ result, selectedHunk, onRefresh, reset }: { result: ReadComparisonResult; selectedHunk: string | null; onRefresh(): void; reset: boolean }) {
+function Body({ result, ...diff }: { result: ReadComparisonResult } & DiffProps) {
   if ("patch" in result) {
-    if (showsDiff(result)) return <Diff comparison={result} selectedHunk={selectedHunk} onRefresh={onRefresh} reset={reset} />;
+    if (showsDiff(result)) return <Diff {...diff} />;
     return (
       <>
         <LimitedOutput completeness={result.completeness} />
@@ -167,26 +180,42 @@ function Body({ result, selectedHunk, onRefresh, reset }: { result: ReadComparis
 }
 
 /** The comparison pane of the selected entry. */
-export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpLine }: ComparisonViewProps) {
+export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpLine, controls, anchor = null, notice }: ComparisonViewProps) {
   const result = resultOf(response);
   // The category and the path bytes name the shown file. A new snapshot gives new entry IDs.
-  // T145 must exclude the patch after the application's own hunk action. Until then, each other patch of the same file is an external change.
+  // Another patch of the same file is an external change, except the one that replaces the patch of an own hunk action.
   const file = entry === null ? null : `${entry.category}:${entry.pathBytes}`;
   const patch = showsDiff(result) ? (result as Comparison).patch : null;
-  const [shown, setShown] = useState({ file, patch, reset: false });
-  if (shown.file !== file) setShown({ file, patch, reset: false });
-  else if (patch !== null && patch !== shown.patch) setShown({ file, patch, reset: shown.patch !== null });
+  const [shown, setShown] = useState({ file, patch, reset: false, key: patch });
+  if (shown.file !== file) setShown({ file, patch, reset: false, key: patch });
+  else if (patch !== null && patch !== shown.patch) {
+    const own = shown.patch !== null && shown.patch === anchor?.patch;
+    setShown({ file, patch, reset: shown.patch !== null && !own, key: own ? shown.key : patch });
+  }
+  const hunks = patch === null ? null : (result as Comparison).hunks;
+  // plan.md "Task flow and command placement": the surviving hunk with the same ordinal, or the last hunk when fewer remain.
+  const anchored = anchor !== null && hunks !== null && patch !== anchor.patch && hunks.length > 0 ? Math.min(anchor.ordinal, hunks.length - 1) : null;
+  const mapped = useMemo<Mapped>(() => {
+    const text = patch === null ? null : decode(patch);
+    return text === null ? null : { patch: text, mapping: mapHunks(text, hunks!) };
+  }, [patch, hunks]);
   if (entry === null) return <NoSelection helpLine={helpLine} />;
   const scope = result !== null && "scope" in result ? SIDES[result.scope] : null;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ComparisonHeading path={entry.path} scope={SCOPE[entry.category]} sides={scope} />
+      <ComparisonHeading
+        path={entry.path}
+        scope={SCOPE[entry.category]}
+        sides={scope}
+        controls={result !== null && "comparisonId" in result ? controls?.(result, patch !== null && (mapped === null || !mapped.mapping.ok)) : undefined}
+      />
+      {notice}
       {response === null ? (
         <Loading hasContent={false} refreshing={false} />
       ) : result === null ? (
         <ErrorState code={(response.code ?? response.state) as ErrorCode} result={response.result} onRefresh={onRefresh} />
       ) : (
-        <Body result={result} selectedHunk={selectedHunk} onRefresh={onRefresh} reset={shown.reset} />
+        <Body result={result} mapped={mapped} view={{ key: shown.key, anchored }} selectedHunk={selectedHunk} onRefresh={onRefresh} reset={shown.reset} />
       )}
     </div>
   );

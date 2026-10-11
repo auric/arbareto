@@ -22,10 +22,14 @@ export type Crate = { name: string; version: string; license: string | undefined
 
 export type LicenseFile = { name: string; text: string };
 export type Shipped = { name: string; version?: string; license: string | undefined; files: LicenseFile[] };
+/** A licence file of the output. `text` is the index of its text in `Notices.texts`. */
+export type NoticeFile = { name: string; text: number };
 export type Notices = {
   repositoryUrl: string;
   project: { license: string; notice: string };
-  groups: { license: string; packages: { name: string; version?: string; files: LicenseFile[] }[] }[];
+  /** Each distinct licence text once. Files share a text only when the texts are byte-identical. */
+  texts: string[];
+  groups: { license: string; packages: { name: string; version?: string; files: NoticeFile[] }[] }[];
 };
 
 // "<name>@<version>": a scoped name starts with "@", so the version separator is the last "@".
@@ -159,7 +163,7 @@ export function licenseFileNames(names: string[]): string[] {
 export function inventory(shipped: Shipped[], repositoryUrl: string, project: Notices["project"]): { notices: Notices; problems: string[]; code: 0 | 1 } {
   const problems: string[] = [];
   if (repositoryUrl.trim() === "") problems.push("package.json repository.url is empty");
-  const groups = new Map<string, Notices["groups"][number]["packages"]>();
+  const groups = new Map<string, { name: string; version?: string; files: LicenseFile[] }[]>();
   for (const item of shipped) {
     const label = item.version === undefined ? item.name : `${item.name} ${item.version}`;
     if (item.license === undefined || item.license.trim() === "") problems.push(`${label}: no licence name`);
@@ -170,13 +174,26 @@ export function inventory(shipped: Shipped[], repositoryUrl: string, project: No
     groups.set(license, group);
   }
   const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-  const notices: Notices = {
-    repositoryUrl,
-    project,
-    groups: [...groups]
-      .sort(([a], [b]) => order(a, b))
-      .map(([license, packages]) => ({ license, packages: packages.sort((a, b) => order(a.name, b.name) || order(a.version ?? "", b.version ?? "")) })),
+  // Map keys compare strings by exact code units, so only identical texts share an index.
+  const ids = new Map<string, number>();
+  const texts: string[] = [];
+  const id = (text: string) => {
+    let n = ids.get(text);
+    if (n === undefined) {
+      n = texts.push(text) - 1;
+      ids.set(text, n);
+    }
+    return n;
   };
+  const sorted = [...groups]
+    .sort(([a], [b]) => order(a, b))
+    .map(([license, packages]) => ({
+      license,
+      packages: packages
+        .sort((a, b) => order(a.name, b.name) || order(a.version ?? "", b.version ?? ""))
+        .map((p) => ({ ...p, files: p.files.map((f) => ({ name: f.name, text: id(f.text) })) })),
+    }));
+  const notices: Notices = { repositoryUrl, project, texts, groups: sorted };
   return { notices, problems, code: problems.length === 0 ? 0 : 1 };
 }
 
@@ -244,7 +261,7 @@ async function main(): Promise<number> {
   const result = inventory(shipped, manifest.repository?.url ?? "", project);
   problems.push(...result.problems);
   // The file holds the inventory also after a refusal, so the About window and its tests still build. The exit code stops `bun run build`.
-  await Bun.write(`${root}/src/frontend/generated/notices.json`, `${JSON.stringify(result.notices, null, 2)}\n`);
+  await Bun.write(`${root}/src/frontend/generated/notices.json`, `${JSON.stringify(result.notices)}\n`);
   const count = result.notices.groups.reduce((n, g) => n + g.packages.length, 0);
   console.log(`notices.json: ${count} entries in ${result.notices.groups.length} licence groups`);
   for (const problem of problems) console.error(`NOTICE_PROBLEM ${problem}`);

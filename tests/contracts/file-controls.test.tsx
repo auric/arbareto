@@ -129,37 +129,37 @@ function expectEnabled(b: HTMLButtonElement) {
 const lastReason = (reasons: (string | null)[]) => reasons.at(-1) ?? null;
 
 describe("decision", () => {
-  test.todo(`a stage decision shows an enabled Stage file and no Unstage file ${NEEDS}`, async () => {
+  test(`a stage decision shows an enabled Stage file and no Unstage file`, async () => {
     const { FileControls } = await fileControls();
     const s = setup();
     const view = await mount(FileControls, s.props);
     try {
-      expectEnabled(view.button("Stage file"));
-      expect(view.buttons("Unstage file")).toHaveLength(0);
+      expectEnabled(view.button("Stage file (Space)"));
+      expect(view.buttons("Unstage file (Space)")).toHaveLength(0);
       expect(lastReason(s.reasons)).toBeNull();
     } finally {
       await view.unmount();
     }
   });
 
-  test.todo(`an Untracked entry with a stage decision shows an enabled Stage file ${NEEDS}`, async () => {
+  test(`an Untracked entry with a stage decision shows an enabled Stage file`, async () => {
     const { FileControls } = await fileControls();
     const s = setup({ category: "untracked", comparison: { ...comparison("stage"), scope: "empty-to-untracked" } });
     const view = await mount(FileControls, s.props);
     try {
-      expectEnabled(view.button("Stage file"));
+      expectEnabled(view.button("Stage file (Space)"));
     } finally {
       await view.unmount();
     }
   });
 
-  test.todo(`an unstage decision shows an enabled Unstage file and no Stage file ${NEEDS}`, async () => {
+  test(`an unstage decision shows an enabled Unstage file and no Stage file`, async () => {
     const { FileControls } = await fileControls();
     const s = setup({ category: "staged", comparison: comparison("unstage") });
     const view = await mount(FileControls, s.props);
     try {
-      expectEnabled(view.button("Unstage file"));
-      expect(view.buttons("Stage file")).toHaveLength(0);
+      expectEnabled(view.button("Unstage file (Space)"));
+      expect(view.buttons("Stage file (Space)")).toHaveLength(0);
     } finally {
       await view.unmount();
     }
@@ -167,24 +167,24 @@ describe("decision", () => {
 });
 
 describe("unavailable states", () => {
-  test.todo(`a refusal reason disables Stage file, keeps it focusable, and feeds the plan.md limitation sentence to the reason line ${NEEDS}`, async () => {
+  test(`a refusal reason disables Stage file, keeps it focusable, and feeds the plan.md limitation sentence to the reason line`, async () => {
     const { FileControls } = await fileControls();
     const s = setup({ comparison: comparison("size", ADD_REMEDY) });
     const view = await mount(FileControls, s.props);
     try {
-      expectFocusableDisabled(view.button("Stage file"));
+      expectFocusableDisabled(view.button("Stage file (Space)"));
       expect(lastReason(s.reasons)).toBe(LIMITATION_TEXT.size);
     } finally {
       await view.unmount();
     }
   });
 
-  test.todo(`a Conflicted entry (decision state) disables Stage file with the conflict sentence ${NEEDS}`, async () => {
+  test(`a Conflicted entry (decision state) disables Stage file with the conflict sentence`, async () => {
     const { FileControls } = await fileControls();
     const s = setup({ category: "conflicted", comparison: comparison("state") });
     const view = await mount(FileControls, s.props);
     try {
-      expectFocusableDisabled(view.button("Stage file"));
+      expectFocusableDisabled(view.button("Stage file (Space)"));
       expect(lastReason(s.reasons)).toBe(LIMITATION_TEXT.state);
     } finally {
       await view.unmount();
@@ -193,16 +193,16 @@ describe("unavailable states", () => {
 
   // plan.md fixes the busy sentence only. The other states show a reason that the plan does not word.
   for (const blocked of ["conflicted", "incomplete", "stale", "expired", "busy"]) {
-    test.todo(`a ${blocked} state disables Stage file, keeps it focusable, and feeds a reason to the reason line ${NEEDS}`, async () => {
+    test(`a ${blocked} state disables Stage file, keeps it focusable, and feeds a reason to the reason line`, async () => {
       const { FileControls } = await fileControls();
       const s = setup({ blocked });
       const view = await mount(FileControls, s.props);
       try {
-        expectFocusableDisabled(view.button("Stage file"));
+        expectFocusableDisabled(view.button("Stage file (Space)"));
         const reason = lastReason(s.reasons);
         expect(reason?.trim()).toBeTruthy();
         if (blocked === "busy") expect(reason).toBe(BUSY_REASON);
-        await view.activate("Stage file");
+        await view.activate("Stage file (Space)");
         expect(s.calls).toEqual([]);
       } finally {
         await view.unmount();
@@ -210,13 +210,13 @@ describe("unavailable states", () => {
     });
   }
 
-  test.todo(`required read trust that is not approved disables Stage file ${NEEDS}`, async () => {
+  test(`required read trust that is not approved disables Stage file`, async () => {
     const { FileControls } = await fileControls();
     for (const state of ["untrusted", "changed", "revoked"]) {
       const s = setup({ trust: trust(state, true) });
       const view = await mount(FileControls, s.props);
       try {
-        expectFocusableDisabled(view.button("Stage file"));
+        expectFocusableDisabled(view.button("Stage file (Space)"));
         expect(lastReason(s.reasons)?.trim()).toBeTruthy();
       } finally {
         await view.unmount();
@@ -225,23 +225,23 @@ describe("unavailable states", () => {
   });
 
   // Contract §7 "Mutation trust": trust `changed` without required read approval disables nothing.
-  test.todo(`trust changed without required read approval keeps Stage file enabled ${NEEDS}`, async () => {
+  test(`trust changed without required read approval keeps Stage file enabled`, async () => {
     const { FileControls } = await fileControls();
     const s = setup({ trust: trust("changed", false) });
     const view = await mount(FileControls, s.props);
     try {
-      expectEnabled(view.button("Stage file"));
+      expectEnabled(view.button("Stage file (Space)"));
     } finally {
       await view.unmount();
     }
   });
 
-  test.todo(`activation of a disabled Stage file sends nothing ${NEEDS}`, async () => {
+  test(`activation of a disabled Stage file sends nothing`, async () => {
     const { FileControls } = await fileControls();
     const s = setup({ comparison: comparison("size", ADD_REMEDY) });
     const view = await mount(FileControls, s.props);
     try {
-      await view.activate("Stage file");
+      await view.activate("Stage file (Space)");
       expect(s.calls).toEqual([]);
     } finally {
       await view.unmount();
@@ -251,7 +251,7 @@ describe("unavailable states", () => {
 
 describe("remedies and output", () => {
   // T134 shows the refused entry's remedy with Copy command (comparison-view.test.tsx). The reason sits beside it, so FileControls adds no second copy.
-  test.todo(`a refused entry gets its reason beside the T134 remedy, and FileControls shows no second Copy command ${NEEDS}`, async () => {
+  test(`a refused entry gets its reason beside the T134 remedy, and FileControls shows no second Copy command`, async () => {
     const { FileControls } = await fileControls();
     const s = setup({ comparison: comparison("size", ADD_REMEDY) });
     const view = await mount(FileControls, s.props);
@@ -263,54 +263,72 @@ describe("remedies and output", () => {
     }
   });
 
-  test.todo(`a stage GIT_FAILED shows its outputTail as plain text in a bounded read-only region, then the add remedy with Copy command ${NEEDS}`, async () => {
-    const { FileControls } = await fileControls();
-    const s = setup();
+  // plan.md: the comparison pane shows the output below its heading. FileControls sends the failed response up, for the button and for Space.
+  test(`a stage GIT_FAILED goes to the failure callback, from the button and from runFileAction`, async () => {
+    const { FileControls, runFileAction } = await fileControls();
+    const failed: BridgeResponse[] = [];
+    const s = setup({ onFailed: (response: BridgeResponse) => void failed.push(response) });
+    const response = { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code: "GIT_FAILED", result: { remedy: ADD_REMEDY, outputTail: TAIL } } as BridgeResponse;
     const view = await mount(FileControls, s.props);
     try {
-      await view.activate("Stage file");
-      expect(s.calls).toHaveLength(1);
+      await view.activate("Stage file (Space)");
       await act(async () => {
-        s.calls[0]!.resolve({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code: "GIT_FAILED", result: { remedy: ADD_REMEDY, outputTail: TAIL } });
+        s.calls[0]!.resolve(response);
         await flush();
       });
-      expect(view.host.querySelector("b")).toBeNull();
-      const region = [...view.host.querySelectorAll("pre")].find((p) => p.textContent === TAIL);
-      expect(region).toBeDefined();
-      expect(region!.closest("[contenteditable='true']")).toBeNull();
-      const text = view.host.textContent ?? "";
-      expect(text).toContain(ADD_REMEDY.command);
-      expect(text.indexOf(ADD_REMEDY.command)).toBeGreaterThan(text.indexOf(TAIL.split("\n")[0]!));
-      expect(view.buttons("Copy command")).toHaveLength(1);
+      const space = runFileAction(s.props);
+      await flush();
+      s.calls[1]!.resolve(response);
+      expect(await space).toEqual({ state: "failed" });
+      expect(failed).toEqual([response, response]);
       expect(s.successes()).toBe(0);
       expect(s.outcomes).toEqual([]);
     } finally {
       await view.unmount();
     }
   });
+
+  test(`the failure view shows the outputTail as plain text in a bounded read-only region, then the add remedy with Copy command`, async () => {
+    const { FileFailure } = (await fileControls()) as unknown as { FileFailure: (props: { response: BridgeResponse }) => ReactNode };
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<FileFailure response={{ requestId: crypto.randomUUID(), state: "failed", code: "GIT_FAILED", result: { remedy: ADD_REMEDY, outputTail: TAIL } } as BridgeResponse} />));
+      expect(host.querySelector("b")).toBeNull();
+      const region = [...host.querySelectorAll("pre")].find((p) => p.textContent === TAIL);
+      expect(region).toBeDefined();
+      expect(region!.closest("[contenteditable='true']")).toBeNull();
+      const text = host.textContent ?? "";
+      expect(text.indexOf(ADD_REMEDY.command)).toBeGreaterThan(text.indexOf(TAIL.split("\n")[0]!));
+      expect([...host.querySelectorAll("button")].filter((b) => b.textContent === "Copy command")).toHaveLength(1);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
 });
 
 describe("activation", () => {
-  test.todo(`Stage file sends one applyFile with the comparison ID, the snapshot ID, and the direction ${NEEDS}`, async () => {
+  test(`Stage file sends one applyFile with the comparison ID, the snapshot ID, and the direction`, async () => {
     const { FileControls } = await fileControls();
     const s = setup();
     const value = s.props.comparison as ReturnType<typeof comparison>;
     const view = await mount(FileControls, s.props);
     try {
-      await view.activate("Stage file");
+      await view.activate("Stage file (Space)");
       expect(s.calls.map((c) => [c.operation, c.target, c.payload])).toEqual([["applyFile", TARGET, { comparisonId: value.comparisonId, snapshotId: value.snapshotId, direction: "stage" }]]);
     } finally {
       await view.unmount();
     }
   });
 
-  test.todo(`a second activation while the action runs sends nothing ${NEEDS}`, async () => {
+  test(`a second activation while the action runs sends nothing`, async () => {
     const { FileControls } = await fileControls();
     const s = setup();
     const view = await mount(FileControls, s.props);
     try {
-      await view.activate("Stage file");
-      await view.activate("Stage file");
+      await view.activate("Stage file (Space)");
+      await view.activate("Stage file (Space)");
       expect(s.calls).toHaveLength(1);
     } finally {
       await view.unmount();
@@ -318,12 +336,12 @@ describe("activation", () => {
   });
 
   for (const [direction, label, outcome] of [["stage", "Stage file", "File staged"], ["unstage", "Unstage file", "File unstaged"]] as const) {
-    test.todo(`after a succeeded ${direction}, it requests a refresh, reports "${outcome}", and calls the success callback once ${NEEDS}`, async () => {
+    test(`after a succeeded ${direction}, it requests a refresh, reports "${outcome}", and calls the success callback once`, async () => {
       const { FileControls } = await fileControls();
       const s = setup(direction === "unstage" ? { category: "staged", comparison: comparison("unstage") } : {});
       const view = await mount(FileControls, s.props);
       try {
-        await view.activate(label);
+        await view.activate(`${label} (Space)`);
         expect(s.refreshes()).toBe(0);
         await act(async () => {
           s.calls[0]!.resolve({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", result: {} });
@@ -339,13 +357,13 @@ describe("activation", () => {
   }
 
   // plan.md "Required visible states" fixes no sentence for the Stale selection notice.
-  test.todo(`after STALE_SELECTION, it shows the Stale selection notice, requests a refresh, and reports no success ${NEEDS}`, async () => {
+  test(`after STALE_SELECTION, it shows the Stale selection notice, requests a refresh, and reports no success`, async () => {
     const { FileControls } = await fileControls();
     const s = setup();
     const view = await mount(FileControls, s.props);
     try {
       const before = view.host.textContent ?? "";
-      await view.activate("Stage file");
+      await view.activate("Stage file (Space)");
       await act(async () => {
         s.calls[0]!.resolve({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code: "STALE_SELECTION" });
         await flush();
@@ -367,7 +385,7 @@ describe("runFileAction", () => {
     ["conflicted", "state", "state", "Stage file"],
     ["staged", "submodule", "submodule", "Unstage file"],
   ] as const) {
-    test.todo(`a ${fileAction} decision in ${category} sends nothing and returns "${label} is unavailable: <reason>" ${NEEDS}`, async () => {
+    test(`a ${fileAction} decision in ${category} sends nothing and returns "${label} is unavailable: <reason>"`, async () => {
       const { runFileAction } = await fileControls();
       const s = setup({ category, comparison: comparison(fileAction, ADD_REMEDY) });
       const result = await runFileAction(s.props);
@@ -376,7 +394,7 @@ describe("runFileAction", () => {
     });
   }
 
-  test.todo(`an accepted decision sends one applyFile and returns succeeded after the service succeeds ${NEEDS}`, async () => {
+  test(`an accepted decision sends one applyFile and returns succeeded after the service succeeds`, async () => {
     const { runFileAction } = await fileControls();
     const s = setup({ category: "staged", comparison: comparison("unstage") });
     const value = s.props.comparison as ReturnType<typeof comparison>;
@@ -387,7 +405,7 @@ describe("runFileAction", () => {
     expect(await pending).toEqual({ state: "succeeded" });
   });
 
-  test.todo(`a failed applyFile returns failed ${NEEDS}`, async () => {
+  test(`a failed applyFile returns failed`, async () => {
     const { runFileAction } = await fileControls();
     const s = setup();
     const pending = runFileAction(s.props);

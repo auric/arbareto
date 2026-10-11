@@ -22,7 +22,8 @@ mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }
 // `Workbench.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
 registerDom();
 const { createRoot } = await import("react-dom/client");
-const { ChangesPaneMount, ComparisonViewMount, HistoryViewMount, INTERIM_HELP_LINE, LATER, Workbench } = await import("../../src/frontend/app/Workbench");
+const { ChangesPaneMount, ComparisonViewMount, HistoryViewMount, LATER, Workbench } = await import("../../src/frontend/app/Workbench");
+const { HELP_LINE } = await import("../../src/frontend/changes/ChangesPane");
 const { readPreferences } = await import("../../src/frontend/state/preferences");
 
 // tasks.md T354: the single-view frame. plan.md "Chosen layout: one view", "Dock region", "Measurements and budgets" (ready frames), and "Required visible states".
@@ -200,13 +201,21 @@ describe("History", () => {
   });
 });
 
-describe("read-only places", () => {
-  test("the commit place states that commit is available after batch 3", async () => {
+describe("mounted controls", () => {
+  // T148: the commit tray replaces the T330 commit place. An empty Staged list disables Commit with its reason.
+  test("the commit panel holds the message field, Commit (Ctrl+Enter) with its disabled reason, the hook disclosure, and the summary line", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readHistory"), succeeded(PAGE));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
     await selectRow("working-directory");
-    expect(document.querySelector('section[aria-label="Commit panel"]')?.textContent).toContain(LATER.commit);
+    const panel = document.querySelector('section[aria-label="Commit panel"]')!;
+    expect(panel.querySelectorAll("textarea")).toHaveLength(1);
+    const commit = [...panel.querySelectorAll("button")].find((b) => b.textContent === "Commit (Ctrl+Enter)")!;
+    expect(commit.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(commit.getAttribute("aria-describedby")!)?.textContent).toBe("The Staged list is empty.");
+    expect(panel.textContent).toContain("Git will run approved hooks. They or other Git tools can change the result during execution.");
+    expect(panel.textContent).toContain("main, 0 staged files");
+    expect(panel.textContent).not.toContain("available after batch 3");
   });
 
   test("the submodule row shows the service count and no Update submodules button", async () => {
@@ -284,14 +293,14 @@ describe("recovery markers", () => {
 });
 
 describe("help line", () => {
-  test("the No selection help line states the interim staging sentence", async () => {
+  test("the No selection help line states the staging sentence", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readHistory"), succeeded(PAGE));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
     await selectRow("working-directory");
     const changes = document.querySelector('section[aria-label="Commit panel"]')!.textContent ?? "";
-    expect(changes).toContain(INTERIM_HELP_LINE);
-    expect(changes).not.toContain("Space stages or unstages it");
+    expect(changes).toContain(HELP_LINE);
+    expect(changes).not.toContain("available after batch 3");
   });
 });
 
@@ -733,9 +742,9 @@ describe("single view", () => {
   });
 });
 
-// plan.md "Switch repository": a switch never discards a draft. The T146 composer and the T147 draft store mount are not in the workbench yet.
+// plan.md "Switch repository": a switch never discards a draft. The draft store keeps each worktree's draft.
 describe("drafts across a switch", () => {
-  test.todo("an unsent message draft stays in the draft store after a switch through the repository switcher, and returns with its worktree (needs T146 and T147)", async () => {
+  test("an unsent message draft stays in the draft store after a switch through the repository switcher, and returns with its worktree", async () => {
     const double = await mount(succeeded(REGISTRATION));
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
@@ -748,6 +757,16 @@ describe("drafts across a switch", () => {
     await act(async () => document.querySelectorAll<HTMLElement>('[role="option"]')[1]!.click());
     await resolve(latest(double, "openRecentRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64), worktreeRoot: "C:\other" }));
     expect(double.calls.some((c) => c.operation === "removeDraft")).toBe(false);
+    // The other worktree has no draft. Its field shows no text.
+    expect(document.querySelector("textarea")).toBe(field);
+    expect(field.value).toBe("");
+    // A switch back restores the draft of the first worktree.
+    await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.click());
+    await settle();
+    await resolve(latest(double, "listRecentRepositories"), succeeded({ entries: [{ entryId: crypto.randomUUID(), path: "C:\\repo", location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }] }));
+    await act(async () => document.querySelectorAll<HTMLElement>('[role="option"]')[1]!.click());
+    await resolve(latest(double, "openRecentRepository"), succeeded(REGISTRATION));
+    expect(field.value).toBe("Unsent draft");
   });
 });
 
@@ -806,5 +825,156 @@ describe("toolbar branch text", () => {
     ]);
     expect(branch.style.flex).toBe("1 1 0px");
     expect(branch.className.split(/\s+/)).toContain("min-w-0");
+  });
+});
+
+// T148 review fixes: the commit trust gate, the status bar notice, and the failed file action output.
+describe("mounted staging and commit", () => {
+  const trustReport = (commit: boolean) => ({ generation: 1, fingerprint: "f".repeat(64), state: "untrusted", persistence: "stored", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
+  const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === label)!;
+  const typeMessage = async (text: string) => {
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    return field;
+  };
+  const stagedEntry = () => ({ ...changeEntry("a.txt"), category: "staged" }) as ChangeEntry;
+  async function openCommitPanel() {
+    const double = await mount(succeeded(REGISTRATION));
+    await resolve(latest(double, "readHistory"), succeeded(PAGE));
+    const entry = stagedEntry();
+    const shown = snapshot({ entries: [entry], entryCount: 1 });
+    await resolve(latest(double, "readWorkspace"), succeeded(shown));
+    await selectRow("working-directory");
+    await typeMessage("Fix the parser");
+    return { double, entry, shown };
+  }
+  async function approveCommitTrust(double: Awaited<ReturnType<typeof openCommitPanel>>["double"]) {
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
+    await act(async () => button("Commit (Ctrl+Enter)").click());
+    await settle();
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
+    await act(async () => button("Approve").click());
+    await settle();
+    await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
+  }
+
+  test("a read after the approval that returns the shown snapshot ends the gate, and reviewCommit names that snapshot", async () => {
+    const { double, shown } = await openCommitPanel();
+    await approveCommitTrust(double);
+    const after = latest(double, "readWorkspace");
+    expect(after.args[1]).toEqual({ refresh: false, check: "full" });
+    expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
+    await resolve(after, succeeded(shown));
+    expect(latest(double, "reviewCommit").args[1]).toEqual({ snapshotId: shown.snapshotId });
+  });
+
+  test("a failed read after the approval also ends the gate", async () => {
+    const { double, shown } = await openCommitPanel();
+    await approveCommitTrust(double);
+    await resolve(latest(double, "readWorkspace"), { requestId: crypto.randomUUID(), state: "failed", code: "GIT_FAILED" });
+    expect(latest(double, "reviewCommit").args[1]).toEqual({ snapshotId: shown.snapshotId });
+  });
+
+  test("a read that started before the approval does not end the gate", async () => {
+    const { double } = await openCommitPanel();
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
+    await act(async () => document.querySelector<HTMLElement>('header button[aria-label="Refresh"]')!.click());
+    await settle();
+    const before = latest(double, "readWorkspace");
+    await act(async () => button("Commit (Ctrl+Enter)").click());
+    await settle();
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
+    await act(async () => button("Approve").click());
+    await settle();
+    await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
+    const own = latest(double, "readWorkspace");
+    expect(own).not.toBe(before);
+    await resolve(before, succeeded(snapshot({ entries: [stagedEntry()], entryCount: 1 })));
+    expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
+    const after = snapshot({ entries: [stagedEntry()], entryCount: 1 });
+    await resolve(own, succeeded(after));
+    expect(latest(double, "reviewCommit").args[1]).toEqual({ snapshotId: after.snapshotId });
+  });
+
+  test("a read after the approval that empties the Staged list stops the commit, sends no reviewCommit, and focuses the message field", async () => {
+    const { double } = await openCommitPanel();
+    await approveCommitTrust(double);
+    await resolve(latest(double, "readWorkspace"), succeeded(snapshot()));
+    expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
+    expect(document.activeElement).toBe(document.querySelector("textarea"));
+  });
+
+  test("after a commit trust approval, reviewCommit names the snapshot of the read after the approval, and the status notice shows beside the outcome", async () => {
+    const { double, entry } = await openCommitPanel();
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
+    await act(async () => button("Commit (Ctrl+Enter)").click());
+    await settle();
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Trust required");
+    await act(async () => button("Approve").click());
+    await settle();
+    await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
+    expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
+    const after = snapshot({ entries: [{ ...entry, entryId: crypto.randomUUID() }], entryCount: 1 });
+    await resolve(latest(double, "readWorkspace"), succeeded(after));
+    expect(latest(double, "reviewCommit").args[1]).toEqual({ snapshotId: after.snapshotId });
+    await resolve(latest(double, "reviewCommit"), succeeded({ reviewToken: crypto.randomUUID() }));
+    await resolve(latest(double, "commit"), succeeded({ commitOid: "2".repeat(40) }));
+    const status = () => [...document.querySelectorAll('footer [role="status"]')].map((s) => s.textContent).join(" | ");
+    expect(status()).toContain("Committed 222222222222 to main");
+    await act(async () => document.querySelector<HTMLElement>('header button[aria-label="Refresh"]')!.click());
+    await settle();
+    expect(status()).toContain("Refreshing…");
+    expect(status()).toContain("Committed 222222222222 to main");
+  });
+
+  test("a trust read that closes the gate dialog cancels the gate, so the next Commit starts again", async () => {
+    const { double } = await openCommitPanel();
+    const initial = latest(double, "readTrust");
+    await act(async () => button("Commit (Ctrl+Enter)").click());
+    await settle();
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    // The first trust read of the registration arrives late and closes the dialog.
+    await resolve(initial, succeeded(trustReport(false)));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    const reads = double.calls.filter((c) => c.operation === "readTrust").length;
+    await act(async () => button("Commit (Ctrl+Enter)").click());
+    await settle();
+    expect(double.calls.filter((c) => c.operation === "readTrust")).toHaveLength(reads + 1);
+    expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
+  });
+
+  test("a failed Stage file shows its output below the comparison heading, also after the next read issues a new comparison ID", async () => {
+    const double = await mount(succeeded(REGISTRATION));
+    await resolve(latest(double, "readHistory"), succeeded(PAGE));
+    const entry = changeEntry("a.txt");
+    const first = snapshot({ entries: [entry], entryCount: 1 });
+    await resolve(latest(double, "readWorkspace"), succeeded(first));
+    await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
+    await selectRow("working-directory");
+    await act(async () => document.querySelector<HTMLElement>(`[role="option"][data-entry-id="${entry.entryId}"]`)!.click());
+    await settle();
+    const shown = shownComparison(entry.entryId, DIFF);
+    await resolve(latest(double, "readComparison"), { ...shown, result: { ...(shown.result as object), snapshotId: first.snapshotId } });
+    await act(async () => button("Stage file (Space)").click());
+    await settle();
+    const TAIL = "error: <b>stopped</b>\n";
+    const COMMAND = "git --literal-pathspecs add -- a.txt";
+    await resolve(latest(double, "applyFile"), { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code: "GIT_FAILED", result: { outputTail: TAIL, remedy: { text: "Run it in a terminal.", command: COMMAND } } });
+    const comparison = () => document.querySelector('[data-section="comparison"]')!;
+    const tail = () => [...comparison().querySelectorAll("pre")].some((p) => p.textContent === TAIL);
+    expect(tail()).toBe(true);
+    expect(comparison().querySelector("b")).toBeNull();
+    expect(comparison().textContent).toContain(COMMAND);
+    const again = { ...entry, entryId: crypto.randomUUID() };
+    const second = snapshot({ entries: [again], entryCount: 1 });
+    await resolve(latest(double, "readWorkspace"), succeeded(second));
+    const next = shownComparison(again.entryId, DIFF);
+    await resolve(latest(double, "readComparison"), { ...next, result: { ...(next.result as object), snapshotId: second.snapshotId } });
+    expect(tail()).toBe(true);
   });
 });

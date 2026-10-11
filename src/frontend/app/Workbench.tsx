@@ -3,13 +3,18 @@
 
 import { GitBranchIcon, GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode } from "react";
-import type { Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
+import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode, type RefObject } from "react";
+import type { ChangeEntry, Comparison as ComparisonResult, Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
-import { ChangesPane as ChangesList } from "../changes/ChangesPane";
+import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
 import { ComparisonView as Comparison, resultOf, showsDiff } from "../changes/ComparisonView";
+import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
+import { HunkControls, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
+import { CommitTray } from "../commit/CommitTray";
 import { IconButton } from "../components/icon-button";
+import { Button } from "../components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import {
   Menubar,
   MenubarContent,
@@ -37,6 +42,7 @@ import {
   headerRows,
   historyFit,
   metrics,
+  overflowScroll,
   paneBounds,
   sidebarBounds,
   statusAreaHeight,
@@ -51,7 +57,10 @@ import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { ReferencesSidebar } from "../refs/ReferencesSidebar";
 import { createRequests, isRegistration, refsPair, wslDistro, type RequestBridge, type Requests, type RequestState } from "../state/requests";
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, writePreferences, type DarkPalette, type Preferences, type Theme } from "../state/preferences";
-import { SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
+import { createDrafts } from "../state/drafts";
+import { createDraftStore } from "../state/draft-store";
+import { OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
+import { isTrustReport, SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
 import { blockingText, NoticeBand, WarningIcon } from "./NoticeBand";
 import { MENU_CONTENT, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
@@ -62,7 +71,51 @@ import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 
 type Bridge = ReturnType<typeof createBridge>;
 export type WorkbenchBridge = RequestBridge &
-  Pick<Bridge, "chooseRepository" | "readTrust" | "approveTrust" | "revokeTrust" | "getEnvironment" | "dismissRecoveryMarker" | "listRecentRepositories" | "openRecentRepository" | "removeRecentRepository">;
+  Pick<
+    Bridge,
+    | "chooseRepository"
+    | "readTrust"
+    | "approveTrust"
+    | "revokeTrust"
+    | "getEnvironment"
+    | "dismissRecoveryMarker"
+    | "listRecentRepositories"
+    | "openRecentRepository"
+    | "removeRecentRepository"
+    | "applyHunk"
+    | "applyFile"
+    | "reviewCommit"
+    | "commit"
+    | "getOperation"
+  >;
+/** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
+export type Staging = {
+  bridge: Pick<Bridge, "applyHunk" | "applyFile">;
+  /** The repository and the generation of the current capability, or null. */
+  target: StagingTarget | null;
+  blocked: Blocked;
+  trust: TrustReport | null;
+  eligibility: Eligibility | undefined;
+  /** The description ID of the file button. Its text is a part of the T145 reason line. */
+  fileReasonId: string;
+  /** The file-action reason and the Stage key reason for the reason line. */
+  reasons: ReasonPart[];
+  onFileReason(text: string | null): void;
+  onPaneReason(text: string | null): void;
+  onOperation(op: StatusOperation): void;
+  onEnded(operation: "applyHunk" | "applyFile", response: BridgeResponse): void;
+  /** A file action that did not succeed, by the file `category:pathBytes`. */
+  onFileFailed(file: string, response: BridgeResponse): void;
+  /** The last failed file action. The comparison of that file shows its output below the heading. */
+  fileFailure: { file: string; response: BridgeResponse } | null;
+  /** A successful hunk action: the file as `category:pathBytes`, the ordinal of the acted hunk, and the patch that it replaced. */
+  onHunkSucceeded(file: string, ordinal: number, patch: string): void;
+  anchor: { file: string; ordinal: number; patch: string } | null;
+  stepRef: RefObject<((direction: "next" | "previous") => void) | null>;
+  /** A new object after each stage bar button success. */
+  toolbarSuccess: { entryId: string } | null;
+  onToolbarSuccess(entryId: string): void;
+};
 /** The props that the workbench gives each injected view. */
 export type WorkbenchPaneProps = {
   state: RequestState;
@@ -80,6 +133,8 @@ export type WorkbenchPaneProps = {
   selected: string | null;
   /** Docks the panel of a history row. It starts no Git read. */
   onSelectRow(id: string): void;
+  /** Absent in a mount without staging controls. */
+  staging?: Staging;
 };
 export type WorkbenchProps = {
   bridge: WorkbenchBridge;
@@ -99,16 +154,17 @@ export type WorkbenchProps = {
   onEnvironment?(response: BridgeResponse): void;
   /** The Windows text scale factor (plan.md "Windows text size"). */
   textScale?: number;
+  /** The draft memory (plan.md "Stored drafts"). The default stores a copy in IndexedDB. */
+  drafts?: ReturnType<typeof createDrafts>;
 };
 
-// The places of the T145 to T147, T202, T235, and T236 controls until T148 mounts them.
+// plan.md "Required visible states", No file-action decision.
+export const NO_DECISION = "This entry has no file-action decision";
+export const NO_DECISION_PENDING = "Its comparison is still loading.";
+// The place of the T235 and T236 controls until they exist.
 export const LATER = {
-  commit: "Commit is available after batch 3.",
-  staging: "Hunk and file staging are available after batch 3.",
   submodules: "Update submodules is available after batch 3.",
 };
-// The interim help line: a click or a navigation key shows a file, and Space shows the staging sentence.
-export const INTERIM_HELP_LINE = `Select a file to show its changes. ${LATER.staging}`;
 // plan.md "Required visible states", No selection.
 export const DOCK_HINT = "Select the Working directory row to commit, or a commit to see its details.";
 const NO_REPOSITORY = "No repository open";
@@ -180,15 +236,52 @@ function WslBadge({ distro, textScale }: { distro: string; textScale: number }) 
 // plan.md "Measurements and budgets": a ready frame needs a complete read with `recoveryState` `ready`.
 const completeRead = (workspace: WorkspaceSnapshot | null) => workspace !== null && workspace.completeness.state === "complete" && workspace.recoveryState === "ready";
 const responseCode = (response: BridgeResponse) => (response.code ?? response.state) as ErrorCode;
-const refuseFileAction = async () => ({ state: "refused" as const, text: LATER.staging });
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** The T133 changes pane on the T132 request state. File staging stays refused until T148 mounts T202. */
-export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen, onStatus }: WorkbenchPaneProps) {
+/** The shown `Comparison` of the selected entry, and the staging target when the current capability binds that comparison (contract §8). */
+function shownComparison(state: RequestState, staging: Staging | undefined) {
+  const entryId = state.selection?.entryId;
+  const entry = entryId === undefined ? null : (state.entries.find((e) => e.entryId === entryId) ?? null);
+  const result = entry !== null && state.comparison?.entryId === entry.entryId ? resultOf(state.comparison) : null;
+  const comparison = result !== null && "patch" in result ? (result as ComparisonResult) : null;
+  const target = comparison !== null && staging?.target && state.capability?.comparisonId === comparison.comparisonId ? staging.target : null;
+  return { entry, comparison, target };
+}
+
+/** The refusal reason of a file action without a `Comparison`: the typed code of the comparison read (contract §3, §9). */
+function noDecisionText(state: RequestState): string {
+  const response = state.comparison;
+  const completeness = (response?.result as { completeness?: { code?: string } } | undefined)?.completeness;
+  const code = completeness?.code ?? response?.code ?? response?.state;
+  return code === undefined ? NO_DECISION_PENDING : `${NO_DECISION}: ${code}`;
+}
+
+/** The T133 changes pane on the T132 request state, with the T202 file controls in its stage bar. */
+export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen, onStatus, staging }: WorkbenchPaneProps) {
   const workspace = state.workspace;
   const failure = state.readFailure === null ? null : <ErrorState code={responseCode(state.readFailure)} result={state.readFailure.result} onRefresh={requests.refresh} />;
   if (workspace === null) return failure ?? <Loading hasContent={false} refreshing={false} />;
   const selection = state.selection === null ? null : { entryId: state.selection.entryId, comparisonId: state.capability?.comparisonId ?? null };
+  const shown = shownComparison(state, staging);
+  const fileProps = (s: Staging, comparison: ComparisonResult, category: ChangeEntry["category"]) => ({
+    bridge: s.bridge,
+    target: shown.target,
+    comparison,
+    category,
+    blocked: s.blocked,
+    trust: s.trust,
+    eligibility: s.eligibility,
+    onRefresh: (response: BridgeResponse) => s.onEnded("applyFile", response),
+    onFailed: (response: BridgeResponse) => s.onFileFailed(`${category}:${shown.entry!.pathBytes}`, response),
+    onOperation: s.onOperation,
+  });
+  // The Space key acts only on the shown comparison that the pane names. Without a `Comparison`, no file-action decision exists.
+  const onFileAction = async (action: FileAction): Promise<FileActionResult> => {
+    const label = action.direction === "unstage" ? "Unstage file" : "Stage file";
+    if (staging !== undefined && shown.entry !== null && shown.comparison?.comparisonId === action.comparisonId) return runFileAction(fileProps(staging, shown.comparison, shown.entry.category));
+    return { state: "refused", text: `${label} is unavailable: ${noDecisionText(state)}` };
+  };
+  const controls = staging !== undefined && shown.entry !== null && shown.comparison !== null ? fileProps(staging, shown.comparison, shown.entry.category) : null;
   return (
     <div className="flex h-full min-h-0 flex-col">
       {failure}
@@ -197,13 +290,27 @@ export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen
         entries={state.entries}
         selection={selection}
         onSelect={requests.selectEntry}
-        onFileAction={refuseFileAction}
+        onFileAction={onFileAction}
+        onReason={staging?.onPaneReason}
         onStatus={onStatus}
         menuOpen={menuOpen}
         modalOpen={modalOpen}
+        fileActionRunning={staging?.blocked === "busy"}
+        operationRunning={staging?.blocked === "busy" || staging?.blocked === "running"}
+        toolbarSuccess={staging?.toolbarSuccess ?? null}
         complete={workspace.completeness.state === "complete"}
-        helpLine={INTERIM_HELP_LINE}
         sideBySide={profile !== "wide"}
+        stageBar={
+          staging === undefined ? undefined : controls === null ? null : (
+            <FileControls
+              key={controls.comparison.comparisonId}
+              {...controls}
+              reasonId={staging.fileReasonId}
+              onReason={staging.onFileReason}
+              onSuccess={() => staging.onToolbarSuccess(shown.entry!.entryId)}
+            />
+          )
+        }
       />
     </div>
   );
@@ -212,17 +319,55 @@ export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen
 // The Pierre worker pool. It loads with the first diff and stays mounted, because Pierre ends the pool when its last provider unmounts.
 const PatchPool = lazy(() => import("../changes/PatchPool"));
 
-/** The T134 comparison view of the selected entry. The hunk controls stay unavailable until T148 mounts T145. */
-export function ComparisonViewMount({ state, requests }: WorkbenchPaneProps) {
-  const selected = state.selection?.entryId;
-  const entry = selected === undefined ? null : (state.entries.find((e) => e.entryId === selected) ?? null);
+/** The T134 comparison view of the selected entry, with the T145 hunk controls in its heading. */
+export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneProps) {
+  const { entry, target } = shownComparison(state, staging);
   const response = entry !== null && state.comparison?.entryId === entry.entryId ? state.comparison : null;
   const [pool, setPool] = useState(false);
   if (!pool && showsDiff(resultOf(response))) setPool(true);
-  const view = <Comparison entry={entry} response={response} selectedHunk={state.selectedHunk} onRefresh={requests.refresh} helpLine={INTERIM_HELP_LINE} />;
+  const file = entry === null ? null : `${entry.category}:${entry.pathBytes}`;
+  const anchor = staging?.anchor?.file === file ? staging.anchor : null;
+  const controls =
+    staging === undefined || entry === null
+      ? undefined
+      : (comparison: ComparisonResult, displayFailed: boolean) => (
+          <HunkControls
+            key={comparison.comparisonId}
+            bridge={staging.bridge}
+            target={target}
+            comparison={comparison}
+            category={entry.category}
+            selectedHunk={state.selectedHunk}
+            // plan.md "Task flow and command placement": the surviving hunk with the same ordinal, or the last hunk when fewer remain.
+            anchoredHunk={anchor !== null && anchor.patch !== comparison.patch ? (comparison.hunks[Math.min(anchor.ordinal, comparison.hunks.length - 1)]?.hunkId ?? null) : null}
+            onSelectHunk={requests.selectHunk}
+            blocked={staging.blocked}
+            trust={staging.trust}
+            eligibility={staging.eligibility}
+            displayFailed={displayFailed}
+            reasons={staging.reasons}
+            onOperation={staging.onOperation}
+            onEnded={(response, ordinal) => {
+              if (response.state === "succeeded") staging.onHunkSucceeded(file!, ordinal, comparison.patch);
+              staging.onEnded("applyHunk", response);
+            }}
+            stepRef={staging.stepRef}
+          />
+        );
+  const failed = staging?.fileFailure?.file === file ? staging.fileFailure.response : null;
+  const view = (
+    <Comparison
+      entry={entry}
+      response={response}
+      selectedHunk={state.selectedHunk}
+      onRefresh={requests.refresh}
+      controls={controls}
+      anchor={anchor}
+      notice={failed === null ? undefined : <FileFailure response={failed} />}
+    />
+  );
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {entry === null ? null : <p className="px-2 text-muted-text">{LATER.staging}</p>}
       <div className="min-h-0 flex-1">
         {pool ? (
           <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
@@ -256,8 +401,6 @@ export function GitSegment({ version, distro, scope }: { version: string; distro
   );
 }
 
-// Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
-const isTrustReport = (value: unknown): value is TrustReport => typeof value === "object" && value !== null && typeof (value as { fingerprint?: unknown }).fingerprint === "string";
 
 /** The docked panel of a history row. */
 const panelOf = (selected: string | null): Panel | null => (selected === null ? null : selected === WORKING_ROW || selected === INDEX_ROW ? "commit" : "details");
@@ -266,7 +409,36 @@ const panelOf = (selected: string | null): Panel | null => (selected === null ? 
 const SECTION_SELECTOR = "[data-section]";
 const TABBABLE = 'input:not([disabled]), button:not([disabled]), textarea, [tabindex="0"], [role="option"][tabindex="0"]';
 
-export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit = () => {}, onEnvironment, textScale = 1 }: WorkbenchProps) {
+// The About dialog and the notices load on first open (plan.md "Startup chunk budget").
+const AboutMount = lazy(() => import("../about/AboutMount"));
+
+// plan.md "Required visible states", About failed. `NOTICES_MISSING` comes from `AboutMount`. Any other failure, such as a chunk that did not load, is `LOAD_FAILED`.
+
+/** Shows the About failure in a dialog, so the window never goes blank. */
+class AboutBoundary extends Component<{ onClose(): void; children: ReactNode }, { code: string | null }> {
+  state = { code: null as string | null };
+  static getDerivedStateFromError(error: unknown) {
+    return { code: (error as { code?: unknown } | null)?.code === "NOTICES_MISSING" ? "NOTICES_MISSING" : "LOAD_FAILED" };
+  }
+  render() {
+    if (this.state.code === null) return this.props.children;
+    return (
+      <Dialog open onOpenChange={(open) => !open && this.props.onClose()}>
+        <DialogContent showCloseButton={false} className="flex flex-col gap-2">
+          <DialogTitle>About Arbareto</DialogTitle>
+          <p role="alert">
+            {codeText("About Arbareto did not load: ", this.state.code)}
+          </p>
+          <Button variant="outline" className="self-end" onClick={this.props.onClose}>
+            Close
+          </Button>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+}
+
+export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit = () => {}, onEnvironment, textScale = 1, drafts: givenDrafts }: WorkbenchProps) {
   // plan.md "Required visible states", Recovery statement: the statement stays until the next `refresh: true` read or another repository.
   const [recovery, setRecovery] = useState<{ repositoryId: string; statement: RecoveryStatement } | null>(null);
   // Contract §11 "Distro start": a registration or restore in phase `wsl-starting`, until its response. No event marks the probe end.
@@ -340,6 +512,44 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const beforeMenu = useRef<HTMLElement | null>(null);
   const sections = useRef<HTMLDivElement>(null);
   const lastFocus = useRef(new Map<Section, HTMLElement>());
+  const [drafts] = useState(() => givenDrafts ?? createDrafts(createDraftStore()));
+  // The latest mutation of this repository for the status region (T138). Another repository clears it.
+  const [operation, setOperation] = useState<StatusOperation | null>(null);
+  const [anchor, setAnchor] = useState<Staging["anchor"]>(null);
+  const [fileReason, setFileReason] = useState<string | null>(null);
+  const [paneReason, setPaneReason] = useState<string | null>(null);
+  const [toolbarSuccess, setToolbarSuccess] = useState<{ entryId: string } | null>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [fileFailure, setFileFailure] = useState<Staging["fileFailure"]>(null);
+  const fileReasonId = useId();
+  const paneReasonId = useId();
+  const helpTrigger = useRef<HTMLButtonElement>(null);
+  const stepRef = useRef<((direction: "next" | "previous") => void) | null>(null);
+  const messageField = useRef<HTMLTextAreaElement | null>(null);
+  const commitPanelRef = useRef<HTMLDivElement>(null);
+  const comparisonPane = useRef<HTMLDivElement>(null);
+  const statusRegion = useRef<StatusRegionHandle>(null);
+  const bandRef = useRef<HTMLDivElement>(null);
+  // The pending commit trust gate (plan.md Commit row). After an approval it waits in `approvalRead` until the read that
+  // `trustApproved` starts ends with any result, so the review names the snapshot after the approval (contract §3).
+  // Every other dialog close resolves it as canceled.
+  const trustGate = useRef<((approved: boolean) => void) | null>(null);
+  const approvalRead = useRef<((approved: boolean) => void) | null>(null);
+  // The dialog opener for its focus return: the commit gate, or else the switcher.
+  const fromCommit = useRef(false);
+  const endGate = (approved: boolean) => {
+    trustGate.current?.(approved);
+    trustGate.current = null;
+  };
+  useEffect(() => {
+    if (trust?.open !== true) endGate(false);
+  }, [trust?.open]);
+  // The gate resolves after the commit that follows the read end, so the tray reads the props of that render.
+  const [approvalEnds, setApprovalEnds] = useState(0);
+  useEffect(() => {
+    approvalRead.current?.(true);
+    approvalRead.current = null;
+  }, [approvalEnds]);
 
   const page = state.history;
   const kept = row.repository === state.repository && (row.id === null || row.id === WORKING_ROW || row.id === INDEX_ROW || page === null || page.rows.some((r) => r.oid === row.id)) ? row.id : null;
@@ -348,8 +558,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // A row selection docks its panel at once and starts no Git read (plan.md "Change the docked panel").
   const onSelectRow = (id: string) => setRow((r) => ({ repository: state.repository, id, epoch: r.epoch + 1 }));
 
-  const live = useRef({ requests, menuOpen, modalOpen, switcherOpen, repository: state.repository, panel });
-  live.current = { requests, menuOpen, modalOpen, switcherOpen, repository: state.repository, panel };
+  const statusStop = operation !== null || starting !== null;
+  const live = useRef({ requests, menuOpen, modalOpen, switcherOpen, repository: state.repository, panel, statusStop, starting: starting !== null });
+  live.current = { requests, menuOpen, modalOpen, switcherOpen, repository: state.repository, panel, statusStop, starting: starting !== null };
 
   useEffect(() => () => requests.dispose(), [requests]);
 
@@ -393,6 +604,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   useEffect(() => {
     setTrust(null);
     setNotice(null);
+    endGate(false);
     if (repositoryId === null) return;
     let current = true;
     void bridge.readTrust({ repositoryId }).then((response) => {
@@ -400,10 +612,26 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       const report = response.result;
       const first = trustShown.current !== repositoryId;
       trustShown.current = repositoryId;
+      if (first) fromCommit.current = false;
       setTrust({ report, open: first && report.approvalRequired.reads && report.state !== "approved" });
     });
     return () => void (current = false);
   }, [bridge, repositoryId, trustRead]);
+
+  // plan.md "Required visible states", Succeeded: the outcome text stays until another repository opens. A service session keeps it.
+  useEffect(() => {
+    setOperation(null);
+    setAnchor(null);
+    setFileFailure(null);
+    approvalRead.current?.(false);
+    approvalRead.current = null;
+  }, [repositoryId]);
+
+  // plan.md "Stored drafts": after each registration result, the page reads the stored draft of that worktree.
+  const worktreeKey = state.repository?.worktreeKey ?? null;
+  useEffect(() => {
+    if (worktreeKey !== null) void drafts.restore(worktreeKey);
+  }, [drafts, worktreeKey]);
 
   // index.css: an absent `data-theme` means System, and an absent `data-density` means Compact.
   useEffect(() => {
@@ -455,12 +683,34 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     return () => cancelAnimationFrame(frame);
   });
 
+  // plan.md "Overflow": a newly shown band row or stall notice scrolls into view inside its own region. The focused control stays visible, and focus never moves.
+  const seen = useRef(new WeakSet<Element>());
+  useLayoutEffect(() => {
+    const areaContent = sections.current?.querySelector<HTMLElement>('section[data-slot="status-area"] > div[tabindex="0"]') ?? null;
+    const regions: [HTMLElement | null, Element[]][] = [
+      [bandRef.current, [...(bandRef.current?.querySelectorAll(":scope > section > div > *") ?? [])]],
+      [areaContent, [...(areaContent?.querySelectorAll('[data-slot="stall-notice"]') ?? [])]],
+    ];
+    for (const [region, rows] of regions) {
+      const added = rows.filter((row) => !seen.current.has(row));
+      for (const row of rows) seen.current.add(row);
+      const row = added.at(-1);
+      if (!region || !row) continue;
+      const top = region.getBoundingClientRect().top - region.scrollTop;
+      const box = (e: Element) => ({ top: e.getBoundingClientRect().top - top, height: e.getBoundingClientRect().height });
+      const active = document.activeElement;
+      region.scrollTop = overflowScroll({ scrollTop: region.scrollTop, viewportHeight: region.clientHeight, target: box(row), focused: active !== null && region.contains(active) ? box(active) : null });
+    }
+  });
+
   // plan.md "Keyboard and focus", Pane navigation: F6 moves through the visible sections in the T346 order.
   function moveSection(direction: "next" | "previous") {
     const root = sections.current;
     if (!root) return;
     const present = new Map<Section, HTMLElement>();
     for (const element of root.querySelectorAll<HTMLElement>(SECTION_SELECTOR)) if (!element.closest("[hidden]")) present.set(element.dataset.section as Section, element);
+    // plan.md "Status area": an empty status region is no F6 stop.
+    if (!live.current.statusStop) present.delete("statusRegion");
     const active = document.activeElement as HTMLElement | null;
     const current = (active?.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined) ?? "header";
     const order: Section[] = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "commitDetails", "statusRegion"];
@@ -469,6 +719,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (target === null) return;
     const element = present.get(target)!;
     const remembered = lastFocus.current.get(target);
+    if (target === "statusRegion") {
+      // The WSL start Cancel, else the T138 entry rule: the area heading once after it opens, then the last target.
+      const entry = (live.current.starting ? root.querySelector<HTMLElement>('[data-slot="status-area"] button') : null) ?? statusRegion.current?.entry() ?? null;
+      return (entry ?? element).focus();
+    }
     const focus = remembered?.isConnected && element.contains(remembered) ? remembered : target === "noticeHeading" ? element.querySelector<HTMLElement>("h2") : element.querySelector<HTMLElement>(TABBABLE);
     (focus ?? element).focus();
   }
@@ -476,6 +731,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const target = event.target as HTMLElement;
     const section = target.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined;
     if (section) lastFocus.current.set(section, target);
+    if (!menubar.current?.contains(target) && !target.closest('[role="menu"]')) lastOutside.current = target;
   };
 
   async function openRepository() {
@@ -487,8 +743,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const handle = createShortcutHandler();
     const onKey = (event: KeyboardEvent) => {
       const { requests, menuOpen, modalOpen, switcherOpen } = live.current;
-      const action = handle(event, { messageField: null, comparisonPane: null, modalOpen, menuOpen: menuOpen !== null || switcherOpen, commitEnabled: false });
+      // The commit tray handles Ctrl+Enter.
+      const action = handle(event, { messageField: null, comparisonPane: comparisonPane.current, modalOpen, menuOpen: menuOpen !== null || switcherOpen, commitEnabled: false });
       if (!action) return;
+      if (action.type === "selectHunk") return void stepRef.current?.(action.direction);
       if (action.type === "focusMenuBar") menubar.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
       else if (action.type === "refresh") requests.refresh();
       else if (action.type === "openFolder") void openRepository();
@@ -514,7 +772,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   async function reviewTrust() {
     if (repositoryId === null) return;
     const response = await bridge.readTrust({ repositoryId });
-    if (response.state === "succeeded" && isTrustReport(response.result)) setTrust({ report: response.result, open: true });
+    if (response.state === "succeeded" && isTrustReport(response.result)) {
+      fromCommit.current = false;
+      setTrust({ report: response.result, open: true });
+    }
     else setNotice(codeText("Trust review did not complete: ", responseCode(response)));
   }
 
@@ -526,12 +787,24 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   }
 
   // Focus returns to the control that had it before the menu bar (plan.md "Keyboard and focus", Menu bar row).
+  // The last focused control outside the menu bar and its menus. React focus events of the portal menus also reach the workbench handlers.
+  const lastOutside = useRef<HTMLElement | null>(null);
   const onMenubarFocus = (event: FocusEvent<HTMLDivElement>) => {
+    if (!menubar.current?.contains(event.target as Node)) return;
+    if (escapeClose.current) {
+      escapeClose.current = false;
+      if (beforeMenu.current?.isConnected) return beforeMenu.current.focus();
+    }
     const from = event.relatedTarget as HTMLElement | null;
-    if (from && !menubar.current?.contains(from) && !from.closest('[data-slot="menubar-content"]')) beforeMenu.current = from;
+    if (from === null || (!menubar.current?.contains(from) && !from.closest('[data-slot="menubar-content"]'))) beforeMenu.current = from ?? lastOutside.current;
   };
   const finalFocus = () => (beforeMenu.current?.isConnected ? beforeMenu.current : true);
-  const onMenuOpen = (name: string) => (open: boolean) => setMenuOpen((current) => (open ? name : current === name ? null : current));
+  // An Escape that closes a menu marks the focus return. Base UI then focuses the menu trigger, and `onMenubarFocus` moves focus back.
+  const escapeClose = useRef(false);
+  const onMenuOpen = (name: string) => (open: boolean, details?: { reason?: string }) => {
+    escapeClose.current = !open && details?.reason === "escape-key";
+    setMenuOpen((current) => (open ? name : current === name ? null : current));
+  };
 
   const distro = wslDistro(workspace);
   const wslGit = workspace?.location.kind === "wsl" ? workspace.location.git : null;
@@ -575,6 +848,44 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The flexible row keeps its computed height only while the work area scrolls. Otherwise it absorbs a shortfall, so the fixed panes stay in view.
   const flexible = `minmax(${scrolls ? clamped.comparison : 0}px, 1fr)`;
   const statusAreaMax = statusAreaHeight({ content: Number.POSITIVE_INFINITY, client, textScale, density: preferences.density, bandRows });
+
+  // The states that block mutations (plan.md "Required visible states": Busy, State unknown, Conflicted/unfinished operation, Limited output).
+  const running = operation !== null && operation.response === null;
+  const loading = workspace === null || state.entries.length < workspace.entryCount;
+  const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : state.blocked ? "unknown" : workspace !== null && workspace.operationState !== "normal" ? "conflicted" : null;
+  const stagingBlocked: Blocked = blocked ?? (loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null);
+  const onEnded = (kind: "applyHunk" | "applyFile" | "commit", response: BridgeResponse) => requests.mutationEnded(kind, response);
+  const staging: Staging = {
+    bridge,
+    target: state.repository !== null && state.capability !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: state.capability.repositoryGeneration } : null,
+    blocked: stagingBlocked,
+    trust: trust?.report ?? null,
+    eligibility: workspace?.hunkEligibility,
+    fileReasonId,
+    reasons: [
+      { id: fileReasonId, text: fileReason },
+      { id: paneReasonId, text: paneReason },
+    ],
+    onFileReason: setFileReason,
+    onPaneReason: setPaneReason,
+    onOperation: (op) => {
+      // A new file action replaces the output of the last failed one.
+      if (op.kind === "applyFile" && op.response === null && op.progress === null) setFileFailure(null);
+      setOperation(op);
+    },
+    onEnded,
+    onFileFailed: (file, response) => setFileFailure({ file, response }),
+    fileFailure,
+    onHunkSucceeded: (file, ordinal, patch) => {
+      // plan.md: a successful hunk action clears the hunk selection and selects no other hunk.
+      setAnchor({ file, ordinal, patch });
+      requests.selectHunk(null);
+    },
+    anchor,
+    stepRef,
+    toolbarSuccess,
+    onToolbarSuccess: (entryId) => setToolbarSuccess({ entryId }),
+  };
   const pane: WorkbenchPaneProps = {
     state,
     requests,
@@ -587,6 +898,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     historyListMin: panel === "details" || panel === null ? history.listMin : undefined,
     selected: kept,
     onSelectRow,
+    staging,
   };
   // A drag shows the live lane width and saves it once, on pointer up.
   const [dragLane, setDragLane] = useState<number | null>(null);
@@ -618,7 +930,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const gitVersion = wslGit?.version ?? environment?.detectedVersion ?? null;
 
   const commitPanel = (
-    <div hidden={panel !== "commit"} className="flex h-full min-h-0 flex-col">
+    <div ref={commitPanelRef} hidden={panel !== "commit"} className="flex h-full min-h-0 flex-col">
       <h2 className="flex shrink-0 items-center px-2 font-semibold" style={{ minHeight: "var(--h-pane-heading)" }}>
         Commit
       </h2>
@@ -640,14 +952,35 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           }}
           className={resizable ? "[grid-area:laneSplit]" : "hidden"}
         />
-        <div data-section="comparison" className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
+        <div ref={comparisonPane} data-section="comparison" className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
           <ComparisonView {...pane} />
         </div>
         <div className="[grid-area:traySplit]">
           <Splitter label="Resize commit tray" orientation="horizontal" value={trayHeight} min={tray.min} max={tray.max} reverse onChange={setBottom} className={resizable ? undefined : "hidden"} />
         </div>
-        <div data-section="composer" tabIndex={-1} className="min-h-0 overflow-auto border-t border-divider p-2 text-muted-text" style={{ gridArea: "tray" }}>
-          {LATER.commit}
+        <div data-section="composer" className="min-h-0 overflow-auto border-t border-divider p-2" style={{ gridArea: "tray" }}>
+          <CommitTray
+            bridge={bridge}
+            target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
+            snapshotId={workspace?.snapshotId ?? null}
+            worktreeKey={worktreeKey}
+            drafts={drafts}
+            head={workspace?.head ?? null}
+            staged={staged}
+            status={loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null}
+            blocked={blocked}
+            requestTrust={(report) =>
+              new Promise<boolean>((resolve) => {
+                endGate(false);
+                trustGate.current = resolve;
+                fromCommit.current = true;
+                setTrust({ report, open: true });
+              })
+            }
+            onOperation={setOperation}
+            onEnded={(response) => onEnded("commit", response)}
+            fieldRef={messageField}
+          />
         </div>
       </section>
     </div>
@@ -831,11 +1164,15 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 </MenubarContent>
               </MenubarMenu>
               <MenubarMenu onOpenChange={onMenuOpen("help")}>
-                <MenubarTrigger>Help</MenubarTrigger>
+                <MenubarTrigger ref={helpTrigger}>Help</MenubarTrigger>
                 <MenubarContent finalFocus={finalFocus} className={MENU_CONTENT}>
                   <MenubarGroup>
                     <MenubarLabel className="whitespace-normal">{SCOPE_LINE}</MenubarLabel>
                   </MenubarGroup>
+                  <MenubarSeparator />
+                  <MenubarItem disabled={environment === null} onClick={() => setAboutOpen(true)}>
+                    About Arbareto
+                  </MenubarItem>
                 </MenubarContent>
               </MenubarMenu>
             </Menubar>
@@ -862,7 +1199,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
         <main className={`flex min-h-0 flex-1 flex-col ${scrolls ? "overflow-y-auto" : "overflow-clip"}`}>
           {/* plan.md "Overflow": the band shows at most its two reserved rows and scrolls inside them. */}
-          <div data-slot="notice-band" data-section={bandRows > 0 ? "noticeHeading" : undefined} className="shrink-0 overflow-y-auto" style={{ maxHeight: 2 * m.bandRow }}>
+          <div ref={bandRef} data-slot="notice-band" data-section={bandRows > 0 ? "noticeHeading" : undefined} className="shrink-0 overflow-y-auto" style={{ maxHeight: 2 * m.bandRow }}>
             {workspace === null ? null : (
               <NoticeBand
                 operationState={workspace.operationState}
@@ -900,15 +1237,27 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </div>
         </main>
 
-        <footer className="flex items-center gap-2 border-t border-divider px-2" style={{ minHeight: "var(--h-status-bar)" }}>
-          <span role="status" className="min-w-0 flex-1 truncate">
-            {statusText}
-          </span>
-          <span role="status" className="min-w-0 flex-1 truncate">
-            {paneStatus}
-          </span>
-          {gitVersion === null ? null : <GitSegment version={gitVersion} distro={wslGit === null ? null : distro} scope={environment?.platformScope} />}
-        </footer>
+        <div data-section="statusRegion" className="contents">
+          <OperationStatus
+            ref={statusRegion}
+            bridge={bridge}
+            operation={operation}
+            worktreeRoot={path ?? ""}
+            head={workspace?.head ?? null}
+            trusted={trust?.report.trustId !== undefined}
+            panel={panel ?? "details"}
+            commitPanel={commitPanelRef}
+            modalOpen={modalOpen}
+            refusal={paneStatus}
+            onFocusMessageField={() => messageField.current?.focus()}
+            onClearMessage={() => worktreeKey !== null && void drafts.clear(worktreeKey)}
+            onRefresh={() => requests.refresh()}
+            areaMaxHeight={statusAreaMax}
+            notice={statusText}
+          >
+            {gitVersion === null ? null : <GitSegment version={gitVersion} distro={wslGit === null ? null : distro} scope={environment?.platformScope} />}
+          </OperationStatus>
+        </div>
         {trust === null || state.repository === null ? null : (
           <TrustDialog
             open={trust.open}
@@ -916,17 +1265,33 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             repositoryId={state.repository.repositoryId}
             bridge={bridge}
             client={client}
-            finalFocus={() => switcher.current?.querySelector<HTMLElement>("button") ?? null}
+            finalFocus={() => (fromCommit.current ? messageField.current : switcher.current?.querySelector<HTMLElement>("button")) ?? null}
             onCancel={() => setTrust({ ...trust, open: false })}
             onApproved={(result) => {
+              approvalRead.current = trustGate.current;
+              trustGate.current = null;
               setTrust({ ...trust, open: false });
               setSaveFailed(result.saveFailed);
-              requests.trustApproved();
+              void requests.trustApproved().then(() => setApprovalEnds((n) => n + 1));
               setTrustRead((n) => n + 1);
             }}
             onFailed={(response) => setNotice(codeText("Trust approval did not complete: ", responseCode(response)))}
           />
         )}
+        {aboutOpen && environment !== null ? (
+          <AboutBoundary onClose={() => setAboutOpen(false)}>
+            <Suspense fallback={null}>
+              <AboutMount
+              open
+              scope={environment.platformScope}
+              build={environment.buildIdentity}
+              client={client}
+              finalFocus={helpTrigger}
+              onClose={() => setAboutOpen(false)}
+            />
+            </Suspense>
+          </AboutBoundary>
+        ) : null}
       </div>
     </CopyFailed>
   );

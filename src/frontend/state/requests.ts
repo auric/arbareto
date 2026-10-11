@@ -189,8 +189,9 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     set({ ...patch, blocked: blocked(next.workspace), capability: capability(next) });
   };
 
-  function readWorkspace(refresh: boolean, check: Check, isPoll = false) {
-    if (!repository) return;
+  /** `onEnd` runs once when this read ends with any result, also after a newer open drops it. */
+  function readWorkspace(refresh: boolean, check: Check, isPoll = false, onEnd?: () => void) {
+    if (!repository) return void onEnd?.();
     if (!isPoll) userRead();
     const e = epoch;
     const token = {};
@@ -208,7 +209,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
         }
       : undefined;
     void bridge.readWorkspace({ repositoryId: repository.repositoryId }, { refresh, check }, onProgress).then((response) => {
-      if (e !== epoch) return;
+      if (e !== epoch) return void onEnd?.();
       pendingReads--;
       if (refresh) userReads--;
       if (refresh && userReads === 0) set({ refreshing: false });
@@ -217,6 +218,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       if (!(own?.cancel && response.state === "canceled")) onWorkspace(response, refresh, token, own !== null);
       if (own) armPoll();
       readEnded();
+      onEnd?.();
     });
     return token;
   }
@@ -509,8 +511,8 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     },
 
     /** The read after a trust approval is a full read (contract §3). */
-    trustApproved() {
-      readWorkspace(false, "full");
+    trustApproved(): Promise<void> {
+      return new Promise((resolve) => void readWorkspace(false, "full", false, resolve));
     },
 
     /** Contract §8 "Service restart": run `restoreWorkspace` again and block mutations until a `refresh: true` read succeeds. */

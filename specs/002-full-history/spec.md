@@ -126,12 +126,12 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 
 - **FR-001**: History MUST cover the commits that the captured ref set reaches. The default scope is all branches. FR-047 defines the all-branches ref set, and FR-048 defines the current-branch ref set.
 - **FR-002**: A history view MUST bind to one ref set and the repository generation, both captured when the view opens. It MUST NOT bind to HEAD alone. A later generation with the same refs and the same commits MUST keep the view.
-- **FR-003**: Each commit that the captured refs reach MUST show exactly once. Every such commit MUST be reachable by scrolling, with no page or count limit.
+- **FR-003**: Each commit that the captured refs reach MUST show exactly once. Every such commit MUST be reachable by scrolling, with no page limit, up to 4,000,000 commits in one view. At that bound, the load MUST end with a typed limit refusal. The loaded rows MUST stay, and the view MUST state the limit. Exception: a commit with more than 64 parents MUST end the load with a typed output-limit refusal.
 - **FR-004**: Rows MUST keep one order for the life of a view. A row MUST NOT change its position after it shows. Children MUST precede parents. Dates alone MUST NOT decide the order.
 - **FR-005**: The checkout can move, or a ref can change after capture. The view MUST then keep its rows and labels. It MUST show a notice that states the change and offers Refresh.
 - **FR-006**: A new view MUST start only when the user asks for it, or when the view is stale. The contract MUST define every stale condition. Git's report of a missing commit of the view MUST be one of them.
 - **FR-007**: A stale view MUST keep its shown rows, state its typed reason, and offer Refresh. It MUST NOT invent rows or edges.
-- **FR-008**: Refresh MUST capture a new ref set in the same scope. It MUST keep the selected commit when the new refs reach it. The view MUST then load the rows up to that commit, with visible progress and Cancel. Otherwise it MUST select the current checkout commit. Without a checkout commit, it MUST select the first commit row.
+- **FR-008**: Refresh MUST capture a new ref set in the same scope. It MUST keep the selected commit when the new refs reach it. The view MUST then load the rows up to that commit, with visible progress and Cancel. Otherwise it MUST select the current checkout commit. Without a checkout commit, it MUST select the first commit row. Cancel of that load MUST keep the loaded rows. It MUST select the checkout commit when that row is loaded. Otherwise it MUST select the first commit row.
 - **FR-009**: End MUST load the rows up to the last commit, with visible progress and Cancel. Cancel MUST keep the loaded rows and the selection.
 - **FR-010**: Until the last row is known, the view MUST state that more rows exist. When it is known, the view MUST show the final row count.
 - **FR-011**: Rows far off screen MAY leave memory. When they show again, they MUST show the same commit, text, and graph cell at the same position.
@@ -142,7 +142,7 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 
 - **FR-014**: The graph of each row MUST equal the graph of one layout of the whole history. It MUST NOT depend on the rows that loaded before or the scroll path.
 - **FR-015**: Edges MUST follow Git parent identities across the whole history. Roots and shallow boundaries MUST stay distinct by shape and by text.
-- **FR-016**: The graph width limit MUST apply to each row. A row above the limit MUST state the limit. Its parent information MUST stay accessible without color or pointer use.
+- **FR-016**: The graph width limit MUST apply to each row. A row above the limit MUST state the limit. Its parent information MUST stay accessible without color or pointer use. The graph column can grow while rows load. It MUST NOT shrink during the life of a view.
 
 #### Commit details
 
@@ -160,7 +160,7 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 - **FR-025**: Without the matching conditions of FR-023 and FR-024, the filter MUST refuse with a typed reason and a remedy. It MUST NOT fall back to another matching rule.
 - **FR-026**: Filter text MUST hold at most 1,024 bytes in UTF-8. Longer text MUST get a typed refusal.
 - **FR-027**: Empty filter text MUST mean no filter. The view MUST then show the full history.
-- **FR-028**: Filter text with a line break, a NUL character, or a backslash followed by "E" MUST get a typed refusal. No search MUST start. The refusal MUST name the found character.
+- **FR-028**: Filter text with a line break, a NUL character, or a backslash followed by "E" MUST get a typed refusal. No search MUST start. The refusal MUST name the found character. A line break is U+000A or U+000D.
 - **FR-029**: The search MUST start only at Enter. A pause in typing MUST NOT start a search.
 - **FR-030**: A changed text, a cleared text, Escape, and closing the repository MUST stop the running search. A stopped search MUST NOT show a count as final.
 - **FR-031**: The filter MUST have an accessible name and a keyboard shortcut. The shortcut MUST show as the 001 rules require.
@@ -197,10 +197,10 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 
 #### History scope and refs
 
-- **FR-047**: The all-branches ref set MUST hold HEAD and the refs under `refs/heads/`, `refs/remotes/`, and `refs/tags/`. It MUST also hold the `refs/stash` ref. The remote HEAD refs under `refs/remotes/` MUST belong to the set. The set MUST NOT hold refs under `refs/notes/` or any other namespace, such as `refs/pull/` or `refs/changes/`. Older stash entries MUST NOT show as rows. Unlike Git Extensions, the set shows branch history only and adds no rows that are not history.
-- **FR-048**: The current-branch ref set MUST hold only HEAD. The current-branch view MUST show the feature 001 history scope on the 002 mechanism.
+- **FR-047**: The all-branches ref set MUST hold HEAD and the refs under `refs/heads/`, `refs/remotes/`, and `refs/tags/`. It MUST also hold the `refs/stash` ref. The remote HEAD refs under `refs/remotes/` MUST belong to the set. The set MUST NOT hold refs under `refs/notes/` or any other namespace, such as `refs/pull/` or `refs/changes/`. Older stash entries MUST NOT show as rows. Unlike Git Extensions, the set shows branch history only and adds no rows that are not history. The ref set MUST hold at most 10,000 refs. A larger set MUST get a typed output-limit refusal that names the ref listing bound.
+- **FR-048**: The current-branch ref set MUST hold only HEAD. The current-branch view MUST show the feature 001 history scope on the 002 mechanism. The current-branch view MUST start only from HEAD. Its rows MUST show the labels of the FR-047 refs that the view captured.
 - **FR-049**: One switch MUST select all branches or the current branch. The default MUST be all branches. A switch MUST start a new view with a newly captured ref set. It MUST keep the selected commit when the new view holds it. A filter text MUST stay, and its search MUST run again on the new view in the same mode.
-- **FR-050**: Each row MUST show a label for each captured ref that points to its commit. A tag MUST label the commit at the end of its tag chain. A tag that ends at a tree or a blob MUST add no row and no history label. The row of the captured checkout commit MUST show a mark that does not depend on color. A detached HEAD MUST show as detached.
+- **FR-050**: Each row MUST show a label for each captured ref that points to its commit. A tag MUST label the commit at the end of its tag chain. A tag that ends at a tree or a blob MUST add no row and no history label. The row of the captured checkout commit MUST show a mark that does not depend on color. A detached HEAD MUST show as detached. A symbolic ref, such as a remote HEAD ref, MUST add no label, as in feature 001.
 - **FR-051**: The application MUST read remote-tracking refs only from the local repository. History MUST NOT contact a remote. Fetch stays in feature 003.
 
 #### Responsiveness
@@ -234,8 +234,8 @@ These outcomes are qualification targets, not measured results. Only recorded pa
 - **SC-008**: In every filter fixture, filter mode shows exactly Git's matches in full-history order. The reduced graph joins each match to exactly its nearest matching ancestors. Highlight mode reaches every match with Next match and Previous match, and the final count equals Git's match count.
 - **SC-009**: Each refused text case shows its typed reason and starts no Git process. Cases are a line break, a NUL character, a backslash followed by "E", and more than 1,024 bytes.
 - **SC-010**: A cancelled search and a cancelled load stop within one second. No process of that operation remains five seconds later. The view shows the full history or the loaded rows, and no count shows as final.
-- **SC-011**: Against Git Extensions under matched conditions, two workflows have a median time ratio of at most 1.0. They are a full scroll to the last commit, and a message filter over the whole history. Both run on the 200,000-commit and 1,000,000-commit fixtures. The record states the work that each tool performs.
-- **SC-012**: The checkout moves, or a ref is added, removed, or moved during a scroll. No shown row or label changes. The notice appears within the feature 001 external-change target. Refresh shows the history of the new ref set.
+- **SC-011**: Against Git Extensions under matched conditions, two workflows have a median time ratio of at most 1.0. They are a full scroll to the last commit, and a message filter over the whole history. Both run on the 200,000-commit and 1,000,000-commit fixtures. The record states the work that each tool performs. The gate value is the upper bound of the 95% interval of the median ratio. This is the feature 001 SC-015 rule (001 plan.md "Measurements and budgets" and "Matched-condition comparisons").
+- **SC-012**: The checkout moves, or a ref is added, removed, or moved during a scroll. No shown row or label changes. The notice appears within the feature 001 external-change target. Refresh shows the history of the new ref set. In a WSL repository, a change of a ref other than HEAD shows the notice at the next focus return, Refresh, or mutation outcome.
 - **SC-013**: After every fixture run, the repository files are byte-identical to their state before the run. No commit-graph file or other repository data appears.
 - **SC-014**: In the packaged application, every 002 workflow of FR-052 meets the feature 001 SC-005 targets. The workloads use the 1,000,000-commit fixture and slow Git activity. At least 95% of tested inputs get a visible acknowledgement within 100 ms. Every tested input gets a visible response within 500 ms. No interface task runs longer than 500 ms. Windows never reports the window as not responding. Cancel responds in every workflow while Git works.
 - **SC-015**: In every ref fixture, the all-branches view shows exactly Git's commits for the FR-047 ref set. Each commit shows exactly once. Each label sits on the commit that Git gives for its ref, with annotated and nested tags. Tags that end at a tree or a blob add no row. The checkout row is marked, also for a detached HEAD. The current-branch view shows exactly Git's commit list for HEAD. Fixtures include remote HEAD refs, the stash ref, and several refs on one commit. They also include an unborn current branch beside other refs, and an empty repository. A notes ref, a ref in another namespace, and older stash entries add no rows.
@@ -245,7 +245,9 @@ These outcomes are qualification targets, not measured results. Only recorded pa
 - The user chose all branches as the default scope, as in Git Extensions. FR-047 lists explicit ref namespaces instead of the Git Extensions exclusion list. This is a reviewer default, not a user decision.
 - Older stash entries are not part of this feature, and only the stash ref shows. A later stash feature adds them. This is a reviewer default, not a user decision.
 - A scope switch runs an active search again on the new view (FR-049). This is a reviewer default, not a user decision.
-- The user confirmed the 128 MiB budget. It comes from the research estimate: about 40 bytes of graph data for each commit, plus a 32 MiB cache of row text. At 1,000,000 commits that is about 72 MiB. The rest is headroom for measurement. Qualification records a miss as a failure.
+- Graph data uses about 48 bytes for each commit, plus an 8 MiB cache of row text. The budget applies to 1,000,000 commits. A larger history stays reachable up to the FR-003 view bound, and its memory grows with it. This estimate is unverified. Qualification records a budget miss as a failure.
+- A history view holds at most 4,000,000 commits (FR-003). At about 48 bytes for each commit, that bound costs about 192 MB of service memory. A larger bound needs a measured memory design. This is a reviewer default, not a user decision.
+- The plan review set these rules: the FR-003 view bound and parent exception, the FR-008 Cancel selection, the FR-016 column growth, the FR-028 line-break characters, the FR-047 ref bound, the FR-048 labels, the FR-050 symbolic refs, the SC-011 statistic, and the SC-012 WSL timing. These are reviewer defaults, not user decisions.
 - The user confirmed the SC-011 ratio. The SC-006 target is proposed, and the plan confirms it before measurement. Feature 001 speed targets stay in force on the moderate fixture.
 - SC-014 reuses the feature 001 SC-005 response targets. It adds no new values.
 - The fixtures are synthetic disposable repositories of 200,000 and 1,000,000 commits, built at test time. They include merges, equal dates, clock skew, a shallow clone, and legacy-encoded messages.
@@ -257,7 +259,7 @@ These outcomes are qualification targets, not measured results. Only recorded pa
 
 These facts come from an investigation on 2026-10-11 with Git 2.56.0.windows.1 on synthetic repositories. The plan uses them and names the mechanisms.
 
-- Each view reads one history stream, bound to the captured ref set. It reads only as fast as rows are needed. This gives an exact order by construction.
+- Each view reads one history stream, bound to the captured ref set. The stream runs to the end at full speed, and the application keeps only the compact topology of each commit. This gives an exact order by construction (research.md R1 and R2).
 - Paging with skip counts gives the same order, but each page walks the history again. A deep page takes about 0.9 s at 200,000 commits without a commit-graph file, and 0.18 s with one.
 - A cursor that restarts from the parents not yet sent gives a different order. The investigation rejects it.
 - Git documents no unique order. Repeatability of the order across two views is an experiment fact only. The spec requires one order only within one view.

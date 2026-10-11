@@ -1,0 +1,219 @@
+# Operation Contract Deltas: Full History and Commit Message Filter
+
+This file lists only the changes to the feature 001 contract, `specs/001-desktop-qualification/contracts/operations.md`. Each delta cites its 001 section. Every 001 rule that no delta replaces stays in force. "001 §n" means that file.
+
+## Δ1 Transport (001 §1)
+
+- Five new renderer operations: `openHistory`, `loadHistory`, `readHistoryRows`, `searchHistory`, `closeHistory`. Each has one Tauri command and one zod schema, as 001 §1 "Renderer request body" and "Schemas" require.
+- Rust typify drops numeric ranges. Keep explicit range checks in Rust, as 001 §1 requires.
+- No new channel frame.
+
+## Δ2 Envelope (001 §2)
+
+- `openHistory` carries `repositoryId` and `repositoryGeneration`. A stale generation gives `REPOSITORY_CHANGED` at acceptance, as for 001 `readHistory`.
+- `loadHistory`, `readHistoryRows`, `searchHistory`, and `closeHistory` carry `repositoryId`. Their target is `viewId`, an opaque §2 identifier that the service issues.
+
+## Δ3 Public operations (001 §3)
+
+### `openHistory`
+
+- Payload: `{scope: "all" | "current"}`.
+- It takes one read slot (001 §5 "Pending reads").
+- The capture steps run beside the shared listing as held steps (001 §7 "Shared listing", "Held history steps"). No captured data leaves before `trust.gate(..., "reads")` passes.
+- Every command carries `--no-lazy-fetch --no-optional-locks`.
+- Capture:
+  1. HEAD: the 001 `captureHead` steps. They are `symbolic-ref -q HEAD`, `rev-parse --verify -q HEAD`, and `show-ref --exists` for an unborn branch.
+  2. Refs: `for-each-ref --format=<the exact 001 §3 "References result" eight-field format> refs/heads refs/remotes refs/tags refs/stash refs/replace`. The 001 record checks apply, with these additions:
+     - A record named exactly `refs/stash` belongs to the set. A record under `refs/stash/` is skipped. Reason: a pattern matches from the beginning up to a slash (git-for-each-ref(1)).
+     - A `refs/replace/` record enters only the topology fingerprint. It is no start point and no label.
+     - `commitId` follows the 001 rule. `%(*objecttype)` gives the end of the tag chain. A tag that ends at a tree or a blob gives no start point and no label.
+     - A symbolic ref gives no label (spec FR-050).
+  3. Topology files: `rev-parse --git-path shallow --git-path info/grafts` gives two paths. The service reads both files with `readBounded` and the 4 MiB bound. It takes a SHA-256 of each. An absent file counts as `absent`.
+- Start points:
+  - `all`: the unique `commitId` values of the FR-047 records, plus the HEAD OID when HEAD is not unborn.
+  - `current`: the HEAD OID only. Rows still show the labels of the captured FR-047 refs (spec FR-048).
+  - Order: ascending lowercase hex.
+  - Git gets the OIDs on stdin, one per line, through the 001 streamed input (001 §6 "Channel frames").
+- Result: `{viewId, scope, generation, head, startCount, refsDigest, shallow}`.
+  - `refsDigest` is a SHA-256 over `refname NUL objectname LF` of each FR-047 record, in Git's output order.
+- One live view per service session. A new `openHistory` releases the old view. Its running operations end `canceled`. Its `viewId` then gives `UNKNOWN_TARGET`.
+- An empty repository gives a view with `startCount` 0.
+
+### `loadHistory {viewId}`
+
+- It takes no read slot. A second load of the view while one runs gives `BUSY`.
+- Command: `--no-lazy-fetch --no-optional-locks rev-list --parents --date-order --stdin`. When the view holds N ≥ 1 rows, add `--skip=<N-1>`. Policy `read`. `deadlineMs` 120,000, the 001 §6 maximum.
+- Before a resume, the service reads the topology fingerprint again. It starts `for-each-ref refs/replace` beside the Git start. A difference makes the view stale with `HISTORY_CHANGED` reason `topology`.
+- On a resume, the first line must equal row N-1 in OID and parents. Otherwise the view is stale with `HISTORY_CHANGED` reason `order`.
+- Each line holds at most 1 + 64 OIDs (`HISTORY_PARENTS_PER_COMMIT`). A longer line ends the load `limited` with `OUTPUT_LIMIT` and that reason.
+- A view holds at most 4,000,000 commits (`HISTORY_VIEW_COMMITS`). At that bound, the service ends the load `limited` with `OUTPUT_LIMIT` and that reason. The loaded rows stay. The view states the limit, and a later `loadHistory` gives the same result without a Git process.
+- The service keeps no raw bytes beyond one partial line. The line bound and the commit bound together bound the stream. This replaces the 001 §5 "History page" bound for this stream only.
+- These cases give `MALFORMED_GIT_OUTPUT` and a stale view: a duplicate row, a parent that already showed, and a parent still pending at exit 0.
+- A nonzero exit runs the 001 `checkFailedRead` steps (001 §7 "Missing objects"):
+  - a missing object in a partial clone gives `OBJECT_MISSING`;
+  - a damaged store without a promisor remote gives `REPOSITORY_UNAVAILABLE`;
+  - other failures give `GIT_FAILED`.
+- Progress: phase `history-load`, counter `rows`, at most 4 events per second.
+- Results:
+  - `succeeded` with the final row count (spec FR-010).
+  - `canceled`: the rows stay, and the Job is closed.
+  - `failed` with `DEADLINE`: the rows stay. The result carries the copyable remedy `git commit-graph write --reachable`. The application never runs it (spec FR-044). This closes the open trigger rule of 001 plan.md "Commit-graph variants".
+
+### `readHistoryRows`
+
+- Payload: `{viewId, mode, searchId?, at, count, text}`.
+  - `mode`: `"full"` or `"filter"`. `"filter"` requires `searchId`.
+  - `at`: `{row}`, `{oid}`, `{match: "next" | "previous", from}`, or `{end: true}`.
+  - `count`: 1 to 512.
+  - `text`: `"none"`, `"rows"`, or `"details"`. `"details"` requires `count` 1.
+- Target resolution:
+  - While the target is unknown and a load or search of the view runs, the request waits.
+  - It returns `target: "unknown"` when nothing runs.
+  - It returns `target: "none"` when no such row exists. This covers spec FR-038 and the FR-008 case where the new refs do not reach the commit.
+- Each row holds:
+  - `index`, `oid`, `parents`;
+  - `cell {node, color, merge, limited, segments, marks}`;
+  - `labels [{kind, name, invalidUtf8}]` and `checkout`;
+  - `match` (true, false, or null) when the payload has `searchId`;
+  - with `text: "rows"`: `subject`, `author`, `date`, `encoding`, and `invalidUtf8`, or `textLimit` for an object above 256 KiB;
+  - with `text: "details"`: also `body`, `bodyCut`, `committer`, `committerDate`, and `children`. `body` and `bodyCut` follow 001 §3 "HistoryPage result" and the 001 §5 "History message body" bound of 16 KiB.
+- In filter mode, a row that is not settled yet has `cell: null`.
+- Text comes from one `cat-file --batch-command -Z` with `contents` lines. Deadline 30 s. `text: "none"` starts no Git process.
+- A newer text read cancels an unfinished one of the same view, by the 001 superseded-read rule (001 §5 "Pending reads").
+- The result stays within `HISTORY_PAGE_BYTES` (8 MiB). It sets `cut` when the bound cuts rows. It also carries `lanes` (the most lanes so far, at most 24), `rows`, `complete`, and `bytes` for the renderer cache.
+
+### `searchHistory {viewId, text}`
+
+- The service refuses before any Git process (spec SC-009):
+  - text that is not well-formed UTF-8, or above 1,024 UTF-8 bytes: `UNSUPPORTED_FILTER_TEXT` reason `length` for the bound;
+  - U+000A or U+000D: reason `line-break`;
+  - U+0000: reason `nul`;
+  - U+005C followed by U+0045: reason `quote-end`.
+- Empty text is no search. The renderer sends none (spec FR-027).
+- The fingerprint check of `loadHistory` runs first.
+- The matching probe runs before the first search of each `gitInstallationId` in a service session ("Matching probe" below).
+- Command: `--no-lazy-fetch --no-optional-locks --literal-pathspecs -c i18n.logOutputEncoding=UTF-8 rev-list --date-order --fixed-strings --regexp-ignore-case --grep=<text> --stdin`. Stdin holds the start-point bytes of the view. Policy `search`. Deadline 120,000 ms.
+- It takes no read slot. One search runs per view. A new search of the view cancels the old one (spec FR-030).
+- Merge into the view:
+  - The service interns each match OID in the OID table of the view.
+  - When the row of a match is known, its index must be above the index of the previous match. When it is not known yet, the match joins a FIFO queue.
+  - A streamed row that is in the queue must be at its head.
+  - When the load completes, the queue must be empty.
+  - Any break fails the search with `HISTORY_CHANGED` reason `order`. The view stays.
+- The reduced graph needs the full topology stream beside the search stream (plan.md D4). When a search starts on an incomplete view, the service resumes the load itself, by the `loadHistory` rules. That load belongs to the search operation: its progress and Cancel go with the search. A cancel of the search keeps the loaded rows. The renderer starts nothing extra.
+- A `loadHistory` while the search load runs gives `BUSY`, as for any second load.
+- A view that stopped at `HISTORY_VIEW_COMMITS` has no full topology. A search on it ends `limited` with `OUTPUT_LIMIT` reason `HISTORY_VIEW_COMMITS`, and no Git process starts.
+- Progress: phase `history-search`, counters `matches` and `settled`.
+- The terminal response carries the final match count (spec FR-039). A shallow view adds the statement that the search covered only the commits that the clone holds.
+- A canceled search shows no count as final.
+
+### Matching probe
+
+- Windows: a `mkdtemp` folder in `os.tmpdir()`. Then `init --bare --template= --object-format=sha1`, `fast-import` of the fixed stream, two probe `rev-list` runs, and `fs.rm` of the folder.
+- WSL: one fixed `matchingProbe` script in a `/tmp/arbareto-probe-<uuid>` folder, through the wrapper in mode `search` (Δ11).
+- The fixed stream and the expected OID sets are contract values in `src/contracts/matching-probe.ts`. They cover "Виправлення" in both cases, є/Є, і/І, ї/Ї, ґ/Ґ, ß against ẞ and SS, and a windows-1251 message with an encoding header.
+- A mismatch gives `SEARCH_UNSUPPORTED` reason `matching`, with a remedy.
+- The probe writes nothing inside a user repository.
+
+### `closeHistory {viewId}`
+
+- It ends the operations of the view and frees its memory. An unknown `viewId` gives `UNKNOWN_TARGET`.
+
+### `readRefs` (001 §3 "References result")
+
+- The patterns add `refs/stash`.
+- `RefEntry.kind` adds `stash`. The sidebar does not show it.
+- The result adds `refsDigest`, computed as in `openHistory`.
+
+### `readHistory` (001 §3, "HistoryPage result")
+
+- Retired in step P7. The 001 artifacts stay as records. The 001 chip-pairing rule (001 §3 "References result") goes with it, because rows carry their own labels.
+
+## Δ4 Snapshot rules (001 §4)
+
+No change.
+
+## Δ5 Finite bounds (001 §5)
+
+New limits:
+
+| Limit | Value |
+|---|---|
+| History views | 1 per service session |
+| Load and search process deadline | 120,000 ms |
+| Text and details read deadline | 30 s |
+| Rows per request | 512 |
+| Parents per commit (`HISTORY_PARENTS_PER_COMMIT`) | 64 |
+| Commits per view (`HISTORY_VIEW_COMMITS`) | 4,000,000. About 192 MB of service memory at 48 bytes per commit (unverified). A reviewer default. |
+| Filter text | 1,024 UTF-8 bytes |
+| Text object above which a row carries `textLimit` | 256 KiB |
+| Progress events | 4 per second |
+| Lane checkpoint interval (service) | 256 rows |
+| Renderer text cache | 8 MiB of `bytes` (a measurement knob) |
+| History processes per view | 3: the load, the search, and the text read |
+
+Reused: `GRAPH_LANES` 24 per row, `REF_LISTING_*` for the capture (10,000 records, 4 MiB), `HISTORY_PAGE_BYTES` 8 MiB for each `readHistoryRows` result, the object bounds, and the 16 KiB body bound. A ref set above 10,000 records gives `OUTPUT_LIMIT` with reason `REF_LISTING_RECORDS`.
+
+Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bound its segments.
+
+## Δ6 Private native process requests (001 §6)
+
+- History processes take no read slot. Polls and `readRefs` keep their two slots.
+- Each operation has its own Job. `cancel` closes that Job. The Windows Job ends every descendant. The WSL `SIGHUP` trap kills the scope (001 §6 "Process ownership", 001 §11 "Process ownership").
+- No new channel frame. No per-call output credit.
+
+## Δ7 Startup, trust, and environment (001 §7)
+
+- New environment policy `search` in `src/contracts/git-environment.json`: the `read` policy plus `LC_ALL=C.UTF-8`.
+- `openHistory` may reuse the trust listing, as 001 `readHistory` does (001 §7 "Shared listing", "Held history steps").
+- No repository program runs. `rev-list` and `cat-file` run without filters.
+- The search text enters no log or diagnostic.
+
+## Δ8 Freshness, cancellation, and outcome (001 §8)
+
+- A ref change or a HEAD move never makes a view stale (spec FR-005). The renderer shows the "References changed" notice with Refresh when:
+  - the newest `readRefs.refsDigest` differs from the digest of the view; or
+  - the newest `readWorkspace.head` differs from the `head` of the view.
+- Stale conditions (spec FR-006). A stale view keeps its rows, refuses further loads and searches with its code, and offers Refresh:
+  1. A view process fails, and the object check finds a missing commit: `OBJECT_MISSING` (reason `object-missing`).
+  2. `HISTORY_CHANGED` reason `topology`: the shallow digest, the grafts digest, or the replace records changed. The service checks this before each later view process.
+  3. `HISTORY_CHANGED` reason `order`: a resume overlap differs, or a pending parent stays at the end.
+  4. `MALFORMED_GIT_OUTPUT`, `GIT_FAILED`, or a diagnostic `OUTPUT_LIMIT`.
+  5. The view was released (`UNKNOWN_TARGET`), or the service session ended.
+- Cancel and `DEADLINE` do not make the view stale. A later demand resumes the load.
+- After a service restart (001 §8 "Service restart"), no view resumes. The renderer marks the view stale, and Refresh opens a new one.
+- The 001 §8 "Changing shallow file" watch for `readHistory` is replaced by the topology fingerprint check.
+
+## Δ9 Error codes (001 §9)
+
+- Reused: `INVALID_REQUEST`, `UNKNOWN_TARGET`, `BUSY`, `REPOSITORY_CHANGED`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `OBJECT_MISSING`, `REPOSITORY_UNAVAILABLE`, `GIT_FAILED`, `DEADLINE`, `CANCELED`, `PROCESS_OWNERSHIP_FAILED`, `WSL_UNAVAILABLE`.
+- New:
+
+| Code | Reasons | Meaning |
+|---|---|---|
+| `HISTORY_CHANGED` | `order`, `topology` | Git gave another order, or the topology inputs changed. |
+| `UNSUPPORTED_FILTER_TEXT` | `line-break`, `nul`, `quote-end`, `length` | The service refuses the text. No Git process starts. |
+| `SEARCH_UNSUPPORTED` | `matching` | The matching probe failed. The result carries a remedy. |
+
+- New `OUTPUT_LIMIT` reasons: `HISTORY_PARENTS_PER_COMMIT` and `HISTORY_VIEW_COMMITS`.
+
+## Δ10 Required contract checks (001 §10)
+
+- Schema tests and golden vectors for the five operations, the three codes, the `search` policy, the WSL mode `search`, and the `matchingProbe` script. They run in Bun and in Rust.
+- The shell allowlist holds the five commands.
+
+## Δ11 WSL repositories (001 §11)
+
+- The same operations run through the wrapper (001 §11 "Process launch").
+- New wrapper mode `search` in `src/contracts/wsl-process.json`. It adds `LC_ALL=C.UTF-8`, because no Windows variable reaches Linux (001 §11 "Trust and environment").
+- New fixed script `matchingProbe`.
+- WSL polls do not run `readRefs` (001 §11 "Change polling"). A change of a ref other than HEAD shows the notice at the next focus return, Refresh, or mutation outcome (spec SC-012).
+- Each text read costs one `wsl.exe` start (unverified, about 250 ms).
+
+## Contract gaps
+
+- Git documents no single order. Runtime checks cover it and refuse with `HISTORY_CHANGED` reason `order`.
+- Git gives no PCRE2 signal. The probe covers only the probed cases. FR-023 for the rest of Unicode rests on PCRE2 caseless matching (unverified).
+- A set `GIT_REPLACE_REF_BASE` moves replace refs outside the fingerprint.
+- The maximum layout height in WebView2 is not verified.
+- Linux Git memory is not part of the Windows process tree.

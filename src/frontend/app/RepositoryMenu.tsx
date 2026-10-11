@@ -2,26 +2,18 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { useState, type ComponentProps, type ReactNode } from "react";
-import type { Environment } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
-import { MenubarContent, MenubarGroup, MenubarItem, MenubarLabel, MenubarMenu, MenubarSeparator, MenubarTrigger } from "../components/ui/menubar";
+import { MenubarContent, MenubarGroup, MenubarItem, MenubarLabel, MenubarMenu, MenubarSeparator, MenubarShortcut, MenubarTrigger } from "../components/ui/menubar";
 import { codeText } from "./RepositoryStates";
 
-// plan.md "Provisional prerequisite admission", "Compact token system" (repository menu), and contract §3 `revokeTrust`.
+// plan.md "Compact token system" (Icons, repository menu) and contract §3 `revokeTrust`. The menu holds actions only.
 
-type Scope = Environment["platformScope"];
+/** plan.md "Compact token system", Icons: each header menu is at least 220 DIPs wide, so a label and its key stay on one line. */
+export const MENU_CONTENT = "min-w-[220px]";
 
-/** The selected Git path and version. Scope `other` adds the "Unqualified platform" label beside the version. */
-export function GitVersionRow({ path, version, scope }: { path: string; version: string; scope: Scope | undefined }) {
-  return (
-    <span className="flex flex-col gap-1">
-      <span className="break-all">Git: {path}</span>
-      <span className="flex flex-wrap items-center gap-2">
-        <span>Version {version}</span>
-        {scope === "other" ? <span className="badge border-control-border">Unqualified platform</span> : null}
-      </span>
-    </span>
-  );
+/** The key of a menu item in a right-aligned Muted text column. It never wraps. */
+export function MenuKey({ children }: { children: string }) {
+  return <MenubarShortcut className="ml-auto pl-4 text-xs tracking-normal whitespace-nowrap text-muted-text">{children}</MenubarShortcut>;
 }
 
 // plan.md "Long text": a count of 1 takes the singular noun.
@@ -36,13 +28,8 @@ function revokeText(response: BridgeResponse): ReactNode {
 }
 
 export type RepositoryMenuProps = {
-  environment: Environment | null;
-  /** The worktree root and HEAD text of the open workspace. */
-  path: string | null;
-  head: string | null;
-  /** The distro of a WSL workspace, and its approved Git, from the snapshot `location` (data-model §2). */
-  distro?: string | null;
-  wslGit?: { path: string; version: string } | null;
+  /** True while a repository is open. Review repository trust needs one. */
+  repositoryOpen: boolean;
   /** The current trust ID of the workspace (contract §3 `readTrust`). Without it, Revoke trust is unavailable. */
   trustId: string | null;
   /** Open folder… (Ctrl+O): runs `chooseRepository`. */
@@ -57,11 +44,9 @@ export type RepositoryMenuProps = {
 };
 
 /** The repository menu of the header menu bar. Render it inside `Menubar`. */
-export function RepositoryMenu({ environment, path, head, distro = null, wslGit = null, trustId, onOpenRepository, onOpenRecent, onSelectGit, onReviewTrust, revokeTrust, onOpenChange, finalFocus }: RepositoryMenuProps) {
+export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOpenRecent, onSelectGit, onReviewTrust, revokeTrust, onOpenChange, finalFocus }: RepositoryMenuProps) {
   const [revoked, setRevoked] = useState<ReactNode>(null);
   const [revoking, setRevoking] = useState(false);
-  const gitPath = environment?.selectedPath;
-  const version = environment?.detectedVersion;
 
   async function revoke() {
     if (trustId === null || revoking) return;
@@ -73,42 +58,22 @@ export function RepositoryMenu({ environment, path, head, distro = null, wslGit 
   return (
     <MenubarMenu onOpenChange={onOpenChange}>
       <MenubarTrigger>Repository</MenubarTrigger>
-      <MenubarContent finalFocus={finalFocus}>
-        {/* plan.md "Compact token system": the menu starts with these two items and shows their keys as text. */}
+      <MenubarContent finalFocus={finalFocus} className={MENU_CONTENT}>
         <MenubarGroup>
-          <MenubarItem onClick={onOpenRepository}>Open folder… (Ctrl+O)</MenubarItem>
-          <MenubarItem disabled={onOpenRecent === undefined} onClick={onOpenRecent}>
-            Recent repositories (Ctrl+R)
+          <MenubarItem aria-keyshortcuts="Control+O" onClick={onOpenRepository}>
+            Open folder…<MenuKey>Ctrl+O</MenuKey>
+          </MenubarItem>
+          <MenubarItem aria-keyshortcuts="Control+R" disabled={onOpenRecent === undefined} onClick={onOpenRecent}>
+            Recent repositories<MenuKey>Ctrl+R</MenuKey>
           </MenubarItem>
         </MenubarGroup>
         <MenubarSeparator />
         <MenubarGroup>
-          <MenubarLabel className="break-all whitespace-normal">{path ?? "No repository"}</MenubarLabel>
-          {head === null ? null : <MenubarLabel className="break-all whitespace-normal">HEAD: {head}</MenubarLabel>}
-        </MenubarGroup>
-        <MenubarSeparator />
-        {distro === null ? null : (
-          // plan.md "Required visible states", WSL location: the label above the distro Git path and version.
-          <MenubarGroup>
-            <MenubarLabel className="break-all whitespace-normal">WSL: {distro}</MenubarLabel>
-            {wslGit === null ? null : (
-              <MenubarLabel className="whitespace-normal">
-                <GitVersionRow path={wslGit.path} version={wslGit.version} scope={environment?.platformScope} />
-              </MenubarLabel>
-            )}
-          </MenubarGroup>
-        )}
-        <MenubarGroup>
-          {environment && gitPath !== undefined && version !== undefined ? (
-            <MenubarLabel className="whitespace-normal">
-              <GitVersionRow path={gitPath} version={version} scope={environment.platformScope} />
-            </MenubarLabel>
-          ) : null}
           <MenubarItem onClick={onSelectGit}>Select Git</MenubarItem>
         </MenubarGroup>
         <MenubarSeparator />
         <MenubarGroup>
-          <MenubarItem disabled={path === null} onClick={onReviewTrust}>
+          <MenubarItem disabled={!repositoryOpen} onClick={onReviewTrust}>
             Review repository trust
           </MenubarItem>
           <MenubarItem disabled={trustId === null || revoking} closeOnClick={false} onClick={() => void revoke()}>

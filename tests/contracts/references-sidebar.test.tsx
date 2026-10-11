@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T358: the read-only references sidebar of `src/frontend/refs/ReferencesSidebar.tsx` (FR-057; plan.md "References sidebar", "Long text",
+// T358 and T362: the read-only references sidebar of `src/frontend/refs/ReferencesSidebar.tsx` (FR-057; plan.md "References sidebar", "Long text",
 // "Keyboard and focus" References sidebar row, "Task flow and command placement" Browse references row, "Required visible states" References, and "Status and fallback texts").
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -19,15 +19,16 @@ const unmounts: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const unmount of unmounts.splice(0)) await unmount();
 });
-async function show(node: ReactNode): Promise<HTMLElement> {
+async function show(node: ReactNode) {
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
   await act(async () => root.render(node));
-  unmounts.push(async () => {
+  const unmount = async () => {
     await act(async () => root.unmount());
     host.remove();
-  });
-  return host;
+  };
+  unmounts.push(unmount);
+  return { host, unmount };
 }
 const text = (element: Element | null | undefined) => (element?.textContent ?? "").replace(/\s+/g, " ").trim();
 
@@ -48,13 +49,17 @@ const ref = (kind: RefEntry["kind"], name: string, commitId: string | null, fiel
   commitId,
   ...fields,
 });
+// Git refname order. `feature/x` and the `release/...` names give folders; `main` has none.
 const REFS: RefsResult = {
   generation: 1,
   refs: [
     ref("branch", "feature/x", B, { upstream: "refs/remotes/origin/feature/x", upstreamPresent: false }),
     ref("branch", "main", A, { upstream: "refs/remotes/origin/main", upstreamPresent: true }),
+    ref("branch", "release/1.0", C),
+    ref("branch", "release/2.0", C),
     ref("remote", "origin/HEAD", A, { symref: "refs/remotes/origin/main" }),
     ref("remote", "origin/main", A),
+    ref("remote", "origin/release/1.0", C),
     ref("remote", "upstream/main", C),
     ref("tag", "v1.0", B, { objectType: "tag", peeledId: B, peeledType: "commit" }),
   ],
@@ -65,19 +70,23 @@ const REFS: RefsResult = {
 const LOADED = new Set([A, B]);
 
 type Props = Partial<Parameters<typeof ReferencesSidebar>[0]>;
+let repositories = 0;
 async function sidebar(props: Props = {}) {
   const selected: string[] = [];
   const refreshes: number[] = [];
-  const host = await show(
-    <ReferencesSidebar refs={REFS} failure={null} unpaired={0} loaded={LOADED} onSelectCommit={(oid: string) => void selected.push(oid)} onRefresh={() => void refreshes.push(1)} {...props} />,
+  // A new repository key for each mount, unless a case passes one: the expansion lasts per repository.
+  const repository = props.repository ?? `repository-${++repositories}`;
+  const shown = await show(
+    <ReferencesSidebar refs={REFS} failure={null} unpaired={0} loaded={LOADED} onSelectCommit={(oid: string) => void selected.push(oid)} onRefresh={() => void refreshes.push(1)} repository={repository} {...props} />,
   );
-  return { host, selected, refreshes };
+  return { ...shown, selected, refreshes, repository };
 }
 const tree = (host: HTMLElement) => host.querySelector<HTMLElement>('[role="tree"]')!;
 const items = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')];
+const names = (host: HTMLElement) => items(host).map((i) => i.getAttribute("aria-label")!);
 const item = (host: HTMLElement, start: string) => {
   const found = items(host).filter((i) => (i.getAttribute("aria-label") ?? "").startsWith(start));
-  expect(found).toHaveLength(1);
+  expect(found.map((f) => f.getAttribute("aria-label"))).toHaveLength(1);
   return found[0]!;
 };
 async function key(target: HTMLElement, name: string) {
@@ -90,56 +99,130 @@ async function type(host: HTMLElement, value: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
+const click = (element: HTMLElement) => act(async () => element.click());
 
-describe("groups and entries", () => {
-  test("the tree holds the groups Branches, Remotes, and Tags with their counts, and Remotes is a flat list", async () => {
+describe("groups and folders", () => {
+  test("three groups carry their counts and aria-expanded; by default Branches is open and Remotes and Tags are closed", async () => {
     const { host } = await sidebar();
     const groups = items(host).filter((i) => i.getAttribute("aria-level") === "1");
-    expect(groups.map((g) => g.getAttribute("aria-label"))).toEqual(["Branches, 2", "Remotes, 3", "Tags, 1"]);
-    expect(items(host).filter((i) => i.getAttribute("aria-level") === "2")).toHaveLength(6);
-    expect(items(host).some((i) => i.getAttribute("aria-level") === "3")).toBe(false);
+    expect(groups.map((g) => [g.getAttribute("aria-label"), g.getAttribute("aria-expanded")])).toEqual([
+      ["Branches, 4", "true"],
+      ["Remotes, 4", "false"],
+      ["Tags, 1", "false"],
+    ]);
   });
 
-  test("the current branch shows the Current mark as text, from current of the result", async () => {
+  test("each / of a name starts a folder level, folders keep the Git order of their first name, and closed folders hide their entries", async () => {
+    const { host } = await sidebar();
+    expect(names(host)).toEqual(["Branches, 4", "feature, folder, 1", "main, local branch, Current, → origin/main", "release, folder, 2", "Remotes, 4", "Tags, 1"]);
+    expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
+    expect(item(host, "feature, folder").getAttribute("aria-level")).toBe("2");
+    expect(item(host, "main,").getAttribute("aria-level")).toBe("2");
+  });
+
+  test("a folder with one child stays a folder, and an entry shows its last segment while its name holds the full name", async () => {
+    const { host } = await sidebar();
+    await click(item(host, "feature, folder"));
+    const entry = item(host, "feature/x,");
+    expect(entry.getAttribute("aria-level")).toBe("3");
+    expect(text(entry).startsWith("x")).toBe(true);
+    expect(entry.getAttribute("aria-label")).toBe("feature/x, local branch, → origin/feature/x, not present");
+  });
+
+  test("the folders on the path to the current branch start open", async () => {
+    const { host } = await sidebar({ refs: { ...REFS, current: { name: "release/2.0", objectId: C } } });
+    expect(item(host, "release, folder").getAttribute("aria-expanded")).toBe("true");
+    expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
+    expect(text(item(host, "release/2.0,"))).toContain("Current");
+  });
+
+  test("remote folders come from the name segments only: the first segment is a folder like any other", async () => {
+    const { host } = await sidebar();
+    await click(item(host, "Remotes"));
+    expect(names(host).filter((n) => n.includes("folder")).slice(2)).toEqual(["origin, folder, 3", "upstream, folder, 1"]);
+    await click(item(host, "origin, folder"));
+    await click(item(host, "release, folder, 1"));
+    expect(item(host, "origin/release/1.0,").getAttribute("aria-level")).toBe("4");
+  });
+
+  test("a symbolic reference reads <name> → <target>, with the last segment as its name", async () => {
+    const { host } = await sidebar();
+    await click(item(host, "Remotes"));
+    await click(item(host, "origin, folder"));
+    expect(text(item(host, "origin/HEAD"))).toBe("HEAD → origin/main");
+    expect(item(host, "origin/HEAD").getAttribute("aria-label")).toBe("origin/HEAD, remote-tracking branch, → origin/main");
+  });
+
+  test("the current branch shows the Current mark as text, and an upstream shows → <upstream> or not present", async () => {
     const { host } = await sidebar();
     expect(text(item(host, "main,"))).toContain("Current");
-    expect(text(item(host, "feature/x,"))).not.toContain("Current");
-    expect(item(host, "main,").getAttribute("aria-label")).toBe("main, local branch, Current, → origin/main");
-  });
-
-  test("an upstream shows → <upstream>, and a missing one adds not present", async () => {
-    const { host } = await sidebar();
     expect(text(item(host, "main,"))).toContain("→ origin/main");
+    await click(item(host, "feature, folder"));
     expect(text(item(host, "feature/x,"))).toContain("→ origin/feature/x, not present");
   });
 
-  test("a symbolic reference reads <name> → <target>", async () => {
-    const { host } = await sidebar();
-    expect(text(item(host, "origin/HEAD"))).toBe("origin/HEAD → origin/main");
-  });
-
   test("an empty group reads its plan.md text", async () => {
-    const { host } = await sidebar({ refs: { ...REFS, refs: REFS.refs.filter((r) => r.kind === "branch"), current: REFS.current } });
+    const { host } = await sidebar({ refs: { ...REFS, refs: REFS.refs.filter((r) => r.kind === "branch") } });
     expect(text(host)).toContain("No remote-tracking branches");
     expect(text(host)).toContain("No tags");
     const empty = await sidebar({ refs: { ...REFS, refs: [], current: null } });
     expect(text(empty.host)).toContain("No branches");
   });
 
-  test("no control changes a reference: the sidebar holds no button except Refresh in a refusal, and no context menu", async () => {
+  test("no control changes a reference: the sidebar holds no button, and no context menu opens", async () => {
     const { host } = await sidebar();
     expect(host.querySelectorAll("button")).toHaveLength(0);
-    const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
-    await act(async () => void item(host, "main,").dispatchEvent(menu));
+    await act(async () => void item(host, "main,").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
     expect(document.querySelector('[role="menu"]')).toBeNull();
   });
 });
 
+describe("one scroll container with sticky group headings", () => {
+  test("the tree scrolls inside one container, and each group heading row sticks to its top", async () => {
+    const { host } = await sidebar();
+    const scrollers = [...host.querySelectorAll(".overflow-y-auto, .overflow-auto")];
+    expect(scrollers).toHaveLength(1);
+    expect(scrollers[0]!.contains(tree(host))).toBe(true);
+    for (const group of items(host).filter((i) => i.getAttribute("aria-level") === "1")) {
+      const classes = group.className.split(/\s+/);
+      expect(classes).toContain("sticky");
+      expect(classes).toContain("top-0");
+    }
+  });
+});
+
+describe("session expansion", () => {
+  test("the expansion lasts per repository for the session, and another repository starts from the default", async () => {
+    const first = await sidebar({ repository: "repository-x" });
+    await click(item(first.host, "Tags"));
+    await click(item(first.host, "release, folder"));
+    await first.unmount();
+    const again = await sidebar({ repository: "repository-x" });
+    expect(item(again.host, "Tags").getAttribute("aria-expanded")).toBe("true");
+    expect(item(again.host, "release, folder").getAttribute("aria-expanded")).toBe("true");
+    const other = await sidebar({ repository: "repository-y" });
+    expect(item(other.host, "Tags").getAttribute("aria-expanded")).toBe("false");
+  });
+});
+
 describe("filter", () => {
-  test("the filter keeps each entry whose name contains the text, without regard to letter case", async () => {
+  test("the filter keeps each entry whose name contains the text, without regard to letter case, with its folder path open", async () => {
     const { host } = await sidebar();
     await type(host, "MAIN");
-    expect(items(host).filter((i) => i.getAttribute("aria-level") === "2").map((i) => i.getAttribute("aria-label")!.split(",")[0])).toEqual(["main", "origin/main", "upstream/main"]);
+    const entries = items(host).filter((i) => !/^(Branches|Remotes|Tags),|, folder,/.test(i.getAttribute("aria-label")!));
+    expect(entries.map((i) => i.getAttribute("aria-label")!.split(",")[0])).toEqual(["main", "origin/main", "upstream/main"]);
+    for (const open of [item(host, "Remotes"), item(host, "origin, folder"), item(host, "upstream, folder")]) expect(open.getAttribute("aria-expanded")).toBe("true");
+    expect(names(host).some((n) => n.startsWith("Tags"))).toBe(false);
+  });
+
+  test("clearing the filter restores the earlier expansion", async () => {
+    const { host } = await sidebar();
+    await click(item(host, "release, folder"));
+    await type(host, "main");
+    await type(host, "");
+    expect(item(host, "Remotes").getAttribute("aria-expanded")).toBe("false");
+    expect(item(host, "release, folder").getAttribute("aria-expanded")).toBe("true");
+    expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
   });
 
   test("no match reads No reference matches the filter.", async () => {
@@ -164,25 +247,27 @@ describe("tree keys", () => {
     expect(items(host).filter((i) => i.tabIndex === 0)).toHaveLength(1);
   });
 
-  test("Down and Up move focus, Right enters a group, Left returns to it and then collapses it, and Home and End reach the ends", async () => {
+  test("Right opens a closed node and then enters it, Left closes an open node and then returns to the parent, and Home and End reach the ends", async () => {
     const { host } = await sidebar();
-    const branches = item(host, "Branches");
-    await act(async () => branches.focus());
-    await key(branches, "ArrowRight");
+    await act(async () => item(host, "Branches").focus());
+    await key(item(host, "Branches"), "ArrowRight");
+    expect(document.activeElement).toBe(item(host, "feature, folder"));
+    await key(item(host, "feature, folder"), "ArrowRight");
+    expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("true");
+    await key(item(host, "feature, folder"), "ArrowRight");
     expect(document.activeElement).toBe(item(host, "feature/x,"));
-    await key(document.activeElement as HTMLElement, "ArrowDown");
+    await key(item(host, "feature/x,"), "ArrowLeft");
+    expect(document.activeElement).toBe(item(host, "feature, folder"));
+    await key(item(host, "feature, folder"), "ArrowLeft");
+    expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
+    await key(item(host, "feature, folder"), "ArrowDown");
     expect(document.activeElement).toBe(item(host, "main,"));
-    await key(document.activeElement as HTMLElement, "ArrowLeft");
+    await key(item(host, "main,"), "End");
+    expect(document.activeElement).toBe(item(host, "Tags"));
+    await key(item(host, "Tags"), "Home");
     expect(document.activeElement).toBe(item(host, "Branches"));
     await key(item(host, "Branches"), "ArrowLeft");
     expect(item(host, "Branches").getAttribute("aria-expanded")).toBe("false");
-    expect(items(host).some((i) => (i.getAttribute("aria-label") ?? "").startsWith("main,"))).toBe(false);
-    await key(item(host, "Branches"), "End");
-    expect(document.activeElement).toBe(item(host, "v1.0,"));
-    await key(document.activeElement as HTMLElement, "Home");
-    expect(document.activeElement).toBe(item(host, "Branches"));
-    await key(item(host, "Branches"), "ArrowRight");
-    expect(item(host, "Branches").getAttribute("aria-expanded")).toBe("true");
   });
 
   test("Enter or a click on an entry on the page selects its row and keeps focus; another entry selects nothing and says why", async () => {
@@ -192,10 +277,13 @@ describe("tree keys", () => {
     await key(main, "Enter");
     expect(selected).toEqual([A]);
     expect(document.activeElement).toBe(main);
-    await act(async () => item(host, "v1.0,").click());
+    await click(item(host, "Tags"));
+    await click(item(host, "v1.0,"));
     expect(selected).toEqual([A, B]);
+    await click(item(host, "Remotes"));
+    await click(item(host, "upstream, folder"));
     const outside = item(host, "upstream/main,");
-    await act(async () => outside.click());
+    await click(outside);
     await key(outside, "Enter");
     expect(selected).toEqual([A, B]);
     expect(text(host.querySelector(`#${CSS.escape(outside.getAttribute("aria-describedby")!)}`))).toBe("Not in the loaded history page");
@@ -220,7 +308,7 @@ describe("states", () => {
       expect(host.querySelector("svg")).not.toBeNull();
       const refresh = [...host.querySelectorAll("button")].filter((b) => text(b) === "Refresh (F5)");
       expect(refresh).toHaveLength(1);
-      await act(async () => refresh[0]!.click());
+      await click(refresh[0]!);
       expect(refreshes).toEqual([1]);
     });
   }
@@ -233,11 +321,6 @@ describe("states", () => {
     expect(text(second.host)).toContain("The history and the references show different HEAD states. Select Refresh (F5).");
     expect(text(second.host)).not.toContain("References changed.");
   });
-
-  test("each pane scrolls by itself: the tree region has its own scroll container", async () => {
-    const { host } = await sidebar();
-    expect(tree(host).closest(".overflow-y-auto")).not.toBeNull();
-  });
 });
 
 describe("constrained profile", () => {
@@ -247,7 +330,7 @@ describe("constrained profile", () => {
     const toggle = host.querySelector<HTMLElement>('button[aria-label="Show references"]')!;
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(host.querySelector('[role="tree"]')).toBeNull();
-    await act(async () => toggle.click());
+    await click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(host.querySelector('[role="tree"]')).not.toBeNull();
   });

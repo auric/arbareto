@@ -424,7 +424,7 @@ describe("repository menu", () => {
     await settle();
     await resolve(latest(double, "revokeTrust"), succeeded({ endedProcesses: 0 }));
     expect(text()).toContain("Trust revoked.");
-    await act(async () => item("Open folder… (Ctrl+O)").click());
+    await act(async () => item("Open folder…Ctrl+O").click());
     await settle();
     await resolve(latest(double, "chooseRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64) }));
     await openMenu();
@@ -620,7 +620,7 @@ describe("single view", () => {
     ];
     expect(items.map((i) => i !== null)).toEqual([true, true, true, true, true, true]);
     for (let i = 1; i < items.length; i++) expect(follows(items[i - 1]!, items[i]!)).toBe(true);
-    expect(header.querySelector('[data-slot="branch-text"]')!.textContent).toBe("main");
+    expect(header.querySelector('[data-slot="branch-text"]')!.getAttribute("title")).toBe("main");
     expect(header.querySelector('button[aria-label="Refresh"]')!.getAttribute("aria-keyshortcuts")).toBe("F5");
   });
 
@@ -748,5 +748,63 @@ describe("drafts across a switch", () => {
     await act(async () => document.querySelectorAll<HTMLElement>('[role="option"]')[1]!.click());
     await resolve(latest(double, "openRecentRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64), worktreeRoot: "C:\other" }));
     expect(double.calls.some((c) => c.operation === "removeDraft")).toBe(false);
+  });
+});
+
+// T362: plan.md "Compact token system" (Icons, repository menu) and "Status area".
+describe("menus", () => {
+  const openMenu = async (name: string) => {
+    const trigger = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === name)!;
+    await act(async () => trigger.focus());
+    await act(async () => trigger.click());
+    await settle();
+    return document.querySelector<HTMLElement>('[data-slot="menubar-content"]')!;
+  };
+
+  test("the repository menu holds actions only, with keys in a right-aligned column that never wraps", async () => {
+    const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
+    const menu = await openMenu("Repository");
+    const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const label = (e: HTMLElement) => [...e.childNodes].filter((n) => !(n instanceof HTMLElement && n.dataset.slot === "menubar-shortcut")).map((n) => n.textContent).join("").trim();
+    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Select Git", "Review repository trust", "Revoke trust"]);
+    const keys = [...menu.querySelectorAll<HTMLElement>('[data-slot="menubar-shortcut"]')];
+    expect(keys.map((k) => k.textContent)).toEqual(["Ctrl+O", "Ctrl+R"]);
+    for (const k of keys) expect(k.className.split(/\s+/)).toEqual(expect.arrayContaining(["ml-auto", "whitespace-nowrap", "text-muted-text"]));
+    expect(items.slice(0, 2).map((e) => e.getAttribute("aria-keyshortcuts"))).toEqual(["Control+O", "Control+R"]);
+    for (const absent of ["C:\\repo", "HEAD:", "Git:", "Version"]) expect(menu.textContent).not.toContain(absent);
+    expect(menu.className.split(/\s+/)).toContain("min-w-[220px]");
+  });
+
+  test("the View menu keeps the 220 DIP minimum width", async () => {
+    await mount(succeeded(REGISTRATION));
+    expect((await openMenu("View")).className.split(/\s+/)).toContain("min-w-[220px]");
+  });
+
+  test("the Unqualified platform label follows the Git version in the status bar, outside every live region", async () => {
+    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), signing: "unsigned" }, platformScope: "other", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [], damagedMarkers: [] } as unknown as Environment;
+    await mount(succeeded(REGISTRATION), environment);
+    const segment = document.querySelector('footer [data-slot="git-version"]')!;
+    expect(segment.textContent).toBe("Git 2.55.0.windows.3Unqualified platform");
+    expect(segment.closest('[role="status"]')).toBeNull();
+  });
+});
+
+// T362: plan.md "Header layout" and "Long text": the branch text of a very long branch name.
+describe("toolbar branch text", () => {
+  const LONG = "feature/ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on";
+  test("it shows a middle ellipsis, holds the full name in its tooltip and accessible text, and takes only the width that the other items leave", async () => {
+    const double = await mount(succeeded(REGISTRATION));
+    await resolve(double.pending("readWorkspace"), succeeded(snapshot({ head: { state: "branch", target: `refs/heads/${LONG}`, oid: HEAD } })));
+    const branch = document.querySelector<HTMLElement>('header [data-slot="branch-text"]')!;
+    expect(branch.getAttribute("title")).toBe(LONG);
+    expect(branch.querySelector(".sr-only")?.textContent).toBe(LONG);
+    const parts = [...branch.querySelectorAll<HTMLElement>("[data-branch-part]")].map((p) => [p.dataset.branchPart, p.textContent, p.className.split(/\s+/).includes("truncate")]);
+    expect(parts).toEqual([
+      ["folder", "feature/", true],
+      ["last", "ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on", true],
+    ]);
+    expect(branch.style.flex).toBe("1 1 0px");
+    expect(branch.className.split(/\s+/)).toContain("min-w-0");
   });
 });

@@ -13,10 +13,8 @@ printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 registerDom();
 const { createRoot } = await import("react-dom/client");
 const { Workbench } = await import("../../src/frontend/app/Workbench");
-const { RepositoryMenu } = await import("../../src/frontend/app/RepositoryMenu");
 const { RepositoryRefused, WslStarting, WSL_START_CANCELED_TEXT } = await import("../../src/frontend/app/RepositoryStates");
 type Location = WorkspaceSnapshot["location"];
-const { Menubar } = await import("../../src/frontend/components/ui/menubar");
 
 // tasks.md T216. plan.md "Header layout" and "Required visible states" (WSL location, Starting WSL distro, Repository refused). Contract §9 and §11.
 
@@ -124,13 +122,10 @@ describe("WSL location", () => {
     expect(badge((await workbench(wslRoot(DISTRO), NATIVE)).host)).toBeNull();
   });
 
-  // T339 (c): the snapshot location carries the approved distro Git.
-  test("the workbench repository menu shows the distro Git path and version of the location", async () => {
-    const menu = await openRepositoryMenu((await wslWorkbench(DISTRO)).host);
-    const label = menu.indexOf(`WSL: ${DISTRO}`);
-    expect(label).toBeGreaterThanOrEqual(0);
-    expect(menu.indexOf(`Git: ${DISTRO_GIT.path}`)).toBeGreaterThan(label);
-    expect(menu.indexOf(`Version ${DISTRO_GIT.version}`)).toBeGreaterThan(label);
+  // T339 (c): the snapshot location carries the approved distro Git; the status bar shows its version.
+  test("the status bar shows the distro Git version of the location", async () => {
+    const { host } = await wslWorkbench(DISTRO);
+    expect(text(host.querySelector('footer [data-slot="git-version"]')!)).toBe(`Git ${DISTRO_GIT.version} (WSL: ${DISTRO})`);
   });
 
   test("a WSL workspace shows the outline badge WSL: <distro> after the path, as text", async () => {
@@ -167,36 +162,12 @@ describe("WSL location", () => {
     expect(visible[1]!.classList.contains("truncate")).toBe(true);
   });
 
-  test("the repository menu shows the full WSL: <distro> label", async () => {
-    expect(await openRepositoryMenu((await wslWorkbench(LONG_DISTRO)).host)).toContain(`WSL: ${LONG_DISTRO}`);
-  });
-
-  test("the repository menu shows the label above the distro Git path and version", async () => {
-    const host = await show(
-      <Menubar>
-        <RepositoryMenu
-          environment={null}
-          path={wslRoot(DISTRO)}
-          head="main"
-          distro={DISTRO}
-          wslGit={{ path: "/usr/bin/git", version: "2.55.0" }}
-          trustId={null}
-          onOpenRepository={noop}
-          onSelectGit={noop}
-          onReviewTrust={noop}
-          revokeTrust={async () => ({ requestId: null, state: "succeeded" })}
-        />
-      </Menubar>,
-    );
-    const trigger = [...host.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => text(e) === "Repository")!;
-    await act(async () => trigger.focus());
-    await act(async () => trigger.click());
-    await settle();
-    const menu = text(document.querySelector('[data-slot="menubar-content"]')!);
-    const label = menu.indexOf(`WSL: ${DISTRO}`);
-    expect(label).toBeGreaterThanOrEqual(0);
-    expect(menu.indexOf("Git: /usr/bin/git")).toBeGreaterThan(label);
-    expect(menu.indexOf("Version 2.55.0")).toBeGreaterThan(label);
+  // T362: the repository menu holds actions only. The status bar Git segment holds the full distro name.
+  test("the status bar Git segment holds the full WSL: <distro> name, and the repository menu holds no label, path, or Git version", async () => {
+    const { host } = await wslWorkbench(LONG_DISTRO);
+    expect(text(host.querySelector('footer [data-slot="git-version"]')!)).toBe(`Git ${DISTRO_GIT.version} (WSL: ${LONG_DISTRO})`);
+    const menu = await openRepositoryMenu(host);
+    for (const absent of [`WSL: ${LONG_DISTRO}`, `Git: ${DISTRO_GIT.path}`, `Version ${DISTRO_GIT.version}`, "HEAD:"]) expect(menu).not.toContain(absent);
   });
 });
 

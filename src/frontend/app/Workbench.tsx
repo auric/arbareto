@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { GitBranchIcon, GitCommitIcon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { GitBranchIcon, GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode } from "react";
 import type { Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
@@ -20,6 +20,9 @@ import {
   MenubarRadioGroup,
   MenubarRadioItem,
   MenubarSeparator,
+  MenubarSub,
+  MenubarSubContent,
+  MenubarSubTrigger,
   MenubarTrigger,
 } from "../components/ui/menubar";
 import { CommitDetails } from "../history/CommitDetails";
@@ -44,12 +47,13 @@ import {
   type Size,
 } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
+import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { ReferencesSidebar } from "../refs/ReferencesSidebar";
 import { createRequests, isRegistration, refsPair, wslDistro, type RequestBridge, type Requests, type RequestState } from "../state/requests";
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, writePreferences, type DarkPalette, type Preferences, type Theme } from "../state/preferences";
 import { SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
 import { blockingText, NoticeBand, WarningIcon } from "./NoticeBand";
-import { RepositoryMenu } from "./RepositoryMenu";
+import { MENU_CONTENT, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
@@ -109,17 +113,13 @@ export const INTERIM_HELP_LINE = `Select a file to show its changes. ${LATER.sta
 export const DOCK_HINT = "Select the Working directory row to commit, or a commit to see its details.";
 const NO_REPOSITORY = "No repository open";
 
-const THEMES: { value: Theme; label: string }[] = [
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "system", label: "System" },
-];
 // plan.md "Dark palettes".
 const DARK_PALETTES: { value: DarkPalette; label: string }[] = [
   { value: "graphite", label: "Graphite" },
   { value: "ink", label: "Ink" },
   { value: "warm", label: "Warm dark" },
 ];
+const paletteLabel = (palette: DarkPalette) => DARK_PALETTES.find((p) => p.value === palette)!.label;
 const DENSITIES: { value: Density; label: string }[] = [
   { value: "comfortable", label: "Comfortable" },
   { value: "compact", label: "Compact" },
@@ -244,6 +244,16 @@ export function HistoryViewMount({ state, requests, density, profile, textScale,
   }
   const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
   return <History page={state.history} entries={entries} selected={selected} onSelect={onSelectRow} density={density} profile={profile} textScale={textScale} listMin={historyListMin} refs={state.refs} />;
+}
+
+/** plan.md "Status area": the Git version at the right end of the status bar, outside every live region, and the "Unqualified platform" label when it applies. */
+export function GitSegment({ version, distro, scope }: { version: string; distro: string | null; scope: Environment["platformScope"] | undefined }) {
+  return (
+    <span data-slot="git-version" className="flex shrink-0 items-center gap-2 text-muted-text">
+      {distro === null ? `Git ${version}` : `Git ${version} (WSL: ${distro})`}
+      {scope === "other" ? <span className="badge border-control-border">Unqualified platform</span> : null}
+    </span>
+  );
 }
 
 // Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
@@ -605,7 +615,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
   // plan.md "Status area": the status bar text is the live region, so a start shows there too.
   const statusText = starting !== null ? wslStartingText(starting.distro) : state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : (notice ?? (state.repository === null && !restoring ? NO_REPOSITORY : null));
-  const gitVersion = wslGit !== null ? `Git ${wslGit.version} (WSL: ${distro})` : environment?.detectedVersion === undefined ? null : `Git ${environment.detectedVersion}`;
+  const gitVersion = wslGit?.version ?? environment?.detectedVersion ?? null;
 
   const commitPanel = (
     <div hidden={panel !== "commit"} className="flex h-full min-h-0 flex-col">
@@ -664,6 +674,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       onSelectCommit={onSelectRow}
       onRefresh={() => requests.refresh()}
       collapsible={profile === "constrained"}
+      repository={state.repository?.worktreeKey ?? ""}
     />
   );
 
@@ -733,20 +744,26 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             </span>
           )}
           {head === null ? null : (
-            <span data-slot="branch-text" className="flex min-w-0 shrink items-center gap-1" style={{ order: 3 }}>
+            // plan.md "Header layout": the branch text takes only the width that the other items leave, so it never moves them to another row.
+            // Its folder part shrinks first and its last `/` segment last (git-check-ref-format(1) hierarchy). The title and the hidden text hold the full name.
+            <span data-slot="branch-text" title={head} className="flex min-w-0 items-center gap-1 whitespace-nowrap" style={{ order: 3, flex: "1 1 0px" }}>
               <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
-              <span className="truncate">{head}</span>
+              <span className="sr-only">{head}</span>
+              {splitPath(head, GIT_SEPARATORS)[0] === "" ? null : (
+                <span data-branch-part="folder" aria-hidden="true" className="min-w-0 shrink-[1000] truncate">
+                  {splitPath(head, GIT_SEPARATORS)[0]}
+                </span>
+              )}
+              <span data-branch-part="last" aria-hidden="true" className="min-w-0 truncate">
+                {splitPath(head, GIT_SEPARATORS)[1]}
+              </span>
             </span>
           )}
           <div ref={menubar} className="flex items-center" style={{ order: 4, flexBasis: rows === 1 ? undefined : "auto" }} onFocus={onMenubarFocus}>
             <Menubar className="h-auto border-0 p-0">
               <RepositoryMenu
                 key={repositoryId}
-                environment={environment}
-                path={path}
-                head={head}
-                distro={distro}
-                wslGit={wslGit}
+                repositoryOpen={path !== null}
                 trustId={trust?.report.trustId ?? null}
                 onOpenRepository={() => void openRepository()}
                 onOpenRecent={() => setSwitcherOpen(true)}
@@ -758,24 +775,38 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               />
               <MenubarMenu onOpenChange={onMenuOpen("view")}>
                 <MenubarTrigger>View</MenubarTrigger>
-                <MenubarContent finalFocus={finalFocus}>
-                  <MenubarRadioGroup value={preferences.theme} onValueChange={(theme) => savePreferences({ ...preferences, theme: theme as Theme })}>
-                    <MenubarLabel>Theme</MenubarLabel>
-                    {THEMES.map((t) => (
-                      <MenubarRadioItem key={t.value} value={t.value}>
-                        {t.label}
-                      </MenubarRadioItem>
-                    ))}
-                  </MenubarRadioGroup>
-                  <MenubarSeparator />
-                  <MenubarRadioGroup value={preferences.darkPalette} onValueChange={(darkPalette) => savePreferences({ ...preferences, darkPalette: darkPalette as DarkPalette })}>
-                    <MenubarLabel>Dark palette</MenubarLabel>
-                    {DARK_PALETTES.map((p) => (
-                      <MenubarRadioItem key={p.value} value={p.value}>
-                        {p.label}
-                      </MenubarRadioItem>
-                    ))}
-                  </MenubarRadioGroup>
+                <MenubarContent finalFocus={finalFocus} className={MENU_CONTENT}>
+                  {/* plan.md "Dark palettes": Theme ▸ System, Light, and Dark ▸ palettes. Exactly one of the three theme entries shows as checked. */}
+                  <MenubarSub>
+                    <MenubarSubTrigger>Theme</MenubarSubTrigger>
+                    <MenubarSubContent className={MENU_CONTENT}>
+                      <MenubarRadioGroup value={preferences.theme === "dark" ? "" : preferences.theme} onValueChange={(theme) => savePreferences({ ...preferences, theme: theme as Theme })}>
+                        <MenubarRadioItem value="system">System (dark: {paletteLabel(preferences.darkPalette)})</MenubarRadioItem>
+                        <MenubarRadioItem value="light">Light</MenubarRadioItem>
+                      </MenubarRadioGroup>
+                      <MenubarSub>
+                        <MenubarSubTrigger data-checked={preferences.theme === "dark" ? "true" : undefined} className="relative pl-7.5">
+                          {preferences.theme === "dark" ? (
+                            <span aria-hidden="true" className="pointer-events-none absolute left-2 flex size-4 items-center justify-center">
+                              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
+                            </span>
+                          ) : null}
+                          Dark
+                          {preferences.theme === "dark" ? <span className="sr-only">, {paletteLabel(preferences.darkPalette)}</span> : null}
+                        </MenubarSubTrigger>
+                        <MenubarSubContent className={MENU_CONTENT}>
+                          {/* A palette choice selects the Dark theme and that palette in one step. */}
+                          <MenubarRadioGroup value={preferences.darkPalette}>
+                            {DARK_PALETTES.map((p) => (
+                              <MenubarRadioItem key={p.value} value={p.value} onClick={() => savePreferences({ ...preferences, theme: "dark", darkPalette: p.value })}>
+                                {p.label}
+                              </MenubarRadioItem>
+                            ))}
+                          </MenubarRadioGroup>
+                        </MenubarSubContent>
+                      </MenubarSub>
+                    </MenubarSubContent>
+                  </MenubarSub>
                   <MenubarSeparator />
                   <MenubarRadioGroup value={preferences.density} onValueChange={(density) => savePreferences({ ...preferences, density: density as Density })}>
                     <MenubarLabel>Density</MenubarLabel>
@@ -801,7 +832,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               </MenubarMenu>
               <MenubarMenu onOpenChange={onMenuOpen("help")}>
                 <MenubarTrigger>Help</MenubarTrigger>
-                <MenubarContent finalFocus={finalFocus}>
+                <MenubarContent finalFocus={finalFocus} className={MENU_CONTENT}>
                   <MenubarGroup>
                     <MenubarLabel className="whitespace-normal">{SCOPE_LINE}</MenubarLabel>
                   </MenubarGroup>
@@ -876,11 +907,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           <span role="status" className="min-w-0 flex-1 truncate">
             {paneStatus}
           </span>
-          {gitVersion === null ? null : (
-            <span data-slot="git-version" className="shrink-0 text-muted-text">
-              {gitVersion}
-            </span>
-          )}
+          {gitVersion === null ? null : <GitSegment version={gitVersion} distro={wslGit === null ? null : distro} scope={environment?.platformScope} />}
         </footer>
         {trust === null || state.repository === null ? null : (
           <TrustDialog

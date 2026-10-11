@@ -147,7 +147,7 @@ async function render(node: ReactNode) {
 
 // ---- Submodule notice (T235). ----
 describe("submodule notice", () => {
-  test.todo(`it shows the plan.md text with the count, the Warning icon, and Update submodules with its icon ${NEEDS_NOTICE}`, async () => {
+  test(`it shows the plan.md text with the count, the Warning icon, and Update submodules with its icon ${NEEDS_NOTICE}`, async () => {
     const { SubmoduleNotice } = await submoduleNotice();
     const updates: number[] = [];
     await render(<SubmoduleNotice count={2} onUpdate={() => void updates.push(1)} />);

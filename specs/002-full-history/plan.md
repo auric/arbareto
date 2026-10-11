@@ -51,7 +51,7 @@ Checked against `.specify/memory/constitution.md` version 2.0.0, before research
 | IV. Real Git verification | Real fixtures. Failure, cancel, and external-change cases: ref moves, shallow, replace, missing objects. | Pass |
 | V. Untrusted repositories | No repository program runs. `rev-list` and `cat-file` run without filters. The trust gate runs at open. Text shows as plain text. The search text enters no log. | Pass |
 | VI. Platform evidence | Packaged Windows evidence. WSL stays unverified until the distro runs. | Pass |
-| VII. Accessible and measured | Keyboard: Enter, Escape, F3 and Shift+F3, End. Marks do not depend on color. Budgets are fixed before measurement. See notes N-2 and N-3. | Pass, with notes N-2 and N-3 |
+| VII. Accessible and measured | Keyboard: Ctrl+F, Enter, Escape, F3 and Shift+F3, End. Marks do not depend on color. Budgets are fixed before measurement. See notes N-2, N-3, and N-5. | Pass, with notes N-2, N-3, and N-5 |
 | VIII. Locked dependencies | No new dependency. | Pass |
 | IX. One planning process | All artifacts stay in `specs/002-full-history`. The 002 contract lists only deltas and cites 001 sections. | Pass |
 
@@ -60,6 +60,7 @@ Notes from the second check:
 - **N-2 (VII, "complete process-tree memory")**: The SI-1 candidate text in O-1 takes Git out of the budget. The measurement still records each Git process. So the measurement stays complete, but the budget changes. The user decides this in O-1.
 - **N-3 (VII, "CPU")**: P8 records the CPU time of each process in the tree, from the WPR CPU trace of each workload run, with Git processes apart.
 - **N-4 (Delivery Gates)**: The plan defines safety tests (SC-013, SC-010), trust boundaries (Δ7), accessibility checks (FR-031, FR-040, SC-014), performance budgets (SC-002, SC-006, SC-011, SC-014), and the platform qualification (P8, WSL).
+- **N-5 (VII, "cold/warm timings")**: P8 records cold and warm runs for SC-005, SC-006, and SC-014, by the 001 rules.
 
 No violation, so Complexity Tracking stays empty. Three items carry ponytail ceilings:
 - the compact OID table;
@@ -120,7 +121,7 @@ tests/
 | P0.1 Fixture builder | new `tests/git/history-fixtures.ts`. It reuses `fiCommit` (`tests/git/fixtures.ts:1204-1235`) and the cache, lock, seed, and digest of `tests/windows/perf-fixtures.ts` (`PERF_CACHE_ROOT`, `ensurePerfFixture`, `hasCommitGraph`). | None (tests only). Small graph fixtures: equal dates, clock skew, criss-cross, an octopus with 10 parents, a merges-only segment, 50 tips, a shallow clone, tag chains, tags to a tree and a blob, the stash with 2 reflog entries, notes, `refs/pull/1/head`, an unborn branch beside other refs, an empty repository, a detached HEAD. Large fixtures: H200K and H1M, with merges, parallel lines, equal-date runs, skew, Ukrainian/ß/ẞ/SS messages, and windows-1251 messages, each with and without a commit-graph. | The builder self-check: counts, `hasCommitGraph`, semantic digest. | Build time for 1M commits. Mitigation: the existing cache. |
 | P0.2 Git order facts | new `tests/git/history-order.test.ts` | None. Records Git behavior that Git does not document. | Two runs of the view argv give the same bytes. `--skip=k` equals the suffix, for k in {1, 255, 256, 257, rows inside merges, last}. `--date-order` is equal with and without a commit-graph. The start-point order on stdin is canonical. `--grep` equals the full order with the non-matches removed. Windows Git 2.56.0 and WSL Ubuntu-26.04 Git 2.55. | A fact fails. The design still holds, because runtime checks refuse with `HISTORY_CHANGED`. Record the result in research.md. |
 | P0.3 Layout equivalence | new `src/git-service/history-layout.ts`: `layoutStep(lanes,row)`, checkpoints, `cellsOf(range)`, moved from `src/frontend/history/lanes.ts:50-120`. New `tests/git/history-layout.test.ts`. | The layout becomes a step function that carries state. | On every graph fixture and H200K: rows fed in random chunk sizes, then cells rebuilt from checkpoints, equal one fold over all rows, cell by cell. Every node-to-bottom segment ends in the lane of the matching Git parent. | The proof from the code is untested. This test is that proof. |
-| P0.4 Git memory record | new `tests/windows/history-git-memory.test.ts` (Windows; `GetProcessMemoryInfo` through `bun:ffi`, like `inject.ts`) | None. | Peak private bytes of the topology `rev-list` and the search `rev-list --grep`, on H1M with and without a commit-graph. | It decides O-1 before the budget work starts. |
+| P0.4 Git memory record | new `tests/windows/history-git-memory.test.ts` (Windows; `GetProcessMemoryInfo` through `bun:ffi` in this file, because 001 T165 has not created `inject.ts` yet) | None. | Peak private bytes of the topology `rev-list` and the search `rev-list --grep`, on H1M with and without a commit-graph. | It decides O-1 before the budget work starts. |
 | P0.5 Matching facts | new `src/contracts/matching-probe.ts` (the fixed fast-import stream and the expected OIDs). Test in `tests/git/history-search-facts.test.ts`. | None. | The FR-023 and FR-024 cases on Windows Git and each WSL distro. Also checks that `init --template=` copies nothing and that an explicit `--git-dir` gets no ownership refusal. | A distro without the C.UTF-8 locale or without PCRE2. |
 | P1 Pure algorithms | new `src/git-service/history-topology.ts` (OID table, CSR parents, line parser, order checks), new `src/git-service/history-reduced.ts`, new `src/contracts/filter-text.ts` | Algorithms only. | Topology checks: a duplicate row, a parent that already showed, a non-empty frontier at the end. Reduced graph against a brute-force BFS oracle on the small fixtures and H200K. Filter-text refusals. | Memory per commit. Mitigation: typed arrays, no JS `Map` of OID strings. |
 | P2 Contracts | `src/contracts/{limits.ts, envelope.ts, errors.ts, operations.ts, git-environment.json, channel.ts, wsl-process.json}`, `schemas/`, `tests/vectors/` | Adds 5 operations, 3 codes, the `search` policy, the WSL mode `search`, and the `matchingProbe` script. | Schema tests and golden vectors in Bun and Rust. | Rust typify drops ranges. Keep explicit checks, as 001 §1 requires. |
@@ -129,7 +130,7 @@ tests/
 | P5 Search | new `src/git-service/history-search.ts` (search, probe, merge, reduced settlement). `session.ts` gets one handler. | `searchHistory`. | SC-007 (Windows and each distro), SC-008, SC-009 (no Git process starts), SC-010 search cancel, the order-mismatch refusal. | The subsequence order is only an experiment fact. The runtime check refuses on a mismatch. |
 | P6 Frontend | `src/frontend/bridge.ts`, new `state/history-view.ts`, `history/HistoryView.tsx`, new `history/HistoryFilter.tsx`, `history/AncestryCell.tsx`, `history/CommitDetails.tsx`, `app/Workbench.tsx`, `NoticeBand.tsx` | A virtual list, the filter, the two modes, the notices, the scope switch, the details pane. | Component tests: keyboard, refusals, notices, stable rows after eviction (FR-011), a fake count of 1M rows with no O(n) structure. | Compressed scrolling at the 1M scale. |
 | P7 Retire 001 `readHistory` | `operations.ts`, `envelope.ts` (`ReadHistory`), `history.ts` (`readHistory`, `pageOf`), `session.ts`, `ipc.rs`, `src/frontend/history/lanes.ts`, their tests | One history path only. | The full run stays green. | 001 evidence names `readHistory`. Keep the 001 artifacts as records. |
-| P8 Qualification | `tests/windows/history-perf.test.ts`, responsiveness workloads, the Git Extensions harness, `tests/wsl/history-wsl.test.ts` | None. | SC-002, SC-005, SC-006, SC-010, SC-011, SC-012, SC-014 in the packaged build. CPU for each workload (N-3). | Git memory (O-1). The filter ratio is close to 1.0. |
+| P8 Qualification | `tests/windows/history-perf.test.ts`, responsiveness workloads, the Git Extensions harness, `tests/wsl/history-wsl.test.ts` | None. | SC-002, SC-005, SC-006, SC-010, SC-011, SC-012, SC-014 in the packaged build. CPU for each workload (N-3). Cold and warm runs for SC-005, SC-006, and SC-014, by the 001 rules (001 plan.md "Measurements and budgets"). | Git memory (O-1). The filter ratio is close to 1.0. Open 001 tools and the measurement environment (001 T154, T165, T180, T240, T242, T244). |
 
 Each phase writes its tests first. P0.2, P0.3, and P0.4 are the riskiest proofs and run first.
 
@@ -195,7 +196,8 @@ The reduced graph needs the full topology stream beside the search stream, becau
 
 ### D6 Frontend
 
-- **List**: a fixed-height window. The first row is `floor(scrollTop·k / rowHeight)`, where `k = max(1, total / MAX_LAYOUT_PX)`. `MAX_LAYOUT_PX` is Chromium's LayoutUnit maximum, about 33,554,431 px (unverified in WebView2). 1M rows at the comfortable density need about 34M px, which passes it. Research R8 records why `@tanstack/react-virtual` does not fit.
+- **List**: a fixed-height window. The first row is `floor(scrollTop·k / rowHeight)`, where `k = max(1, total·rowHeight / MAX_LAYOUT_PX)`. `MAX_LAYOUT_PX` is Chromium's LayoutUnit maximum, about 33,554,431 px (unverified in WebView2). 1M rows at the comfortable density need about 34M px, which passes it. Research R8 records why `@tanstack/react-virtual` does not fit.
+- **Shortcuts**: Ctrl+F focuses the filter. F3 and Shift+F3 move to the next and the previous match. The 001 map (001 plan.md "Keyboard and focus", `src/frontend/keyboard/shortcuts.ts`) uses none of these keys. The 001 accelerator handler turns off the WebView2 find keys, so Ctrl+F and F3 reach the page. T038 records conflicts with the 001 keyboard map before T040. These keys are reviewer defaults, not user decisions.
 - **Listbox**: focus stays on the list element with `aria-activedescendant`. Options carry `aria-posinset`. `aria-setsize` is -1 until the count is known (WAI-ARIA 1.2).
 - **Cache**: pages of 128 rows in LRU order up to 8 MiB of `bytes`. The visible pages always stay. Row reads follow the latest-wins rule, one in flight per view.
 - **Graph column**: its width is the `lanes` value, at most 24. It never shrinks during a view (FR-016).
@@ -236,7 +238,7 @@ The reduced graph needs the full topology stream beside the search stream, becau
   - Background: the design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep` (unverified). Without a commit-graph, the limited walk then keeps every commit buffer. The estimate is 100-300 MB for Git alone at 1M commits (unverified).
   - Candidate text (design SI-1, not adopted): "The view adds at most 128 MiB of private memory to the Arbareto processes: the shell, the service, and the WebView2 processes. The base is the same worktree with a one-commit history. The record states the peak private memory of each Git process next to the peak of the same Git command run alone."
   - Constitution note N-2 applies to the candidate.
-- **O-2 SC-006 value.** The spec proposes 10% or 500 ms. The plan confirms the value before measurement (spec Assumptions).
+- **O-2 SC-006 and SC-010 values.** The spec proposes 10% or 500 ms for SC-006. The spec proposes 1 s to stop and 5 s to no remaining process for SC-010. The plan confirms them before measurement (spec Assumptions).
 - **O-3 Unverified facts.** Research R13 lists them, with the step that checks each one.
 - **O-4 Load during a search.** Closed. The service resumes the load itself when a search starts on an incomplete view (D5, contract Δ3 `searchHistory`, data-model §6). The renderer starts nothing extra.
 
@@ -258,16 +260,16 @@ The reduced graph needs the full topology stream beside the search stream, becau
 | WP | Agent | Files | Steps |
 |---|---|---|---|
 | WP0 | implementer | `specs/002-full-history/{plan.md, research.md, data-model.md, contracts/operations.md, quickstart.md}` | This plan. Run `/speckit-tasks` and `/speckit-analyze` after it. |
-| WP1 | implementer-xhigh | `tests/git/history-fixtures.ts`, `tests/git/history-order.test.ts`, `tests/git/history-search-facts.test.ts` | P0.1, P0.2, P0.5 |
+| WP1 | implementer-xhigh | `tests/git/history-fixtures.ts`, `tests/git/history-order.test.ts`, `tests/git/history-search-facts.test.ts`, `src/contracts/matching-probe.ts`, `tests/wsl/history-wsl.test.ts` (P0.2 and P0.5 facts) | P0.1, P0.2, P0.5 |
 | WP2 | implementer | `tests/windows/history-git-memory.test.ts` | P0.4. Local Windows run. |
-| WP3 | implementer-xhigh | `src/git-service/history-{topology,layout,reduced}.ts`, `src/contracts/filter-text.ts`, `src/contracts/matching-probe.ts`, their tests | P0.3, P1 |
+| WP3 | implementer-xhigh | `src/git-service/history-{topology,layout,reduced}.ts`, `src/contracts/filter-text.ts`, their tests | P0.3, P1 |
 | WP4 | implementer | `src/contracts/{limits,envelope,errors,operations,channel}.ts`, `git-environment.json`, `wsl-process.json`, `schemas/`, `tests/vectors/` | P2 |
 | WP5 | implementer | `src-tauri/src/{ipc,git_env,wsl}.rs`, `src-tauri/build.rs` | P4. Local only. |
 | WP6 | implementer-xhigh | `src/git-service/{commands,refs-parser,refs,history-view,session}.ts`, view tests | P3 |
 | WP7 | implementer-xhigh | `src/git-service/history-search.ts`, search tests | P5 |
 | WP8 | frontend-implementer (loads arbareto-ux and vercel-react-best-practices) | `src/frontend/{bridge.ts, state/history-view.ts, history/*, app/Workbench.tsx, NoticeBand.tsx}`, `tests/contracts/history-*.test.tsx` | P6 |
 | WP9 | implementer | Retire `readHistory` | P7 |
-| WP10 | implementer, with the runs done by scout | `tests/windows/history-perf.test.ts`, the Git Extensions harness, `tests/wsl/history-wsl.test.ts` | P8 |
+| WP10 | implementer, with the runs done by scout | `tests/windows/history-perf.test.ts`, the Git Extensions harness, the view and search cases of `tests/wsl/history-wsl.test.ts` | P8 |
 
 Two packages are not file-disjoint:
 - WP7 adds one `searchHistory` handler line to `session.ts`. It runs strictly after WP6.

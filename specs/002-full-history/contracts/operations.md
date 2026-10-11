@@ -57,12 +57,12 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 - Results:
   - `succeeded` with the final row count (spec FR-010).
   - `canceled`: the rows stay, and the Job is closed.
-  - `failed` with `DEADLINE`: the rows stay. The result carries the copyable remedy `git commit-graph write --reachable`. The application never runs it (spec FR-044). This closes the open trigger rule of 001 plan.md "Commit-graph variants".
+  - `failed` with `DEADLINE`: the rows stay. The result carries the copyable 001 remedy `& '<selected Git path>' --no-lazy-fetch -C '<worktree root>' commit-graph write --reachable`, quoted by the T262 builder (001 plan.md "Commit-graph variants"). The application never runs it (spec FR-044). For 002 views, `DEADLINE` is the trigger. The 001 trigger rule for other reads stays open (001 plan.md "Commit-graph variants" ties it to the contract §6 and §7 changes after 001 T280 to T283).
 
 ### `readHistoryRows`
 
 - Payload: `{viewId, mode, searchId?, at, count, text}`.
-  - `mode`: `"full"` or `"filter"`. `"filter"` requires `searchId`.
+  - `mode`: `"full"` or `"filter"`. `"filter"` requires `searchId`. Spec highlight mode is `mode: "full"` with `searchId`. Spec filter mode is `mode: "filter"`.
   - `at`: `{row}`, `{oid}`, `{match: "next" | "previous", from}`, or `{end: true}`.
   - `count`: 1 to 512.
   - `text`: `"none"`, `"rows"`, or `"details"`. `"details"` requires `count` 1.

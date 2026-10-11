@@ -58,7 +58,7 @@ Use only the README "Development" commands:
 2. Open a repository with branches, remote-tracking refs, tags, and a stash.
 3. Press End. Expect progress with Cancel, then the last commit and the final row count.
 4. Type "fix" in the message filter and press Enter. Expect matches in history order and a count that states that it is final at the end.
-5. Switch to highlight mode. Expect no new search. Press F3 and Shift+F3 (planned shortcuts; research R9 lists the conflict check as unverified). Expect the selection to move across matches without wrap.
+5. Switch to highlight mode. Expect no new search. Press F3 and Shift+F3 (plan.md D6 shortcuts: Ctrl+F focuses the filter, F3 and Shift+F3 move between matches; research R13 lists the conflict check as unverified). Expect the selection to move across matches without wrap.
 6. Create a branch in a terminal. Expect the "References changed" notice. Select Refresh. Expect the new branch label.
 
 ## Evidence

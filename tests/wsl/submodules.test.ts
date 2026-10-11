@@ -95,7 +95,7 @@ function oracleOf(f: F31): ReturnType<typeof distroSubmoduleOracle> {
 }
 const expectOracle = (f: F31, oracle: ReturnType<typeof distroSubmoduleOracle>, except?: Parameters<typeof oracleExcept>[1]) =>
   expect({ oracle: oracle.exitCode, state: distroSubmoduleState(f.sup) }).toEqual({ oracle: 0, state: oracleExcept(oracle, except) });
-const tmpPacks =(f: F31, name: string) => inDistro(f.sup.host.distro, ["/usr/bin/find", `${f.sup.dir}/.git/modules/${name}/objects/pack`, "-name", "tmp_pack_*"], { allowExit: [0, 1] }).trim();
+const tmpPacks = (f: F31, name: string) => inDistro(f.sup.host.distro, ["/usr/bin/find", `${f.sup.dir}/.git/modules/${name}/objects/pack`, "-name", "tmp_pack_*"], { allowExit: [0, 1] }).trim();
 
 async function until(condition: () => boolean, what: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;

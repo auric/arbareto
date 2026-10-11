@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { EnvironmentPolicy, GitRunner } from "../../src/git-service/git-runner";
 import type { CandidateFailure } from "../../src/git-service/hunk-candidate";
 import {
   candidateRefusal,
@@ -16,6 +17,7 @@ import {
   lingeringSentence,
   lockRefusal,
   publishRefusal,
+  recording,
   removeOwned,
   SPLIT_INDEX_TEXT,
   STEP_FAILED_TEXT,
@@ -172,6 +174,24 @@ describe("checkpointRefusal (contract §4, §9)", () => {
 
   test("a binding without a working version ignores the working file", () => {
     expect(checkpointRefusal({ ...binding, working: null }, policy(), state({ working: null }), "sha1")).toBeNull();
+  });
+});
+
+describe("recording (contract §6 \"Lingering Jobs\", T371)", () => {
+  // A runner double: each run exits 0 with the next count.
+  const replay = async (runs: [EnvironmentPolicy, number | null][]) => {
+    const counts = runs.map(([, count]) => count);
+    const rec = recording({ run: async () => ({ exitCode: 0, activeDescendants: counts.shift()! }) } as unknown as GitRunner);
+    for (const [environmentPolicy] of runs) await rec.run({ environmentPolicy } as never);
+    return { last: rec.last, execution: rec.execution };
+  };
+
+  test("a checkpoint read with a count of 1 before the first mutation step gives no execution count", async () => {
+    expect(await replay([["read", 1]])).toEqual({ last: 1, execution: null });
+  });
+
+  test("a mutation step that exits with 1 keeps 1 after a later read with 0", async () => {
+    expect(await replay([["read", 1], ["mutation", 1], ["read", 0]])).toEqual({ last: 0, execution: 1 });
   });
 });
 

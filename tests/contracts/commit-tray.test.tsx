@@ -256,6 +256,14 @@ describe("commit flow", () => {
     expect(t.host.querySelector('[role="status"] code')?.textContent).toBe("DEADLINE");
   });
 
+  test("T372: a trust read above a report row bound shows OUTPUT_LIMIT with the bound name", async () => {
+    const t = await ready();
+    await act(async () => t.commit.click());
+    await t.answer("readTrust", { requestId: crypto.randomUUID(), state: "failed", code: "OUTPUT_LIMIT", result: { reason: "TRUST_REPORT_ENTRIES" } } as BridgeResponse);
+    expect(t.ops()).toEqual(["readTrust"]);
+    expect(t.host.querySelector('[role="status"]')?.textContent).toBe("Trust review did not complete: OUTPUT_LIMIT TRUST_REPORT_ENTRIES");
+  });
+
   test("the live element stays mounted and only its text changes", async () => {
     const t = await ready();
     const live = t.host.querySelector('[role="status"]');

@@ -61,7 +61,7 @@ import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
-import { isTrustReport, SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
+import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
 import { blockingText, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
@@ -635,7 +635,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (repositoryId === null) return;
     let current = true;
     void bridge.readTrust({ repositoryId }).then((response) => {
-      if (!current || response.state !== "succeeded" || !isTrustReport(response.result)) return;
+      if (!current) return;
+      if (response.state !== "succeeded" || !isTrustReport(response.result)) return setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
       const report = response.result;
       const first = trustShown.current !== repositoryId;
       trustShown.current = repositoryId;
@@ -822,7 +823,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       fromCommit.current = false;
       setTrust({ report: response.result, open: true });
     }
-    else setNotice(codeText("Trust review did not complete: ", responseCode(response)));
+    else setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
   }
 
   // A canceled selection keeps the current Git and shows nothing (contract §3 `chooseGit`).

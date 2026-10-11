@@ -268,7 +268,7 @@ export function createFilePublisher(o: FilePublisherOptions) {
       }
       return read;
     });
-    run.executionLast = rec.last ?? 0;
+    run.executionLast = rec.execution ?? 0;
     if (!prepared.ok) {
       run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
       const refused = candidateRefusal(prepared.failure);
@@ -288,7 +288,7 @@ export function createFilePublisher(o: FilePublisherOptions) {
     run.candidatePath = besideIndex(w, candidate.path);
     if (staged !== null && binding.working !== null) {
       const proof = await blobProof(ctx, path, staged, binding.working, addRemedy());
-      run.executionLast = rec.last ?? 0;
+      run.executionLast = rec.execution ?? 0;
       if (proof !== null) return proof;
     }
     // Contract §4 step 7.

@@ -16,6 +16,8 @@ import {
   TRUST_DIGEST_FILES,
   TRUST_INPUT_BYTES,
   TRUST_LINK_HOPS,
+  TRUST_REPORT_ENTRIES,
+  TRUST_REPORT_HOOKS,
 } from "../contracts/limits";
 import { NATIVE, PATH_RULES } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
@@ -1419,7 +1421,7 @@ export interface TrustView {
 export type TrustOutcome<R> =
   | { result: "succeeded"; value: R }
   | { result: "limited"; code: "OUTPUT_LIMIT"; value: R }
-  | { result: "failed"; code: ErrorCode; value?: { remedy: { text: string } } }
+  | { result: "failed"; code: ErrorCode; value?: { remedy: { text: string } } | { reason: "TRUST_REPORT_ENTRIES" | "TRUST_REPORT_HOOKS" } }
   | { result: "canceled" }
   | { result: "deadline" };
 
@@ -1559,6 +1561,12 @@ export function createTrust({ runner, environment, configFiles = () => undefined
       // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read issues nothing.
       if (target.signal.aborted) return { result: "canceled" };
       const { listing } = outcome;
+      // Contract §5 "Trust report rows": the approval covers every row, so a report above a bound is refused whole and issues nothing.
+      const rows = listing.entries.length > TRUST_REPORT_ENTRIES ? "TRUST_REPORT_ENTRIES" : listing.hooks.configured.length + listing.hooks.folder.length > TRUST_REPORT_HOOKS ? "TRUST_REPORT_HOOKS" : null;
+      if (rows !== null) {
+        issued.delete(target.workspace.repositoryId);
+        return { result: "failed", code: "OUTPUT_LIMIT", value: { reason: rows } };
+      }
       issued.set(target.workspace.repositoryId, { fingerprint: listing.fingerprint, generation, inputLimited: listing.inputLimited });
       const value: ReadTrustValue = {
         generation,

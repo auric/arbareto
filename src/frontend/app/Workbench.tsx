@@ -148,7 +148,8 @@ export type WorkbenchProps = {
   restoreProgress?(listener: OnProgress): void;
   /** Adds 1 after each `service-session` event (contract §2). */
   session?: number;
-  onSelectGit?(): void;
+  /** Runs `chooseGit` and reads the environment again. It resolves with the `chooseGit` response. */
+  onSelectGit?(): Promise<BridgeResponse>;
   /** Each `getEnvironment` response that the workbench reads again. */
   onEnvironment?(response: BridgeResponse): void;
   /** The Windows text scale factor (plan.md "Windows text size"). */
@@ -437,7 +438,7 @@ class AboutBoundary extends Component<{ onClose(): void; children: ReactNode }, 
   }
 }
 
-export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit = () => {}, onEnvironment, textScale = 1, drafts: givenDrafts }: WorkbenchProps) {
+export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit, onEnvironment, textScale = 1, drafts: givenDrafts }: WorkbenchProps) {
   // plan.md "Required visible states", Recovery statement: the statement stays until the next `refresh: true` read or another repository.
   const [recovery, setRecovery] = useState<{ repositoryId: string; statement: RecoveryStatement } | null>(null);
   // Contract §11 "Distro start": a registration or restore in phase `wsl-starting`, until its response. No event marks the probe end.
@@ -784,6 +785,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     else setNotice(codeText("Trust review did not complete: ", responseCode(response)));
   }
 
+  // A canceled selection keeps the current Git and shows nothing (contract §3 `chooseGit`).
+  async function selectGit() {
+    const response = await onSelectGit?.();
+    if (response !== undefined && response.state !== "succeeded" && response.state !== "canceled") setNotice(codeText("Select Git did not complete: ", responseCode(response)));
+  }
+
   // The menu shows the outcome text. A new trust read gives the new trust state and trust ID.
   async function revokeTrust(trustId: string) {
     const response = await bridge.revokeTrust({ repositoryId: repositoryId! }, { trustId });
@@ -1110,7 +1117,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                   setSwitcherInstant(false);
                   setSwitcherOpen(true);
                 }}
-                onSelectGit={onSelectGit}
+                onSelectGit={() => void selectGit()}
                 onReviewTrust={() => void reviewTrust()}
                 revokeTrust={revokeTrust}
                 onOpenChange={onMenuOpen("repository")}

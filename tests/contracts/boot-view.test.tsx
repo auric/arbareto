@@ -2,13 +2,17 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
+import { act, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { BootView, bootActions, markBootView, type BootProps, type Environment } from "../../src/frontend/boot/BootView";
 import { Button } from "../../src/frontend/components/ui/button";
 
 printOrigin("../../src/frontend/boot/BootView.tsx", import.meta.dir);
+registerDom();
+const { createRoot } = await import("react-dom/client");
+const CANCELED = { requestId: null, state: "canceled" as const };
 
 const environment = (fields: Partial<Environment> = {}): Environment => ({
   buildIdentity: { version: "0.1.0", commit: "c".repeat(40) + "-dirty", signing: "unsigned" },
@@ -21,7 +25,7 @@ const environment = (fields: Partial<Environment> = {}): Environment => ({
   ...fields,
 });
 
-const render = (env: Environment) => renderToStaticMarkup(<BootView state="facts" environment={env} onSelectGit={() => {}} onDismissMarker={() => {}} />);
+const render = (env: Environment) => renderToStaticMarkup(<BootView state="facts" environment={env} onSelectGit={async () => CANCELED} onDismissMarker={() => {}} />);
 
 const FRAME_HEADER = /<header\b[^>]*style="height:var\(--h-header\)"[^>]*><h1[^>]*>Arbareto<\/h1><\/header>/;
 
@@ -127,7 +131,7 @@ describe("boot view", () => {
     const markers = ["a", "b"].map((markerId) => ({ markerId, kind: "commit" as const, startedAt: "2026-10-02T10:00:00Z", worktreeRoot: "C:\\repo" }));
     const calls: string[] = [];
     const damagedMarkers = [{ markerId: "c", fileName: "broken.json" }];
-    const props: BootProps = { state: "facts", environment: environment({ gitCode: "GIT_UNAVAILABLE", markers, damagedMarkers }), onSelectGit: () => calls.push("select"), onDismissMarker: (id) => calls.push(`dismiss ${id}`) };
+    const props: BootProps = { state: "facts", environment: environment({ gitCode: "GIT_UNAVAILABLE", markers, damagedMarkers }), onSelectGit: async () => (calls.push("select"), CANCELED), onDismissMarker: (id) => calls.push(`dismiss ${id}`) };
     // A direct component call inside a render keeps the hooks valid and returns the element tree.
     let tree: ReactNode;
     const Probe = () => ((tree = BootView(props)), null);
@@ -156,6 +160,42 @@ describe("boot view", () => {
     markBootView();
     markBootView();
     expect(performance.getEntriesByName("arbareto:boot-view", "mark")).toHaveLength(1);
+  });
+});
+
+// A `chooseGit` result other than `succeeded` or `canceled` shows its code and text (contract §3, §9), as a refused repository does.
+describe("Select Git result", () => {
+  async function mountBlocked(response: unknown) {
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    await act(async () => root.render(<BootView state="facts" environment={environment({ gitCode: "GIT_UNAVAILABLE" })} onSelectGit={async () => response as never} onDismissMarker={() => {}} />));
+    const select = [...host.querySelectorAll("button")].find((b) => b.textContent === "Select Git")!;
+    await act(async () => select.click());
+    return { host, done: () => act(async () => root.unmount()).then(() => host.remove()) };
+  }
+
+  test("a rejected chooseGit shows its code and its text in an alert", async () => {
+    const view = await mountBlocked({ requestId: crypto.randomUUID(), state: "rejected", code: "GIT_UNAVAILABLE", result: { text: "The selected file is not a Git executable.", path: "C:\Tools\other.exe", minimumVersion: "2.55.0.windows.3" } });
+    try {
+      const alert = view.host.querySelector('[role="alert"]');
+      expect(alert).not.toBeNull();
+      expect(alert!.textContent).toContain("Select Git did not complete: GIT_UNAVAILABLE");
+      expect(alert!.querySelector("code")?.textContent).toBe("GIT_UNAVAILABLE");
+      expect(alert!.textContent).toContain("The selected file is not a Git executable.");
+      expect(alert!.textContent).toContain("C:\Tools\other.exe");
+    } finally {
+      await view.done();
+    }
+  });
+
+  test("a canceled chooseGit shows nothing", async () => {
+    const view = await mountBlocked(CANCELED);
+    try {
+      expect(view.host.querySelector('[role="alert"]')).toBeNull();
+      expect(view.host.textContent).not.toContain("did not complete");
+    } finally {
+      await view.done();
+    }
   });
 });
 

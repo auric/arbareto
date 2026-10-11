@@ -64,11 +64,11 @@ function App() {
         setView(load());
       }
     };
-    const selectGit = () =>
-      void bridge
-        .chooseGit()
-        .then(() => bridge.getEnvironment())
-        .then(onEnvironment);
+    const selectGit = async () => {
+      const response = await bridge.chooseGit();
+      onEnvironment(await bridge.getEnvironment());
+      return response;
+    };
     return (
       <Workbench
         bridge={bridge}

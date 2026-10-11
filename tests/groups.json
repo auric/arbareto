@@ -61,6 +61,7 @@
     "tests/contracts/status-area.test.tsx",
     "tests/contracts/strict-json.test.ts",
     "tests/contracts/submodule-remote.test.ts",
+    "tests/contracts/submodule-ui.test.tsx",
     "tests/contracts/submodules.test.ts",
     "tests/contracts/support.test.ts",
     "tests/contracts/text-scale.test.ts",

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useEffect, type ReactNode } from "react";
+import { CancelCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button";
 import type { Environment } from "../../contracts/envelope";
-import type { createBridge } from "../bridge";
+import type { BridgeResponse, createBridge } from "../bridge";
 
 // Contract §3 `getEnvironment`. A type-only import keeps zod out of the renderer bundle.
 export type { Environment };
@@ -12,7 +14,7 @@ export type { Environment };
 export type BootProps =
   | { state: "loading" }
   | { state: "unavailable"; code: string; session?: boolean }
-  | { state: "facts"; environment: Environment; onSelectGit: () => void; onDismissMarker: (markerId: string) => void };
+  | { state: "facts"; environment: Environment; onSelectGit: () => Promise<BridgeResponse>; onDismissMarker: (markerId: string) => void };
 
 const GIT_BLOCKED: Record<string, string> = {
   GIT_UNAVAILABLE: "Git unavailable",
@@ -31,7 +33,12 @@ export function markBootView() {
 type Bridge = ReturnType<typeof createBridge>;
 export function bootActions(bridge: Pick<Bridge, "chooseGit" | "dismissRecoveryMarker">, reload: () => void) {
   return {
-    onSelectGit: () => void bridge.chooseGit().then(reload),
+    /** A success reloads the environment. The view shows every other result except `canceled`. */
+    onSelectGit: async () => {
+      const response = await bridge.chooseGit();
+      if (response.state === "succeeded") reload();
+      return response;
+    },
     onDismissMarker: (markerId: string) => void bridge.dismissRecoveryMarker({ markerId }).then(reload),
   };
 }
@@ -59,8 +66,26 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+/** A `chooseGit` result other than `succeeded` or `canceled`, with its code and the result text (contract §3, §9). */
+function GitRefused({ response }: { response: BridgeResponse }) {
+  const result = typeof response.result === "object" && response.result !== null ? (response.result as Record<string, unknown>) : {};
+  const facts = (["text", "reason", "path"] as const).filter((key) => typeof result[key] === "string");
+  return (
+    <section role="alert" className="flex flex-col items-start gap-2">
+      <p className="flex items-center gap-2">
+        <HugeiconsIcon icon={CancelCircleIcon} size="1em" strokeWidth={2} aria-hidden="true" className="shrink-0 text-removed" />
+        <span>
+          Select Git did not complete: <code>{response.code ?? response.state}</code>
+        </span>
+      </p>
+      {facts.map((key) => (key === "text" ? <p key={key}>{result.text as string}</p> : <code key={key}>{result[key] as string}</code>))}
+    </section>
+  );
+}
+
 export function BootView(props: BootProps) {
   const facts = props.state === "facts";
+  const [refused, setRefused] = useState<BridgeResponse | null>(null);
   useEffect(() => {
     if (facts) markBootView();
   }, [facts]);
@@ -83,6 +108,12 @@ export function BootView(props: BootProps) {
   }
 
   const env = props.environment;
+  const onSelectGit = props.onSelectGit;
+  async function selectGit() {
+    setRefused(null);
+    const response = await onSelectGit();
+    if (response.state !== "succeeded" && response.state !== "canceled") setRefused(response);
+  }
   const blocked = env.gitCode === undefined ? undefined : (GIT_BLOCKED[env.gitCode] ?? "Git check failed");
   return (
     <Frame>
@@ -91,7 +122,8 @@ export function BootView(props: BootProps) {
           <p className="font-semibold">
             {blocked}: {env.gitCode}
           </p>
-          <Button onClick={props.onSelectGit}>Select Git</Button>
+          <Button onClick={selectGit}>Select Git</Button>
+          {refused === null ? null : <GitRefused response={refused} />}
         </section>
       )}
       {env.buildIdentity.signing === "unsigned" && <p className="text-warning">Unsigned local test package</p>}

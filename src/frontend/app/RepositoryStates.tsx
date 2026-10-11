@@ -53,12 +53,12 @@ function Code({ children }: { children: string }) {
   return <code className="break-all">{children}</code>;
 }
 
-/** A status text that ends in a code: `<text><code>.` The code shows in the code font. */
+/** A status text that ends in a code: `<text><code>`, with no final period (plan.md "Status and fallback texts"). The code shows in the code font. */
 export function codeText(text: string, code: string): ReactNode {
   return (
     <>
       {text}
-      <Code>{code}</Code>.
+      <Code>{code}</Code>
     </>
   );
 }

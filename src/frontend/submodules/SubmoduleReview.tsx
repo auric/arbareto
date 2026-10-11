@@ -24,8 +24,8 @@ export type SubmoduleReviewProps = {
   open: boolean;
   bridge: Bridge;
   target: Target;
-  /** The snapshot of the review. An expired token reads the review again for it. */
-  snapshotId: string;
+  /** The generation and snapshot ID of the current read. An expired token reads the review again for them, because each full read issues a new snapshot ID (contract §8). */
+  current(): { repositoryGeneration: number; snapshotId: string };
   review: SubmoduleReviewValue;
   /** The main window client size in DIPs. */
   client: Size;
@@ -34,9 +34,17 @@ export type SubmoduleReviewProps = {
   /** Cancel in the status bar. */
   startFocus: () => HTMLElement | null;
   onCancel(): void;
-  /** Each `trackOperation` report of the `updateSubmodules` request. The dialog hides itself at the first progress event. */
+  /** Each `trackOperation` report of the `updateSubmodules` request. The dialog hides itself when `passedAcceptance` holds. */
   onOperation(op: StatusOperation): void;
+  /** The reason of a workbench state that blocks mutations, or null (plan.md "Busy" and "Unavailable control"). */
+  blockedReason?: string | null;
 };
+
+/**
+ * Contract §2: the `accepted` event comes before the approval checks, and a `rejected` response can follow it.
+ * Data-model §7: the state leaves `accepted` only after the checks pass. Contract §9: only `rejected` keeps the token unconsumed.
+ */
+export const passedAcceptance = (op: StatusOperation) => (op.progress !== null && op.progress.state !== "accepted") || (op.response !== null && op.response.state !== "rejected");
 
 const DISCLOSURE = "Git connects to each URL. Your credential helper can show its own window.";
 const PROGRAMS = "Programs from submodule settings and hooks that Git can run";
@@ -82,7 +90,7 @@ function RovingList({ labelledBy, children }: { labelledBy: string; children: Re
   return (
     <div ref={list} role="listbox" aria-labelledby={labelledBy} className="flex flex-col" onKeyDown={onKeyDown}>
       {children.map((child, i) => (
-        <div key={i} role="option" tabIndex={i === at ? 0 : -1} className="list-row px-2 py-1" onFocus={() => setActive(i)}>
+        <div key={i} role="option" aria-selected={i === at} tabIndex={i === at ? 0 : -1} className="list-row px-2 py-1" onFocus={() => setActive(i)}>
           {child}
         </div>
       ))}
@@ -90,13 +98,15 @@ function RovingList({ labelledBy, children }: { labelledBy: string; children: Re
   );
 }
 
-export function SubmoduleReview({ open, bridge, target, snapshotId, review, client, finalFocus, startFocus, onCancel, onOperation }: SubmoduleReviewProps) {
+export function SubmoduleReview({ open, bridge, target, current, review, client, finalFocus, startFocus, onCancel, onOperation, blockedReason = null }: SubmoduleReviewProps) {
   const headingId = useId();
   const reasonId = useId();
   const programsId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
   const [value, setValue] = useState(review);
   const [source, setSource] = useState(review);
+  // The target of the shown review. A new review after `APPROVAL_EXPIRED` can name a newer generation.
+  const [reviewed, setReviewed] = useState(target);
   const [accepted, setAccepted] = useState(false);
   // The code of a failed new review after `APPROVAL_EXPIRED`. The token is then dead.
   const [rereadFailed, setRereadFailed] = useState<string | null>(null);
@@ -108,6 +118,7 @@ export function SubmoduleReview({ open, bridge, target, snapshotId, review, clie
   if (source !== review) {
     setSource(review);
     setValue(review);
+    setReviewed(target);
     setAccepted(false);
     setRereadFailed(null);
     sent.current = false;
@@ -115,8 +126,8 @@ export function SubmoduleReview({ open, bridge, target, snapshotId, review, clie
   }
 
   const refused = value.refusals.length > 0;
-  const blocked = refused || rereadFailed !== null;
-  const reasons = [...value.refusals.map((_, i) => `${reasonId}-${i}`), ...(rereadFailed === null ? [] : [`${reasonId}-reread`])];
+  const blocked = refused || rereadFailed !== null || blockedReason !== null;
+  const reasons = [...value.refusals.map((_, i) => `${reasonId}-${i}`), ...(rereadFailed === null ? [] : [`${reasonId}-reread`]), ...(blockedReason === null ? [] : [`${reasonId}-busy`])];
   const pathOf = new Map(value.rows.map((row) => [row.rowId, row.path]));
 
   async function start() {
@@ -126,11 +137,10 @@ export function SubmoduleReview({ open, bridge, target, snapshotId, review, clie
     const response: BridgeResponse = await trackOperation(
       "updateSubmodules",
       undefined,
-      (onProgress: (event: ProgressEvent) => void) => bridge.updateSubmodules(target, { submoduleReviewToken: value.submoduleReviewToken, start: true }, onProgress),
+      (onProgress: (event: ProgressEvent) => void) => bridge.updateSubmodules(reviewed, { submoduleReviewToken: value.submoduleReviewToken, start: true }, onProgress),
       (op) => {
         onOperation(op);
-        if (op.progress !== null && !seen) {
-          // Contract §9: the service rejects an expired token before the accepted event, so the first event closes the dialog.
+        if (!seen && passedAcceptance(op)) {
           seen = true;
           toStart.current = true;
           setAccepted(true);
@@ -139,9 +149,13 @@ export function SubmoduleReview({ open, bridge, target, snapshotId, review, clie
     );
     if (seen) return;
     if (response.state === "rejected" && response.code === "APPROVAL_EXPIRED") {
-      const fresh = await bridge.reviewSubmodules(target, { snapshotId });
-      if (fresh.state === "succeeded") setValue(fresh.result as SubmoduleReviewValue);
-      else setRereadFailed(fresh.code ?? fresh.state);
+      const now = current();
+      const next = { repositoryId: reviewed.repositoryId, repositoryGeneration: now.repositoryGeneration };
+      const fresh = await bridge.reviewSubmodules(next, { snapshotId: now.snapshotId });
+      if (fresh.state === "succeeded") {
+        setValue(fresh.result as SubmoduleReviewValue);
+        setReviewed(next);
+      } else setRereadFailed(fresh.code ?? fresh.state);
     }
     sent.current = false;
   }
@@ -205,13 +219,15 @@ export function SubmoduleReview({ open, bridge, target, snapshotId, review, clie
               Submodule review did not complete: <code>{rereadFailed}</code>
             </p>
           )}
+          {blockedReason === null ? null : <p id={`${reasonId}-busy`}>{blockedReason}</p>}
           {value.programs.length === 0 ? null : (
             <>
               <p id={programsId}>{PROGRAMS}</p>
               <RovingList labelledBy={programsId}>
                 {value.programs.map((program, i) => (
                   <div key={i}>
-                    <p className="break-all">{"rowId" in program ? (pathOf.get(program.rowId) ?? "") : program.gitDirectory}</p>
+                    {/* A row ID outside the plan has no path. Its row ID shows, never an empty path. */}
+                    <p className="break-all">{"rowId" in program ? (pathOf.get(program.rowId) ?? <code>{program.rowId}</code>) : program.gitDirectory}</p>
                     <p className="break-all">
                       <code>{program.key}</code> <code>{program.program}</code>
                     </p>

@@ -29,11 +29,11 @@ rustc --version
 cargo --version
 ```
 
-Compare them with the minimum versions in `plan.md` Technical Context; Bun must be exactly `1.4.2`. Find the MSVC toolset and Windows SDK versions with the Rust link probe in `research.md` R6. Check the selected Git path separately through application setup after implementation.
+Compare them with the minimum versions in `plan.md` Technical Context; Bun must be exactly `1.4.3`. Find the MSVC toolset and Windows SDK versions with the Rust link probe in `research.md` R6. Check the selected Git path separately through application setup after implementation.
 
 Before building, verify:
 
-- Bun exactly `1.4.2`. At least the `plan.md` minimum versions: Rust/Cargo `1.98.0`, native cargo-tauri `2.12.0`, MSVC toolset `14.51.36231`, and Windows SDK `10.0.26100.0`.
+- Bun exactly `1.4.3`. At least the `plan.md` minimum versions: Rust/Cargo `1.98.0`, native cargo-tauri `2.12.0`, MSVC toolset `14.51.36231`, and Windows SDK `10.0.26100.0`.
 - Minimum-version dependency declarations, an exact Bun version, and committed Bun/Cargo lockfiles.
 - Selected SDK version, native imports, development-only Node requirements, and third-party notice obligations.
 - Frontend build compatibility under Bun, without an accidental Node shebang fallback.
@@ -66,7 +66,7 @@ cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked
 `bun run build` runs `build:notices`, then `bunx --bun vite build`, then these two service steps:
 
 ```powershell
-bun -e "if (Bun.version !== '1.4.2') { console.error('Bun 1.4.2 required, found ' + Bun.version); process.exit(1) }"
+bun -e "if (Bun.version !== '1.4.3') { console.error('Bun 1.4.3 required, found ' + Bun.version); process.exit(1) }"
 bun build src/git-service/main.ts --compile --target=bun-windows-x64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json --outfile src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe
 ```
 

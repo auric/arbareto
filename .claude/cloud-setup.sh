@@ -3,10 +3,10 @@
 # The hook keeps every session on the checked-out script. Each install step skips when its pinned version is present, so a repeated run is short.
 # The environment's "Setup script" field can stay empty. To warm the environment cache, it can hold: ARBARETO_FORCE_CLOUD_SETUP=1 bash "${CLAUDE_PROJECT_DIR:-/home/user/arbareto}/.claude/cloud-setup.sh"
 # The script exits at once unless CLAUDE_CODE_REMOTE is "true". Set ARBARETO_FORCE_CLOUD_SETUP=1 to run it by hand.
-# Set ARBARETO_LOCAL_TOOLS=1 to install neither Bun nor Rust. The script then requires Bun 1.4.2 and cargo on PATH, and uses them.
+# Set ARBARETO_LOCAL_TOOLS=1 to install neither Bun nor Rust. The script then requires Bun 1.4.3 and cargo on PATH, and uses them.
 # The repository steps run each time.
 # Hook stdout enters the session context. So the full output goes to ${TMPDIR:-/tmp}/arbareto-cloud-setup.log, and only the script's own messages go to stdout.
-# It installs Git 2.55 or newer from the git-core PPA and Bun 1.4.2, then runs "bun install --frozen-lockfile".
+# It installs Git 2.55 or newer from the git-core PPA and Bun 1.4.3, then runs "bun install --frozen-lockfile".
 # It installs specify-cli 1.0.12 from PyPI with "uv tool install", or with "pip install --user" when uv is absent. A failed install does not stop the session.
 # It installs CodeGraph 1.6.0 from the upstream GitHub release. It builds the index with "codegraph init -y", or runs "codegraph sync" when .codegraph/codegraph.db exists. A failed step does not stop the session.
 # The CodeGraph bundle contains its own Node runtime. The script does not install Node.
@@ -28,8 +28,8 @@ fi
 
 # Launchpad signs the git-core PPA InRelease with this rsa4096 key. Ubuntu 26.04 apt rejects the older rsa1024 key.
 GIT_PPA_KEY=F911AB184317630C59970973E363C90F8F1B6217
-BUN_VERSION=1.4.2
-BUN_ZIP_SHA256=36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913
+BUN_VERSION=1.4.3
+BUN_ZIP_SHA256=3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18
 CODEGRAPH_VERSION=1.6.0
 CODEGRAPH_TGZ_SHA256=de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e80b879ba73ef216b0
 RUST_VERSION=1.98.0

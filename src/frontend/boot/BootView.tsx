@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
+import { Button } from "../components/ui/button";
 import type { Environment } from "../../contracts/envelope";
 import type { createBridge } from "../bridge";
 
@@ -35,55 +36,84 @@ export function bootActions(bridge: Pick<Bridge, "chooseGit" | "dismissRecoveryM
   };
 }
 
+/** The one-view frame: one header row at the plan.md header height and one centered Surface panel. Only the panel scrolls. */
+function Frame({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-dvh flex-col overflow-clip bg-canvas text-text">
+      <header className="flex shrink-0 items-center border-b border-divider px-2" style={{ height: "var(--h-header)" }}>
+        <h1 className="font-semibold">Arbareto</h1>
+      </header>
+      <main className="flex min-h-0 flex-1 overflow-auto p-4">
+        <div className="m-auto flex w-full max-w-[640px] flex-col gap-3 rounded-md border border-divider bg-surface p-4">{children}</div>
+      </main>
+    </div>
+  );
+}
+
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </>
+  );
+}
+
 export function BootView(props: BootProps) {
   const facts = props.state === "facts";
   useEffect(() => {
     if (facts) markBootView();
   }, [facts]);
 
-  if (props.state === "loading") return <p>Loading…</p>;
+  if (props.state === "loading")
+    return (
+      <Frame>
+        <p>Loading…</p>
+      </Frame>
+    );
   if (props.state === "unavailable") {
     const text = !props.session ? "Git service not connected" : props.code === "SERVICE_UNAVAILABLE" ? "Environment not available yet" : "Environment request failed";
     return (
-      <p>
-        {text}: {props.code}
-      </p>
+      <Frame>
+        <p>
+          {text}: {props.code}
+        </p>
+      </Frame>
     );
   }
 
   const env = props.environment;
   const blocked = env.gitCode === undefined ? undefined : (GIT_BLOCKED[env.gitCode] ?? "Git check failed");
   return (
-    <main>
-      <h1>Arbareto</h1>
-      <p>
-        Build: {env.buildIdentity.version} {env.buildIdentity.commit}
-      </p>
-      {env.buildIdentity.signing === "unsigned" && <p>Unsigned local test package</p>}
-      <p>Platform scope: {env.platformScope}</p>
-      {env.platformScope === "other" && <p>Unqualified platform</p>}
-      {env.selectedPath !== undefined && <p>Selected Git: {env.selectedPath}</p>}
-      {env.executablePath !== undefined && env.executablePath !== env.selectedPath && <p>Runs: {env.executablePath}</p>}
-      <p>Detected Git version: {env.detectedVersion ?? "none"}</p>
-      {env.previousVersion !== undefined && <p>{`Git updated: ${env.previousVersion} → ${env.detectedVersion}`}</p>}
-      <p>Minimum Git version: {env.minimumVersion}</p>
-      {env.admission !== undefined && <p>Admission: {env.admission}</p>}
-      <p>Qualification: {env.qualification}</p>
+    <Frame>
       {blocked !== undefined && (
-        <section>
-          <p>
+        <section className="flex flex-wrap items-center gap-2">
+          <p className="font-semibold">
             {blocked}: {env.gitCode}
           </p>
-          {env.reason !== undefined && <p>Reason: {env.reason}</p>}
-          {env.path !== undefined && <p>Path: {env.path}</p>}
-          <button type="button" onClick={props.onSelectGit}>
-            Select Git
-          </button>
+          <Button onClick={props.onSelectGit}>Select Git</Button>
         </section>
       )}
+      {env.buildIdentity.signing === "unsigned" && <p className="text-warning">Unsigned local test package</p>}
+      {env.platformScope === "other" && <p className="text-warning">Unqualified platform</p>}
+      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 [&_dd]:break-all [&_dt]:text-muted-text">
+        <Fact label="Build">
+          {env.buildIdentity.version} {env.buildIdentity.commit}
+        </Fact>
+        <Fact label="Platform scope">{env.platformScope}</Fact>
+        {env.selectedPath !== undefined && <Fact label="Selected Git">{env.selectedPath}</Fact>}
+        {env.executablePath !== undefined && env.executablePath !== env.selectedPath && <Fact label="Runs">{env.executablePath}</Fact>}
+        <Fact label="Detected Git version">{env.detectedVersion ?? "none"}</Fact>
+        {env.previousVersion !== undefined && <Fact label="Git updated">{`${env.previousVersion} → ${env.detectedVersion}`}</Fact>}
+        <Fact label="Minimum Git version">{env.minimumVersion}</Fact>
+        {env.admission !== undefined && <Fact label="Admission">{env.admission}</Fact>}
+        <Fact label="Qualification">{env.qualification}</Fact>
+        {blocked !== undefined && env.reason !== undefined && <Fact label="Reason">{env.reason}</Fact>}
+        {blocked !== undefined && env.path !== undefined && <Fact label="Path">{env.path}</Fact>}
+      </dl>
       {/* A direct call keeps the marker buttons in the BootView element tree. RecoveryMarkers uses no hooks. */}
       {RecoveryMarkers({ environment: env, onDismissMarker: props.onDismissMarker })}
-    </main>
+    </Frame>
   );
 }
 

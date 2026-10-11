@@ -6,6 +6,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { printOrigin } from "../origin";
 import { BootView, bootActions, markBootView, type BootProps, type Environment } from "../../src/frontend/boot/BootView";
+import { Button } from "../../src/frontend/components/ui/button";
 
 printOrigin("../../src/frontend/boot/BootView.tsx", import.meta.dir);
 
@@ -22,7 +23,37 @@ const environment = (fields: Partial<Environment> = {}): Environment => ({
 
 const render = (env: Environment) => renderToStaticMarkup(<BootView state="facts" environment={env} onSelectGit={() => {}} onDismissMarker={() => {}} />);
 
+const FRAME_HEADER = /<header\b[^>]*style="height:var\(--h-header\)"[^>]*><h1[^>]*>Arbareto<\/h1><\/header>/;
+
 describe("boot view", () => {
+  // T363: the one-view frame. plan.md "Compact token system" gives the header height and the Surface role.
+  test("the facts state has one header row, one Surface panel, one definition list, and a primary Select Git", () => {
+    const html = render(environment({ gitCode: "GIT_UNAVAILABLE", reason: "selected-missing", path: "C:\\Git\\git.exe", selectedPath: "C:\\Git\\git.exe", previousVersion: "2.42.0.windows.1", admission: "admitted" }));
+    const count = (pattern: RegExp) => html.match(pattern)?.length ?? 0;
+    expect(count(/<header\b/g)).toBe(1);
+    expect(html).toMatch(FRAME_HEADER);
+    expect(count(/class="[^"]*\bbg-surface\b/g)).toBe(1);
+    expect(count(/<dl\b/g)).toBe(1);
+    const labels = [...html.matchAll(/<dt>([^<]*)<\/dt>/g)].map((m) => m[1]);
+    expect(labels).toEqual(["Build", "Platform scope", "Selected Git", "Detected Git version", "Git updated", "Minimum Git version", "Admission", "Qualification", "Reason", "Path"]);
+    expect(count(/<dd>/g)).toBe(labels.length);
+    expect(html).toMatch(/<dt>Build<\/dt><dd>0\.1\.0 c{40}-dirty<\/dd>/);
+    for (const label of labels) expect(html).not.toContain(`<p>${label}`);
+    // A screen reader reads the blocked line before its details.
+    expect(html.indexOf("Git unavailable: GIT_UNAVAILABLE")).toBeGreaterThan(-1);
+    expect(html.indexOf("Git unavailable: GIT_UNAVAILABLE")).toBeLessThan(html.indexOf("<dl"));
+    const select = html.match(/<button\b[^>]*>Select Git<\/button>/)?.[0] ?? "";
+    expect(select).toContain('data-slot="button"');
+    expect(select).toContain("bg-primary");
+  });
+
+  test("the loading and unavailable states use the same frame", () => {
+    for (const html of [renderToStaticMarkup(<BootView state="loading" />), renderToStaticMarkup(<BootView state="unavailable" code="SERVICE_UNAVAILABLE" />)]) {
+      expect(html).toMatch(FRAME_HEADER);
+      expect(html.match(/class="[^"]*\bbg-surface\b/g)?.length).toBe(1);
+    }
+  });
+
   test("the unavailable state names the code", () => {
     expect(renderToStaticMarkup(<BootView state="unavailable" code="SERVICE_UNAVAILABLE" />)).toContain("Git service not connected: SERVICE_UNAVAILABLE");
   });
@@ -39,10 +70,10 @@ describe("boot view", () => {
     const wrapper = "C:\\Git\\cmd\\git.exe";
     const resolved = "C:\\Git\\mingw64\\libexec\\git-core\\git.exe";
     const viaWrapper = render(environment({ selectedPath: wrapper, executablePath: resolved }));
-    expect(viaWrapper).toContain(`<p>Selected Git: ${wrapper}</p><p>Runs: ${resolved}</p>`);
+    expect(viaWrapper).toContain(`<dt>Selected Git</dt><dd>${wrapper}</dd><dt>Runs</dt><dd>${resolved}</dd>`);
     const direct = render(environment({ selectedPath: resolved, executablePath: resolved }));
-    expect(direct).toContain(`<p>Selected Git: ${resolved}</p>`);
-    expect(direct).not.toContain("Runs:");
+    expect(direct).toContain(`<dt>Selected Git</dt><dd>${resolved}</dd>`);
+    expect(direct).not.toContain("<dt>Runs</dt>");
     expect(render(environment())).not.toContain("Selected Git");
   });
 
@@ -64,7 +95,7 @@ describe("boot view", () => {
 
   test("a startup upgrade shows a non-blocking update line, and no line without previousVersion", () => {
     const html = render(environment({ detectedVersion: "2.56.0.windows.1", previousVersion: "2.55.0.windows.3", admission: "admitted" }));
-    expect(html).toContain("Git updated: 2.55.0.windows.3 → 2.56.0.windows.1");
+    expect(html).toContain("<dt>Git updated</dt><dd>2.55.0.windows.3 → 2.56.0.windows.1</dd>");
     expect(html).not.toContain("Select Git");
     expect(render(environment({ detectedVersion: "2.56.0.windows.1", admission: "admitted" }))).not.toContain("Git updated");
   });
@@ -145,5 +176,5 @@ describe("no network request", () => {
 function buttons(node: ReactNode): ReactElement<{ onClick: () => void }>[] {
   if (Array.isArray(node)) return node.flatMap(buttons);
   if (!isValidElement<{ children?: ReactNode; onClick: () => void }>(node)) return [];
-  return node.type === "button" ? [node] : buttons(node.props.children);
+  return node.type === "button" || node.type === Button ? [node] : buttons(node.props.children);
 }

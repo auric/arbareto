@@ -94,13 +94,13 @@ export function createOperationRegistry(
       return next;
     },
 
-    // `distro`: the listed distro name of phase `wsl-starting` (contract §11 "Distro start").
-    progress(operationId: string, phase: Phase, counters: Record<string, number> = {}, distro?: string): void {
+    // `distro`: the listed distro name of phase `wsl-starting` (contract §11 "Distro start"). `path`: the submodule row path (contract §12 "Progress").
+    progress(operationId: string, phase: Phase, counters: Record<string, number> = {}, distro?: string, path?: string): void {
       const e = entry(operationId);
       const state = e.view.state as ProgressEvent["state"];
       // Data-model §9 "Progress": every `updateSubmodules` event carries the stall flag.
       const stalled = e.view.operation === "updateSubmodules" ? (e.view.stalled ?? false) : e.view.stalled;
-      const event = { requestId: e.requestId, operationId, state, phase, counters: { ...counters }, ...(stalled === undefined ? {} : { stalled }), ...(distro === undefined ? {} : { distro }) };
+      const event = { requestId: e.requestId, operationId, state, phase, counters: { ...counters }, ...(stalled === undefined ? {} : { stalled }), ...(distro === undefined ? {} : { distro }), ...(path === undefined ? {} : { path }) };
       // Contract §2: no progress event follows the terminal response.
       if (isTerminal(e.view.state) || !ProgressEvent.safeParse(event).success) throw new TypeError("progress event refused");
       e.view = { ...e.view, phase };

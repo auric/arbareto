@@ -270,6 +270,29 @@ describe("Git's own update (contract §12 \"Scope\", research.md R14 S20)", () =
       expect(events.some((e) => valuesOf(e, "percent").length > 0)).toBe(true);
     });
   });
+
+  // T365: the found nested row has no other name in the progress stream.
+  updateCase(`F27 base: each progress event names the row of its row index by path, also the found nested row mid/leaf`, SHELL, () => {
+    const b = buildF27(gitPath(), "t365-progress-path", "base");
+    const sup = superOf(b);
+    return withFixture(b, "t365-progress-path", async (service) => {
+      await update();
+      const { repositoryId, r } = await reviewedOk(service, sup);
+      const isStep = (p: { requestId?: string; phase?: string }) => p.requestId === requestId && (SUBMODULE_PROGRESS_PHASES as readonly (string | undefined)[]).includes(p.phase);
+      const events = () => (service.progress as { requestId?: string; phase?: string; path?: string; counters?: { rowIndex?: number } }[]).filter(isStep);
+      // The held leaf clone step keeps the throttled leaf event from a merge with the solo event.
+      const release = service.runner.holdStart(once((c) => isAt(sup, "mid")(c) && c.arguments.includes(":(literal)leaf")));
+      const requestId = sendUpdate(service, repositoryId, r);
+      await until(() => events().some((e) => e.counters?.rowIndex === 2) || service.responseAt.has(requestId), "row 2 progress event", TIMEOUT_MS);
+      release();
+      await service.response(requestId);
+      for (const event of events()) expect(SubmoduleProgress.safeParse(event).success).toBe(true);
+      const rows = ["mid", "mid/leaf", "solo"];
+      expect(events().filter((e) => rows[e.counters!.rowIndex! - 1] !== e.path).map((e) => [e.counters?.rowIndex, e.path])).toEqual([]);
+      expect(events().some((e) => e.path === "mid/leaf")).toBe(true);
+      expect(resultOf(await service.response(requestId), "mid/leaf").found).toBe(true);
+    });
+  });
 });
 
 describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {

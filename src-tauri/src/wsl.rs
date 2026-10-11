@@ -230,9 +230,11 @@ pub struct Output {
 }
 
 /// The end of one process with its own deadline. `deadline`: the deadline ended it, and `output` is `None`.
+/// `process`: the open handle and the ID of the started process. While the handle is open, the ID cannot identify another process.
 pub struct Ended {
     pub output: Option<Output>,
     pub deadline: bool,
+    pub process: Option<(OwnedHandle, u32)>,
 }
 
 /// The process and registry calls of this module. Tests inject them.
@@ -245,6 +247,7 @@ pub trait Host {
         Ended {
             output: self.run(command),
             deadline: false,
+            process: None,
         }
     }
     /// The process of one walk (contract §6 "Walks"): as `run_until`, and the set `stop` Event ends that process at once.
@@ -1720,6 +1723,7 @@ pub fn distros_reply(
 const NO_OUTPUT: Ended = Ended {
     output: None,
     deadline: false,
+    process: None,
 };
 
 /// Starts one `wsl.exe` with `start` and collects it. A walk whose stop Event is already set starts no process (contract §6 "Walks").
@@ -1764,6 +1768,7 @@ pub(crate) fn collect(
         return Ended {
             output: None,
             deadline: waited == WAIT_TIMEOUT,
+            process: Some((process, spawned.pid)),
         };
     }
     let mut code = 0u32;
@@ -1772,6 +1777,7 @@ pub(crate) fn collect(
         return Ended {
             output: None,
             deadline: false,
+            process: Some((process, spawned.pid)),
         };
     }
     // The pipe ends when `wsl.exe` ends. The probe deadline bounds the wait for the last bytes. A set stop Event ends the wait.
@@ -1792,6 +1798,7 @@ pub(crate) fn collect(
             stdout,
         }),
         deadline: false,
+        process: Some((process, spawned.pid)),
     }
 }
 
@@ -2031,6 +2038,7 @@ mod tests {
             Ended {
                 output: self.run(command),
                 deadline: false,
+                process: None,
             }
         }
     }

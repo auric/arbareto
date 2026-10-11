@@ -905,7 +905,7 @@ impl ProcessRequests {
                 let Ok(spawned) = spawned else {
                     return refused(OWNERSHIP);
                 };
-                let process = Owned(spawned.process);
+                let (process, pid) = (Owned(spawned.process), spawned.pid);
                 let (stdin, stdout, stderr) = (spawned.stdin, spawned.stdout, spawned.stderr);
                 Box::new(move || {
                     let exited = Arc::new(Mutex::new(false));
@@ -941,7 +941,7 @@ impl ProcessRequests {
                         std::thread::spawn(move || me.read_stream(&run, stream));
                     }
                     let wait = (limits.wait, limits.expiry);
-                    std::thread::spawn(move || me.watch(&run, process, wait));
+                    std::thread::spawn(move || me.watch(&run, (process, pid), wait));
                     None
                 })
             },
@@ -1884,7 +1884,9 @@ impl ProcessRequests {
                     reply::output(&call_id, OutputStream::Stdout, &data),
                 );
             }
-            let active = me.jobs.active_processes(&operation_id);
+            // `ended.process` keeps the handle open until the count is read, so the ID cannot identify another process.
+            let exited = ended.process.as_ref().map(|&(_, pid)| pid);
+            let active = me.jobs.active_descendants(&operation_id, exited);
             let deadline = ended.deadline.then_some(ExitDeadline::Deadline);
             me.send(
                 generation,
@@ -2439,7 +2441,12 @@ impl ProcessRequests {
 
     /// Ends the run at its process handle signal, never at pipe end-of-file (contract §6 "Completion signal").
     /// `limit` is the deadline, or the ceiling of a `network` request. `reason` names it in the exit reply.
-    fn watch(&self, run: &Run, process: Owned, (limit, reason): (Duration, ExitDeadline)) {
+    fn watch(
+        &self,
+        run: &Run,
+        (process, pid): (Owned, u32),
+        (limit, reason): (Duration, ExitDeadline),
+    ) {
         let mut expired = None;
         if !wait(process.0, limit) {
             expired = Some(reason);
@@ -2451,7 +2458,8 @@ impl ProcessRequests {
             .calls
             .get(&run.call_id)
             .is_some_and(|call| call.closed);
-        let active = self.jobs.active_processes(&run.operation_id);
+        // `process` stays open until the count is read, so `pid` cannot identify another process.
+        let active = self.jobs.active_descendants(&run.operation_id, Some(pid));
         let mut code = 0u32;
         // SAFETY: `process` owns the open process handle, and `code` is a live local.
         let read = unsafe { GetExitCodeProcess(process.0, &mut code) }.is_ok();
@@ -4904,6 +4912,42 @@ pub(crate) mod tests {
         }
     }
 
+    /// T370: the process handle can signal before Windows removes the process from its Job.
+    /// The count leaves out the exited child, so a child without descendants always gives 0 (contract §6 "Lingering Jobs").
+    #[test]
+    #[ignore = "run this load probe of the Job removal race alone with --ignored"]
+    fn a_child_without_descendants_gives_zero_active_descendants_in_each_of_1600_runs() {
+        // The race shows under CPU load. More than 8 children at a time delay the stall timers of other tests.
+        const ROUNDS: usize = 200;
+        const CONCURRENT: usize = 8;
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let mut counted = Vec::new();
+        for _ in 0..ROUNDS {
+            let calls: Vec<(String, String)> = (0..CONCURRENT)
+                .map(|_| {
+                    let operation = uuid();
+                    let call = harness.run(&operation, &workspace, &["sleep", "10"]);
+                    (operation, call)
+                })
+                .collect();
+            for (operation, call) in calls {
+                let exit = harness.exit(&call, WAIT).expect("exit").1;
+                assert_eq!(exit["exitCode"], 0);
+                if exit["activeDescendants"] != 0 {
+                    counted.push(exit["activeDescendants"].clone());
+                }
+                harness.send(json!({ "type": "closeJob", "operationId": operation }));
+            }
+        }
+        assert!(
+            counted.is_empty(),
+            "{} of {} exit replies counted a process: {counted:?}",
+            counted.len(),
+            ROUNDS * CONCURRENT
+        );
+    }
+
     #[test]
     fn ten_thousand_sequential_operations_leave_the_session_maps_bounded() {
         let harness = Harness::child();
@@ -5690,6 +5734,7 @@ pub(crate) mod tests {
                 return wsl::Ended {
                     output: self.run(command),
                     deadline: false,
+                    process: None,
                 };
             };
             self.commands

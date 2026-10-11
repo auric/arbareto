@@ -64,10 +64,6 @@ pub struct SpawnRequest<'a> {
 pub struct Spawned {
     /// The caller owns and closes this handle.
     pub process: HANDLE,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "only tests read the process ID")
-    )]
     pub pid: u32,
     pub stdin: Option<File>,
     pub stdout: File,
@@ -824,7 +820,7 @@ mod tests {
 
         let direct = hash_object(&resolved, &fixture);
         assert_eq!(
-            direct.job.process_ids(),
+            direct.job.process_ids().expect("process IDs"),
             vec![direct.process.pid],
             "the resolved Git runs alone in its Job, without conhost.exe"
         );
@@ -837,6 +833,7 @@ mod tests {
             names = wrapped
                 .job
                 .process_ids()
+                .expect("process IDs")
                 .into_iter()
                 .filter_map(image_name)
                 .collect();

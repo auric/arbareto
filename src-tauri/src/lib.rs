@@ -80,7 +80,6 @@ pub fn run() {
     let root = profile::root(std::env::var_os(profile::VARIABLE))
         .unwrap_or_else(|refusal| profile::refuse(&refusal));
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             ipc::get_environment,
             ipc::choose_git,

@@ -110,6 +110,7 @@
         "SIGNING_FAILED",
         "GIT_FAILED",
         "PROCESS_OWNERSHIP_FAILED",
+        "PICKER_FAILED",
         "DEADLINE",
         "CANCELED",
         "COMMIT_ENCODING_UNSUPPORTED",

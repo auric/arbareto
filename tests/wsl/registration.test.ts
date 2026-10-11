@@ -36,7 +36,7 @@ afterEach(async () => {
   runners = [];
 }, CASE_TIMEOUT_MS);
 
-function setup(host: WslHost): { runner: BunRunner; s: WslSession } {
+function setup(host: WslHost, markers: object[] = []): { runner: BunRunner; s: WslSession } {
   const runner = createBunRunner({
     git: GIT ?? "git",
     directory: fixtureDir(`runner-${crypto.randomUUID()}`),
@@ -44,7 +44,7 @@ function setup(host: WslHost): { runner: BunRunner; s: WslSession } {
     wslGlobalConfig: globalConfig(host),
   });
   runners.push(runner);
-  return { runner, s: startSession(runner) };
+  return { runner, s: startSession(runner, { markers }) };
 }
 
 // Contract §11 "Process ownership": after each probe, no `arbareto-*` scope of the test remains.
@@ -246,9 +246,10 @@ describe("WSL registration seams (T207)", () => {
   const OTHER_INODE = "9999";
   const markerOf = (host: WslHost, inode: string) => ({ commonIdentity: { distroGuid: host.guid, fileSystemId: host.probe.gitfs!.split(":")[1]!, inode } });
   const dismiss = (runner: GitRunner & WslRunner & { addContext: BunRunner["addContext"] }, path: string, options: { marker?: { commonIdentity: PhysicalIdentity }; session?: WslGit } = {}) => {
+    const gits = new Map(options.session === undefined ? [] : [[options.session.guid, options.session]]);
     const bootstrapId = runner.addContext("repositoryDiscovery", path);
     const marker = options.marker ?? { commonIdentity: { distroGuid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", fileSystemId: "1", inode: OTHER_INODE } };
-    return dismissWslMarker(runner, { operationId: crypto.randomUUID(), bootstrapId, signal: new AbortController().signal, starting: () => {} }, marker, options.session);
+    return dismissWslMarker(runner, { operationId: crypto.randomUUID(), bootstrapId, signal: new AbortController().signal, starting: () => {} }, marker, gits);
   };
   // The approved session Git of the distro, as a registration of `path` approves it through the injected probe.
   async function sessionGit(runner: BunRunner, path: string): Promise<WslGit> {
@@ -358,6 +359,92 @@ describe("WSL registration seams (T207)", () => {
       expect(await dismiss(runner, repo.path, { marker: markerOf(host, SEAM_GIT_INODE), session })).toEqual(refresh);
       // A session Git of another path than the probe found runs no discovery.
       expect(await dismiss(runner, repo.path, { marker: markerOf(host, OTHER_INODE), session: { ...session, path: "/usr/local/bin/git" } })).toEqual(refresh);
+      expect(runner.spawned).toBe(0);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  // T115: `dismissRecoveryMarker` of the session routes a WSL marker to the WSL rule, with the approved Git of the distro that the path routes to.
+  // `distroGuid`: another GUID stands for a marker of an earlier distro with the same name.
+  const wslMarker = (host: WslHost, path: string, inode: string, distroGuid = host.guid) => ({
+    markerId: crypto.randomUUID(),
+    kind: "commit",
+    startedAt: new Date().toISOString(),
+    worktreeRoot: path,
+    commonDirectory: `${path}\\.git`,
+    commonIdentity: { ...markerOf(host, inode).commonIdentity, distroGuid },
+  });
+  const REFUSED = { state: "failed", code: "STATE_UNKNOWN", result: { remedy: { text: "Open this repository and use Refresh." } } };
+  const dismissed = (s: WslSession, runner: BunRunner, markerId: string, path: string) =>
+    s.response(s.request("dismissRecoveryMarker", { markerId, bootstrapId: runner.addContext("repositoryDiscovery", path) }));
+
+  wslTest(
+    "T115: the session allows a WSL marker dismissal when the list does not name the distro, and no process starts",
+    [],
+    async (host) => {
+      const path = `\\\\wsl.localhost\\arbareto-missing-${crypto.randomUUID().slice(0, 8)}\\home\\u\\r`;
+      const marker = wslMarker(host, path, OTHER_INODE);
+      const { runner, s } = setup(host, [marker]);
+      expect(await dismissed(s, runner, marker.markerId, path)).toMatchObject({ state: "succeeded", result: { outcome: "unknown" } });
+      expect(runner.spawned).toBe(0);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "T115: a WSL marker dismissal in a stopped distro gives phase wsl-starting with the listed distro name",
+    [],
+    async (host) => {
+      const marker = wslMarker(host, folder(host), OTHER_INODE);
+      const { runner, s } = setup(host, [marker]);
+      runner.inject.wslProbe = { stdout: seamProbe(host, { version: `git version ${MINIMUM}` }) };
+      runner.inject.wslRunning = [];
+      const release = runner.holdStart();
+      const requestId = s.request("dismissRecoveryMarker", { markerId: marker.markerId, bootstrapId: runner.addContext("repositoryDiscovery", folder(host)) });
+      const deadline = Date.now() + 30_000;
+      while (!s.progressOf(requestId).some((p) => p.phase === "wsl-starting") && Date.now() < deadline) await Bun.sleep(10);
+      release();
+      expect(s.progressOf(requestId).filter((p) => p.phase === "wsl-starting")).toMatchObject([{ distro: host.distro }]);
+      // No session Git of the distro, so the rule refuses after the probe.
+      expect(await s.response(requestId)).toMatchObject(REFUSED);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "T115: the session decides a WSL marker dismissal with the approved Git of the distro, by the common-directory identity",
+    ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"],
+    async (host) => {
+      const other = wslMarker(host, folder(host), OTHER_INODE);
+      const same = wslMarker(host, folder(host), SEAM_GIT_INODE);
+      const { runner, s } = setup(host, [other, same]);
+      const repo = seamRepository(host, runner);
+      // No session Git of the distro yet, so no discovery runs.
+      expect(await dismissed(s, runner, other.markerId, repo.path)).toMatchObject(REFUSED);
+      expect(await s.response(s.chooseRepository(repo.path))).toMatchObject({ state: "succeeded" });
+      const running = s.request("dismissRecoveryMarker", { markerId: other.markerId, bootstrapId: runner.addContext("repositoryDiscovery", repo.path) });
+      expect(await s.response(running)).toMatchObject({ state: "succeeded", result: { outcome: "unknown" } });
+      // Contract §11 "Distro start": the running list names the distro, so no `wsl-starting` event comes.
+      expect(s.progressOf(running).filter((p) => p.phase === "wsl-starting")).toEqual([]);
+      expect(await dismissed(s, runner, same.markerId, repo.path)).toMatchObject(REFUSED);
+      expect(runner.spawned).toBe(0);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "T115: a WSL marker of an earlier distro GUID with the same name is decided with the approved Git of the current distro, and is allowed",
+    ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"],
+    async (host) => {
+      const earlier = wslMarker(host, folder(host), SEAM_GIT_INODE, `{${crypto.randomUUID()}}`);
+      const { runner, s } = setup(host, [earlier]);
+      const repo = seamRepository(host, runner);
+      expect(await s.response(s.chooseRepository(repo.path))).toMatchObject({ state: "succeeded" });
+      expect(await dismissed(s, runner, earlier.markerId, repo.path)).toMatchObject({ state: "succeeded", result: { outcome: "unknown" } });
       expect(runner.spawned).toBe(0);
       expectNoScope(host);
     },

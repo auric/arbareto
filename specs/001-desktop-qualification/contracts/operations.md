@@ -1481,7 +1481,7 @@ WSL2 repositories are in this slice (spec FR-039 to FR-046). Git inside the dist
 
 ### Distro start
 
-- When the running list does not name the distro, registration or restore enters phase `wsl-starting`. Its progress event carries `distro`, the listed distro name (§2). The renderer shows "Starting WSL distro <name>…" with Cancel until the response of that request. No event marks the end of the start.
+- When the running list does not name the distro, registration, restore, or `dismissRecoveryMarker` of a WSL marker enters phase `wsl-starting`. Its progress event carries `distro`, the listed distro name (§2). The renderer shows "Starting WSL distro <name>…" with Cancel until the response of that request. A dismissal has no Cancel. Its start state ends when the dismissal ends. No event marks the end of the start.
 - The first WSL process starts the distro, as `wsl.exe` does for any command. That process is the Git probe ("Git per distro" below). Its deadline is the §5 WSL start deadline.
 - The renderer sends Cancel as `cancel` with the `operationId` from the accepted event of the registration request (§2). Cancel closes the probe Job. Registration ends `canceled`, and the current workspace stays unchanged. The distro can keep starting after Cancel, and the app does not stop it.
 - A deadline gives `DEADLINE`. A `wsl.exe` failure gives `WSL_UNAVAILABLE` with reason `start-failed`. The result carries the bounded `wsl.exe` error text as plain text, such as `Wsl/Service/WSL_E_DISTRO_NOT_FOUND` (P3).

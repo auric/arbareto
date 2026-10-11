@@ -232,8 +232,8 @@ export interface WslProbeTarget {
   operationId: string;
   bootstrapId: string;
   signal: AbortSignal;
-  // Contract §11 "Distro start": called before the probe of a distro that the running list does not name.
-  starting(): void;
+  // Contract §11 "Distro start": called with the listed distro name before the probe of a distro that the running list does not name.
+  starting(distro: string): void;
 }
 
 // Contract §11 "Distro start": the probe run and its parsed lines. `canceled` means that the signal ended the probe.
@@ -242,7 +242,7 @@ export async function runWslProbe(
   route: Extract<WslRoute, { kind: "wsl" }>,
   target: WslProbeTarget,
 ): Promise<{ ok: true; facts: WslProbeFacts } | WslRefusal | { ok: false; canceled: true }> {
-  if (!route.running) target.starting();
+  if (!route.running) target.starting(route.distro);
   const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   // Contract §5: the WSL distro start deadline for a stopped distro, the probe deadline otherwise.

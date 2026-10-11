@@ -552,6 +552,19 @@ describe("dismissal (contract §6 \"Dismissal\")", () => {
     });
   }, TIMEOUT_MS);
 
+  // T115: the marker ID decides at acceptance, before any Git process starts.
+  caseTest("T115", `dismissRecoveryMarker with a marker ID that the handshake does not list gives UNKNOWN_TARGET, and no Git process starts`, SHELL, async () => {
+    const name = "t115-dismiss-unknown";
+    const repo = repoOf(buildChanged(gitPath(), name, "F09"));
+    const marker = await markerFor(name, repo);
+    await underTest("recovery");
+    await withService({ name, markers: [marker] }, async (service) => {
+      const from = service.runner.calls.length;
+      const response = await dismiss(service, crypto.randomUUID(), repo);
+      expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
+    });
+  }, TIMEOUT_MS);
+
   caseTest(TASK, `dismissRecoveryMarker is allowed for a marker whose resolved common-directory identity differs`, SHELL, async () => {
     const name = "t100-dismiss-other";
     const repo = repoOf(buildChanged(gitPath(), name, "F09"));

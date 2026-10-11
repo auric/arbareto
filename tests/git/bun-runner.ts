@@ -831,6 +831,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       "inactivityMs" in limits
         ? setTimeout(() => expire("ceiling"), shorter(limits.ceilingMs, inject.limits.ceilingMs))
         : setTimeout(() => expire("deadline"), shorter(limits.deadlineMs, inject.deadlineMs));
+    // The exit can reach the loop before a due timer callback. A test-injected deadline then still ends the call.
+    const injectedEnd = "inactivityMs" in limits || inject.deadlineMs == null ? null : performance.now() + shorter(limits.deadlineMs, inject.deadlineMs);
     // Contract §6 "Activity and stall notice": only a call with `stallMs` gets activity events, and only at a state change.
     const stallMs = call.limits.stallMs === undefined ? undefined : shorter(call.limits.stallMs, inject.limits.stallMs);
     let inactivity: ReturnType<typeof setTimeout> | undefined;
@@ -893,6 +895,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     ];
 
     await proc.exited;
+    if (injectedEnd !== null && performance.now() >= injectedEnd) expire("deadline");
     exited = true;
     samples.delete(call);
     for (const t of [timer, inactivity, stall]) clearTimeout(t);

@@ -13,7 +13,7 @@
 
 ## Requirement Completeness
 
-- [ ] No [NEEDS CLARIFICATION] markers remain
+- [x] No [NEEDS CLARIFICATION] markers remain
 - [x] Requirements are testable and unambiguous
 - [x] Success criteria are measurable
 - [x] Success criteria are technology-agnostic (no implementation details)
@@ -31,8 +31,9 @@
 
 ## Notes
 
-- One marker remains by design: FR-001, the history scope. The default is the current checkout. The user has not confirmed it. Resolve it with `/speckit-clarify` before `/speckit-plan`.
+- The 2026-10-11 clarification resolved the FR-001 marker. The default scope is all branches, as in Git Extensions. No marker remains.
 - Iteration 1 found sentences above 20 words. The fix split them. A word count check now finds none.
 - The spec names Git, Git Extensions, and the commit-graph file. These are domain terms of a Git client, not implementation choices.
 - The "Research inputs" section holds mechanism facts for the plan. Requirements and success criteria do not depend on its wording.
-- SC-002, SC-006, SC-010, and SC-011 hold proposed targets. The plan confirms them before measurement.
+- The user confirmed the SC-002 budget and the SC-011 ratio. SC-014 reuses the feature 001 SC-005 targets. SC-006 and SC-010 hold proposed targets. The plan confirms them before measurement.
+- The spec names a few ref names, such as `refs/notes/commits`. They are Git domain terms, not implementation choices.

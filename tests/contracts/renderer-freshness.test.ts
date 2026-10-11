@@ -242,6 +242,23 @@ describe("obsolete responses", () => {
     expect(o.requests.state().workspace?.generation).toBe(2);
     o.requests.dispose();
   });
+
+  test("B4-1: a rejected updateSubmodules with APPROVAL_EXPIRED records its outcome and starts no read; REPOSITORY_CHANGED starts one full read", async () => {
+    const o = await opened();
+    const reads = () => o.of("readWorkspace").length;
+    const before = reads();
+    const expired: BridgeResponse = { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "APPROVAL_EXPIRED", repositoryGeneration: 1 };
+    o.requests.mutationEnded("updateSubmodules", expired);
+    await flush();
+    expect(o.requests.state().outcomes).toContainEqual(expired);
+    expect(reads()).toBe(before);
+    const changed: BridgeResponse = { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "REPOSITORY_CHANGED", repositoryGeneration: 1 };
+    o.requests.mutationEnded("updateSubmodules", changed);
+    await flush();
+    expect(o.requests.state().outcomes).toContainEqual(changed);
+    expect(o.of("readWorkspace").slice(before).map((c) => c.payload)).toEqual([{ refresh: false, check: "full" }]);
+    o.requests.dispose();
+  });
 });
 
 describe("approvals", () => {

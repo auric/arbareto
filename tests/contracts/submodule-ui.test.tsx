@@ -10,8 +10,9 @@
 // - `SubmoduleReview` ({ open, bridge, target, snapshotId, review, client, finalFocus, startFocus, onCancel, onOperation }):
 //   `review` is the `reviewSubmodules` result value. `finalFocus` gives the opener, or the nearest surviving logical control.
 //   `startFocus` gives Cancel in the status bar. `onOperation` gets each `trackOperation` report of the `updateSubmodules` request.
-//   The service accepts a request or rejects it before the first progress event (contract §9: an expired token gives `APPROVAL_EXPIRED` at acceptance).
-//   So the dialog closes at the first progress event, and a rejection before it keeps the dialog open.
+//   `current` gives the snapshot ID and generation of the current read. A new review after `APPROVAL_EXPIRED` names them.
+//   Contract §2: the `accepted` event comes before the approval checks, and a `rejected` response can follow it.
+//   Data-model §7: a mutation goes to `running` only after those checks pass. So the dialog closes at the first event after `accepted`, and a rejection keeps it open.
 // - `OperationStatus`: a `StatusOperation` of kind `updateSubmodules` carries `submoduleRows`, the plan rows of its review.
 //   Each outcome row icon carries `data-icon` "added", "warning", or "removed".
 // The stall notice of a submodule step is a T257 case in `stall-notice.test.tsx`.
@@ -159,6 +160,20 @@ describe("submodule notice", () => {
     await click(update);
     expect(updates).toEqual([1]);
   });
+
+  test("B4-2: a blocking workbench state disables Update submodules, which stays focusable with the visible reason as its accessible description", async () => {
+    const { SubmoduleNotice } = await submoduleNotice();
+    const updates: number[] = [];
+    const reason = "A Git operation is running. Wait for its result, or select Cancel.";
+    await render(<SubmoduleNotice count={2} onUpdate={() => void updates.push(1)} blockedReason={reason} />);
+    const update = button("Update submodules");
+    expect(update.getAttribute("aria-disabled")).toBe("true");
+    expect(update.tabIndex).toBe(0);
+    expect(describedText(update)).toBe(reason);
+    expect(text(document.body)).toContain(reason);
+    await click(update);
+    expect(updates).toEqual([]);
+  });
 });
 
 // ---- Submodule review (T236). ----
@@ -171,7 +186,7 @@ function reviewBridge() {
   return { bridge, calls, of: (name: string) => calls.filter((c) => c.name === name) };
 }
 
-async function mountReview(value = review()) {
+async function mountReview(value = review(), props: Props = {}) {
   const { SubmoduleReview } = await submoduleReview();
   const double = reviewBridge();
   const operations: { progress: unknown; response: unknown }[] = [];
@@ -223,6 +238,8 @@ async function mountReview(value = review()) {
             operations.push(next);
             setOp(next);
           }}
+          current={() => ({ repositoryGeneration: TARGET.repositoryGeneration, snapshotId: SNAPSHOT })}
+          {...props}
         />
       </>
     );
@@ -231,7 +248,14 @@ async function mountReview(value = review()) {
   await settle();
   return { ...double, operations, setOpen, statusCalls: status.calls, opener: () => opener()! };
 }
-const accepted = (call: Call) => act(async () => call.onProgress?.({ requestId: id(), operationId: OPERATION_ID, state: "accepted", phase: "update", path: "libs/a", counters: { rowIndex: 1, rowCount: 2 }, stalled: false }));
+// Contract §2: the accepted event. A `rejected` response can follow it.
+const acceptedEvent = (call: Call) => act(async () => call.onProgress?.({ requestId: id(), operationId: OPERATION_ID, state: "accepted", counters: {} }));
+// Data-model §7: the first event after the approval checks passed. The service sends it with phase `preflight`.
+const admitted = (call: Call) =>
+  act(async () => {
+    call.onProgress?.({ requestId: id(), operationId: OPERATION_ID, state: "accepted", counters: {} });
+    call.onProgress?.({ requestId: id(), operationId: OPERATION_ID, state: "running", phase: "preflight", counters: {}, stalled: false });
+  });
 const answer = (call: Call, response: unknown) => act(async () => call.resolve({ requestId: id(), operationId: OPERATION_ID, ...(response as object) }));
 
 describe("submodule review", () => {
@@ -365,7 +389,7 @@ describe("submodule review", () => {
   test(`Start update closes the dialog at acceptance and moves focus to Cancel in the status bar ${NEEDS}`, async () => {
     const t = await mountReview();
     await click(button("Start update", dialog()!));
-    await accepted(t.of("updateSubmodules")[0]!);
+    await admitted(t.of("updateSubmodules")[0]!);
     await settle();
     expect(dialog()).toBeNull();
     expect(document.activeElement === document.querySelector('[data-double="status-cancel"]')).toBe(true);
@@ -386,6 +410,60 @@ describe("submodule review", () => {
     await click(button("Start update", dialog()!));
     expect(t.of("updateSubmodules")).toHaveLength(2);
     expect(t.of("updateSubmodules").at(-1)!.payload).toEqual({ submoduleReviewToken: fresh.submoduleReviewToken, start: true });
+  });
+
+  test("B4-1: after a read between the review and Start update, an expired token after the accepted event reviews the current snapshot and generation", async () => {
+    const newer = id();
+    let now = { repositoryGeneration: TARGET.repositoryGeneration, snapshotId: SNAPSHOT };
+    const t = await mountReview(review(), { current: () => now });
+    // Contract §8: each full read gives a new snapshot ID, and a changed observation gives a new generation.
+    now = { repositoryGeneration: TARGET.repositoryGeneration + 1, snapshotId: newer };
+    await click(button("Start update", dialog()!));
+    const call = t.of("updateSubmodules")[0]!;
+    await acceptedEvent(call);
+    await settle();
+    expect(dialog()).not.toBeNull();
+    await answer(call, { state: "rejected", code: "APPROVAL_EXPIRED" });
+    await settle();
+    expect(dialog()).not.toBeNull();
+    const current = { ...TARGET, repositoryGeneration: TARGET.repositoryGeneration + 1 };
+    expect(t.of("reviewSubmodules").map((c) => [c.target, c.payload])).toEqual([[current, { snapshotId: newer }]]);
+    const fresh = review({ generation: current.repositoryGeneration });
+    await answer(t.of("reviewSubmodules")[0]!, { state: "succeeded", result: fresh });
+    await settle();
+    await click(button("Start update", dialog()!));
+    expect(t.of("updateSubmodules").at(-1)!.target).toEqual(current);
+    expect(t.of("updateSubmodules").at(-1)!.payload).toEqual({ submoduleReviewToken: fresh.submoduleReviewToken, start: true });
+  });
+
+  test("B4-2: a blocking workbench state disables Start update, which stays focusable with the reason as its accessible description", async () => {
+    const reason = "A Git operation is running. Wait for its result, or select Cancel.";
+    const t = await mountReview(review(), { blockedReason: reason });
+    const start = button("Start update", dialog()!);
+    expect(start.getAttribute("aria-disabled")).toBe("true");
+    expect(start.tabIndex).toBe(0);
+    expect(describedText(start)).toBe(reason);
+    expect(text(dialog())).toContain(reason);
+    await click(start);
+    expect(t.of("updateSubmodules")).toHaveLength(0);
+  });
+
+  test("B4-7: the current option of each list carries aria-selected true, and the others false", async () => {
+    await mountReview();
+    const list = dialog()!.querySelector<HTMLElement>('[role="listbox"]')!;
+    const selected = () => [...list.querySelectorAll('[role="option"]')].map((o) => o.getAttribute("aria-selected"));
+    expect(selected()).toEqual(["true", "false"]);
+    await act(async () => void list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true, cancelable: true })));
+    expect(selected()).toEqual(["false", "true"]);
+    const programs = [...dialog()!.querySelectorAll('[role="listbox"]')][1]!;
+    expect(programs.querySelector('[role="option"]')!.getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("B4-8: a program whose rowId names no plan row shows that row ID in the code font, not an empty path", async () => {
+    const unknown = id();
+    await mountReview(review({ programs: [{ ...PROGRAM, rowId: unknown }] }));
+    const programs = [...dialog()!.querySelectorAll('[role="listbox"]')][1]!;
+    expect([...programs.querySelectorAll("code")].map(text)).toContain(unknown);
   });
 
   test("a failed new review after an expired token shows its code and keeps Start update disabled", async () => {
@@ -411,7 +489,7 @@ describe("submodule review", () => {
     await act(async () => void dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true })));
     await settle();
     expect(dialog()).not.toBeNull();
-    await accepted(t.of("updateSubmodules")[0]!);
+    await admitted(t.of("updateSubmodules")[0]!);
     await settle();
     expect(dialog()).toBeNull();
   });
@@ -420,7 +498,7 @@ describe("submodule review", () => {
     const t = await mountReview();
     await click(button("Start update", dialog()!));
     const call = t.of("updateSubmodules")[0]!;
-    await accepted(call);
+    await admitted(call);
     await settle();
     await click(button("Cancel", document.querySelector("footer")!));
     expect(t.statusCalls).toEqual(["cancel"]);
@@ -435,7 +513,7 @@ describe("submodule review", () => {
     const t = await mountReview();
     await click(button("Start update", dialog()!));
     const call = t.of("updateSubmodules")[0]!;
-    await accepted(call);
+    await admitted(call);
     await settle();
     await click(button("Cancel", document.querySelector("footer")!));
     await answer(call, { state: "canceled", result: {} });
@@ -447,7 +525,7 @@ describe("submodule review", () => {
     const t = await mountReview();
     await click(button("Start update", dialog()!));
     const call = t.of("updateSubmodules")[0]!;
-    await accepted(call);
+    await admitted(call);
     await answer(call, { state: "canceled", result: {} });
     await settle();
     expect(document.activeElement === t.opener()).toBe(true);
@@ -457,7 +535,7 @@ describe("submodule review", () => {
     const t = await mountReview();
     await click(button("Start update", dialog()!));
     const call = t.of("updateSubmodules")[0]!;
-    await accepted(call);
+    await admitted(call);
     t.opener().remove();
     const fallback = document.querySelector<HTMLElement>('[data-double="fallback"]')!;
     fallback.setAttribute("data-double", "opener");
@@ -525,6 +603,23 @@ describe("updating submodules", () => {
     expect(live()).not.toContain("40%");
     expect(text(document.querySelector("footer") ?? document.body)).toContain("40%");
     expect(buttons("Cancel")).toHaveLength(1);
+  });
+
+  test("B4-3: the status region handle gives Cancel by its element while the operation runs, and null after the outcome", async () => {
+    const handle: { current: { cancel(): HTMLElement | null } | null } = { current: null };
+    const double = statusBridge();
+    const op = updating();
+    const props = { bridge: double.bridge, worktreeRoot: ROOT, head: null, trusted: false, panel: "details" as const, modalOpen: false, refusal: null, onFocusMessageField() {}, onClearMessage() {}, onRefresh() {} };
+    let set!: (op: Operation) => void;
+    function Harness() {
+      const [current, setCurrent] = useState(op);
+      set = setCurrent;
+      return <OperationStatus ref={handle as never} operation={current} {...props} />;
+    }
+    await render(<Harness />);
+    expect(handle.current!.cancel()).toBe(button("Cancel", document.querySelector("footer")!));
+    await act(async () => set(ended(op, "succeeded", { rows: [] })));
+    expect(handle.current!.cancel()).toBeNull();
   });
 
   test(`the update phase shows the update step text ${NEEDS}`, async () => {

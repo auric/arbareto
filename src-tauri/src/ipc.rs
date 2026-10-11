@@ -1340,7 +1340,7 @@ mod tests {
 
     #[test]
     fn a_progress_event_outside_the_contract_shape_never_reaches_the_renderer() {
-        let valid = json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "accepted", "phase": "fetch", "counters": { "index": 1 }, "stalled": true });
+        let valid = json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "accepted", "phase": "fetch", "path": "libs/a", "counters": { "index": 1 }, "stalled": true });
         assert_eq!(
             renderer_message(&json!({ "kind": "public", "progress": valid }).to_string()),
             Some(ToRenderer::Progress(valid.clone())),

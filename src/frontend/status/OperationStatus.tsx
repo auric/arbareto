@@ -8,11 +8,11 @@ import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import type { SubmoduleRowResult } from "../../contracts/submodules";
 import { WarningIcon } from "../app/NoticeBand";
 import { CopyButton } from "../app/RepositoryStates";
+import { folderName } from "../app/RepositorySwitcher";
 import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
 import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
 import { isEditable, type Panel } from "../keyboard/shortcuts";
-import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
 import { cn } from "../lib/utils";
 
 // plan.md "Status area", "Status and fallback texts", "Required visible states" (Succeeded, Busy, Cancel requested, Canceled, Completed with effects, State unknown), "Keyboard and focus" (Status area row), and the Commit outcome row of "Task flow and command placement".
@@ -30,6 +30,8 @@ export type StatusOperation = {
 export type StatusRegionHandle = {
   /** The F6 target of the status region, or null when the region is no F6 stop. */
   entry(): HTMLElement | null;
+  /** Cancel in the status bar, or null while no operation runs. */
+  cancel(): HTMLElement | null;
 };
 export type OperationStatusProps = {
   bridge: Pick<ReturnType<typeof createBridge>, "cancel" | "getOperation">;
@@ -237,11 +239,6 @@ export function outcomeFocus(panel: Panel, modalOpen: boolean, from: "cancel" | 
   return from === "cancel" ? "area-heading" : "stay";
 }
 
-/** plan.md "Header layout": the last folder name of the worktree root. A WSL root ends in the same name. */
-export function repositoryName(worktreeRoot: string): string {
-  return splitPath(worktreeRoot, WINDOWS_SEPARATORS)[1];
-}
-
 const plain = (line: Line) => line.lead + (line.code ?? "") + line.tail;
 const lineNode = (line: Line) => (
   <>
@@ -263,7 +260,7 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
     const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
     const { rowIndex, rowCount } = progress?.counters ?? {};
     if (step !== undefined && progress?.path !== undefined && rowIndex !== undefined && rowCount !== undefined) return { lead: `${step} ${progress.path} (${rowIndex} of ${rowCount})…`, tail: "" };
-    return { lead: `${verb} in ${repositoryName(worktreeRoot)}…`, tail: "" };
+    return { lead: `${verb} in ${folderName(worktreeRoot)}…`, tail: "" };
   }
   const outcome = outcomeOf(response);
   // plan.md "Status and fallback texts": the contract §9 code, or the result state without a code.
@@ -396,7 +393,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   }, [stalled, requestId]);
 
   // plan.md "Status area" and the Submodule review dialog row: an editable field or an open dialog keeps focus.
-  // Contract §12 "Reconciliation and outcome": `canceled` comes from a Cancel or a declined Run confirmation. This bar sends the only renderer Cancel.
+  // Contract §12 "Reconciliation and outcome": `canceled` comes from a Cancel or a declined Run confirmation. This bar sends the only renderer Cancel (plan.md "Status area").
   function submoduleFocus(): "area-heading" | "stay" | "declined" {
     if (modalOpen || isEditable((document.activeElement as HTMLElement | null) ?? undefined)) return "stay";
     return response?.state === "canceled" && canceled.current !== requestId ? "declined" : "area-heading";
@@ -446,6 +443,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
       if (open) return headingRef.current;
       return footerRef.current?.querySelector("button") ?? (liveText === "" ? null : textRef.current);
     },
+    cancel: () => cancelRef.current,
   }));
 
   function toggle() {

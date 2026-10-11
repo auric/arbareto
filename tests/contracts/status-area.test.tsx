@@ -16,7 +16,7 @@ const { createRoot } = await import("react-dom/client");
 const { OperationStatus, outcomeFocus } = await import("../../src/frontend/status/OperationStatus");
 type Props = Parameters<typeof OperationStatus>[0];
 type Operation = NonNullable<Props["operation"]>;
-type Handle = { entry(): HTMLElement | null };
+type Handle = { entry(): HTMLElement | null; cancel(): HTMLElement | null };
 
 // plan.md "Status area", "Long text", and "Required visible states" (Succeeded, Busy); contract §6 "Activity and stall notice"; contract §9; research.md R4.
 const COMMITTED = "Committed 0123456789ab to main";

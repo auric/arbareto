@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { cargoShipped, cssPackages, inventory, licenseFileNames, npmClosure, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
+import { cargoShipped, cssPackages, inventory, licenseFileNames, missingRuntimeFiles, npmClosure, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
 import { TM_GRAMMARS_VERSION, TM_THEMES_VERSION } from "../../src/frontend/highlight/set";
 import { printOrigin } from "../origin";
 
@@ -139,6 +139,17 @@ describe("vendored licence texts (T338)", () => {
     expect(vendoredKey(keys, "npm", "tm-grammars", "1.32.21")).toBeUndefined();
     const result = inventory([{ name: "tm-grammars", version: "1.32.21", license: "MIT", files: [] }], REPO, PROJECT);
     expect(result.problems).toEqual(["tm-grammars 1.32.21: no licence text"]);
+  });
+
+  test("the runtime folder of the pinned Bun holds its licence and the typescript-go NOTICE (T366)", async () => {
+    const pin = ((await Bun.file(`${import.meta.dir}/../../package.json`).json()) as { packageManager: string }).packageManager.replace(/^bun@/, "");
+    const dir = `${import.meta.dir}/../../third-party-licenses/runtime/bun@${pin}`;
+    expect(missingRuntimeFiles([...new Bun.Glob("*").scanSync({ cwd: dir, onlyFiles: true })])).toEqual([]);
+  });
+
+  test("a runtime folder without the typescript-go NOTICE is a refusal", () => {
+    expect(missingRuntimeFiles(["LICENSE.md"])).toEqual(["typescript-go-NOTICE.txt"]);
+    expect(missingRuntimeFiles([])).toEqual(["LICENSE.md", "typescript-go-NOTICE.txt"]);
   });
 });
 

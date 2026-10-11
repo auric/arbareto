@@ -47,7 +47,7 @@ Git Extensions is a Windows Git GUI under GPL-3.0. Borrow behavior and layout id
   - No motion on keyboard actions, list selection, arrow keys, scrolling, or a diff that appears on selection. These stay instant.
   - Motion only for occasional state changes: popover, menu, and tooltip open; the dock swap; a notice band; a splitter that settles.
   - CSS transitions, `@starting-style`, and Base UI `data-starting-style` / `data-ending-style` first. Add no motion library without a dependency review.
-  - Keep `prefers-reduced-motion` (gentler, not zero) and Windows forced colors working.
+  - Under `prefers-reduced-motion: reduce`, nothing moves or fades. Each state change shows at once. plan.md "Motion" is the authority, and it overrides the skills' "gentler, not zero" advice. Keep Windows forced colors working.
   - Ignore the skills' pointers to `pick-ui-library`, Sonner, or Vaul. Components come from shadcn 4.21.0 and Base UI.
 - Project rules in CLAUDE.md: no heuristics; no mock data shown as real; every visible text comes from plan.md.
 

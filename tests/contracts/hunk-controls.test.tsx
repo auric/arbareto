@@ -16,7 +16,6 @@ async function comparisonView() {
 }
 
 // T145 waits for T117. A template path keeps `tsc` from resolving the module before it exists.
-const NEEDS = "(needs T145)";
 type Props = Record<string, unknown>;
 type HunkModule = {
   HunkControls: (props: Props) => ReactNode;

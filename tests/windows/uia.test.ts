@@ -11,6 +11,7 @@ import { close, find, findLiveRegions, invoke, MAX_WAIT_MS, readText, UiaError, 
 
 const UIA = printOrigin("./uia.ts", import.meta.dir);
 const TEST_TIMEOUT_MS = 60_000;
+const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 
 const code = async (body: () => unknown) => {
   try {
@@ -118,9 +119,10 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
           // A new profile holds no Git selection, so the boot view offers Select Git. Its task dialog names the Git that the host finds.
           await using(await find(owned.pid, "Select Git", MAX_WAIT_MS), invoke);
           await using(await find(owned.pid, "Use this Git", MAX_WAIT_MS), invoke);
-          await using(await find(owned.pid, "Open repository", MAX_WAIT_MS), invoke);
+          // The start page option text, `OPEN_FOLDER` in src/frontend/app/RepositorySwitcher.tsx. `find` matches the whole Name.
+          await using(await find(owned.pid, OPEN_FOLDER, MAX_WAIT_MS), invoke);
           await using(await find(owned.pid, "Cancel", MAX_WAIT_MS), invoke);
-          console.log(`FOCUS_QPC ${await waitFocus(owned.pid, "Open repository", MAX_WAIT_MS)}`);
+          console.log(`FOCUS_QPC ${await waitFocus(owned.pid, OPEN_FOLDER, MAX_WAIT_MS)}`);
           const regions = await findLiveRegions(owned.pid, MAX_WAIT_MS);
           for (const region of regions) console.log(`STATUS_TEXT ${JSON.stringify(await using(region, readText))}`);
         } finally {

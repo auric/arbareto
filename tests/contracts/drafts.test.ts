@@ -139,7 +139,7 @@ describe("draft submission", () => {
     expect(drafts.draft(KEY_B)?.text).toBe("B text");
   });
 
-  test.todo("after a `service-session` event, the Workbench keeps the composer text and the page does not reload (needs T148)", () => {});
+  // The mounted case is in workbench-mount.test.tsx: "after a `service-session` event, the Workbench keeps the composer text and the page does not reload".
 });
 
 describe("Clear message", () => {
@@ -161,22 +161,10 @@ describe("Clear message", () => {
     expect(records.get(KEY_B)?.message).toBe("B text");
   });
 
-  test.todo("the Clear message button of the status area clears the composer draft (needs T148)", () => {});
+  // The mounted case is in workbench-mount.test.tsx: "the Clear message button of the status area clears the composer draft".
 });
 
-// T146 builds the commit tray. A template path keeps `tsc` from resolving the module before it exists.
-describe("commit tray", () => {
-  async function commitTray() {
-    const module = "CommitTray";
-    printOrigin(`../../src/frontend/commit/${module}.tsx`, import.meta.dir);
-    return await import(`../../src/frontend/commit/${module}.tsx`);
-  }
-
-  test.todo("IME composition blocks submission (needs T146)", async () => {
-    const { CommitTray } = await commitTray();
-    expect(CommitTray).toBeDefined();
-  });
-});
+// "IME composition blocks submission": T239 covers it in commit-tray.test.tsx, "a key with repeat true sends nothing, and so does a key during IME composition".
 
 describe("stored drafts", () => {
   test("each change writes the latest text for its worktreeKey", async () => {

@@ -251,11 +251,14 @@ export type RepositorySwitcherProps = Omit<RecentListProps, "onClose" | "popup">
   /** The worktree root of the open workspace, or null. */
   worktreeRoot: string | null;
   open: boolean;
-  onOpenChange(open: boolean): void;
+  /** A keyboard shortcut opened the popup. Base UI sets no `data-instant` for an open without an event, so this prop sets it (plan.md "Motion"). */
+  instant?: boolean;
+  /** `instant` is true only for an open by Alt+Down. */
+  onOpenChange(open: boolean, instant?: boolean): void;
 };
 
 /** The toolbar switcher: the button shows the open repository, and its popup holds the recent list. Ctrl+R sets `open`. */
-export function RepositorySwitcher({ worktreeRoot, open, onOpenChange, ...list }: RepositorySwitcherProps) {
+export function RepositorySwitcher({ worktreeRoot, open, instant = false, onOpenChange, ...list }: RepositorySwitcherProps) {
   const name = worktreeRoot === null ? null : folderName(worktreeRoot);
   const label = worktreeRoot === null ? "Recent repositories" : `${name}, ${worktreeRoot}`;
   return (
@@ -274,7 +277,7 @@ export function RepositorySwitcher({ worktreeRoot, open, onOpenChange, ...list }
                   onKeyDown={(event) => {
                     if (event.altKey && event.key === "ArrowDown" && !event.ctrlKey && !event.shiftKey && !event.metaKey) {
                       event.preventDefault();
-                      onOpenChange(true);
+                      onOpenChange(true, true);
                     }
                   }}
                 />
@@ -296,7 +299,7 @@ export function RepositorySwitcher({ worktreeRoot, open, onOpenChange, ...list }
         <TooltipContent>Recent repositories (Ctrl+R)</TooltipContent>
       </Tooltip>
       {/* plan.md "Dialog sizes": at most 480 DIPs wide and 60% of the client height, inside the client area less 16 DIPs on each side. */}
-      <PopoverContent align="start" className="max-h-[min(60vh,calc(100vh-32px))] w-[min(480px,calc(100vw-32px))]">
+      <PopoverContent {...(instant && open ? { "data-instant": "" } : {})} align="start" className="max-h-[min(60vh,calc(100vh-32px))] w-[min(480px,calc(100vw-32px))]">
         {open ? <RecentList {...list} popup onClose={() => onOpenChange(false)} /> : null}
       </PopoverContent>
     </Popover>

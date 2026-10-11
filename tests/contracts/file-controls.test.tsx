@@ -17,7 +17,6 @@ const { BUSY_REASON } = await import("../../src/frontend/changes/ChangesPane");
 // "Keyboard and focus" (Stage key row, File actions, Unavailable control), and contract §4 "File staging" and "Limitation remedies".
 
 // T202 waits for T117. A template path keeps `tsc` from resolving the module before it exists.
-const NEEDS = "(needs T202)";
 type Props = Record<string, unknown>;
 type FileModule = {
   FileControls: (props: Props) => ReactNode;

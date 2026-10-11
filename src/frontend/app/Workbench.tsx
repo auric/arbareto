@@ -491,6 +491,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const panes = { ...preferences.panes, ...dragPanes };
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [switcherInstant, setSwitcherInstant] = useState(false);
   // A refused `chooseRepository` or `restoreWorkspace`. The workspace stays unchanged.
   const [refusal, setRefusal] = useState<BridgeResponse | null>(null);
   const [restoring, setRestoring] = useState(restored !== undefined);
@@ -751,7 +752,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       if (action.type === "focusMenuBar") menubar.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
       else if (action.type === "refresh") requests.refresh();
       else if (action.type === "openFolder") void openRepository();
-      else if (action.type === "openSwitcher") setSwitcherOpen(true);
+      else if (action.type === "openSwitcher") {
+        setSwitcherInstant(true);
+        setSwitcherOpen(true);
+      }
       else if (action.type === "focusSection") moveSection(action.direction);
     };
     window.addEventListener("keydown", onKey);
@@ -1065,7 +1069,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               worktreeRoot={path}
               busy={false}
               open={switcherOpen}
-              onOpenChange={setSwitcherOpen}
+              instant={switcherInstant}
+              onOpenChange={(open, instant = false) => {
+                setSwitcherInstant(instant);
+                setSwitcherOpen(open);
+              }}
               onOpenFolder={() => void openRepository()}
               onOpened={registered}
             />
@@ -1098,7 +1106,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 repositoryOpen={path !== null}
                 trustId={trust?.report.trustId ?? null}
                 onOpenRepository={() => void openRepository()}
-                onOpenRecent={() => setSwitcherOpen(true)}
+                onOpenRecent={() => {
+                  setSwitcherInstant(false);
+                  setSwitcherOpen(true);
+                }}
                 onSelectGit={onSelectGit}
                 onReviewTrust={() => void reviewTrust()}
                 revokeTrust={revokeTrust}

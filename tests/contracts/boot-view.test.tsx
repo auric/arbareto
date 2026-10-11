@@ -3,15 +3,17 @@
 
 import { describe, expect, test } from "bun:test";
 import { act, isValidElement, type ReactElement, type ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { BootView, bootActions, markBootView, type BootProps, type Environment } from "../../src/frontend/boot/BootView";
-import { Button } from "../../src/frontend/components/ui/button";
+import type { BootProps, Environment } from "../../src/frontend/boot/BootView";
 
 printOrigin("../../src/frontend/boot/BootView.tsx", import.meta.dir);
+// tests/dom.ts: Base UI must first evaluate with a DOM, so the modules that load it come after registerDom().
 registerDom();
+const { renderToStaticMarkup } = await import("react-dom/server");
 const { createRoot } = await import("react-dom/client");
+const { BootView, bootActions, markBootView } = await import("../../src/frontend/boot/BootView");
+const { Button } = await import("../../src/frontend/components/ui/button");
 const CANCELED = { requestId: null, state: "canceled" as const };
 
 const environment = (fields: Partial<Environment> = {}): Environment => ({

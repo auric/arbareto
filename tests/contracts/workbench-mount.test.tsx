@@ -804,6 +804,49 @@ describe("single view", () => {
   });
 });
 
+// Contract §3 `chooseGit`: Select Git in the repository menu shows a refused selection in the status bar. A canceled one shows nothing.
+describe("Select Git result", () => {
+  test("a rejected chooseGit shows its code in the status bar, and a canceled one shows nothing", async () => {
+    const responses = [
+      { requestId: crypto.randomUUID(), state: "canceled" },
+      { requestId: crypto.randomUUID(), state: "rejected", code: "GIT_UNAVAILABLE", result: { minimumVersion: "2.55.0.windows.3" } },
+    ];
+    const double = bridgeDouble();
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <Workbench
+          bridge={double.bridge as never}
+          restored={Promise.resolve(succeeded(REGISTRATION)) as never}
+          onSelectGit={async () => responses.shift() as never}
+          ChangesPane={ChangesPaneMount}
+          ComparisonView={ComparisonViewMount}
+          HistoryView={HistoryViewMount}
+        />,
+      ),
+    );
+    unmounts.push(async () => {
+      await act(async () => root.unmount());
+      host.remove();
+    });
+    await settle();
+    const status = () => [...document.querySelectorAll('footer [role="status"]')].map((s) => s.textContent).join(" | ");
+    const choose = async () => {
+      const trigger = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === "Repository")!;
+      await act(async () => trigger.focus());
+      await act(async () => trigger.click());
+      await settle();
+      await act(async () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => e.textContent === "Select Git")!.click());
+      await settle();
+    };
+    await choose();
+    expect(status()).not.toContain("Select Git did not complete");
+    await choose();
+    expect(status()).toContain("Select Git did not complete: GIT_UNAVAILABLE.");
+  });
+});
+
 // plan.md "Motion": a popup that the keyboard opens shows at once. Base UI sets no `data-instant` for the Ctrl+R open, which has no trigger event.
 describe("switcher open motion", () => {
   const popup = () => document.querySelector<HTMLElement>('[data-slot="popover-content"]');

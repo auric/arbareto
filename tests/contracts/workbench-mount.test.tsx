@@ -24,7 +24,7 @@ registerDom();
 const { createRoot } = await import("react-dom/client");
 const { ChangesPaneMount, ComparisonViewMount, HistoryViewMount, LATER, Workbench } = await import("../../src/frontend/app/Workbench");
 const { HELP_LINE } = await import("../../src/frontend/changes/ChangesPane");
-const { readPreferences } = await import("../../src/frontend/state/preferences");
+const { DEFAULT_PREFERENCES, readPreferences, writePreferences } = await import("../../src/frontend/state/preferences");
 
 // tasks.md T354: the single-view frame. plan.md "Chosen layout: one view", "Dock region", "Measurements and budgets" (ready frames), and "Required visible states".
 
@@ -442,12 +442,75 @@ describe("repository menu", () => {
   });
 });
 
+// T364: plan.md "Store pane sizes in logical units".
+describe("remembered pane sizes", () => {
+  test("a stored sidebar width shows after a reload, a key step stores it, and Reset pane sizes stores every default", async () => {
+    const before = window.innerWidth;
+    (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(1600);
+    try {
+      writePreferences(localStorage, { ...DEFAULT_PREFERENCES, panes: { ...DEFAULT_PREFERENCES.panes, sidebar: 300, detailsDock: 240 } });
+      await mount(succeeded(REGISTRATION));
+      const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize references sidebar"]')!;
+      expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(300);
+      await act(async () => void splitter.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+      expect(readPreferences(localStorage).panes).toEqual({ ...DEFAULT_PREFERENCES.panes, sidebar: 308, detailsDock: 240 });
+      expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(308);
+      const view = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === "View")!;
+      await act(async () => view.focus());
+      await act(async () => view.click());
+      await settle();
+      await act(async () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => e.textContent === "Reset pane sizes")!.click());
+      await settle();
+      expect(readPreferences(localStorage).panes).toEqual(DEFAULT_PREFERENCES.panes);
+      expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(DEFAULT_PREFERENCES.panes.sidebar);
+    } finally {
+      (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(before);
+    }
+  });
+
+  // plan.md "Dock region": pointer and keyboard resizing change the docked panel height in both directions.
+  test("a keyboard shrink step lowers the commit dock and stores it, and a grow step raises it", async () => {
+    const before = window.innerWidth;
+    (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(1600);
+    try {
+      const double = await mount(succeeded(REGISTRATION));
+      await resolve(double.pending("readHistory"), succeeded(PAGE));
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
+      await selectRow("working-directory");
+      const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize dock"]')!;
+      const key = (k: string) => act(async () => void splitter.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })));
+      const start = Number(splitter.getAttribute("aria-valuenow"));
+      expect(Number(splitter.getAttribute("aria-valuemin"))).toBeLessThan(start);
+      // The dock sits below the splitter, so ArrowDown shrinks it.
+      await key("ArrowDown");
+      expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(start - 8);
+      expect(readPreferences(localStorage).panes.commitDock).toBe(start - 8);
+      await key("ArrowUp");
+      expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(start);
+      expect(readPreferences(localStorage).panes.commitDock).toBe(start);
+    } finally {
+      (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(before);
+    }
+  });
+});
+
 describe("file lane splitter", () => {
   type HappyWindow = { happyDOM: { setInnerWidth(width: number): void } };
   test("a pointer drag saves the wide file lane once, on pointer up", async () => {
     const before = window.innerWidth;
     (window as unknown as HappyWindow).happyDOM.setInnerWidth(1600);
-    const setItem = spyOn(Storage.prototype, "setItem");
+    // happy-dom binds each Storage method on its first read, so a Storage.prototype spy misses later writes. A wrapper counts the writes.
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage")!;
+    const real = localStorage;
+    let writes = 0;
+    const counting = {
+      getItem: (key: string) => real.getItem(key),
+      setItem: (key: string, value: string) => {
+        writes++;
+        real.setItem(key, value);
+      },
+    };
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, get: () => counting });
     try {
       const double = await mount(succeeded(REGISTRATION));
       await resolve(double.pending("readHistory"), succeeded(PAGE));
@@ -457,14 +520,13 @@ describe("file lane splitter", () => {
       expect(splitter).not.toBeNull();
       const start = Number(splitter.getAttribute("aria-valuenow"));
       const pointer = (type: string, clientX: number) => act(async () => void splitter.dispatchEvent(new PointerEvent(type, { pointerId: 1, button: 0, clientX, bubbles: true })));
-      setItem.mockClear();
       await pointer("pointerdown", 500);
       await pointer("pointermove", 520);
       await pointer("pointermove", 540);
       expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(start + 40);
-      expect(setItem).not.toHaveBeenCalled();
+      expect(writes).toBe(0);
       await pointer("pointerup", 540);
-      expect(setItem).toHaveBeenCalledTimes(1);
+      expect(writes).toBe(1);
       expect(readPreferences(localStorage).panes.fileLane).toBe(start + 40);
       // A drag back to its start value still ends the live width, so a later preference write shows.
       await pointer("pointerdown", 540);
@@ -480,7 +542,7 @@ describe("file lane splitter", () => {
       expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(readPreferences(localStorage).panes.fileLane);
       expect(Number(splitter.getAttribute("aria-valuenow"))).not.toBe(start + 40);
     } finally {
-      setItem.mockRestore();
+      Object.defineProperty(globalThis, "localStorage", descriptor);
       (window as unknown as HappyWindow).happyDOM.setInnerWidth(before);
     }
   });

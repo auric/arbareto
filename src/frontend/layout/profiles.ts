@@ -12,7 +12,7 @@ export type Size = { width: number; height: number };
 export const NATIVE_MINIMUM: Size = { width: 720, height: 480 };
 export const FILE_LANE = { min: 240, max: 400, default: 280 } as const;
 // plan.md "References sidebar". The width stays in DIPs at every text size.
-const SIDEBAR = { min: 180, max: 420, default: 240 } as const;
+export const SIDEBAR = { min: 180, max: 420, default: 240 } as const;
 // The width beside the sidebar: the 240 lane minimum, the lane splitter, and the 520 diff minimum; narrow keeps the diff minimum.
 const SIDEBAR_REST = { wide: 768, narrow: 520 } as const;
 const WIDE_WIDTH = 1120;

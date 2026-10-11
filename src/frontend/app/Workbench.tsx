@@ -38,7 +38,6 @@ import {
   chooseProfile,
   clampPanes,
   dockBounds,
-  FILE_LANE,
   headerRows,
   historyFit,
   metrics,
@@ -56,7 +55,7 @@ import { Splitter } from "../layout/Splitter";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { ReferencesSidebar } from "../refs/ReferencesSidebar";
 import { createRequests, isRegistration, refsPair, wslDistro, type RequestBridge, type Requests, type RequestState } from "../state/requests";
-import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, writePreferences, type DarkPalette, type Preferences, type Theme } from "../state/preferences";
+import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
 import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
@@ -487,12 +486,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const client = useClientSize();
   const profile: Profile = chooseProfile(client, textScale, preferences.density);
   const m = metrics(preferences.density, textScale);
-  // Pane sizes in the session. Preferences store only `panes.fileLane`.
-  const [bottom, setBottom] = useState<number | null>(null);
-  const [fileBand, setFileBand] = useState<number | null>(null);
-  const [sidebar, setSidebar] = useState<number | null>(null);
-  // plan.md "Dock region": one remembered height for each panel.
-  const [docks, setDocks] = useState<Partial<Record<Panel, number>>>({});
+  // A drag shows its live sizes here and stores them once, at its end. plan.md "Dock region": one remembered height for each panel.
+  const [dragPanes, setDragPanes] = useState<Partial<Panes>>({});
+  const panes = { ...preferences.panes, ...dragPanes };
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   // A refused `chooseRepository` or `restoreWorkspace`. The workspace stays unchanged.
@@ -648,6 +644,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const savePreferences = (next: Preferences) => {
     setPreferences(next);
     if (typeof localStorage !== "undefined") writePreferences(localStorage, next);
+  };
+  const resize = (key: keyof Panes) => (value: number) => setDragPanes((l) => ({ ...l, [key]: value }));
+  const keepPane = (key: keyof Panes) => (value: number) => {
+    setDragPanes({});
+    setPreferences(storePanes(typeof localStorage === "undefined" ? null : localStorage, preferences, profile, { [key]: value }));
   };
 
   const workspace = state.workspace;
@@ -832,16 +833,19 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const band = paneBounds("fileBand", { width: client.width, available: workArea, density: preferences.density, textScale });
   // The status area is an empty slot until T138, so it takes no rows here.
   const fit = { client, textScale, density: preferences.density, bandRows, statusArea: 0 };
-  const clamped = clampPanes({ ...fit, fileBand: fileBand ?? band.default, tray: bottom ?? tray.default, dock: docks.commit });
+  const remembered = { ...fit, fileBand: panes.fileBand ?? band.default, tray: panes.tray ?? tray.default };
+  const clamped = clampPanes({ ...remembered, dock: panes.commitDock ?? undefined });
+  // The smallest commit dock that the layout keeps beside the remembered file band and tray.
+  const commitDockMin = clampPanes({ ...remembered, dock: 0 }).dock ?? 0;
   const history = historyFit(fit);
   const content = workArea - bandRows * m.bandRow;
   const detailsBounds = dockBounds("details", { width: client.width, available: content, density: preferences.density, textScale });
   const resizable = profile !== "constrained";
   // The dock height of the shown panel. Without a selection, the hint takes the details height.
-  const dockHeight = panel === "commit" ? (clamped.dock ?? 0) : Math.min(Math.max(docks.details ?? detailsBounds.default, detailsBounds.min), detailsBounds.max);
+  const dockHeight = panel === "commit" ? (clamped.dock ?? 0) : Math.min(Math.max(panes.detailsDock ?? detailsBounds.default, detailsBounds.min), detailsBounds.max);
   const listHeight = content - m.splitter - dockHeight;
   const sideBounds = profile === "constrained" ? null : sidebarBounds(profile, client.width);
-  const sideWidth = sideBounds === null ? 0 : Math.min(Math.max(sidebar ?? sideBounds.default, sideBounds.min), sideBounds.max);
+  const sideWidth = sideBounds === null ? 0 : Math.min(Math.max(panes.sidebar, sideBounds.min), sideBounds.max);
   const markers = environment !== null && hasMarkers(environment);
   // The work area scrolls only when the reduced pane minima do not fit, or below the recovery markers, which no floor reserves.
   const scrolls = markers || (panel === "commit" ? clamped.scrolls === true : history.scrolls);
@@ -900,10 +904,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     onSelectRow,
     staging,
   };
-  // A drag shows the live lane width and saves it once, on pointer up.
-  const [dragLane, setDragLane] = useState<number | null>(null);
   const laneBounds = paneBounds("fileLane", { width: client.width - sideWidth - m.splitter, available: workArea, density: preferences.density, textScale });
-  const lane = Math.min(Math.max(dragLane ?? preferences.panes.fileLane, laneBounds.min), laneBounds.max);
+  const lane = Math.min(Math.max(panes.fileLane, laneBounds.min), laneBounds.max);
   const trayHeight = clamped.tray;
   const bandHeight = clamped.fileBand ?? band.default;
   const grid: CSSProperties =
@@ -944,19 +946,15 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           value={profile === "wide" ? lane : bandHeight}
           min={profile === "wide" ? laneBounds.min : band.min}
           max={profile === "wide" ? laneBounds.max : band.max}
-          onChange={(value) => (profile === "wide" ? setDragLane(value) : setFileBand(value))}
-          onCommit={(value) => {
-            if (profile !== "wide") return;
-            setDragLane(null);
-            savePreferences({ ...preferences, panes: { fileLane: value } });
-          }}
+          onChange={resize(profile === "wide" ? "fileLane" : "fileBand")}
+          onCommit={keepPane(profile === "wide" ? "fileLane" : "fileBand")}
           className={resizable ? "[grid-area:laneSplit]" : "hidden"}
         />
         <div ref={comparisonPane} data-section="comparison" className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
           <ComparisonView {...pane} />
         </div>
         <div className="[grid-area:traySplit]">
-          <Splitter label="Resize commit tray" orientation="horizontal" value={trayHeight} min={tray.min} max={tray.max} reverse onChange={setBottom} className={resizable ? undefined : "hidden"} />
+          <Splitter label="Resize commit tray" orientation="horizontal" value={trayHeight} min={tray.min} max={tray.max} reverse onChange={resize("tray")} onCommit={keepPane("tray")} className={resizable ? undefined : "hidden"} />
         </div>
         <div data-section="composer" className="min-h-0 overflow-auto border-t border-divider p-2" style={{ gridArea: "tray" }}>
           <CommitTray
@@ -1030,7 +1028,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         <div data-section="references" className="min-h-0 border-r border-divider">
           {refsSidebar}
         </div>
-        <Splitter label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={setSidebar} />
+        <Splitter label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
         <div className="flex min-h-0 flex-col">
           <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "0 0 auto", height: Math.max(listHeight, m.historyListMin) }}>
             <HistoryView {...pane} />
@@ -1039,10 +1037,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             label="Resize dock"
             orientation="horizontal"
             value={dockHeight}
-            min={panel === "commit" ? (clamped.dock ?? 0) : detailsBounds.min}
+            min={panel === "commit" ? commitDockMin : detailsBounds.min}
             max={panel === "commit" ? content - m.splitter - m.historyListMin : detailsBounds.max}
             reverse
-            onChange={(value) => setDocks((d) => ({ ...d, [panel ?? "details"]: value }))}
+            onChange={resize(panel === "commit" ? "commitDock" : "detailsDock")}
+            onCommit={keepPane(panel === "commit" ? "commitDock" : "detailsDock")}
           />
           <section aria-label="Dock" className="flex min-h-0 flex-1 flex-col">
             {dock}
@@ -1152,11 +1151,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                   <MenubarSeparator />
                   <MenubarItem
                     onClick={() => {
-                      savePreferences({ ...preferences, panes: { fileLane: FILE_LANE.default } });
-                      setBottom(null);
-                      setFileBand(null);
-                      setSidebar(null);
-                      setDocks({});
+                      setDragPanes({});
+                      savePreferences({ ...preferences, panes: DEFAULT_PREFERENCES.panes });
                     }}
                   >
                     Reset pane sizes

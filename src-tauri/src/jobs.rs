@@ -152,7 +152,8 @@ impl Job {
         }
     }
 
-    pub(crate) fn process_ids(&self) -> Vec<u32> {
+    /// The IDs of the processes in the Job. A list that does not fit is read again at the reported count, never cut.
+    pub(crate) fn process_ids(&self) -> windows::core::Result<Vec<u32>> {
         let first = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
             / size_of::<usize>();
         let mut slots = 64;
@@ -174,15 +175,15 @@ impl Job {
             let listed = list.NumberOfProcessIdsInList as usize;
             match result {
                 Ok(()) if listed == assigned => {
-                    return buffer[first..first + listed]
+                    return Ok(buffer[first..first + listed]
                         .iter()
                         .map(|&id| id as u32)
-                        .collect();
+                        .collect());
                 }
                 Err(error) if error.code() != HRESULT::from_win32(ERROR_MORE_DATA.0) => {
-                    return Vec::new();
+                    return Err(error);
                 }
-                _ => slots = assigned.max(slots * 2),
+                _ => slots = assigned.max(slots + 1),
             }
         }
     }
@@ -670,21 +671,29 @@ impl Supervisor {
             .map(|entry| entry.job.handle())
     }
 
-    /// The `activeDescendants` count after an execution process exits: the active process count from
-    /// `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`, or the anchor count of a WSL mutation (contract §11 "Process ownership").
+    /// The `activeDescendants` count after an execution process exits: the processes in the Job other than `exited`,
+    /// or the anchor count of a WSL mutation (contract §6 "Lingering Jobs", §11 "Process ownership").
+    /// The process handle can signal before Windows removes the process from the Job. So the count leaves out `exited` by its ID.
+    /// The caller keeps the handle of `exited` open during the call, so its ID cannot identify another process.
     /// `None`: a closed Job, a failed query, or no fresh known anchor count. The exit reply then carries `null` (contract §6).
-    pub fn active_processes(&self, operation_id: &str) -> Option<u32> {
-        let (count, wsl) = {
+    pub fn active_descendants(&self, operation_id: &str, exited: Option<u32>) -> Option<u32> {
+        let (ids, wsl) = {
             let state = self.shared.state();
             let entry = state.jobs.get(operation_id)?;
-            (entry.job.active_processes().ok(), entry.wsl.clone())
+            (entry.job.process_ids(), entry.wsl.clone())
         };
         // The anchor answer can take up to the probe deadline, so the state lock is released first.
         if wsl.has_anchor() {
-            wsl.after_exit()
-        } else {
-            count
+            return wsl.after_exit();
         }
+        let ids = ids.ok()?;
+        Some(ids.iter().filter(|&&id| Some(id) != exited).count() as u32)
+    }
+
+    /// The processes in the Job, or the anchor count of a WSL mutation.
+    #[cfg(test)]
+    pub fn active_processes(&self, operation_id: &str) -> Option<u32> {
+        self.active_descendants(operation_id, None)
     }
 
     /// The IDs of the processes in the Job. Only tests read process IDs.
@@ -694,7 +703,7 @@ impl Supervisor {
         state
             .jobs
             .get(operation_id)
-            .map(|entry| entry.job.process_ids())
+            .map(|entry| entry.job.process_ids().expect("Job process IDs"))
             .unwrap_or_default()
     }
 
@@ -832,8 +841,8 @@ pub(crate) mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use windows::Win32::Foundation::{
-        CloseHandle, GENERIC_READ, GENERIC_WRITE, GetHandleInformation, HANDLE_FLAG_INHERIT,
-        WAIT_OBJECT_0,
+        CloseHandle, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, GENERIC_READ, GENERIC_WRITE,
+        GetHandleInformation, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0,
     };
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_NAME_NORMALIZED, FILE_SHARE_READ,
@@ -845,9 +854,10 @@ pub(crate) mod tests {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicProcessIdList,
         JobObjectExtendedLimitInformation, QueryInformationJobObject,
     };
+    use windows::Win32::System::SystemServices::JOB_OBJECT_ASSIGN_PROCESS;
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-        TerminateProcess, WaitForSingleObject,
+        GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
     };
     use windows::core::{BOOL, w};
 
@@ -1667,6 +1677,60 @@ pub(crate) mod tests {
                 .active_processes("op-zero")
                 == Some(0)),
             "0 active processes"
+        );
+        supervisor.close_all();
+        supervisor.shutdown();
+    }
+
+    /// T370: the count leaves out the exited process by its ID. A failed list query gives no count.
+    #[test]
+    fn the_active_descendants_leave_out_the_exited_process_and_a_failed_query_gives_none() {
+        let supervisor = Supervisor::start().expect("start");
+        supervisor.open("op-ids").expect("open");
+        let (child, grandchildren) = child_in_job(&supervisor, "op-ids", 1, "stay");
+        let pid = child.child.id();
+        let mut listed = supervisor.process_ids("op-ids");
+        listed.sort_unstable();
+        let mut expected = vec![pid, grandchildren[0].pid];
+        expected.sort_unstable();
+        assert_eq!(
+            listed, expected,
+            "the Job holds the child and the grandchild"
+        );
+        assert_eq!(
+            supervisor.active_descendants("op-ids", Some(pid)),
+            Some(1),
+            "the count leaves out the exited process"
+        );
+        assert_eq!(supervisor.active_descendants("op-ids", None), Some(2));
+        // A handle without JOB_OBJECT_QUERY makes the list query fail.
+        let mut assign_only = HANDLE::default();
+        // SAFETY: both process handles are the current-process pseudo handle, and the entry keeps the source open.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                supervisor.job_handle("op-ids").expect("Job handle"),
+                GetCurrentProcess(),
+                &mut assign_only,
+                JOB_OBJECT_ASSIGN_PROCESS,
+                false,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        }
+        .expect("DuplicateHandle");
+        supervisor
+            .shared
+            .state()
+            .jobs
+            .get_mut("op-ids")
+            .expect("entry")
+            .job = Arc::new(Job {
+            handle: assign_only,
+        });
+        assert_eq!(
+            supervisor.active_descendants("op-ids", Some(pid)),
+            None,
+            "a failed query gives no count"
         );
         supervisor.close_all();
         supervisor.shutdown();

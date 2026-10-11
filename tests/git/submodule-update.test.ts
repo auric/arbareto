@@ -1069,6 +1069,20 @@ describe("admission (contract §2, §9)", () => {
       });
     });
   }, TIMEOUT_MS);
+
+  // T115, contract §8 "Token invalidation": an equal observation keeps the generation, so acceptance sees a released token.
+  caseTest("T115", `a review token that a refresh: true readWorkspace invalidated without a change gives UNKNOWN_TARGET at acceptance, and no Git process starts`, SHELL, () => {
+    const b = buildF27(gitPath(), "t115-refreshed", "base");
+    return withFixture(b, "t115-refreshed", async (service) => {
+      await update();
+      const a = await reviewedOk(service, superOf(b));
+      const read = await service.readWorkspace(a.repositoryId, { refresh: true, check: "full" });
+      expect({ ...outcome(read), generation: read.result?.generation }).toEqual({ ...SUCCEEDED, generation: a.r.read.generation });
+      const from = service.runner.calls.length;
+      const response = await service.request("updateSubmodules", { submoduleReviewToken: a.r.token, start: true }, { repositoryId: a.repositoryId, repositoryGeneration: a.r.read.generation });
+      expect({ ...outcome(response), runs: service.runner.calls.length - from }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
+    });
+  }, TIMEOUT_MS);
 });
 
 describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {

@@ -284,7 +284,9 @@ export interface PublicProgress {
 
 const RESPONSE_WAIT_MS = 120_000;
 
-export function startSession(runner: BunRunner, options: Pick<SessionOptions, "readRawIndex"> = {}) {
+// `markers`: the recovery markers of the handshake, as the shell loads them.
+export function startSession(runner: BunRunner, options: Pick<SessionOptions, "readRawIndex"> & { markers?: object[] } = {}) {
+  const { markers = [], ...sessionOptions } = options;
   const responses: PublicResponse[] = [];
   const progress: PublicProgress[] = [];
   const session = createSession({
@@ -297,7 +299,7 @@ export function startSession(runner: BunRunner, options: Pick<SessionOptions, "r
     },
     runner: { ...runner, receive: () => false } as unknown as SessionOptions["runner"],
     fail: () => {},
-    ...options,
+    ...sessionOptions,
   });
   const send = (frame: object) => session.receive({ type: "frame", body: new TextEncoder().encode(JSON.stringify(frame)) });
   const handshake = {
@@ -307,7 +309,7 @@ export function startSession(runner: BunRunner, options: Pick<SessionOptions, "r
     osBuild: 26200,
     webView2Version: "140.0.0.0",
     buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
-    markers: [],
+    markers,
     unloadedMarkers: 0,
     damagedMarkers: [],
     trustRecords: [],

@@ -102,11 +102,12 @@ export async function dismissMarker(runner: GitRunner, target: RegistrationTarge
 // Contract §6 "Dismissal", WSL marker rule and decision W13. Allowed when `wslDistros` does not list the distro of the path,
 // when the §11 probe reports the path `absent`, when discovery call 1 gives the merged refusal, or when the common-directory identity differs from the marker.
 // A dismissal shows no Git confirmation, so discovery runs only with the approved session Git of the distro, unchanged since its probe.
+// `gits`: the approved session Git of each distro GUID. The path route selects the GUID, because a reimported distro has a new GUID.
 export async function dismissWslMarker(
   runner: GitRunner & WslRunner,
   target: WslProbeTarget,
   marker: { commonIdentity: PhysicalIdentity },
-  session: WslGit | undefined,
+  gits: ReadonlyMap<string, WslGit>,
 ): Promise<DismissalOutcome> {
   const { operationId, bootstrapId, signal } = target;
   const stopped = (code: ErrorCode): DismissalOutcome => (code === "DEADLINE" || code === "CANCELED" ? { ok: false, code } : dismissalRefused);
@@ -126,7 +127,8 @@ export async function dismissWslMarker(
     // Contract §11 "Git per distro": the program checks come first, so `absent` counts only when the path rule refuses.
     const checked = checkWslProbe(route.distro, probe.facts, route.wslExecutable);
     if (!checked.ok) return checked.code === "UNSUPPORTED_REPOSITORY" && probe.facts.facts.selstat === "absent" ? { ok: true } : dismissalRefused;
-    if (session === undefined || session.guid !== route.guid || session.path !== checked.git.path || gitChanged(session, checked.git)) return dismissalRefused;
+    const session = gits.get(route.guid);
+    if (session === undefined || session.path !== checked.git.path || gitChanged(session, checked.git)) return dismissalRefused;
     const { gitInstallationId } = session;
     const discovered = await discoverRepository(runner, { operationId, bootstrapId, gitInstallationId, gitSelectedPath: session.path, signal, wsl: { distro: route.distro } });
     if (!discovered.ok) return isMergedRefusal(discovered.refusal) ? { ok: true } : stopped(discovered.refusal.code);

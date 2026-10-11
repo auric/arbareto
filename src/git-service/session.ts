@@ -25,7 +25,7 @@ import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
 import { createRefsReader, type RefsOutcome } from "./refs";
 import { createRecovery } from "./recovery";
-import { createRegistrations, dismissMarker, type DismissalOutcome, type RegistrationOutcome, type Workspace } from "./registration";
+import { createRegistrations, dismissMarker, dismissWslMarker, type DismissalOutcome, type RegistrationOutcome, type Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
 import { createSubmoduleReviewer } from "./submodule-review";
 import { createSubmoduleUpdater, type SubmoduleUpdaterOptions } from "./submodule-update";
@@ -516,11 +516,15 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     if (bootstrapId !== undefined) {
       // Contract §6: the shell sends a damaged marker without a context, so a damaged marker has no stored identity to compare.
       if (marker === undefined) return reject(request.requestId, "INVALID_REQUEST");
-      // T115 wires the WSL marker form.
-      if ("distroGuid" in marker.commonIdentity) return reject(request.requestId, "SERVICE_UNAVAILABLE");
-      if (!git?.ok) return reject(request.requestId, gitCode());
-      const installation = git.installation;
-      discover = (t) => dismissMarker(runner, { ...t, bootstrapId, installation }, marker);
+      if ("distroGuid" in marker.commonIdentity) {
+        // Contract §11 "Distro start": a dismissal of a WSL marker enters phase `wsl-starting` as registration and restore do.
+        discover = (t) =>
+          dismissWslMarker(runner, { ...t, bootstrapId, starting: (distro) => registry.progress(t.operationId, "wsl-starting", {}, distro) }, marker, wslGits);
+      } else {
+        if (!git?.ok) return reject(request.requestId, gitCode());
+        const installation = git.installation;
+        discover = (t) => dismissMarker(runner, { ...t, bootstrapId, installation }, marker);
+      }
     }
     const { operationId, signal } = registry.start("dismissRecoveryMarker", request.requestId);
     registry.apply(operationId, { type: "valid-read" });

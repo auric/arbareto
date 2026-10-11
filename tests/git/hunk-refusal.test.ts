@@ -167,6 +167,22 @@ describe("checkpoints (contract §4, §9)", () => {
     TIMEOUT_MS,
   );
 
+  // T115, contract §8 "Token invalidation": an equal observation keeps the generation, so acceptance sees a released approval.
+  caseTest("T115", `F09: an approval that a refresh: true readWorkspace invalidated without a change gives UNKNOWN_TARGET at acceptance, and no Git process starts`, SHELL, () =>
+    withService({ name: "t115-hunk-refreshed" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t115-hunk-refreshed", "F09"));
+      await underTest("hunk-publish");
+      const { repositoryId } = await service.register(repo);
+      const c = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
+      const read = await service.readWorkspace(repositoryId, { refresh: true, check: "full" });
+      expect({ ...outcome(read), generation: read.result?.generation }).toEqual({ ...SUCCEEDED, generation: c.read.generation });
+      const calls = service.runner.calls.length;
+      const response = await refused(service, repo, () => applyHunk(service, repositoryId, c, c.hunkIds[0]!, "stage"));
+      expect({ ...outcome(response), runs: service.runner.calls.length - calls }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
+    }),
+    TIMEOUT_MS,
+  );
+
   caseTest(TASK, `F09: a configuration change of the trust fingerprint gives TRUST_CHANGED; without required approval, the next readWorkspace and a new selection stage the hunk without an approval`, SHELL, () =>
     withService({ name: "t096-trust" }, async (service) => {
       const built = buildChanged(gitPath(), "t096-trust", "F09");

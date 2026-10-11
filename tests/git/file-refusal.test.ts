@@ -244,6 +244,22 @@ describe("checkpoints (contract §4 \"File staging\" steps 3 and 7, §9)", () =>
     TIMEOUT_MS,
   );
 
+  // T115, contract §8 "Token invalidation": an equal observation keeps the generation, so acceptance sees a released approval.
+  caseTest("T115", `an approval that a refresh: true readWorkspace invalidated without a change gives UNKNOWN_TARGET at acceptance, and no Git process starts`, SHELL, () =>
+    withService({ name: "t115-file-refreshed" }, async (service) => {
+      const repo = changed("t115-file-refreshed");
+      await underTest();
+      const { repositoryId } = await service.register(repo);
+      const c = await compare(service, repositoryId, "multi.txt", "unstaged");
+      const read = await refresh(service, repositoryId);
+      expect({ ...outcome(read), generation: read.result?.generation }).toEqual({ ...SUCCEEDED, generation: c.read.generation });
+      const calls = service.runner.calls.length;
+      const response = await refused(service, repo, () => applyFile(service, repositoryId, c, "stage"));
+      expect({ ...outcome(response), runs: service.runner.calls.length - calls }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
+    }),
+    TIMEOUT_MS,
+  );
+
   caseTest(TASK, `a configuration change of the trust fingerprint gives TRUST_CHANGED`, SHELL, () =>
     withService({ name: "t197-trust" }, async (service) => {
       const built = buildChanged(gitPath(), "t197-trust", "F09");

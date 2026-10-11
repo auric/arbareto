@@ -398,7 +398,7 @@ describe("live-node counts", () => {
   // T236 adds the step text "Fetching submodule <path> (<i> of <n>)…" and "Updating submodule <path> (<i> of <n>)…".
   test("a submodule step with five percentage events gives no change, and the visible text shows each <p>% outside every live element", () => {
     const op = running({ kind: "updateSubmodules" });
-    const step = (percent?: number) => html({ operation: { ...op, progress: progress(op, { phase: "update", stalled: false, counters: { rowIndex: 1, rowCount: 2, ...(percent === undefined ? {} : { percent }) } }) } });
+    const step = (percent?: number) => html({ operation: { ...op, progress: progress(op, { phase: "update", path: "libs/a", stalled: false, counters: { rowIndex: 1, rowCount: 2, ...(percent === undefined ? {} : { percent }) } }) } });
     const states = [step(), ...[10, 30, 50, 70, 90].map((p) => step(p))];
     for (let i = 1; i < states.length; i++) {
       expect(changes(states[i - 1]!, states[i]!)).toEqual([0, 0]);
@@ -409,7 +409,14 @@ describe("live-node counts", () => {
     }
   });
 
-  test.todo("a new submodule step gives one change, and the step text shows (needs T236)", () => {});
+  test("a new submodule step gives one change, and the step text shows (needs T236)", () => {
+    const op = running({ kind: "updateSubmodules" });
+    const step = (phase: "fetch" | "update", path: string, rowIndex: number) => html({ operation: { ...op, progress: progress(op, { phase, path, stalled: false, counters: { rowIndex, rowCount: 2, percent: 50 } }) } });
+    const [first, second] = [step("fetch", "libs/a", 1), step("update", "mid/leaf", 2)];
+    expect(changes(first, second)).toEqual([1, 0]);
+    expect(text(visible(first))).toContain("Fetching submodule libs/a (1 of 2)…");
+    expect(text(visible(second))).toContain("Updating submodule mid/leaf (2 of 2)…");
+  });
 
   test("a requested cancel keeps the label Cancel requested and Cancel until the outcome", () => {
     const op = running();

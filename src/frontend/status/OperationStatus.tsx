@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { CancelCircleIcon, PlusSignCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
+import type { SubmoduleRowResult } from "../../contracts/submodules";
 import { WarningIcon } from "../app/NoticeBand";
 import { CopyButton } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
 import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
-import type { Panel } from "../keyboard/shortcuts";
+import { isEditable, type Panel } from "../keyboard/shortcuts";
 import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
 import { cn } from "../lib/utils";
 
@@ -48,6 +51,8 @@ export type OperationStatusProps = {
   onFocusMessageField(): void;
   onClearMessage(): void;
   onRefresh(): void;
+  /** The opener of the submodule review, or the nearest surviving logical control. A declined Run confirmation returns focus there. */
+  declinedFocus?: () => HTMLElement | null;
   /** The plan.md "Status area" maximum in DIPs (`statusAreaHeight`). */
   areaMaxHeight?: number;
   /** A workbench status text in its own live element before the operation text: "No repository open", "Refreshing…", "State unknown", a WSL start, or a notice. An outcome never hides it. */
@@ -116,11 +121,90 @@ const EFFECT_SENTENCES: Record<string, Record<EffectField, string>> = {
 const STALL_SENTENCE = "Git may be waiting for input.";
 // Contract §6 "Activity and stall notice".
 const STALL_NOTICE = "Git may be waiting for a prompt that Arbareto cannot show, or for a sign-in window. To answer a hidden prompt, select Cancel and run this command in a terminal.";
+// plan.md "Required visible states", Updating submodules.
+const INACTIVITY = "Git sent no output and transferred no data for 5 minutes, so Arbareto stopped it.";
+const FAILED_READ = "Arbareto could not read this submodule. Use Refresh, then try again.";
 // Data-model §7 and plan.md "Status area": these commit states open the area.
 const OPENING_COMMIT_STATES = ["failed", "failed-with-effects", "completed-with-effects"];
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isText = (value: unknown): value is string => typeof value === "string";
+/** plan.md "History graph design": a short ID is the first 12 hex digits. */
+export const shortId = (oid: string | null) => (oid ?? "").slice(0, 12);
+
+function submoduleRowsOf(response: BridgeResponse | null): SubmoduleRowResult[] {
+  const rows = isObject(response?.result) ? response.result.rows : undefined;
+  return Array.isArray(rows) ? (rows.filter((row) => isObject(row) && isText(row.path) && isText(row.state)) as SubmoduleRowResult[]) : [];
+}
+
+// plan.md "Required visible states", Updating submodules: the state text and icon of each row.
+function rowState(row: SubmoduleRowResult): [text: string, icon: "added" | "warning" | "removed" | null] {
+  switch (row.state) {
+    case "cloned":
+      return ["Cloned", "added"];
+    case "moved":
+      return [`Moved from ${shortId(row.oldCommit)} to ${shortId(row.newCommit)}`, "added"];
+    case "unchanged":
+      return ["No change", null];
+    case "failed":
+      return ["Failed", "removed"];
+    case "clone-interrupted":
+      return ["Clone interrupted", "warning"];
+    case "changed-elsewhere":
+      return [row.newCommit === null ? "Changed elsewhere" : `Changed elsewhere to ${shortId(row.newCommit)}`, "warning"];
+    case "refused":
+      return ["Refused", "warning"];
+  }
+}
+
+// plan.md "Required visible states", Updating submodules: the flag sentences.
+function rowSentences(row: SubmoduleRowResult): string[] {
+  const sentences: string[] = [];
+  const settled = row.state === "unchanged" || row.state === "failed";
+  if (row.fetched) sentences.push("Git fetched in this submodule.");
+  if (row.found) sentences.push("Found during the update.");
+  if (settled && row.connected) sentences.push("Git connected the submodule folder.");
+  if (settled && row.registered) sentences.push("Git changed the settings of this submodule.");
+  if (row.failedRead !== undefined) sentences.push(FAILED_READ);
+  return sentences;
+}
+
+const ROW_ICONS = {
+  added: <HugeiconsIcon icon={PlusSignCircleIcon} size="1em" strokeWidth={2} aria-hidden="true" className="shrink-0 text-added" />,
+  warning: <WarningIcon />,
+  removed: <HugeiconsIcon icon={CancelCircleIcon} size="1em" strokeWidth={2} aria-hidden="true" className="shrink-0 text-removed" />,
+};
+
+function SubmoduleRow({ row }: { row: SubmoduleRowResult }) {
+  const [state, icon] = rowState(row);
+  const command = row.remedy?.command;
+  return (
+    <li className="py-1">
+      <p className="flex items-center gap-1 break-all">
+        {icon === null ? null : (
+          <span data-icon={icon} className="inline-flex">
+            {ROW_ICONS[icon]}
+          </span>
+        )}
+        <span>{`${row.path}: ${state}`}</span>
+      </p>
+      {row.text === undefined ? null : <p>{row.text}</p>}
+      {row.folderPath === undefined ? null : <code className="block break-all">{row.folderPath}</code>}
+      {rowSentences(row).map((sentence) => (
+        <p key={sentence}>{sentence}</p>
+      ))}
+      {row.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap">{row.outputTail}</pre>}
+      {row.remedy?.text === undefined ? null : <p>{row.remedy.text}</p>}
+      {isText(command) ? <code className="block break-all">{command}</code> : null}
+      {isText(command) || row.folderPath !== undefined ? (
+        <div className="flex flex-wrap gap-2 py-1">
+          {isText(command) ? <CopyButton text={command}>Copy command</CopyButton> : null}
+          {row.folderPath === undefined ? null : <CopyButton text={row.folderPath}>Copy path</CopyButton>}
+        </div>
+      ) : null}
+    </li>
+  );
+}
 
 function outcomeOf(response: BridgeResponse | null | undefined): Outcome {
   const r = response?.result;
@@ -167,16 +251,24 @@ const lineNode = (line: Line) => (
   </>
 );
 
-// T236 replaces the running text of Update submodules with the step text.
+// plan.md "Required visible states", Updating submodules: the step text of each contract §12 progress phase.
+const SUBMODULE_STEPS: Record<string, string> = { "fetch": "Fetching submodule", update: "Updating submodule" };
+
 function operationText(op: StatusOperation, worktreeRoot: string, head: Head | null, trusted: boolean): Line {
   const [name, verb] = textsOf(op);
   const response = op.response;
-  if (response === null) return { lead: op.progress?.state === "cancel-requested" ? "Cancel requested" : `${verb} in ${repositoryName(worktreeRoot)}…`, tail: "" };
+  if (response === null) {
+    const progress = op.progress;
+    if (progress?.state === "cancel-requested") return { lead: "Cancel requested", tail: "" };
+    const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
+    const { rowIndex, rowCount } = progress?.counters ?? {};
+    if (step !== undefined && progress?.path !== undefined && rowIndex !== undefined && rowCount !== undefined) return { lead: `${step} ${progress.path} (${rowIndex} of ${rowCount})…`, tail: "" };
+    return { lead: `${verb} in ${repositoryName(worktreeRoot)}…`, tail: "" };
+  }
   const outcome = outcomeOf(response);
   // plan.md "Status and fallback texts": the contract §9 code, or the result state without a code.
   const coded = (lead: string): Line => ({ lead, code: response.code ?? response.state, tail: outcome.reason === undefined ? "" : ` ${outcome.reason}` });
-  // plan.md "History graph design": a short ID is the first 12 hex digits.
-  const short = outcome.commitOid?.slice(0, 12);
+  const short = outcome.commitOid === undefined ? undefined : shortId(outcome.commitOid);
   let line: Line = { lead: "", tail: "" };
   if (response.state === "unknown") line.lead = "State unknown";
   else if (response.state === "canceled") line.lead = `${name} canceled`;
@@ -205,7 +297,7 @@ function readStallRemedy(response: BridgeResponse): StallRemedy | null {
 type Area = { requestId: string; open: boolean; forStall: boolean };
 type Stall = { requestId: string; remedy: StallRemedy | null; ending: boolean };
 
-export function OperationStatus({ bridge, operation: op, worktreeRoot, head, trusted, panel, commitPanel, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, areaMaxHeight, notice: workbenchNotice, children, ref }: OperationStatusProps) {
+export function OperationStatus({ bridge, operation: op, worktreeRoot, head, trusted, panel, commitPanel, modalOpen, refusal, onFocusMessageField, onClearMessage, onRefresh, declinedFocus, areaMaxHeight, notice: workbenchNotice, children, ref }: OperationStatusProps) {
   const [area, setArea] = useState<Area | null>(null);
   const [stall, setStall] = useState<Stall | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -243,6 +335,10 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   const effects = outcome.effects;
   const sentences = response !== null && effects !== undefined && response.state in EFFECT_SENTENCES ? EFFECT_FIELDS.filter((f) => effects[f]).map((f) => EFFECT_SENTENCES[response.state]![f]) : [];
   const markerFailed = response?.code === "RECOVERY_MARKER_FAILED";
+  const submodules = op?.kind === "updateSubmodules";
+  const submoduleRows = submodules ? submoduleRowsOf(response) : [];
+  // Contract §12 "Deadlines and Cancel": `DEADLINE` or `FAILED_WITH_EFFECTS` keeps the deadline reason.
+  const inactivity = submodules && response !== null && outcome.reason === "inactivity";
   const details =
     notice !== null ||
     sentences.length > 0 ||
@@ -252,6 +348,8 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
     (outcome.lingeringDescendants ?? 0) > 0 ||
     outcome.failure !== undefined ||
     outcome.path !== undefined ||
+    submoduleRows.length > 0 ||
+    inactivity ||
     suggested;
   const hasArea = heading !== undefined && (details || truncated || current !== null);
   const open = hasArea && current?.open === true;
@@ -297,17 +395,25 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
     wasStalled.current = stalled;
   }, [stalled, requestId]);
 
+  // plan.md "Status area" and the Submodule review dialog row: an editable field or an open dialog keeps focus.
+  // Contract §12 "Reconciliation and outcome": `canceled` comes from a Cancel or a declined Run confirmation. This bar sends the only renderer Cancel.
+  function submoduleFocus(): "area-heading" | "stay" | "declined" {
+    if (modalOpen || isEditable((document.activeElement as HTMLElement | null) ?? undefined)) return "stay";
+    return response?.state === "canceled" && canceled.current !== requestId ? "declined" : "area-heading";
+  }
+
   useLayoutEffect(() => {
     if (op === null || response === null || handled.current === requestId) return;
     handled.current = requestId;
     const commit = op.kind === "commit";
-    const target = commit ? outcomeFocus(panel, modalOpen, focusFrom.current) : "stay";
+    const target = commit ? outcomeFocus(panel, modalOpen, focusFrom.current) : op.kind === "updateSubmodules" ? submoduleFocus() : "stay";
     const count = outcome.lingeringDescendants ?? 0;
     // plan.md "Status area", Opening: every commit outcome opens the area while the commit details are docked.
     const opens = (commit && (panel === "details" || OPENING_COMMIT_STATES.includes(response.state))) || count > 0 || op.kind === "updateSubmodules";
     if (heading !== undefined && opens) openArea(false);
     if (target === "message-field") onFocusMessageField();
     else if (target === "area-heading" && heading !== undefined) focusHeading.current = true;
+    else if (target === "declined") declinedFocus?.()?.focus();
   }, [response]);
 
   useLayoutEffect(() => {
@@ -427,6 +533,14 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
                 {path}
               </code>
             ))}
+            {inactivity ? <p>{INACTIVITY}</p> : null}
+            {submoduleRows.length === 0 ? null : (
+              <ul>
+                {submoduleRows.map((row) => (
+                  <SubmoduleRow key={row.rowId} row={row} />
+                ))}
+              </ul>
+            )}
             {sentences.length === 0 ? null : <p>{sentences.join(" ")}</p>}
             {suggested ? <p>{`Git created commit ${outcome.commitOid}. Repository state changed during execution. Review the resulting commit and staged changes.`}</p> : null}
           </div>

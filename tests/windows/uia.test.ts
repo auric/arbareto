@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { printOrigin } from "../origin";
+import { srcImportHits } from "./src-imports";
 import { fixtureDir, useFixtureRoot } from "../git/fixture-root";
 import { appEnv, findInstalledApp, startInstalledApp, waitExit } from "./installed-app";
 import { close, find, findLiveRegions, invoke, MAX_WAIT_MS, readText, UiaError, waitFocus, type Element } from "./uia";
@@ -56,19 +56,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
   afterAll(() => close());
 
   test("no file under src/ imports bun:ffi or the driver", () => {
-    const src = resolve(import.meta.dir, "..", "..", "src");
-    const driver = UIA.replace(/\.ts$/, "");
-    const hits: string[] = [];
-    for (const entry of readdirSync(src, { recursive: true, withFileTypes: true })) {
-      if (!entry.isFile() || !/\.(?:ts|tsx|js|mjs)$/.test(entry.name)) continue;
-      const file = join(entry.parentPath, entry.name);
-      const loader = entry.name.endsWith(".tsx") ? "tsx" : entry.name.endsWith(".ts") ? "ts" : "js";
-      for (const { path } of new Bun.Transpiler({ loader }).scanImports(readFileSync(file, "utf8"))) {
-        if (path === "bun:ffi" || (path.startsWith(".") && resolve(dirname(file), path).replace(/\.ts$/, "") === driver)) hits.push(`${file}: ${path}`);
-      }
-    }
-    console.log(`SCAN_ROOT ${src}`);
-    expect(hits).toEqual([]);
+    expect(srcImportHits([UIA])).toEqual([]);
   });
 
   test("bad arguments refuse before any search", async () => {

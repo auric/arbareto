@@ -1,0 +1,5 @@
+{
+  "schema": "open-history-result",
+  "expected": "valid",
+  "text": "{\"viewId\":\"0f0f0f0f-0000-4000-8000-000000000006\",\"scope\":\"all\",\"generation\":3,\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},\"startCount\":2,\"refsDigest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"shallow\":false}"
+}

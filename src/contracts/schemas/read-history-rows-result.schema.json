@@ -1,0 +1,397 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "enum": [
+            "found",
+            "unknown",
+            "none"
+          ]
+        },
+        "rows": {
+          "maxItems": 512,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3999999
+              },
+              "oid": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+              },
+              "parents": {
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "cell": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "node": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 23
+                      },
+                      "color": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "merge": {
+                        "type": "boolean"
+                      },
+                      "limited": {
+                        "type": "boolean"
+                      },
+                      "segments": {
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "shape": {
+                                  "type": "string",
+                                  "const": "line"
+                                },
+                                "from": {
+                                  "type": "object",
+                                  "properties": {
+                                    "lane": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 23
+                                    },
+                                    "at": {
+                                      "type": "string",
+                                      "enum": [
+                                        "top",
+                                        "node",
+                                        "bottom"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "lane",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false,
+                                  "title": "GraphPoint"
+                                },
+                                "to": {
+                                  "type": "object",
+                                  "properties": {
+                                    "lane": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 23
+                                    },
+                                    "at": {
+                                      "type": "string",
+                                      "enum": [
+                                        "top",
+                                        "node",
+                                        "bottom"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "lane",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false,
+                                  "title": "GraphPoint"
+                                },
+                                "color": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skip": {
+                                  "type": "boolean",
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "shape",
+                                "from",
+                                "to",
+                                "color"
+                              ],
+                              "additionalProperties": false,
+                              "title": "GraphLine"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "shape": {
+                                  "type": "string",
+                                  "const": "stub"
+                                },
+                                "lane": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 23
+                                },
+                                "color": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "shape",
+                                "lane",
+                                "color"
+                              ],
+                              "additionalProperties": false,
+                              "title": "GraphStub"
+                            }
+                          ],
+                          "title": "GraphSegment"
+                        }
+                      },
+                      "marks": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "root",
+                            "shallow"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "node",
+                      "color",
+                      "merge",
+                      "limited",
+                      "segments",
+                      "marks"
+                    ],
+                    "additionalProperties": false,
+                    "title": "GraphCell"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "labels": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "branch",
+                        "remote",
+                        "tag",
+                        "stash"
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "invalidUtf8": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "invalidUtf8"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "checkout": {
+                "type": "boolean"
+              },
+              "match": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "subject": {
+                "type": "string"
+              },
+              "author": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "email"
+                ],
+                "additionalProperties": false
+              },
+              "date": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "encoding": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "invalidUtf8": {
+                "type": "boolean"
+              },
+              "textLimit": {
+                "type": "boolean",
+                "const": true
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 16384
+              },
+              "bodyCut": {
+                "type": "boolean"
+              },
+              "committer": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "email"
+                ],
+                "additionalProperties": false
+              },
+              "committerDate": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              }
+            },
+            "required": [
+              "index",
+              "oid",
+              "parents",
+              "cell",
+              "labels",
+              "checkout"
+            ],
+            "additionalProperties": false,
+            "title": "HistoryViewRow"
+          }
+        },
+        "lanes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "cut": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8388608
+        }
+      },
+      "required": [
+        "target",
+        "rows",
+        "lanes",
+        "complete",
+        "cut",
+        "bytes"
+      ],
+      "additionalProperties": false,
+      "title": "HistoryRows"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "order",
+            "topology",
+            "line-break",
+            "nul",
+            "quote-end",
+            "length",
+            "matching",
+            "HISTORY_PARENTS_PER_COMMIT",
+            "HISTORY_VIEW_COMMITS",
+            "REF_LISTING_RECORDS",
+            "REF_LISTING_BYTES",
+            "object-missing"
+          ]
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "text",
+            "command"
+          ],
+          "additionalProperties": false,
+          "title": "ViewRemedy"
+        }
+      },
+      "additionalProperties": false,
+      "title": "HistoryViewRefusal"
+    }
+  ],
+  "title": "ReadHistoryRowsResult"
+}

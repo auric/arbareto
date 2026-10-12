@@ -1,0 +1,5 @@
+{
+  "schema": "search-history-result",
+  "expected": "valid",
+  "text": "{\"matches\":3,\"shallow\":true}"
+}

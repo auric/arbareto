@@ -40,6 +40,7 @@
     "tests/contracts/fold-ascii.test.ts",
     "tests/contracts/git-commands.test.ts",
     "tests/contracts/highlight.test.ts",
+    "tests/contracts/history-contract.test.ts",
     "tests/contracts/history-view.test.tsx",
     "tests/contracts/hunk-controls.test.tsx",
     "tests/contracts/identity.test.ts",

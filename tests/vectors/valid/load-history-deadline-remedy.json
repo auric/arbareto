@@ -1,0 +1,5 @@
+{
+  "schema": "load-history-result",
+  "expected": "valid",
+  "text": "{\"rows\":52049,\"complete\":false,\"remedy\":{\"text\":\"Write a commit-graph, then load again.\",\"command\":\"& 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe' --no-lazy-fetch -C 'C:\\\\repo' commit-graph write --reachable\"}}"
+}

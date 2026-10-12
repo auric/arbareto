@@ -3,15 +3,11 @@
 
 // Contract Δ3 `searchHistory`: the filter-text refusals. The service and the renderer run the same checks before any Git process.
 
-// Contract Δ5 "Filter text".
-export const FILTER_TEXT_BYTES = 1024;
+import type { UnsupportedFilterTextReason } from "./errors";
+import { FILTER_TEXT_BYTES } from "./limits";
 
-// Contract Δ9 `UNSUPPORTED_FILTER_TEXT` reasons.
-export const FILTER_TEXT_REASONS = ["line-break", "nul", "quote-end", "length"] as const;
-export type FilterTextReason = (typeof FILTER_TEXT_REASONS)[number];
-
-// `found` names the refused characters. It is null for the byte bound.
-export type FilterText = { kind: "none" } | { kind: "search"; text: string } | { kind: "refused"; reason: FilterTextReason; found: string | null };
+// `reason` is the contract Δ9 reason of `UNSUPPORTED_FILTER_TEXT`. `found` names the refused characters. It is null for the byte bound.
+export type FilterText = { kind: "none" } | { kind: "search"; text: string } | { kind: "refused"; reason: UnsupportedFilterTextReason; found: string | null };
 
 export function filterText(text: string): FilterText {
   // Spec FR-027: empty text is no filter.

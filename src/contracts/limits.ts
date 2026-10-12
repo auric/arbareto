@@ -29,6 +29,7 @@ export const ATTRIBUTION_EVIDENCE_BYTES = 4 * MIB;
 export const ATTRIBUTION_EVIDENCE_RECORDS = 10_000;
 export const HISTORY_STREAM_ROWS = 100;
 export const HISTORY_STREAM_BYTES = 128 * KIB;
+// Also the feature 002 contract Δ5 bound of a `rev-list --parents` line.
 export const HISTORY_PARENTS_PER_COMMIT = 64;
 export const HISTORY_PARENTS_PER_PAGE = 1024;
 export const SHALLOW_METADATA_BYTES = 4 * MIB;
@@ -104,3 +105,17 @@ export const BOOTSTRAP_DEADLINE_CAP_MS = 30 * SECOND_MS;
 export const REGISTERED_DEADLINE_CAP_MS = 120 * SECOND_MS;
 export const PROCESS_EXIT_CODE_MAX = 4_294_967_295;
 export const REGISTER_VERSION_BYTES = 64;
+
+// Feature 002 contract Δ5 "Finite bounds". The 001 bounds above stay in force.
+// The text object bound of a `readHistoryRows` row is HISTORY_COMMIT_OBJECT_BYTES.
+export const HISTORY_VIEWS_PER_SESSION = 1;
+export const HISTORY_PROCESS_DEADLINE_MS = 120 * SECOND_MS;
+export const HISTORY_TEXT_DEADLINE_MS = 30 * SECOND_MS;
+export const HISTORY_ROWS_PER_REQUEST = 512;
+export const HISTORY_VIEW_COMMITS = 4_000_000;
+export const HISTORY_LOAD_MARGIN = 1024;
+export const FILTER_TEXT_BYTES = 1024;
+export const HISTORY_PROGRESS_EVENTS_PER_SECOND = 4;
+export const HISTORY_CHECKPOINT_ROWS = 256;
+export const HISTORY_RENDERER_CACHE_BYTES = 8 * MIB;
+export const HISTORY_PROCESSES_PER_VIEW = 3;

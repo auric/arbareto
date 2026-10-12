@@ -87,6 +87,15 @@ describe("golden vectors", () => {
   });
   test.skip.each(rows(false))("%s (other platform)", () => {});
 
+  // Feature 002 contract Δ10: vectors for the five operations and their results.
+  test("each feature 002 operation has a valid request vector, and each of its result schemas has valid and invalid vectors", () => {
+    const operations = vectors.filter(({ kind, vector }) => kind === "valid" && vector.schema === "renderer-envelope").map(({ vector }) => JSON.parse(vector.text).operation);
+    expect(operations).toEqual(expect.arrayContaining(["openHistory", "loadHistory", "readHistoryRows", "searchHistory", "closeHistory"]));
+    for (const schema of ["open-history-result", "load-history-result", "read-history-rows-result", "search-history-result"]) {
+      for (const kind of ["valid", "invalid"]) expect(vectors.some((v) => v.kind === kind && v.vector.schema === schema)).toBe(true);
+    }
+  });
+
   const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));
   test("each invalid vector of a fault schema carries its repair", () => {
     expect(faulted.filter(({ vector }) => vector.repair === undefined).map(({ name }) => name)).toEqual([]);

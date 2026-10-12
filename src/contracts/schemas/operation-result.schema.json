@@ -20,6 +20,11 @@
         "readWorkspace",
         "readEntries",
         "readHistory",
+        "openHistory",
+        "loadHistory",
+        "readHistoryRows",
+        "searchHistory",
+        "closeHistory",
         "readRefs",
         "readComparison",
         "readTrust",
@@ -66,7 +71,9 @@
         "submodule-confirmation",
         "fetch",
         "update",
-        "reconciliation"
+        "reconciliation",
+        "history-load",
+        "history-search"
       ]
     },
     "code": {
@@ -118,7 +125,10 @@
         "FAILED_WITH_EFFECTS",
         "STATE_UNKNOWN",
         "SERVICE_UNAVAILABLE",
-        "RECOVERY_MARKER_FAILED"
+        "RECOVERY_MARKER_FAILED",
+        "HISTORY_CHANGED",
+        "UNSUPPORTED_FILTER_TEXT",
+        "SEARCH_UNSUPPORTED"
       ]
     },
     "cause": {

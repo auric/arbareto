@@ -4,10 +4,8 @@
 // plan.md D3 and data-model.md §4: the lane layout as a pure step over the rows of one `rev-list --parents --date-order` stream.
 // The lane rules are those of `layoutHistory` in `src/frontend/history/lanes.ts`, except that a limited row closes the free lane slots (plan.md O-5). In a complete stream every parent is a later row, so no lane ends outside the stream.
 
-import { GRAPH_LANES } from "../contracts/limits";
+import { GRAPH_LANES, HISTORY_CHECKPOINT_ROWS as CHECKPOINT_ROWS } from "../contracts/limits";
 
-// Contract Δ5 "Lane checkpoint interval (service)".
-export const CHECKPOINT_ROWS = 256;
 // 001 plan.md "History graph design": four lane colors.
 const COLORS = 4;
 

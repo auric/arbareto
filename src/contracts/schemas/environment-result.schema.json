@@ -108,7 +108,10 @@
         "FAILED_WITH_EFFECTS",
         "STATE_UNKNOWN",
         "SERVICE_UNAVAILABLE",
-        "RECOVERY_MARKER_FAILED"
+        "RECOVERY_MARKER_FAILED",
+        "HISTORY_CHANGED",
+        "UNSUPPORTED_FILTER_TEXT",
+        "SEARCH_UNSUPPORTED"
       ]
     },
     "reason": {

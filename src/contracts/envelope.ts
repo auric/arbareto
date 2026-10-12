@@ -3,10 +3,30 @@
 
 import { z } from "zod";
 import { DamagedMarker, LinuxPath, TRUST_BOUNDS, UtcTime } from "./channel";
-import { ERROR_CODES, TERMINAL_STATES, WSL_UNAVAILABLE_REASONS, type ErrorCode } from "./errors";
+import {
+  ERROR_CODES,
+  HISTORY_CHANGED_REASONS,
+  HISTORY_OUTPUT_LIMIT_REASONS,
+  SEARCH_UNSUPPORTED_REASONS,
+  TERMINAL_STATES,
+  UNSUPPORTED_FILTER_TEXT_REASONS,
+  WSL_UNAVAILABLE_REASONS,
+  type ErrorCode,
+} from "./errors";
 import { FILE_ACTION_REASONS } from "./file-action";
 import * as limits from "./limits";
-import { COMMIT_MESSAGE_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_STREAM_ROWS, PUBLIC_REQUEST_BYTES, REF_LISTING_RECORDS, REGISTERED_WORKSPACES } from "./limits";
+import {
+  COMMIT_MESSAGE_BYTES,
+  GRAPH_LANES,
+  HISTORY_PAGE_BYTES,
+  HISTORY_PARENTS_PER_COMMIT,
+  HISTORY_ROWS_PER_REQUEST,
+  HISTORY_STREAM_ROWS,
+  HISTORY_VIEW_COMMITS,
+  PUBLIC_REQUEST_BYTES,
+  REF_LISTING_RECORDS,
+  REGISTERED_WORKSPACES,
+} from "./limits";
 import {
   ChannelPath,
   Count,
@@ -36,6 +56,8 @@ const Generation = Count;
 const repository = { repositoryId: Identifier };
 const snapshot = { repositoryId: Identifier, repositoryGeneration: Generation };
 const empty = () => z.strictObject({});
+// Data-model §2 `objectFormat`: SHA-1 and SHA-256 object IDs in lowercase hex.
+const ObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 const pascal = (name: string) => name[0].toUpperCase() + name.slice(1);
 
 function op<N extends OperationName, T extends z.ZodRawShape, P extends z.ZodType>(operation: N, target: T, payload: P) {
@@ -70,6 +92,38 @@ const ReadEntries = op("readEntries", snapshot, z.strictObject({ snapshotId: Ide
 const ReadHistory = op("readHistory", snapshot, empty());
 // Contract §3 `readRefs`: no renderer ref, pattern, or format.
 const ReadRefs = op("readRefs", snapshot, empty());
+// Feature 002 contract Δ2 and Δ3. `viewId` and `searchId` are §2 identifiers that the service issues. The service checks the object format of an `oid`.
+const OpenHistory = op("openHistory", snapshot, z.strictObject({ scope: z.enum(["all", "current"]) }));
+const HistoryNeed = z.union([
+  z.strictObject({ row: z.int().min(0).max(HISTORY_VIEW_COMMITS) }).meta({ title: "NeedRow" }),
+  z.strictObject({ oid: ObjectId }).meta({ title: "NeedOid" }),
+  z.strictObject({ end: z.literal(true) }).meta({ title: "NeedEnd" }),
+]);
+const LoadHistory = op("loadHistory", repository, z.strictObject({ viewId: Identifier, need: HistoryNeed }));
+// `from` is the row index where a match search starts.
+const RowsAt = z.union([
+  z.strictObject({ row: Count }).meta({ title: "AtRow" }),
+  z.strictObject({ oid: ObjectId }).meta({ title: "AtOid" }),
+  z.strictObject({ match: z.enum(["next", "previous"]), from: Count }).meta({ title: "AtMatch" }),
+  z.strictObject({ end: z.literal(true) }).meta({ title: "AtEnd" }),
+]);
+const ReadHistoryRows = op(
+  "readHistoryRows",
+  repository,
+  z
+    .strictObject({
+      viewId: Identifier,
+      mode: z.enum(["full", "filter"]),
+      searchId: Identifier.optional(),
+      at: RowsAt,
+      count: z.int().min(1).max(HISTORY_ROWS_PER_REQUEST),
+      text: z.enum(["none", "rows", "details"]),
+    })
+    .refine((p) => (p.mode !== "filter" || p.searchId !== undefined) && (p.text !== "details" || p.count === 1)),
+);
+// Contract Δ3: the service refuses a nonempty text with UNSUPPORTED_FILTER_TEXT, so the schema takes any nonempty string.
+const SearchHistory = op("searchHistory", repository, z.strictObject({ viewId: Identifier, text: z.string().min(1) }));
+const CloseHistory = op("closeHistory", repository, z.strictObject({ viewId: Identifier }));
 const ReadComparison = op("readComparison", { ...snapshot, selectionId: Identifier }, z.strictObject({ snapshotId: Identifier, entryId: Identifier }));
 const ReadTrust = op("readTrust", repository, empty());
 const ApproveTrust = op("approveTrust", snapshot, z.strictObject({ fingerprint: Fingerprint, approve: z.literal(true) }));
@@ -111,6 +165,11 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   ReadWorkspace,
   ReadEntries,
   ReadHistory,
+  OpenHistory,
+  LoadHistory,
+  ReadHistoryRows,
+  SearchHistory,
+  CloseHistory,
   ReadRefs,
   ReadComparison,
   ReadTrust,
@@ -151,6 +210,11 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   ReadWorkspace,
   ReadEntries,
   ReadHistory,
+  OpenHistory,
+  LoadHistory,
+  ReadHistoryRows,
+  SearchHistory,
+  CloseHistory,
   ReadRefs,
   ReadComparison,
   ReadTrust,
@@ -380,8 +444,6 @@ export const ApproveTrustResult = z
 // Contract §3 `revokeTrust`: the process count of the shell `revoke` reply.
 export const RevokeTrustResult = z.strictObject({ endedProcesses: Count }).meta({ title: "RevokeTrustResult" });
 
-// Data-model §2 `objectFormat`: SHA-1 and SHA-256 object IDs in lowercase hex.
-const ObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 // git-status(1) "Porcelain Format Version 2": octal modes.
 const FileMode = z.string().regex(/^[0-7]{6}$/);
 
@@ -583,7 +645,7 @@ export type HistoryRefusal = z.infer<typeof HistoryRefusal>;
 // `commitId` is `objectId` for a commit, `peeledId` for a tag that Git peels to a commit, and otherwise null.
 export const RefEntry = z
   .strictObject({
-    kind: z.enum(["branch", "remote", "tag"]),
+    kind: z.enum(["branch", "remote", "tag", "stash"]),
     name: z.string(),
     invalidUtf8: z.boolean(),
     objectId: ObjectId,
@@ -598,10 +660,12 @@ export const RefEntry = z
   .meta({ title: "RefEntry" });
 
 // Contract §3 `readRefs`: the complete list in Git's `refname` order, and the branch that `%(HEAD)` marks.
+// Feature 002 contract Δ3: `refsDigest` is computed as in `openHistory`.
 export const RefList = z
   .strictObject({
     generation: Generation,
     refs: z.array(RefEntry).max(REF_LISTING_RECORDS),
+    refsDigest: Fingerprint,
     current: z.strictObject({ name: z.string(), objectId: ObjectId }).meta({ title: "CurrentBranch" }).nullable(),
     completeness: Completeness,
   })
@@ -618,6 +682,125 @@ export const ReadRefsResult = z.union([RefList, RefsRefusal]).meta({ title: "Rea
 export type RefEntry = z.infer<typeof RefEntry>;
 export type RefsResult = z.infer<typeof RefList>;
 export type RefsRefusal = z.infer<typeof RefsRefusal>;
+
+// ---- Feature 002 history views (contract Δ3) ----
+
+// A remedy text, and a copyable command or null. A `DEADLINE` load carries the 001 commit-graph command.
+const ViewRemedy = z.strictObject({ text: z.string().min(1), command: z.string().nullable() }).meta({ title: "ViewRemedy" });
+// The reason of the response code (contract Δ8, Δ9). An `OUTPUT_LIMIT` reason is the export name of its `limits.ts` bound.
+const ViewReason = z.enum([
+  ...HISTORY_CHANGED_REASONS,
+  ...UNSUPPORTED_FILTER_TEXT_REASONS,
+  ...SEARCH_UNSUPPORTED_REASONS,
+  ...HISTORY_OUTPUT_LIMIT_REASONS,
+  "REF_LISTING_RECORDS",
+  "REF_LISTING_BYTES",
+  "object-missing",
+]);
+// A view operation that ended without its result value.
+export const HistoryViewRefusal = z.strictObject({ reason: ViewReason.optional(), remedy: ViewRemedy.optional() }).meta({ title: "HistoryViewRefusal" });
+
+// `startCount`: the unique commits of at most REF_LISTING_RECORDS records, plus HEAD.
+export const OpenHistoryResult = z
+  .union([
+    z
+      .strictObject({
+        viewId: Identifier,
+        scope: z.enum(["all", "current"]),
+        generation: Generation,
+        head: Head,
+        startCount: Count.max(REF_LISTING_RECORDS + 1),
+        refsDigest: Fingerprint,
+        shallow: z.boolean(),
+      })
+      .meta({ title: "HistoryViewOpened" }),
+    HistoryViewRefusal,
+  ])
+  .meta({ title: "OpenHistoryResult" });
+
+// `rows`: the rows that the view holds after the load. `reason` and `remedy` follow the response code.
+export const LoadHistoryResult = z
+  .strictObject({ rows: Count.max(HISTORY_VIEW_COMMITS), complete: z.boolean(), reason: ViewReason.optional(), remedy: ViewRemedy.optional() })
+  .refine((r) => !r.complete || r.reason === undefined)
+  .meta({ title: "LoadHistoryResult" });
+
+const Lane = z.int().min(0).max(GRAPH_LANES - 1);
+const GraphPoint = z.strictObject({ lane: Lane, at: z.enum(["top", "node", "bottom"]) }).meta({ title: "GraphPoint" });
+// Data-model §4. `skip` marks a filter-mode edge that skips commits (spec FR-034).
+const GraphSegment = z
+  .discriminatedUnion("shape", [
+    z.strictObject({ shape: z.literal("line"), from: GraphPoint, to: GraphPoint, color: Count, skip: z.literal(true).optional() }).meta({ title: "GraphLine" }),
+    z.strictObject({ shape: z.literal("stub"), lane: Lane, color: Count }).meta({ title: "GraphStub" }),
+  ])
+  .meta({ title: "GraphSegment" });
+export const GraphCell = z
+  .strictObject({ node: Lane, color: Count, merge: z.boolean(), limited: z.boolean(), segments: z.array(GraphSegment), marks: z.array(z.enum(["root", "shallow"])) })
+  .meta({ title: "GraphCell" });
+const Person = z.strictObject({ name: z.string(), email: z.string() });
+
+// The row form of `readHistoryRows`. `text: "rows"` adds ROW_TEXT, or `textLimit` for an object above HISTORY_COMMIT_OBJECT_BYTES. `text: "details"` also adds ROW_DETAILS.
+const ROW_TEXT = ["subject", "author", "date", "encoding", "invalidUtf8"] as const;
+const ROW_DETAILS = ["body", "bodyCut", "committer", "committerDate", "children"] as const;
+const allOf = (row: Record<string, unknown>, keys: readonly string[]) => keys.every((k) => row[k] !== undefined);
+const noneOf = (row: Record<string, unknown>, keys: readonly string[]) => keys.every((k) => row[k] === undefined);
+export const HistoryViewRow = z
+  .strictObject({
+    index: Count.max(HISTORY_VIEW_COMMITS - 1),
+    oid: ObjectId,
+    parents: z.array(ObjectId).max(HISTORY_PARENTS_PER_COMMIT),
+    // Null in filter mode for a row that is not settled yet.
+    cell: GraphCell.nullable(),
+    labels: z.array(z.strictObject({ kind: z.enum(["branch", "remote", "tag", "stash"]), name: z.string(), invalidUtf8: z.boolean() })),
+    checkout: z.boolean(),
+    // Present when the request has `searchId`. Null while the match state of the row is not known.
+    match: z.boolean().nullable().optional(),
+    subject: z.string().optional(),
+    author: Person.optional(),
+    date: Count.optional(),
+    encoding: z.string().regex(/^[^\u0000-\u001f\u007f-\u009f]*$/).nullable().optional(),
+    invalidUtf8: z.boolean().optional(),
+    textLimit: z.literal(true).optional(),
+    body: z
+      .string()
+      .max(HISTORY_BODY_BYTES)
+      .refine((b) => new TextEncoder().encode(b).length <= HISTORY_BODY_BYTES)
+      .optional(),
+    bodyCut: z.boolean().optional(),
+    committer: Person.optional(),
+    committerDate: Count.optional(),
+    children: z.array(ObjectId).optional(),
+  })
+  .refine(
+    (r) =>
+      (allOf(r, ROW_TEXT) || noneOf(r, ROW_TEXT)) &&
+      (allOf(r, ROW_DETAILS) || noneOf(r, ROW_DETAILS)) &&
+      (noneOf(r, ROW_DETAILS) || allOf(r, ROW_TEXT)) &&
+      (r.textLimit === undefined || (noneOf(r, ROW_TEXT) && noneOf(r, ROW_DETAILS))),
+  )
+  .meta({ title: "HistoryViewRow" });
+
+// `target` is `found` when the requested row exists. `lanes` is the most lanes so far. `bytes` is the encoded result size for the renderer cache.
+export const ReadHistoryRowsResult = z
+  .union([
+    z
+      .strictObject({
+        target: z.enum(["found", "unknown", "none"]),
+        rows: z.array(HistoryViewRow).max(HISTORY_ROWS_PER_REQUEST),
+        lanes: z.int().min(1).max(GRAPH_LANES),
+        complete: z.boolean(),
+        cut: z.boolean(),
+        bytes: Count.max(HISTORY_PAGE_BYTES),
+      })
+      .refine((r) => (r.target === "found" || r.rows.length === 0) && r.rows.every((row, i) => i === 0 || row.index > r.rows[i - 1]!.index))
+      .meta({ title: "HistoryRows" }),
+    HistoryViewRefusal,
+  ])
+  .meta({ title: "ReadHistoryRowsResult" });
+
+// Contract Δ3: the final match count. `shallow` states that the search covered only the commits that the clone holds.
+export const SearchHistoryResult = z
+  .union([z.strictObject({ matches: Count.max(HISTORY_VIEW_COMMITS), shallow: z.boolean() }).meta({ title: "SearchFinished" }), HistoryViewRefusal])
+  .meta({ title: "SearchHistoryResult" });
 
 // Data-model §5 "Support decision". `src/git-service/support.ts` `SUPPORT_REASONS` holds the same list.
 const SupportValue = z.enum(["supported", "binary", "encoding", "size", "rename", "mode", "type", "symlink", "submodule", "LFS", "filter", "state", "line-endings", "index-flag", "path"]);

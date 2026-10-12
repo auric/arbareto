@@ -5,7 +5,8 @@
 
 import { expect, test } from "bun:test";
 import { GRAPH_LANES } from "../../src/contracts/limits";
-import { CHECKPOINT_ROWS, EMPTY_STATE, HistoryLayout, layoutStep, type Cell, type LaneState, type LayoutRow } from "../../src/git-service/history-layout";
+import { HISTORY_CHECKPOINT_ROWS as CHECKPOINT_ROWS } from "../../src/contracts/limits";
+import { EMPTY_STATE, HistoryLayout, layoutStep, type Cell, type LaneState, type LayoutRow } from "../../src/git-service/history-layout";
 import { printOrigin } from "../origin";
 import { PERF_CACHE_ROOT } from "../windows/perf-fixtures";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";

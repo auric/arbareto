@@ -32,7 +32,9 @@
         "submodule-confirmation",
         "fetch",
         "update",
-        "reconciliation"
+        "reconciliation",
+        "history-load",
+        "history-search"
       ]
     },
     "counters": {

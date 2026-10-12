@@ -1,0 +1,5 @@
+{
+  "schema": "load-history-result",
+  "expected": "valid",
+  "text": "{\"rows\":2089,\"complete\":false}"
+}

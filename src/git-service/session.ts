@@ -554,6 +554,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readWorkspace,
     readEntries,
     readHistory,
+    // T028 adds the feature 002 view handlers. Until then the service answers SERVICE_UNAVAILABLE.
+    openHistory: undefined,
+    loadHistory: undefined,
+    readHistoryRows: undefined,
+    searchHistory: undefined,
+    closeHistory: undefined,
     readRefs,
     readComparison,
     readTrust: (request) => {

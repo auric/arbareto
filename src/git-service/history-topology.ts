@@ -5,13 +5,14 @@
 // Input: the stdout frames of `rev-list --parents --date-order --stdin`, one `<oid>[ <parent>]*` line per row, each ended by LF.
 // Typed arrays only. A JS `Map` of OID strings costs several times the bytes per commit.
 
+import type { ErrorCode, HistoryChangedReason, HistoryOutputLimitReason } from "../contracts/errors";
 import { HISTORY_PARENTS_PER_COMMIT } from "../contracts/limits";
 import type { ObjectFormat } from "./commands";
 
 export type TopologyFailure =
-  | { code: "MALFORMED_GIT_OUTPUT" }
-  | { code: "OUTPUT_LIMIT"; reason: "HISTORY_PARENTS_PER_COMMIT" }
-  | { code: "HISTORY_CHANGED"; reason: "order" };
+  | { code: Extract<ErrorCode, "MALFORMED_GIT_OUTPUT"> }
+  | { code: Extract<ErrorCode, "OUTPUT_LIMIT">; reason: Extract<HistoryOutputLimitReason, "HISTORY_PARENTS_PER_COMMIT"> }
+  | { code: Extract<ErrorCode, "HISTORY_CHANGED">; reason: Extract<HistoryChangedReason, "order"> };
 
 const MALFORMED: TopologyFailure = { code: "MALFORMED_GIT_OUTPUT" };
 const PARENTS_LIMIT: TopologyFailure = { code: "OUTPUT_LIMIT", reason: "HISTORY_PARENTS_PER_COMMIT" };

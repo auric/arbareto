@@ -4,8 +4,10 @@
 // plan.md D4 and data-model.md §7: the filter-mode reduced graph, built in stream order of one `rev-list --parents --date-order` stream.
 // A commit is a numeric identifier, as the topology table gives it. Every child streams before its parent (`--date-order`).
 
+import { HISTORY_VIEW_COMMITS } from "../contracts/limits";
+
 const EMPTY = new Uint32Array(0);
-// Bit 31 of the edge target marks an edge that skips commits.
+// Bit 31 of the edge target marks an edge that skips commits. Contract Δ5: a view holds at most HISTORY_VIEW_COMMITS rows, so every match sequence number is below it.
 const SKIP = 0x8000_0000;
 const HAS_PARENTS = 1;
 const HAS_EDGE = 2;
@@ -44,7 +46,7 @@ export class ReducedGraph {
     let t = s;
     if (match) {
       const q = this.matchCount++;
-      if (q >= SKIP) throw new RangeError(`match ${q} does not fit an edge`);
+      if (q >= HISTORY_VIEW_COMMITS) throw new RangeError(`match ${q} is above the HISTORY_VIEW_COMMITS bound`);
       if (q === this.flags.length) this.flags = grow(this.flags, new Uint8Array(2 * q));
       if (parents.length > 0) this.flags[q] = HAS_PARENTS;
       const direct = this.childOf.get(commit);

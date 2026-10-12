@@ -1838,6 +1838,17 @@ Skips. Each capability skip is `unverified`:
 | installed app | 1 `tests/windows` case: no uninstall entry `HKCU\...\Uninstall\Arbareto` | unverified |
 | other platform | 29 golden vectors, 2 POSIX trust cases, and 1 Linux-only pipe case in `bun-runner.test.ts`. These are platform skips, not capability skips. | not applicable on Windows |
 
+**Full run 8, 2026-10-12.** Full run 8 used main `dbcb658` in the main checkout `D:\dev\rozvio`, with Bun 1.4.2 and no other load on the PC. Every command exited with code 0.
+
+- `bun install --frozen-lockfile`, `bunx --bun tsc --noEmit`, `export-schemas.ts --check`, and `bun run build` passed. The startup chunk was 633.37 kB, and the About chunk was 527.57 kB.
+- `bun run test:contracts`: 58 files, 2,872 pass, 29 skip, 0 fail, 118 s.
+- `bun run test:all` with 6 workers and the WSL distro `Ubuntu-26.04` reported 136 of 136 files and 4,767 tests, in about 95 min. Parallel step: 123 files, 4,480 pass, 36 skip, 0 todo, 0 fail, 3,018.8 s. Serial step: 13 files, 245 pass, 6 skip, 0 fail, 2,664.0 s.
+- `tests/wsl/registration.test.ts` on `Ubuntu-24.04`: 38 pass, 4 skip, 0 fail. `bun run test:windows`: 70 pass, 1 skip, 0 fail, 484 s.
+- `cargo test --locked`: 435 passed, 0 failed, 4 ignored. The ignored tests are 3 child entries and the T370 load probe, so that probe did not run. Clippy with `-D warnings` and `cargo fmt --check` printed no finding.
+- Each of the 58 Git blocks printed `C:\Git\cmd\git.exe` and `git version 2.56.0.windows.1`, built from commit `49d759b698127791a5f3f2759c69b983846711dd`. No test skipped for an absent Git.
+- 1,215 `ORIGIN` lines, all under `D:\dev\rozvio`. 1,213 point into `src`, 729 of them into `src\git-service`. 8 `GLOBAL_ORIGIN` lines.
+- The skips are the same as in the table above. No `test.todo` case remains in `tests/`.
+
 Earlier runs of this batch:
 
 - Run 1 at `667a1df`: the lane palette test failed, because it did not expect the Graphite dark lane values of T361. Commit `45be610` fixed the test. The F27 stall case failed under load, because the 10 s wait ended before the held checkout step. Commit `fa2b311` makes the wait end at the step or the response.

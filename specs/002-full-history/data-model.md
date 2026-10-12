@@ -17,7 +17,8 @@ One per service session (contract Δ5).
 | `topology` | topology table (§3) | Grows in stream order only. |
 | `checkpoints` | lane states | One state every 256 rows (§4). |
 | `rowCount` | integer, 0 to 4,000,000 | Rows streamed so far. The bound is `HISTORY_VIEW_COMMITS` (contract Δ5). |
-| `complete` | boolean | True after a load ends `succeeded`. |
+| `complete` | boolean | True when Git exits 0 before the stop row of a load (contract Δ3). |
+| `load` | null or `{operationId, stop}` | `stop` is a row count, `open` for an `{oid}` need before the commit streams, or `end`. One load per view. |
 | `limited` | boolean | True after the load reached `HISTORY_VIEW_COMMITS`. The rows stay, and the view states the limit. |
 | `lanes` | integer, 1 to 24 | The most lanes so far. It never shrinks (spec FR-016). |
 | `stale` | null or `{code, reason}` | Contract Δ8 lists the conditions. |
@@ -26,16 +27,15 @@ One per service session (contract Δ5).
 **State transitions**
 
 ```text
-open ──openHistory──▶ loading ──succeeded──▶ complete
-                        │  ──4,000,000 rows──▶ limited (rows stay; no further load or search)
-                        │  ▲
-          cancel/DEADLINE│  │loadHistory (resume with --skip)
-                        ▼  │
-                       idle
+open ──openHistory──▶ idle ──loadHistory──▶ loading ──Git exit 0 before the stop row──▶ complete
+                        ▲                     │ ──stop row reached (service ends Git)──▶ idle
+                        └──cancel / DEADLINE──┤
+                                              └──4,000,000 rows──▶ limited (rows stay; no further load or search)
 any state ──stale condition──▶ stale (rows stay; load and search refuse)
 any state ──closeHistory / new openHistory / session end──▶ released
 ```
 
+- A stop row leads to `idle`. No load process runs in `idle`.
 - Cancel and `DEADLINE` lead to `idle`, never to `stale`.
 - A ref change or a HEAD move changes no state. The renderer shows a notice (contract Δ8).
 
@@ -60,7 +60,7 @@ Validation:
 
 Typed arrays. No JS `Map` of OID strings.
 
-| Part | Content | Size per commit (unverified) |
+| Part | Content | Size per loaded commit (unverified) |
 |---|---|---|
 | OID table | Raw OID bytes in row order | 20 (SHA-1) or 32 (SHA-256) |
 | Hash slots | Lookup from OID to row | about 12 |
@@ -68,6 +68,8 @@ Typed arrays. No JS `Map` of OID strings.
 | CSR parents | Offsets and parent row IDs | about 8.4 |
 
 The total is about 48 bytes per commit for SHA-1 and 60 for SHA-256 (research R6, unverified).
+
+The table grows only when a load adds rows, and it never shrinks during a view (plan.md D3). ponytail: about 192 MB at `HISTORY_VIEW_COMMITS`.
 
 Validation (contract Δ3 `loadHistory`):
 - A row OID that already exists gives `MALFORMED_GIT_OUTPUT`.
@@ -128,7 +130,7 @@ Text comes from the commit object by OID. Commit objects never change, so a rere
 A `stopped` or `failed` search never shows its count as final.
 
 **Load during a search**
-- When a search starts on an incomplete view, the service resumes the load itself, because filter mode needs the full topology stream (plan.md D4). The renderer starts nothing extra.
+- When a search starts on an incomplete view, the service loads to the end itself, because filter mode needs the full topology stream (plan.md D4). The renderer starts nothing extra.
 - That load belongs to the search operation. Its progress and Cancel go with the search. A cancel keeps the loaded rows.
 - On a view in the `limited` state, a search ends `limited` with `OUTPUT_LIMIT` reason `HISTORY_VIEW_COMMITS`. No Git process starts.
 
@@ -152,6 +154,7 @@ Plan D4 gives the algorithm and its proof. A match without a matching ancestor s
 | Bound | 8 MiB of the `bytes` value of each result, in LRU order. A measurement knob. |
 | Visible pages | Always stay. |
 | In flight | One row read per view. The latest request wins. |
+| Scroll range | The loaded rows plus one more-rows row until the view is complete (plan.md D6). |
 
 The renderer holds O(visible + cache) only. It holds no structure of the history size.
 
@@ -162,4 +165,5 @@ The renderer holds O(visible + cache) only. It holds no structure of the history
 | Base | The same workspace before history opens (spec SC-002). The design proposes a twin worktree with a one-commit history. That base waits for plan.md open item O-1. |
 | Samples | Private bytes over the complete process tree, every 100 ms. |
 | Git processes | Recorded apart, next to the peak of the same Git command run alone. |
-| Checkpoints | End of a full scroll, after a return to the top, during a filter search (spec SC-002). |
+| Checkpoints | After the first screen shows, with no Git process of the view; after End; after a return to the top; during a filter search (spec SC-002). |
+| Loaded rows | The loaded row count at each checkpoint. |

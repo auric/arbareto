@@ -19,6 +19,10 @@
 - Q: Is the 128 MiB memory budget of SC-002 confirmed? → A: Yes. The measurement rules of SC-002 stay.
 - Q: When does a message search start? → A: Only at Enter. A pause in typing does not start a search.
 
+### Session 2026-10-12
+
+- Q: Should history load the whole stream, or load progressively and unload the rows that are not visible? → A: The user said: "yes, we should do progressive loading, and unload what's not visible". The user also said: "the same approach we should use for all other lists we have, also for branch view". FR-054 and FR-055 encode this.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows one history page of at most 100 commits. This feature replaces that limit with the full history of a captured ref set. The default set covers all branches. The order of the journeys follows the reading flow: scroll, filter, then highlight.
@@ -29,7 +33,7 @@ A developer opens a repository with a long history and scrolls to any commit, al
 
 **Why this priority**: Feature 001 stops at 100 commits. Every later history feature, and remote sync in feature 003, needs the full history.
 
-**Independent Test**: Open disposable fixtures with known histories up to 1,000,000 commits. Scroll to the end and compare every row and graph edge with Git. Measure the memory of the complete process tree.
+**Independent Test**: Open disposable fixtures with known histories of up to 200,000 commits. Scroll to the end and compare every row and graph edge with Git. On a 1,000,000-commit fixture, press End, and measure the memory of the complete process tree near the top, after End, and during a search.
 
 **Acceptance Scenarios**:
 
@@ -43,6 +47,8 @@ A developer opens a repository with a long history and scrolls to any commit, al
 8. **Given** a repository with several local branches, remote-tracking branches, and tags. **When** history opens. **Then** the commits of all these refs show. Each row shows the labels of its refs, and the current checkout row is marked.
 9. **Given** the all-branches view. **When** I switch to the current branch. **Then** only the commits that the current checkout reaches show, as in feature 001. **When** I switch back. **Then** all branches show again.
 10. **Given** a long load, a scroll, a search, or a refresh. **When** I type, click, scroll, or press Cancel. **Then** the window responds, and Cancel stays available while Git works.
+11. **Given** a long history. **When** I open it and read only the first rows. **Then** no Git process of the view runs after those rows show, and the view uses almost no memory.
+12. **Given** a repository with thousands of refs. **When** the references sidebar shows them. **Then** it creates elements only for the rows near the visible area, and keyboard navigation reaches every ref.
 
 ---
 
@@ -106,13 +112,13 @@ A developer keeps the full history and graph, and moves from one match to the ne
 - Filter text holds leading or trailing spaces. The search keeps them.
 - A message is not valid text and names no encoding. The row shows replacement characters and the encoding label, as in feature 001. Matching of its non-text bytes is not promised.
 - The process that reads history fails during a scroll. Shown rows stay, the view states the failure, and Refresh starts a new view.
-- The repository has no commit-graph file. The first row waits longer, and the application never writes one.
+- The repository has no commit-graph file. The first row waits longer, and each later load step waits as long again. The application never writes one.
 
 ## Requirements *(mandatory)*
 
 ### Scope Boundaries
 
-Include the full history of one captured ref set, a scrollable virtual list, and graph lanes for every row. Include a switch between all branches and the current branch. Include commit bodies for the details pane only. Include one commit message filter with filter mode and highlight mode. Include a memory budget and speed comparisons with Git Extensions.
+Include the full history of one captured ref set, loaded in steps, a scrollable virtual list, and graph lanes for every row. Include a virtual list for the references sidebar. Include a switch between all branches and the current branch. Include commit bodies for the details pane only. Include one commit message filter with filter mode and highlight mode. Include a memory budget and speed comparisons with Git Extensions.
 
 Exclude remote sync, ahead and behind counts, and remote operations (feature 003). Exclude several patterns, AND matching, and inverted matching. Exclude author, committer, date, path, and content filters. They come later on the same mechanism. Exclude history inspection features: Changes and Files tabs, historical diffs, and branch filtering. Git Extensions calls that filter "Show filtered branches". Exclude the reflog and older stash entries from the history rows.
 
@@ -133,10 +139,14 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 - **FR-007**: A stale view MUST keep its shown rows, state its typed reason, and offer Refresh. It MUST NOT invent rows or edges.
 - **FR-008**: Refresh MUST capture a new ref set in the same scope. It MUST keep the selected commit when the new refs reach it. The view MUST then load the rows up to that commit, with visible progress and Cancel. Otherwise it MUST select the current checkout commit. Without a checkout commit, it MUST select the first commit row. Cancel of that load MUST keep the loaded rows. It MUST select the checkout commit when that row is loaded. Otherwise it MUST select the first commit row.
 - **FR-009**: End MUST load the rows up to the last commit, with visible progress and Cancel. Cancel MUST keep the loaded rows and the selection.
-- **FR-010**: Until the last row is known, the view MUST state that more rows exist. When it is known, the view MUST show the final row count.
-- **FR-011**: Rows far off screen MAY leave memory. When they show again, they MUST show the same commit, text, and graph cell at the same position.
+- **FR-010**: Until the last row is known, the view MUST state that more rows exist. The scroll range MUST then end after the loaded rows. The view MUST NOT show an estimated row count or scroll size. When the last row is known, the view MUST show the final row count.
+- **FR-011**: The text and the graph cells of rows off screen MUST leave memory beyond a fixed cache bound. When such rows show again, they MUST show the same commit, text, and graph cell at the same position.
 - **FR-012**: The view MUST stay usable during a load. Scrolling, selection, and Cancel MUST respond within the targets of FR-052.
 - **FR-013**: The Working directory and Index rows MUST stay above the commits in every mode, as in feature 001.
+
+#### Progressive load
+
+- **FR-054**: The view MUST load commits in steps. A step MUST load rows only up to a fixed read-ahead below the last row that shows. The Git process of the step MUST then end. A new step MUST start when the shown rows come within the read-ahead of the last loaded row. The read-ahead and the step size MUST be row counts. They MUST NOT depend on time. End, a message search, and Refresh or a scope switch with a kept selection MUST load beyond the read-ahead. After Cancel of a step, a new step MUST start only when the user scrolls to the end of the loaded rows.
 
 #### Graph
 
@@ -187,7 +197,7 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 
 #### Memory and repository data
 
-- **FR-043**: On the SC-002 fixture, the whole history view MUST stay within the RAM budget of SC-002. This includes a search and the end of a full scroll. Above 1,000,000 commits, memory grows with the history up to the FR-003 bound.
+- **FR-043**: The memory of a history view MUST grow only with the rows that it loaded. When the user stays near the top, the view MUST stay within the SC-002 first-screen bound and MUST NOT keep a Git process running. On the SC-002 fixture, End and a search MUST stay within the SC-002 budget. Above 1,000,000 loaded commits, memory grows with the loaded rows up to the FR-003 bound.
 - **FR-044**: The application MUST NOT write a commit-graph file, a message index, or any other repository data to make reads faster. It MUST NOT start repository maintenance.
 - **FR-045**: History reads and searches MUST bound their output and support cancellation, as the feature 001 operation rules require.
 
@@ -208,9 +218,13 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 - **FR-052**: The window MUST never stop responding during a 002 workflow. The workflows are open, load, a full scroll, End, and a search. They also include a mode switch, a scope switch, Cancel, and Refresh after a ref change. Each input MUST get a visible response within the feature 001 SC-005 targets. An interface task MUST NOT run longer than the SC-005 bound of 500 ms.
 - **FR-053**: Cancel MUST stay available and respond while Git works. The application MUST NOT wait for a Git process before it handles input.
 
+#### Other lists
+
+- **FR-055**: The references sidebar MUST create elements only for the rows near the visible area. Keyboard navigation, the sidebar filter, and the expanded state MUST cover every ref. Each tree item MUST state its level, its position, and its set size, because not all items exist as elements.
+
 ### Key Entities *(include if feature involves data)*
 
-- **History view**: One captured ref set, its scope, the repository generation at capture, the row order, and the known row count. Its stale state has a typed reason.
+- **History view**: One captured ref set, its scope, the repository generation at capture, the row order, the loaded row count, and the final row count when it is known. Its stale state has a typed reason.
 - **Captured ref set**: The scope, each ref name with its commit, the checkout commit, and the detached state of HEAD. The scope is all branches or the current branch. It does not change during the life of a view.
 - **History row**: One commit with its position, subject, author, date, ref labels, checkout mark, parent identities, and graph cell. Its text can leave memory and come back unchanged.
 - **Commit details**: The full message of one selected commit, up to the 16 KiB bound, with the feature 001 encoding rules.
@@ -222,19 +236,19 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 
 ### Measurable Outcomes
 
-These outcomes are qualification targets, not measured results. Only recorded packaged tests can establish whether they pass. The user confirmed the SC-002 budget and the SC-011 ratio. SC-014 reuses the feature 001 SC-005 targets. The SC-006 and SC-010 values are proposed. The plan fixes the fixtures, hardware, run counts, and timing boundaries before measurement.
+These outcomes are qualification targets, not measured results. Only recorded packaged tests can establish whether they pass. The user confirmed the SC-002 budget and the SC-011 ratio. SC-014 reuses the feature 001 SC-005 targets. The SC-002 first-screen bound and the SC-006 and SC-010 values are proposed. The plan fixes the fixtures, hardware, run counts, and timing boundaries before measurement.
 
-- **SC-001**: On a 1,000,000-commit fixture, End reaches the last commit. The last row matches Git's last commit of the same captured ref set. Every row from first to last matches Git's commit list, each commit exactly once.
-- **SC-002**: On a 1,000,000-commit fixture, the whole history view adds at most 128 MiB of memory. The base is the same workspace before history opens. The measure covers the complete process tree. It holds at the end of a full scroll, after a return to the top, and during a filter search.
+- **SC-001**: On a 200,000-commit fixture, a scroll to the end shows every row from first to last as in Git's commit list, each commit exactly once. On a 1,000,000-commit fixture, End reaches the last commit, and the last row matches Git's last commit of the same captured ref set.
+- **SC-002**: On a 1,000,000-commit fixture, the history view adds memory within two bounds. After the first screen of rows shows, no Git process of the view runs, and the view adds at most 16 MiB. After End shows the last commit, after a return to the top, and during a filter search, the view adds at most 128 MiB. The base is the same workspace before history opens. The measure covers the complete process tree. Each record states the loaded row count.
 - **SC-003**: In every order fixture, no shown row changes its position during the view's life. Fixtures include equal dates, clock skew, merges, and a history that holds only merges.
 - **SC-004**: In every graph fixture, each graph cell equals the cell of one full layout of the whole history. Edges match Git parents. Rows above the width limit state the limit.
-- **SC-005**: Time to the first row is recorded on 200,000-commit and 1,000,000-commit fixtures, with and without a commit-graph file. Git's own time to its first output under the same conditions is recorded next to it. No fixed target applies, because Git sets the floor. The record states the time that the application adds. Each record states the cache state. A cold run follows a reboot. A warm run follows one discarded run. Both use the feature 001 rules (001 plan.md "Measurements and budgets").
-- **SC-006**: Filter latency is recorded on the 1,000,000-commit fixture: the time to the first match and to the final count. Git's own search time under the same conditions is recorded next to it. The application adds at most 10% or 500 ms to the time to the final count, whichever is larger. Each record states the cache state. A cold run follows a reboot. A warm run follows one discarded run. Both use the feature 001 rules (001 plan.md "Measurements and budgets").
+- **SC-005**: Time to the first row is recorded on the 200,000-commit fixture, with and without a commit-graph file. The time to the first new row of a later load step is recorded too. Git's own time to its first output under the same conditions is recorded next to it. No fixed target applies, because Git sets the floor. The record states the time that the application adds. Each record states the cache state. A cold run follows a reboot. A warm run follows one discarded run. Both use the feature 001 rules (001 plan.md "Measurements and budgets").
+- **SC-006**: Filter latency is recorded on the 200,000-commit fixture: the time to the first match and to the final count. Git's own search time under the same conditions is recorded next to it. The application adds at most 10% or 500 ms to the time to the final count, whichever is larger. Each record states the cache state. A cold run follows a reboot. A warm run follows one discarded run. Both use the feature 001 rules (001 plan.md "Measurements and budgets").
 - **SC-007**: In the matching fixture, every match and non-match agrees with FR-023 and FR-024. This holds on Windows and on each qualified WSL distro. Cases include "Виправлення" in lower and upper case, and the pairs є/Є, і/І, ї/Ї, and ґ/Ґ. They also include "ß" against "ẞ" and "SS", and a legacy-encoded message. Characters outside the probe stay unverified.
 - **SC-008**: In every filter fixture, filter mode shows exactly Git's matches in full-history order. The reduced graph joins each match to exactly its nearest matching ancestors. Highlight mode reaches every match with Next match and Previous match, and the final count equals Git's match count.
 - **SC-009**: Each refused text case shows its typed reason and starts no Git process. Cases are a line break, a NUL character, a backslash followed by "E", and more than 1,024 bytes.
 - **SC-010**: A cancelled search and a cancelled load stop within one second. No process of that operation remains five seconds later. The view shows the full history or the loaded rows, and no count shows as final.
-- **SC-011**: Against Git Extensions 7.2.1 (installed build 7.2.1.7, as pinned by feature 001 SC-015 and T180) under matched conditions, two workflows have a median time ratio of at most 1.0. They are a full scroll to the last commit, and a message filter over the whole history. Both run on the 200,000-commit and 1,000,000-commit fixtures. The record states the work that each tool performs. The gate value is the upper bound of the 95% interval of the median ratio. This is the feature 001 SC-015 rule (001 plan.md "Measurements and budgets" and "Matched-condition comparisons").
+- **SC-011**: Against Git Extensions 7.2.1 (installed build 7.2.1.7, as pinned by feature 001 SC-015 and T180) under matched conditions, two workflows have a median time ratio of at most 1.0. They are a full scroll to the last commit, and a message filter over the whole history. Both run on the 200,000-commit fixture. The record states the work that each tool performs. The gate value is the upper bound of the 95% interval of the median ratio. This is the feature 001 SC-015 rule (001 plan.md "Measurements and budgets" and "Matched-condition comparisons").
 - **SC-012**: The checkout moves, or a ref is added, removed, or moved during a scroll. No shown row or label changes. The notice appears within the feature 001 external-change target. Refresh shows the history of the new ref set. In a WSL repository, a change of a ref other than HEAD shows the notice at the next focus return, Refresh, or mutation outcome.
 - **SC-013**: After every fixture run, the repository files are byte-identical to their state before the run. No commit-graph file or other repository data appears.
 - **SC-014**: In the packaged application, every 002 workflow of FR-052 meets the feature 001 SC-005 targets. The workloads use the 1,000,000-commit fixture and slow Git activity. At least 95% of tested inputs get a visible acknowledgement within 100 ms. Every tested input gets a visible response within 500 ms. No interface task runs longer than 500 ms. Windows never reports the window as not responding. Cancel responds in every workflow while Git works.
@@ -245,12 +259,15 @@ These outcomes are qualification targets, not measured results. Only recorded pa
 - The user chose all branches as the default scope (Clarifications). FR-047 lists explicit ref namespaces instead of the Git Extensions exclusion list. The namespace list is a reviewer default, not a user decision.
 - Older stash entries are not part of this feature, and only the stash ref shows. A later stash feature adds them. This is a reviewer default, not a user decision.
 - A scope switch runs an active search again on the new view (FR-049). This is a reviewer default, not a user decision.
-- Graph data uses about 48 bytes for each commit, plus an 8 MiB cache of row text. The budget applies to 1,000,000 commits. A larger history stays reachable up to the FR-003 view bound, and its memory grows with it. This estimate is unverified. Qualification records a budget miss as a failure. The budget scope at 1,000,000 commits is a reviewer default, not a user decision.
-- A history view holds at most 4,000,000 commits (FR-003). At about 48 bytes for each commit, that bound costs about 192 MB of service memory. A larger bound needs a measured memory design. This is a reviewer default, not a user decision.
+- Graph data uses about 48 bytes for each loaded commit, plus an 8 MiB cache of row text. Near the top, the view holds about 2,000 commits. After End or a search, it holds every commit. The budget applies to 1,000,000 commits. A larger history stays reachable up to the FR-003 view bound, and its memory grows with the loaded rows. This estimate is unverified. Qualification records a budget miss as a failure. The budget scope at 1,000,000 commits is a reviewer default, not a user decision.
+- The read-ahead of 1,024 rows and the step rule are reviewer defaults (FR-054). Each step loads at least as many rows as the view holds. So the steps of a full scroll grow with the logarithm of the row count.
+- Known limit: the topology of each loaded row stays for the life of the view, at about 48 bytes per commit (unverified). Only the row text and the graph cells leave memory (FR-011). A return to the top does not free the topology. This is a reviewer default, not a user decision.
+- Known limit: the changes list creates elements only for the visible rows, but it holds up to 100,000 entries of the status listing in memory (`STATUS_LISTING_RECORDS`). The references sidebar holds up to 10,000 refs. A larger ref set gets the FR-047 refusal. These are feature 001 bounds.
+- A history view holds at most 4,000,000 commits (FR-003). At about 48 bytes for each loaded commit, that bound costs about 192 MB of service memory. A larger bound needs a measured memory design. This is a reviewer default, not a user decision.
 - The plan review set these rules: the FR-003 view bound and parent exception, the FR-008 Cancel selection, the FR-016 column growth, the FR-028 line-break characters, the FR-047 ref bound, the FR-048 labels, the FR-050 symbolic refs, the SC-011 statistic, the SC-012 WSL timing, the FR-026 byte bound, the FR-038 no-wrap rule, the FR-042 selection move, and the SC-010 values. These are reviewer defaults, not user decisions.
-- The user confirmed the SC-011 ratio. The SC-006 target and the SC-010 values are proposed, and the plan confirms them before measurement. Feature 001 speed targets stay in force on the moderate fixture.
+- The user confirmed the SC-011 ratio. The SC-002 first-screen bound, the SC-006 target, and the SC-010 values are proposed, and the plan confirms them before measurement. Feature 001 speed targets stay in force on the moderate fixture.
 - SC-014 reuses the feature 001 SC-005 response targets. It adds no new values.
-- The fixtures are synthetic disposable repositories of 200,000 and 1,000,000 commits, built at test time. They include merges, equal dates, clock skew, a shallow clone, and legacy-encoded messages. The fixture sizes and contents are reviewer defaults, not user decisions.
+- The fixtures are synthetic disposable repositories of 200,000 and 1,000,000 commits, built at test time. They include merges, equal dates, clock skew, a shallow clone, and legacy-encoded messages. The fixture sizes and contents are reviewer defaults, not user decisions. Only the memory and responsiveness records use the 1,000,000-commit fixture: Git memory, End, a search, and the compressed list. Correctness, timings, and the Git Extensions comparison use the 200,000-commit fixture. This split is a reviewer default, not a user decision.
 - The plan selects the Git Extensions workflow that searches the whole history for the message filter comparison. Its quick search covers only loaded rows, so it is not matched work.
 - Git Extensions loads history in no fixed order and reorders rows after they show. Arbareto keeps one order, so the comparison measures matched work, not identical behavior.
 - macOS and Linux stay unqualified. The matching rules need separate verification there and in each WSL distro before support claims.
@@ -259,11 +276,12 @@ These outcomes are qualification targets, not measured results. Only recorded pa
 
 These facts come from an investigation on 2026-10-11 with Git 2.56.0.windows.1 on synthetic repositories. The plan uses them and names the mechanisms.
 
-- Each view reads one history stream, bound to the captured ref set. The stream runs to the end at full speed, and the application keeps only the compact topology of each commit. This gives an exact order by construction (research.md R1 and R2).
+- Each view reads one ordered history stream, bound to the captured ref set, in load steps. A later step runs the same read again and skips the rows that the view holds. Its first row must equal the last row that the view holds. The application keeps only the compact topology of each loaded commit (research.md R1 and R2).
 - Paging with skip counts gives the same order, but each page walks the history again. A deep page takes about 0.9 s at 200,000 commits without a commit-graph file, and 0.18 s with one.
 - A cursor that restarts from the parents not yet sent gives a different order. The investigation rejects it.
 - Git documents no unique order. Repeatability of the order across two views is an experiment fact only. The spec requires one order only within one view.
 - Without a commit-graph file, the first row waits for a walk of the whole graph: about 1 s at 200,000 commits. With a commit-graph file, it takes 48 ms.
+- Without a commit-graph file, Git sorts the whole graph before its first row, so each later load step pays that walk again. With a commit-graph file, Git walks only the skipped rows and the shown rows (Git source).
 - Git's message search keeps the real parents of each match. Its own graph output breaks at parents that do not match. The application must build the reduced graph itself.
 - The matches of Git's message search come in exactly the full-history order, with the non-matches removed.
 - Case folding of non-ASCII text needs Git to run with a UTF-8 locale and UTF-8 log output. The application must set both for the search.

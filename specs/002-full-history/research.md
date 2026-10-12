@@ -16,9 +16,9 @@ Each fact has one mark:
 
 The investigation scripts were in a session scratchpad. They may be gone. Step P0.2 records the experiment facts again as tests.
 
-## R1 Page rule: one stream per view
+## R1 Page rule: one order per view, read in load steps
 
-- **Decision**: Each view reads one `rev-list --parents --date-order --stdin` stream. The service reads it to the end at full speed. A resume after Cancel or a deadline uses the same arguments with `--skip=<N-1>`. The first resumed line must equal row N-1.
+- **Decision**: Each view reads one `rev-list --parents --date-order --stdin` order in load steps. A step reads to a stop row, and then the service ends Git (plan.md D2). A later step uses the same arguments with `--skip=<N-1>`. The first resumed line must equal row N-1.
 - **Rationale**:
   - One stream gives one exact order by construction. **experiment**
   - `--date-order` shows no parent before all its children (git-rev-list(1)). **documented**
@@ -28,20 +28,26 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - Without a commit-graph, the first row waits for a walk of the whole graph: about 1 s at 200,000 commits, 48 ms with a commit-graph. **experiment**
   - rev-list reads revisions from stdin with `--stdin` (git-rev-list(1)). **documented**
   - With equal commit dates, the stdin order of the start points decides the order of the tied rows. A shuffled or a reversed stdin gave the same rows in another order. So the start points must go to Git in ascending lowercase hex. **experiment** (Git 2.56.0.windows.1, T003 equal-dates fixture)
+  - Without generation numbers, `--date-order` sets `limited`, and `limit_list` walks the whole graph before the first line (Git v2.56.0 revision.c:2485-2487, 3195-3196, 4053-4057). With them, `init_topo_walk` walks on demand (revision.c:4058-4059). `--skip` takes one walk step for each skipped commit (revision.c:4598-4607). **documented** (code)
 - **Alternatives considered**:
   - A cursor that restarts from the parents not yet sent. It gives another valid order, so the order changes inside a view. Rejected. **experiment**
-  - `--skip` pages for every scroll. Each page walks again. Rejected for scrolling; kept only for a resume.
+  - Fixed-size `--skip` pages. A deep scroll costs one walk per page. Rejected; load steps double instead (plan.md D2).
+  - One stream per view, drained at full speed. It holds the topology of every commit from the open. Replaced by load steps on 2026-10-12 (user decision, spec Clarifications).
   - A paused stream with backpressure. The memory note of the investigation proposed it ("read with backpressure"). The design rejects it (R2).
 
-## R2 Process model: drain, do not pause
+## R2 Process model: load to a stop row, then end Git
 
-- **Decision**: The load streams as fast as Git and the service run. The service parses each frame into compact arrays. No new shell flow-control frame. No Web Worker.
+- **Decision**: A load reads to its stop row. The service then ends Git with the process `cancel` of the call. Git never pauses. The service parses each frame into compact arrays. No new shell flow-control frame. No Web Worker.
 - **Rationale**:
   - The shell keeps at most 8 chunks per stream, and the service handles each frame before it reads the next (001 contract §6 "Backpressure"; `process_requests.rs:2394`). A paused stream would stall the service pipe for every operation. **documented**
-  - Without a commit-graph, Git walks the whole graph before the first row and holds that memory. A paused stream keeps the memory for the life of the view. A drained stream lets Git exit after a few seconds. **experiment** (the walk) and **unverified** (the hold time)
+  - A paused Git keeps the memory of its walk. An ended Git frees it at once. Without a commit-graph, the next step walks again (R1). **experiment** (the walk) and **documented** (code, R1)
+  - A process `cancel` for a run call closes the Job of the operation that owns the call, and each process of it gets `exit` (001 §6 "Channel frames"; `process_requests.rs:1148-1158`). **documented**
   - The cost is about 1-3 µs per row, so about 2 ms per 64 KiB frame. Other requests wait at most one frame. **unverified**
-  - A 1M-commit drain is about 1,350 frames of 64 KiB, about 115 MB. The cost of the strict JSON decoder over that volume is unknown. **unverified**
-- **Alternatives considered**: A per-call output credit frame. Left out. Add it when a qualified fixture beyond about 2M commits must stay within the budget.
+  - An End load of 1M commits is about 1,350 frames of 64 KiB, about 115 MB. The cost of the strict JSON decoder over that volume is unknown. **unverified**
+- **Alternatives considered**:
+  - A per-call output credit frame. Left out: the stop row bounds each load.
+  - A paused stream. Rejected: Git keeps its memory, and the pipe stalls.
+  - `--max-count` per step. Rejected: an `{oid}` load learns its stop row only when the commit streams.
 
 ## R3 Graph layout: one step function with checkpoints
 
@@ -98,6 +104,8 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - The design counts about 48 bytes per commit for SHA-1 (60 for SHA-256): OID 20, hash slots about 12, idToRow and rowToId 8, CSR about 8.4. That is about 48 MB at 1M commits. **unverified**
   - Git alone uses 446.5 MiB during a search on 1M commits without a commit-graph, and 145.9 to 166.4 MiB otherwise (R14). **experiment** The design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep`, so the limited walk keeps every commit buffer. **unverified** (plan.md open item O-1)
   - Linux Git memory is not part of the Windows process tree. The WSL scope `memory.peak` can record it. **unverified**
+  - With load steps, the view holds at most 2·n + 2·M + 1 rows until End or a search (plan.md D2). Near the top, that is about 2,089 rows. **documented** (arithmetic)
+  - The topology table never shrinks during a view (plan.md D3).
 - **Alternatives considered**: A JS `Map` of OID strings. Rejected for its memory per commit. The investigation proposed a 32 MiB text cache. The design uses 8 MiB of `bytes` as a measurement knob.
 
 ## R7 Ref set capture
@@ -115,7 +123,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 
 ## R8 History list: why the installed virtualizer does not fit
 
-- **Decision**: The history list uses its own fixed-height row arithmetic. ChangesPane keeps `@tanstack/react-virtual`. This follows the project rule "prefer libraries": the plan checked the installed library first.
+- **Decision**: The history list uses its own fixed-height row arithmetic. ChangesPane keeps `@tanstack/react-virtual`, and the references sidebar uses it too (plan.md D6), because its count is at most 10,000 refs. This follows the project rule "prefer libraries": the plan checked the installed library first.
 - **Rationale**:
   - `@tanstack/virtual-core` 3.17.11 builds a `Float64Array(count*2)` and an items array of `count`. It rebuilds them from index 0 whenever `count` changes (`node_modules/@tanstack/virtual-core/dist/esm/index.js:673-705`). A load that grows `count` to 1M rows repeats O(n) work in the renderer. **documented** (code)
   - The library has no fix for the maximum element height of the browser. **documented** (code)
@@ -141,7 +149,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - WSL polls do not run `readRefs` (001 §11). So a ref change shows at the next focus return, Refresh, or mutation outcome (spec SC-012). **documented**
   - Each text read costs one `wsl.exe` start, about 250 ms. **unverified**
   - Ubuntu-26.04 (Git 2.55.0) has the C.UTF-8 locale, gives the probe matches, and gives the R15 order facts. Its view bytes equal the Windows Git bytes. **experiment** (T010)
-  - PCRE2 and the C.UTF-8 locale in other distros, and the relay throughput for a 1M drain. **unverified** until the distro runs
+  - PCRE2 and the C.UTF-8 locale in other distros, and the relay throughput of an End load on H200K. **unverified** until the distro runs
 - **Alternatives considered**: A long-lived `cat-file` in the distro. Left out. Add it when WSL misses SC-014.
 
 ## R11 Git Extensions comparison
@@ -172,18 +180,24 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 | Policies are data in `src/contracts/git-environment.json`. WSL gets an empty `WSLENV`. | 001 §7, §11 | documented |
 | virtual-core rebuilds from index 0 on every count change. | `dist/esm/index.js:673-705` | documented (code) |
 | `captureHead`, `sharedListing`, and `checkFailedRead` can be reused. | `src/git-service/history.ts:255-397` | documented (code) |
+| Without generation numbers, `--date-order` walks the whole graph before the first line. | Git v2.56.0 revision.c:2485-2487, 3195-3196, 4053-4057 | documented (code) |
+| With generation numbers, the walk runs on demand, and `--skip` takes one walk step per skipped commit. | Git v2.56.0 revision.c:4058-4059, 4598-4607 | documented (code) |
+| A service `cancel` of a run call closes the Job of its operation. | `native-runner.ts:155-159, 212-213`, `process_requests.rs:1148-1158`, 001 contract §6 | documented (code) |
 
 ## R13 Open facts
 
 These stay **unverified** until the named step runs:
 - Git peak memory during load and search: P0.4 measured it on Windows (R14, **experiment**). Linux Git memory stays open: P8.
-- About 48 bytes per commit in the service, and the service CPU during the drain: P3 and P8.
+- About 48 bytes per commit in the service, and the service CPU during an End load: P3 and P8.
 - The `save_commit_buffer` recollection: open. P0.4 measured the extra search memory (R14), but no plan step reads the Git source yet (plan.md O-1).
 - `init --template=` copies nothing; an explicit `--git-dir` skips the ownership check: P0.5 showed both on Git 2.56.0.windows.1 (R4, **experiment**).
 - `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: P3.
 - The maximum layout height in WebView2: P6.
 - `IsHungAppWindow` covers the Tauri main window: P8.
 - The shortcut conflicts with the 001 keyboard map: P6.
+- The resume cost at 1,000,000 commits: T061.
+- The first-screen memory with no Git process: P8.
+- The shell routes `succeeded` after the service closed the load Job: P3.
 
 ## Results
 

@@ -39,23 +39,30 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 - One live view per service session. A new `openHistory` releases the old view. Its running operations end `canceled`. Its `viewId` then gives `UNKNOWN_TARGET`.
 - An empty repository gives a view with `startCount` 0.
 
-### `loadHistory {viewId}`
+### `loadHistory {viewId, need}`
 
-- It takes no read slot. A second load of the view while one runs gives `BUSY`.
+- Payload `need`: `{row: n}` with n from 0 to 4,000,000, `{oid}` with an object ID of the view's format, or `{end: true}`.
+- It takes no read slot. A second load of the view while one runs gives `BUSY`. A load while a search of the view runs gives `BUSY`.
 - Command: `--no-lazy-fetch --no-optional-locks rev-list --parents --date-order --stdin`. When the view holds N ≥ 1 rows, add `--skip=<N-1>`. Policy `read`. `deadlineMs` 120,000, the 001 §6 maximum.
+- Stop row S. L₀ is the row count at the start. M is `HISTORY_LOAD_MARGIN` (Δ5).
+  - `{row: n}`: S = max(n + 1 + 2·M, 2·L₀).
+  - `{oid}`: no stop row until that commit streams at row r. Then S = max(r + 1 + 2·M, 2·L₀). If the commit never streams, the load reads to the end.
+  - `{end: true}`, and the load inside a search: no stop row.
+- At S rows, the service waits for the fingerprint check of this load. It then sends the process `cancel` for the call and waits for `exit` (Δ6). It ignores that exit code. The load ends `succeeded` with `complete: false`.
+- A Git exit before S: exit 0 is the end of the history. The end checks run, and the load ends `succeeded` with `complete: true`.
 - Before a resume, the service reads the topology fingerprint again. It starts `for-each-ref refs/replace` beside the Git start. A difference makes the view stale with `HISTORY_CHANGED` reason `topology`.
 - On a resume, the first line must equal row N-1 in OID and parents. Otherwise the view is stale with `HISTORY_CHANGED` reason `order`.
 - Each line holds at most 1 + 64 OIDs (`HISTORY_PARENTS_PER_COMMIT`). A longer line ends the load `limited` with `OUTPUT_LIMIT` and that reason.
 - A view holds at most 4,000,000 commits (`HISTORY_VIEW_COMMITS`). At that bound, the service ends the load `limited` with `OUTPUT_LIMIT` and that reason. The loaded rows stay. The view states the limit, and a later `loadHistory` gives the same result without a Git process.
 - The service keeps no raw bytes beyond one partial line. The line bound and the commit bound together bound the stream. This replaces the 001 §5 "History page" bound for this stream only.
 - These cases give `MALFORMED_GIT_OUTPUT` and a stale view: a duplicate row, a parent that already showed, and a parent still pending at exit 0.
-- A nonzero exit runs the 001 `checkFailedRead` steps (001 §7 "Missing objects"):
+- A nonzero exit before S runs the 001 `checkFailedRead` steps (001 §7 "Missing objects"):
   - a missing object in a partial clone gives `OBJECT_MISSING`;
   - a damaged store without a promisor remote gives `REPOSITORY_UNAVAILABLE`;
   - other failures give `GIT_FAILED`.
 - Progress: phase `history-load`, counter `rows`, at most 4 events per second.
 - Results:
-  - `succeeded` with the final row count (spec FR-010).
+  - `succeeded` with `rows` and `complete`. `complete: true` gives the final row count (spec FR-010).
   - `canceled`: the rows stay, and the Job is closed.
   - `failed` with `DEADLINE`: the rows stay. The result carries the copyable 001 remedy `& '<selected Git path>' --no-lazy-fetch -C '<worktree root>' commit-graph write --reachable`, quoted by the T262 builder (001 plan.md "Commit-graph variants"). The application never runs it (spec FR-044). For 002 views, `DEADLINE` is the trigger. The 001 trigger rule for other reads stays open (001 plan.md "Commit-graph variants" ties it to the contract §6 and §7 changes after 001 T280 to T283).
 
@@ -100,8 +107,8 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - A streamed row that is in the queue must be at its head.
   - When the load completes, the queue must be empty.
   - Any break fails the search with `HISTORY_CHANGED` reason `order`. The view stays.
-- The reduced graph needs the full topology stream beside the search stream (plan.md D4). When a search starts on an incomplete view, the service resumes the load itself, by the `loadHistory` rules. That load belongs to the search operation: its progress and Cancel go with the search. A cancel of the search keeps the loaded rows. The renderer starts nothing extra.
-- A `loadHistory` while the search load runs gives `BUSY`, as for any second load.
+- The reduced graph needs the full topology stream beside the search stream (plan.md D4). When a search starts on an incomplete view, the service loads to the end itself, by the `loadHistory` rules with no stop row. That load belongs to the search operation: its progress and Cancel go with the search. A cancel of the search keeps the loaded rows. The renderer starts nothing extra.
+- A `loadHistory` while the search load runs gives `BUSY`. A `searchHistory` while a load of the view runs gives `BUSY`. The renderer cancels its scroll load first (plan.md D6).
 - A view that stopped at `HISTORY_VIEW_COMMITS` has no full topology. A search on it ends `limited` with `OUTPUT_LIMIT` reason `HISTORY_VIEW_COMMITS`, and no Git process starts.
 - Progress: phase `history-search`, counters `matches` and `settled`.
 - The terminal response carries the final match count (spec FR-039). A shallow view adds the statement that the search covered only the commits that the clone holds.
@@ -144,7 +151,8 @@ New limits:
 | Text and details read deadline | 30 s |
 | Rows per request | 512 |
 | Parents per commit (`HISTORY_PARENTS_PER_COMMIT`) | 64 |
-| Commits per view (`HISTORY_VIEW_COMMITS`) | 4,000,000. About 192 MB of service memory at 48 bytes per commit (unverified). A reviewer default. |
+| Commits per view (`HISTORY_VIEW_COMMITS`) | 4,000,000. About 192 MB of service memory at 48 bytes per loaded commit (unverified). A reviewer default. |
+| Load read-ahead (`HISTORY_LOAD_MARGIN`) | 1,024 rows. A scroll load starts when fewer loaded rows lie below the last needed row. A reviewer default and a measurement knob. |
 | Filter text | 1,024 UTF-8 bytes |
 | Text object above which a row carries `textLimit` | 256 KiB |
 | Progress events | 4 per second |
@@ -161,6 +169,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
 - History processes take no read slot. Polls and `readRefs` keep their two slots.
 - Each operation has its own Job. `cancel` closes that Job. The Windows Job ends every descendant. The WSL `SIGHUP` trap kills the scope (001 §6 "Process ownership", 001 §11 "Process ownership").
 - No new channel frame. No per-call output credit.
+- A load ends at its stop row through the process `cancel` of its call. That closes the Job of the load operation (001 §6 "Channel frames"). A `succeeded` result follows.
 
 ## Δ7 Startup, trust, and environment (001 §7)
 

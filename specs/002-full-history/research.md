@@ -199,10 +199,10 @@ These stay **unverified** until the named step runs:
 - `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: P3.
 - The maximum layout height in WebView2: P6.
 - `IsHungAppWindow` covers the Tauri main window: P8.
-- The shortcut conflicts with the 001 keyboard map: P6.
+- The shortcut conflicts with the 001 keyboard map (Ctrl+F for the filter, F3, Shift+F3, Ctrl+Shift+B; plan.md D6): P6.
 - The re-read cost of a later step at 1,000,000 commits: T061.
 - The memory after the first load step, with no Git process: P8.
-- The Rust shell routes `succeeded` after the service closed the load Job: T025 and T055.
+- The Rust shell routes `succeeded` after the service closed the load Job: T025 and T055. T025 first result, 2026-10-12: the cargo case `a_succeeded_response_after_a_cancel_closed_the_operation_job_reaches_the_renderer` in `src-tauri/src/process_requests.rs` passed on its first run after T029. Before T029, the shell answers `loadHistory` with `UNKNOWN_OPERATION`, so the case cannot run there. T055 checks the packaged app.
 
 ## Results
 

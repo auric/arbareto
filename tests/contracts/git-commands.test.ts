@@ -98,6 +98,7 @@ describe("read builders (contract §7)", () => {
       "refs/heads",
       "refs/remotes",
       "refs/tags",
+      "refs/stash",
     ]);
     expect(commands.refsArgs()).not.toBe(commands.refsArgs());
   });

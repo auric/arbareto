@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-history-rows"
+description = "Enables the read_history_rows command without any pre-configured scope."
+commands.allow = ["read_history_rows"]
+
+[[permission]]
+identifier = "deny-read-history-rows"
+description = "Denies the read_history_rows command without any pre-configured scope."
+commands.deny = ["read_history_rows"]

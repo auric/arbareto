@@ -184,3 +184,38 @@ describeGit("history reduced graph", (git) => {
     check(H200K.name, rowsOf(PERF_CACHE_ROOT, largeFixture(git, H200K, false).repo), 200);
   }, LARGE_TIMEOUT_MS);
 });
+
+// Data-model §3: a parent that repeats inside one line gives one edge. Rows 0 to 4: 0 -> 1, 1 -> 2 twice, 2 -> 3 and 4 twice.
+test("a repeated parent gives the edges of its distinct parents", () => {
+  const edges = (parents: number[][], match: boolean[]) => {
+    const graph = new ReducedGraph();
+    parents.forEach((ps, row) => graph.step(row, ps, match[row]!));
+    return Array.from({ length: graph.edges }, (_, i) => graph.edgeAt(i));
+  };
+  const repeated = [[1], [2, 2], [3, 4, 3], [], []];
+  const distinct = [[1], [2], [3, 4], [], []];
+  for (const match of [
+    [true, false, true, true, true],
+    [true, true, true, false, true],
+    [true, false, false, true, false],
+  ]) {
+    expect(edges(repeated, match)).toEqual(edges(distinct, match));
+  }
+  expect(edges(repeated, [true, false, true, true, true])).toEqual([
+    { from: 0, to: 1, direct: false },
+    { from: 1, to: 2, direct: true },
+    { from: 1, to: 3, direct: true },
+  ]);
+});
+
+test("noEarlier refuses a match that is not settled", () => {
+  const graph = new ReducedGraph();
+  graph.step(0, [1], true);
+  // Match 0 waits for row 1.
+  expect(graph.settled()).toBe(0);
+  expect(() => graph.noEarlier(0)).toThrow(RangeError);
+  expect(() => graph.noEarlier(1)).toThrow(RangeError);
+  graph.step(1, [], false);
+  expect(graph.settled()).toBe(1);
+  expect(graph.noEarlier(0)).toBe(true);
+});

@@ -6,11 +6,7 @@
       "properties": {
         "target": {
           "type": "string",
-          "enum": [
-            "found",
-            "unknown",
-            "none"
-          ]
+          "const": "found"
         },
         "rows": {
           "maxItems": 512,
@@ -319,15 +315,20 @@
             "title": "HistoryViewRow"
           }
         },
+        "cut": {
+          "type": "boolean"
+        },
+        "rowCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4000000
+        },
         "lanes": {
           "type": "integer",
           "minimum": 1,
           "maximum": 24
         },
         "complete": {
-          "type": "boolean"
-        },
-        "cut": {
           "type": "boolean"
         },
         "bytes": {
@@ -339,13 +340,53 @@
       "required": [
         "target",
         "rows",
+        "cut",
+        "rowCount",
         "lanes",
         "complete",
-        "cut",
         "bytes"
       ],
       "additionalProperties": false,
       "title": "HistoryRows"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "none"
+          ]
+        },
+        "rowCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4000000
+        },
+        "lanes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8388608
+        }
+      },
+      "required": [
+        "target",
+        "rowCount",
+        "lanes",
+        "complete",
+        "bytes"
+      ],
+      "additionalProperties": false,
+      "title": "HistoryRowsTarget"
     },
     {
       "type": "object",

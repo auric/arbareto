@@ -24,6 +24,14 @@ describe("filter text", () => {
     expect(filterText("a\\Eb")).toEqual({ kind: "refused", reason: "quote-end", found: "\\E" });
   });
 
+  test("the first refused character in text order wins, and the byte bound comes last", () => {
+    expect(filterText("a\nb\0c")).toEqual({ kind: "refused", reason: "line-break", found: "\n" });
+    expect(filterText("a\0b\nc")).toEqual({ kind: "refused", reason: "nul", found: "\0" });
+    expect(filterText("\\Ea\n")).toEqual({ kind: "refused", reason: "quote-end", found: "\\E" });
+    expect(filterText(`${"x".repeat(FILTER_TEXT_BYTES)}\0`)).toEqual({ kind: "refused", reason: "nul", found: "\0" });
+    expect(filterText(`\0${"x".repeat(FILTER_TEXT_BYTES)}`)).toEqual({ kind: "refused", reason: "nul", found: "\0" });
+  });
+
   test("other text passes unchanged", () => {
     for (const text of ["a\\eb", "\\", "a\\", "-v --all", "\"quoted\" 'single'", ".*+?[](){}^$|\\Q", "  spaced  ", "Виправлення ß ẞ 😀"]) {
       expect(filterText(text)).toEqual({ kind: "search", text });

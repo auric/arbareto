@@ -13,7 +13,7 @@ const HAS_PARENTS = 1;
 const HAS_EDGE = 2;
 
 export interface ReducedEdge {
-  // Match sequence numbers: `from` is the later match, `to` its nearest matching ancestor (spec FR-033).
+  // Match sequence numbers: `from` is the descendant match, with the lower sequence number. `to` is its nearest matching ancestor (spec FR-033).
   from: number;
   to: number;
   // `to` is a Git parent of `from` (spec FR-034).
@@ -95,7 +95,7 @@ export class ReducedGraph {
   }
 }
 
-// ponytail: k branches that join one base cost O(k²) union work. A mergeable heap per frontier commit is the upgrade path (plan.md D4).
+// ponytail: k branches that join one base cost O(k²) union work, and the `direct?.includes` checks in `step` cost O(k²) too. A mergeable heap per frontier commit and a set of direct children are the upgrade path (plan.md D4).
 function union(a: Uint32Array, b: Uint32Array): Uint32Array {
   const out = new Uint32Array(a.length + b.length);
   let i = 0;

@@ -1,0 +1,5 @@
+{
+  "schema": "read-history-rows-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"target\":\"found\",\"rows\":[{\"index\":7,\"oid\":\"0123456789abcdef0123456789abcdef01234567\",\"parents\":[\"89abcdef0123456789abcdef0123456789abcdef\"],\"cell\":{\"node\":0,\"color\":0,\"merge\":true,\"limited\":false,\"segments\":[{\"shape\":\"line\",\"from\":{\"lane\":0,\"at\":\"node\"},\"to\":{\"lane\":1,\"at\":\"bottom\"},\"color\":1,\"skip\":true}],\"marks\":[]},\"labels\":[{\"kind\":\"branch\",\"name\":\"main\",\"invalidUtf8\":false},{\"kind\":\"stash\",\"name\":\"stash\",\"invalidUtf8\":false}],\"checkout\":true,\"match\":true,\"subject\":\"Fix\",\"author\":{\"name\":\"A\",\"email\":\"a@example.invalid\"},\"date\":1767225600,\"encoding\":null,\"invalidUtf8\":false},{\"index\":8,\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\",\"parents\":[],\"cell\":null,\"labels\":[],\"checkout\":false,\"match\":null,\"textLimit\":true}],\"rowCount\":8,\"lanes\":2,\"complete\":false,\"cut\":false,\"bytes\":1024}"
+}

@@ -20,7 +20,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 26] = [
+pub const OPERATIONS: [&str; 31] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -31,6 +31,11 @@ pub const OPERATIONS: [&str; 26] = [
     "readWorkspace",
     "readEntries",
     "readHistory",
+    "openHistory",
+    "loadHistory",
+    "readHistoryRows",
+    "searchHistory",
+    "closeHistory",
     "readRefs",
     "readComparison",
     "readTrust",
@@ -131,7 +136,7 @@ pub trait NativeFirst: Send + Sync {
 }
 
 /// A forwarded request waits here for the service response with its `requestId`.
-enum Submitted {
+pub(crate) enum Submitted {
     Answer(Value),
     Waiting(Receiver<Value>, Option<Prepared>),
     Denied,
@@ -227,7 +232,13 @@ impl Ipc {
 
     /// The steps of contract §1 "Renderer request body", in that order.
     /// The service strict decoder checks duplicate keys, nesting, and unsafe integers. The shell also runs it on a native-first body.
-    fn submit(&self, label: &str, url: &str, body: &InvokeBody, command: &str) -> Submitted {
+    pub(crate) fn submit(
+        &self,
+        label: &str,
+        url: &str,
+        body: &InvokeBody,
+        command: &str,
+    ) -> Submitted {
         if label != MAIN_WINDOW || !is_local(url) {
             return Submitted::Denied;
         }
@@ -562,6 +573,51 @@ pub async fn read_history(
     request: Request<'_>,
 ) -> Result<Value, &'static str> {
     call(webview, &ipc, "readHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn open_history(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "openHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn load_history(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "loadHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_history_rows(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readHistoryRows", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn search_history(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "searchHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn close_history(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "closeHistory", request.body().clone()).await
 }
 
 #[tauri::command]
@@ -909,6 +965,58 @@ mod tests {
             Outcome::Forwarded
         );
         assert_eq!(*frames.lock().expect("frames"), vec![frame_of(&body)]);
+    }
+
+    /// Feature 002 contract Δ1: the shell reads only `operation` and `requestId` of the five history bodies.
+    /// Payloads outside the service schemas reach the service byte for byte.
+    #[test]
+    fn the_five_history_requests_are_forwarded_byte_for_byte_whatever_their_payload() {
+        const FIVE: [&str; 5] = [
+            "openHistory",
+            "loadHistory",
+            "readHistoryRows",
+            "searchHistory",
+            "closeHistory",
+        ];
+        for operation in FIVE {
+            assert!(OPERATIONS.contains(&operation), "{operation}");
+            assert!(!NATIVE_FIRST.contains(&operation), "{operation}");
+        }
+        let text = "\u{e9}".repeat(512) + "x";
+        assert_eq!(text.len(), 1025);
+        let cases = [
+            ("openHistory", json!({ "scope": "branch" })),
+            (
+                "loadHistory",
+                json!({ "viewId": OPERATION_ID, "need": { "row": 4_000_001 } }),
+            ),
+            (
+                "readHistoryRows",
+                json!({ "viewId": OPERATION_ID, "mode": "full", "at": { "row": 0 }, "count": 513, "text": "none" }),
+            ),
+            (
+                "searchHistory",
+                json!({ "viewId": OPERATION_ID, "text": text }),
+            ),
+            ("closeHistory", json!({ "viewId": "view", "extra": 1 })),
+        ];
+        for (operation, payload) in cases {
+            let (ipc, frames) = ipc();
+            let mut envelope = request(operation, payload);
+            envelope["repositoryId"] = json!(OPERATION_ID);
+            // Spaces that a parse and a new encoding would not keep.
+            let body = envelope.to_string().replacen(':', " : ", 1);
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), operation),
+                Outcome::Forwarded,
+                "{operation}"
+            );
+            assert_eq!(
+                *frames.lock().expect("frames"),
+                vec![frame_of(&body)],
+                "{operation}"
+            );
+        }
     }
 
     /// Contract §3: each operation of `src/contracts/operations.ts` has its handler in `lib.rs` and its grant in the capability.

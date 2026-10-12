@@ -16,10 +16,12 @@ import {
   ReadRefsResult,
   SearchHistoryResult,
 } from "../../src/contracts/envelope";
+import { EnvironmentPolicy } from "../../src/contracts/channel";
 import * as errors from "../../src/contracts/errors";
 import * as limits from "../../src/contracts/limits";
 import { OPERATIONS, PHASES, SHELL_ONLY } from "../../src/contracts/operations";
 
+printOrigin("../../src/contracts/channel.ts", import.meta.dir);
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
 printOrigin("../../src/contracts/errors.ts", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -133,7 +135,8 @@ describe("contract Δ3 results", () => {
   const row = { index: 0, oid: OID, parents: [PARENT], cell, labels: [{ kind: "stash", name: "stash", invalidUtf8: false }], checkout: true };
   const text = { subject: "Fix", author: { name: "A", email: "a@example.invalid" }, date: 1, encoding: null, invalidUtf8: false };
   const details = { body: "", bodyCut: false, committer: { name: "C", email: "c@example.invalid" }, committerDate: 2, children: [] };
-  const page = (rows: unknown[], extra: Record<string, unknown> = {}) => ({ target: "found", rows, lanes: 1, complete: false, cut: false, bytes: 512, ...extra });
+  const page = (rows: unknown[], extra: Record<string, unknown> = {}) => ({ target: "found", rows, rowCount: 9, lanes: 1, complete: false, cut: false, bytes: 512, ...extra });
+  const noTarget = (target: string, extra: Record<string, unknown> = {}) => ({ target, rowCount: 9, lanes: 1, complete: false, bytes: 64, ...extra });
 
   test("readHistoryRows rows carry the contract fields for each text value", () => {
     expect(ReadHistoryRowsResult.safeParse(page([row])).success).toBe(true);
@@ -159,10 +162,50 @@ describe("contract Δ3 results", () => {
     expect(ReadHistoryRowsResult.safeParse(page(Array.from({ length: 513 }, (_, i) => ({ ...row, index: i })))).success).toBe(false);
   });
 
-  test("readHistoryRows gives target unknown or none with no row", () => {
-    expect(ReadHistoryRowsResult.safeParse(page([], { target: "unknown" })).success).toBe(true);
-    expect(ReadHistoryRowsResult.safeParse(page([], { target: "none" })).success).toBe(true);
-    expect(ReadHistoryRowsResult.safeParse(page([row], { target: "none" })).success).toBe(false);
+  test("readHistoryRows carries rowCount, and each row lies below it", () => {
+    const { rowCount: _omit, ...withoutCount } = page([row]);
+    expect(ReadHistoryRowsResult.safeParse(withoutCount).success).toBe(false);
+    expect(ReadHistoryRowsResult.safeParse(page([{ ...row, index: 8 }])).success).toBe(true);
+    expect(ReadHistoryRowsResult.safeParse(page([{ ...row, index: 9 }])).success).toBe(false);
+    expect(ReadHistoryRowsResult.safeParse(page([], { rowCount: limits.HISTORY_VIEW_COMMITS })).success).toBe(true);
+    expect(ReadHistoryRowsResult.safeParse(page([], { rowCount: limits.HISTORY_VIEW_COMMITS + 1 })).success).toBe(false);
+  });
+
+  test("readHistoryRows gives target unknown or none without rows, and only found carries rows", () => {
+    for (const target of ["unknown", "none"]) {
+      expect(ReadHistoryRowsResult.safeParse(noTarget(target)).success).toBe(true);
+      expect(ReadHistoryRowsResult.safeParse(noTarget(target, { rows: [] })).success).toBe(false);
+      expect(ReadHistoryRowsResult.safeParse(noTarget(target, { rows: [row] })).success).toBe(false);
+      const { rowCount: _omit, ...withoutCount } = noTarget(target);
+      expect(ReadHistoryRowsResult.safeParse(withoutCount).success).toBe(false);
+    }
+    const { rows: _omit, ...withoutRows } = page([row]);
+    expect(ReadHistoryRowsResult.safeParse(withoutRows).success).toBe(false);
+    expect(ReadHistoryRowsResult.safeParse(noTarget("other")).success).toBe(false);
+  });
+
+  test("only a line segment may carry skip, and only as true", () => {
+    const line = cell.segments[0]!;
+    const withSegment = (segment: unknown) => page([{ ...row, cell: { ...cell, segments: [segment] } }]);
+    expect(ReadHistoryRowsResult.safeParse(withSegment({ ...line, skip: true })).success).toBe(true);
+    expect(ReadHistoryRowsResult.safeParse(withSegment({ ...line, skip: false })).success).toBe(false);
+    expect(ReadHistoryRowsResult.safeParse(withSegment({ shape: "stub", lane: 0, color: 1 })).success).toBe(true);
+    expect(ReadHistoryRowsResult.safeParse(withSegment({ shape: "stub", lane: 0, color: 1, skip: true })).success).toBe(false);
+  });
+
+  test("a view operation without its result value carries reason and a remedy of text and command", () => {
+    const command = "& 'C:\\Git\\cmd\\git.exe' --no-lazy-fetch -C 'C:\\repo' commit-graph write --reachable";
+    for (const result of [OpenHistoryResult, ReadHistoryRowsResult, SearchHistoryResult]) {
+      expect(result.safeParse({}).success).toBe(true);
+      expect(result.safeParse({ reason: "topology" }).success).toBe(true);
+      expect(result.safeParse({ reason: "object-missing", remedy: { text: "Fetch the missing objects.", command: null } }).success).toBe(true);
+      expect(result.safeParse({ remedy: { text: "Write a commit-graph.", command } }).success).toBe(true);
+      expect(result.safeParse({ remedy: { text: "Write a commit-graph." } }).success).toBe(false);
+      expect(result.safeParse({ remedy: { command: null } }).success).toBe(false);
+      expect(result.safeParse({ remedy: { text: "", command: null } }).success).toBe(false);
+      expect(result.safeParse({ reason: "order", code: "HISTORY_CHANGED" }).success).toBe(false);
+    }
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: false, remedy: { text: "Write a commit-graph." } }).success).toBe(false);
   });
 
   test("searchHistory gives the final match count, the shallow statement, or a refusal reason", () => {
@@ -199,6 +242,10 @@ describe("contract Δ7 and Δ11 process texts", () => {
   test("the search policy is the read policy plus LC_ALL=C.UTF-8", () => {
     const { read, search } = policyFile.policies as Record<string, { set: Record<string, string> }>;
     expect(search).toEqual({ ...read, set: { ...read.set, LC_ALL: "C.UTF-8" } });
+  });
+
+  test("a run frame takes the environment policy search", () => {
+    expect(EnvironmentPolicy.options).toEqual(["probe", "read", "mutation", "network", "search"]);
   });
 
   test("the WSL wrapper mode search exports LC_ALL=C.UTF-8 and ends its scope like read", () => {

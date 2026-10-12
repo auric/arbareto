@@ -779,20 +779,16 @@ export const HistoryViewRow = z
   )
   .meta({ title: "HistoryViewRow" });
 
-// `target` is `found` when the requested row exists. `lanes` is the most lanes so far. `bytes` is the encoded result size for the renderer cache.
+// `rowCount` is the rows that the view holds. `lanes` is the most lanes so far. `bytes` is the encoded result size for the renderer cache.
+const RowsState = { rowCount: Count.max(HISTORY_VIEW_COMMITS), lanes: z.int().min(1).max(GRAPH_LANES), complete: z.boolean(), bytes: Count.max(HISTORY_PAGE_BYTES) };
+// Only `target: "found"` carries rows.
 export const ReadHistoryRowsResult = z
   .union([
     z
-      .strictObject({
-        target: z.enum(["found", "unknown", "none"]),
-        rows: z.array(HistoryViewRow).max(HISTORY_ROWS_PER_REQUEST),
-        lanes: z.int().min(1).max(GRAPH_LANES),
-        complete: z.boolean(),
-        cut: z.boolean(),
-        bytes: Count.max(HISTORY_PAGE_BYTES),
-      })
-      .refine((r) => (r.target === "found" || r.rows.length === 0) && r.rows.every((row, i) => i === 0 || row.index > r.rows[i - 1]!.index))
+      .strictObject({ target: z.literal("found"), rows: z.array(HistoryViewRow).max(HISTORY_ROWS_PER_REQUEST), cut: z.boolean(), ...RowsState })
+      .refine((r) => r.rows.every((row, i) => row.index < r.rowCount && (i === 0 || row.index > r.rows[i - 1]!.index)))
       .meta({ title: "HistoryRows" }),
+    z.strictObject({ target: z.enum(["unknown", "none"]), ...RowsState }).meta({ title: "HistoryRowsTarget" }),
     HistoryViewRefusal,
   ])
   .meta({ title: "ReadHistoryRowsResult" });

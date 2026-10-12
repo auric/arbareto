@@ -560,7 +560,7 @@ describe("superseded comparison reads", () => {
 
 // T358: contract §3 "References result" and "Pairing with the history page"; plan.md Refresh row.
 describe("reference reads", () => {
-  const refs = (generation: number, current: { name: string; objectId: string } | null) => ({ generation, refs: [], current, completeness: { state: "complete" as const } });
+  const refs = (generation: number, current: { name: string; objectId: string } | null) => ({ generation, refs: [], current, refsDigest: "0".repeat(64), completeness: { state: "complete" as const } });
 
   test("readRefs follows a full readWorkspace result with its generation, and the paired result shows", async () => {
     const o = await opened();

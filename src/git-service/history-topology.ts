@@ -38,7 +38,8 @@ function grow<T extends Uint8Array | Int32Array>(array: T, length: number): T {
 export class HistoryTopology {
   private readonly rawLength: number;
   private readonly hexLength: number;
-  // A valid line without its LF is shorter than this.
+  // A line without its LF that reaches this length holds more than LINE_OIDS fields, or it is malformed.
+  // The bound covers one more field and its separator, so the check decodes that field before it reports the limit.
   private readonly lineCap: number;
   // OID bytes by ID. An ID exists for each row and for each parent that is not a row yet.
   private oids: Uint8Array;
@@ -70,10 +71,10 @@ export class HistoryTopology {
   constructor(objectFormat: ObjectFormat) {
     this.rawLength = objectFormat === "sha1" ? 20 : 32;
     this.hexLength = this.rawLength * 2;
-    this.lineCap = LINE_OIDS * (this.hexLength + 1);
+    this.lineCap = (LINE_OIDS + 1) * (this.hexLength + 1);
     this.oids = new Uint8Array(1024 * this.rawLength);
     this.partial = new Uint8Array(this.lineCap);
-    this.scratch = new Uint8Array(LINE_OIDS * this.rawLength);
+    this.scratch = new Uint8Array((LINE_OIDS + 1) * this.rawLength);
   }
 
   /** Starts a load step. The step streams from row 0 again. Its first `rows` lines must equal the held rows (plan.md D2). */
@@ -91,8 +92,8 @@ export class HistoryTopology {
       const end = lf === -1 ? frame.length : lf;
       if (this.partialLength + end - at >= this.lineCap) {
         this.partial.set(frame.subarray(at, at + this.lineCap - this.partialLength), this.partialLength);
-        // The first LINE_OIDS fields are well formed, so the line holds more OIDs than the bound.
-        this.failure = this.decode(this.partial, 0, LINE_OIDS) && this.partial[this.lineCap - 1] === SPACE ? PARENTS_LIMIT : MALFORMED;
+        // The first LINE_OIDS + 1 fields are well formed, and another field follows.
+        this.failure = this.decode(this.partial, 0, LINE_OIDS + 1) && this.partial[this.lineCap - 1] === SPACE ? PARENTS_LIMIT : MALFORMED;
         break;
       }
       if (lf === -1) {
@@ -157,6 +158,7 @@ export class HistoryTopology {
     const width = this.hexLength + 1;
     if (length % width !== 0 || !this.decode(bytes, start, length / width)) return MALFORMED;
     const parents = length / width - 1;
+    if (parents > HISTORY_PARENTS_PER_COMMIT) return PARENTS_LIMIT;
     if (this.streamed < this.held) return this.same(this.streamed++, parents) ? null : ORDER;
     this.streamed++;
     const id = this.intern(0);

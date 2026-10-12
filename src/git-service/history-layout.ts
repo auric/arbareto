@@ -52,6 +52,8 @@ export function layoutStep(state: LaneState, row: LayoutRow): { cell: Cell; stat
   const input = state.open;
   const work = input.slice();
   const segments: Segment[] = [];
+  // Data-model §3: the distinct parents in the order of first occurrence. Git may repeat a parent inside one line.
+  const parents = row.parents.length > 1 ? [...new Set(row.parents)] : row.parents;
   const into = input.flatMap((lane, i) => (lane?.oid === row.oid ? [i] : []));
   let node: number;
   let color: number;
@@ -69,7 +71,7 @@ export function layoutStep(state: LaneState, row: LayoutRow): { cell: Cell; stat
   input.forEach((lane, i) => {
     if (lane !== null && lane.oid !== row.oid) segments.push({ shape: "line", from: { lane: i, at: "top" }, to: { lane: i, at: "bottom" }, color: lane.color });
   });
-  row.parents.forEach((parent, k) => {
+  parents.forEach((parent, k) => {
     let lane = work.findIndex((l) => l?.oid === parent);
     if (lane === -1) {
       // The first parent keeps the node lane and its color.
@@ -78,13 +80,13 @@ export function layoutStep(state: LaneState, row: LayoutRow): { cell: Cell; stat
     }
     segments.push({ shape: "line", from: { lane: node, at: "node" }, to: { lane, at: "bottom" }, color: work[lane]!.color });
   });
-  const marks: Mark[] = row.parents.length > 0 ? [] : [row.shallow ? "shallow" : "root"];
-  if (row.parents.length === 0 && row.shallow) segments.push({ shape: "stub", lane: node, color });
+  const marks: Mark[] = parents.length > 0 ? [] : [row.shallow ? "shallow" : "root"];
+  if (parents.length === 0 && row.shallow) segments.push({ shape: "stub", lane: node, color });
   while (work.length > 0 && work[work.length - 1] === null) work.pop();
 
   const width = Math.max(input.length, node + 1, ...segments.map((s) => (s.shape === "stub" ? s.lane : Math.max(s.from.lane, s.to.lane)) + 1));
   const limited = width > GRAPH_LANES;
-  const merge = row.parents.length > 1;
+  const merge = parents.length > 1;
   return {
     // 001 plan.md: a row above the limit has a node in one lane, with no edge. The state keeps the lane of every parent.
     // A limited row draws no edge, so its output closes the free slots and keeps the lane order.

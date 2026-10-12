@@ -259,6 +259,7 @@ describe("reference chips", () => {
       ref("remote", "origin/main", 3),
     ],
     current: { name: "main", objectId: oid(3) },
+    refsDigest: "0".repeat(64),
     completeness: { state: "complete" as const },
   };
   const chips = (option: HTMLElement) => [...option.querySelectorAll<HTMLElement>(".chip")].map((c) => text(c));
@@ -317,6 +318,7 @@ describe("label region bound", () => {
       { kind: "tag" as const, name: `release/${LONG}`, invalidUtf8: false, objectId: oid(1), objectType: "commit" as const, peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId: oid(1) },
     ],
     current: { name: LONG, objectId: oid(1) },
+    refsDigest: "0".repeat(64),
     completeness: { state: "complete" as const },
   };
 

@@ -91,6 +91,11 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     readWorkspace: (target: Target<"readWorkspace">, payload: Payload<"readWorkspace">, onProgress?: OnProgress) => call("readWorkspace", target, payload, onProgress),
     readEntries: (target: Target<"readEntries">, payload: Payload<"readEntries">, onProgress?: OnProgress) => call("readEntries", target, payload, onProgress),
     readHistory: (target: Target<"readHistory">, onProgress?: OnProgress) => call("readHistory", target, {}, onProgress),
+    openHistory: (target: Target<"openHistory">, payload: Payload<"openHistory">, onProgress?: OnProgress) => call("openHistory", target, payload, onProgress),
+    loadHistory: (target: Target<"loadHistory">, payload: Payload<"loadHistory">, onProgress?: OnProgress) => call("loadHistory", target, payload, onProgress),
+    readHistoryRows: (target: Target<"readHistoryRows">, payload: Payload<"readHistoryRows">, onProgress?: OnProgress) => call("readHistoryRows", target, payload, onProgress),
+    searchHistory: (target: Target<"searchHistory">, payload: Payload<"searchHistory">, onProgress?: OnProgress) => call("searchHistory", target, payload, onProgress),
+    closeHistory: (target: Target<"closeHistory">, payload: Payload<"closeHistory">, onProgress?: OnProgress) => call("closeHistory", target, payload, onProgress),
     readRefs: (target: Target<"readRefs">, onProgress?: OnProgress) => call("readRefs", target, {}, onProgress),
     readComparison: (target: Target<"readComparison">, payload: Payload<"readComparison">, onProgress?: OnProgress) =>
       call("readComparison", target, payload, onProgress),

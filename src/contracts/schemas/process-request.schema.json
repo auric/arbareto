@@ -1468,7 +1468,8 @@
         "probe",
         "read",
         "mutation",
-        "network"
+        "network",
+        "search"
       ]
     },
     "Input": {

@@ -166,6 +166,40 @@ describe("topology table", () => {
     expect(step([`${a} ${b}`, `${b}`], [`${a} ${b}`])).toEqual(ORDER);
   });
 
+  test("a parent that repeats inside one line is accepted, and the table keeps Git's parent list", () => {
+    const lines = [`${a} ${b} ${c} ${b}`, `${b}`, `${c}`];
+    const topology = new HistoryTopology("sha1");
+    topology.beginStep();
+    expect(topology.push(encode(lines.slice(0, 1)))).toBeNull();
+    expect(topology.pending).toBe(2);
+    expect(topology.push(encode(lines.slice(1)))).toBeNull();
+    expect(topology.end()).toBeNull();
+    expect(topology.pending).toBe(0);
+    expectRows(topology, lines);
+    // A re-read compares Git's list, the repeated parent included.
+    topology.beginStep();
+    expect(topology.push(encode(lines)) ?? topology.end()).toBeNull();
+    topology.beginStep();
+    expect(topology.push(encode([`${a} ${b} ${c}`]))).toEqual(ORDER);
+  });
+
+  test("65 OIDs and a trailing field that is no OID give MALFORMED_GIT_OUTPUT, not OUTPUT_LIMIT", () => {
+    const random = rng(6);
+    for (const format of ["sha1", "sha256"] as const) {
+      const oids = randomLines(format, 66, random).map((l) => l.split(" ")[0]!);
+      const extras = ["zz", "z".repeat(HEX[format]), oids[65]!.toUpperCase(), oids[65]!.slice(1), `${oids[65]!}x`, `${oids[65]!.slice(1)} ${oids[0]!}`];
+      for (const extra of extras) {
+        for (const maxFrame of [97, 1 << 20]) {
+          const topology = new HistoryTopology(format);
+          topology.beginStep();
+          // The push itself fails. `end` would also refuse the pending parents.
+          const failure = feed(topology, encode([[...oids.slice(0, 65), extra].join(" ")]), random, maxFrame);
+          expect({ format, extra, maxFrame, failure }).toEqual({ format, extra, maxFrame, failure: MALFORMED });
+        }
+      }
+    }
+  });
+
   test("a line with more than 1 + 64 OIDs gives OUTPUT_LIMIT HISTORY_PARENTS_PER_COMMIT", () => {
     const random = rng(5);
     for (const format of ["sha1", "sha256"] as const) {

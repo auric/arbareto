@@ -1,0 +1,5 @@
+{
+  "schema": "read-history-rows-result",
+  "expected": "valid",
+  "text": "{\"target\":\"none\",\"rowCount\":2089,\"lanes\":3,\"complete\":true,\"bytes\":64}"
+}

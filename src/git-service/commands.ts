@@ -191,6 +191,7 @@ export function refsArgs(): string[] {
     "refs/heads",
     "refs/remotes",
     "refs/tags",
+    "refs/stash",
   ];
 }
 

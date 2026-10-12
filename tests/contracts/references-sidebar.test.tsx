@@ -64,6 +64,7 @@ const REFS: RefsResult = {
     ref("tag", "v1.0", B, { objectType: "tag", peeledId: B, peeledType: "commit" }),
   ],
   current: { name: "main", objectId: A },
+  refsDigest: "0".repeat(64),
   completeness: { state: "complete" },
 };
 // The loaded history page holds A and B, not C.

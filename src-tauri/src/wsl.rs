@@ -350,6 +350,8 @@ pub enum Mode {
     Read,
     Mutation,
     Network,
+    /// Feature 002 contract Δ11: `read` with `LC_ALL=C.UTF-8`.
+    Search,
 }
 
 impl Mode {
@@ -359,6 +361,7 @@ impl Mode {
             Mode::Read => "read",
             Mode::Mutation => "mutation",
             Mode::Network => "network",
+            Mode::Search => "search",
         }
     }
 }
@@ -2343,6 +2346,22 @@ mod tests {
         assert_eq!(texts().probe, json_text("probe"));
     }
 
+    /// Feature 002 contract Δ11: the wrapper mode `search` sets `LC_ALL=C.UTF-8`.
+    /// The fixed script `matchingProbe` exists in the contract file.
+    #[test]
+    fn the_search_mode_sets_a_c_utf8_locale_and_the_matching_probe_script_exists() {
+        let wrapper = json_text("wrapper");
+        let lines: Vec<&str> = wrapper.lines().collect();
+        assert!(
+            lines.contains(&"search) export LC_ALL=C.UTF-8 ;;"),
+            "{wrapper}"
+        );
+        let probe = json_text("matchingProbe");
+        let lines: Vec<&str> = probe.lines().collect();
+        assert_eq!(lines.first(), Some(&"git=$1 dir=$2 tip=$3 count=$4"));
+        assert!(lines.contains(&"trap 'rm -rf -- \"$dir\"' EXIT"), "{probe}");
+    }
+
     #[test]
     fn every_mode_passes_the_setsid_path_and_only_a_mutation_passes_an_index_file() {
         let inst = installation();
@@ -2352,6 +2371,7 @@ mod tests {
             (Mode::Read, "read"),
             (Mode::Mutation, "mutation"),
             (Mode::Network, "network"),
+            (Mode::Search, "search"),
         ] {
             let command = git_command(
                 &inst,
@@ -2381,7 +2401,7 @@ mod tests {
         )
         .expect("mutation");
         assert_eq!(mutation.arguments[11], index);
-        for mode in [Mode::Probe, Mode::Read, Mode::Network] {
+        for mode in [Mode::Probe, Mode::Read, Mode::Network, Mode::Search] {
             assert_eq!(
                 git_command(
                     &inst,
@@ -2424,7 +2444,7 @@ mod tests {
         assert!(lines.contains(&"trap 'end; exit 129' HUP"));
         assert!(lines.contains(&"probe) export LC_ALL=C ;;"));
         assert!(lines.contains(&"network) export GIT_PROTOCOL_FROM_USER=0 ;;"));
-        assert!(lines.contains(&"case $mode in probe | read) end ;; esac"));
+        assert!(lines.contains(&"case $mode in probe | read | search) end ;; esac"));
         assert!(
             !json_text("anchor").contains("setsid"),
             "no setsid in the anchor"

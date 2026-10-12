@@ -740,7 +740,10 @@ impl ProcessRequests {
             Kind::Bootstrap(_) => matches!(policy, EnvironmentPolicy::Probe),
             Kind::Registered => matches!(
                 policy,
-                EnvironmentPolicy::Read | EnvironmentPolicy::Mutation | EnvironmentPolicy::Network
+                EnvironmentPolicy::Read
+                    | EnvironmentPolicy::Mutation
+                    | EnvironmentPolicy::Network
+                    | EnvironmentPolicy::Search
             ),
         };
         if !policy_fits {
@@ -1780,6 +1783,7 @@ impl ProcessRequests {
             EnvironmentPolicy::Read => wsl::Mode::Read,
             EnvironmentPolicy::Mutation => wsl::Mode::Mutation,
             EnvironmentPolicy::Network => wsl::Mode::Network,
+            EnvironmentPolicy::Search => wsl::Mode::Search,
         };
         let index = index_file
             .map(|file| wsl::linux_path(file, &installation.distro).ok_or(INVALID))
@@ -4821,6 +4825,53 @@ pub(crate) mod tests {
     }
 
     // ---- Cancel, exit replies, and lingering Jobs ----
+
+    /// Feature 002 T025 guard (contract Δ6): a load ends at its stop row through the process `cancel` of its call.
+    /// The `succeeded` response of that operation still reaches the renderer, because `Ipc::deliver` routes by `requestId` only.
+    #[test]
+    fn a_succeeded_response_after_a_cancel_closed_the_operation_job_reaches_the_renderer() {
+        use crate::ipc::{Ipc, MAIN_WINDOW, Submitted, ToRenderer, renderer_message};
+        use tauri::ipc::InvokeBody;
+
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let ipc = Ipc::new(Arc::new(|_| true));
+        let session = uuid();
+        ipc.set_session(Some(session.clone()));
+        let (operation, request_id) = (uuid(), uuid());
+        let envelope = json!({
+            "version": 1, "sessionId": session, "requestId": request_id, "operation": "loadHistory",
+            "repositoryId": workspace.repository, "payload": { "viewId": uuid(), "need": { "end": true } },
+        });
+        let body = InvokeBody::Raw(envelope.to_string().into_bytes());
+        let Submitted::Waiting(mut renderer, None) =
+            ipc.submit(MAIN_WINDOW, "http://tauri.localhost/", &body, "loadHistory")
+        else {
+            panic!("the shell forwards loadHistory");
+        };
+        let call = harness.run(&operation, &workspace, &["sleep", "60000"]);
+        harness.output_line(&call, "stdout", "PID");
+        harness.send(json!({ "type": "cancel", "callId": call }));
+        let exit = harness.exit(&call, WAIT).expect("exit");
+        assert_eq!(
+            exit.1["exitCode"],
+            Value::Null,
+            "a Job close ended the process"
+        );
+        assert!(
+            renderer.try_recv().is_err(),
+            "no response before the service sends one"
+        );
+        let frame = json!({
+            "kind": "public",
+            "response": { "requestId": request_id, "operationId": operation, "state": "succeeded", "result": { "rows": 2, "complete": false } },
+        });
+        let Some(ToRenderer::Response(response)) = renderer_message(&frame.to_string()) else {
+            panic!("a public response frame");
+        };
+        ipc.deliver(response.clone());
+        assert_eq!(renderer.try_recv().ok(), Some(response));
+    }
 
     #[test]
     fn cancel_closes_only_the_job_of_that_operation_at_once_while_a_grandchild_sleeps() {

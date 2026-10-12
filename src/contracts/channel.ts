@@ -189,7 +189,7 @@ export const Base64 = z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2
 export const decodedBytes = (data: string) => Math.floor((data.length * 3) / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
 const InlineInput = Base64.refine((data) => decodedBytes(data) >= 1 && decodedBytes(data) <= INLINE_PROCESS_INPUT_BYTES);
 
-const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network"] as const;
+const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network", "search"] as const;
 // The `id` gives the shell one generated `EnvironmentPolicy` type for the three `run` context kinds.
 export const EnvironmentPolicy = z.enum(ENVIRONMENT_POLICIES).meta({ id: "EnvironmentPolicy" });
 

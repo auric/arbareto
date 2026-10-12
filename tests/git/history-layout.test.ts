@@ -196,3 +196,17 @@ describeGit("history layout equivalence", (git) => {
     check(H200K.name, PERF_CACHE_ROOT, largeFixture(git, H200K, false).repo);
   }, LARGE_TIMEOUT_MS);
 });
+
+// Data-model §3 and §4: the layout uses the distinct parents in the order of first occurrence. `merge` needs two distinct parents.
+test("a repeated parent gives one edge, and merge needs two distinct parents", () => {
+  const [p, q, r] = ["p", "q", "r"].map((x) => x.repeat(40)) as [string, string, string];
+  const step = (parents: string[]) => layoutStep(EMPTY_STATE, { oid: r, parents, shallow: false });
+  const once = step([p]);
+  const twice = step([p, p]);
+  expect(twice).toEqual(once);
+  expect(twice.cell.merge).toBe(false);
+  const merge = step([p, q, p]);
+  expect(merge).toEqual(step([p, q]));
+  expect(merge.cell.merge).toBe(true);
+  expect(merge.state.open.map((lane) => lane?.oid)).toEqual([p, q]);
+});

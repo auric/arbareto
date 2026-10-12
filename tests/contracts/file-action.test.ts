@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { decideFileAction, FILE_ACTION_REASONS, type FileActionDecision, type FileActionInput } from "../../src/contracts/file-action";
+import { decideFileAction, decideResolve, FILE_ACTION_REASONS, type FileActionDecision, type FileActionInput, type ResolveDecision, type ResolveReason } from "../../src/contracts/file-action";
 import { WHOLE_FILE_STAGE_INPUT_BYTES } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 
@@ -374,5 +374,93 @@ describe("malformed status records give MALFORMED_GIT_OUTPUT (git-status(1) 'Por
     expect(decide(input("staged", modified("U."), "f.txt"))).toEqual(MALFORMED);
     expect(decide(input("staged", modified("R."), "f.txt"))).toEqual(MALFORMED);
     expect(decide(input("staged", renamed("M.", "100644", "100644", "100644", HEAD_OID, HEAD_OID, "R100", "new.txt", "old.txt"), "new.txt"))).toEqual(MALFORMED);
+  });
+});
+
+describe("Mark resolved: the decision resolve (contract Δ4, data-model §9, T018)", () => {
+  const S1 = "1".repeat(40);
+  const S2 = "2".repeat(40);
+  const S3 = "3".repeat(40);
+  // git-status(1) "Unmerged entries": `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`. An absent stage has mode 000000 and the zero OID.
+  const MODES: Record<string, [string, string, string]> = {
+    UU: ["100644", "100644", "100644"],
+    AA: ["000000", "100644", "100644"],
+    AU: ["000000", "100644", "000000"],
+    UA: ["000000", "000000", "100644"],
+    DU: ["100644", "000000", "100644"],
+    UD: ["100644", "100644", "000000"],
+    DD: ["100644", "000000", "000000"],
+  };
+  const conflict = (xy: string, path: string | Uint8Array = "c.txt", modes = MODES[xy]!, mW = "100644", sub = "N...") => {
+    const oids = modes.map((m, i) => (m === "000000" ? ZERO : [S1, S2, S3][i]!));
+    return concat(`u ${xy} ${sub} ${modes.join(" ")} ${mW} ${oids.join(" ")} `, path);
+  };
+  const resolveInput = (record: Uint8Array, path: string | Uint8Array = "c.txt", over: Partial<FileActionInput> = {}) => input("conflicted", record, path, over);
+  const RESOLVE = { direction: "resolve", changedPaths: [{ path: hex(bytes("c.txt")) }] };
+  const norm = (value: ReturnType<typeof decideResolve>) =>
+    value.direction === "resolve" ? { direction: "resolve", changedPaths: value.changedPaths.map((p) => ({ path: hex(p.path) })) } : value;
+  const refuse = (reason: ResolveReason): ResolveDecision => ({ direction: null, code: "UNSUPPORTED_COMPARISON", reason });
+
+  test("each accepted unmerged kind with a regular working file gives resolve", () => {
+    for (const xy of ["UU", "AA", "AU", "UA", "DU", "UD"]) expect(norm(decideResolve(resolveInput(conflict(xy))))).toEqual(RESOLVE);
+  });
+
+  test("a file at the size limit gives resolve, one byte more gives size", () => {
+    const at = { working: { type: "file" as const, size: WHOLE_FILE_STAGE_INPUT_BYTES, diskPath: bytes("c.txt") } };
+    const over = { working: { type: "file" as const, size: WHOLE_FILE_STAGE_INPUT_BYTES + 1, diskPath: bytes("c.txt") } };
+    expect(norm(decideResolve(resolveInput(conflict("UU"), "c.txt", at)))).toEqual(RESOLVE);
+    expect(decideResolve(resolveInput(conflict("UU"), "c.txt", over))).toEqual(refuse("size"));
+  });
+
+  test("DD and a missing working file give missing", () => {
+    expect(decideResolve(resolveInput(conflict("DD")))).toEqual(refuse("missing"));
+    expect(decideResolve(resolveInput(conflict("DD"), "c.txt", { working: { type: "absent" } }))).toEqual(refuse("missing"));
+    for (const xy of ["UU", "DU", "UD"]) expect(decideResolve(resolveInput(conflict(xy), "c.txt", { working: { type: "absent" } }))).toEqual(refuse("missing"));
+  });
+
+  test("a symbolic link gives symlink", () => {
+    expect(decideResolve(resolveInput(conflict("UU"), "c.txt", { working: { type: "symlink", diskPath: bytes("c.txt") } }))).toEqual(refuse("symlink"));
+    expect(decideResolve(resolveInput(conflict("UU", "c.txt", ["100644", "120000", "100644"])))).toEqual(refuse("symlink"));
+    expect(decideResolve(resolveInput(conflict("UU", "c.txt", MODES.UU!, "120000")))).toEqual(refuse("symlink"));
+  });
+
+  test("a gitlink gives submodule", () => {
+    expect(decideResolve(resolveInput(conflict("UU", "c.txt", ["160000", "160000", "160000"], "160000", "SC..")))).toEqual(refuse("submodule"));
+    expect(decideResolve(resolveInput(conflict("UU", "c.txt", ["100644", "100644", "160000"])))).toEqual(refuse("submodule"));
+  });
+
+  test("the other data-model §9 refusals", () => {
+    expect(decideResolve(resolveInput(conflict("UU"), "c.txt", { working: { type: "directory", diskPath: bytes("c.txt") } }))).toEqual(refuse("type"));
+    expect(decideResolve(resolveInput(conflict("UU"), "c.txt", { working: { type: "other", diskPath: bytes("c.txt") } }))).toEqual(refuse("type"));
+    expect(decideResolve(resolveInput(conflict("UU"), "c.txt", { working: { type: "unreadable" } }))).toEqual(refuse("path"));
+    expect(decideResolve(resolveInput(conflict("UU"), "c.txt", { working: { type: "file", size: 1, diskPath: bytes("C.txt") } }))).toEqual(refuse("path"));
+    expect(decideResolve(resolveInput(conflict("UU", BAD_PATH), BAD_PATH))).toEqual(refuse("path"));
+    expect(decideResolve(resolveInput(conflict("UU"), "c.txt", { attributes: { filter: "crypt" } }))).toEqual(refuse("filter"));
+    expect(decideResolve(resolveInput(conflict("UU"), "c.txt", { attributes: { filter: "lfs" } }))).toEqual(refuse("LFS"));
+    expect(norm(decideResolve(resolveInput(conflict("UU"), "c.txt", { attributes: { filter: "unset" } })))).toEqual(RESOLVE);
+  });
+
+  test("the decision reads no file text", () => {
+    const facts = { content: { binary: true, validUtf8: false, lineEndings: "mixed" as const } };
+    expect(norm(decideResolve(resolveInput(conflict("UU"), "c.txt", facts)))).toEqual(RESOLVE);
+  });
+
+  test("a record that is no unmerged record gives MALFORMED_GIT_OUTPUT", () => {
+    const MALFORMED: ResolveDecision = { direction: null, code: "MALFORMED_GIT_OUTPUT" };
+    const records = [
+      ordinary(".M", "N...", "100644", "100644", "100644", HEAD_OID, INDEX_OID, "c.txt"),
+      conflict("MM", "c.txt", MODES.UU!),
+      conflict("UU", ""),
+      conflict("UU", "c.txt", ["100644", "100644", "10064"]),
+      conflict("UU", "c.txt", MODES.UU!, "100644", "X..."),
+      concat(`u UU N... 100644 100644 100644 100644 ${S1} ${S2} ${"3".repeat(64)} c.txt`),
+      concat(`u UU N... 100644 100644 100644 100644 ${S1} ${S2} c.txt`),
+    ];
+    for (const record of records) expect(decideResolve(resolveInput(record))).toEqual(MALFORMED);
+  });
+
+  test("Stage file still refuses a conflicted entry (001 FR-038)", () => {
+    expect(decide(input("conflicted", conflict("UU"), "c.txt"))).toEqual({ direction: null, code: "CONFLICTED" });
+    expect(decide(input("unstaged", conflict("AA"), "c.txt"))).toEqual({ direction: null, code: "CONFLICTED" });
   });
 });

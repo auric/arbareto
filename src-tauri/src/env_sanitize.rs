@@ -3,8 +3,8 @@
 
 use std::ffi::{OsStr, OsString};
 
-/// Bun 1.4.2 reads each name at startup. Research R7 lists each read site.
-const STARTUP_CONTROLS: [&str; 30] = [
+/// Bun 1.4.3 reads each name at startup or at exit. Research R7 lists each read site.
+const STARTUP_CONTROLS: [&str; 32] = [
     "BUN_BE_BUN",
     "BUN_OPTIONS",
     "BUN_FEATURE_FLAG_NO_ORPHANS",
@@ -35,12 +35,14 @@ const STARTUP_CONTROLS: [&str; 30] = [
     "BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING",
     "BUN_FEATURE_FLAG_SYNTHETIC_MEMORY_LIMIT",
     "BUN_FEATURE_FLAG_DISABLE_STANDALONE_MADVISE",
+    "BUN_BYTECODE_ORDER_OUT",
+    "BUN_BYTECODE_DIGEST_OUT",
 ];
 
 /// Each name after `BUN_JSC_` sets one JSC option.
 const STARTUP_CONTROL_PREFIX: &str = "BUN_JSC_";
 
-/// Removes each runtime-control variable that the pinned Bun 1.4.2 reads at startup (contract §7). Names match without case.
+/// Removes each runtime-control variable that the pinned Bun 1.4.3 reads at startup or at exit (contract §7). Names match without case.
 pub fn sanitize(environment: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
     environment
         .into_iter()
@@ -53,7 +55,7 @@ pub fn sanitize(environment: Vec<(OsString, OsString)>) -> Vec<(OsString, OsStri
         .collect()
 }
 
-/// Matches an ASCII name without ASCII letter case. Bun 1.4.2 uses this rule on Windows (research R7).
+/// Matches an ASCII name without ASCII letter case. Bun 1.4.3 uses this rule on Windows (research R7).
 pub(crate) fn name_is(name: &OsStr, ascii: &str) -> bool {
     name.len() == ascii.len() && name_starts_with(name, ascii)
 }
@@ -71,8 +73,8 @@ pub(crate) fn name_starts_with(name: &OsStr, ascii: &str) -> bool {
 mod tests {
     use super::*;
 
-    // Bun 744846f844374847c902b5e7fd59b4342a51ef99 reads these names between process entry and the entry module of a compiled executable on Windows.
-    const STARTUP_CONTROLS: [&str; 38] = [
+    // Bun c6da4a4d3010e5553438c60f6bd76d981976867c reads these names in a compiled executable on Windows. It reads `BUN_BYTECODE_DIGEST_OUT` at exit and the others before the entry module.
+    const STARTUP_CONTROLS: [&str; 40] = [
         "BUN_BE_BUN",
         "BUN_OPTIONS",
         "BUN_FEATURE_FLAG_NO_ORPHANS",
@@ -103,7 +105,9 @@ mod tests {
         "BUN_FEATURE_FLAG_FORCE_WAITER_THREAD",
         "BUN_FEATURE_FLAG_SYNTHETIC_MEMORY_LIMIT",
         "BUN_FEATURE_FLAG_DISABLE_STANDALONE_MADVISE",
-        // `BUN_JSC_` is a prefix: each name after it sets one JSC option (jsc/bindings/ZigGlobalObject.cpp:363-377).
+        "BUN_BYTECODE_ORDER_OUT",
+        "BUN_BYTECODE_DIGEST_OUT",
+        // `BUN_JSC_` is a prefix: each name after it sets one JSC option (jsc/bindings/ZigGlobalObject.cpp:373-387).
         "BUN_JSC_useJIT",
         "BUN_JSC_enableRestrictedOptions",
         "BUN_JSC_",
@@ -172,6 +176,7 @@ mod tests {
             ("node_channel_fd", "3"),
             ("Node_Env", "development"),
             ("_bun_watcher_child", "1"),
+            ("bun_bytecode_order_out", "x"),
         ];
         let output = names(&sanitize(pairs(&input)));
         assert!(output.is_empty(), "left: {output:?}");

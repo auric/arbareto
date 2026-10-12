@@ -126,6 +126,14 @@ export function vendoredKey(keys: ReadonlySet<string>, ecosystem: "npm" | "cargo
   return keys.has(key) ? key : undefined;
 }
 
+// research.md R10 (T366): Bun 1.4.3 embeds the typescript-go type checker, so Apache-2.0 §4(d) requires its NOTICE.txt.
+export const BUN_RUNTIME_FILES = ["LICENSE.md", "typescript-go-NOTICE.txt"] as const;
+
+/** The required Bun runtime files that the vendored runtime folder does not hold. */
+export function missingRuntimeFiles(names: readonly string[]): string[] {
+  return BUN_RUNTIME_FILES.filter((name) => !names.includes(name));
+}
+
 // No npm or Cargo manifest field names the licence file of a package (cargo `license_file` is empty for every shipped crate).
 // So this exact name set is the contract. It holds the names that the shipped packages use. A package without a match is refused.
 // NOTICE files stay with the package: research.md R9 requires supplied NOTICE content.
@@ -250,7 +258,9 @@ async function main(): Promise<number> {
   shipped.push({ name: "NSIS", license: "zlib/libpng, bzip2, CPL-1.0", files: nsisCopying ? await readLicenseFiles(nsis, "COPYING") : [] });
   // research.md R7: Bun is MIT, and it statically links LGPL-2 JavaScriptCore and WebKit and other libraries. Its LICENSE.md lists them.
   const bunKey = vendoredKey(vendoredKeys, "runtime", "bun", Bun.version);
-  shipped.push({ name: "Bun runtime and linked components", version: Bun.version, license: "MIT, LGPL-2.0 (JavaScriptCore, WebKit), and linked-library licences", files: await filesOf([], bunKey) });
+  const bunFiles = await filesOf([], bunKey);
+  for (const name of missingRuntimeFiles(bunFiles.map((f) => f.name))) problems.push(`Bun runtime ${Bun.version}: no ${name}`);
+  shipped.push({ name: "Bun runtime and linked components", version: Bun.version, license: "MIT, LGPL-2.0 (JavaScriptCore, WebKit), and linked-library licences", files: bunFiles });
   // research.md R9 and R10: the shipped Shiki grammars and themes come from these releases, and every shipped entry is MIT.
   // The vite.config.ts bundle check refuses Oniguruma WASM in the build, so it needs no notice.
   for (const [name, version] of [["tm-grammars", TM_GRAMMARS_VERSION], ["tm-themes", TM_THEMES_VERSION]] as const) {

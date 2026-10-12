@@ -9,10 +9,13 @@ import {
   type FetchFlag,
   parseAheadBehind,
   parsePushPorcelain,
+  parsePushRecord,
   parsePushUrls,
+  parseRevListCount,
   parseTracking,
   SYNC_FETCH_LISTED_REFS,
 } from "../../src/git-service/sync-parsers";
+import { RECORDED } from "./sync-recorded";
 
 printOrigin("../../src/git-service/sync-parsers.ts", import.meta.dir);
 
@@ -42,13 +45,17 @@ const zeroCounts = (): Record<FetchFlag, number> => Object.fromEntries(FETCH_FLA
 describe("fetch porcelain", () => {
   test("the limit value", () => expect(SYNC_FETCH_LISTED_REFS).toBe(1000));
 
-  test("each flag of the grammar", () => {
-    const lines = FETCH_FLAGS.map((flag, i) => `${flag} ${A1} ${B1} refs/remotes/origin/b${i}\n`).join("");
-    const result = fetchList(lines);
-    expect(result).toEqual({
-      updates: FETCH_FLAGS.map((flag, i) => ({ flag, oldObjectId: A1, newObjectId: B1, ref: `refs/remotes/origin/b${i}` })),
-      counts: Object.fromEntries(FETCH_FLAGS.map((f) => [f, 1])) as Record<FetchFlag, number>,
-    });
+  test("recorded outputs hold each flag", () => {
+    const seen = new Set<string>();
+    for (const key of ["fetch.d3", "fetch.prune-tags-force", "fetch.rewound", "fetch.up-to-date-verbose"]) {
+      const output = RECORDED[key]!.stdout;
+      const result = fetchList(output);
+      expect(result?.updates.map((u) => `${u.flag} ${u.oldObjectId} ${u.newObjectId} ${u.ref}`)).toEqual(output.split("\n").slice(0, -1));
+      for (const u of result!.updates) seen.add(u.flag);
+    }
+    expect([...seen].sort()).toEqual([...FETCH_FLAGS].sort());
+    expect(fetchList(RECORDED["fetch.prune-tags-force"]!.stdout)?.counts).toEqual({ ...zeroCounts(), "-": 1, " ": 1, "+": 2, "*": 1, t: 1 });
+    expect(fetchList(RECORDED["fetch.prune-tags-force"]!.stdout)?.updates[0]).toEqual({ flag: "-", oldObjectId: "c53b5b9004fb3ec22e81c45a3966ff316fbf09cc", newObjectId: Z1, ref: "refs/remotes/origin/gone-soon" });
   });
 
   test("SHA-256 object IDs and a new ref with the zero OID", () => {
@@ -116,20 +123,27 @@ describe("push porcelain", () => {
   const SPEC = "refs/heads/main:refs/heads/main";
   const push = (lines: string[], exit: number, spec = SPEC) => parsePushPorcelain(bytes(lines.map((l) => `${l}\n`).join("")), spec, exit);
 
+  const recorded: [string, string, string, ReturnType<typeof parsePushPorcelain>][] = [
+    ["a fast-forward", "push.fast-forward", "refs/heads/p-behind:refs/heads/p-equal", { status: "pushed", reasonText: null }],
+    ["a forced update", "push.forced", "refs/heads/p-diverged:refs/heads/p-diverged", { status: "forced", reasonText: "forced update" }],
+    ["a new branch", "push.created", "refs/heads/p-equal:refs/heads/created", { status: "created", reasonText: null }],
+    ["up to date", "push.up-to-date", "refs/heads/p-equal:refs/heads/created", { status: "up-to-date", reasonText: null }],
+    ["rejected, with Done after it", "push.rejected", "refs/heads/p-diverged:refs/heads/p-diverged", { status: "rejected", reasonText: "non-fast-forward" }],
+    ["a stale lease", "push.lease-rejected", "refs/heads/p-diverged:refs/heads/p-diverged", { status: "rejected", reasonText: "stale info" }],
+    ["remote rejected", "push.remote-rejected", "refs/heads/p-equal:refs/heads/x", { status: "remote-rejected", reasonText: "pre-receive hook declined" }],
+  ];
+  for (const [name, key, spec, expected] of recorded) {
+    test(`recorded: ${name}`, () => expect(parsePushPorcelain(bytes(RECORDED[key]!.stdout), spec, RECORDED[key]!.exit)).toEqual(expected));
+  }
+
+  // No fixture produces these forms. They follow the git-push(1) grammar.
   const cases: [string, string, number, ReturnType<typeof parsePushPorcelain>][] = [
-    ["a fast-forward", ` \t${SPEC}\t1111111..2222222`, 0, { status: "pushed", reasonText: null }],
-    ["a forced update", `+\t${SPEC}\t1111111...2222222 (forced update)`, 0, { status: "forced", reasonText: "forced update" }],
-    ["a new branch", `*\t${SPEC}\t[new branch]`, 0, { status: "created", reasonText: null }],
-    ["up to date", `=\t${SPEC}\t[up to date]`, 0, { status: "up-to-date", reasonText: null }],
-    ["rejected", `!\t${SPEC}\t[rejected] (non-fast-forward)`, 1, { status: "rejected", reasonText: "non-fast-forward" }],
     ["rejected with another reason", `!\t${SPEC}\t[rejected] (fetch first)`, 1, { status: "rejected", reasonText: "fetch first" }],
-    ["a stale lease", `!\t${SPEC}\t[rejected] (stale info)`, 1, { status: "rejected", reasonText: "stale info" }],
-    ["remote rejected", `!\t${SPEC}\t[remote rejected] (pre-receive hook declined)`, 1, { status: "remote-rejected", reasonText: "pre-receive hook declined" }],
     ["remote failure", `!\t${SPEC}\t[remote failure] (remote failed to report status)`, 1, { status: "remote-failure", reasonText: "remote failed to report status" }],
     ["a reason with parentheses", `!\t${SPEC}\t[remote rejected] (hook (x) said no)`, 1, { status: "remote-rejected", reasonText: "hook (x) said no" }],
   ];
   for (const [name, line, exit, expected] of cases) {
-    test(name, () => expect(push(["To /srv/remote.git", line, ...(exit === 0 ? ["Done"] : [])], exit)).toEqual(expected));
+    test(name, () => expect(push(["To /srv/remote.git", line, "Done"], exit)).toEqual(expected));
   }
 
   test("the reason text changes no status (FR-015)", () => {
@@ -204,6 +218,18 @@ describe("tracking records", () => {
     ]);
   });
 
+  test("a recorded listing", () => {
+    const BASE = "c53b5b9004fb3ec22e81c45a3966ff316fbf09cc";
+    const entry = (name: string, objectId: string, upstreamObjectId: string, ahead: number, behind: number, current = false) => ({ name, invalidUtf8: false, objectId, upstream: `refs/remotes/origin/${name}`, upstreamObjectId, track: { state: "counts" as const, ahead, behind }, current });
+    expect(parseTracking(bytes(RECORDED.tracking!.stdout), "sha1")).toEqual([
+      entry("main", BASE, BASE, 0, 0, true),
+      entry("p-behind", "bbf1b244faad7c21296a5274dd2e24d9a46ca12b", "bbf1b244faad7c21296a5274dd2e24d9a46ca12b", 0, 0),
+      entry("p-diverged", "eccb5595dfdb31d77b6b63703720c5b54194a2ac", "b8481fb7912c87754fa5f3baa1f5c684a99d0a8d", 1, 1),
+      entry("p-equal", BASE, BASE, 0, 0),
+      entry("rewrite", "7af04eb869d5507a766d0df9a6407dfe5f0868a9", "1488cccf42680f79afa72de87baf6cc5dce18433", 1, 0),
+    ]);
+  });
+
   test("empty output gives no entry", () => expect(parse()).toEqual([]));
 
   test("SHA-256 object IDs", () => {
@@ -242,11 +268,80 @@ describe("tracking records", () => {
 
 describe("ahead and behind counts", () => {
   test("ahead TAB behind", () => {
+    expect(parseAheadBehind(bytes(RECORDED["ahead-behind.rewrite"]!.stdout))).toEqual({ ahead: 1, behind: 0 });
     expect(parseAheadBehind(bytes("2\t3\n"))).toEqual({ ahead: 2, behind: 3 });
     expect(parseAheadBehind(bytes("0\t0\n"))).toEqual({ ahead: 0, behind: 0 });
     expect(parseAheadBehind(bytes("0\t20000\n"))).toEqual({ ahead: 0, behind: 20000 });
   });
   for (const output of ["", "2\t3", "2 3\n", "2\t3\n\n", "02\t3\n", "-1\t3\n", "2\t3\t4\n", "a\tb\n"]) {
     test(`${JSON.stringify(output)} gives MALFORMED_GIT_OUTPUT`, () => expect(parseAheadBehind(bytes(output))).toBeNull());
+  }
+});
+
+describe("push review record (plan.md D4)", () => {
+  const rec = (...f: string[]) => `${f.join("\0")}\n`;
+  const TOPIC = rec("refs/heads/topic", A1, "refs/remotes/origin/topic", "origin", "refs/heads/topic", "refs/remotes/origin/topic", "origin", "");
+  const parse = (output: string | Uint8Array, branch = "topic", format: "sha1" | "sha256" = "sha1") => parsePushRecord(bytes(output), branch, format);
+
+  test("the record of the branch", () => {
+    expect(parse(TOPIC)).toEqual({ branch: "topic", upstream: "refs/remotes/origin/topic", upstreamRemote: "origin", upstreamRemoteRef: "refs/heads/topic", push: "refs/remotes/origin/topic", pushRemote: "origin", pushRemoteRef: "" });
+  });
+
+  test("recorded records", () => {
+    const recorded = (key: string, branch: string) => parse(RECORDED[`push-record.${key}`]!.stdout, branch);
+    expect(recorded("push.default=unset/topic", "topic")).toEqual({ branch: "topic", upstream: "refs/remotes/origin/topic", upstreamRemote: "origin", upstreamRemoteRef: "refs/heads/topic", push: "refs/remotes/origin/topic", pushRemote: "origin", pushRemoteRef: "" });
+    expect(recorded("push.default=current/noup", "noup")).toEqual({ branch: "noup", upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "refs/remotes/origin/noup", pushRemote: "", pushRemoteRef: "" });
+    expect(recorded("remote.origin.push/renamed", "renamed")).toEqual({ branch: "renamed", upstream: "refs/remotes/origin/other-name", upstreamRemote: "origin", upstreamRemoteRef: "refs/heads/other-name", push: "refs/remotes/origin/mapped", pushRemote: "origin", pushRemoteRef: "refs/heads/mapped" });
+    expect(recorded("branch.pushRemote/topic", "topic")).toEqual({ branch: "topic", upstream: "refs/remotes/origin/topic", upstreamRemote: "origin", upstreamRemoteRef: "refs/heads/topic", push: "", pushRemote: "second", pushRemoteRef: "" });
+    expect(recorded("push.default=upstream/renamed", "renamed")).toMatchObject({ push: "refs/remotes/origin/other-name", pushRemote: "origin" });
+  });
+
+  test("the prefix match keeps only the equal refname", () => {
+    const below = rec("refs/heads/topic/sub", B1, "", "", "", "", "", "");
+    expect(parse(below + TOPIC + below)).toMatchObject({ branch: "topic", upstream: "refs/remotes/origin/topic" });
+  });
+
+  test("a branch without an upstream has empty fields", () => {
+    expect(parse(rec("refs/heads/topic", A1, "", "", "", "", "", ""))).toEqual({ branch: "topic", upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "", pushRemote: "", pushRemoteRef: "" });
+  });
+
+  test("a UTF-8 branch name", () => {
+    expect(parse(rec("refs/heads/zweig-ä", A1, "refs/remotes/o/zweig-ä", "o", "refs/heads/zweig-ä", "", "o", ""), "zweig-ä")).toMatchObject({ branch: "zweig-ä", upstream: "refs/remotes/o/zweig-ä" });
+  });
+
+  test("no equal record gives absent", () => {
+    expect(parse("")).toBe("absent");
+    expect(parse(rec("refs/heads/topic/sub", B1, "", "", "", "", "", ""))).toBe("absent");
+  });
+
+  test("SHA-256 object IDs", () => {
+    expect(parse(rec("refs/heads/topic", A2, "", "", "", "", "", ""), "topic", "sha256")).toMatchObject({ branch: "topic" });
+    expect(parse(rec("refs/heads/topic", A1, "", "", "", "", "", ""), "topic", "sha256")).toBeNull();
+  });
+
+  const refused: [string, string][] = [
+    ["seven fields", rec("refs/heads/topic", A1, "", "", "", "", "")],
+    ["nine fields", rec("refs/heads/topic", A1, "", "", "", "", "", "", "")],
+    ["no final LF", rec("refs/heads/topic", A1, "", "", "", "", "", "").slice(0, -1)],
+    ["an empty line", "\n"],
+    ["a bad OID", rec("refs/heads/topic", "x".repeat(40), "", "", "", "", "", "")],
+    ["a refname outside refs/heads/", rec("refs/remotes/origin/topic", A1, "", "", "", "", "", "")],
+    ["an upstream outside refs/", rec("refs/heads/topic", A1, "origin/topic", "origin", "refs/heads/topic", "", "", "")],
+    ["a push ref outside refs/", rec("refs/heads/topic", A1, "", "", "", "origin/topic", "", "")],
+    ["a remote ref outside refs/", rec("refs/heads/topic", A1, "", "", "", "", "o", "topic")],
+    ["two equal records", TOPIC + TOPIC],
+  ];
+  for (const [name, output] of refused) test(`${name} gives MALFORMED_GIT_OUTPUT`, () => expect(parse(output)).toBeNull());
+});
+
+describe("lease count (plan.md D5)", () => {
+  test("rev-list --count", () => {
+    expect(parseRevListCount(bytes(RECORDED["lease-count"]!.stdout))).toBe(1);
+    expect(parseRevListCount(bytes("0\n"))).toBe(0);
+    expect(parseRevListCount(bytes("3\n"))).toBe(3);
+    expect(parseRevListCount(bytes("20000\n"))).toBe(20000);
+  });
+  for (const output of ["", "3", "03\n", "-1\n", "3\n\n", "3 \n", "3\t0\n", "a\n"]) {
+    test(`${JSON.stringify(output)} gives MALFORMED_GIT_OUTPUT`, () => expect(parseRevListCount(bytes(output))).toBeNull());
   }
 });

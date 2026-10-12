@@ -203,6 +203,12 @@ export function parseAheadBehind(stdout: Uint8Array): { ahead: number; behind: n
   return m ? { ahead: Number(m[1]), behind: Number(m[2]) } : null;
 }
 
+// git-rev-list(1) `--count`: one decimal line. Plan.md D5 counts the commits that a force push removes.
+export function parseRevListCount(stdout: Uint8Array): number | null {
+  const m = /^(0|[1-9][0-9]*)\n$/.exec(utf8.decode(stdout));
+  return m ? Number(m[1]) : null;
+}
+
 // ---- Configuration ----
 
 export type ConfigValue = Pick<ConfigEntry, "key" | "value">;
@@ -227,11 +233,34 @@ export interface PushRecord {
   pushRemoteRef: string;
 }
 
+// The pattern `refs/heads/<branch>` also matches the refs below it, so only the record with an equal refname counts.
+// "absent": no such branch.
+export function parsePushRecord(stdout: Uint8Array, branch: string, objectFormat: ObjectFormat): PushRecord | "absent" | null {
+  const raw = Buffer.from(stdout).toString("latin1");
+  if (raw === "") return "absent";
+  if (!raw.endsWith("\n")) return null;
+  const wanted = Buffer.from(`${HEADS}${branch}`, "utf8").toString("latin1");
+  const isRef = (field: string) => field === "" || field.startsWith("refs/");
+  let found: string[] | undefined;
+  for (const line of raw.slice(0, -1).split("\n")) {
+    const f = line.split("\0");
+    if (f.length !== 8 || !f[0]!.startsWith(HEADS) || !isObjectId(f[1]!, objectFormat)) return null;
+    if (![f[2], f[4], f[5], f[7]].every((field) => isRef(field!))) return null;
+    if (f[0] !== wanted) continue;
+    if (found) return null;
+    found = f.map(text);
+  }
+  if (!found) return "absent";
+  const [, , upstream, upstreamRemote, upstreamRemoteRef, push, pushRemote, pushRemoteRef] = found as [string, string, string, string, string, string, string, string];
+  return { branch, upstream, upstreamRemote, upstreamRemoteRef, push, pushRemote, pushRemoteRef };
+}
+
 export interface PushDestination {
   remote: string;
   ref: string;
-  trackingRef: string;
-  source: "remote-push-refspec" | "push-default-upstream" | "push-default-branch";
+  // Null gives `no-lease` for Force push with lease (plan.md D5).
+  trackingRef: string | null;
+  source: "remote-push-refspec" | "push-default-upstream" | "push-default-branch" | "push-default-triangular";
 }
 
 export type PushDecision =
@@ -241,22 +270,37 @@ export type PushDecision =
 
 const PANEL: PushDecision = { kind: "panel", prefill: null };
 
+// remote.c `remote_for_branch`: a push without an explicit remote goes to `origin` (git-push(1)).
+const DEFAULT_REMOTE = "origin";
+
 function destinationSteps(r: PushRecord, remotes: readonly string[], config: readonly ConfigValue[]): PushDecision {
-  const remote = r.pushRemote;
-  if (remote === "") return PANEL;
+  const remote = r.pushRemote === "" ? DEFAULT_REMOTE : r.pushRemote;
+  if (r.pushRemote === "" && !remotes.includes(remote)) return PANEL;
   if (!remotes.includes(remote)) return { kind: "refused", reason: "remote-missing" };
   const mirror = lastEntry(config, `remote.${remote}.mirror`);
   const isMirror = mirror === undefined ? 0 : parseMaybeBool(mirror.value);
   if (isMirror < 0) return { kind: "refused", reason: "invalid-config" };
   if (isMirror === 1) return { kind: "refused", reason: "mirror" };
-  if (r.push === "") return PANEL;
-  const to = (ref: string, source: PushDestination["source"]): PushDecision => ({ kind: "destination", destination: { remote, ref, trackingRef: r.push, source } });
+  const to = (ref: string, source: PushDestination["source"], trackingRef: string | null = r.push || null): PushDecision => ({ kind: "destination", destination: { remote, ref, trackingRef, source } });
   if (r.pushRemoteRef !== "") return to(r.pushRemoteRef, "remote-push-refspec");
+  const branchRef = `refs/heads/${r.branch}`;
   // config.c `git_default_push_config` compares with `strcmp`. Unset means `simple`.
   const entry = lastEntry(config, "push.default");
   const mode = entry === undefined ? "simple" : entry.value;
-  if (mode === "upstream" || mode === "tracking") return r.upstreamRemote === remote ? to(r.upstreamRemoteRef, "push-default-upstream") : { kind: "refused", reason: "push-remote-differs" };
-  if (mode === "simple" || mode === "current" || mode === "matching") return to(`refs/heads/${r.branch}`, "push-default-branch");
+  if (mode === "current") return to(branchRef, "push-default-branch");
+  if (mode === "simple") {
+    // builtin/push.c `is_same_remote`: Git pushes a triangular `simple` like `current`. `branch_get_push_1` gives no `%(push)` for it.
+    const fetchEntry = lastEntry(config, `branch.${r.branch}.remote`);
+    if (fetchEntry?.value === null) return { kind: "refused", reason: "invalid-config" };
+    if ((fetchEntry?.value ?? DEFAULT_REMOTE) !== remote) return to(branchRef, "push-default-triangular", null);
+    return r.push === "" ? PANEL : to(branchRef, "push-default-branch");
+  }
+  if (mode === "upstream" || mode === "tracking") {
+    if (r.upstreamRemote !== remote) return { kind: "refused", reason: "push-remote-differs" };
+    return r.upstream === "" ? PANEL : to(r.upstreamRemoteRef, "push-default-upstream");
+  }
+  // Git pushes a `matching` branch only when the remote advertises its name at push time. The review contacts no remote.
+  if (mode === "matching") return PANEL;
   return { kind: "refused", reason: "invalid-config" };
 }
 
@@ -341,6 +385,7 @@ export function decidePull(input: PullInput): PullDecision {
     if (rebase === "interactive") return refusePull("interactive-rebase");
     return { kind: "rebase", rebaseMerges: rebase === "merges", source: source! };
   }
-  if (!diverged && ff !== "--no-ff") return { kind: "fast-forward", source };
+  // Without a `pull.ff` option, Git's pull runs `merge` with none, so `merge.ff` applies also when only behind.
+  if (!diverged && ff === "--ff") return { kind: "fast-forward", source };
   return { kind: "merge", ff, source };
 }

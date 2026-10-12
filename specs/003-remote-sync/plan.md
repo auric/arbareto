@@ -224,13 +224,13 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
    - `pull.ff=only` and diverged: with no payload mode, reason `ff-only`, whatever the configured rebase value (t7601 "pull.ff=only overrides pull.rebase=true"). With a payload mode, that mode runs, because Git's pull turns `--ff-only` into `--ff` for an explicit `--rebase` or `--no-rebase`. Only behind: fast-forward.
    - The payload mode, then `branch.<branch>.rebase`, then `pull.rebase`: `true` or `merges` rebases when diverged and fast-forwards when only behind, also with `pull.ff=false`. `interactive` gives reason `interactive-rebase` when a rebase is needed.
    - Diverged, with no rebase value and no `pull.ff`: the result is `integration: mode-required`. The renderer asks, then sends `reviewSync {action: "integrate", mode}`. No configuration changes.
-   - Only behind: fast-forward. With `pull.ff=false`, Git's pull makes a merge commit (O-2).
+   - Only behind: with `pull.ff=true` or `only`, fast-forward. With `pull.ff=false`, Git's pull makes a merge commit (O-2). Without `pull.ff`, merge with no ff option, so `merge.ff` applies as in Git's pull (O-2, research R16 e).
    - Otherwise: merge, with the `pull.ff` option that Git's pull passes.
 5. Integrate (policy `integrate`):
    - fast-forward: `merge --ff-only --no-autostash <upstream ref>`;
    - merge: `merge --no-edit --no-autostash [--ff | --no-ff] <upstream ref>`;
    - rebase: `rebase --no-autostash --fork-point [--rebase-merges] <upstream ref>`.
-6. Reconcile. A fast-forward HEAD must equal U. A merge commit must hold U as a parent. A rebase result must contain U. Any other observation gives `completed-with-effects`, with the observed values.
+6. Reconcile. A fast-forward HEAD must equal U. A merge commit must hold U as a parent. After a merge without an ff option, HEAD equals U, or a merge commit holds U as a parent. A rebase result must contain U. Any other observation gives `completed-with-effects`, with the observed values.
 - A merge or rebase in progress after step 5 gives `failed-with-effects` with `integration: stopped`, its kind, and the unmerged count. The notice band then shows the actions.
 - The merge message is Git's default for the remote-tracking ref (O-3).
 
@@ -375,7 +375,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 ## Reviewer defaults (O-1 to O-11)
 
 - **O-1 Count source (FR-019 wording).** Reviewer default: `for-each-ref %(upstream:track,nobracket)`, the untranslated plumbing form, in one process. Alternative: one `rev-list` per branch, about 400 processes for SC-003, about 100 s in WSL. FR-019 and the spec Assumptions record it.
-- **O-2 Only behind with `pull.ff=false`.** Git's pull makes a merge commit, while FR-027 says fast-forward. Reviewer default: follow Git. FR-027 and the spec Assumptions record it.
+- **O-2 Only behind with `pull.ff=false`.** Git's pull makes a merge commit, while FR-027 says fast-forward. Reviewer default: follow Git. FR-027 and the spec Assumptions record it. The same default covers `merge.ff=false` without `pull.ff`: Git's pull runs `merge` with no ff option, and the merge makes a merge commit (research R16 e).
 - **O-3 Merge message.** The app merges the remote-tracking ref, so the message reads "Merge remote-tracking branch 'origin/main'". Git's pull writes "Merge branch 'main' of <url>". Reviewer default: accept, because it binds the merge to the counted commit.
 - **O-4 Fetch all and `skipFetchAll`.** Reviewer default: skip the remotes that `git fetch --all` skips. Git skips a remote when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true (research R16 k).
 - **O-5 SSH test server.** Reviewer default: test devDependency `ssh2`, if P0.3 shows that it runs under Bun. Else a WSL `sshd` when `openssh-server` is already installed in the distro. Else the SSH cases stay unverified. The project installs nothing; installing `openssh-server` with sudo is the user's step.

@@ -3,7 +3,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { decidePull, decidePushDestination, type PullDecision, type PushDecision, type PushRecord } from "../../src/git-service/sync-parsers";
+import { decidePull, decidePushDestination, parsePushRecord, type PullDecision, type PushDecision, type PushDestination, type PushRecord } from "../../src/git-service/sync-parsers";
+import { RECORDED } from "./sync-recorded";
 
 printOrigin("../../src/git-service/sync-parsers.ts", import.meta.dir);
 
@@ -26,11 +27,45 @@ describe("D4 push destination", () => {
   });
   const REMOTES = ["origin", "fork"];
   const decide = (over: Partial<PushRecord>, config: Config = [], remotes = REMOTES) => decidePushDestination(record(over), remotes, cfg(config));
+  const noUpstream = { upstream: "", upstreamRemote: "", upstreamRemoteRef: "" };
   const branchDest: Extract<PushDecision, { kind: "destination" }> = { kind: "destination", destination: { remote: "origin", ref: "refs/heads/topic", trackingRef: "refs/remotes/origin/topic", source: "push-default-branch" } };
 
-  test("simple, unset, current, and matching give refs/heads/<branch>", () => {
+  test("simple, unset, and current give refs/heads/<branch>", () => {
     expect(decide({})).toEqual(branchDest);
-    for (const value of ["simple", "current", "matching"]) expect(decide({}, [["push.default", value]])).toEqual(branchDest);
+    for (const value of ["simple", "current"]) expect(decide({}, [["push.default", value]])).toEqual(branchDest);
+  });
+
+  test("matching always gives the panel (R16 d)", () => {
+    expect(decide({}, [["push.default", "matching"]])).toEqual({ kind: "panel", prefill: null });
+    expect(decide(noUpstream, [["push.default", "matching"]])).toEqual({ kind: "panel", prefill: null });
+  });
+
+  test("current with no upstream and no explicit remote pre-fills refs/heads/<branch> on origin (R16 d)", () => {
+    expect(decide({ ...noUpstream, pushRemote: "" }, [["push.default", "current"]])).toEqual({ kind: "panel", prefill: branchDest.destination });
+    expect(decide({ ...noUpstream, pushRemote: "", push: "" }, [["push.default", "current"]])).toEqual({ kind: "panel", prefill: { ...branchDest.destination, trackingRef: null } });
+  });
+
+  test("an empty %(push:remotename) and no origin gives the panel", () => {
+    expect(decide({ ...noUpstream, pushRemote: "" }, [["push.default", "current"]], ["fork"])).toEqual({ kind: "panel", prefill: null });
+  });
+
+  test("simple or unset with a push remote other than the fetch remote is triangular (R16 d)", () => {
+    const triangular: PushDestination = { remote: "fork", ref: "refs/heads/topic", trackingRef: null, source: "push-default-triangular" };
+    const over = { pushRemote: "fork", push: "" };
+    expect(decide(over)).toEqual({ kind: "destination", destination: triangular });
+    expect(decide(over, [["push.default", "simple"]])).toEqual({ kind: "destination", destination: triangular });
+    expect(decide(over, [["branch.topic.remote", "origin"]])).toEqual({ kind: "destination", destination: triangular });
+    expect(decide({ ...over, push: "refs/remotes/fork/topic" })).toEqual({ kind: "destination", destination: triangular });
+    expect(decide({ ...noUpstream, ...over })).toEqual({ kind: "panel", prefill: triangular });
+  });
+
+  test("the fetch remote is the last branch.<name>.remote value, else origin", () => {
+    const over = { pushRemote: "fork", push: "refs/remotes/fork/topic" };
+    expect(decide(over, [["branch.topic.remote", "fork"]])).toEqual({ kind: "destination", destination: { remote: "fork", ref: "refs/heads/topic", trackingRef: "refs/remotes/fork/topic", source: "push-default-branch" } });
+    expect(decide(over, [["branch.topic.remote", "origin"], ["branch.topic.remote", "fork"]])).toMatchObject({ destination: { source: "push-default-branch" } });
+    expect(decide(over, [["branch.topic.remote", "fork"], ["branch.topic.remote", "origin"]])).toMatchObject({ destination: { source: "push-default-triangular" } });
+    expect(decide(over, [["branch.other.remote", "fork"]])).toMatchObject({ destination: { source: "push-default-triangular" } });
+    expect(decide(over, [["branch.topic.remote", null]])).toEqual({ kind: "refused", reason: "invalid-config" });
   });
 
   test("upstream and tracking give %(upstream:remoteref)", () => {
@@ -65,11 +100,12 @@ describe("D4 push destination", () => {
     });
   });
 
-  test("an empty %(push:remotename) gives the panel", () => {
+  test("an empty %(push:remotename) takes origin", () => {
+    expect(decide({ pushRemote: "" })).toEqual(branchDest);
     expect(decide({ pushRemote: "", push: "" })).toEqual({ kind: "panel", prefill: null });
   });
 
-  test("an empty %(push) gives the panel", () => {
+  test("simple with the fetch remote and an empty %(push) gives the panel", () => {
     expect(decide({ push: "" })).toEqual({ kind: "panel", prefill: null });
   });
 
@@ -84,6 +120,22 @@ describe("D4 push destination", () => {
     expect(decide({}, [["remote.origin.mirror", "true"], ["remote.origin.mirror", "false"]])).toEqual(branchDest);
     expect(decide({}, [["remote.fork.mirror", "true"]])).toEqual(branchDest);
     expect(decide({}, [["remote.origin.mirror", "maybe"]])).toEqual({ kind: "refused", reason: "invalid-config" });
+  });
+
+  // T005 (d) observed these destinations from `push --dry-run --porcelain` on the same fixture variants.
+  test("recorded records give the destination of Git's own push", () => {
+    const remotes = ["origin", "second"];
+    const recorded = (key: string, branch: string, config: Config) => {
+      const r = parsePushRecord(new TextEncoder().encode(RECORDED[`push-record.${key}`]!.stdout), branch, "sha1");
+      if (r === null || r === "absent") throw new Error(`recorded ${key} refused`);
+      return decidePushDestination(r, remotes, cfg(config));
+    };
+    const at = (remote: string, ref: string, trackingRef: string | null, source: PushDestination["source"]): PushDestination => ({ remote, ref, trackingRef, source });
+    expect(recorded("push.default=unset/topic", "topic", [["branch.topic.remote", "origin"]])).toEqual({ kind: "destination", destination: at("origin", "refs/heads/topic", "refs/remotes/origin/topic", "push-default-branch") });
+    expect(recorded("push.default=current/noup", "noup", [["push.default", "current"]])).toEqual({ kind: "panel", prefill: at("origin", "refs/heads/noup", "refs/remotes/origin/noup", "push-default-branch") });
+    expect(recorded("remote.origin.push/renamed", "renamed", [["branch.renamed.remote", "origin"], ["remote.origin.push", "refs/heads/renamed:refs/heads/mapped"]])).toEqual({ kind: "destination", destination: at("origin", "refs/heads/mapped", "refs/remotes/origin/mapped", "remote-push-refspec") });
+    expect(recorded("branch.pushRemote/topic", "topic", [["branch.topic.remote", "origin"], ["branch.topic.pushremote", "second"]])).toEqual({ kind: "destination", destination: at("second", "refs/heads/topic", null, "push-default-triangular") });
+    expect(recorded("push.default=upstream/renamed", "renamed", [["branch.renamed.remote", "origin"], ["push.default", "upstream"]])).toEqual({ kind: "destination", destination: at("origin", "refs/heads/other-name", "refs/remotes/origin/other-name", "push-default-upstream") });
   });
 
   test("an empty %(upstream) gives the panel, pre-filled with the destination", () => {
@@ -117,12 +169,17 @@ describe("D6 pull decision", () => {
     expect(pull(0, 2, [["pull.ff", "false"], ["pull.rebase", "true"]], "merge")).toEqual({ kind: "merge", ff: "--no-ff", source: "payload" });
   });
 
-  test("only behind with pull.ff other than false fast-forwards", () => {
-    expect(pull(0, 2)).toEqual({ kind: "fast-forward", source: null });
+  test("only behind with pull.ff true or only fast-forwards", () => {
     expect(pull(0, 2, [["pull.ff", "true"]])).toEqual({ kind: "fast-forward", source: "pull-ff" });
     expect(pull(0, 2, [["pull.ff", "only"], ["pull.rebase", "true"]])).toEqual({ kind: "fast-forward", source: "pull-ff" });
-    expect(pull(0, 2, [["pull.rebase", "false"]])).toEqual({ kind: "fast-forward", source: "pull" });
-    expect(pull(0, 2, [], "merge")).toEqual({ kind: "fast-forward", source: "payload" });
+    expect(pull(0, 2, [["pull.ff", "only"]], "merge")).toEqual({ kind: "fast-forward", source: "payload" });
+  });
+
+  test("only behind with no pull.ff and no rebase merges with no option, so merge.ff applies (R16 e)", () => {
+    expect(pull(0, 2)).toEqual({ kind: "merge", ff: null, source: null });
+    expect(pull(0, 2, [["pull.rebase", "false"]])).toEqual({ kind: "merge", ff: null, source: "pull" });
+    expect(pull(0, 2, [], "merge")).toEqual({ kind: "merge", ff: null, source: "payload" });
+    expect(pull(0, 2, [["merge.ff", "false"]])).toEqual({ kind: "merge", ff: null, source: null });
   });
 
   test("pull.ff=only and diverged with no payload refuses ff-only, also with pull.rebase=true", () => {
@@ -194,6 +251,6 @@ describe("D6 pull decision", () => {
 
   test("several branch.<name>.merge values give several-merge-refs", () => {
     expect(pull(0, 1, [["branch.main.merge", "refs/heads/a"], ["branch.main.merge", "refs/heads/b"]])).toEqual(refused("several-merge-refs"));
-    expect(pull(0, 1, [["branch.main.merge", "refs/heads/a"]])).toEqual({ kind: "fast-forward", source: null });
+    expect(pull(0, 1, [["branch.main.merge", "refs/heads/a"]])).toEqual({ kind: "merge", ff: null, source: null });
   });
 });

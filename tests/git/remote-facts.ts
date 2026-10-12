@@ -163,7 +163,8 @@ function factB(h: GitHost): Observation[] {
     obs("b.rejected", "![rejected]", one(rejected, "refs/heads/p-diverged"), one(rejected, "refs/heads/p-diverged") === "![rejected]" && rejected.exitCode !== 0),
     obs("b.remote-rejected", "![remote rejected]", one(refused, "refs/heads/p-equal"), one(refused, "refs/heads/p-equal") === "![remote rejected]" && refused.exitCode !== 0),
     obs("b.lease-refusal", "![rejected]", one(lease, "refs/heads/p-diverged"), one(lease, "refs/heads/p-diverged") === "![rejected]" && lease.exitCode !== 0),
-    obs("b.done-absent-on-failure", false, stdoutLines(rejected).at(-1) === "Done"),
+    // R16 (b): Git prints `Done` after a rejected push too, so `Done` decides nothing.
+    obs("b.done-line-last-on-rejection", "Done", stdoutLines(rejected).at(-1) ?? null),
   ];
 }
 
@@ -213,8 +214,12 @@ function factC(h: GitHost): Observation[] {
 
 interface D4Result {
   dst: string | null;
+  // The push URL of the destination remote.
+  url: string | null;
   reason: string | null;
   panel: boolean;
+  // A difference from Git that the plan chooses on purpose (R16 d).
+  deliberate: string | null;
 }
 
 const configValue = (h: GitHost, repo: string, args: string[]): string | null => {
@@ -224,34 +229,35 @@ const configValue = (h: GitHost, repo: string, args: string[]): string | null =>
   return r.stdout.toString("utf8").replace(/\n$/, "");
 };
 
-// plan.md D4 steps 0 to 6 and the push URL rule (O-11), from Git's own fields.
+// plan.md D4 steps 0 to 5 and the push URL rule (O-11), from Git's own fields. A panel pre-fill counts as the destination.
 function d4(h: GitHost, repo: string, branch: string): D4Result {
   const ref = `refs/heads/${branch}`;
+  const none = (reason: string | null, panel: boolean, deliberate: string | null = null): D4Result => ({ dst: null, url: null, reason, panel, deliberate });
   const read = run(h, repo, ["--no-lazy-fetch", "--no-optional-locks", "for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(push)%00%(push:remotename)%00%(push:remoteref)", ref]);
-  if (read.exitCode !== 0) return { dst: null, reason: `read-exit-${read.exitCode}`, panel: false };
+  if (read.exitCode !== 0) return none(`read-exit-${read.exitCode}`, false);
   const record = read.stdout.toString("utf8").split("\n").map((l) => l.split("\0")).find((f) => f[0] === ref);
-  if (record === undefined) return { dst: null, reason: "no-record", panel: false };
+  if (record === undefined) return none("no-record", false);
   const [, , upstream, upRemote, upRef, push, pushRemote, pushRef] = record as string[];
   const panel = upstream === "";
-  const R = pushRemote!;
-  if (R === "") return { dst: null, reason: null, panel: true };
   const remotes = gitOut(h, repo, ["remote"]).split("\n").filter((r) => r !== "");
-  if (!remotes.includes(R)) return { dst: null, reason: "remote-missing", panel };
-  if (configValue(h, repo, ["--type=bool", "--get", `remote.${R}.mirror`]) === "true") return { dst: null, reason: "mirror", panel };
-  if (push === "") return { dst: null, reason: null, panel: true };
-  let dst: string;
+  const R = pushRemote === "" ? "origin" : pushRemote!;
+  if (pushRemote === "" && !remotes.includes(R)) return none(null, true);
+  if (!remotes.includes(R)) return none("remote-missing", panel);
+  if (configValue(h, repo, ["--type=bool", "--get", `remote.${R}.mirror`]) === "true") return none("mirror", panel, "mirror");
+  let dst: string | null;
+  const mode = configValue(h, repo, ["--get", "push.default"]) ?? "simple";
   if (pushRef !== "") dst = pushRef!;
-  else {
-    const mode = configValue(h, repo, ["--get", "push.default"]);
-    if (mode === "upstream" || mode === "tracking") {
-      if (upRemote !== R) return { dst: null, reason: "push-remote-differs", panel };
-      dst = upRef!;
-    } else if (mode === null || mode === "simple" || mode === "current" || mode === "matching") dst = ref;
-    else return { dst: null, reason: "invalid-config", panel };
-  }
-  const urls = run(h, repo, ["remote", "get-url", "--push", "--all", "--", R]);
-  if (urls.exitCode !== 0 || stdoutLines(urls).length !== 1) return { dst: null, reason: "push-urls", panel };
-  return { dst, reason: null, panel };
+  else if (mode === "current") dst = ref;
+  else if (mode === "simple") dst = (configValue(h, repo, ["--get", `branch.${branch}.remote`]) ?? "origin") !== R || push !== "" ? ref : null;
+  else if (mode === "upstream" || mode === "tracking") {
+    if (upRemote !== R) return none("push-remote-differs", panel);
+    dst = upstream === "" ? null : upRef!;
+  } else if (mode === "matching") return none(null, true, "matching");
+  else return none("invalid-config", panel);
+  if (dst === null) return none(null, true);
+  const urls = stdoutLines(run(h, repo, ["remote", "get-url", "--push", "--all", "--", R]));
+  if (urls.length !== 1) return none("push-urls", panel, "push-urls");
+  return { dst, url: urls[0]!, reason: null, panel, deliberate: null };
 }
 
 function factD(h: GitHost): Observation[] {
@@ -261,10 +267,11 @@ function factD(h: GitHost): Observation[] {
     const rule = d4(h, repo, v.branch);
     const dry = run(h, repo, ["--no-lazy-fetch", "push", "--dry-run", "--porcelain", "--no-recurse-submodules", "--no-follow-tags"]);
     const line = pushLines(dry).find((l) => l.from === `refs/heads/${v.branch}`);
-    const expected = rule.dst !== null && rule.reason === null ? rule.dst : `none(${rule.reason ?? "panel"})`;
-    const observed = line === undefined ? `none(exit=${dry.exitCode})` : line.to;
-    const match = rule.dst !== null && rule.reason === null ? line?.to === rule.dst : line === undefined;
-    return obs(`d.${slug(v.name)}`, { d4: expected, panel: rule.panel }, { git: observed, lines: pushLines(dry).length }, match);
+    // transport.c prints `To <url>` before the status lines of each URL.
+    const to = stdoutLines(dry).find((l) => l.startsWith("To "))?.slice(3) ?? null;
+    const expected = rule.dst !== null ? { dst: rule.dst, url: rule.url } : `none(${rule.reason ?? "panel"})`;
+    const observed = line === undefined ? `none(exit=${dry.exitCode})` : { dst: line.to, url: to };
+    return obs(`d.${slug(v.name)}`, { d4: expected, panel: rule.panel, deliberate: rule.deliberate }, { git: observed, lines: pushLines(dry).length }, rule.dst !== null ? same(expected, observed) : line === undefined);
   });
 }
 
@@ -275,8 +282,10 @@ export function d6Decide(ahead: number, behind: number, ff: string | null, rebas
   if (behind === 0) return "up-to-date";
   const value = payload === "rebase" ? "true" : payload === "merge" ? "false" : rebase;
   if (ahead === 0) {
-    if (ff === "false") return value === "true" || value === "merges" || value === "interactive" ? "fast-forward" : "merge-no-ff";
-    return "fast-forward";
+    if (value === "true" || value === "merges" || value === "interactive") return "fast-forward";
+    if (ff === "false") return "merge-no-ff";
+    // Git's pull passes no ff option without `pull.ff`, so `merge.ff` applies.
+    return ff === null ? "merge" : "fast-forward";
   }
   if (ff === "only") {
     if (payload === undefined) return "refuse:ff-only";
@@ -417,6 +426,36 @@ function factI(h: GitHost): Observation[] {
   });
 }
 
+// ---- (i2) hash-object and update-index --index-info with mW (plan.md D7) ----
+
+function factI2(h: GitHost): Observation[] {
+  const f = once(h, "merge", () => buildMergeConflict(h));
+  const modes = worktreeModes(h, f.repo);
+  const viaAdd = copyOf(h, f.repo);
+  const viaIndex = copyOf(h, f.repo);
+  const config = { symlinks: configValue(h, viaIndex, ["--type=bool", "--get", "core.symlinks"]), filemode: configValue(h, viaIndex, ["--type=bool", "--get", "core.filemode"]) };
+  const out = [obs("i2.repository-config", "recorded", config, true)];
+  for (const [path, kind] of Object.entries(f.kinds)) {
+    // data-model §9 refuses a path without a working file (mW 000000) and a path with mode 120000. No copy changes it, so the whole-index check holds it on both sides.
+    if (modes[path] === "000000") {
+      out.push(obs(`i2.missing.${kind}.${path}`, "000000", modes[path]));
+      continue;
+    }
+    if (modes[path] === "120000" || stageEntries(h, f.repo, [path]).some((e) => e.mode === "120000")) {
+      // Recorded only: Git for Windows with core.symlinks=false hashes the link file; a real link makes hash-object follow it.
+      out.push(obs(`i2.symlink-refused.${kind}.${path}`, "recorded", { hashObjectExit: run(h, f.repo, ["hash-object", "--", path]).exitCode }, true));
+      continue;
+    }
+    const add = run(h, viaAdd, ["--literal-pathspecs", "add", "--", path]);
+    const hash = run(h, viaIndex, ["hash-object", "-w", "--", path]);
+    const record = Buffer.from(`${modes[path]} ${hash.stdout.toString("utf8").trim()}\t${path}\0`);
+    const update = hash.exitCode === 0 ? gitRun(h, viaIndex, ["update-index", "-z", "--index-info"], { input: record, allowExit: ANY_EXIT }).exitCode : hash.exitCode;
+    out.push(obs(`i2.entries.${kind}.${path}`, { exit: add.exitCode, entries: stageEntries(h, viaAdd, [path]) }, { exit: update, entries: stageEntries(h, viaIndex, [path]) }));
+  }
+  out.push(obs("i2.whole-index", stageEntries(h, viaAdd), stageEntries(h, viaIndex)));
+  return out;
+}
+
 // ---- (j) %(upstream) with an unconfigured remote ----
 
 function factJ(h: GitHost): Observation[] {
@@ -432,8 +471,9 @@ function factK(h: GitHost): Observation[] {
   const fetch = run(h, repo, ["--no-lazy-fetch", "fetch", "--all", "--no-recurse-submodules"]);
   const fetched = Object.keys(refMap(h, repo, ["refs/remotes"])).map((r) => r.split("/")[2]!);
   const observed = Object.keys(FETCH_ALL_REMOTES).filter((r) => fetched.includes(r));
-  // O-4: every remote whose `remote.<name>.skipFetchAll` Git reads as true is skipped.
-  const expected = Object.keys(FETCH_ALL_REMOTES).filter((r) => configValue(h, repo, ["--type=bool", "--get", `remote.${r}.skipFetchAll`]) !== "true");
+  // O-4: Git skips a remote when the last value over `skipFetchAll` and `skipDefaultUpdate` is true. `--get-regexp` lists the values in file order.
+  const lastSkip = (r: string) => stdoutLines(run(h, repo, ["config", "--type=bool", "--get-regexp", `^remote\\.${r}\\.(skipfetchall|skipdefaultupdate)$`])).at(-1)?.split(" ")[1];
+  const expected = Object.keys(FETCH_ALL_REMOTES).filter((r) => lastSkip(r) !== "true");
   return [obs("k.fetch-all-remote-set", { remotes: expected, exit: 0 }, { remotes: observed, exit: fetch.exitCode })];
 }
 
@@ -479,6 +519,7 @@ export const FACTS: Fact[] = [
   { id: "g", title: "GIT_PROTOCOL_FROM_USER=0 blocks a local-path remote", run: factG },
   { id: "h", title: "merge and rebase ignore submodule.recurse=true", run: factH },
   { id: "i", title: "update-index --add --remove equals git add on unmerged kinds", run: factI },
+  { id: "i2", title: "hash-object and update-index --index-info with mW equal git add on unmerged kinds", run: factI2 },
   { id: "j", title: "%(upstream) is empty for an unconfigured remote", run: factJ },
   { id: "k", title: "fetch --all remote set with skipFetchAll and skipDefaultUpdate", run: factK },
   { id: "l", title: "rebase --skip leaves the index and files equal to HEAD", run: factL },

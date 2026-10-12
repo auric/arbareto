@@ -77,9 +77,10 @@ Inputs: counts after the fetch, `pull.ff`, `branch.<name>.rebase`, `pull.rebase`
 | Counts | `pull.ff` | Rebase value or payload mode | Result |
 |---|---|---|---|
 | behind 0 | any | any | `up-to-date`, no integration |
-| ahead 0, behind > 0 | `false` | `true`, `merges`, `interactive`, or payload `rebase` | `fast-forward` (Git's pull fast-forwards a rebase pull that can fast-forward) |
+| ahead 0, behind > 0 | any | `true`, `merges`, `interactive`, or payload `rebase` | `fast-forward` (Git's pull fast-forwards a rebase pull that can fast-forward) |
 | ahead 0, behind > 0 | `false` | unset or `false`, or payload `merge` | `merge --no-ff` (FR-027, reviewer default O-2) |
-| ahead 0, behind > 0 | any except `false` | any | `fast-forward` |
+| ahead 0, behind > 0 | `true` or `only` | any | `fast-forward` |
+| ahead 0, behind > 0 | unset | unset or `false`, or payload `merge` | `merge` with no ff option, so `merge.ff` applies as in Git's pull (reviewer default O-2, research R16 e) |
 | both > 0 | `only` | no payload, any configured rebase value | refusal `ff-only` (t7601 "pull.ff=only overrides pull.rebase=true") |
 | both > 0 | `only` | payload `rebase` or `merge` | that mode; Git's pull turns `--ff-only` into `--ff` |
 | both > 0 | unset | unset and no payload | `mode-required` |

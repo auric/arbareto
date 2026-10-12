@@ -1,11 +1,11 @@
 <!--
 Sync Impact Report
-- Version change: 1.0.1 -> 2.0.0 (MAJOR). The amendment removes the exact-version obligation for dependencies and build tools and redefines it as minimum versions plus frozen lockfile installs.
-- Modified principles: VIII. Pinned Dependencies and Qualified Shell Selection -> VIII. Locked Dependencies and Qualified Shell Selection. The dependency rules changed. The shell-selection rules and the dependency-update rule are unchanged.
+- Version change: 2.0.0 -> 3.0.0 (MAJOR). The amendment narrows an existing MUST of principle I with a defined exception. A non-interactive rebase pull that the user selects, or that the user's own Git configuration selects, no longer needs a separate confirmation.
+- Modified principles: I. Preserve User Data (title unchanged). One bullet is added. Its first case includes an application default action that the user set to a rebase pull. The other principle I obligations are unchanged.
 - Added sections: none.
 - Removed sections: none.
-- Templates: .specify/templates/plan-template.md, spec-template.md, tasks-template.md, and checklist-template.md state no exact-pin rule. They stay unchanged (upstream).
-- Dependent artifacts: specs/001-desktop-qualification/ is updated to the minimum-version policy and to version 2.0.0.
+- Templates: .specify/templates/plan-template.md, spec-template.md, tasks-template.md, and checklist-template.md cite no principle text or version. They stay unchanged (upstream).
+- Dependent artifacts: specs/001-desktop-qualification/plan.md now cites version 3.0.0. specs/002-full-history/plan.md (branch f002-b0) and specs/003-remote-sync/plan.md (branch f003-spec) still cite 2.0.0. They need a version citation update to 3.0.0.
 - Follow-up TODOs: none.
 -->
 # Arbareto Constitution
@@ -16,6 +16,7 @@ Sync Impact Report
 
 - Git MUST remain authoritative. Cached views and filesystem watchers MUST NOT replace fresh Git state checks.
 - Operations MUST NOT silently discard changes, rewrite history, or change user Git configuration. Destructive actions and history rewrites MUST require explicit confirmation of their scope and effects.
+- Exception: a non-interactive rebase pull counts as confirmed when the user explicitly selects a rebase action, including an application default action that the user set to a rebase pull. It also counts as confirmed when the user's own Git configuration selects a rebase for a pull that the user starts. Force operations, discards, resets, and other history rewrites still MUST require explicit confirmation of their scope and effects.
 - Operations MUST NOT bypass Git hooks.
 - Operations MUST use the selected Git executable and record its version.
 - Cancellation MUST NOT be reported as rollback. After failure or interruption, the application MUST re-read Git state and report the actual result.
@@ -111,4 +112,4 @@ Sync Impact Report
 - Plans and reviews MUST identify compliance evidence or unresolved blockers for each applicable principle.
 - Unresolved violations MUST block affected merges or releases. Conflicting changes MUST wait for an approved constitutional amendment.
 
-**Version**: 2.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-09-29
+**Version**: 3.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-12

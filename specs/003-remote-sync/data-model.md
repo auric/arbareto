@@ -43,12 +43,12 @@ Label rule (renderer):
 
 | Field | Rule |
 |---|---|
-| `remote` | `%(push:remotename)`, or the panel choice. Must be in `git remote`. |
+| `remote` | `%(push:remotename)`, else `origin` (plan.md D4 step 1), or the panel choice. Must be in `git remote`. |
 | `ref` | Full remote ref name (plan.md D4), or `refs/heads/<panel name>`. |
-| `trackingRef` | `%(push)`, or null for a panel destination. |
+| `trackingRef` | `%(push)`, or null for a panel destination and a `push-default-triangular` destination. Null gives `no-lease` for Force push with lease. |
 | `url` | The one push URL, redacted for display. |
 | `setUpstream` | Panel choice. Default true only for a branch without an upstream, else false (FR-016). Only the panel sets it. |
-| `source` | `remote-push-refspec`, `push-default-upstream`, `push-default-branch`, or `panel`. |
+| `source` | `remote-push-refspec` (`remote.<R>.push`), `push-default-upstream` (`upstream`, `tracking`), `push-default-branch` (`current`, and `simple` or unset with the fetch remote), `push-default-triangular` (`simple` or unset with another push remote), or `panel`. `matching` always gives `panel` (plan.md D4 step 4). |
 
 ## 4. Fetch result
 
@@ -120,8 +120,9 @@ A failed reconciliation read gives `unknown`, and the recovery marker stays (001
 | Entry | A `u` status record with stages present. |
 | Accepted | XY in `UU`, `AA`, `AU`, `UA`, `DU`, `UD`, a regular working file, no `120000` or `160000` in any mode, no `filter` attribute, size within 512 MiB, and the 001 path rule. |
 | Refused | `missing` (no working file, includes `DD`), `type`, `symlink`, `submodule`, `path`, `filter`, `LFS`, `size`, `blob-proof`. |
-| Binding | The 001 `FileBinding`, with `entry.stage` null and the three stage modes and OIDs, plus `operationState`. |
-| Verification | One stage-0 entry with the P0.2 mode, no stages 1 to 3 for the path, and every other entry unchanged. |
+| Binding | The 001 `FileBinding`, with `entry.stage` null, the three stage modes and OIDs, the working mode `mW` of the `u` record, plus `operationState`. |
+| Staging | `hash-object -w -- <path>` on the working file, then `update-index -z --index-info` with `<mW> SP <oid> TAB <path>` (plan.md D7). `mW` equals the `git add` mode, also on Windows with `core.symlinks=false` and `core.filemode=false` (research R16 i). `update-index --add` is not used: it writes `100644` there. |
+| Verification | One stage-0 entry with mode `mW`, no stages 1 to 3 for the path, and every other entry unchanged. P0.2 (i2) verifies the equality with `git add`. |
 
 ## 10. Shell settings
 

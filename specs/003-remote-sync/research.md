@@ -25,8 +25,9 @@ Line numbers in Git source are not recorded here. P0.2 records the Git version o
   - `fetch --all --porcelain` passes `--porcelain` to each child. **documented** (builtin/fetch.c `add_options_to_argv`)
   - Whether `--progress` still prints the counter with `--porcelain` is open. DeepWiki said no, without a source line. **unverified** (P0.2 a)
   - `push --porcelain` prints `<flag>\t<from>:<to>\t<summary> (<reason>)` to stdout. Summaries `[rejected]`, `[remote rejected]`, `[remote failure]`, `[up to date]`, and `[new branch]` are not marked for translation. **documented** (git-push(1) OUTPUT; transport.c `print_ref_status`)
-  - Push prints `To <url>` with `transport_anonymize_url`, and `Done` when the push had no error. **documented** (transport.c)
-  - Porcelain `from` and `to` are full ref names. **unverified** (P0.2 b)
+  - Push prints `To <url>` with `transport_anonymize_url`. **documented** (transport.c)
+  - Push also prints `Done` after a rejected push. So `Done` decides nothing. **experiment** (R16 b)
+  - Porcelain `from` and `to` are full ref names. **experiment** (R16 b)
   - git-push(1) calls the reason "human-readable". So the app never classifies by it (FR-015). **documented**
   - Exit codes of fetch and push: non-zero on any failed ref. Git documents no finer codes, so the porcelain lines and the observed refs decide. **documented** (gap)
 - **Alternatives considered**:
@@ -36,14 +37,16 @@ Line numbers in Git source are not recorded here. P0.2 records the Git version o
 
 ## R2 Push destination
 
-- **Decision**: The plan.md D4 rule. Git computes the remote and the tracking ref. The service adds only the three `push.default` cases for the remote ref name.
+- **Decision**: The plan.md D4 rule. Git computes the remote and the tracking ref. The service adds the `push.default` cases for the remote ref name, as builtin/push.c `setup_default_push_refspecs` selects them. The R16 (d) fact drives the rule.
 - **Rationale**:
   - `branch_get_push_1` applies the `remote.<name>.push` refspecs first, then mirror, then `push.default`: `nothing` errors; `matching` and `current` use the branch name; `upstream` uses the upstream; `simple` and unset need the upstream tracking ref to equal the tracking ref of the branch name. **documented** (remote.c)
   - `%(push)` is the local tracking ref of that destination. It is empty when Git reports an error. **documented** (ref-filter.c `populate_value`)
   - `%(push:remoteref)` is filled only when `remote.<R>.push` maps the branch. **documented** (remote.c `remote_ref_for_branch`)
   - `%(push:remotename)` and `%(upstream:remotename)` print only an explicit remote. **documented** (ref-filter.c)
   - `%(upstream)` is empty when `branch.<name>.remote` names an unconfigured remote. **documented** (DeepWiki), **unverified** (P0.2 j)
-  - With `simple`, Git's push treats a triangular push like `current`. `branch_get_push_1` does not, so the app shows the FR-016 panel there. **documented** (builtin/push.c `setup_default_push_refspecs`), **unverified** as a fixture (P0.2 d)
+  - With `simple` or unset, Git's push treats a triangular push like `current`: the push remote differs from the fetch remote, and the destination is `refs/heads/<branch>`. `branch_get_push_1` does not, so `%(push)` is empty there. FR-014 asks for the destination of Git's own push, so D4 follows Git and has no tracking ref for that destination. **documented** (builtin/push.c `setup_default_push_refspecs`, `is_same_remote`), **experiment** (R16 d)
+  - The fetch remote of `is_same_remote` is `branch.<name>.remote`, else `origin`. A push without a `<repository>` argument and without an explicit remote uses `origin`. **documented** (git-push(1) DESCRIPTION; remote.c `remote_for_branch`)
+  - `matching` pushes a branch only when the remote has a branch of the same name. Git decides it from the refs that the remote advertises at push time. **documented** (git-config(1) `push.default`), **experiment** (R16 d)
 - **Alternatives considered**:
   - `git push --dry-run` before the start: it contacts the remote and can run `pre-push`. Rejected.
   - A plain `git push` without a refspec: `matching` pushes several refs. Rejected (spec edge case).
@@ -138,7 +141,7 @@ Line numbers in Git source are not recorded here. P0.2 records the Git version o
 
 - **Decision**: One `readTracking` read with `%(upstream:track,nobracket)`. Pull uses `rev-list --left-right --count` for its decision.
 - **Rationale**:
-  - The `msgs` defaults in ref-filter.c are "Untranslated plumbing messages". Only `git branch` and `git tag` load the translated ones. **documented** (ref-filter.c; builtin/branch.c; builtin/tag.c)
+  - The `msgs` defaults in ref-filter.c are "Untranslated plumbing messages". Only `git branch` and `git tag` load the translated ones. **documented** (ref-filter.c; builtin/branch.c; builtin/tag.c), **unverified** as an experiment (R16 c)
   - The track counts use `stat_tracking_info` with `AHEAD_BEHIND_FULL`, so they are exact. **documented**
   - The forms are `[ahead N]`, `[behind N]`, `[ahead N, behind M]`, and `[gone]`. `nobracket` drops the brackets. Equal gives an empty value. **documented** (git-for-each-ref(1))
   - `%(ahead-behind:<committish>)` takes one base for all refs, so it cannot count against each upstream. **documented**
@@ -147,13 +150,17 @@ Line numbers in Git source are not recorded here. P0.2 records the Git version o
 
 ## R10 Mark resolved through the 001 staging path
 
-- **Decision**: `applyFile` direction `resolve`. Step 5 runs `update-index --add --remove -z --stdin` on the candidate, then the 001 verification and blob proof.
+- **Decision**: `applyFile` direction `resolve`. Step 5 runs `hash-object -w -- <path>` on the working file, then `update-index -z --index-info` on the candidate with `<mW> SP <oid> TAB <path>`. Then the 001 verification and blob proof follow.
 - **Rationale**:
-  - `update-index --add` on an unmerged path removes stages 1 to 3 and adds stage 0 from the working file, as `add_to_index` does for `git add`. **unverified** (P0.2 i)
-  - The stage-0 mode comes from `ce_mode_from_stat` with the entry that `index_name_pos_also_unmerged` finds. The status `u` record field `mW` is the expected mode. **unverified** (P0.2 i)
+  - `update-index --add` on an unmerged path does not equal `git add` on Windows. With `core.symlinks=false` and `core.filemode=false`, it writes `100644` where `git add` keeps `120000` or `100755`. **experiment** (R16 i)
+  - The status `u` record field `mW` equals the `git add` stage-0 mode in every fixture. **experiment** (R16 i)
+  - A stage-0 entry that `update-index --index-info` adds replaces every unmerged entry of the path. **documented** (read-cache.c `add_index_entry_with_check`), **unverified** as a fixture (P0.2 i2)
+  - `hash-object -w -- <path>` applies the conversion of the path attributes, as `git add` does. A path with a `filter` driver is refused (data-model §9), so no filter driver runs. **documented** (git-hash-object(1)), **unverified** as a fixture (P0.2 i2)
   - 001 refuses conflicted entries in `decideFileAction` (`file-action.ts:146-148`) and at acceptance (`file-publish.ts:219-220`). **documented**
   - `hunk-publish.ts:628-635` assumes no stage above 0 in the retained WSL index. **documented**
-- **Alternatives considered**: `git add -- <path>` as a separate command. It writes the canonical index without the candidate, the verification, or the stale check. Rejected (FR-053).
+- **Alternatives considered**:
+  - `git add -- <path>` as a separate command. It writes the canonical index without the candidate, the verification, or the stale check. Rejected (FR-053).
+  - `update-index --add --remove -z --stdin` as for 001 Stage file. It loses the link and exec modes on Windows (R16 i). Rejected.
 
 ## R11 Clone
 
@@ -199,15 +206,14 @@ Line numbers in Git source are not recorded here. P0.2 records the Git version o
 
 These stay **unverified** until the named step runs:
 - `fetch --porcelain` with `--progress` prints the counter: P0.2 a.
-- Porcelain push `from:to` are full names: P0.2 b.
+- The untranslated `for-each-ref` track text under a German locale: P0.2 c. It needs a German catalog and a `de_DE.UTF-8` locale (R16 c).
 - `%(upstream)` with an unconfigured remote: P0.2 j.
 - `pull.ff=only` precedence as an experiment, `rebase --fork-point` equality, the matrix against Git's pull: P0.2 e.
 - `rebase --skip` leaves the index and working files equal to HEAD of the next step: P0.2 l.
 - Pageant `--encrypted` with an unreadable key file exits non-zero: P0.3.
 - `GIT_EDITOR=:` and the commit cleanup: P0.2 f.
 - `submodule.recurse` and merge or rebase: P0.2 h.
-- `update-index --add` on unmerged paths and the mode: P0.2 i.
-- The `skipFetchAll` set: P0.2 k.
+- `update-index --index-info` with mode `mW` equals `git add` on each unmerged kind: P0.2 i2.
 - Pageant `--encrypted` and `WaitForInputIdle`: P0.3.
 - `ssh2` under Bun: P0.3 (O-5).
 - WSL activity on a real fetch: P11.
@@ -216,3 +222,18 @@ These stay **unverified** until the named step runs:
 ## Results
 
 P0 to P12 record their results here as R16 and later. Record times and counts as numbers.
+
+## R16 Batch 0 Git facts (P0.2)
+
+Git versions: Windows Git for Windows 2.56.0.windows.2 on the reference PC, and WSL `Ubuntu-26.04` Git 2.55.0. The fact code is `tests/git/remote-facts.ts`. This record holds the facts that change the design. T013 copies every `OBSERVATION` line.
+
+- **(b) Push porcelain**: `from` and `to` are full ref names. `To` is the first line. Push also prints `Done` as the last line after a rejected push. The `b.done-absent-on-failure` expectation was wrong. **experiment** (Windows 2.56.0.windows.2, WSL 2.55.0). Design change: `Done` decides nothing (contract Δ3, R1).
+- **(c) Track text under a German locale**: the proof did not run. Windows Git has no German message catalog, and the distro has no `de_DE.UTF-8` locale. So `c.translation-active` cannot show an active translation. The claim stays **documented** (ref-filter.c `msgs`) and **unverified** as an experiment. To verify it, the reference host needs a Git build with the German catalog, and the distro needs the `de_DE.UTF-8` locale. Installing them is the user's decision. The project installs nothing.
+- **(d) Push destination against `push --dry-run --porcelain`**: three cases differ from the first D4 rule. **experiment** (Windows 2.56.0.windows.2, WSL 2.55.0).
+  - `push.default=current` on a branch without an upstream: Git pushes to `refs/heads/<branch>` on `origin`. The first rule gave no destination. Design change: D4 step 1 takes `origin` when no remote is explicit, so the panel pre-fills this destination (FR-014, FR-016).
+  - `push.default=matching` on a branch without a same-name remote branch: Git pushes nothing for the branch. The first rule gave `refs/heads/<branch>`. Design change: `matching` gives no destination, and the panel shows.
+  - Unset `push.default` (`simple`) with `branch.<name>.pushRemote` or `remote.pushDefault` (a triangular workflow): Git pushes to `refs/heads/<branch>` on the push remote. The first rule showed the panel. Design change: D4 follows Git, with no tracking ref (R2).
+  - Two push URLs and a mirror remote: Git pushes. The app refuses both on purpose, with reasons `push-urls` (O-11) and `mirror`. The fact confirms that the refusal is a deliberate difference from Git.
+- **(i) Mark resolved staging**: on Windows, the repository has `core.symlinks=false` and `core.filemode=false`. There, `update-index --add --remove -z --stdin` writes `100644` for the symbolic link stage and for the exec-bit stage. `git add` keeps `120000` and `100755`. The porcelain v2 `u` record field `mW` equals the `git add` mode in every fixture. **experiment** (Windows 2.56.0.windows.2). Design change: step 5 hashes the working file and writes stage 0 with mode `mW` through `update-index --index-info` (plan D7, contract Δ4). Symbolic links stay refused (data-model §9). The new fact (i2) must verify the new step on Windows and WSL.
+- **(k) `git fetch --all` remote set**: Git skips a remote when `remote.<name>.skipFetchAll` or `remote.<name>.skipDefaultUpdate` is true. The last value of the two names wins. Fixture: r1 none; r2 `skipFetchAll=true`; r3 `skipDefaultUpdate=true`; r4 `skipFetchAll=false`, then `skipDefaultUpdate=true`; r5 `skipDefaultUpdate=true`, then `skipFetchAll=false`. Observed fetched set: r1 and r5. **experiment** (Windows 2.56.0.windows.2, WSL 2.55.0). Design change: O-4, plan D3, and contract Δ3 use the last value of the two names. The `k` expectation in `tests/git/remote-facts.ts` reads only `skipFetchAll`, so it needs the same rule.
+- **Version**: T005 expected 2.56.0.windows.1. The reference PC has 2.56.0.windows.2. The fact tasks now record the observed version and do not require one build.

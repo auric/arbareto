@@ -67,8 +67,8 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   7. Reconcile: the refs listing again, HEAD, the index, markers, the unmerged count, and for push the upstream values. WSL waits for the 001 §12 process-end fact first.
 - Steps. Every argument array starts with `--no-lazy-fetch`. Network limits from 001 §12. Policy in brackets.
   - fetch: `fetch --porcelain --progress --no-recurse-submodules -- <remote>` [`remote`].
-  - fetch-all: the same, once per remote, in `git remote` order, without `skipFetchAll` remotes (O-4). A failed remote does not stop the next.
-  - push and force-push: `push --porcelain --progress --no-recurse-submodules --no-follow-tags [--set-upstream] [--force-with-lease=<dst>:<expect>] -- <remote> refs/heads/<branch>:<dst>` [`remote`].
+  - fetch-all: the same, once per remote, in `git remote` order, without the skipped remotes (O-4). A remote is skipped when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true. A failed remote does not stop the next.
+  - push and force-push: `push --porcelain --progress --no-recurse-submodules --no-follow-tags [--set-upstream] [--force-with-lease=<dst>:<expect>] -- <remote> refs/heads/<branch>:<dst>` [`remote`]. `<remote>` and `<dst>` come from the plan.md D4 rule or the panel. A triangular destination is `refs/heads/<branch>` on the push remote, as Git's own push selects it. `matching` always needs the panel. A mirror remote and a remote with several push URLs are refused on purpose, although Git pushes to them (research R16 d).
   - pull: the fetch step, then a `for-each-ref --format=%(refname)%00%(objectname)` listing after the fetch process ends; U is the upstream OID from that listing. Then `--no-optional-locks rev-list --left-right --count <HEAD>...<U>` with the 30 s deadline, the data-model §6 decision, then integrate.
   - integrate: the count and the decision without a fetch.
     - fast-forward: `merge --ff-only --no-autostash <upstream ref>` [`integrate`];
@@ -78,7 +78,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   - continue: `commit --quiet` (merging) or `rebase --continue` (rebasing) [`integrate`].
   - skip: `rebase --skip` [`integrate`].
 - Fetch line grammar: `^([ +\-t*!=]) ([0-9a-f]+) ([0-9a-f]+) (\S+)$`, with OIDs of the object format. A line that breaks it makes the fetch list `MALFORMED_GIT_OUTPUT`. The observed listing still decides the effects.
-- Push lines: `To <text>`, `<flag>\t<from>:<to>\t<summary>[ (<reason>)]`, and `Done`.
+- Push lines: `To <text>`, `<flag>\t<from>:<to>\t<summary>[ (<reason>)]`, and `Done`. `from` and `to` are full ref names. Git prints `Done` also after a rejected push, so `Done` decides nothing (research R16 b).
   - Exactly one status line must have `from:to` equal to the refspec. Its flag and summary give data-model §5 `status`. `[rejected]`, `[remote rejected]`, and `[remote failure]` are the only `!` summaries that decide.
   - Another or a missing line, with a non-zero exit, gives status `none`.
 - Results and states: data-model §4 to §8. `PUSH_REJECTED` reasons: `rejected`, `stale-lease` (a lease was sent), `remote-rejected`, `remote-failure`.
@@ -126,11 +126,14 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 ## Δ4 File staging (001 §4)
 
-- New table row: `resolve` accepts a Conflicted entry by data-model §9. Git sets one stage-0 entry from the working file, as `git add` does, and stages 1 to 3 of the path leave.
+- New table row: `resolve` accepts a Conflicted entry by data-model §9. The app writes one stage-0 entry from the working file with the `git add` mode, and stages 1 to 3 of the path leave.
 - New refusal reason `missing`: a conflicted path without a working file.
 - Acceptance: the bound `operationState` must equal the observed one. The 001 `CONFLICTED` and `OPERATION_IN_PROGRESS` acceptance refusals do not apply to `resolve`.
-- Step 5: `update-index --add --remove -z --stdin` on the candidate, with the path bytes.
-- Step 6: the path has exactly one stage-0 entry with the P0.2 mode and no stage 1 to 3. The blob proof runs. Every other entry keeps its values, also other unmerged stages.
+- Step 5:
+  - `--no-lazy-fetch hash-object -w -- <path>` on the working file. Git applies the conversion of the path attributes. A `filter` path is refused before this step, so no filter driver runs.
+  - `--no-lazy-fetch update-index -z --index-info` on the candidate, with `<mW> SP <oid> TAB <path>` and NUL. `mW` is the bound working mode of the status `u` record. The stage-0 entry replaces stages 1 to 3 of the path.
+  - `update-index --add` is not used for `resolve`. On Windows with `core.symlinks=false` and `core.filemode=false`, it writes `100644` where `git add` keeps `120000` or `100755` (research R16 i).
+- Step 6: the path has exactly one stage-0 entry with mode `mW` and no stage 1 to 3. The blob proof runs. Every other entry keeps its values, also other unmerged stages. P0.2 (i2) verifies the equality with `git add`.
 - Step 7: the index fingerprint, the stage set of the path, and the working digest must equal the binding. Otherwise `STALE_SELECTION`.
 - No step reads conflict markers or any file text for a decision.
 
@@ -216,7 +219,8 @@ Reused: `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW
 - Git gives no machine-readable reason for an SSH failure, a credential failure, or a host-key failure. The outcome says the cause is unknown and shows the tail.
 - Git gives no machine-readable "mode required" for pull. The app decides from the counts and the configuration itself.
 - Git gives no signal that a process used SSH. So Connect in a terminal shows for every failed network operation under `plink` (O-10).
-- Under `simple`, `%(push)` and Git's own push differ for a triangular workflow. The app shows the FR-016 panel there.
+- Under `simple`, `%(push)` is empty for a triangular workflow, while Git's own push selects `refs/heads/<branch>` on the push remote. The app follows Git's push, so that destination has no tracking ref and no lease.
+- Under `matching`, Git selects the branch from the refs that the remote advertises at push time. The review contacts no remote, so the FR-016 panel shows.
 - A push URL from `remote get-url --push` already has `pushInsteadOf` applied. `ls-remote` in the terminal applies `insteadOf` to it again.
 - A remote result after a canceled push is not observable without a fetch.
 - A local-path remote runs the remote repository's own receive hooks on this machine, as Git does by hand.

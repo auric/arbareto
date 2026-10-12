@@ -10,9 +10,17 @@
 
 **Input**: User description: "Fetch, pull, and push for the open repository, with progress, Cancel, and a bounded deadline. A rejected push offers pull with rebase, pull with merge, force push with lease, and fetch. Show ahead and behind counts for the current branch and its upstream in the history graph and the branch list. Support PuTTY, plink, and Pageant for SSH remotes. Use the credential helpers that the user configured. Never store or log credentials, and never change the user's Git configuration silently. Avoid feature overload."
 
+## Clarifications
+
+### Session 2026-10-12
+
+- Q: Does Clone belong in this feature? → A: Yes, in feature 003. Clone is User Story 7 (P2) with FR-046 to FR-051 and SC-011. It never recurses into submodules.
+- Q: Should the application fetch on its own, for example on a timer or when a repository opens? → A: No, only on user action. The application uses the network only when the user starts a network operation (FR-041). The counts state that they compare with the last fetch (FR-022).
+- Q: Which conflict actions does this feature offer after a pull? → A: Abort, Continue, and Skip as application actions (FR-030, FR-042 to FR-045). Abort needs a confirmation. Continue needs an index without unmerged entries, from exact index facts, never conflict markers. Skip applies only to a rebase. The resolve panel stays with branch operations.
+
 ## User Scenarios & Testing *(mandatory)*
 
-Feature 001 has no remote operation except Update submodules, and it hides Fetch, Pull, and Push. Feature 002 shows the full history of all branches. This feature adds the remote operations for the open repository and shows how far each branch is ahead of its upstream or behind it. The order of the journeys follows a normal work day: fetch, see the difference, push, recover from a rejected push, pull, then SSH with PuTTY.
+Feature 001 has no remote operation except Update submodules, and it hides Fetch, Pull, and Push. Feature 002 shows the full history of all branches. This feature adds the remote operations for the open repository and shows how far each branch is ahead of its upstream or behind it. It also adds Clone. The order of the journeys follows a normal work day: fetch, see the difference, push, recover from a rejected push, pull, then SSH with PuTTY. Clone and Commit and push follow by priority.
 
 ### User Story 1 - Fetch and see what changed (Priority: P1)
 
@@ -105,9 +113,12 @@ A developer brings the upstream commits into the current branch, by a fast-forwa
 2. **Given** a diverged branch and Git configuration that names a pull mode for this branch. **When** I select Pull. **Then** the pull uses that mode, and the result names it.
 3. **Given** a diverged branch and no configured pull mode. **When** I select Pull. **Then** the application fetches, and then asks me to choose Rebase or Merge for this pull. It changes no configuration.
 4. **Given** uncommitted changes that Git refuses to overwrite. **When** I pull. **Then** Git refuses, and I see its bounded output. My working files and index stay unchanged.
-5. **Given** a pull that stops with conflicts. **When** it ends. **Then** the notice band names the merge or the rebase in progress, and the Conflicted list shows the files that the index records as unmerged. The notice offers the conflict actions of FR-030.
+5. **Given** a pull that stops with conflicts. **When** it ends. **Then** the notice band names the merge or the rebase in progress, and the Conflicted list shows the files that the index records as unmerged. The notice offers Abort and Continue, and Skip for a rebase. Continue is unavailable and states its reason while the index has unmerged entries.
 6. **Given** a pull hook or a filter that needs trust approval. **When** I select Pull. **Then** the feature 001 trust rules apply before any Git process starts.
 7. **Given** a slow pull. **When** I cancel it. **Then** the application re-reads HEAD, the index, and the operation state, and reports the actual result. It never claims rollback.
+8. **Given** the conflict notice of scenario 5. **When** I select Abort. **Then** a confirmation states what Git restores and what it cannot restore. Cancel has focus. After my confirmation, Git aborts the merge or the rebase, and the result reports the observed HEAD, index, and operation state.
+9. **Given** the conflict notice and an index without unmerged entries, after I resolved and staged the files outside the application. **When** I select Continue. **Then** Git continues the merge or the rebase with the message that Git prepared. A rebase that stops again shows the notice again.
+10. **Given** the conflict notice of a rebase. **When** I select Skip. **Then** Git leaves the current commit out of the rebase and continues. The Skip label states that it leaves that commit out.
 
 ---
 
@@ -130,7 +141,27 @@ A developer who keeps SSH keys in Pageant uses plink for SSH remotes, as in Git 
 
 ---
 
-### User Story 7 - Commit and push in one step (Priority: P3)
+### User Story 7 - Clone a repository (Priority: P2)
+
+A developer copies a remote repository into a new local folder and starts work in it.
+
+**Why this priority**: The project brief lists Clone for this feature. Users can clone with Git and open the folder through feature 001, so the daily operations of stories 1 to 5 come first.
+
+**Independent Test**: Clone local bare remotes and a disposable SSH server into missing, empty, and non-empty folders. Compare each new repository with Git's own clone in another folder. Compare the destination folder before and after each refusal and each cancellation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a remote URL and a destination folder that does not exist or is empty. **When** I start Clone. **Then** I see "Cloning into <folder>…" with Cancel, and a percentage where Git reports one. At the end, the application opens the new repository through the feature 001 open flow. The feature 001 trust decision shows before the first read of the new repository.
+2. **Given** a destination folder that holds any file or folder, or a destination path that is a file. **When** I start Clone. **Then** a refusal names the destination. No Git process starts, and the destination stays unchanged.
+3. **Given** a remote that needs sign-in. **When** I clone. **Then** Git uses my configured credential helpers. The application stores and logs no credential. A failure shows the bounded end of Git's output without credentials, and a copyable terminal command.
+4. **Given** the SSH client setting "PuTTY (plink)" and an SSH URL. **When** I clone. **Then** Git uses plink for the clone. A key file that I set in the clone panel reaches Pageant before the start. A host key that PuTTY does not know fails the clone at once, and the notice offers Connect in a terminal.
+5. **Given** a slow clone. **When** I select Cancel, or Git shows no output and transfers no data for 5 minutes. **Then** the clone stops. The result states whether the destination folder exists and whether it is empty. The application deletes and moves no file.
+6. **Given** a remote whose commit records submodules. **When** the clone ends. **Then** Git cloned no submodule. The opened repository offers Update submodules of feature 001.
+7. **Given** a destination folder inside a WSL distro. **When** I clone. **Then** the distro's Git clones inside the distro, with the distro's credentials and SSH setup.
+
+---
+
+### User Story 8 - Commit and push in one step (Priority: P3)
 
 A developer commits the staged changes and pushes the current branch with one action.
 
@@ -166,16 +197,20 @@ A developer commits the staged changes and pushes the current branch with one ac
 - A fetch can bring a very large number of new references. The result then states the counts and the documented limit, not a partial list as a complete one.
 - Ahead or behind counts can be very large, for example after an unrelated history. The counting has the normal deadline. Above the documented bound, the label shows the bound with a plus sign, such as "↓10000+".
 - A pull rebase can stop at a commit whose hook fails. The repository then has a rebase in progress, and the notice band names it.
+- A merge or a rebase can be in progress when the repository opens, for example after a restart or after a Git command in a terminal. Git's state does not record which command started it. So the notice offers the same conflict actions for every merge or rebase in progress.
+- A remote repository can have no commits. Its clone then opens with an unborn branch, as feature 001 shows it.
+- Another process can write into the destination folder after the check and before Git creates it. Git then refuses the clone, and the result shows Git's bounded output and the observed folder state.
+- A clone URL can start with a dash or hold a user name and a password. The application passes it to Git as a literal value, never as an option, and shows it without credentials.
 
 ## Requirements *(mandatory)*
 
 ### Scope Boundaries
 
-Include Fetch for the remote of the current branch and Fetch all remotes. Include Pull into the current branch by fast-forward, merge, or rebase. Include Push of the current branch to one destination, with Set upstream for a branch without an upstream. Include the push-rejected notice with its four choices, and Force push with lease behind a confirmation. Include ahead and behind counts in the toolbar, the references sidebar, and the history branch labels. Include Commit and push. Include PuTTY support for SSH remotes of Windows repositories: plink, Pageant start with a key file, and a PuTTYgen launch.
+Include Fetch for the remote of the current branch and Fetch all remotes. Include Pull into the current branch by fast-forward, merge, or rebase. Include Push of the current branch to one destination, with Set upstream for a branch without an upstream. Include the push-rejected notice with its four choices, and Force push with lease behind a confirmation. Include ahead and behind counts in the toolbar, the references sidebar, and the history branch labels. Include Commit and push. Include Abort and Continue for a merge or a rebase in progress, and Skip for a rebase in progress. Include PuTTY support for SSH remotes of Windows repositories: plink, Pageant start with a key file, and a PuTTYgen launch.
 
-Exclude Clone. [NEEDS CLARIFICATION: Does Clone belong in this feature? The project brief lists it for remote sync, but the user's 003 list omits it. Recommended: no. Clone needs a destination flow, a new trust decision, and a first checkout, so it comes with a later repository feature.]
+Include Clone of one remote URL into one new or empty folder, followed by the feature 001 open flow. Exclude clone options: shallow and partial clones, a chosen branch, a chosen remote name, a bare or mirror clone, templates, and submodule recursion.
 
-Exclude branch operations: checkout, create, rename, delete, merge into current, rebase onto, reset, cherry-pick, and revert. Exclude the conflict resolution panel and its Continue and Skip actions. Exclude remote management: add, rename, remove, and edit URLs. Exclude push of tags, push of other branches, push of several branches in one action, and deletion of remote branches. Exclude the Git configuration editor and its presets. Exclude credential setup, credential storage, SSH key creation by the application, and edits of PuTTY settings. Exclude provider integrations, such as pull requests. Exclude automatic or scheduled fetch. [NEEDS CLARIFICATION: Should the application fetch on its own, for example on a timer or when a repository opens? Recommended: no. Network access then happens only at an explicit user action, and the counts state that they compare with the last fetch.]
+Exclude branch operations: checkout, create, rename, delete, merge into current, rebase onto, reset, cherry-pick, and revert. Exclude the conflict resolution panel, a Mark resolved action, and merge tools. Exclude remote management: add, rename, remove, and edit URLs. Exclude push of tags, push of other branches, push of several branches in one action, and deletion of remote branches. Exclude the Git configuration editor and its presets. Exclude credential setup, credential storage, SSH key creation by the application, and edits of PuTTY settings. Exclude provider integrations, such as pull requests. Exclude automatic, scheduled, and background fetch, including a fetch when a repository opens or the window gets focus.
 
 ### Changes to feature 001 requirements
 
@@ -183,7 +218,9 @@ This feature changes these feature 001 requirements for builds that include it. 
 
 - **001 FR-003**: Push with Set upstream MAY write the upstream of the current branch into the repository configuration, only after the user selects it in the push panel. That is the second named exception to "no configuration change".
 - **001 FR-027**: Force push with lease is allowed behind the FR-024 confirmation of this feature. Every other force operation stays excluded.
-- **001 FR-051**: Fetch, Pull, and Push also use the network. The rules of 001 FR-051 apply to them: Git's own transport policy, no hidden terminal prompt, the stall notice, and no credential setup. One exception exists. When the user selects the SSH client "PuTTY (plink)" in the application settings, the application sets the SSH program and its variant for the Git processes that it starts. It never writes them into any Git configuration file or the user environment.
+- **001 Scope Boundaries**: Clone moves from the 001 exclusions into this feature.
+- **001 conflict clarification** ("How does this feature show conflicts?"): The Conflicted list stays a read-only display. This feature adds Abort, Continue, and Skip (FR-030, FR-042 to FR-045). The resolve panel stays with branch operations.
+- **001 FR-051**: Fetch, Pull, Push, and Clone also use the network. The rules of 001 FR-051 apply to them: Git's own transport policy, no hidden terminal prompt, the stall notice, and no credential setup. One exception exists. When the user selects the SSH client "PuTTY (plink)" in the application settings, the application sets the SSH program and its variant for the Git processes that it starts. It never writes them into any Git configuration file or the user environment.
 - **001 FR-056**: Fetch, Pull, and Push become visible. Stash and the other later controls stay hidden.
 - **001 FR-057**: Each local branch with an upstream shows its ahead and behind counts (FR-019 of this feature).
 
@@ -191,14 +228,14 @@ This feature changes these feature 001 requirements for builds that include it. 
 
 #### Common rules for remote operations
 
-- **FR-001**: Fetch, Pull, Push, and Commit and push MUST count as mutations for feature 001 FR-015, FR-016, FR-023, and FR-024. While one runs, another mutation of the same repository MUST be refused as busy. Reads MUST stay available.
+- **FR-001**: Fetch, Pull, Push, Commit and push, Abort, Continue, and Skip MUST count as mutations for feature 001 FR-015, FR-016, FR-023, and FR-024. While one runs, another mutation of the same repository MUST be refused as busy. Reads MUST stay available.
 - **FR-002**: Each remote operation MUST show its step text with Cancel: "Fetching from <remote>…", "Pulling from <remote>…", "Rebasing…", "Merging…", or "Pushing to <remote>…". It MUST show a percentage only where Git prints its untranslated progress counter. It MUST NOT show a computed or estimated percentage.
 - **FR-003**: Each remote operation MUST use the time limits of feature 001: a stall notice after 15 seconds without output and without data transfer, an end after 5 minutes without output and without data transfer, and an end after 4 hours. The stall notice MUST name a hidden prompt or a sign-in window and offer Cancel and a copyable terminal command.
 - **FR-004**: After success, failure, cancellation, or a time limit, the application MUST re-read the affected references, HEAD, the index, and the repository operation state. It MUST report the observed result. It MUST NOT claim rollback, retry automatically, or undo a change.
 - **FR-005**: Every outcome MUST come from Git exit codes that Git documents for that command, from Git's machine-readable output, or from a fresh read of repository state. The application MUST NOT classify any result by Git's message text, by the remote's message text, or by timing. When no such signal exists, the outcome MUST state that the cause is unknown and show Git's bounded output.
 - **FR-006**: Failure output MUST follow the feature 001 FR-019 output rules: bounded, plain text, no terminal control sequences, no credentials in URLs, and never logged. Messages from the remote MUST follow the same rules.
 - **FR-007**: Operations of this feature MUST NOT start Git inside a submodule and MUST NOT recurse into submodules, whatever the configuration selects. After an operation that changed a recorded submodule commit, the feature 001 FR-053 notice MUST show.
-- **FR-008**: The application MUST use Git's own transport policy, credential helpers, and SSH configuration unchanged, except for FR-033. It MUST NOT store, cache, or log credentials. It MUST NOT add, change, or remove any Git configuration value without an explicit user selection that names the value. Set upstream (FR-016) is the only such selection in this feature.
+- **FR-008**: The application MUST use Git's own transport policy, credential helpers, and SSH configuration unchanged, except for FR-033. It MUST NOT store, cache, or log credentials. It MUST NOT add, change, or remove any Git configuration value without an explicit user selection that names the value. Set upstream (FR-016) is the only such selection in this feature. Clone writes only the configuration that Git's own clone writes into the new repository.
 - **FR-009**: Repository-controlled hooks and filters that an operation can run MUST follow feature 001 FR-025. This covers the reference-transaction hook during fetch and pull, the pre-push hook, the merge and rebase hooks, and the checkout filters of a pull.
 - **FR-010**: In a WSL repository, every operation of this feature MUST run through the distro's Git, with its network access inside the distro. The distro's own credentials and SSH setup MUST apply. Feature 001 FR-045 and FR-046 MUST apply.
 
@@ -206,6 +243,7 @@ This feature changes these feature 001 requirements for builds that include it. 
 
 - **FR-011**: Fetch MUST fetch the remote that Git's own fetch without arguments selects for the current branch. Fetch all remotes MUST fetch every configured remote. Both MUST follow the user's configuration for pruning and tags and MUST NOT add options that change them.
 - **FR-012**: The fetch result MUST list each updated, created, and deleted remote-tracking reference from Git's machine-readable fetch output. It MUST state when nothing changed. Above the documented limit, it MUST state the counts and the limit.
+- **FR-041**: The application MUST use the network only when the user starts Fetch, Fetch all remotes, Pull, Push, Commit and push, Clone, a pull or a fetch from the push-rejected notice, Connect in a terminal, or feature 001 Update submodules. It MUST NOT fetch on a timer, at repository open, at focus return, or in the background.
 - **FR-013**: After a fetch that the user started, the history view and the references sidebar MUST refresh without the feature 002 refs-changed notice, and MUST keep the selected commit when the new references reach it.
 
 #### Push
@@ -235,7 +273,11 @@ This feature changes these feature 001 requirements for builds that include it. 
 - **FR-027**: Pull MUST fetch the upstream of the current branch and then integrate it. When the branch is only behind, Pull MUST fast-forward. When the branch is diverged, Pull MUST use the mode that Git's configuration names for this branch or for all pulls. When no mode is configured, Pull MUST ask the user to choose Rebase or Merge for this pull. The choice MUST NOT change any configuration. The application MUST decide "only behind" and "diverged" from the counts of FR-019 after the fetch.
 - **FR-028**: Pull MUST be unavailable, with a visible reason, for a detached checkout, a branch without an upstream, an unfinished repository operation, and a missing remote.
 - **FR-029**: Pull MUST NOT stash, discard, or reset local changes. When Git refuses to overwrite local changes, the application MUST report the refusal, and the index and working files MUST stay as Git left them.
-- **FR-030**: A pull that ends with a merge or a rebase in progress MUST show that state in the notice band at once. The Conflicted list MUST show only the files that the index records as unmerged. The application MUST NOT read conflict markers in file text. The notice MUST offer these conflict actions: [NEEDS CLARIFICATION: Which conflict actions does this feature offer after a pull? Recommended: Abort only, behind a confirmation that states Git's limits, plus copyable terminal commands for Continue and Skip. Continue, Skip, and the resolve panel stay with branch operations.]
+- **FR-030**: A pull that ends with a merge or a rebase in progress MUST show that state in the notice band at once. The Conflicted list MUST show only the files that the index records as unmerged. The application MUST NOT read conflict markers in file text. The notice MUST offer Abort and Continue for a merge or a rebase in progress, and Skip only for a rebase in progress. The application MUST take the kind of operation in progress from Git's repository state, never from message text. The same actions MUST apply to every merge or rebase in progress, whatever started it.
+- **FR-042**: Abort MUST open a confirmation before the start. The confirmation MUST state that Git returns the branch, the index, and the working files to their state before the merge or the rebase. For a merge, it MUST state that Git can fail to restore uncommitted changes from before the merge. Cancel MUST have the initial focus.
+- **FR-043**: Continue MUST be available only when a fresh read of the index shows no unmerged entry. Otherwise it MUST be unavailable and state the number of unmerged files. Continue MUST use the commit message that Git prepared, with commit hooks and signing as FR-031 requires. The application MUST NOT stage a file for Continue.
+- **FR-044**: Skip MUST be available only for a rebase in progress. Its label or tooltip MUST state that it leaves the current commit out of the rebased branch.
+- **FR-045**: After Abort, Continue, or Skip, FR-004 MUST apply. A rebase that stops again MUST show the conflict notice again. The resolve panel, Mark resolved, and merge tools stay with branch operations.
 - **FR-031**: A pull MUST respect commit hooks, merge hooks, and signing, as feature 001 FR-019 requires for commit. A merge commit MUST use Git's own default message.
 
 #### PuTTY support
@@ -251,6 +293,15 @@ This feature changes these feature 001 requirements for builds that include it. 
 
 - **FR-038**: The commit panel MUST offer Commit and push beside Commit. It MUST run the feature 001 commit. Only after a reconciled intended success MUST it start the push of FR-014. A failed, changed, or uncertain commit result MUST start no push.
 
+#### Clone
+
+- **FR-046**: The application MUST offer Clone in the start view and in the repository menu. The clone panel MUST take a remote URL and a full destination folder path. The application MUST NOT derive the folder from the URL. Clone MUST start only at an explicit start in the panel.
+- **FR-047**: Before the start, the application MUST read the destination from operating system facts. When the destination is a file, or a folder that holds any entry, Clone MUST refuse with the destination path, and no Git process MUST start. A missing folder or an empty folder MUST be accepted. A Windows or WSL destination MUST follow feature 001 FR-044.
+- **FR-048**: Clone MUST show "Cloning into <folder>…" with Cancel and MUST follow FR-002, FR-003, FR-005, FR-006, FR-008, and FR-010. It MUST pass the URL and the folder to Git as literal values. It MUST NOT add options that change Git's defaults for the remote name, the branch, the history depth, object filters, templates, or submodules. Git MUST clone no submodule.
+- **FR-049**: Under "PuTTY (plink)", Clone MUST follow FR-033, FR-034, and FR-037. The clone panel MUST offer one optional PuTTY key file for this clone. FR-035 MUST apply to that key file before the start. The application MUST NOT save it.
+- **FR-050**: After failure, cancellation, or a time limit, the result MUST state whether the destination folder exists and whether it is empty, from operating system facts. The application MUST NOT delete, move, or open any file in the destination.
+- **FR-051**: Clone succeeds only when Git exits with status 0 and the feature 001 open flow (001 FR-006) resolves the destination as a repository top level. The application MUST then show the new repository. The feature 001 trust decision (001 FR-025) MUST come before the first read of the new repository. Every other result MUST follow FR-050 and show Git's bounded output.
+
 #### Visible controls
 
 - **FR-039**: The toolbar MUST show Fetch, Pull, and Push as icon buttons with tooltips that name the action and its shortcut key. A menu beside Fetch MUST offer Fetch all remotes. Each control MUST show its unavailable reason when it cannot run.
@@ -265,6 +316,8 @@ This feature changes these feature 001 requirements for builds that include it. 
 - **Push request**: The local branch, the full destination reference, the remote, the Set upstream choice, and, for a force push, the expected remote commit.
 - **Push result**: The status of the destination reference from Git's machine-readable output, the old and new commit, and the remote's message as untrusted text.
 - **Pull request**: The upstream, the chosen or configured mode, and the counts after the fetch that decided fast-forward or integration.
+- **Clone request**: The remote URL as a literal value, shown without credentials, the full destination folder path, and an optional PuTTY key file for this clone.
+- **Operation in progress**: A merge or a rebase, as Git's repository state records it, with the number of unmerged index entries.
 - **SSH client setting**: "Git's own configuration" or "PuTTY (plink)", with the plink path and a PuTTY key file for each remote. It holds no passphrase and no credential.
 
 ## Success Criteria *(mandatory)*
@@ -278,11 +331,14 @@ These outcomes are targets to measure, not measured results. Only recorded packa
 - **SC-003**: In every count fixture, each shown ahead and behind count equals Git's own count of the two commit ranges. Fixtures cover ahead, behind, diverged, equal, no upstream, upstream gone, names with slashes, and a branch above the count bound. On the moderate fixture with 200 local branches, all counts show within 1 second after the references sidebar shows.
 - **SC-004**: After cancellation or a time limit, every remote operation reaches a reconciled or explicitly unknown state within 5 seconds. A step that waits for hidden input shows the stall notice within 20 seconds after its last output or data transfer.
 - **SC-005**: In fixtures with a credential in the remote URL and with a credential helper, no credential appears in any display, diagnostic, log, or copyable command.
-- **SC-006**: Across every fixture of this feature, the system, global, and repository Git configuration files stay byte-identical, except for the upstream values that a selected Set upstream writes. The Windows environment and the PuTTY registry settings stay unchanged.
+- **SC-006**: Across every fixture of this feature, the system, global, and repository Git configuration files stay byte-identical, except for the upstream values that a selected Set upstream writes. A new repository from Clone holds only the configuration that Git's own clone writes. The Windows environment and the PuTTY registry settings stay unchanged.
 - **SC-007**: In the PuTTY fixtures, fetch and push through plink and Pageant succeed. An unknown host key fails within 5 seconds and offers Connect in a terminal. A key file set for a remote reaches Pageant before the operation starts.
 - **SC-008**: While any remote operation runs, the feature 001 SC-005 response targets hold: 95% of tested inputs show a visible response within 100 ms, and every tested input within 500 ms. Network time has no comparison target.
 - **SC-009**: In the WSL fixtures, fetch, pull, and push give the SC-001 results through the distro's Git, and no process of an operation remains in the distro after cancellation or closure.
 - **SC-010**: In every fixture, each outcome type traces to a Git exit code, a machine-readable Git output, or a repository read. A review of the requirement-to-test mapping finds no outcome decided by message text or timing.
+- **SC-011**: In every clone fixture, the new repository's references, HEAD, configuration values, index, and working files match Git's own clone of the same URL in another folder. Each refusal for a non-empty destination starts no Git process and leaves every destination file byte-identical. After each cancellation, the reported folder state matches the folder on disk.
+- **SC-012**: In every merge and rebase conflict fixture, Abort, Continue, and Skip give the same HEAD, index, working files, and operation state as the same Git commands run by hand on a copy. Continue stays unavailable while the index has an unmerged entry, including a fixture where a resolved file still holds text like conflict markers.
+- **SC-013**: In a session that opens repositories, waits 30 minutes, and returns focus several times without a user network action, the local remotes and the SSH server record no connection.
 
 ## Assumptions
 
@@ -294,7 +350,7 @@ These outcomes are targets to measure, not measured results. Only recorded packa
 - Git's tracking text for ahead and behind is translated, so the application uses Git's numeric counts instead. This is a reviewer default.
 - The toolbar Pull fetches, then fast-forwards, or uses the configured mode, or asks for the mode. It never changes `pull.rebase` or the branch settings. This is a reviewer default.
 - Fetch and Fetch all remotes follow the user's pruning and tag settings. The application adds no prune option. This is a reviewer default.
-- Fetch, Pull, and Push never recurse into submodules. Update submodules of feature 001 stays the only submodule network action. This is a reviewer default.
+- Fetch, Pull, Push, and Clone never recurse into submodules. Update submodules of feature 001 stays the only submodule network action. This is a reviewer default.
 - Set upstream is selected by default in the push panel, as in Git Extensions. The panel names the configuration change. This is a reviewer default.
 - Plink and Git give no machine-readable reason for an SSH failure, such as an unknown host key or a refused key. This is a contract gap. So every failed SSH operation under plink offers Connect in a terminal, and the notice names no cause. This is a reviewer default.
 - Plink runs with its batch option, so a host key prompt fails at once. Connect in a terminal is the accept step. The application never stores host keys. The project brief states this rule.
@@ -303,4 +359,10 @@ These outcomes are targets to measure, not measured results. Only recorded packa
 - Force push with lease is the only force push. A plain force push is not offered. This is a reviewer default.
 - The push-rejected notice is a notice band row, not a dialog, as in the feature 001 notice design. Only Force push with lease opens a modal confirmation, because it is destructive. This is a reviewer default.
 - Commit and push is in scope because the project brief lists it for this feature. It adds no new Git behavior.
+- Clone is P2. Fetch, counts, push, push-rejected recovery, and pull serve each work day. Clone runs once for each repository, and Git plus the feature 001 open flow covers it until then. The user chose Clone for this feature.
+- The application does not derive the clone folder from the URL. Git's own name rule is not a machine-readable output, and a copy of it would be a guess. This is a reviewer default.
+- The application never deletes a folder after a failed or cancelled clone. Git can leave a partial folder when its process ends. The result names the folder, and the user decides.
+- The conflict actions apply to every merge or rebase in progress, not only to one that a pull of this session started. Git's state does not record the starting command. This is a reviewer default.
+- This feature adds no Mark resolved action. The user resolves and stages files in an editor or a terminal. Continue becomes available when the next index read shows no unmerged entry. This is a reviewer default.
+- The application never fetches on its own. The user chose network use only on user action, so counts can be older than the remote. FR-022 states this.
 - Git Extensions detects a rejected push by matching its English output text. This feature uses Git's machine-readable push output instead, so it borrows the flow but not the detection.

@@ -47,7 +47,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 - Payload `need`: `{row: n}` with n from 0 to 4,000,000, `{oid}` with an object ID of the view's format, or `{end: true}`.
 - It takes no read slot. A second load of the view while one runs gives `BUSY`. A load while a search of the view runs gives `BUSY`.
 - Command: `--no-lazy-fetch --no-optional-locks rev-list --parents --date-order --stdin`. Every step uses this argv, with no `--skip`. Policy `read`. `deadlineMs` 120,000, the 001 §6 maximum.
-- Stop row S. L₀ is the row count at the start. M is `HISTORY_LOAD_MARGIN` (Δ5).
+- Stop row S. L₀ is the topology row count at the start. It includes the rows that the view does not serve yet. M is `HISTORY_LOAD_MARGIN` (Δ5).
   - `{row: n}`: S = max(n + 1 + 2·M, 2·L₀).
   - `{oid}`: no stop row until that commit streams at row r. Then S = max(r + 1 + 2·M, 2·L₀). If the commit never streams, the load reads to the end.
   - `{end: true}`, and the load inside a search: no stop row.
@@ -58,7 +58,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - The service runs `for-each-ref refs/replace` beside the Git start, in the Job of the load.
   - At the stop row, the service waits for this check before it sends the process `cancel`. Reason: the `cancel` closes the load Job, and that Job also holds the check process.
 - The view serves only the rows of a load whose fingerprint check passed. When the check does not finish, for example after a quick cancel, the service keeps the streamed rows but does not serve them. The next load re-reads these rows, compares them, and serves them after its check passes.
-- Re-read rule. N is the row count that the view holds at the start. For each i below N, streamed row i must equal held row i in OID and parents. The first difference makes the view stale with `HISTORY_CHANGED` reason `order`. A Git exit 0 before row N gives the same result. A nonzero exit before row N follows the `checkFailedRead` rule below. A cancel or a `DEADLINE` before row N adds no row, and the view stays `idle`. The rows from N on append to the view. Reason: Git documents no unique order, so a one-row overlap check cannot prove the earlier rows (plan.md D2).
+- Re-read rule. N is the topology row count at the start. It includes the rows that the view does not serve yet (data-model §1 `rowCount`). For each i below N, streamed row i must equal held row i in OID and parents. The first difference makes the view stale with `HISTORY_CHANGED` reason `order`. A Git exit 0 before row N gives the same result. A nonzero exit before row N follows the `checkFailedRead` rule below. A cancel or a `DEADLINE` before row N adds no row, and the view stays `idle`. The rows from N on append to the view. Reason: Git documents no unique order, so a one-row overlap check cannot prove the earlier rows (plan.md D2).
 - Each line holds at most 1 + 64 OIDs (`HISTORY_PARENTS_PER_COMMIT`). A longer line ends the load `limited` with `OUTPUT_LIMIT` and that reason.
 - A view holds at most 4,000,000 commits (`HISTORY_VIEW_COMMITS`). At that bound, the service ends the load `limited` with `OUTPUT_LIMIT` and that reason. The loaded rows stay. The view states the limit, and a later `loadHistory` gives the same result without a Git process.
 - The service keeps no raw bytes beyond one partial line. The line bound and the commit bound together bound the stream. This replaces the 001 §5 "History page" bound for this stream only.

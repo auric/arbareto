@@ -906,7 +906,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     call.signal.removeEventListener("abort", kill);
     own.delete(proc);
     const usage = proc.resourceUsage();
-    // Bun 1.4.2 on Windows gives a bigint here, although its type says number.
+    // Bun 1.4.3 on Windows gives a bigint here, although its type says number.
     if (usage && recorded) recorded.cpuMicros = Number(usage.cpuTime.total);
     for (const stream of streams) stream.exit();
     await Promise.all(streams.map((s) => s.done));

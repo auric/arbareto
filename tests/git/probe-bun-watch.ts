@@ -70,8 +70,9 @@ if (process.platform === "win32") {
 } else if (process.platform === "linux") {
   console.log("T366 check 3: remove the watched root");
   const { after, errors } = await removal();
-  const first = after.findIndex((e) => e.name === null);
-  verdict("T366-3", first >= 0 && first === after.length - 1 && errors.length === 0, `a null name, then silence (null at index ${first} of ${after.length}, ${errors.length} errors)`);
+  const nulls = after.filter((e) => e.name === null).length;
+  const last = after.at(-1);
+  verdict("T366-3", last !== undefined && last.name === undefined && nulls === 0 && errors.length === 0, `an undefined name, then silence (last of ${after.length} events: ${last === undefined ? "none" : `${last.event} ${String(last.name)}`}, ${nulls} null names, ${errors.length} errors)`);
 } else {
   verdict("T366", false, `no check for ${process.platform}`);
 }

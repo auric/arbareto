@@ -246,31 +246,33 @@ describe("watcher hints (L, real files)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(
-    "T088",
-    "a change event without a file name gives a hint and re-arms the watch (T088 decision E8)",
-    [],
-    () =>
-      withFakeWatch(async (fakes, spy) => {
-        const directory = fakeWatchDirectory("t088-overflow");
-        const hints: boolean[] = [];
-        const stop = watchWorkspace([directory], (lost) => hints.push(lost));
-        try {
-          expect(fakes.length).toBe(1);
-          const closed = spyOn(fakes[0]!, "close");
-          fakes[0]!.emit("change", "rename", null);
-          expect({ closes: closed.mock.calls.length, watched: spy.mock.calls.map((call) => call[0]) }).toEqual({ closes: 1, watched: [directory, directory] });
-          await Bun.sleep(HINT_BUDGET_MS);
-          expect(hints).toEqual([false]);
-          fakes[1]!.emit("change", "change", "watched.txt");
-          await Bun.sleep(HINT_BUDGET_MS);
-          expect(hints).toEqual([false, false]);
-        } finally {
-          stop();
-        }
-      }),
-    TIMEOUT_MS,
-  );
+  for (const name of [null, undefined]) {
+    caseTest(
+      "T088",
+      `a change event whose file name is ${name} gives a hint and re-arms the watch (T088 decision E8)`,
+      [],
+      () =>
+        withFakeWatch(async (fakes, spy) => {
+          const directory = fakeWatchDirectory(`t088-${name}-name`);
+          const hints: boolean[] = [];
+          const stop = watchWorkspace([directory], (lost) => hints.push(lost));
+          try {
+            expect(fakes.length).toBe(1);
+            const closed = spyOn(fakes[0]!, "close");
+            fakes[0]!.emit("change", "rename", name);
+            expect({ closes: closed.mock.calls.length, watched: spy.mock.calls.map((call) => call[0]) }).toEqual({ closes: 1, watched: [directory, directory] });
+            await Bun.sleep(HINT_BUDGET_MS);
+            expect(hints).toEqual([false]);
+            fakes[1]!.emit("change", "change", "watched.txt");
+            await Bun.sleep(HINT_BUDGET_MS);
+            expect(hints).toEqual([false, false]);
+          } finally {
+            stop();
+          }
+        }),
+      TIMEOUT_MS,
+    );
+  }
 
   caseTest(
     "T088",

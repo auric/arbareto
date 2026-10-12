@@ -24,7 +24,7 @@ const mode = process.argv[2];
 if (mode !== "full" && mode !== "fast") throw new Error("usage: bun tests/run.ts full|fast");
 
 const slash = (p: string) => p.replaceAll("\\", "/");
-// Bun 1.4.2 docs/test/discovery.mdx: the default test file name patterns.
+// Bun 1.4.3 docs/test/discovery.mdx: the default test file name patterns.
 const TEST_FILE = new Bun.Glob("**/*{.test,_test,.spec,_spec}.{js,jsx,ts,tsx,mjs,cjs,mts,cts}");
 const discovered = groups.roots.flatMap((root) => [...TEST_FILE.scanSync({ cwd: join(REPO, root) })].map((f) => `${root}/${slash(f)}`)).sort();
 const serial = Object.keys(groups.serial);
@@ -62,7 +62,7 @@ const ran = new Map<string, number>();
 for (const step of steps) {
   if (step.files.length === 0) continue;
   const report = join(out, `${step.name}.xml`);
-  // A leading `./` makes Bun read each argument as a path, not as a name filter (Bun 1.4.2 docs/test/discovery.mdx).
+  // A leading `./` makes Bun read each argument as a path, not as a name filter (Bun 1.4.3 docs/test/discovery.mdx).
   const args = ["test", ...step.flags, "--reporter=junit", `--reporter-outfile=${report}`, ...step.files.map((f) => `./${f}`)];
   console.log(`STEP ${step.name}: ${step.files.length} files, start ${new Date().toISOString()}`);
   const started = performance.now();

@@ -98,10 +98,6 @@ describe("repository states", () => {
     expect(text(await show(<states.LimitedOutput completeness={{ state: "complete" }} />))).toBe("");
   });
 
-  test("Large history shows the scope limit", async () => {
-    expect(text(await show(<states.LargeHistory />))).toBe("Up to 100 commits");
-  });
-
   test("Unsupported or binary shows the limitation sentence, and the remedy with Copy command only for an entry that applyFile refuses", async () => {
     const remedy = { text: "Stage this file in a terminal.", command: "& 'C:\\Git\\cmd\\git.exe' --literal-pathspecs -C 'D:\\repo' add -- 'big.bin'" };
     const refused = await show(<states.UnsupportedState support="size" fileAction="size" remedy={remedy} />);

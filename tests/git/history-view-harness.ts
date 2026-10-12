@@ -14,7 +14,7 @@ import { FIXTURE_ROOT, fixturePath, ownedGit, type OwnedGitOptions } from "./fix
 import { GIT } from "./git-binary";
 import { largeFixture, startPoints, type LargeSpec } from "./history-fixtures";
 import type { BunRunner } from "./bun-runner";
-import type { Service, ServiceResponse } from "./service-harness";
+import type { OpenedHistory, Service, ServiceResponse } from "./service-harness";
 
 printOrigin("../../src/git-service/history-view.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
@@ -27,15 +27,7 @@ export const gitPath = (): string => {
 export const git = (repo: string, args: string[], options: OwnedGitOptions = {}) => ownedGit(gitPath(), FIXTURE_ROOT, repo, args, options);
 export const gitText = (repo: string, args: string[], options: OwnedGitOptions = {}) => git(repo, args, options).toString("utf8");
 
-export interface Opened {
-  viewId: string;
-  scope: "all" | "current";
-  generation: number;
-  head: { state: "branch" | "detached" | "unborn"; oid?: string; target?: string };
-  startCount: number;
-  refsDigest: string;
-  shallow: boolean;
-}
+export type Opened = OpenedHistory;
 export interface Loaded {
   rows: number;
   complete: boolean;

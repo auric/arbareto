@@ -2,16 +2,16 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { z } from "zod";
-import type { HistoryPage, HistoryViewRow, LoadHistoryResult, OpenHistoryResult, ReadHistoryRowsResult, SearchHistoryResult } from "../../contracts/envelope";
+import type { Head as HeadSchema, HistoryViewRow, LoadHistoryResult, OpenHistoryResult, ReadHistoryRowsResult, SearchHistoryResult } from "../../contracts/envelope";
 import { filterText } from "../../contracts/filter-text";
-import { HISTORY_LOAD_MARGIN, HISTORY_RENDERER_CACHE_BYTES, HISTORY_ROWS_PER_REQUEST } from "../../contracts/limits";
+import { FILTER_TEXT_BYTES, HISTORY_LOAD_MARGIN, HISTORY_RENDERER_CACHE_BYTES, HISTORY_ROWS_PER_REQUEST } from "../../contracts/limits";
 import type { BridgeResponse, createBridge } from "../bridge";
 
 // Feature 002 plan.md D5 and D6, data-model §6 and §8, contract Δ3 and Δ8. The service holds the view. This store holds O(visible + cache) only.
 
 export type HistoryBridge = Pick<ReturnType<typeof createBridge>, "openHistory" | "loadHistory" | "readHistoryRows" | "searchHistory" | "closeHistory" | "cancel">;
 export type ViewRow = z.infer<typeof HistoryViewRow>;
-export type Head = HistoryPage["head"];
+export type Head = z.infer<typeof HeadSchema>;
 type Opened = Extract<z.infer<typeof OpenHistoryResult>, { viewId: string }>;
 type Rows = z.infer<typeof ReadHistoryRowsResult>;
 type Found = Extract<Rows, { target: "found" }>;
@@ -451,7 +451,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
 
   /** Spec FR-029: only Enter starts a search. The renderer runs the `filter-text.ts` checks first. */
   async function search(text: string, mode: HistoryMode) {
-    const checked = filterText(text);
+    const checked = filterText(text, FILTER_TEXT_BYTES);
     if (checked.kind === "none") return clearSearch();
     if (state.search?.text === text && state.search.state !== "stopped" && state.search.state !== "failed") return setMode(mode);
     stopSearch();

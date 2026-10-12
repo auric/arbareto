@@ -16,7 +16,6 @@ export const OPERATION_NAMES = [
   "removeRecentRepository",
   "readWorkspace",
   "readEntries",
-  "readHistory",
   // Feature 002 contract Δ3.
   "openHistory",
   "loadHistory",

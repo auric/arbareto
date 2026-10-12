@@ -1,29 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// Contract §3 `readHistory` and "HistoryPage result", the §5 history bounds, and contract §7 "Shared listing", "Held history steps", and "Missing objects".
+// The 001 history steps that feature 002 reuses: the HEAD capture, the commit text, contract §7 "Shared listing", and "Missing objects".
 
 import { isUtf8 } from "node:buffer";
-import type { HistoryPage, HistoryRefusal, HistoryRow } from "../contracts/envelope";
+import type { HistoryRow } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import {
-  DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
-  HISTORY_COMMIT_OBJECT_BYTES,
-  HISTORY_PAGE_BYTES,
-  HISTORY_STREAM_BYTES,
-  HISTORY_STREAM_ROWS,
-  SHALLOW_METADATA_BYTES,
-} from "../contracts/limits";
-import { NATIVE } from "../contracts/native-path";
-import { batchCommandArgs, headOidArgs, headRefExistsArgs, headTargetArgs, isObjectId, isRefName, objectCheckArgs, revListArgs, shallowPathArgs, type ObjectFormat } from "./commands";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, SHALLOW_METADATA_BYTES } from "../contracts/limits";
+import { batchCommandArgs, headOidArgs, headRefExistsArgs, headTargetArgs, isObjectId, isRefName, objectCheckArgs, type ObjectFormat } from "./commands";
 import type { ReadInstallation } from "./snapshot";
-import { createCollector, isChannelPath, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
-import { boundedBody, HEADER_BYTES, isSpace, messageBody, parseCommitObjects, parseTraversal, type CommitObject, type CommitObjects, type Traversal } from "./history-parser";
-import { contextOf, encodedBytes, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead, type ReadStep } from "./read-steps";
+import { createCollector, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
+import { boundedBody, HEADER_BYTES, isSpace, messageBody, parseCommitObjects, type CommitObject, type CommitObjects } from "./history-parser";
+import { latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
-import type { Completeness, Head, LimitName } from "./snapshot";
-import { hasPromisor, OBJECT_MISSING_REMEDY } from "./status";
-import type { ListingOutcome, Trust, TrustListing } from "./trust";
+import type { Head } from "./snapshot";
+import type { ListingOutcome, Trust } from "./trust";
 
 // Contract §7 "Missing objects": a failed history read with a missing object and without a promisor remote.
 export const DAMAGED_STORE_REMEDY =
@@ -37,13 +28,6 @@ export interface ReadHistoryTarget {
   // The envelope `repositoryGeneration`. The page binds it, and a shared listing must belong to it (contract §7 "Shared listing").
   generation: number;
 }
-
-export type HistoryOutcome =
-  | { result: "succeeded"; value: HistoryPage }
-  | { result: "limited"; code: "OUTPUT_LIMIT" | "OBJECT_MISSING" | "WORKTREE_CHANGING"; value: HistoryPage }
-  | { result: "failed"; code: ErrorCode; value: HistoryRefusal }
-  | { result: "canceled" }
-  | { result: "deadline" };
 
 export interface HistoryReaderOptions {
   runner: GitRunner;
@@ -65,25 +49,9 @@ export type Stop = { stop: "canceled" | "deadline" } | { failed: ErrorCode };
 
 export type Shallow = { kind: "absent" } | { kind: "file"; commits: ReadonlySet<string>; fingerprint: string } | { kind: "over" };
 
-// The output of the held steps. `traversal` is null for an unborn HEAD. `failedStep` names a nonzero exit of `rev-list` or `cat-file` below every bound.
-// `shallowChanged`: the shallow file changed between the first read and the recheck after the traversal.
-interface Held {
-  head: Head;
-  shallow: Shallow;
-  traversal: Traversal | null;
-  objects: CommitObjects;
-  failedStep: "rev-list" | "cat-file" | null;
-  shallowChanged: boolean;
-}
-
 const LF = 0x0a;
 // git-show-ref(1) `--exists`: the status for a missing reference.
 const REF_MISSING_STATUS = 2;
-// Contract §5: 100 objects at the object bound, each with its longest `-Z` header and two NUL bytes. So the cap never cuts a valid page.
-const CAT_FILE_BYTES = HISTORY_STREAM_ROWS * (HISTORY_COMMIT_OBJECT_BYTES + HEADER_BYTES + 2);
-const COMPLETE: Completeness = { state: "complete" };
-const OBJECT_MISSING: Completeness = { state: "limited", code: "OBJECT_MISSING" };
-const limited = (reason: LimitName): Completeness => ({ state: "limited", code: "OUTPUT_LIMIT", reason });
 // Spec FR-008: invalid UTF-8 shows replacement characters. A byte order mark stays text.
 const lossy = new TextDecoder("utf-8", { ignoreBOM: true });
 const exact = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -91,17 +59,6 @@ export const isStop = (value: unknown): value is Stop => typeof value === "objec
 const isDigit = (byte: number) => byte >= 0x30 && byte <= 0x39;
 // The `encoding` label shows no C0 control, DEL, or C1 control.
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
-
-const refusal = (code: ErrorCode, text?: string): HistoryOutcome => ({
-  result: "failed",
-  code,
-  value: { completeness: { state: "failed", code }, ...(text === undefined ? {} : { remedy: { text } }) },
-});
-
-const endOf = (stop: Stop): HistoryOutcome => ("stop" in stop ? { result: stop.stop } : refusal(stop.failed));
-
-const stoppedListing = (outcome: Exclude<ListingOutcome, { ok: true }>): HistoryOutcome =>
-  "stop" in outcome ? { result: outcome.stop } : refusal(outcome.code, outcome.text);
 
 // The first step that ends the chain. Null: each step ran to its exit.
 function stepStop(signal: AbortSignal, steps: readonly Step[]): Stop | null {
@@ -147,8 +104,6 @@ export async function readShallow(path: string, objectFormat: ObjectFormat): Pro
   if (commits === null) return { failed: "MALFORMED_GIT_OUTPUT" };
   return { kind: "file", commits, fingerprint: new Bun.CryptoHasher("sha256").update(read).digest("hex") };
 }
-
-const sameShallow = (a: Shallow, b: Shallow) => a.kind === b.kind && (a.kind !== "file" || a.fingerprint === (b as typeof a).fingerprint);
 
 const join = (parts: readonly Uint8Array[]) => Buffer.concat(parts.flatMap((part, i) => (i === 0 ? [part] : [Buffer.from(" "), part])));
 
@@ -234,15 +189,6 @@ export function commitTextOf(object: Pick<CommitObject, "content" | "encoding">)
   };
 }
 
-// Contract §3 "HistoryPage result" row fields. The parents come from the traversal, never from the raw headers.
-// `shallow`: the shallow file lists the commit.
-function rowOf(oid: string, parents: readonly string[], object: CommitObject, shallow: boolean): HistoryRow | null {
-  const text = commitTextOf(object);
-  if (text === null) return null;
-  const { subject, author, date, encoding, invalidUtf8, committer, committerDate, body, bodyCut } = text;
-  return { oid, parents: [...parents], subject, author, date, encoding, shallow, invalidUtf8, committer, committerDate, body, bodyCut };
-}
-
 async function runStep(runner: GitRunner, t: ProcessTarget, args: string[], stdout: Bytes, input?: Uint8Array): Promise<Step> {
   if (t.signal.aborted) return { aborted: true };
   let step: ReadStep;
@@ -287,7 +233,7 @@ export async function captureHead(runner: GitRunner, t: ProcessTarget): Promise<
 }
 
 // Contract §7 "Shared listing": the listing of a `readWorkspace` of the request generation, after the tuple recheck. Otherwise an own listing.
-// `readHistory` and `readRefs` use it.
+// `openHistory` and `readRefs` use it.
 export async function sharedListing(
   { trust, listingTuple }: Pick<HistoryReaderOptions, "trust" | "listingTuple">,
   t: Pick<ReadHistoryTarget, "operationId" | "signal" | "workspace" | "generation">,
@@ -326,7 +272,7 @@ async function objectCheck(runner: GitRunner, t: ProcessTarget, oids: readonly s
   return objectCheckOutcome(step, out, oids);
 }
 
-// The input of `checkFailedRead`. `anchors`: the commits where the walk starts, HEAD for `readHistory` and the start points for a feature 002 view.
+// The input of `checkFailedRead`. `anchors`: the commits where the walk starts, the start points of a feature 002 view.
 // `named`: the rows and the parents that `rev-list` named. `objects`: the commit objects that `cat-file` read.
 export interface FailedRead {
   anchors: readonly string[];
@@ -356,180 +302,3 @@ export async function checkFailedRead(runner: GitRunner, t: ProcessTarget, read:
   if (checked === "canceled" || checked === "deadline") return { stop: checked };
   return checked === "missing" ? "missing" : { failed: "GIT_FAILED" };
 }
-
-export function createHistoryReader({ runner, trust, listingTuple, markUnavailable }: HistoryReaderOptions) {
-  const run = (t: ProcessTarget, args: string[], stdout: Bytes, input?: Uint8Array) => runStep(runner, t, args, stdout, input);
-
-  // Contract §3: Git resolves the shallow file. The path is relative to the worktree root, where Git ran.
-  async function shallowPath(t: ProcessTarget): Promise<string | Stop> {
-    const step = await run(t, shallowPathArgs(), small());
-    const stop = stepStop(t.signal, [step]);
-    if (stop !== null) return stop;
-    const ran = step as Ran;
-    if (ran.exit.exitCode !== 0) return { failed: "GIT_FAILED" };
-    const text = oneLine(ran.stdout);
-    const path = text === null ? null : NATIVE.path.resolve(t.workspace.worktreeRoot, text);
-    if (path === null || !isChannelPath(path)) return { failed: "MALFORMED_GIT_OUTPUT" };
-    return path;
-  }
-
-  // The held steps (contract §7 "Held history steps"). They run beside the trust listing and start no object check.
-  async function heldSteps(t: ProcessTarget): Promise<Held | Stop> {
-    const w = t.workspace;
-    const [head, path] = await Promise.all([captureHead(runner, t), shallowPath(t)]);
-    if (t.signal.aborted) return { stop: "canceled" };
-    if (isStop(head)) return head;
-    if (isStop(path)) return path;
-    const shallow = await readShallow(path, w.objectFormat);
-    if (isStop(shallow)) return shallow;
-    if (head.state === "unborn") return { head, shallow, traversal: null, objects: { objects: [], completeness: COMPLETE }, failedStep: null, shallowChanged: false };
-
-    // Contract §5 "History traversal stream": one byte above the bound shows a cut stream to the parser.
-    const stream = createCollector({ maxBytes: HISTORY_STREAM_BYTES + 1 });
-    const listed = await run(t, revListArgs(head.oid, w.objectFormat), stream);
-    const stop = stepStop(t.signal, [listed]);
-    if (stop !== null) return stop;
-    const traversal = parseTraversal(stream.take(), w.objectFormat);
-    // Contract §5: the first reached bound wins, also over a later Git failure.
-    if (!stream.limited && (listed as Ran).exit.exitCode !== 0 && traversal.completeness.state !== "limited") {
-      return { head, shallow, traversal: { rows: traversal.rows, completeness: COMPLETE }, objects: { objects: [], completeness: COMPLETE }, failedStep: "rev-list", shallowChanged: false };
-    }
-    if (traversal.completeness.state === "failed") return { failed: traversal.completeness.code };
-
-    let objects: CommitObjects = { objects: [], completeness: COMPLETE };
-    let failedStep: Held["failedStep"] = null;
-    if (traversal.rows.length > 0) {
-      const read = await readObjects(runner, t, traversal.rows.map((row) => row.oid), CAT_FILE_BYTES);
-      if (isStop(read)) return read;
-      if (read.objects.completeness.state === "failed" && !read.exitFailed) return { failed: read.objects.completeness.code };
-      objects = read.objects;
-      if (read.exitFailed) failedStep = "cat-file";
-    }
-
-    // Contract §3: recheck the shallow fingerprint after the traversal. A changed file can give rows and boundaries from two states.
-    const again = await readShallow(path, w.objectFormat);
-    if (isStop(again)) return again;
-    return { head, shallow, traversal, objects, failedStep, shallowChanged: !sameShallow(shallow, again) };
-  }
-
-  const listingFor = (t: ReadHistoryTarget) => sharedListing({ trust, listingTuple }, t);
-
-  // The page after a passed gate.
-  async function pageOf(t: ReadHistoryTarget, listing: TrustListing, held: Held): Promise<HistoryOutcome> {
-    const { head, shallow } = held;
-    const traversal = held.traversal ?? { rows: [], completeness: COMPLETE };
-    let objects = held.objects;
-    if (held.failedStep !== null && head.state !== "unborn") {
-      const named = (held.traversal?.rows ?? []).flatMap((row) => [row.oid, ...row.parents]);
-      const checked = await checkFailedRead(runner, t, { anchors: [head.oid], shallow, named, objects: held.objects.objects, failedStep: held.failedStep });
-      if (checked !== "missing") return endOf(checked);
-      objects = { objects: objects.objects, completeness: OBJECT_MISSING };
-    }
-    const missing = objects.completeness.state === "limited" && objects.completeness.code === "OBJECT_MISSING";
-    if (missing) {
-      const w = t.workspace;
-      const promisor = await hasPromisor(listing.entries, w, (paths) => runner.identities(t.operationId, contextOf(w), paths, t.signal));
-      // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read marks nothing.
-      if (t.signal.aborted) return { result: "canceled" };
-      if (promisor === "canceled" || promisor === "deadline") return { result: promisor };
-      // A promisor check that cannot complete gives GIT_FAILED, as an object check that cannot complete does.
-      if (promisor === "unknown") return refusal("GIT_FAILED");
-      if (!promisor) {
-        markUnavailable(w.repositoryId);
-        return refusal("REPOSITORY_UNAVAILABLE", DAMAGED_STORE_REMEDY);
-      }
-    }
-
-    // Contract §5: the first reached bound wins. A cut object output keeps the rows before its first unread object.
-    let count = Math.min(traversal.rows.length, objects.objects.length);
-    let completeness = held.failedStep !== null || objects.objects.length < traversal.rows.length ? objects.completeness : traversal.completeness;
-    if (shallow.kind === "over") {
-      // The shallow read comes first. Without the full shallow list, a row without effective parents can be a root or a shallow commit.
-      const unknown = traversal.rows.findIndex((row, i) => i < count && row.parents.length === 0);
-      if (unknown !== -1) count = unknown;
-      completeness = limited("SHALLOW_METADATA_BYTES");
-    }
-    // Contract §8 "Changing working file": a change during the second attempt ends the read `limited` with WORKTREE_CHANGING.
-    if (held.shallowChanged && completeness.state === "complete") completeness = { state: "limited", code: "WORKTREE_CHANGING" };
-    // Git `commit.c` `parse_commit_buffer`: a commit that the shallow file lists has no effective parent.
-    // So with a shallow file above its bound, each kept row has a parent and is not shallow.
-    const rows: HistoryRow[] = [];
-    for (let i = 0; i < count; i++) {
-      const { oid, parents } = traversal.rows[i]!;
-      const row = rowOf(oid, parents, objects.objects[i]!, shallow.kind === "file" && shallow.commits.has(oid));
-      if (row === null) return refusal("MALFORMED_GIT_OUTPUT");
-      rows.push(row);
-    }
-    // Contract §3: raw parent headers explain only the shallow boundaries.
-    const hidden = (i: number): readonly string[] => (rows[i]!.shallow ? objects.objects[i]!.parents : []);
-    const boundaries = (kept: number) => {
-      const inPage = new Set(rows.slice(0, kept).map((row) => row.oid));
-      const page = new Set<string>();
-      const hiddenParents = new Set<string>();
-      for (let i = 0; i < kept; i++) {
-        for (const parent of rows[i]!.parents) if (!inPage.has(parent)) page.add(parent);
-        for (const parent of hidden(i)) hiddenParents.add(parent);
-      }
-      return { page: [...page], shallow: [...hiddenParents] };
-    };
-    const base = (kept: number, c: Completeness): HistoryPage => ({
-      generation: t.generation,
-      scope: "current-checkout",
-      head,
-      shallowFingerprint: shallow.kind === "file" ? shallow.fingerprint : null,
-      rows: [],
-      boundaries: boundaries(kept),
-      completeness: c as HistoryPage["completeness"],
-      ...(c.state === "limited" && c.code === "OBJECT_MISSING" ? { remedy: { text: OBJECT_MISSING_REMEDY } } : {}),
-    });
-
-    // Contract §5 "History page": count the encoded result bytes as rows join the page. Each row adds its bytes and one comma.
-    const pageLimit = limited("HISTORY_PAGE_BYTES");
-    const sizes = rows.map(encodedBytes);
-    const size = (kept: number, c: Completeness) => encodedBytes(base(kept, c)) + sizes.slice(0, kept).reduce((sum, n) => sum + n, 0) + Math.max(0, kept - 1);
-    // The page bound sets the completeness only when no earlier bound did. The rows always stay within the page bound.
-    let kept = rows.length;
-    if (size(kept, completeness) > HISTORY_PAGE_BYTES) {
-      if (completeness.state === "complete") completeness = pageLimit;
-      kept = 0;
-      while (kept < rows.length - 1 && size(kept + 1, completeness) <= HISTORY_PAGE_BYTES) kept++;
-    }
-    const value: HistoryPage = { ...base(kept, completeness), rows: rows.slice(0, kept) };
-    if (completeness.state === "complete") return { result: "succeeded", value };
-    return { result: "limited", code: completeness.code as "OUTPUT_LIMIT" | "OBJECT_MISSING" | "WORKTREE_CHANGING", value };
-  }
-
-  return {
-    // Contract §3 `readHistory`: no status snapshot. The held steps start beside the trust listing, and the gate decides before any row leaves.
-    async readHistory(t: ReadHistoryTarget): Promise<HistoryOutcome> {
-      const steps = new AbortController();
-      const stopSteps = () => steps.abort();
-      t.signal.addEventListener("abort", stopSteps, { once: true });
-      if (t.signal.aborted) steps.abort();
-      try {
-        const pending = heldSteps({ operationId: t.operationId, signal: steps.signal, workspace: t.workspace });
-        pending.catch(() => {});
-        const listed = await listingFor(t);
-        const gate = listed.ok ? trust.gate(t.workspace, listed.listing, t.installation, "reads") : null;
-        if (!listed.ok || gate !== null) {
-          // Contract §7 "Held history steps": a refused gate ends every held step, discards its output, and starts no object check.
-          steps.abort();
-          await pending.catch(() => null);
-          if (t.signal.aborted) return { result: "canceled" };
-          return listed.ok ? refusal(gate!) : stoppedListing(listed);
-        }
-        let held = await pending;
-        // Contract §8 "Changing working file": a shallow file change discards the attempt, and the held steps run once more.
-        // The page still binds the request generation (contract §3 `readHistory`).
-        if (!isStop(held) && held.shallowChanged && !t.signal.aborted) held = await heldSteps({ operationId: t.operationId, signal: steps.signal, workspace: t.workspace });
-        if (t.signal.aborted) return { result: "canceled" };
-        if (isStop(held)) return endOf(held);
-        return await pageOf(t, listed.listing, held);
-      } finally {
-        t.signal.removeEventListener("abort", stopSteps);
-      }
-    },
-  };
-}
-
-export type HistoryReader = ReturnType<typeof createHistoryReader>;

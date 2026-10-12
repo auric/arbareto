@@ -13,7 +13,6 @@
     "allow-remove-recent-repository",
     "allow-read-workspace",
     "allow-read-entries",
-    "allow-read-history",
     "allow-open-history",
     "allow-load-history",
     "allow-read-history-rows",

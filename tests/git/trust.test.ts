@@ -225,9 +225,20 @@ async function approve(service: Service, repositoryId: string, issued?: TrustRes
   return response.result!;
 }
 
+// The 001 history read on the feature 002 operations: `openHistory`, a load to the end, and one text read.
+// The result is the first response that does not succeed, else the text read.
+async function historyRead(service: Service, repositoryId: string, generation: number): Promise<ServiceResponse> {
+  const opened = await service.openHistory(repositoryId, generation);
+  if (opened.state !== "succeeded") return opened;
+  const viewId = opened.result!.viewId;
+  const loaded = await service.request("loadHistory", { viewId, need: { end: true } }, { repositoryId });
+  if (loaded.state !== "succeeded") return loaded;
+  return service.request("readHistoryRows", { viewId, mode: "full", at: { row: 0 }, count: 100, text: "rows" }, { repositoryId });
+}
+
 async function readBoth(service: Service, repositoryId: string, generation: number): Promise<{ workspace: ServiceResponse; history: ServiceResponse }> {
   const workspace = await service.readWorkspace(repositoryId);
-  const history = await service.readHistory(repositoryId, workspace.result?.generation ?? generation);
+  const history = await historyRead(service, repositoryId, workspace.result?.generation ?? generation);
   return { workspace, history };
 }
 
@@ -336,7 +347,7 @@ describe("read gate (contract §7)", () => {
   for (const key of BLOCKING) {
     caseTest(
       TASK,
-      `F17: a repository-scope ${key} canary makes readWorkspace and readHistory return TRUST_REQUIRED before any status or diff read, no response holds a commit ID of the fixture, and no canary runs`,
+      `F17: a repository-scope ${key} canary makes readWorkspace and openHistory return TRUST_REQUIRED before any status or diff read, no response holds a commit ID of the fixture, and no canary runs`,
       W,
       () =>
         withService({ name: `t071-gate-${key.replaceAll(".", "-")}` }, async (service) => {
@@ -477,7 +488,7 @@ describe("partial clone (contract §7 \"Missing objects\")", () => {
   for (const variant of ["partial-reset-soft", "partial-read-tree"] as const) {
     caseTest(
       TASK,
-      `F17 ${variant}: readWorkspace and readHistory never run the remote.origin.uploadpack canary, before or after approval, and every argument array starts with --no-lazy-fetch`,
+      `F17 ${variant}: readWorkspace and the history reads never run the remote.origin.uploadpack canary, before or after approval, and every argument array starts with --no-lazy-fetch`,
       W,
       () =>
         withService({ name: `t071-${variant}` }, async (service) => {
@@ -1976,7 +1987,7 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
 
   caseTest(
     "T080",
-    "a readHistory before any readWorkspace of its generation lists itself; a full readWorkspace and then a readHistory of its generation start one config list and one rev-parse --git-path hooks; a local configuration edit between them starts a second listing",
+    "an openHistory before any readWorkspace of its generation lists itself; a full readWorkspace and then an openHistory of its generation start one config list and one rev-parse --git-path hooks; a local configuration edit between them starts a second listing",
     W,
     () =>
       withService({ name: "t080-shared-listing" }, async (service) => {
@@ -1985,14 +1996,14 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
         const { repositoryId } = registered;
 
         let from = service.runner.calls.length;
-        const firstHistory = await service.readHistory(repositoryId, registered.generation);
+        const firstHistory = await service.openHistory(repositoryId, registered.generation);
         const firstWorkspace = await service.readWorkspace(repositoryId);
         expect({ history: outcome(firstHistory), workspace: outcome(firstWorkspace) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
         expect(listings(service, from)).toEqual({ configList: 2, hooksPath: 2 });
 
         from = service.runner.calls.length;
         const workspace = await service.readWorkspace(repositoryId);
-        const history = await service.readHistory(repositoryId, workspace.result!.generation);
+        const history = await service.openHistory(repositoryId, workspace.result!.generation);
         expect({ history: outcome(history), workspace: outcome(workspace) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
         expect(listings(service, from)).toEqual({ configList: 1, hooksPath: 1 });
 
@@ -2000,7 +2011,7 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
         from = service.runner.calls.length;
         const edited = await service.readWorkspace(repositoryId);
         config(repo, "t080.note", "edited");
-        const afterEdit = await service.readHistory(repositoryId, edited.result!.generation);
+        const afterEdit = await service.openHistory(repositoryId, edited.result!.generation);
         expect({ history: outcome(afterEdit), workspace: outcome(edited) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
         expect(listings(service, from)).toEqual({ configList: 2, hooksPath: 2 });
       }),
@@ -2009,7 +2020,7 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
 
   caseTest(
     "T322",
-    "a missing include.path target that appears between a full readWorkspace and a readHistory of its generation makes the readHistory start its own config list",
+    "a missing include.path target that appears between a full readWorkspace and an openHistory of its generation makes the openHistory start its own config list",
     W,
     () =>
       withService({ name: "t322-new-candidate" }, async (service) => {
@@ -2024,7 +2035,7 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
 
         let from = service.runner.calls.length;
         let workspace = await service.readWorkspace(repositoryId);
-        let history = await service.readHistory(repositoryId, workspace.result!.generation);
+        let history = await service.openHistory(repositoryId, workspace.result!.generation);
         expect({ history: outcome(history), workspace: outcome(workspace) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
         expect(listings(service, from)).toEqual({ configList: 1, hooksPath: 1 });
 
@@ -2033,7 +2044,7 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
         writeFileSync(target, "[t322]\n\tnote = new\n");
         // Oracle: Git reads the new target with the scope of the file that names it.
         expect(configListing(repo).filter((e) => e.key === "t322.note").map((e) => ({ scope: e.scope, origin: originPath(e.origin, repo) }))).toEqual([{ scope: "local", origin: samePath(target) }]);
-        history = await service.readHistory(repositoryId, workspace.result!.generation);
+        history = await service.openHistory(repositoryId, workspace.result!.generation);
         expect({ history: outcome(history), workspace: outcome(workspace) }).toEqual({ history: SUCCEEDED, workspace: SUCCEEDED });
         expect(listings(service, from)).toEqual({ configList: 2, hooksPath: 2 });
       }),
@@ -2042,7 +2053,7 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
 
   caseTest(
     "T080",
-    "a readHistory that waits for the shared listing of a held readWorkspace ends canceled after cancel, while the readWorkspace still waits",
+    "an openHistory that waits for the shared listing of a held readWorkspace ends canceled after cancel, while the readWorkspace still waits",
     W,
     () =>
       withService({ name: "t080-shared-cancel" }, async (service) => {
@@ -2058,10 +2069,10 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
           // The request generation makes the listing shareable at once (contract §7 "Shared listing").
           const workspace = service.send("readWorkspace", { refresh: false, check: "full" }, { repositoryId, repositoryGeneration: generation });
           await waitFor("held config list", () => service.runner.calls.slice(from).some(isConfigList));
-          const history = service.send("readHistory", {}, { repositoryId, repositoryGeneration: generation });
+          const history = service.send("openHistory", { scope: "current" }, { repositoryId, repositoryGeneration: generation });
           const operationId = await service.operationId(history);
-          // The listing reuse starts after a few file facts, and `rev-list` starts after three Git processes. So the cancel finds the read waiting for the shared listing.
-          await waitFor("history rev-list call", () => service.runner.calls.some((c) => c.operationId === operationId && c.arguments.includes("rev-list")));
+          // The ref listing starts with the capture steps, and the listing reuse waits for the held config list. So the cancel finds the read waiting for the shared listing.
+          await waitFor("history for-each-ref call", () => service.runner.calls.some((c) => c.operationId === operationId && c.arguments.includes("for-each-ref")));
           expect((await service.cancel(operationId)).state).toBe("succeeded");
           expect(outcome(await service.response(history, RECONCILIATION_TARGET_MS * 2))).toEqual({ state: "canceled", code: "CANCELED" });
           expect(service.responseAt.has(workspace)).toBe(false);

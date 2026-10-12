@@ -110,6 +110,71 @@ const LABEL_KINDS: { kind: ViewRow["labels"][number]["kind"]; label: string; ico
   { kind: "stash", label: "stash", icon: Archive01Icon },
 ];
 
+/** 001 plan.md "History graph design": how many labels fit in `room`, half of the subject cell. Without room for all, the shown labels leave room for the "+<n>" chip. */
+export function fitChips(widths: readonly number[], room: number, plus: number): number {
+  if (widths.reduce((a, b) => a + b, 0) <= room) return widths.length;
+  let used = plus;
+  let count = 0;
+  for (const width of widths) {
+    if (used + width > room) break;
+    used += width;
+    count++;
+  }
+  return count;
+}
+
+function LabelChip({ label }: { label: ViewRow["labels"][number] }) {
+  return (
+    <span data-kind={label.kind} className="chip flex shrink-0 items-center gap-1">
+      <HugeiconsIcon icon={LABEL_KINDS.find((k) => k.kind === label.kind)!.icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
+      <span data-chip-name className="max-w-[160px] truncate">
+        {label.name}
+      </span>
+    </span>
+  );
+}
+
+/** The labels of one row. A hidden copy measures each label, so the shown labels take at most half of the subject cell. */
+function RowLabels({ labels }: { labels: ViewRow["labels"] }) {
+  const measure = useRef<HTMLSpanElement>(null);
+  const [count, setCount] = useState(labels.length);
+  useLayoutEffect(() => {
+    const copy = measure.current;
+    // The label region sits in the subject cell. The HEAD badge takes its part of the half first.
+    const region = copy?.parentElement;
+    const cell = region?.parentElement;
+    if (!copy || !region || !cell || typeof ResizeObserver === "undefined") return;
+    const fit = () => {
+      const parts = [...copy.children].map((c) => c.getBoundingClientRect().width);
+      const plus = parts.pop() ?? 0;
+      const badges = [...region.querySelectorAll(":scope > .badge")].reduce((sum, b) => sum + b.getBoundingClientRect().width, 0);
+      setCount(fitChips(parts, Math.max(0, cell.clientWidth / 2 - badges), plus));
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(cell);
+    return () => observer.disconnect();
+  }, [labels]);
+  const hidden = labels.length - count;
+  return (
+    <>
+      {labels.slice(0, count).map((l) => (
+        <LabelChip key={`${l.kind}:${l.name}`} label={l} />
+      ))}
+      {hidden > 0 ? <span className="chip shrink-0">+{hidden}</span> : null}
+      <span ref={measure} aria-hidden="true" className="invisible absolute flex gap-1">
+        {labels.map((l) => (
+          <span key={`${l.kind}:${l.name}`} className="flex items-center gap-1">
+            <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} className="size-(--icon-size)" />
+            <span className="max-w-[160px] truncate">{l.name}</span>
+          </span>
+        ))}
+        <span>+{labels.length}</span>
+      </span>
+    </>
+  );
+}
+
 /** The checkout text of the row that `checkout` marks (spec FR-050). */
 function checkoutText(head: Head): string {
   return head.state === "branch" ? `HEAD, branch ${branchName(head.target)}` : head.state === "detached" ? "HEAD, detached" : "HEAD";
@@ -372,14 +437,9 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
         )}
         <span aria-hidden="true" className="flex min-w-0 flex-1 items-center gap-2 whitespace-nowrap">
           {row.checkout || row.labels.length > 0 ? (
-            <span data-slot="row-labels" title={row.labels.map((l) => l.name).join(", ")} className="flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
+            <span data-slot="row-labels" title={row.labels.map((l) => l.name).join(", ")} className="relative flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
               {row.checkout ? <span className="badge shrink-0">{head?.state === "detached" ? "HEAD, detached" : "HEAD"}</span> : null}
-              {row.labels.map((l) => (
-                <span key={`${l.kind}:${l.name}`} data-kind={l.kind} className="chip flex min-w-0 shrink items-center gap-1">
-                  <HugeiconsIcon icon={LABEL_KINDS.find((k) => k.kind === l.kind)!.icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
-                  <span className="truncate">{l.name}</span>
-                </span>
-              ))}
+              <RowLabels labels={row.labels} />
             </span>
           ) : null}
           {row.match === true ? <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" data-slot="match-mark" className="size-(--icon-size) shrink-0 text-accent-role" /> : null}

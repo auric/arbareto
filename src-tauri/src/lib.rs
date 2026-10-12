@@ -90,7 +90,6 @@ pub fn run() {
             ipc::remove_recent_repository,
             ipc::read_workspace,
             ipc::read_entries,
-            ipc::read_history,
             ipc::open_history,
             ipc::load_history,
             ipc::read_history_rows,

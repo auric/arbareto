@@ -15,7 +15,6 @@ const COMMANDS: &[&str] = &[
     "remove_recent_repository",
     "read_workspace",
     "read_entries",
-    "read_history",
     "open_history",
     "load_history",
     "read_history_rows",

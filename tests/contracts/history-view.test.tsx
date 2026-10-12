@@ -15,7 +15,7 @@ printOrigin("../../src/frontend/history/HistoryView.tsx", import.meta.dir);
 // `HistoryList.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
 registerDom();
 const { createRoot } = await import("react-dom/client");
-const { HistoryList } = await import("../../src/frontend/history/HistoryList");
+const { HistoryList, fitChips } = await import("../../src/frontend/history/HistoryList");
 const { WORKING_ROW, INDEX_ROW } = await import("../../src/frontend/history/HistoryView");
 const { createHistoryView } = await import("../../src/frontend/state/history-view");
 
@@ -248,12 +248,20 @@ describe("row labels", () => {
     expect(second!.getAttribute("aria-label")!.startsWith("Branches: old, Commit 1, ")).toBe(true);
   });
 
-  test("each label has its kind icon, and its name ends with an ellipsis", async () => {
+  test("each label has its kind icon, and its name ends with an ellipsis beyond 160 DIPs", async () => {
     const { host } = await mount({ text: labels });
     for (const chip of commits(host)[0]!.querySelectorAll<HTMLElement>(".chip")) {
       expect(chip.querySelector("svg")).not.toBeNull();
-      expect([...chip.querySelectorAll("span")].some((s) => s.className.split(/\s+/).includes("truncate"))).toBe(true);
+      const name = chip.querySelector<HTMLElement>("[data-chip-name]")!;
+      expect(name.className.split(/\s+/)).toEqual(expect.arrayContaining(["truncate", "max-w-[160px]"]));
     }
+  });
+
+  test("the labels of one row take at most half of the subject cell; the rest collapse into one +<n> chip", () => {
+    expect(fitChips([50, 50, 50], 200, 30)).toBe(3);
+    expect(fitChips([50, 50, 50], 120, 30)).toBe(1);
+    expect(fitChips([50, 50, 50], 140, 30)).toBe(2);
+    expect(fitChips([50, 50, 50], 20, 30)).toBe(0);
   });
 
   test("the labels share one region that takes at most half of the subject cell and clips at its edge", async () => {

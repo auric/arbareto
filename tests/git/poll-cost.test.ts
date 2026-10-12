@@ -229,7 +229,7 @@ function statFacts(paths: readonly string[]): Map<string, string> {
 
 const factChanges = (a: Map<string, string>, b: Map<string, string>) => [...a].filter(([path, fact]) => b.get(path) !== fact).map(([path, fact]) => `${path}: ${fact} -> ${b.get(path)}`);
 
-const KINDS = ["discovery", "trust listing", 'readWorkspace check "full"', 'no-change readWorkspace check "changes"', "readHistory with its own trust listing", "readHistory with a shared trust listing", "readRefs with its own trust listing", "readRefs with a shared trust listing"] as const;
+const KINDS = ["discovery", "trust listing", 'readWorkspace check "full"', 'no-change readWorkspace check "changes"', "openHistory with its own trust listing", "openHistory with a shared trust listing", "readRefs with its own trust listing", "readRefs with a shared trust listing"] as const;
 type Kind = (typeof KINDS)[number];
 
 // The subcommand and its arguments, without the global options. An object ID prints as `<oid>`.
@@ -287,13 +287,13 @@ for (const spec of [PERF_M, PERF_L]) {
             let own!: ReadFacts;
             await withService(`t192-${key}-own-${run}`, async (service) => {
               const { repositoryId, generation } = await service.register(repo);
-              own = await readFacts(service, () => service.readHistory(repositoryId, generation));
+              own = await readFacts(service, () => service.openHistory(repositoryId, generation));
               // T357: no `readWorkspace` listing exists, so `readRefs` runs its own listing.
               const ownRefs = await readFacts(service, () => service.request("readRefs", {}, { repositoryId, repositoryGeneration: generation }));
               expect(sortedArgs(ownRefs.calls)).toEqual([configListArgs().join(" "), hooksPathArgs().join(" "), refsArgs().join(" ")].sort());
               add("readRefs with its own trust listing", ownRefs);
             });
-            add("readHistory with its own trust listing", own);
+            add("openHistory with its own trust listing", own);
             await withService(`t192-${key}-shared-${run}`, async (service) => {
               const { repositoryId } = await service.register(repo);
               // T088 decision E6: the first full read after registration has no tuple before its listing, so it shares no listing. This warm-up read is not a sample.
@@ -304,9 +304,9 @@ for (const spec of [PERF_M, PERF_L]) {
               const between = statFacts(tuplePaths);
               expect(countOf(full.calls, statusArgs())).toBe(1);
               add('readWorkspace check "full"', full);
-              const shared = await readFacts(service, () => service.readHistory(repositoryId, full.result.generation));
+              const shared = await readFacts(service, () => service.openHistory(repositoryId, full.result.generation));
               const after = statFacts(tuplePaths);
-              add("readHistory with a shared trust listing", shared);
+              add("openHistory with a shared trust listing", shared);
               const sharedRefs = await readFacts(service, () => service.request("readRefs", {}, { repositoryId, repositoryGeneration: full.result.generation }));
               const afterRefs = statFacts(tuplePaths);
               add("readRefs with a shared trust listing", sharedRefs);
@@ -314,7 +314,7 @@ for (const spec of [PERF_M, PERF_L]) {
               // Blind spot: a `stat` failure inside the service is not visible to the test.
               const differences = [
                 ...factChanges(before, between).map((d) => `during readWorkspace: ${d}`),
-                ...factChanges(between, after).map((d) => `during readHistory: ${d}`),
+                ...factChanges(between, after).map((d) => `during openHistory: ${d}`),
                 ...service.runner.fileFactCalls.slice(factCalls).filter((c) => c.facts.some((f) => f.kind === "error")).map((c) => `fileFacts error in ${c.operationId}: ${JSON.stringify(c.facts)}, NTSTATUS ${JSON.stringify(c.statuses?.map((s) => (s === null ? null : `0x${s.toString(16)}`)))}`),
               ];
               const listings = { ownListing: own.calls.filter((c) => isListing(c.arguments)).length, sharedListing: shared.calls.filter((c) => isListing(c.arguments)).length };
@@ -323,7 +323,7 @@ for (const spec of [PERF_M, PERF_L]) {
                 expect(listings).toEqual({ ownListing: 2, sharedListing: 0 });
                 expect(sortedArgs(shared.calls)).toEqual(sortedArgs(own.calls.filter((c) => !isListing(c.arguments))));
               } else {
-                console.log(`OBSERVATION ${TASK}: fixture ${fixture} run ${run}: tuple facts differ, so readHistory runs its own listing: ${differences.join("; ")}`);
+                console.log(`OBSERVATION ${TASK}: fixture ${fixture} run ${run}: tuple facts differ, so openHistory runs its own listing: ${differences.join("; ")}`);
                 expect(listings).toEqual({ ownListing: 2, sharedListing: 2 });
               }
               // T357: `readRefs` follows the same shared listing rule. Its only own process is the `for-each-ref` step.

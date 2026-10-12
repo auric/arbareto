@@ -93,7 +93,8 @@ async function allEntries(service: Service, repositoryId: string, first: Workspa
 }
 
 const statusCall: CallMatch = (call) => call.arguments.includes("status");
-const revListCall: CallMatch = (call) => call.arguments.includes("rev-list");
+// The held ref listing of `openHistory` (feature 002 contract Δ3 capture step 2).
+const refListingCall: CallMatch = (call) => call.arguments.includes("for-each-ref");
 
 // Waits until the double records a call of `operationId` that `match` accepts.
 async function heldCall(service: Service, operationId: string, match: CallMatch): Promise<void> {
@@ -452,7 +453,7 @@ describe("F16 status bounds (contract §5)", () => {
 
   caseTest(
     TASK,
-    `F16: exactly ${LIMITS.STATUS_LISTING_RECORDS} records give a complete result in pages within the Status page bound; each readEntries page ends succeeded while a readHistory and a readWorkspace of the workspace wait at the stdout barrier`,
+    `F16: exactly ${LIMITS.STATUS_LISTING_RECORDS} records give a complete result in pages within the Status page bound; each readEntries page ends succeeded while an openHistory and a readWorkspace of the workspace wait at the stdout barrier`,
     ["shell-double"],
     () =>
       withService("t069-f16-at", async (service) => {
@@ -465,15 +466,15 @@ describe("F16 status bounds (contract §5)", () => {
         expect({ completeness: result.completeness.state, entryCount: result.entryCount }).toEqual({ completeness: "complete", entryCount: LIMITS.STATUS_LISTING_RECORDS });
         // Contract §5 "Concurrent reads": the two held reads take both read slots of the workspace. `readEntries` takes no slot and never waits in the pending queue.
         const releaseStatus = service.runner.pauseStdout(once(statusCall));
-        const releaseHistory = service.runner.pauseStdout(once(revListCall));
+        const releaseHistory = service.runner.pauseStdout(once(refListingCall));
         let held: string[] = [];
         try {
           held = [
-            service.send("readHistory", {}, { repositoryId, repositoryGeneration: result.generation }),
+            service.send("openHistory", { scope: "current" }, { repositoryId, repositoryGeneration: result.generation }),
             service.send("readWorkspace", { refresh: false, check: "full" }, { repositoryId }),
           ];
           const [history, workspace] = await Promise.all(held.map((requestId) => service.operationId(requestId)));
-          await heldCall(service, history!, revListCall);
+          await heldCall(service, history!, refListingCall);
           await heldCall(service, workspace!, statusCall);
           const calls = service.runner.calls.length;
           const entries = await allEntries(service, repositoryId, result, ["succeeded"]);

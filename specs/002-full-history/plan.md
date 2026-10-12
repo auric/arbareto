@@ -216,6 +216,7 @@ The reduced graph needs the full topology stream beside the search stream, becau
 - Matching probe: contract Δ3 "Matching probe". It runs before the search, not beside it. Hold its output in parallel only if SC-006 misses.
 - Merge into the view and the known match state: contract Δ3 and data-model §6.
 - Load during a search: a search on an incomplete view loads to the end itself, because filter mode needs the full topology stream (D4). That load belongs to the search operation, so its progress and Cancel go with the search. A `searchHistory` while a load of the view runs gives `BUSY`, so the renderer cancels its scroll load first (D6). A view at the `HISTORY_VIEW_COMMITS` bound gets a `limited` search result, and no Git process starts.
+- Filter-mode positions: `at: {row: k}`, the row `index`, and the list length count matches, not view rows. `from` in `at: {match, from}` is an inclusive view row index (contract Δ3 `readHistoryRows`). These are reviewer defaults, not user decisions.
 - Next and Previous use `readHistoryRows at:{match}`. The streamed matches have rising row indices, so a binary search finds the target. When the target is not loaded yet, the request waits on the load or search progress, with Cancel. A finished search leaves a complete view. Previous never targets an unloaded row, because loaded rows stay.
 - Progress: phase `history-search`, counters `matches` and `settled`. The final count comes in the terminal response (FR-039). A shallow view adds the "searched only the commits that the clone holds" sentence.
 
@@ -232,7 +233,7 @@ The reduced graph needs the full topology stream beside the search stream, becau
 - **Listbox**: focus stays on the list element with `aria-activedescendant`. Options carry `aria-posinset`. `aria-setsize` is -1 until the count is known (WAI-ARIA 1.2).
 - **Cache**: pages of 128 rows in LRU order up to 8 MiB of `bytes`. The visible pages always stay. Row reads follow the latest-wins rule, one in flight per view.
 - **Graph column**: its width is the `lanes` value, at most 24. It never shrinks during a view (FR-016).
-- **Labels**: they come from the rows, so the 001 chip-pairing rule goes.
+- **Labels**: they come from the rows, so the 001 chip-pairing rule goes. The 001 label layout stays (001 plan.md "History graph design"): the labels take at most half of the subject cell, a name ends with an ellipsis beyond 160 DIPs, and labels that do not fit collapse into one "+<n>" chip.
 - **Working directory line**: the dotted lead-in shows only when HEAD is row 0.
 - **Memory**: the renderer holds O(visible + cache) only. For SHA-1, the service holds about 46 bytes per loaded commit when the typed arrays are nearly full, and about 80 to 90 bytes just after a doubling (unverified, D3). That is about 100 to 200 KB near the top, and about 46 to 90 MB at 1M commits after End or a search.
 

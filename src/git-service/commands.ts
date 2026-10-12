@@ -100,12 +100,12 @@ export function headTargetArgs(): string[] {
   return read("symbolic-ref", "-q", "HEAD");
 }
 
-// Contract §7 "Held history steps": the `readHistory` HEAD capture with `headTargetArgs`. git-rev-parse(1) `--verify -q`: on success, Git prints the full object ID.
+// Contract §7 "Held history steps": the HEAD capture of `openHistory` with `headTargetArgs`. git-rev-parse(1) `--verify -q`: on success, Git prints the full object ID.
 export function headOidArgs(): string[] {
   return read("rev-parse", "--verify", "-q", "HEAD");
 }
 
-// The unborn check of the `readHistory` HEAD capture. git-show-ref(1) `--exists`: status 0 when the reference exists, 2 when it is missing, and 1 for another lookup error.
+// The unborn check of the HEAD capture. git-show-ref(1) `--exists`: status 0 when the reference exists, 2 when it is missing, and 1 for another lookup error.
 export function headRefExistsArgs(name: string): string[] {
   if (!isRefName(name)) throw new TypeError("ref name refused");
   return read("show-ref", "--exists", name);

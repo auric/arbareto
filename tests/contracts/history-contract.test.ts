@@ -58,8 +58,10 @@ describe("contract Δ5 bounds", () => {
     expect(limits.REF_LISTING_RECORDS).toBe(10_000);
     expect(limits.REF_LISTING_BYTES).toBe(4 * MIB);
     expect(limits.HISTORY_PAGE_BYTES).toBe(8 * MIB);
-    // T049 retires it with `readHistory`.
-    expect(limits.GRAPH_PATH_SEGMENTS).toBe(4096);
+  });
+
+  test("T049 retires GRAPH_PATH_SEGMENTS", () => {
+    expect("GRAPH_PATH_SEGMENTS" in limits).toBe(false);
   });
 });
 

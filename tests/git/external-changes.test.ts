@@ -9,7 +9,10 @@ import { join, resolve } from "node:path";
 import { refPathArgs } from "../../src/git-service/commands";
 import { probeGit } from "../../src/git-service/git-installation";
 import type { GitRunner } from "../../src/git-service/git-runner";
-import { createHistoryReader } from "../../src/git-service/history";
+import { HISTORY_VIEW_COMMITS } from "../../src/contracts/limits";
+import { createHistoryViews } from "../../src/git-service/history-view";
+import { createSessionLog } from "../../src/git-service/log";
+import { createOperationRegistry } from "../../src/git-service/operations";
 import { createRegistrations } from "../../src/git-service/registration";
 import { createWorkspaceReader } from "../../src/git-service/status";
 import { createTrust } from "../../src/git-service/trust";
@@ -744,7 +747,7 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
   // Contract §6 "File facts": an `error` fact names no file state. So a tuple with it proves nothing, and the reads keep and share no tuple.
   caseTest(
     "T309",
-    'an error fact for a program-file entry outside the trust listing keeps no tuple: a check "changes" read runs in full, and readHistory runs its own listing',
+    'an error fact for a program-file entry outside the trust listing keeps no tuple: a check "changes" read runs in full, and openHistory runs its own listing',
     W,
     () =>
       withService({ name: "t309-tuple-error", watchHints: false }, async (service) => {
@@ -780,7 +783,8 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
           }
         };
         const reader = createWorkspaceReader({ runner, trust });
-        const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
+        const registry = createOperationRegistry(() => {}, () => {}, createSessionLog(), { closeJob: () => {}, ended: () => {} });
+        const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: HISTORY_VIEW_COMMITS, reject: () => {} });
         const target = () => ({ operationId: crypto.randomUUID(), signal: new AbortController().signal, installation, workspace });
         const poll = async (check: "full" | "changes") => {
           const before = service.runner.calls.length;
@@ -795,7 +799,7 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
         expect((await poll("changes")).full).toBe(true);
         expect(stubbed).toBeGreaterThanOrEqual(2);
         const before = service.runner.calls.length;
-        const read = await history.readHistory({ ...target(), generation: second.generation });
+        const read = await views.open({ ...target(), generation: second.generation }, "current");
         expect({ result: read.result, listed: listedTrust(service.runner.calls.slice(before)) }).toEqual({ result: "succeeded", listed: true });
       }),
     TIMEOUT_MS,
@@ -803,7 +807,7 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
 
   caseTest(
     "T088",
-    "the first full read after registration shares no trust listing with readHistory, and a later full read does (T088 decision E6)",
+    "the first full read after registration shares no trust listing with openHistory, and a later full read does (T088 decision E6)",
     W,
     () =>
       withService({ name: "t088-first-share", watchHints: false }, async (service) => {
@@ -811,7 +815,7 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
         const { repositoryId } = await service.register(repo);
         const listings = async (generation: number) => {
           const before = service.runner.calls.length;
-          expect(outcome(await service.readHistory(repositoryId, generation))).toEqual(SUCCEEDED);
+          expect(outcome(await service.openHistory(repositoryId, generation))).toEqual(SUCCEEDED);
           return service.runner.calls.slice(before).filter((c) => listedTrust([c])).length;
         };
         expect(await listings((await read(service, repositoryId, FULL)).result.generation)).toBe(1);

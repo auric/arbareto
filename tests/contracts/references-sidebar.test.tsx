@@ -288,7 +288,7 @@ describe("tree keys", () => {
     await click(outside);
     await key(outside, "Enter");
     expect(selected).toEqual([A, B]);
-    expect(text(host.querySelector(`#${CSS.escape(outside.getAttribute("aria-describedby")!)}`))).toBe("Not in the loaded history page");
+    expect(text(host.querySelector(`#${CSS.escape(outside.getAttribute("aria-describedby")!)}`))).toBe("Not in the loaded history rows");
     expect(main.hasAttribute("aria-describedby")).toBe(false);
   });
 });

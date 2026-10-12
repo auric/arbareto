@@ -252,7 +252,11 @@ describe("service arrays", () => {
         const { repositoryId, generation } = await service.register(repo);
         expect((await service.readTrust(repositoryId)).state).toBe("succeeded");
         expect((await service.readWorkspace(repositoryId)).state).toBe("succeeded");
-        expect((await service.readHistory(repositoryId, generation)).state).toBe("succeeded");
+        const viewFrom = service.runner.calls.length;
+        const view = await service.openHistory(repositoryId, generation);
+        expect(view.state).toBe("succeeded");
+        expect((await service.request("loadHistory", { viewId: view.result!.viewId, need: { end: true } }, { repositoryId })).state).toBe("succeeded");
+        expect((await service.request("readHistoryRows", { viewId: view.result!.viewId, mode: "full", at: { row: 0 }, count: 1, text: "details" }, { repositoryId })).state).toBe("succeeded");
         const calls = service.runner.calls;
         const probes = calls.filter((c) => c.contextKind === "gitProbe").map((c) => [...c.arguments]);
         expect(probes).toContainEqual(["version", "--build-options"]);
@@ -262,7 +266,9 @@ describe("service arrays", () => {
         for (const c of others) expect({ args: c.arguments, first: c.arguments[0] }).toEqual({ args: c.arguments, first: "--no-lazy-fetch" });
         const reads = others.filter((c) => c.environmentPolicy === "read");
         expect(reads.length).toBeGreaterThan(0);
-        for (const c of reads) expect({ args: c.arguments, global: c.arguments.slice(0, 3) }).toEqual({ args: c.arguments, global: R });
+        // Feature 002 contract Δ3: every view command carries `--no-lazy-fetch --no-optional-locks`. It names no pathspec.
+        const viewCalls = new Set(calls.slice(viewFrom));
+        for (const c of reads) expect({ args: c.arguments, global: c.arguments.slice(0, viewCalls.has(c) ? 2 : 3) }).toEqual({ args: c.arguments, global: viewCalls.has(c) ? R.slice(0, 2) : R });
       } finally {
         await service.dispose();
       }

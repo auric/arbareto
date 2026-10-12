@@ -25,7 +25,7 @@ const GROUPS: { kind: Exclude<Kind, "stash">; label: string; empty: string; noun
 ];
 const LOADING = "Loading references…";
 const NO_MATCH = "No reference matches the filter.";
-const NOT_LOADED = "Not in the loaded history page";
+const NOT_LOADED = "Not in the loaded history rows";
 const REFUSAL: Record<string, string> = {
   REF_LISTING_RECORDS: "This repository has more than 10,000 references. This version does not list them.",
   REF_LISTING_BYTES: "The reference list is larger than this version can show.",

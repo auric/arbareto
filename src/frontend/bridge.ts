@@ -90,7 +90,6 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     removeRecentRepository: (payload: Payload<"removeRecentRepository">, onProgress?: OnProgress) => call("removeRecentRepository", {}, payload, onProgress),
     readWorkspace: (target: Target<"readWorkspace">, payload: Payload<"readWorkspace">, onProgress?: OnProgress) => call("readWorkspace", target, payload, onProgress),
     readEntries: (target: Target<"readEntries">, payload: Payload<"readEntries">, onProgress?: OnProgress) => call("readEntries", target, payload, onProgress),
-    readHistory: (target: Target<"readHistory">, onProgress?: OnProgress) => call("readHistory", target, {}, onProgress),
     openHistory: (target: Target<"openHistory">, payload: Payload<"openHistory">, onProgress?: OnProgress) => call("openHistory", target, payload, onProgress),
     loadHistory: (target: Target<"loadHistory">, payload: Payload<"loadHistory">, onProgress?: OnProgress) => call("loadHistory", target, payload, onProgress),
     readHistoryRows: (target: Target<"readHistoryRows">, payload: Payload<"readHistoryRows">, onProgress?: OnProgress) => call("readHistoryRows", target, payload, onProgress),

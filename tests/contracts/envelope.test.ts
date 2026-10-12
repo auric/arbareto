@@ -35,7 +35,6 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
     renderer: () => ({ snapshotId: id(), cursor: id() }),
     service: () => ({ snapshotId: id(), cursor: id() }),
   },
-  readHistory: { renderer: () => ({}), service: () => ({}) },
   readRefs: { renderer: () => ({}), service: () => ({}) },
   // Feature 002 contract Δ3.
   openHistory: { renderer: () => ({ scope: "all" }), service: () => ({ scope: "all" }) },
@@ -92,7 +91,6 @@ const NAMES = Object.keys(PAYLOADS);
 
 const GENERATION_REQUIRED = [
   "readEntries",
-  "readHistory",
   "openHistory",
   "readRefs",
   "readComparison",
@@ -109,7 +107,6 @@ const GENERATION_ABSENT = NAMES.filter((n) => !GENERATION_REQUIRED.includes(n) &
 const REPOSITORY_BOUND = [
   "readWorkspace",
   "readEntries",
-  "readHistory",
   "openHistory",
   "loadHistory",
   "readHistoryRows",
@@ -161,9 +158,10 @@ const sidesOf = (name: string) =>
   (["renderer", "service"] as const).filter((side) => PAYLOADS[name][side] !== undefined);
 
 describe("operation list", () => {
-  test("holds exactly the 26 contract §3 operations and the 5 feature 002 contract Δ3 operations", () => {
+  // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
+  test("holds exactly the 25 remaining contract §3 operations and the 5 feature 002 contract Δ3 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(31);
+    expect(OPERATIONS.length).toBe(30);
   });
 
   for (const name of NAMES) {
@@ -239,6 +237,8 @@ describe("operation names", () => {
     ["toString"],
     ["constructor"],
     [" readWorkspace"],
+    // Feature 002 plan.md P7: the 001 operation is retired.
+    ["readHistory"],
   ])("operation %j gives UNKNOWN_OPERATION", (operation) =>
     expectCode({ ...envelope("getEnvironment"), operation }, "UNKNOWN_OPERATION"),
   );
@@ -284,10 +284,10 @@ describe("repositoryGeneration", () => {
   }
 
   test.each([[-1], [1.5], ["1"], [null], [true]])("repositoryGeneration %j gives INVALID_REQUEST", (value) =>
-    expectCode({ ...envelope("readHistory"), repositoryGeneration: value }, "INVALID_REQUEST"),
+    expectCode({ ...envelope("openHistory"), repositoryGeneration: value }, "INVALID_REQUEST"),
   );
   test("repositoryGeneration above the safe range gives INVALID_REQUEST", () => {
-    const text = JSON.stringify(envelope("readHistory")).replace('"repositoryGeneration":3', '"repositoryGeneration":9007199254740992');
+    const text = JSON.stringify(envelope("openHistory")).replace('"repositoryGeneration":3', '"repositoryGeneration":9007199254740992');
     const result = decodeRequest(new TextEncoder().encode(text), "renderer");
     expect(result).toEqual({ ok: false, code: "INVALID_REQUEST" });
   });
@@ -397,7 +397,7 @@ describe("unknown and forbidden fields", () => {
     ["pattern", "refs/heads/*"],
     ["format", "%(refname)"],
   ])("payload field %s gives INVALID_REQUEST", (field, value) => {
-    for (const name of ["readComparison", "applyHunk", "applyFile", "commit", "readHistory", "readRefs"]) {
+    for (const name of ["readComparison", "applyHunk", "applyFile", "commit", "openHistory", "readRefs"]) {
       const request = envelope(name);
       expectCode({ ...request, payload: { ...(request.payload as Json), [field]: value } }, "INVALID_REQUEST");
     }
@@ -605,8 +605,8 @@ describe("readEntries", () => {
 });
 
 describe("other exact payloads", () => {
-  test.each([[{ limit: 100 }], [{ ref: "main" }], [{ cursor: id() }]])("readHistory payload %j gives INVALID_REQUEST", (payload) =>
-    expectCode(envelope("readHistory", "renderer", payload), "INVALID_REQUEST"),
+  test.each([[{ limit: 100 }], [{ ref: "main" }], [{ cursor: id() }]])("openHistory payload with %j gives INVALID_REQUEST", (payload) =>
+    expectCode(envelope("openHistory", "renderer", { scope: "all", ...payload }), "INVALID_REQUEST"),
   );
 
   test("reviewSubmodules accepts only a snapshot ID", () => {

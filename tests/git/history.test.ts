@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+// T070, T322, T336, and T341: the feature 001 history rules on the feature 002 operations (feature 002 tasks.md T049, plan.md P7).
+// A case keeps its 001 assertion where feature 002 keeps the rule. Feature 002 replaces the 100-row page, its boundaries, and its page bounds.
+
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HISTORY_BODY_BYTES } from "../../src/contracts/envelope";
 import * as LIMITS from "../../src/contracts/limits";
-import { batchCommandArgs, configListArgs, headOidArgs, headTargetArgs, hooksPathArgs, revListArgs, shallowPathArgs } from "../../src/git-service/commands";
+import { batchCommandArgs, configListArgs, historyRefsArgs } from "../../src/git-service/commands";
 import { probeGit } from "../../src/git-service/git-installation";
-import { createHistoryReader, DAMAGED_STORE_REMEDY } from "../../src/git-service/history";
+import { DAMAGED_STORE_REMEDY } from "../../src/git-service/history";
+import { createHistoryViews } from "../../src/git-service/history-view";
+import { createSessionLog } from "../../src/git-service/log";
+import { createOperationRegistry } from "../../src/git-service/operations";
 import { createRegistrations } from "../../src/git-service/registration";
 import { createWorkspaceReader } from "../../src/git-service/status";
 import { createTrust } from "../../src/git-service/trust";
@@ -18,10 +24,12 @@ import { cachedF16History } from "../windows/fixture-cache";
 import { buildF01, buildF17, buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
 import { GIT } from "./git-binary";
 import { refState } from "./git-oracle";
-import { caseTest, once, openService, type HistoryResult, type Service, type ServiceResponse } from "./service-harness";
+import { isLoad, isTextRead, load, openView, rows, type Loaded, type Opened, type ViewRow } from "./history-view-harness";
+import { caseTest, once, openService, type Service, type ServiceResponse } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/history.ts", import.meta.dir);
+printOrigin("../../src/git-service/history-view.ts", import.meta.dir);
 
 const TASK = "T070";
 const TIMEOUT_MS = 120_000;
@@ -46,20 +54,72 @@ async function withService(name: string, body: (service: Service) => Promise<voi
   }
 }
 
-async function history(service: Service, repo: string): Promise<ServiceResponse<HistoryResult>> {
+// The 001 scope: a current-checkout view, loaded to the end.
+interface Checkout {
+  repositoryId: string;
+  generation: number;
+  opened: ServiceResponse<Opened>;
+  loaded: ServiceResponse<Loaded> | null;
+}
+async function checkout(service: Service, repo: string): Promise<Checkout> {
   const { repositoryId, generation } = await service.register(repo);
-  return service.readHistory(repositoryId, generation);
+  const opened = await openView(service, repositoryId, generation, "current");
+  const loaded = opened.state === "succeeded" ? await load(service, repositoryId, opened.result!.viewId, { end: true }) : null;
+  return { repositoryId, generation, opened, loaded };
+}
+
+// Every loaded row with `text: "rows"`, and with `text: "details"` when `details` is set.
+async function textRows(service: Service, c: Checkout, details = false): Promise<ViewRow[]> {
+  const viewId = c.opened.result!.viewId;
+  const total = c.loaded!.result!.rows;
+  const out: ViewRow[] = [];
+  while (out.length < total) {
+    const page = await rows(service, c.repositoryId, viewId, { row: out.length }, details ? 1 : 512, details ? "details" : "rows");
+    expect({ state: page.state, target: page.result?.target, cut: page.result?.cut }).toEqual({ state: "succeeded", target: "found", cut: false });
+    out.push(...page.result!.rows!);
+  }
+  return out;
 }
 
 const repoOf = (built: Built, repo = "repo") => join(built.root, repo);
 const git = (repo: string, args: string[], input?: string | Buffer) =>
   ownedGit(gitPath(), FIXTURE_ROOT, repo, ["--no-lazy-fetch", ...args], input === undefined ? {} : { input: Buffer.from(input) });
 
-type Row = HistoryResult["rows"][number];
+// The 001 row fields. `shallow` is the 002 cell mark (data-model §4).
+interface Row {
+  oid: string;
+  parents: string[];
+  subject: string;
+  author: { name: string; email: string };
+  date: number;
+  encoding: string | null;
+  shallow: boolean;
+  invalidUtf8: boolean;
+  committer: { name: string; email: string };
+  committerDate: number;
+  body: string;
+  bodyCut: boolean;
+}
+const rowOf = (r: ViewRow): Row => ({
+  oid: r.oid,
+  parents: r.parents,
+  subject: r.subject!,
+  author: r.author!,
+  date: r.date!,
+  encoding: r.encoding!,
+  shallow: r.cell?.marks.includes("shallow") ?? false,
+  invalidUtf8: r.invalidUtf8!,
+  committer: r.committer!,
+  committerDate: r.committerDate!,
+  body: r.body!,
+  bodyCut: r.bodyCut!,
+});
+type TextRow = Pick<Row, "oid" | "parents" | "subject" | "author" | "date" | "encoding" | "invalidUtf8">;
+const textOf = (r: Pick<Row, keyof TextRow> | ViewRow): TextRow => ({ oid: r.oid, parents: r.parents, subject: r.subject!, author: r.author!, date: r.date!, encoding: r.encoding!, invalidUtf8: r.invalidUtf8! });
 
-// Oracle: the exact Git traversal of the task text.
+// Oracle: the exact Git traversal of the current checkout, as one uninterrupted run.
 function oracleTraversal(repo: string, tip: string): { oid: string; parents: string[] }[] {
-  const out = git(repo, ["--no-optional-locks", "rev-list", "--parents", "--max-count=100", "--date-order", tip]).toString("utf8");
+  const out = git(repo, ["--no-optional-locks", "rev-list", "--parents", "--date-order", tip]).toString("utf8");
   return out
     .split("\n")
     .filter((line) => line !== "")
@@ -135,7 +195,7 @@ function oracleBody(raw: Buffer): { body: string; bodyCut: boolean } {
 
 const validBytes = (bytes: Buffer) => validUtf8(bytes.toString("latin1"));
 
-// Contract §3 "HistoryPage result" row fields from the raw object. Invalid UTF-8 decodes to U+FFFD. The subject is Git's first paragraph joined by spaces.
+// The 001 row fields from the raw object. Invalid UTF-8 decodes to U+FFFD. The subject is Git's first paragraph joined by spaces.
 function oracleRow(oid: string, parents: string[], raw: Buffer, shallow: boolean, committer: CommitterFields): Row {
   const split = raw.indexOf("\n\n");
   const headers = raw.subarray(0, split).toString("latin1").split("\n");
@@ -180,62 +240,42 @@ function oracleRows(repo: string, tip: string): Row[] {
   return traversal.map((r, i) => oracleRow(r.oid, r.parents, raws[i]!, shallow.has(r.oid), committers.get(r.oid)!));
 }
 
-const parentLines = (raw: Buffer) => raw.toString("latin1").slice(0, raw.indexOf("\n\n")).split("\n").filter((l) => l.startsWith("parent ")).map((l) => l.slice(7));
-const sorted = (list: string[]) => [...list].sort();
-
-// Parents that the rows name but that are no row of the page.
-const outsidePage = (rows: { oid: string; parents: string[] }[]) => {
-  const inPage = new Set(rows.map((r) => r.oid));
-  return [...new Set(rows.flatMap((r) => r.parents).filter((p) => !inPage.has(p)))];
-};
-
 const HEX = { sha1: /^[0-9a-f]{40}$/, sha256: /^[0-9a-f]{64}$/ };
 
-describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
+describe("F19 history shapes (001 contract §3 \"HistoryPage result\" rows on readHistoryRows)", () => {
   const VARIANTS: F19Variant[] = ["linear", "merge", "octopus", "skewed", "roots", "long", "wide", "encoding", "shallow", "sha256"];
 
   for (const variant of VARIANTS) {
     caseTest(
       TASK,
-      `F19 ${variant}: rows equal git rev-list --parents --max-count=100 --date-order <OID>, with full row fields and separate boundaries`,
+      `F19 ${variant}: rows equal git rev-list --parents --date-order <OID>, with full row fields and the shallow mark`,
       ["shell-double"],
       () =>
         withService(`t070-f19-${variant}`, async (service) => {
           const built = buildF19(gitPath(), `t070-f19-${variant}`, variant);
           const repo = repoOf(built);
           const tip = built.facts.notes.tip as string;
-          const response = await history(service, repo);
-          expect({ state: response.state, code: response.code }).toEqual({ state: "succeeded", code: undefined });
-          const page = response.result!;
+          const c = await checkout(service, repo);
+          expect({ state: c.loaded!.state, code: c.loaded!.code, complete: c.loaded!.result!.complete }).toEqual({ state: "succeeded", code: undefined, complete: true });
           const expected = oracleRows(repo, tip);
-          expect(page.scope).toBe("current-checkout");
-          expect(page.rows.length).toBeLessThanOrEqual(LIMITS.HISTORY_STREAM_ROWS);
-          expect(page.rows).toEqual(expected);
+          const found = (await textRows(service, c, true)).map(rowOf);
+          expect(c.opened.result!.scope).toBe("current");
+          expect(found).toEqual(expected);
           const format = variant === "sha256" ? "sha256" : "sha1";
-          for (const row of page.rows) for (const oid of [row.oid, ...row.parents]) expect(oid).toMatch(HEX[format]);
-          expect(page.completeness.state).toBe("complete");
-          expect(page.head).toEqual({ state: "branch", target: "refs/heads/main", oid: tip });
+          for (const row of found) for (const oid of [row.oid, ...row.parents]) expect(oid).toMatch(HEX[format]);
+          expect(c.opened.result!.head).toEqual({ state: "branch", target: "refs/heads/main", oid: tip });
 
-          // Contract §3: shallow-unavailable parents come from the raw parent headers of the shallow commits.
           const shallowCommits = (built.facts.notes.shallow as string[] | undefined) ?? [];
-          const shallowParents = rawCommits(repo, shallowCommits).flatMap(parentLines);
-          expect({ page: sorted(page.boundaries.page), shallow: sorted(page.boundaries.shallow) }).toEqual({
-            page: sorted(outsidePage(expected)),
-            shallow: sorted(shallowParents),
-          });
-          for (const parent of shallowParents) expect(page.boundaries.page).not.toContain(parent);
-          if (variant === "long") expect(page.boundaries.page.length).toBe(1);
           if (variant === "shallow") {
-            expect(shallowParents.length).toBe(1);
-            // The shallow commit stays a row with no effective parent, and its boundary keeps it from reading as a root.
-            const boundaryRow = page.rows.find((r) => r.oid === shallowCommits[0]);
+            // The shallow commit stays a row with no effective parent, and its mark keeps it from reading as a root.
+            const boundaryRow = found.find((r) => r.oid === shallowCommits[0]);
             expect(boundaryRow?.parents).toEqual([]);
           }
           // T336: only a commit that the shallow file lists is shallow. A root is never shallow.
-          expect(page.rows.filter((r) => r.shallow).map((r) => r.oid)).toEqual(shallowCommits);
-          if (variant === "roots") expect(page.rows.filter((r) => r.parents.length === 0).length).toBe(2);
+          expect(found.filter((r) => r.shallow).map((r) => r.oid)).toEqual(shallowCommits);
+          if (variant === "roots") expect(found.filter((r) => r.parents.length === 0).length).toBe(2);
           // T336: only the legacy commit holds bytes that are not valid UTF-8.
-          expect(page.rows.filter((r) => r.invalidUtf8).map((r) => r.oid)).toEqual(variant === "encoding" ? [tip] : []);
+          expect(found.filter((r) => r.invalidUtf8).map((r) => r.oid)).toEqual(variant === "encoding" ? [tip] : []);
         }),
       TIMEOUT_MS,
     );
@@ -248,15 +288,15 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
     () =>
       withService("t070-encoding", async (service) => {
         const built = buildF19(gitPath(), "t070-encoding", "encoding");
-        const page = (await history(service, repoOf(built))).result!;
-        const legacy = page.rows[0]!;
+        const found = await textRows(service, await checkout(service, repoOf(built)));
+        const legacy = found[0]!;
         expect(legacy.oid).toBe(built.facts.notes.tip as string);
-        expect({ subject: legacy.subject, author: legacy.author.name, encoding: legacy.encoding }).toEqual({
+        expect({ subject: legacy.subject, author: legacy.author!.name, encoding: legacy.encoding }).toEqual({
           subject: "Caf� r�sum�",
           author: "Jos�",
           encoding: "ISO-8859-1",
         });
-        for (const row of page.rows.slice(1)) expect(row.encoding).toBeNull();
+        for (const row of found.slice(1)) expect(row.encoding).toBeNull();
       }),
     TIMEOUT_MS,
   );
@@ -291,14 +331,14 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
         const stored = rawCommits(repo, oids);
         for (const object of stored) expect(object.includes(Buffer.from("\nencoding "))).toBe(false);
         expect(stored[3]!.includes(Buffer.from([0x43, 0x61, 0x66, 0xe9, 0x0a]))).toBe(true);
-        const rows = (await history(service, repo)).result!.rows.slice(0, 4);
-        expect(rows.map((r) => ({ oid: r.oid, encoding: r.encoding, invalidUtf8: r.invalidUtf8 }))).toEqual([
+        const found = (await textRows(service, await checkout(service, repo))).slice(0, 4);
+        expect(found.map((r) => ({ oid: r.oid, encoding: r.encoding, invalidUtf8: r.invalidUtf8 }))).toEqual([
           { oid: oids[0]!, encoding: null, invalidUtf8: false },
           { oid: oids[1]!, encoding: null, invalidUtf8: true },
           { oid: oids[2]!, encoding: null, invalidUtf8: true },
           { oid: oids[3]!, encoding: null, invalidUtf8: true },
         ]);
-        expect(rows).toEqual(oracleRows(repo, parent).slice(0, 4));
+        expect(found.map(textOf)).toEqual(oracleRows(repo, parent).slice(0, 4).map(textOf));
       }),
     TIMEOUT_MS,
   );
@@ -319,7 +359,7 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
         git(repo, ["update-ref", "refs/heads/main", oid, tip]);
         // Oracle: the stored header holds both control bytes.
         expect(rawCommits(repo, [oid])[0]!.includes(Buffer.from("encoding ISO\x1b-8859\x7f-1\n"))).toBe(true);
-        const row = (await history(service, repo)).result!.rows[0]!;
+        const row = (await textRows(service, await checkout(service, repo)))[0]!;
         expect({ oid: row.oid, encoding: row.encoding }).toEqual({ oid, encoding: "ISO-8859-1" });
       }),
     TIMEOUT_MS,
@@ -327,25 +367,25 @@ describe("F19 history shapes (contract §3 \"HistoryPage result\")", () => {
 
   caseTest(
     TASK,
-    "F01 unborn gives an empty complete page with the unborn head",
+    "F01 unborn gives an empty complete view with the unborn head",
     ["shell-double"],
     () =>
       withService("t070-unborn", async (service) => {
         const built = buildF01(gitPath(), "t070-unborn", "empty");
-        const response = await history(service, repoOf(built));
-        expect(response.state).toBe("succeeded");
-        expect({ rows: response.result!.rows, boundaries: response.result!.boundaries, head: response.result!.head, completeness: response.result!.completeness.state }).toEqual({
-          rows: [],
-          boundaries: { page: [], shallow: [] },
+        const c = await checkout(service, repoOf(built));
+        expect(c.opened.state).toBe("succeeded");
+        expect({ head: c.opened.result!.head, startCount: c.opened.result!.startCount, loaded: c.loaded!.result }).toEqual({
           head: { state: "unborn", target: "refs/heads/main" },
-          completeness: "complete",
+          startCount: 0,
+          loaded: { rows: 0, complete: true },
         });
+        expect((await rows(service, c.repositoryId, c.opened.result!.viewId, { row: 0 }, 1, "rows")).result).toMatchObject({ target: "none", rowCount: 0, complete: true });
       }),
     TIMEOUT_MS,
   );
 });
 
-describe("committer and message body (contract §3 \"HistoryPage result\", §5 \"History message body\")", () => {
+describe("committer and message body (001 contract §3 \"HistoryPage result\", §5 \"History message body\")", () => {
   const ROW_TASK = "T341";
 
   // A commit on top of the F19 linear tip, from the raw object text. Returns the repository and the new commit ID.
@@ -376,7 +416,8 @@ describe("committer and message body (contract §3 \"HistoryPage result\", §5 \
         const { repo, oid } = oneCommit("t341-committer", (tree, parent) =>
           Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${author}\ncommitter ${committer}\n\n${message}`, "utf8"),
         );
-        const row = (await history(service, repo)).result!.rows[0]!;
+        const c = await checkout(service, repo);
+        const row = rowOf((await rows(service, c.repositoryId, c.opened.result!.viewId, { row: 0 }, 1, "details")).result!.rows![0]!);
         expect(row).toEqual(oracleRows(repo, oid)[0]!);
         expect({ oid: row.oid, subject: row.subject, committer: row.committer, committerDate: row.committerDate, body: row.body, bodyCut: row.bodyCut, date: row.date }).toEqual({
           oid,
@@ -393,7 +434,7 @@ describe("committer and message body (contract §3 \"HistoryPage result\", §5 \
 
   caseTest(
     ROW_TASK,
-    "a 20 KiB body gives at most 16 KiB that ends at a UTF-8 character boundary with bodyCut true, and the read starts no added Git process",
+    "a 20 KiB body gives at most 16 KiB that ends at a UTF-8 character boundary with bodyCut true, and the details read starts one cat-file --batch-command only",
     ["shell-double"],
     () =>
       withService("t341-body-cut", async (service) => {
@@ -401,11 +442,11 @@ describe("committer and message body (contract §3 \"HistoryPage result\", §5 \
         // U+20AC takes 3 bytes, and 16,384 is not a multiple of 3. So the bound falls inside a character.
         const body = "€".repeat(Math.ceil((20 * 1024) / 3));
         const { repo, oid } = oneCommit("t341-body-cut", (tree, parent) => Buffer.from(`tree ${tree}\nparent ${parent}\nauthor ${ident}\ncommitter ${ident}\n\nlong body\n\n${body}`, "utf8"));
-        const { repositoryId, generation } = await service.register(repo);
+        const c = await checkout(service, repo);
         const first = service.runner.calls.length;
-        const response = await service.readHistory(repositoryId, generation);
+        const response = await rows(service, c.repositoryId, c.opened.result!.viewId, { row: 0 }, 1, "details");
         expect({ state: response.state, code: response.code }).toEqual({ state: "succeeded", code: undefined });
-        const row = response.result!.rows[0]!;
+        const row = rowOf(response.result!.rows![0]!);
         expect(row.oid).toBe(oid);
         const bytes = Buffer.byteLength(row.body);
         expect(bytes).toBeLessThanOrEqual(HISTORY_BODY_BYTES);
@@ -414,10 +455,9 @@ describe("committer and message body (contract §3 \"HistoryPage result\", §5 \
         expect(row.bodyCut).toBe(true);
         expect(row.invalidUtf8).toBe(false);
         expect(row).toEqual(oracleRows(repo, oid)[0]!);
-        // Contract §3: the fields come from the `cat-file --batch-command -Z` object. The read runs only its listing and its held steps, each once.
-        const expected = [configListArgs(), hooksPathArgs(), headTargetArgs(), headOidArgs(), shallowPathArgs(), revListArgs(oid, "sha1"), batchCommandArgs()].map((a) => a.join(" "));
-        const ran = service.runner.calls.slice(first).filter((c) => c.refused === undefined).map((c) => c.arguments.join(" "));
-        expect(ran.toSorted()).toEqual(expected.toSorted());
+        // Contract Δ3: the fields come from one `cat-file --batch-command -Z` object. A text read runs no fingerprint check.
+        const ran = service.runner.calls.slice(first).filter((call) => call.refused === undefined).map((call) => call.arguments.join(" "));
+        expect(ran).toEqual([batchCommandArgs().join(" ")]);
       }),
     TIMEOUT_MS,
   );
@@ -448,118 +488,118 @@ describe("committer and message body (contract §3 \"HistoryPage result\", §5 \
           oids.unshift(parent);
         }
         git(repo, ["update-ref", "refs/heads/main", parent, tip]);
-        const rows = (await history(service, repo)).result!.rows.slice(0, 3);
-        expect(rows.map((r) => ({ oid: r.oid, invalidUtf8: r.invalidUtf8, committer: r.committer, body: r.body }))).toEqual([
+        const found = (await textRows(service, await checkout(service, repo), true)).slice(0, 3).map(rowOf);
+        expect(found.map((r) => ({ oid: r.oid, invalidUtf8: r.invalidUtf8, committer: r.committer, body: r.body }))).toEqual([
           { oid: oids[0]!, invalidUtf8: true, committer: FIXED_IDENTITY, body: "Caf�\n" },
           { oid: oids[1]!, invalidUtf8: true, committer: { name: FIXED_IDENTITY.name, email: "jos�@arbareto.invalid" }, body: "" },
           { oid: oids[2]!, invalidUtf8: true, committer: { name: "Jos�", email: FIXED_IDENTITY.email }, body: "" },
         ]);
-        expect(rows).toEqual(oracleRows(repo, parent).slice(0, 3));
+        expect(found).toEqual(oracleRows(repo, parent).slice(0, 3));
       }),
     TIMEOUT_MS,
   );
 });
 
-describe("F16 history bounds (contract §5)", () => {
-  // Each F16 history variant with its reached bound, or null at the bound.
+describe("F16 history bounds (001 contract §5 on the feature 002 bounds, contract Δ5)", () => {
+  // Each F16 history variant with the 002 load reason, or null for a complete view. Feature 002 has no page, so the 001 page bounds no longer apply.
   const CASES: [F16HistoryVariant, keyof typeof LIMITS | null][] = [
     ["parents-64", null],
     ["parents-65", limitName("HISTORY_PARENTS_PER_COMMIT")],
-    ["parent-refs", limitName("HISTORY_PARENTS_PER_PAGE")],
+    ["parent-refs", null],
     ["object-at-limit", null],
-    ["object-over-limit", limitName("HISTORY_COMMIT_OBJECT_BYTES")],
-    // The traversal stream holds object IDs only, so 100 commits stay below HISTORY_STREAM_BYTES, as in T286.
+    ["object-over-limit", null],
     ["traversal", null],
   ];
 
   for (const [variant, reason] of CASES) {
     caseTest(
       TASK,
-      reason === null ? `F16 ${variant}: a page at the bound is complete` : `F16 ${variant}: the bound gives limited with reason ${reason}, never a truncated complete page`,
+      reason === null ? `F16 ${variant}: the view loads complete and equals the oracle` : `F16 ${variant}: the bound gives limited with reason ${reason}, never a truncated complete view`,
       ["shell-double"],
       () =>
         withService(`t070-f16-${variant}`, async (service) => {
           const built = cachedF16History(gitPath(), `t070-f16-${variant}`, variant).built;
           const repo = repoOf(built);
           const tip = (built.facts.notes.commits as Record<string, string>).tip!;
-          const expected = oracleRows(repo, tip);
+          const expected = oracleTraversal(repo, tip);
           if (variant === "object-at-limit" || variant === "object-over-limit") {
             expect(F16_OBJECT_LIMIT).toBe(LIMITS.HISTORY_COMMIT_OBJECT_BYTES);
             expect(Number(git(repo, ["cat-file", "-s", tip]).toString().trim())).toBe(built.facts.notes.objectBytes as number);
           }
-          const response = await history(service, repo);
-          const page = response.result!;
+          const c = await checkout(service, repo);
+          const loaded = c.loaded!;
           if (reason === null) {
-            expect({ state: response.state, completeness: page.completeness.state }).toEqual({ state: "succeeded", completeness: "complete" });
-            expect(page.rows).toEqual(expected);
+            expect({ state: loaded.state, complete: loaded.result!.complete }).toEqual({ state: "succeeded", complete: true });
+            const found = await textRows(service, c);
+            expect(found.map((r) => ({ oid: r.oid, parents: r.parents }))).toEqual(expected);
+            // Contract Δ3: an object above HISTORY_COMMIT_OBJECT_BYTES gives `textLimit` and no text.
+            const limitedText = found.filter((r) => r.textLimit === true).map((r) => r.oid);
+            expect(limitedText).toEqual(variant === "object-over-limit" ? [tip] : []);
             return;
           }
-          expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "OUTPUT_LIMIT" });
-          expect(page.completeness).toMatchObject({ state: "limited", reason });
+          expect({ state: loaded.state, code: loaded.code, reason: loaded.result!.reason, complete: loaded.result!.complete }).toEqual({ state: "limited", code: "OUTPUT_LIMIT", reason, complete: false });
           // Bounded data stays a prefix of the Git traversal.
-          expect(page.rows.length).toBeLessThan(expected.length);
-          expect(page.rows).toEqual(expected.slice(0, page.rows.length));
+          const held = loaded.result!.rows;
+          expect(held).toBeLessThan(expected.length);
+          const found = held === 0 ? [] : (await rows(service, c.repositoryId, c.opened.result!.viewId, { row: 0 }, held)).result!.rows!;
+          expect(found.map((r) => ({ oid: r.oid, parents: r.parents }))).toEqual(expected.slice(0, held));
         }),
       TIMEOUT_MS,
     );
   }
 
-  // Contract §5 "History page": the page keeps the rows before the first row that passes the 8 MiB encoded result bound.
+  // Contract Δ3 `readHistoryRows`: the result keeps the rows before the first row that passes the 8 MiB encoded result bound, and sets `cut`.
   caseTest(
     TASK,
-    "History page: F16 page-bytes gives limited with reason HISTORY_PAGE_BYTES, its rows are a prefix of the oracle, and its encoded result is at most 8 MiB",
+    "History rows: F16 page-bytes gives cut rows that are a prefix of the oracle, and the encoded result is at most 8 MiB",
     ["shell-double"],
     () =>
       withService("t070-f16-page-bytes", async (service) => {
         const built = cachedF16History(gitPath(), "t070-f16-page-bytes", "page-bytes").built;
         const repo = repoOf(built);
         const tip = (built.facts.notes.commits as Record<string, string>).tip!;
-        const expected = oracleRows(repo, tip);
+        const expected = oracleRows(repo, tip).map(textOf);
         expect(expected.length).toBe(10);
-        const response = await history(service, repo);
-        const page = response.result!;
-        expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "OUTPUT_LIMIT" });
-        expect(page.completeness).toMatchObject({ state: "limited", reason: limitName("HISTORY_PAGE_BYTES") });
+        const c = await checkout(service, repo);
+        expect(c.loaded!.result).toEqual({ rows: 10, complete: true });
+        const response = await rows(service, c.repositoryId, c.opened.result!.viewId, { row: 0 }, 10, "rows");
+        expect({ state: response.state, cut: response.result!.cut }).toEqual({ state: "succeeded", cut: true });
+        const found = response.result!.rows!;
         // JSON escapes each 0x01 byte as 6 bytes, so one row holds about 1.2 MB and the bound keeps at least one row.
-        expect(page.rows.length).toBeGreaterThan(0);
-        expect(page.rows.length).toBeLessThan(expected.length);
-        expect(page.rows).toEqual(expected.slice(0, page.rows.length));
-        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(LIMITS.HISTORY_PAGE_BYTES);
+        expect(found.length).toBeGreaterThan(0);
+        expect(found.length).toBeLessThan(expected.length);
+        expect(found.map(textOf)).toEqual(expected.slice(0, found.length));
+        expect(Buffer.byteLength(JSON.stringify(response.result))).toBeLessThanOrEqual(LIMITS.HISTORY_PAGE_BYTES);
       }),
     TIMEOUT_MS,
   );
 
-  // Contract §5: the first reached bound wins. The page bound still cuts the rows.
+  // Contract "Contract gaps": a shallow file above 4 MiB has no view reason. The first reached bound wins, so no row leaves.
   caseTest(
     TASK,
-    "F16 page-bytes with a shallow file above its bound keeps reason SHALLOW_METADATA_BYTES, and the page bound still cuts the rows to at most 8 MiB",
+    "F16 page-bytes with a shallow file above its bound gives OUTPUT_LIMIT at openHistory, and no row reaches a response",
     ["shell-double"],
     () =>
       withService("t070-f16-first-bound", async (service) => {
         const built = cachedF16History(gitPath(), "t070-f16-first-bound", "page-bytes").built;
         const repo = repoOf(built);
         const tip = (built.facts.notes.commits as Record<string, string>).tip!;
-        const expected = oracleRows(repo, tip);
         const shallow = join(repo, git(repo, ["rev-parse", "--git-path", "shallow"]).toString().trim());
         // Valid object ID lines that name no commit of the fixture. Git keeps them as grafts, so the traversal stays the same.
         const line = (i: number) => `${new Bun.CryptoHasher("sha1").update(`t070-first-bound-${i}`).digest("hex")}\n`;
         appendFileSync(shallow, Array.from({ length: Math.ceil((LIMITS.SHALLOW_METADATA_BYTES + 1) / line(0).length) }, (_, i) => line(i)).join(""));
-        const response = await history(service, repo);
-        const page = response.result!;
-        expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "OUTPUT_LIMIT" });
-        expect(page.completeness).toMatchObject({ state: "limited", reason: limitName("SHALLOW_METADATA_BYTES") });
-        // Without the full shallow list, the root row is unknown, so at most 9 rows remain. Their encoded bytes pass the page bound.
-        expect(Buffer.byteLength(JSON.stringify(expected.slice(0, 9)))).toBeGreaterThan(LIMITS.HISTORY_PAGE_BYTES);
-        expect(page.rows.length).toBeGreaterThan(0);
-        expect(page.rows).toEqual(expected.slice(0, page.rows.length));
-        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(LIMITS.HISTORY_PAGE_BYTES);
+        const c = await checkout(service, repo);
+        expect({ state: c.opened.state, code: c.opened.code, reason: (c.opened.result as { reason?: string } | undefined)?.reason }).toEqual({ state: "failed", code: "OUTPUT_LIMIT", reason: undefined });
+        expect(service.runner.calls.filter(isLoad)).toEqual([]);
+        const text = JSON.stringify(service.responses);
+        expect(oracleTraversal(repo, tip).filter((r) => text.includes(r.oid))).toEqual([]);
       }),
     TIMEOUT_MS,
   );
 
   caseTest(
     TASK,
-    `a shallow file above ${LIMITS.SHALLOW_METADATA_BYTES} bytes gives limited with reason SHALLOW_METADATA_BYTES`,
+    `a shallow file above ${LIMITS.SHALLOW_METADATA_BYTES} bytes gives OUTPUT_LIMIT without a reason`,
     ["shell-double"],
     () =>
       withService("t070-shallow-limit", async (service) => {
@@ -571,18 +611,17 @@ describe("F16 history bounds (contract §5)", () => {
         const missing = LIMITS.SHALLOW_METADATA_BYTES + 1 - statSync(shallow).size;
         appendFileSync(shallow, Array.from({ length: Math.ceil(missing / line(0).length) }, (_, i) => line(i)).join(""));
         expect(statSync(shallow).size).toBeGreaterThan(LIMITS.SHALLOW_METADATA_BYTES);
-        const response = await history(service, repo);
-        expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "OUTPUT_LIMIT" });
-        expect(response.result!.completeness).toMatchObject({ state: "limited", reason: limitName("SHALLOW_METADATA_BYTES") });
+        const c = await checkout(service, repo);
+        expect({ state: c.opened.state, code: c.opened.code, reason: (c.opened.result as { reason?: string } | undefined)?.reason }).toEqual({ state: "failed", code: "OUTPUT_LIMIT", reason: undefined });
       }),
     TIMEOUT_MS,
   );
 });
 
-describe("missing objects (contract §7 \"Missing objects\")", () => {
+describe("missing objects (001 contract §7 \"Missing objects\")", () => {
   caseTest(
     TASK,
-    "F17 partial clone: a missing commit gives limited with OBJECT_MISSING, git cat-file -e still fails, and the uploadpack canary never runs",
+    "F17 partial clone: a missing commit gives OBJECT_MISSING, git cat-file -e still fails, and the uploadpack canary never runs",
     ["shell-double"],
     () =>
       withService("t070-partial", async (service) => {
@@ -598,9 +637,8 @@ describe("missing objects (contract §7 \"Missing objects\")", () => {
         git(clone, ["update-ref", "refs/heads/main", tip]);
         const catFile = () => Bun.spawnSync([gitPath(), "--no-lazy-fetch", "cat-file", "-e", missing], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
         expect(catFile()).not.toBe(0);
-        const response = await history(service, clone);
-        expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "OBJECT_MISSING" });
-        expect(response.result?.completeness).toMatchObject({ state: "limited", code: "OBJECT_MISSING" });
+        const loaded = (await checkout(service, clone)).loaded!;
+        expect({ state: loaded.state, code: loaded.code, reason: loaded.result?.reason }).toEqual({ state: "failed", code: "OBJECT_MISSING", reason: "object-missing" });
         expect(catFile()).not.toBe(0);
         expect(existsSync(join(built.root, built.facts.canaries.uploadpack!))).toBe(false);
         // Contract §7: only the `gitProbe` probes run without `--no-lazy-fetch`.
@@ -620,30 +658,30 @@ async function waitFor(what: string, found: () => boolean): Promise<void> {
 }
 
 const isStatus = (call: { arguments: readonly string[] }) => call.arguments.includes("status");
-const isRevList = (call: { arguments: readonly string[] }) => call.arguments.includes("rev-list");
 const isConfigList = (call: { arguments: readonly string[] }) => call.arguments.join("\0") === configListArgs().join("\0");
+const isRefListing = (call: { arguments: readonly string[] }) => call.arguments.join("\0") === historyRefsArgs().join("\0");
 
-describe("history without a status snapshot (contract §3 readHistory)", () => {
+describe("history without a status snapshot (001 contract §3, feature 002 openHistory)", () => {
   caseTest(
     TASK,
-    "right after registration, readHistory returns the page with the registration generation, and the runner sees no status call",
+    "right after registration, openHistory returns the view with the registration generation, and the runner sees no status call",
     ["shell-double"],
     () =>
       withService("t070-no-status", async (service) => {
         const built = buildF19(gitPath(), "t070-no-status", "linear");
-        const { repositoryId, generation } = await service.register(repoOf(built));
-        const response = await service.readHistory(repositoryId, generation);
-        expect(response.state).toBe("succeeded");
-        expect(response.result!.generation).toBe(generation);
+        const c = await checkout(service, repoOf(built));
+        expect(c.opened.state).toBe("succeeded");
+        expect(c.opened.result!.generation).toBe(c.generation);
+        expect(c.loaded!.result!.complete).toBe(true);
         expect(service.runner.calls.filter(isStatus)).toEqual([]);
-        expect(service.runner.calls.filter(isRevList).length).toBe(1);
+        expect(service.runner.calls.filter(isLoad).length).toBe(1);
       }),
     TIMEOUT_MS,
   );
 
   caseTest(
     TASK,
-    `readHistory runs beside a held readWorkspace within the ${LIMITS.CONCURRENT_READS_PER_WORKSPACE}-read cap`,
+    `openHistory runs beside a held readWorkspace within the ${LIMITS.CONCURRENT_READS_PER_WORKSPACE}-read cap`,
     ["shell-double"],
     () =>
       withService("t070-beside", async (service) => {
@@ -653,8 +691,8 @@ describe("history without a status snapshot (contract §3 readHistory)", () => {
         try {
           const workspace = service.send("readWorkspace", { refresh: false, check: "full" }, { repositoryId });
           await waitFor("status call", () => service.runner.calls.some(isStatus));
-          const page = await service.readHistory(repositoryId, generation);
-          expect(page.state).toBe("succeeded");
+          const view = await service.openHistory(repositoryId, generation);
+          expect(view.state).toBe("succeeded");
           expect(service.responseAt.has(workspace)).toBe(false);
           release();
           expect((await service.response(workspace)).state).toBe("succeeded");
@@ -667,50 +705,55 @@ describe("history without a status snapshot (contract §3 readHistory)", () => {
 
   caseTest(
     TASK,
-    "the page binds the captured HEAD OID and target",
+    "the view binds the captured HEAD OID and target",
     ["shell-double"],
     () =>
       withService("t070-head", async (service) => {
         const built = buildF19(gitPath(), "t070-head", "linear");
         const repo = repoOf(built);
-        const { repositoryId, generation } = await service.register(repo);
-        const first = (await service.readHistory(repositoryId, generation)).result!;
-        expect(first.head).toEqual({ state: "branch", target: "refs/heads/main", oid: built.facts.notes.tip as string });
-        expect(first.shallowFingerprint).toBeNull();
+        const first = await checkout(service, repo);
+        expect(first.opened.result!.head).toEqual({ state: "branch", target: "refs/heads/main", oid: built.facts.notes.tip as string });
+        expect(first.opened.result!.shallow).toBe(false);
         git(repo, ["commit", "-q", "--allow-empty", "--no-verify", "-m", "next"]);
         const next = refState(gitPath(), repo).headOid!;
-        const second = (await service.readHistory(repositoryId, generation)).result!;
-        expect({ head: second.head, first: second.rows[0]?.oid }).toEqual({ head: { state: "branch", target: "refs/heads/main", oid: next }, first: next });
+        const second = await openView(service, first.repositoryId, first.generation, "current");
+        await load(service, first.repositoryId, second.result!.viewId, { end: true });
+        const row = (await rows(service, first.repositoryId, second.result!.viewId, { row: 0 }, 1)).result!.rows![0]!;
+        expect({ head: second.result!.head, first: row.oid, checkout: row.checkout }).toEqual({ head: { state: "branch", target: "refs/heads/main", oid: next }, first: next, checkout: true });
       }),
     TIMEOUT_MS,
   );
 
+  // Contract Δ8: a shallow file change makes the view stale with HISTORY_CHANGED reason `topology` before its next Git process.
   caseTest(
     TASK,
-    "the page binds the shallow fingerprint, and a shallow file change gives another fingerprint",
+    "the view binds the shallow file, a shallow file change makes it stale, and a new view gives the same rows",
     ["shell-double"],
     () =>
       withService("t070-shallow-fingerprint", async (service) => {
         const built = buildF19(gitPath(), "t070-shallow-fingerprint", "shallow");
         const repo = repoOf(built);
         const { repositoryId, generation } = await service.register(repo);
-        const first = (await service.readHistory(repositoryId, generation)).result!;
-        expect(first.shallowFingerprint).toBeString();
+        const first = await openView(service, repositoryId, generation, "current");
+        expect(first.result!.shallow).toBe(true);
         const shallow = join(repo, git(repo, ["rev-parse", "--git-path", "shallow"]).toString().trim());
         appendFileSync(shallow, `${new Bun.CryptoHasher("sha1").update("t070-graft").digest("hex")}\n`);
-        const second = (await service.readHistory(repositoryId, generation)).result!;
-        expect(second.shallowFingerprint).toBeString();
-        expect(second.shallowFingerprint).not.toBe(first.shallowFingerprint);
-        expect(second.rows).toEqual(first.rows);
+        const stale = await load(service, repositoryId, first.result!.viewId, { end: true });
+        expect({ state: stale.state, code: stale.code, reason: stale.result?.reason }).toEqual({ state: "failed", code: "HISTORY_CHANGED", reason: "topology" });
+        const second = await openView(service, repositoryId, generation, "current");
+        expect(second.result!.shallow).toBe(true);
+        const loaded = await load(service, repositoryId, second.result!.viewId, { end: true });
+        const found = (await rows(service, repositoryId, second.result!.viewId, { row: 0 }, loaded.result!.rows)).result!.rows!;
+        expect(found.map((r) => ({ oid: r.oid, parents: r.parents }))).toEqual(oracleTraversal(repo, built.facts.notes.tip as string));
       }),
     TIMEOUT_MS,
   );
 });
 
-describe("trust gate (contract §7)", () => {
+describe("trust gate (001 contract §7)", () => {
   caseTest(
     TASK,
-    "an F17 copy without read approval gives TRUST_REQUIRED, the refused gate stops the held rev-list, no response holds a commit ID of the fixture, and no canary runs",
+    "an F17 copy without read approval gives TRUST_REQUIRED, the refused gate stops the held ref listing, no response holds a commit ID of the fixture, and no canary runs",
     ["shell-double"],
     () =>
       withService("t070-trust", async (service) => {
@@ -720,27 +763,27 @@ describe("trust gate (contract §7)", () => {
         const commits = oracleTraversal(repo, tip).flatMap((row) => [row.oid, ...row.parents]);
         expect(commits.length).toBeGreaterThan(0);
         const { repositoryId, generation } = await service.register(repo);
-        // A real `rev-list` writes less than one pipe buffer, so it can exit before the gate decides. The double sends the real Git bytes as the `rev-list` output.
-        const traversal = git(repo, ["--no-optional-locks", "rev-list", "--parents", "--max-count=100", "--date-order", tip]);
-        service.runner.inject.stdout = (call) => (isRevList(call) ? traversal : undefined);
-        // The listing waits until `rev-list` starts. The injected `rev-list` waits at its stdout barrier. So only the refused gate can end `rev-list`.
+        // A real `for-each-ref` writes less than one pipe buffer, so it can exit before the gate decides. The double sends the real Git bytes as its output.
+        const listing = ownedGit(gitPath(), FIXTURE_ROOT, repo, historyRefsArgs());
+        service.runner.inject.stdout = (call) => (isRefListing(call) ? listing : undefined);
+        // The trust listing waits until the ref listing starts. The injected ref listing waits at its stdout barrier. So only the refused gate can end it.
         const releaseListing = service.runner.pauseStdout(once(isConfigList));
-        const releaseRevList = service.runner.pauseStdout(once(isRevList));
+        const releaseRefs = service.runner.pauseStdout(once(isRefListing));
         try {
-          const request = service.send("readHistory", {}, { repositoryId, repositoryGeneration: generation });
-          await waitFor("rev-list call", () => service.runner.calls.some(isRevList));
+          const request = service.send("openHistory", { scope: "current" }, { repositoryId, repositoryGeneration: generation });
+          await waitFor("for-each-ref call", () => service.runner.calls.some(isRefListing));
           releaseListing();
           const response = await service.response(request);
           // Contract §9 fixes the code. The read starts its trust listing first, so the terminal state is not fixed as `rejected`.
           expect({ code: response.code, succeeded: response.state === "succeeded" }).toEqual({ code: "TRUST_REQUIRED", succeeded: false });
-          // Contract §7 "Held history steps": the refused gate ends every held step. The recorded `rev-list` ended without an exit status.
-          expect(service.runner.calls.filter(isRevList).map((c) => c.exit?.exitCode)).toEqual([null]);
-          expect(service.runner.calls.filter((c) => c.arguments.includes("cat-file"))).toEqual([]);
+          // Contract §7 "Held history steps": the refused gate ends every held step. The recorded ref listing ended without an exit status.
+          expect(service.runner.calls.filter(isRefListing).map((c) => c.exit?.exitCode)).toEqual([null]);
+          expect(service.runner.calls.filter((c) => isLoad(c) || isTextRead(c))).toEqual([]);
         } finally {
           releaseListing();
-          releaseRevList();
+          releaseRefs();
         }
-        // Contract §7 "Held history steps": the history steps can run beside the listing, but no held row reaches a response.
+        // Contract §7 "Held history steps": the capture steps can run beside the listing, but no captured data reaches a response.
         const text = JSON.stringify(service.responses);
         expect(commits.filter((oid) => text.includes(oid))).toEqual([]);
         const logs = Object.values(built.facts.canaries).map((log) => join(built.root, log));
@@ -780,13 +823,11 @@ function corrupt(path: string): void {
   writeFileSync(path, bytes);
 }
 
-const isBatchCommand = (call: { arguments: readonly string[] }) => call.arguments.includes("--batch-command");
-
-describe("failed history steps (contract §7 \"Missing objects\")", () => {
+describe("failed history steps (001 contract §7 \"Missing objects\")", () => {
   // D33: the shell identity of the origin file decides that `extensions.partialclone` comes from `<commondir>/config`, never the path text.
   caseTest(
     TASK,
-    "a repository with only extensions.partialclone, whose listing spells the common config through a junction alias, gives limited with OBJECT_MISSING for a missing parent",
+    "a repository with only extensions.partialclone, whose listing spells the common config through a junction alias, gives OBJECT_MISSING for a missing parent",
     ["shell-double"],
     () =>
       withService("t070-promisor-alias", async (service) => {
@@ -802,8 +843,8 @@ describe("failed history steps (contract §7 \"Missing objects\")", () => {
         const listing = Buffer.from(ownedGit(gitPath(), FIXTURE_ROOT, repo, configListArgs()).toString("utf8").replaceAll("\0file:.git/config\0", `\0${spelled}\0`));
         expect(listing.includes(Buffer.from(`\0${spelled}\0extensions.partialclone\norigin\0`))).toBe(true);
         service.runner.inject.stdout = (call) => (isConfigList(call) ? listing : undefined);
-        const response = await history(service, repo);
-        expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "OBJECT_MISSING" });
+        const loaded = (await checkout(service, repo)).loaded!;
+        expect({ state: loaded.state, code: loaded.code }).toEqual({ state: "failed", code: "OBJECT_MISSING" });
       }),
     TIMEOUT_MS,
   );
@@ -819,16 +860,17 @@ describe("failed history steps (contract §7 \"Missing objects\")", () => {
         writeFileSync(join(repo, ".git", "shallow"), `${oids.H2}\n`);
         rmSync(loose(oids.H1), { force: true });
         expect(oracleTraversal(repo, oids.M).map((row) => row.oid)).toEqual([oids.M, oids.H3, oids.H2, oids.S, oids.R]);
-        const { repositoryId, generation } = await service.register(repo);
-        const release = service.runner.holdStart(once(isBatchCommand));
+        const c = await checkout(service, repo);
+        expect(c.loaded!.result).toEqual({ rows: 5, complete: true });
+        const release = service.runner.holdStart(once(isTextRead));
         try {
-          const request = service.send("readHistory", {}, { repositoryId, repositoryGeneration: generation });
-          await waitFor("cat-file --batch-command call", () => service.runner.calls.some(isBatchCommand));
+          const request = service.send("readHistoryRows", { viewId: c.opened.result!.viewId, mode: "full", at: { row: 0 }, count: 5, text: "rows" }, { repositoryId: c.repositoryId });
+          await waitFor("cat-file --batch-command call", () => service.runner.calls.some(isTextRead));
           corrupt(loose(oids.S));
           release();
           const response = await service.response(request);
           expect({ state: response.state, code: response.code }).toEqual({ state: "failed", code: "GIT_FAILED" });
-          expect(service.runner.calls.filter(isBatchCommand).map((c) => c.exit?.exitCode)).toEqual([128]);
+          expect(service.runner.calls.filter(isTextRead).map((call) => call.exit?.exitCode)).toEqual([128]);
         } finally {
           release();
         }
@@ -836,10 +878,10 @@ describe("failed history steps (contract §7 \"Missing objects\")", () => {
     TIMEOUT_MS,
   );
 
-  // Data-model §2 `unavailable`: the last read got REPOSITORY_UNAVAILABLE. A later complete `readWorkspace` resets the mark, so the case observes the history reader call alone.
+  // Data-model §2 `unavailable`: the last read got REPOSITORY_UNAVAILABLE. A later complete `readWorkspace` resets the mark, so the case observes the view calls alone.
   caseTest(
     TASK,
-    "a commit object that disappears before cat-file --batch-command, without a promisor remote, ends REPOSITORY_UNAVAILABLE, and the history reader marks the workspace state unavailable",
+    "a commit object that disappears before cat-file --batch-command, without a promisor remote, ends REPOSITORY_UNAVAILABLE, and the history view marks the workspace state unavailable",
     ["shell-double"],
     () =>
       withService("t070-damaged-store", async (service) => {
@@ -854,84 +896,38 @@ describe("failed history steps (contract §7 \"Missing objects\")", () => {
         const trust = createTrust({ runner: service.runner, environment: serviceEnv() });
         const reader = createWorkspaceReader({ runner: service.runner, trust });
         const marked: string[] = [];
-        const reads = createHistoryReader({ runner: service.runner, trust, listingTuple: reader.listingTuple, markUnavailable: (id) => void marked.push(id) });
-        const release = service.runner.holdStart(once(isBatchCommand));
+        const responses = new Map<string, { state: string; code?: string; result?: unknown }>();
+        // A response without `requestId` belongs to no request of this case.
+        const registry = createOperationRegistry((response) => void (response.requestId !== null && responses.set(response.requestId, response as never)), () => {}, createSessionLog(), service.runner);
+        const views = createHistoryViews({
+          runner: service.runner,
+          trust,
+          listingTuple: reader.listingTuple,
+          markUnavailable: (id) => void marked.push(id),
+          registry,
+          viewCommits: LIMITS.HISTORY_VIEW_COMMITS,
+          reject: (requestId, code) => void responses.set(requestId, { state: "rejected", code }),
+        });
+        const opened = await views.open({ operationId: crypto.randomUUID(), signal, installation: probed.installation, workspace, generation: workspace.generation }, "current");
+        expect(opened.result).toBe("succeeded");
+        const { viewId } = opened.value as { viewId: string };
+        const send = async (request: Record<string, unknown>, run: (request: never) => void) => {
+          const requestId = crypto.randomUUID();
+          run({ requestId, repositoryId: workspace.repositoryId, ...request } as never);
+          await waitFor(`response ${requestId}`, () => responses.has(requestId));
+          return responses.get(requestId)!;
+        };
+        expect(await send({ payload: { viewId, need: { end: true } } }, (r) => views.load(r))).toMatchObject({ state: "succeeded", result: { rows: 6, complete: true } });
+        const release = service.runner.holdStart(once(isTextRead));
         try {
-          const outcome = reads.readHistory({ operationId: crypto.randomUUID(), signal, installation: probed.installation, workspace, generation: workspace.generation });
-          await waitFor("cat-file --batch-command call", () => service.runner.calls.some(isBatchCommand));
+          const pending = send({ payload: { viewId, mode: "full", at: { row: 0 }, count: 6, text: "rows" } }, (r) => views.rows(r));
+          await waitFor("cat-file --batch-command call", () => service.runner.calls.some(isTextRead));
           rmSync(loose(oids.H1), { force: true });
           release();
-          expect(await outcome).toEqual({ result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" }, remedy: { text: DAMAGED_STORE_REMEDY } } });
+          expect(await pending).toMatchObject({ state: "failed", code: "REPOSITORY_UNAVAILABLE", result: { remedy: { text: DAMAGED_STORE_REMEDY, command: null } } });
           expect(marked).toEqual([workspace.repositoryId]);
         } finally {
           release();
-        }
-      }),
-    TIMEOUT_MS,
-  );
-});
-
-describe("shallow file change during a read (contract §8 \"Changing working file\")", () => {
-  const shallowOf = (repo: string) => join(repo, git(repo, ["rev-parse", "--git-path", "shallow"]).toString().trim());
-  const graft = (repo: string, label: string) => appendFileSync(shallowOf(repo), `${new Bun.CryptoHasher("sha1").update(label).digest("hex")}\n`);
-
-  caseTest(
-    TASK,
-    "one shallow file change during readHistory discards the attempt, the held steps run once more, and the page binds the new fingerprint and the request generation",
-    ["shell-double"],
-    () =>
-      withService("t070-shallow-restart", async (service) => {
-        const repo = repoOf(buildF19(gitPath(), "t070-shallow-restart", "shallow"));
-        const { repositoryId, generation } = await service.register(repo);
-        const release = service.runner.pauseStdout(once(isRevList));
-        try {
-          const request = service.send("readHistory", {}, { repositoryId, repositoryGeneration: generation });
-          await waitFor("rev-list call", () => service.runner.calls.some(isRevList));
-          graft(repo, "t070-restart");
-          release();
-          const response = await service.response<HistoryResult>(request);
-          expect({ state: response.state, code: response.code, generation: response.result?.generation }).toEqual({ state: "succeeded", code: undefined, generation });
-          expect(response.result!.shallowFingerprint).toBe(new Bun.CryptoHasher("sha256").update(readFileSync(shallowOf(repo))).digest("hex"));
-          expect(service.runner.calls.filter(isRevList)).toHaveLength(2);
-        } finally {
-          release();
-        }
-      }),
-    TIMEOUT_MS,
-  );
-
-  caseTest(
-    TASK,
-    "a second shallow file change ends readHistory limited with WORKTREE_CHANGING, never REPOSITORY_CHANGED",
-    ["shell-double"],
-    () =>
-      withService("t070-shallow-changing", async (service) => {
-        const repo = repoOf(buildF19(gitPath(), "t070-shallow-changing", "shallow"));
-        const { repositoryId, generation } = await service.register(repo);
-        // Each barrier holds one `rev-list` call in start order. `once` would take the first call again after the first barrier opens.
-        const nth = (index: number) => {
-          const seen: object[] = [];
-          return (call: { arguments: readonly string[] }) => {
-            if (!isRevList(call)) return false;
-            if (!seen.includes(call)) seen.push(call);
-            return seen.indexOf(call) === index;
-          };
-        };
-        const releaseFirst = service.runner.pauseStdout(nth(0));
-        const releaseSecond = service.runner.pauseStdout(nth(1));
-        try {
-          const request = service.send("readHistory", {}, { repositoryId, repositoryGeneration: generation });
-          for (const [i, release] of [releaseFirst, releaseSecond].entries()) {
-            await waitFor(`rev-list call ${i + 1}`, () => service.runner.calls.filter(isRevList).length > i);
-            graft(repo, `t070-changing-${i}`);
-            release();
-          }
-          const response = await service.response<HistoryResult>(request);
-          expect({ state: response.state, code: response.code }).toEqual({ state: "limited", code: "WORKTREE_CHANGING" });
-          expect(response.result!.completeness).toEqual({ state: "limited", code: "WORKTREE_CHANGING" });
-        } finally {
-          releaseFirst();
-          releaseSecond();
         }
       }),
     TIMEOUT_MS,

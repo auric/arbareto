@@ -334,56 +334,6 @@
         },
         "operation": {
           "type": "string",
-          "const": "readHistory"
-        },
-        "repositoryId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "repositoryGeneration": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        "payload": {
-          "type": "object",
-          "properties": {},
-          "additionalProperties": false,
-          "title": "ReadHistoryPayload"
-        }
-      },
-      "required": [
-        "version",
-        "sessionId",
-        "requestId",
-        "operation",
-        "repositoryId",
-        "repositoryGeneration",
-        "payload"
-      ],
-      "additionalProperties": false,
-      "title": "ReadHistoryRequest"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "version": {
-          "type": "number",
-          "const": 1
-        },
-        "sessionId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "requestId": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        },
-        "operation": {
-          "type": "string",
           "const": "openHistory"
         },
         "repositoryId": {

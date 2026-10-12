@@ -18,7 +18,6 @@ import { getEnvironment } from "./environment";
 import { createExclusion } from "./exclusion";
 import { createFilePublisher, fileApproval } from "./file-publish";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
-import { createHistoryReader, type HistoryOutcome } from "./history";
 import { createHistoryViews } from "./history-view";
 import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from "./hunk-publish";
 import { createSessionLog, type DiagnosticCause } from "./log";
@@ -145,7 +144,6 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     unknown: (w) => recovery.unknown(w),
     reconciling: (w) => exclusion.running(w.commonIdentity).some((operationId) => registry.get(operationId)?.state === "reconciling"),
   });
-  const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
   const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, reject: (requestId, code) => reject(requestId, code) });
   const approvals = createApprovals(approvalClock);
@@ -339,7 +337,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -386,25 +384,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     );
   };
 
-  // Contract §3 `readHistory`. Contract §2 and §9: a `repositoryGeneration` other than the current workspace generation gives REPOSITORY_CHANGED at acceptance, and no Git process starts.
-  const readHistory: Handler<"readHistory"> = (request) => {
-    const workspace = workspaceOf(request.repositoryId);
-    const installation = installationOf(workspace);
-    if (installation === null) return reject(request.requestId, gitCode());
-    if (request.repositoryGeneration !== workspace.generation) {
-      const { operationId } = registry.start("readHistory", request.requestId);
-      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
-    }
-    scheduleRead(
-      request,
-      (t) => history.readHistory({ ...t, installation, workspace, generation: request.repositoryGeneration }),
-      async (t) =>
-        (await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } },
-      { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } } satisfies HistoryOutcome,
-    );
-  };
-
-  // Feature 002 contract Δ2 and Δ3 `openHistory`: one read slot. The generation decides at acceptance as for `readHistory`.
+  // Feature 002 contract Δ2 and Δ3 `openHistory`: one read slot. Contract §2 and §9: a `repositoryGeneration` other than the current workspace generation gives REPOSITORY_CHANGED at acceptance, and no Git process starts.
   const openHistory: Handler<"openHistory"> = (request) => {
     const workspace = workspaceOf(request.repositoryId);
     const installation = installationOf(workspace);
@@ -421,7 +401,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     );
   };
 
-  // Contract §3 `readRefs`. The generation decides at acceptance as for `readHistory`. Contract §5 "Pending reads": a new `readRefs` cancels each unfinished one of its workspace.
+  // Contract §3 `readRefs`. The generation decides at acceptance as for `openHistory`. Contract §5 "Pending reads": a new `readRefs` cancels each unfinished one of its workspace.
   const readRefs: Handler<"readRefs"> = (request) => {
     const workspace = workspaceOf(request.repositoryId);
     const installation = installationOf(workspace);
@@ -575,7 +555,6 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     restoreWorkspace: register,
     readWorkspace,
     readEntries,
-    readHistory,
     openHistory,
     loadHistory: (request) => views.load(request),
     readHistoryRows: (request) => views.rows(request),

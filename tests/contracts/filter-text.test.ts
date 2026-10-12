@@ -4,12 +4,14 @@
 // T014: the filter-text refusals of contract Δ3 `searchHistory` (spec FR-022, FR-026, FR-027, FR-028, SC-009).
 
 import { describe, expect, test } from "bun:test";
-import { filterText } from "../../src/contracts/filter-text";
+import { filterText as check } from "../../src/contracts/filter-text";
 import { FILTER_TEXT_BYTES } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/contracts/filter-text.ts", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
+
+const filterText = (text: string) => check(text, FILTER_TEXT_BYTES);
 
 describe("filter text", () => {
   test("each refused text gives its reason and the found character", () => {

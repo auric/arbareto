@@ -81,6 +81,8 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 - Payload: `{viewId, mode, searchId?, at, count, text}`.
   - `mode`: `"full"` or `"filter"`. `"filter"` requires `searchId`. Spec highlight mode is `mode: "full"` with `searchId`. Spec filter mode is `mode: "filter"`.
   - `at`: `{row}`, `{oid}`, `{match: "next" | "previous", from}`, or `{end: true}`. `{match}` requires `searchId`. Without it, the request ends `rejected` with `INVALID_REQUEST`, and no Git process starts.
+  - In filter mode, `at: {row: k}` names match k, and each row `index` is its match index. Both count matches in full-history order, not view rows. The filter list length is the match count. `rowCount` stays the view row count (data-model §1). This is a reviewer default.
+  - `from` in `at: {match, from}` is a view row index, and it is inclusive. `next` gives the first match at row `from` or later. `previous` gives the last match at row `from` or earlier. This is a reviewer default.
   - `count`: 1 to 512.
   - `text`: `"none"`, `"rows"`, or `"details"`. `"details"` requires `count` 1.
 - Target resolution:

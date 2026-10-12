@@ -19,7 +19,6 @@
         "removeRecentRepository",
         "readWorkspace",
         "readEntries",
-        "readHistory",
         "openHistory",
         "loadHistory",
         "readHistoryRows",

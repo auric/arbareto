@@ -4,12 +4,12 @@
 // Contract Δ3 `searchHistory`: the filter-text refusals. The service and the renderer run the same checks before any Git process.
 
 import type { UnsupportedFilterTextReason } from "./errors";
-import { FILTER_TEXT_BYTES } from "./limits";
 
+// `maxBytes` is `FILTER_TEXT_BYTES`. The caller passes it, so this module stays a leaf contract that the renderer may load (tests/git/portable-imports.test.ts).
 // `reason` is the contract Δ9 reason of `UNSUPPORTED_FILTER_TEXT`. `found` names the refused characters. It is null for the byte bound.
 export type FilterText = { kind: "none" } | { kind: "search"; text: string } | { kind: "refused"; reason: UnsupportedFilterTextReason; found: string | null };
 
-export function filterText(text: string): FilterText {
+export function filterText(text: string, maxBytes: number): FilterText {
   // Spec FR-027: empty text is no filter.
   if (text === "") return { kind: "none" };
   for (let i = 0; i < text.length; i++) {
@@ -22,6 +22,6 @@ export function filterText(text: string): FilterText {
     // Spec "Assumptions": PCRE2 literal matching quotes the text with \Q and \E, so a \E ends the quote.
     else if (c === 0x5c && text.charCodeAt(i + 1) === 0x45) return { kind: "refused", reason: "quote-end", found: "\\E" };
   }
-  if (new TextEncoder().encode(text).length > FILTER_TEXT_BYTES) return { kind: "refused", reason: "length", found: null };
+  if (new TextEncoder().encode(text).length > maxBytes) return { kind: "refused", reason: "length", found: null };
   return { kind: "search", text };
 }

@@ -21,7 +21,6 @@ import {
   HISTORY_PAGE_BYTES,
   HISTORY_PARENTS_PER_COMMIT,
   HISTORY_ROWS_PER_REQUEST,
-  HISTORY_STREAM_ROWS,
   HISTORY_VIEW_COMMITS,
   PUBLIC_REQUEST_BYTES,
   REF_LISTING_RECORDS,
@@ -89,7 +88,6 @@ const GetEnvironment = op("getEnvironment", {}, empty());
 const ReadWorkspace = op("readWorkspace", { ...repository, repositoryGeneration: Generation.optional() }, ReadWorkspacePayload);
 // Contract §3 fixes no cursor form. The service issues each cursor, so it is a contract §2 identifier.
 const ReadEntries = op("readEntries", snapshot, z.strictObject({ snapshotId: Identifier, cursor: Identifier }));
-const ReadHistory = op("readHistory", snapshot, empty());
 // Contract §3 `readRefs`: no renderer ref, pattern, or format.
 const ReadRefs = op("readRefs", snapshot, empty());
 // Feature 002 contract Δ2 and Δ3. `viewId` and `searchId` are §2 identifiers that the service issues. The service checks the object format of an `oid`.
@@ -100,7 +98,7 @@ const HistoryNeed = z.union([
   z.strictObject({ end: z.literal(true) }).meta({ title: "NeedEnd" }),
 ]);
 const LoadHistory = op("loadHistory", repository, z.strictObject({ viewId: Identifier, need: HistoryNeed }));
-// `from` is the row index where a match search starts.
+// `from` is an inclusive view row index where a match search starts (contract Δ3).
 const RowsAt = z.union([
   z.strictObject({ row: Count }).meta({ title: "AtRow" }),
   z.strictObject({ oid: ObjectId }).meta({ title: "AtOid" }),
@@ -164,7 +162,6 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   RemoveRecentRepository,
   ReadWorkspace,
   ReadEntries,
-  ReadHistory,
   OpenHistory,
   LoadHistory,
   ReadHistoryRows,
@@ -209,7 +206,6 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   op("restoreWorkspace", {}, z.strictObject({ bootstrapId: Identifier })),
   ReadWorkspace,
   ReadEntries,
-  ReadHistory,
   OpenHistory,
   LoadHistory,
   ReadHistoryRows,
@@ -613,33 +609,7 @@ export const HistoryRow = z
   })
   .meta({ title: "HistoryRow" });
 
-// Contract §3 `readHistory`: at most 100 rows of the captured checkout, child before parent. The first row is the captured HEAD commit.
-// `boundaries.page` holds the parents outside the page. `boundaries.shallow` holds the raw parents that a shallow commit of the page hides.
-// `remedy` holds the contract §7 "Missing objects" text of an `OBJECT_MISSING` page.
-export const HistoryPage = z
-  .strictObject({
-    generation: Generation,
-    scope: z.literal("current-checkout"),
-    head: Head,
-    shallowFingerprint: Fingerprint.nullable(),
-    rows: z.array(HistoryRow).max(HISTORY_STREAM_ROWS),
-    boundaries: z.strictObject({ page: z.array(ObjectId), shallow: z.array(ObjectId) }),
-    completeness: Completeness,
-    remedy: Remedy.optional(),
-  })
-  .refine((p) => p.completeness.state !== "failed" && (p.head.state === "unborn" ? p.rows.length === 0 : p.rows.length === 0 || p.rows[0]!.oid === p.head.oid))
-  .meta({ title: "HistoryPage" });
-
-// Contract §3 `readHistory` without a page: a refused gate, a failed read, or a damaged object store (contract §7 "Missing objects"). It holds no row.
-export const HistoryRefusal = z
-  .strictObject({ completeness: Completeness, remedy: Remedy.optional() })
-  .refine((r) => r.completeness.state === "failed")
-  .meta({ title: "HistoryRefusal" });
-
-export const ReadHistoryResult = z.union([HistoryPage, HistoryRefusal]).meta({ title: "ReadHistoryResult" });
 export type HistoryRow = z.infer<typeof HistoryRow>;
-export type HistoryPage = z.infer<typeof HistoryPage>;
-export type HistoryRefusal = z.infer<typeof HistoryRefusal>;
 
 // Contract §3 "References result" and data-model §4 "Reference list". `name` has no kind prefix. An empty Git field gives null.
 // `commitId` is `objectId` for a commit, `peeledId` for a tag that Git peels to a commit, and otherwise null.

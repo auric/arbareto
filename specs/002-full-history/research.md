@@ -27,7 +27,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - Git documents no unique order (rev-list-options.adoc:916). Repeatability across two processes is an experiment fact only. **documented** (the gap) and **experiment** (the repeatability)
   - Without a commit-graph, the first row waits for a walk of the whole graph: about 1 s at 200,000 commits, 48 ms with a commit-graph. **experiment**
   - Because Git documents no unique order, a later run can order the skipped rows another way. A one-row overlap check after `--skip` cannot prove the skipped prefix. The full compare of the re-read rows uses only exact parses. **documented** (the gap)
-  - The step size rule keeps S ≥ 2·L₀. So the re-read rows of all later steps add up to less than the final row count (plan.md D2). **documented** (arithmetic)
+  - The step size rule keeps S ≥ 2·L₀. So the re-read rows of all later steps add up to less than twice the final row count (plan.md D2). **documented** (arithmetic)
   - rev-list reads revisions from stdin with `--stdin` (git-rev-list(1)). **documented**
   - With equal commit dates, the stdin order of the start points decides the order of the tied rows. A shuffled or a reversed stdin gave the same rows in another order. So the start points must go to Git in ascending lowercase hex. **experiment** (Git 2.56.0.windows.1, T003 equal-dates fixture)
   - Without generation numbers, `--date-order` sets `limited`, and `limit_list` walks the whole graph before the first line (Git v2.56.0 revision.c:2485-2487, 3195-3196, 4053-4057). With them, `init_topo_walk` walks on demand (revision.c:4058-4059). `--skip` takes one walk step for each skipped commit (revision.c:4598-4607). **documented** (code)
@@ -122,6 +122,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - `%(objectname)` of a symbolic ref gives the target OID. **unverified**
   - 10,000 SHA-256 lines need about 650 KB, so a large set uses the 001 streamed input. **documented** (arithmetic)
   - A set `GIT_REPLACE_REF_BASE` moves replace refs outside the fingerprint. **documented** (Git environment); a contract gap
+  - `core.useReplaceRefs` in the repository config changes parents outside the fingerprint. The re-read compare reports it as reason `order`. A load after `core.useReplaceRefs false` keeps the topology fingerprint equal and gives `HISTORY_CHANGED` reason `order` (T024). **unverified**; a contract gap
 - **Alternatives considered**: The Git Extensions exclusion list. Rejected for explicit namespaces (spec Assumptions).
 
 ## R8 History list: why the installed virtualizer does not fit
@@ -199,7 +200,7 @@ These stay **unverified** until the named step runs:
 - `IsHungAppWindow` covers the Tauri main window: P8.
 - The shortcut conflicts with the 001 keyboard map: P6.
 - The re-read cost of a later step at 1,000,000 commits: T061.
-- The first-screen memory with no Git process: P8.
+- The memory after the first load step, with no Git process: P8.
 - The Rust shell routes `succeeded` after the service closed the load Job: T025 and T055.
 
 ## Results

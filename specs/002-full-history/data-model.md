@@ -76,7 +76,8 @@ Validation (contract Δ3 `loadHistory`):
 - A parent that already showed as a row gives `MALFORMED_GIT_OUTPUT`.
 - A parent still pending at exit 0 gives `MALFORMED_GIT_OUTPUT`.
 - A line with more than 64 parents gives `OUTPUT_LIMIT` reason `HISTORY_PARENTS_PER_COMMIT`.
-- On a later step, the first N streamed rows are compared with the N held rows at the same index, in OID and parents. They do not enter the table again. A difference, or a Git exit before row N, gives `HISTORY_CHANGED` reason `order`. The rows from N on enter the table.
+- On a later step, the first N streamed rows are compared with the N held rows at the same index, in OID and parents. They do not enter the table again. A difference, or a Git exit 0 before row N, gives `HISTORY_CHANGED` reason `order`. The rows from N on enter the table.
+- Pending parents at a stop row, a cancel, or a `DEADLINE` get no check. The check runs only at a Git exit 0 at or after row N.
 
 ## 4. Lane state and graph cell
 

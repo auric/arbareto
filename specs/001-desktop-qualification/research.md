@@ -1848,7 +1848,7 @@ Skips. Each capability skip is `unverified`:
 - Each of the 58 Git blocks printed `C:\Git\cmd\git.exe` and `git version 2.56.0.windows.1`, built from commit `49d759b698127791a5f3f2759c69b983846711dd`. No test skipped for an absent Git.
 - 1,215 `ORIGIN` lines, all under `D:\dev\rozvio`. 1,213 point into `src`, 729 of them into `src\git-service`. 8 `GLOBAL_ORIGIN` lines.
 - The test skips are the same as in the table above. The Rust run ignores 3 child entries and the T370 load probe. No `test.todo` case remains in `tests/`.
-- The T370 load probe ran alone at main `5a27e51`: `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib a_child_without_descendants -- --ignored` exited with code 0, 1 passed, 0 failed, 10.43 s test time. Control mutation in a scratch worktree: `Supervisor::active_descendants` counted every listed process, with the exited child. The probe then failed with exit code 101, because 1 of 1600 exit replies counted a process.
+- The T370 load probe ran alone at main `5a27e51`: `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib a_child_without_descendants -- --ignored` exited with code 0, 1 passed, 0 failed, 10.43 s test time. Control mutation at `a293fdd` in a scratch worktree, as T370 states it: `Supervisor::active_descendants` read `ActiveProcesses` after the wait again. The default `cargo test --locked` run then exited with code 101, with `jobs::tests::the_active_descendants_leave_out_the_exited_process_and_a_failed_query_gives_none` red, and the probe exited with code 101, because 1 of 1600 exit replies counted a process. After the undo, both runs exited with code 0 (435 passed, and the probe passed).
 
 Earlier runs of this batch:
 

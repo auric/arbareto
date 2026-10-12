@@ -47,7 +47,7 @@ Label rule (renderer):
 | `ref` | Full remote ref name (plan.md D4), or `refs/heads/<panel name>`. |
 | `trackingRef` | `%(push)`, or null for a panel destination. |
 | `url` | The one push URL, redacted for display. |
-| `setUpstream` | Panel choice, default true. Only the panel sets it. |
+| `setUpstream` | Panel choice. Default true only for a branch without an upstream, else false (FR-016). Only the panel sets it. |
 | `source` | `remote-push-refspec`, `push-default-upstream`, `push-default-branch`, or `panel`. |
 
 ## 4. Fetch result
@@ -72,17 +72,20 @@ Label rule (renderer):
 
 ## 6. Pull decision
 
-Inputs: counts after the fetch, `pull.ff`, `branch.<name>.rebase`, `pull.rebase`, and the payload mode.
+Inputs: counts after the fetch, `pull.ff`, `branch.<name>.rebase`, `pull.rebase`, and the payload mode. The rebase column takes the payload mode first, then `branch.<name>.rebase`, then `pull.rebase`. The rows apply in order, and the first match decides.
 
 | Counts | `pull.ff` | Rebase value or payload mode | Result |
 |---|---|---|---|
 | behind 0 | any | any | `up-to-date`, no integration |
+| ahead 0, behind > 0 | `false` | `true`, `merges`, `interactive`, or payload `rebase` | `fast-forward` (Git's pull fast-forwards a rebase pull that can fast-forward) |
+| ahead 0, behind > 0 | `false` | unset or `false`, or payload `merge` | `merge --no-ff` (FR-027, reviewer default O-2) |
 | ahead 0, behind > 0 | any except `false` | any | `fast-forward` |
-| ahead 0, behind > 0 | `false` | none or `merge` | `merge --no-ff` (FR-027, reviewer default O-2) |
-| both > 0 | `only` | any | refusal `ff-only` |
+| both > 0 | `only` | no payload, any configured rebase value | refusal `ff-only` (t7601 "pull.ff=only overrides pull.rebase=true") |
+| both > 0 | `only` | payload `rebase` or `merge` | that mode; Git's pull turns `--ff-only` into `--ff` |
 | both > 0 | unset | unset and no payload | `mode-required` |
 | both > 0 | any | `true`, `merges`, payload `rebase` | `rebase` (`--rebase-merges` for `merges`) |
 | both > 0 | any | `interactive` | refusal `interactive-rebase` |
+| both > 0 | `true` or `false` | unset and no payload | `merge` with `--ff` or `--no-ff` |
 | both > 0 | `true`, `false`, or unset | `false` or payload `merge` | `merge` with `--ff`, `--no-ff`, or nothing |
 
 An invalid value gives refusal `invalid-config`. The source of the mode goes into the result: `payload`, `branch`, `pull`, or `pull-ff`.
@@ -105,7 +108,7 @@ An invalid value gives refusal `invalid-config`. The source of the mode goes int
 | fetch, fetch-all | Every process exit 0, and the listing diff equals the lines. | Exit 0, and the diff has more changes. | A process failed, and no ref changed. | A process failed or a limit fired, and a ref changed. | Cancel, and no ref changed. |
 | push | Status `pushed`, `forced`, `created`, or `up-to-date`. | Success, and another local change is observed. | `PUSH_REJECTED` with its reason, or no line and no change. | A limit or Cancel, and a local ref or config changed. | Cancel, and no local change. The remote can hold the push. |
 | pull, integrate | Integration `up-to-date` or `done`, or `mode-required`. | `done`, and an observed value differs from the expected one. | No effect. | The fetch changed refs, and the integration is `stopped`, `refused`, or not started. | Cancel, and no change. |
-| abort, continue, skip | State `normal` after abort; `normal` or a moved rebase after continue or skip. | Another observed change. | Git refused, and nothing changed. | `stopped` again, or a partial change. | Cancel, and no change. |
+| abort, continue, skip | State `normal` after abort; Git exit 0 and state `normal` after continue or skip. | Another observed change. | Git refused, and nothing changed. | `stopped` again, or a partial change. | Cancel, and no change. |
 | clone | Exit 0 and registration. | Not used. | A refusal before the start, or a failure with the destination absent or empty. | The destination exists and is not empty after a failure, a limit, or Cancel. | Cancel, and the destination is absent or empty. |
 
 A failed reconciliation read gives `unknown`, and the recovery marker stays (001 §8). Clone has no marker.
@@ -125,6 +128,7 @@ A failed reconciliation read gives `unknown`, and the recovery marker stays (001
 | Field | Rule |
 |---|---|
 | `sshClient` | `git` (default) or `plink`. |
+| `defaultPullAction` | `pull` (default, Pull with Git's configuration), `pull-merge`, `pull-rebase`, `fetch`, or `fetch-all`. The main part of the Pull split button runs it (FR-055, FR-056). Never written into Git configuration. |
 | `plinkPath` | A picked file. Pageant and PuTTYgen sit in its folder (O-7). |
 | `remoteKeyFiles[]` | Up to 256 entries of `{worktreeKey, remote, path}`. The path is a picked file. |
 | `defaultCloneFolder` | A picked folder or null. |

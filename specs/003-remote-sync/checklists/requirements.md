@@ -36,5 +36,7 @@
 - Mark resolved decides only from unmerged index stages and file identity and bytes. The clone suggestion is a convenience that the user confirms, so the no-heuristics rule does not apply to it.
 - New FR IDs keep the existing IDs stable, so FR-041 to FR-045, FR-052, FR-053, and FR-054 sit inside the Fetch, Pull, and Clone sections out of numeric order.
 - Git names stay in the spec where feature 001 already uses them as contract facts, such as `pull.rebase` and `remote.<name>.puttykeyfile`. The plan names the Git commands and options.
+- FR-019 names the Git format as a reviewer default (O-1).
+- The analyze session of 2026-10-12 adds the Pull split button and its default action (FR-055, FR-056), the rebase confirmation ruling (FR-057), and three US5 scenarios. The spec now holds 57 FRs, 14 SCs, and 57 acceptance scenarios.
 - SC-010 is a review criterion. It checks the no-heuristics rule across the requirement-to-test mapping.
 - Items marked incomplete require spec updates before `/speckit-clarify` or `/speckit-plan`.

@@ -34,8 +34,8 @@ Use only the README "Development" commands:
 | # | Scenario | Test home | Expected outcome | Spec |
 |---|---|---|---|---|
 | Q1 | Build the remote fixtures. | `tests/git/remote-fixtures.ts` | Self-check: refs, counts, markers. | SC-001 to SC-003 |
-| Q2 | Record the Git facts (a) to (k). | `tests/git/remote-facts.test.ts` | Each fact passes, or research.md records the failure. | FR-005, FR-015, FR-019 |
-| Q3 | Record the PuTTY facts. | `tests/windows/putty-facts.test.ts` | Unknown host fails within 5 s. The quoted plink path works. Pageant loads `--encrypted`. | SC-007 |
+| Q2 | Record the Git facts (a) to (l). | `tests/git/remote-facts.test.ts` | Each fact passes, or research.md records the failure. | FR-005, FR-015, FR-019 |
+| Q3 | Record the PuTTY facts (Sandbox). | `tests/windows/putty-facts.test.ts` | Unknown host fails within 5 s. The quoted plink path works. Pageant loads `--encrypted`. | SC-007 |
 | Q4 | Fetch and Fetch all against bare remotes. | `tests/git/sync-fetch.test.ts` | Remote-tracking refs equal Git's fetch on a copy. Each remote has its outcome. "Nothing changed" when no line. | SC-001, FR-011, FR-012 |
 | Q5 | Cancel and the inactivity end during a slow fetch. | `tests/git/sync-fetch.test.ts` (serial) | Reconciled within 5 s. The observed changes list. No rollback text. | SC-004, FR-004 |
 | Q6 | Counts on every count fixture. | `tests/git/tracking.test.ts` | Each count equals `rev-list --left-right --count`. Gone, no upstream, equal, slashes, 10000+. | SC-003 |
@@ -56,15 +56,15 @@ Use only the README "Development" commands:
 | Q21 | Input response during a fetch, a push, and a clone, packaged. | `tests/windows/sync-packaged.test.ts` | 95% within 100 ms, all within 500 ms. | SC-008 |
 | Q22 | 30 minutes with focus returns and no network action. | `tests/windows/no-network.test.ts` | The `git daemon` access-hook counter, the HTTP request counter, and the SSH connection counter stay at 0. | SC-013, FR-041 |
 | Q23 | Requirement-to-test review. | review of tasks.md | No outcome decided by message text or timing. | SC-010 |
-| Q24 | Component tests: toolbar, counts, push panel, notices, force confirmation, conflict actions, Mark resolved, clone panel, settings. | `tests/contracts/sync-*.test.tsx` | Keyboard, focus, text alternatives, Cancel focus, destructive styling. | FR-020, FR-024, FR-039 |
+| Q24 | Component tests: toolbar, Pull split button and default action, counts, push panel, notices, force confirmation, conflict actions, Mark resolved, clone panel, settings. | `tests/contracts/sync-*.test.tsx` | Keyboard, focus, text alternatives, Cancel focus, destructive styling. The default action is stored in the app settings only. | FR-020, FR-024, FR-039, FR-055 to FR-057 |
 
 ## Manual check in the app
 
 1. Start the app with `ARBARETO_PROFILE_ROOT` set. Open a fixture clone with a diverged branch.
 2. Check the toolbar and sidebar counts and their tooltips.
 3. Push. Check the rejected notice and its four choices. Use Force push with lease and check the modal.
-4. Pull with each mode. Make a conflict. Use Mark resolved, then Continue.
-5. Select PuTTY in the settings. Fetch from the SSH fixture with an unknown host key. Use Connect in a terminal.
+4. Pull with each item of the Pull split button. Set a default action and check the icon and tooltip. Make a conflict. Use Mark resolved, then Continue.
+5. Run this step only in Windows Sandbox with the T076 package (T080). Never run it on the host. Select PuTTY in the settings. Fetch from the SSH fixture with an unknown host key. Use Connect in a terminal.
 6. Clone a bare fixture with the suggested destination.
 
 ## Evidence

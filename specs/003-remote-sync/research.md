@@ -58,7 +58,8 @@ Line numbers in Git source are not recorded here. P0.2 records the Git version o
   - `rebase --fork-point <upstream>` replays the same commits onto the same base. **unverified** (P0.2 e)
   - With rebase configured, a pull that can fast-forward does so (Git 2.27 and later). **documented** (builtin/pull.c; RelNotes 2.27.0)
   - Divergence with neither `pull.rebase` nor `pull.ff` makes Git die with advice. **documented** (builtin/pull.c)
-  - `--ff-only` takes precedence over rebase. **unverified** (recollection of builtin/pull.c; P0.2 e)
+  - An explicit `--rebase` or `--no-rebase` overrides `pull.ff=only`: `cmd_pull` turns `--ff-only` into `--ff` when `opt_rebase >= 0`, "so that an explicit '--rebase' can override a config setting of pull.ff=only". A configured `pull.rebase` does not override it: "ff-only takes precedence over rebase" dies on divergence (t7601 "pull.ff=only overrides pull.rebase=true"). **documented** (builtin/pull.c `cmd_pull`, DeepWiki git/git; P0.2 e records it as an experiment)
+  - With rebase configured and a pull that can fast-forward, Git forces `--ff-only`, also with `pull.ff=false`. **documented** (builtin/pull.c), **unverified** as a fixture (P0.2 e)
   - `pull.rebase` values: `true`, `false`, `merges`, `interactive`. `branch.<name>.rebase` overrides `pull.rebase`. **documented** (git-config(1); builtin/pull.c `config_get_rebase`)
   - `merge` and `rebase` do not honor `submodule.recurse`. **documented** (Documentation/config/submodule.adoc list), **unverified** as a fixture (P0.2 h)
 - **Alternatives considered**:
@@ -178,13 +179,13 @@ Line numbers in Git source are not recorded here. P0.2 records the Git version o
 - **Decision**:
   - Local bare remotes.
   - `git http-backend` behind `Bun.serve` with Basic sign-in on 127.0.0.1.
-  - `git daemon --verbose` on 127.0.0.1 for SC-013.
+  - `git daemon` on 127.0.0.1 for SC-013. An access hook counts service requests; no log text decides.
   - An SSH server in the test process (O-5) or a WSL `sshd`.
   - Inert key fixtures.
-  - Windows Sandbox for PuTTY registry cases.
+  - Windows Sandbox for every case that starts plink, Pageant, or PuTTYgen (T084 configuration).
 - **Rationale**:
   - The `git http-backend` CGI serves smart HTTP. **documented** (git-http-backend(1))
-  - `git daemon --verbose` logs each connection. **documented** (git-daemon(1))
+  - `git daemon --access-hook` runs a program for each service request. **documented** (git-daemon(1))
   - Windows on this PC has no `sshd`: neither Git for Windows nor System32 has one. PuTTY 0.8x is installed. **experiment** (2026-10-12 listing)
   - Windows PuTTYgen has no command line, so the test `.ppk` is an inert fixture. **unverified**
 - **Alternatives considered**: public hosts. Forbidden by the spec. Rejected.
@@ -200,7 +201,9 @@ These stay **unverified** until the named step runs:
 - `fetch --porcelain` with `--progress` prints the counter: P0.2 a.
 - Porcelain push `from:to` are full names: P0.2 b.
 - `%(upstream)` with an unconfigured remote: P0.2 j.
-- `--ff-only` precedence, `rebase --fork-point` equality, the matrix against Git's pull: P0.2 e.
+- `pull.ff=only` precedence as an experiment, `rebase --fork-point` equality, the matrix against Git's pull: P0.2 e.
+- `rebase --skip` leaves the index and working files equal to HEAD of the next step: P0.2 l.
+- Pageant `--encrypted` with an unreadable key file exits non-zero: P0.3.
 - `GIT_EDITOR=:` and the commit cleanup: P0.2 f.
 - `submodule.recurse` and merge or rebase: P0.2 h.
 - `update-index --add` on unmerged paths and the mode: P0.2 i.

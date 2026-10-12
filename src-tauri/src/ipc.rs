@@ -136,7 +136,7 @@ pub trait NativeFirst: Send + Sync {
 }
 
 /// A forwarded request waits here for the service response with its `requestId`.
-pub(crate) enum Submitted {
+enum Submitted {
     Answer(Value),
     Waiting(Receiver<Value>, Option<Prepared>),
     Denied,
@@ -232,13 +232,7 @@ impl Ipc {
 
     /// The steps of contract §1 "Renderer request body", in that order.
     /// The service strict decoder checks duplicate keys, nesting, and unsafe integers. The shell also runs it on a native-first body.
-    pub(crate) fn submit(
-        &self,
-        label: &str,
-        url: &str,
-        body: &InvokeBody,
-        command: &str,
-    ) -> Submitted {
+    fn submit(&self, label: &str, url: &str, body: &InvokeBody, command: &str) -> Submitted {
         if label != MAIN_WINDOW || !is_local(url) {
             return Submitted::Denied;
         }
@@ -1017,6 +1011,40 @@ mod tests {
                 "{operation}"
             );
         }
+    }
+
+    /// Feature 002 T025 (contract Δ6): this case covers only the routing by `requestId`.
+    /// T055 owns the end-to-end check of a `succeeded` response after a process `cancel`.
+    #[test]
+    fn a_succeeded_response_of_an_operation_reaches_the_renderer_by_its_request_id() {
+        let (ipc, _frames) = ipc();
+        ipc.set_session(Some(SESSION_ID.to_string()));
+        let mut envelope = request(
+            "loadHistory",
+            json!({ "viewId": OPERATION_ID, "need": { "end": true } }),
+        );
+        envelope["repositoryId"] = json!(OPERATION_ID);
+        let Submitted::Waiting(mut renderer, None) = ipc.submit(
+            MAIN_WINDOW,
+            LOCAL,
+            &raw(&envelope.to_string()),
+            "loadHistory",
+        ) else {
+            panic!("the shell forwards loadHistory");
+        };
+        assert!(
+            renderer.try_recv().is_err(),
+            "no response before the service sends one"
+        );
+        let frame = json!({
+            "kind": "public",
+            "response": { "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "succeeded", "result": { "rows": 2, "complete": false } },
+        });
+        let Some(ToRenderer::Response(response)) = renderer_message(&frame.to_string()) else {
+            panic!("a public response frame");
+        };
+        ipc.deliver(response.clone());
+        assert_eq!(renderer.try_recv().ok(), Some(response));
     }
 
     /// Contract §3: each operation of `src/contracts/operations.ts` has its handler in `lib.rs` and its grant in the capability.

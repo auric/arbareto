@@ -733,8 +733,9 @@ const GraphSegment = z
     z.strictObject({ shape: z.literal("stub"), lane: Lane, color: Count }).meta({ title: "GraphStub" }),
   ])
   .meta({ title: "GraphSegment" });
+// `layoutStep` (src/git-service/history-layout.ts) draws one line per open lane above and one line per parent lane or one stub below.
 export const GraphCell = z
-  .strictObject({ node: Lane, color: Count, merge: z.boolean(), limited: z.boolean(), segments: z.array(GraphSegment), marks: z.array(z.enum(["root", "shallow"])) })
+  .strictObject({ node: Lane, color: Count, merge: z.boolean(), limited: z.boolean(), segments: z.array(GraphSegment).max(2 * GRAPH_LANES), marks: z.array(z.enum(["root", "shallow"])) })
   .meta({ title: "GraphCell" });
 const Person = z.strictObject({ name: z.string(), email: z.string() });
 
@@ -750,7 +751,7 @@ export const HistoryViewRow = z
     parents: z.array(ObjectId).max(HISTORY_PARENTS_PER_COMMIT),
     // Null in filter mode for a row that is not settled yet.
     cell: GraphCell.nullable(),
-    labels: z.array(z.strictObject({ kind: z.enum(["branch", "remote", "tag", "stash"]), name: z.string(), invalidUtf8: z.boolean() })),
+    labels: z.array(z.strictObject({ kind: z.enum(["branch", "remote", "tag", "stash"]), name: z.string(), invalidUtf8: z.boolean() })).max(REF_LISTING_RECORDS),
     checkout: z.boolean(),
     // Present when the request has `searchId`. Null while the match state of the row is not known.
     match: z.boolean().nullable().optional(),

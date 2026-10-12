@@ -53,6 +53,7 @@
                         "type": "boolean"
                       },
                       "segments": {
+                        "maxItems": 48,
                         "type": "array",
                         "items": {
                           "oneOf": [
@@ -188,6 +189,7 @@
                 ]
               },
               "labels": {
+                "maxItems": 10000,
                 "type": "array",
                 "items": {
                   "type": "object",

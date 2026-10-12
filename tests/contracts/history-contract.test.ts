@@ -162,6 +162,15 @@ describe("contract Δ3 results", () => {
     expect(ReadHistoryRowsResult.safeParse(page(Array.from({ length: 513 }, (_, i) => ({ ...row, index: i })))).success).toBe(false);
   });
 
+  test("a row holds at most REF_LISTING_RECORDS labels and 2 × GRAPH_LANES segments", () => {
+    const labels = (n: number) => page([{ ...row, labels: Array(n).fill(row.labels[0]) }]);
+    expect(ReadHistoryRowsResult.safeParse(labels(limits.REF_LISTING_RECORDS)).success).toBe(true);
+    expect(ReadHistoryRowsResult.safeParse(labels(limits.REF_LISTING_RECORDS + 1)).success).toBe(false);
+    const segments = (n: number) => page([{ ...row, cell: { ...cell, segments: Array(n).fill(cell.segments[0]) } }]);
+    expect(ReadHistoryRowsResult.safeParse(segments(2 * limits.GRAPH_LANES)).success).toBe(true);
+    expect(ReadHistoryRowsResult.safeParse(segments(2 * limits.GRAPH_LANES + 1)).success).toBe(false);
+  });
+
   test("readHistoryRows carries rowCount, and each row lies below it", () => {
     const { rowCount: _omit, ...withoutCount } = page([row]);
     expect(ReadHistoryRowsResult.safeParse(withoutCount).success).toBe(false);

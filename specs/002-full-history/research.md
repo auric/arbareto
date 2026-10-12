@@ -202,7 +202,7 @@ These stay **unverified** until the named step runs:
 - The shortcut conflicts with the 001 keyboard map (Ctrl+F for the filter, F3, Shift+F3, Ctrl+Shift+B; plan.md D6): P6.
 - The re-read cost of a later step at 1,000,000 commits: T061.
 - The memory after the first load step, with no Git process: P8.
-- The Rust shell routes `succeeded` after the service closed the load Job: T025 and T055. T025 first result, 2026-10-12: the cargo case `a_succeeded_response_after_a_cancel_closed_the_operation_job_reaches_the_renderer` in `src-tauri/src/process_requests.rs` passed on its first run after T029. Before T029, the shell answers `loadHistory` with `UNKNOWN_OPERATION`, so the case cannot run there. T055 checks the packaged app.
+- The Rust shell routes `succeeded` after the service closed the load Job: T055. The cargo case `a_succeeded_response_of_an_operation_reaches_the_renderer_by_its_request_id` in `src-tauri/src/ipc.rs` covers only the routing by `requestId`. It closes no Job. T055 owns the end-to-end check in the packaged app.
 
 ## Results
 
@@ -255,3 +255,9 @@ T003 (Windows Git 2.56.0.windows.1) and T010 (Ubuntu-26.04 Git 2.55.0), 2026-10-
 - T005 now asserts that a row is limited exactly when it needs more than 24 lanes. A row needs the larger of two counts: its open lanes above plus one lane for a new node, and its open lanes below. On the old layout, this check fails on 2,080 H200K rows and on 24 octopus-65 rows. **experiment**
 - After the O-5 fix, a limited row closes the free lane slots and keeps the lane order (plan.md O-5). T005 on H200K: 200,000 rows; each cell rebuilt from a checkpoint equals the fold. 199,899 lanes end at their parent nodes through the cells. 93 rows are limited. octopus-65 has 43 limited rows of 68, and tips-50 has 103 of 151. **experiment**
 - T010: Ubuntu-26.04 has the C.UTF-8 locale (`locale charmap` gives `UTF-8`). Both probe runs give the contract matches with the distro Git and `LC_ALL=C.UTF-8`. **experiment**
+
+## Batch reviews
+
+T020 passes only after one independent review of batch 1 is recorded here.
+
+**Batch 1, 2026-10-12.** Independent batch 1 review, reviewer agent (Opus), 2026-10-12. Scope: commits adccfa0 (T015, T018) and dcd9d5d (T014, T025, T027, T029, review fixes) on f002-b0, for src, src-tauri, tests, and README.md, without the merges of main. Verdict: pass. Open items: the cancel guard case proves only routing by requestId (R13 stays unverified until T055); the search policy gate gets its cargo case in this fix; labels and segments are bounded in this fix; children is a contract gap; at: {match} without searchId is a contract gap for T028.

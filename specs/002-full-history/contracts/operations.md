@@ -242,3 +242,4 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
 - The maximum layout height in WebView2 is not verified.
 - Linux Git memory is not part of the Windows process tree.
 - `core.useReplaceRefs` in the repository config changes parents outside the fingerprint. The re-read compare reports it as reason `order`.
+- No Δ5 bound for `children` of a `details` row. Only `HISTORY_VIEW_COMMITS` limits it. T028 sets the bound.

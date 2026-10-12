@@ -43,15 +43,15 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 
 - Payload `need`: `{row: n}` with n from 0 to 4,000,000, `{oid}` with an object ID of the view's format, or `{end: true}`.
 - It takes no read slot. A second load of the view while one runs gives `BUSY`. A load while a search of the view runs gives `BUSY`.
-- Command: `--no-lazy-fetch --no-optional-locks rev-list --parents --date-order --stdin`. When the view holds N ≥ 1 rows, add `--skip=<N-1>`. Policy `read`. `deadlineMs` 120,000, the 001 §6 maximum.
+- Command: `--no-lazy-fetch --no-optional-locks rev-list --parents --date-order --stdin`. Every step uses this argv, with no `--skip`. Policy `read`. `deadlineMs` 120,000, the 001 §6 maximum.
 - Stop row S. L₀ is the row count at the start. M is `HISTORY_LOAD_MARGIN` (Δ5).
   - `{row: n}`: S = max(n + 1 + 2·M, 2·L₀).
   - `{oid}`: no stop row until that commit streams at row r. Then S = max(r + 1 + 2·M, 2·L₀). If the commit never streams, the load reads to the end.
   - `{end: true}`, and the load inside a search: no stop row.
 - At S rows, the service waits for the fingerprint check of this load. It then sends the process `cancel` for the call and waits for `exit` (Δ6). It ignores that exit code. The load ends `succeeded` with `complete: false`.
 - A Git exit before S: exit 0 is the end of the history. The end checks run, and the load ends `succeeded` with `complete: true`.
-- Before a resume, the service reads the topology fingerprint again. It starts `for-each-ref refs/replace` beside the Git start. A difference makes the view stale with `HISTORY_CHANGED` reason `topology`.
-- On a resume, the first line must equal row N-1 in OID and parents. Otherwise the view is stale with `HISTORY_CHANGED` reason `order`.
+- Before a later step, the service reads the topology fingerprint again. It starts `for-each-ref refs/replace` beside the Git start. A difference makes the view stale with `HISTORY_CHANGED` reason `topology`.
+- Re-read rule. N is the row count that the view holds at the start. For each i below N, streamed row i must equal held row i in OID and parents. The first difference makes the view stale with `HISTORY_CHANGED` reason `order`. A Git exit before row N gives the same result. The rows from N on append to the view. Reason: Git documents no unique order, so a one-row overlap check cannot prove the earlier rows (plan.md D2).
 - Each line holds at most 1 + 64 OIDs (`HISTORY_PARENTS_PER_COMMIT`). A longer line ends the load `limited` with `OUTPUT_LIMIT` and that reason.
 - A view holds at most 4,000,000 commits (`HISTORY_VIEW_COMMITS`). At that bound, the service ends the load `limited` with `OUTPUT_LIMIT` and that reason. The loaded rows stay. The view states the limit, and a later `loadHistory` gives the same result without a Git process.
 - The service keeps no raw bytes beyond one partial line. The line bound and the commit bound together bound the stream. This replaces the 001 §5 "History page" bound for this stream only.
@@ -186,7 +186,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
 - Stale conditions (spec FR-006). A stale view keeps its rows, refuses further loads and searches with its code, and offers Refresh:
   1. A view process fails, and the object check finds a missing commit: `OBJECT_MISSING` (reason `object-missing`).
   2. `HISTORY_CHANGED` reason `topology`: the shallow digest, the grafts digest, or the replace records changed. The service checks this before each later view process.
-  3. `HISTORY_CHANGED` reason `order`: a resume overlap differs, or a pending parent stays at the end.
+  3. `HISTORY_CHANGED` reason `order`: a re-read row differs from the held row, a later step ends before the held row count, or a pending parent stays at the end.
   4. `MALFORMED_GIT_OUTPUT`, `GIT_FAILED`, or a diagnostic `OUTPUT_LIMIT`.
   5. The view was released (`UNKNOWN_TARGET`), or the service session ended.
 - Cancel and `DEADLINE` do not make the view stale. A later demand resumes the load.

@@ -76,7 +76,7 @@ Validation (contract Δ3 `loadHistory`):
 - A parent that already showed as a row gives `MALFORMED_GIT_OUTPUT`.
 - A parent still pending at exit 0 gives `MALFORMED_GIT_OUTPUT`.
 - A line with more than 64 parents gives `OUTPUT_LIMIT` reason `HISTORY_PARENTS_PER_COMMIT`.
-- A resume overlap row that differs gives `HISTORY_CHANGED` reason `order`.
+- On a later step, the first N streamed rows are compared with the N held rows at the same index, in OID and parents. They do not enter the table again. A difference, or a Git exit before row N, gives `HISTORY_CHANGED` reason `order`. The rows from N on enter the table.
 
 ## 4. Lane state and graph cell
 
@@ -165,5 +165,5 @@ The renderer holds O(visible + cache) only. It holds no structure of the history
 | Base | The same workspace before history opens (spec SC-002). The design proposes a twin worktree with a one-commit history. That base waits for plan.md open item O-1. |
 | Samples | Private bytes over the complete process tree, every 100 ms. |
 | Git processes | Recorded apart, next to the peak of the same Git command run alone. |
-| Checkpoints | After the first screen shows, with no Git process of the view; after End; after a return to the top; during a filter search (spec SC-002). |
+| Checkpoints | After the first load step ends (its `loadHistory` result arrived), no Git process of the view runs, and the view adds at most 16 MiB; after End; after a return to the top; during a filter search (spec SC-002). |
 | Loaded rows | The loaded row count at each checkpoint. |

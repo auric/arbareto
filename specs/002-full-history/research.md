@@ -18,7 +18,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 
 ## R1 Page rule: one order per view, read in load steps
 
-- **Decision**: Each view reads one `rev-list --parents --date-order --stdin` order in load steps. A step reads to a stop row, and then the service ends Git (plan.md D2). A later step uses the same arguments with `--skip=<N-1>`. The first resumed line must equal row N-1.
+- **Decision**: Each view reads one `rev-list --parents --date-order --stdin` order in load steps. A step reads to a stop row, and then the service ends Git (plan.md D2). A later step runs the same arguments with no `--skip`. The service compares each of the first N streamed rows with the held row at the same index, in OID and parents. The first difference makes the view stale with `HISTORY_CHANGED` reason `order`. The rows after the held rows append (reviewer default, spec Assumptions).
 - **Rationale**:
   - One stream gives one exact order by construction. **experiment**
   - `--date-order` shows no parent before all its children (git-rev-list(1)). **documented**
@@ -26,12 +26,15 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - Joined `--skip` pages give the same order. Each deep page walks the history again: 942 ms at 200,000 commits without a commit-graph, 180 ms with one. **experiment**
   - Git documents no unique order (rev-list-options.adoc:916). Repeatability across two processes is an experiment fact only. **documented** (the gap) and **experiment** (the repeatability)
   - Without a commit-graph, the first row waits for a walk of the whole graph: about 1 s at 200,000 commits, 48 ms with a commit-graph. **experiment**
+  - Because Git documents no unique order, a later run can order the skipped rows another way. A one-row overlap check after `--skip` cannot prove the skipped prefix. The full compare of the re-read rows uses only exact parses. **documented** (the gap)
+  - The step size rule keeps S ≥ 2·L₀. So the re-read rows of all later steps add up to less than the final row count (plan.md D2). **documented** (arithmetic)
   - rev-list reads revisions from stdin with `--stdin` (git-rev-list(1)). **documented**
   - With equal commit dates, the stdin order of the start points decides the order of the tied rows. A shuffled or a reversed stdin gave the same rows in another order. So the start points must go to Git in ascending lowercase hex. **experiment** (Git 2.56.0.windows.1, T003 equal-dates fixture)
   - Without generation numbers, `--date-order` sets `limited`, and `limit_list` walks the whole graph before the first line (Git v2.56.0 revision.c:2485-2487, 3195-3196, 4053-4057). With them, `init_topo_walk` walks on demand (revision.c:4058-4059). `--skip` takes one walk step for each skipped commit (revision.c:4598-4607). **documented** (code)
 - **Alternatives considered**:
   - A cursor that restarts from the parents not yet sent. It gives another valid order, so the order changes inside a view. Rejected. **experiment**
   - Fixed-size `--skip` pages. A deep scroll costs one walk per page. Rejected; load steps double instead (plan.md D2).
+  - Load steps with `--skip=<N-1>` and a one-row overlap check. The check cannot prove the skipped prefix. Replaced by the full compare on 2026-10-12 (reviewer default, spec Assumptions).
   - One stream per view, drained at full speed. It holds the topology of every commit from the open. Replaced by load steps on 2026-10-12 (user decision, spec Clarifications).
   - A paused stream with backpressure. The memory note of the investigation proposed it ("read with backpressure"). The design rejects it (R2).
 
@@ -195,9 +198,9 @@ These stay **unverified** until the named step runs:
 - The maximum layout height in WebView2: P6.
 - `IsHungAppWindow` covers the Tauri main window: P8.
 - The shortcut conflicts with the 001 keyboard map: P6.
-- The resume cost at 1,000,000 commits: T061.
+- The re-read cost of a later step at 1,000,000 commits: T061.
 - The first-screen memory with no Git process: P8.
-- The shell routes `succeeded` after the service closed the load Job: P3.
+- The Rust shell routes `succeeded` after the service closed the load Job: T025 and T055.
 
 ## Results
 

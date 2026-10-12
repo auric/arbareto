@@ -9,6 +9,7 @@
     "tests/git/history-fixtures.test.ts": "builds or reads H1M",
     "tests/git/history-layout.test.ts": "builds or reads H200K",
     "tests/git/history-order.test.ts": "builds or reads H1M",
+    "tests/git/history-reduced.test.ts": "builds or reads H200K",
     "tests/git/mutation-lifecycle.test.ts": "asserts child ends within END_MS and reports maintenance run time",
     "tests/git/poll-cost.test.ts": "T192 observations: wall and CPU time of reads",
     "tests/git/read-inputs.test.ts": "asserts no watcher hint within HINT_BUDGET_MS",

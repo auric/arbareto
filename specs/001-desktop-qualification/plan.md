@@ -79,9 +79,9 @@ Keep the clean-install environment offline after prerequisite installation. On t
 
 ## Constitution Check
 
-**Pre-research gate**: PASS after the user selected Tauri-only implementation. Constitution `2.0.0` applies. Its 2026-09-29 amendments renamed the product and changed the Principle VIII dependency rules to minimum versions with committed lockfiles.
+**Pre-research gate**: PASS after the user selected Tauri-only implementation. Constitution `3.0.0` applies. Its 2026-09-29 amendments renamed the product and changed the Principle VIII dependency rules to minimum versions with committed lockfiles.
 
-**Post-design gate**: Design resolved under the explicit checkpoint contract and approved standard Git commit policy. Constitution `2.0.0` applies. The design follows the amended Principle VIII. Real-repository and packaged proof cases remain mandatory; no runtime pass is claimed.
+**Post-design gate**: Design resolved under the explicit checkpoint contract and approved standard Git commit policy. Constitution `3.0.0` applies. The design follows the amended Principle VIII. Real-repository and packaged proof cases remain mandatory; no runtime pass is claimed.
 
 | Principle | Planning evidence | Post-design status |
 | --- | --- | --- |

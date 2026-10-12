@@ -1,0 +1,19 @@
+<Configuration>
+  <Networking>Disable</Networking>
+  <MemoryInMB>8192</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>%USERPROFILE%\arbareto-sandbox\in</HostFolder>
+      <SandboxFolder>C:\arbareto\in</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>%USERPROFILE%\arbareto-sandbox\out</HostFolder>
+      <SandboxFolder>C:\arbareto\out</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -File C:\arbareto\in\clean-install-prepare.ps1</Command>
+  </LogonCommand>
+</Configuration>

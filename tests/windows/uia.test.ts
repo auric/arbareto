@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
 import { printOrigin } from "../origin";
+import { srcImportHits } from "./src-imports";
+import { withProbe } from "./probe-window";
 import { fixtureDir, useFixtureRoot } from "../git/fixture-root";
 import { appEnv, findInstalledApp, startInstalledApp, waitExit } from "./installed-app";
-import { close, find, findLiveRegions, invoke, MAX_WAIT_MS, readText, UiaError, waitFocus, type Element } from "./uia";
+import { close, find, findLiveRegions, focus, invoke, isSelected, MAX_WAIT_MS, readText, select, setValue, UiaError, waitFocus, type Element } from "./uia";
 
 const UIA = printOrigin("./uia.ts", import.meta.dir);
 const TEST_TIMEOUT_MS = 60_000;
@@ -45,6 +45,10 @@ $w = [Windows.Markup.XamlReader]::Parse(@'
         <TextBlock Text="beta"/>
       </StackPanel>
     </GroupBox>
+    <ListBox AutomationProperties.Name="Probe list">
+      <ListBoxItem Content="first"/>
+      <ListBoxItem Content="second"/>
+    </ListBox>
   </StackPanel>
 </Window>
 '@)
@@ -56,19 +60,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
   afterAll(() => close());
 
   test("no file under src/ imports bun:ffi or the driver", () => {
-    const src = resolve(import.meta.dir, "..", "..", "src");
-    const driver = UIA.replace(/\.ts$/, "");
-    const hits: string[] = [];
-    for (const entry of readdirSync(src, { recursive: true, withFileTypes: true })) {
-      if (!entry.isFile() || !/\.(?:ts|tsx|js|mjs)$/.test(entry.name)) continue;
-      const file = join(entry.parentPath, entry.name);
-      const loader = entry.name.endsWith(".tsx") ? "tsx" : entry.name.endsWith(".ts") ? "ts" : "js";
-      for (const { path } of new Bun.Transpiler({ loader }).scanImports(readFileSync(file, "utf8"))) {
-        if (path === "bun:ffi" || (path.startsWith(".") && resolve(dirname(file), path).replace(/\.ts$/, "") === driver)) hits.push(`${file}: ${path}`);
-      }
-    }
-    console.log(`SCAN_ROOT ${src}`);
-    expect(hits).toEqual([]);
+    expect(srcImportHits([UIA])).toEqual([]);
   });
 
   test("bad arguments refuse before any search", async () => {
@@ -80,28 +72,57 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
 
   test(
     "finds and reads elements of an owned WPF window, and refuses with typed errors",
-    async () => {
-      const shell = join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      const fixture = Bun.spawn([shell, "-NoProfile", "-NonInteractive", "-Command", FIXTURE], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-      try {
+    () =>
+      withProbe(FIXTURE, async ({ pid }) => {
         // A WPF TextBox has the Text pattern.
-        expect(await using(await find(fixture.pid, "Probe field", MAX_WAIT_MS), readText)).toBe("probe text");
+        expect(await using(await find(pid, "Probe field", MAX_WAIT_MS), readText)).toBe("probe text");
         // A GroupBox has no Text pattern, so the Names of its descendants join.
-        expect(await using(await find(fixture.pid, "Probe group", 2000), readText)).toBe("alphabeta");
+        expect(await using(await find(pid, "Probe group", 2000), readText)).toBe("alphabeta");
         // A WPF TextBlock has no Invoke pattern.
-        expect(await using(await find(fixture.pid, "alpha", 2000), (text) => code(() => invoke(text)))).toBe("NO_PATTERN");
-        const released = await find(fixture.pid, "beta", 2000);
+        expect(await using(await find(pid, "alpha", 2000), (text) => code(() => invoke(text)))).toBe("NO_PATTERN");
+        const released = await find(pid, "beta", 2000);
         released.release();
         expect(await code(() => readText(released))).toBe("RELEASED");
-        expect(await code(() => find(fixture.pid, "no such element", 50))).toBe("TIMEOUT");
-        expect(await code(() => findLiveRegions(fixture.pid, 50))).toBe("TIMEOUT");
+        expect(await code(() => find(pid, "no such element", 50))).toBe("TIMEOUT");
+        expect(await code(() => findLiveRegions(pid, 50))).toBe("TIMEOUT");
         // The fixture never takes focus.
-        expect(await code(() => waitFocus(fixture.pid, "Probe field", 50))).toBe("TIMEOUT");
-      } finally {
-        fixture.kill();
-        await fixture.exited;
-      }
-    },
+        expect(await code(() => waitFocus(pid, "Probe field", 50))).toBe("TIMEOUT");
+      }),
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "selects the second list item",
+    () =>
+      withProbe(FIXTURE, async ({ pid }) => {
+        await using(await find(pid, "second", MAX_WAIT_MS), (item) => {
+          expect(isSelected(item)).toBe(false);
+          select(item);
+          expect(isSelected(item)).toBe(true);
+        });
+      }),
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "sets the value of the probe field",
+    () =>
+      withProbe(FIXTURE, async ({ pid }) => {
+        await using(await find(pid, "Probe field", MAX_WAIT_MS), (field) => {
+          setValue(field, "new text");
+          expect(readText(field)).toBe("new text");
+        });
+      }),
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "focuses the probe field",
+    () =>
+      withProbe(FIXTURE, async ({ pid }) => {
+        await using(await find(pid, "Probe field", MAX_WAIT_MS), focus);
+        expect(await waitFocus(pid, "Probe field", 2000)).toBeGreaterThan(0n);
+      }),
     TEST_TIMEOUT_MS,
   );
 
@@ -117,7 +138,11 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
         const owned = startInstalledApp(live!, appEnv(fixtureDir("app"), false));
         try {
           // A new profile holds no Git selection, so the boot view offers Select Git. Its task dialog names the Git that the host finds.
-          await using(await find(owned.pid, "Select Git", MAX_WAIT_MS), invoke);
+          await using(await find(owned.pid, "Select Git", MAX_WAIT_MS), async (button) => {
+            focus(button);
+            await waitFocus(owned.pid, "Select Git", MAX_WAIT_MS);
+            invoke(button);
+          });
           await using(await find(owned.pid, "Use this Git", MAX_WAIT_MS), invoke);
           // The start page option text, `OPEN_FOLDER` in src/frontend/app/RepositorySwitcher.tsx. `find` matches the whole Name.
           await using(await find(owned.pid, OPEN_FOLDER, MAX_WAIT_MS), invoke);

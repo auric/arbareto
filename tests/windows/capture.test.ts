@@ -34,6 +34,7 @@ import {
   type RunResult,
 } from "./capture";
 import { srcImportHits } from "./src-imports";
+import { withProbe } from "./probe-window";
 
 const CAPTURE = printOrigin("./capture.ts", import.meta.dir);
 const INJECT = printOrigin("./inject.ts", import.meta.dir);
@@ -195,6 +196,19 @@ describe("T242 capture.ts without input", () => {
   });
 });
 
+// A top-most WPF window over the region. `ShowActivated="False"` keeps the desktop focus with the user. It prints "rendered" after its first render.
+const PROBE = `
+Add-Type -AssemblyName PresentationFramework
+$w = [Windows.Markup.XamlReader]::Parse(@'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Capture probe" ShowActivated="False" ShowInTaskbar="False" Topmost="True" WindowStyle="None" ResizeMode="NoResize" WindowStartupLocation="Manual" Left="0" Top="0" Width="64" Height="64"><Grid Background="#102030"/></Window>
+'@)
+$w.Add_ContentRendered({ [Console]::WriteLine("rendered") })
+$w.Show()
+[Windows.Threading.Dispatcher]::Run()
+`;
+// #102030 in the BGRA order of the duplicated desktop image.
+const PROBE_BGRA = [0x30, 0x20, 0x10, 0xff];
+
 // A CaptureError, such as DPI_SCALED or ROTATED, also names a missing capability.
 function tryOpen(region: Region): Opened {
   try {
@@ -219,22 +233,33 @@ describe.skipIf(process.platform !== "win32")("T242 capture.ts live", () => {
   const opened = tryOpen({ x: 0, y: 0, width: 16, height: 16 });
   if ("skip" in opened) console.log(`SKIP desktop duplication: missing capability ${opened.skip}`);
 
-  test.skipIf("skip" in opened)("duplicates the reference output and reads the refresh rate and one region frame", () => {
-    const dup = "skip" in opened ? null! : opened.dup;
-    try {
-      console.log(`ADAPTER ${dup.adapter}`);
-      console.log(`OUTPUT ${dup.output.name} ${JSON.stringify(dup.output.rect)} mode=${dup.mode.width}x${dup.mode.height} refresh=${dup.mode.numerator}/${dup.mode.denominator}`);
-      console.log(`DELTA_MS ${deltaSeconds(dup.mode.numerator, dup.mode.denominator) * 1000}`);
-      let got = null;
-      // The first image after DuplicateOutput is the whole desktop. 20 waits of 100 ms bound the case.
-      for (let i = 0; i < 20 && got === null; i++) got = dup.acquire(100);
-      expect(got).not.toBeNull();
-      expect(got!.lastPresentTime).toBeGreaterThan(0n);
-      expect(got!.image.length).toBe(16 * 16 * 4);
-    } finally {
-      dup.close();
-    }
-  });
+  test.skipIf("skip" in opened)(
+    "duplicates the reference output and reads the probe colour in one region frame",
+    () =>
+      withProbe(PROBE, async (probe) => {
+        const dup = "skip" in opened ? null! : opened.dup;
+        try {
+          console.log(`ADAPTER ${dup.adapter}`);
+          console.log(`OUTPUT ${dup.output.name} ${JSON.stringify(dup.output.rect)} mode=${dup.mode.width}x${dup.mode.height} refresh=${dup.mode.numerator}/${dup.mode.denominator}`);
+          console.log(`DELTA_MS ${deltaSeconds(dup.mode.numerator, dup.mode.denominator) * 1000}`);
+          const reader = probe.stdout.getReader();
+          const timer = setTimeout(() => probe.kill(), MAX_WAIT_MS);
+          const chunk = await reader.read().finally(() => clearTimeout(timer));
+          expect(new TextDecoder().decode(chunk.value)).toContain("rendered");
+          const expected = Array.from({ length: 16 * 16 }, () => PROBE_BGRA).flat();
+          let got = null;
+          // `acquire` skips the pointer-only first frame. The next frame can still predate the probe composition. 20 waits of 100 ms bound the case.
+          for (let i = 0; i < 20 && (got === null || !Bun.deepEquals([...got.image], expected)); i++) got = dup.acquire(100) ?? got;
+          expect(got).not.toBeNull();
+          expect(got!.lastPresentTime).toBeGreaterThan(0n);
+          console.log(`REGION_BGRA ${[...got!.image.subarray(0, 4)]}`);
+          expect([...got!.image]).toEqual(expected);
+        } finally {
+          dup.close();
+        }
+      }),
+    MAX_WAIT_MS + 10_000,
+  );
 
   describe("installed app", () => {
     useFixtureRoot();

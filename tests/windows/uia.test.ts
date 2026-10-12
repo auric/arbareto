@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { srcImportHits } from "./src-imports";
+import { withProbe } from "./probe-window";
 import { fixtureDir, useFixtureRoot } from "../git/fixture-root";
 import { appEnv, findInstalledApp, startInstalledApp, waitExit } from "./installed-app";
 import { close, find, findLiveRegions, focus, invoke, isSelected, MAX_WAIT_MS, readText, select, setValue, UiaError, waitFocus, type Element } from "./uia";
@@ -56,18 +56,6 @@ $w.Show()
 [Windows.Threading.Dispatcher]::Run()
 `;
 
-// Starts the probe window and ends it by PID after the body.
-async function withProbe(body: (processId: number) => Promise<void>): Promise<void> {
-  const shell = join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const fixture = Bun.spawn([shell, "-NoProfile", "-NonInteractive", "-Command", FIXTURE], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-  try {
-    await body(fixture.pid);
-  } finally {
-    fixture.kill();
-    await fixture.exited;
-  }
-}
-
 describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () => {
   afterAll(() => close());
 
@@ -85,7 +73,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
   test(
     "finds and reads elements of an owned WPF window, and refuses with typed errors",
     () =>
-      withProbe(async (pid) => {
+      withProbe(FIXTURE, async ({ pid }) => {
         // A WPF TextBox has the Text pattern.
         expect(await using(await find(pid, "Probe field", MAX_WAIT_MS), readText)).toBe("probe text");
         // A GroupBox has no Text pattern, so the Names of its descendants join.
@@ -106,7 +94,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
   test(
     "selects the second list item",
     () =>
-      withProbe(async (pid) => {
+      withProbe(FIXTURE, async ({ pid }) => {
         await using(await find(pid, "second", MAX_WAIT_MS), (item) => {
           expect(isSelected(item)).toBe(false);
           select(item);
@@ -119,7 +107,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
   test(
     "sets the value of the probe field",
     () =>
-      withProbe(async (pid) => {
+      withProbe(FIXTURE, async ({ pid }) => {
         await using(await find(pid, "Probe field", MAX_WAIT_MS), (field) => {
           setValue(field, "new text");
           expect(readText(field)).toBe("new text");
@@ -131,7 +119,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
   test(
     "focuses the probe field",
     () =>
-      withProbe(async (pid) => {
+      withProbe(FIXTURE, async ({ pid }) => {
         await using(await find(pid, "Probe field", MAX_WAIT_MS), focus);
         expect(await waitFocus(pid, "Probe field", 2000)).toBeGreaterThan(0n);
       }),

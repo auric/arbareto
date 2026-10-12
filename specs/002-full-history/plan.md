@@ -236,13 +236,14 @@ The reduced graph needs the full topology stream beside the search stream, becau
 ## Open items
 
 - **O-1 SC-002 and Git memory.** The user confirmed 128 MiB for the complete process tree. SC-002 stays unchanged. The P0.4 measurement of Git's own peak memory comes first. The user then decides whether Git's processes stay inside the budget.
-  - Background: the design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep` (unverified). Without a commit-graph, the limited walk then keeps every commit buffer. The estimate is 100-300 MB for Git alone at 1M commits (unverified).
+  - Background: the design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep` (unverified). Without a commit-graph, the limited walk then keeps every commit buffer.
+  - P0.4 result (T006, research.md R14, experiment): on H1M with Git 2.56.0.windows.1, the median peak private bytes of the walking Git process are 166.4 MiB (topology) and 446.5 MiB (search) without a commit-graph, and 145.9 MiB (topology) and 148.2 MiB (search) with one. Five runs vary by at most 0.1 MiB. Each command alone is above 128 MiB. The decision is still open (T007).
   - Candidate text (design SI-1, not adopted): "The view adds at most 128 MiB of private memory to the Arbareto processes: the shell, the service, and the WebView2 processes. The base is the same worktree with a one-commit history. The record states the peak private memory of each Git process next to the peak of the same Git command run alone."
   - Constitution note N-2 applies to the candidate.
 - **O-2 SC-006 and SC-010 values.** The spec proposes 10% or 500 ms for SC-006. The spec proposes 1 s to stop and 5 s to no remaining process for SC-010. The plan confirms them before measurement (spec Assumptions).
 - **O-3 Unverified facts.** Research R13 lists them, with the step that checks each one.
 - **O-4 Load during a search.** Closed. The service resumes the load itself when a search starts on an incomplete view (D5, contract Δ3 `searchHistory`, data-model §6). The renderer starts nothing extra.
-- **O-5 Limited rows after a wide region.** Open for P6. The 001 lane rules never move a lane. So one open lane beyond lane 24 keeps each row limited until that lane ends. In the octopus-65 fixture, 67 of 68 rows are limited (T005). P6 decides whether the layout compacts lanes or keeps this rule.
+- **O-5 Limited rows after a wide region.** Closed in batch 0. The 001 lane rules never move a lane. So one open lane at index 24 or above kept each later row limited until that lane ended. On H200K, 2,173 rows were limited, but only 93 needed more than 24 lanes; 2,080 had 9 to 24 open lanes. In octopus-65, 67 of 68 rows were limited. Rule now: a limited row draws no edge, so its output lane array drops the free slots and keeps the lane order. A new lane takes the lowest free slot, so a row is limited exactly when it needs more than 24 lanes (data-model.md §4). T005 asserts this both ways. H200K now has 93 limited rows, and octopus-65 has 43 (research.md R16). Each limited row still states the limit, and the lane count never shrinks (FR-016).
 
 ## Phases
 

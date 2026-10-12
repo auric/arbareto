@@ -11,6 +11,7 @@ import { PERF_CACHE_ROOT } from "../windows/perf-fixtures";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { buildSmallFixtures, H200K, largeCase, largeFixture, repositoryDigest, rng, shallowCommits, startPoints, type SmallName } from "./history-fixtures";
+import { VIEW } from "./history-order-facts";
 
 printOrigin("../../src/git-service/history-layout.ts", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -18,8 +19,6 @@ printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 const TASK = "T005";
 const SMALL_TIMEOUT_MS = 300_000;
 const LARGE_TIMEOUT_MS = 60 * 60_000;
-// Contract Δ3 `loadHistory`.
-const VIEW = ["--no-lazy-fetch", "--no-optional-locks", "rev-list", "--parents", "--date-order", "--stdin"];
 // The chunk sizes of the random feed.
 const MAX_CHUNK = 700;
 
@@ -71,6 +70,7 @@ function prove(label: string, rows: readonly LayoutRow[]): Proof {
   // Each lane holds the parent that an edge drawn above the row waits for.
   const pending = new Map<number, string>();
   const frontier = new Set<string>();
+  const wrongLimit: string[] = [];
   const reference = fold(rows);
 
   for (let loaded = 0; loaded < rows.length; ) {
@@ -84,11 +84,12 @@ function prove(label: string, rows: readonly LayoutRow[]): Proof {
       const { cell, before, after } = reference();
       sameCell(i, cells[i - loaded], cell, "the cell rebuilt from a checkpoint");
 
-      // FR-016: distinct commits need distinct lanes, so a frontier above the bound needs more than GRAPH_LANES lanes.
-      const above = frontier.size;
+      // FR-016 and data-model.md §4: distinct commits need distinct lanes. The row needs the lanes above it, plus a new lane for its node, and the lanes below it.
+      const above = frontier.size + (frontier.has(row.oid) ? 0 : 1);
       frontier.delete(row.oid);
       for (const p of row.parents) frontier.add(p);
-      if (Math.max(above, frontier.size) > GRAPH_LANES && !cell.limited) fail(`row ${i} has a frontier of ${Math.max(above, frontier.size)} and is not limited`);
+      const need = Math.max(above, frontier.size);
+      if (cell.limited !== need > GRAPH_LANES) wrongLimit.push(`row ${i} needs ${need} lanes, limited ${cell.limited}`);
       if (after.lanes < before.lanes || after.lanes > GRAPH_LANES) fail(`row ${i}: the lane count goes from ${before.lanes} to ${after.lanes}`);
       proof.lanes = after.lanes;
       if (cell.merge !== row.parents.length > 1) fail(`row ${i}: merge is ${cell.merge}`);
@@ -105,18 +106,16 @@ function prove(label: string, rows: readonly LayoutRow[]): Proof {
         // FR-016: a limited row draws no lane. Its edges continue in the lane state, so the parent identities stay.
         proof.limited++;
         if (cell.node !== 0 || cell.segments.length !== 0) fail(`limited row ${i} draws ${JSON.stringify(cell)}`);
-        for (const [lane, parent] of [...pending]) {
-          if (parent === row.oid) {
-            pending.delete(lane);
-            proof.atLimited++;
-          } else if (after.open[lane]?.oid !== parent) fail(`limited row ${i} loses the lane ${lane} of ${parent}`);
-        }
-        for (const parent of row.parents) {
+        // The lanes below a limited row can move, so the edges follow their parents by OID.
+        const waiting = [...pending.values()].filter((parent) => parent !== row.oid);
+        proof.atLimited += pending.size - waiting.length;
+        pending.clear();
+        for (const parent of [...waiting, ...row.parents]) {
           const lane = after.open.findIndex((l) => l?.oid === parent);
-          if (lane === -1) fail(`limited row ${i} loses its parent ${parent}`);
+          if (lane === -1) fail(`limited row ${i} loses the lane of ${parent}`);
           pending.set(lane, parent);
-          proof.handed++;
         }
+        proof.handed += row.parents.length;
         continue;
       }
 
@@ -148,6 +147,7 @@ function prove(label: string, rows: readonly LayoutRow[]): Proof {
     loaded = end;
   }
   if (pending.size > 0) fail(`edges never reach their parents: ${JSON.stringify([...pending])}`);
+  if (wrongLimit.length > 0) fail(`${wrongLimit.length} rows have the wrong limited flag, first ${wrongLimit[0]}`);
 
   // Each cell rebuilt from its own checkpoint equals the fold.
   const again = fold(rows);

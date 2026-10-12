@@ -12,7 +12,7 @@ import { printOrigin } from "../origin";
 import { hasCommitGraph, PERF_CACHE_ROOT, semanticDigest } from "../windows/perf-fixtures";
 import { FIXTURE_ROOT, fixtureDir, ownedGit, useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
-import { refState } from "./git-oracle";
+import { indexEntries, refState, workingFileDigests } from "./git-oracle";
 import { buildLargeRepo, buildSmallFixtures, H1M, H200K, largeCase, largeFixture, LONG_BODY_WORD, repositoryDigest, SMALL_NAMES, withCommitGraph, type LargeSpec, type SmallFixture } from "./history-fixtures";
 
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
@@ -119,7 +119,9 @@ describeGit("history fixtures", (git) => {
       console.log(`HISTORY_FIXTURE ${spec.name}${commitGraph ? " commit-graph" : ""}: ${f.reused ? "reused" : "built"} at ${f.folder}; semantic digest ${f.manifest.facts.semanticDigest}`);
       return f;
     });
-    expect(refState(git, variants[1]!.repo)).toEqual(refState(git, variants[0]!.repo));
+    // The variants are two builds of one stream. `semanticDigest` also covers the commit-graph state, so the check compares its other parts.
+    const parts = (repo: string) => ({ refs: refState(git, repo), entries: indexEntries(git, repo), files: workingFileDigests(repo) });
+    expect(parts(variants[1]!.repo)).toEqual(parts(variants[0]!.repo));
   }
 
   largeCase(TASK, "H200K has 200,000 commits, the commit-graph state of each variant, and a stable semantic digest", H200K, () => checkLarge(H200K), LARGE_TIMEOUT_MS);

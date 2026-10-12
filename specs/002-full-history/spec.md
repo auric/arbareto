@@ -269,7 +269,7 @@ These facts come from an investigation on 2026-10-11 with Git 2.56.0.windows.1 o
 - Case folding of non-ASCII text needs Git to run with a UTF-8 locale and UTF-8 log output. The application must set both for the search.
 - On a Git build with the PCRE2 library, literal matching wraps the pattern in quote marks. A backslash followed by "E" ends them. This Git defect causes the FR-028 refusal.
 - Git reports no signal that tells whether it uses PCRE2. This is a contract gap. Linux, macOS, and each WSL distro need verification before the application relies on them.
-- Today's lane layout can run page by page with equal results. It must carry the output lane array and the set of sent commits. This is proven from the code, not tested yet.
+- Today's lane layout can run page by page with equal results. Its state is the output lane array and the lane count. This is proven from the code, not tested yet.
 - The page-wide graph width limit of feature 001 must become a rule for each row.
 - Git Extensions streams the history with no order option and reorders rows after they show. Its quick search covers only the loaded rows.
 - The default Git Extensions view is "Show all branches". It reads HEAD and every ref of the repository. By default it excludes the `refs/notes/commits` ref and the refs under `refs/sessions/` and `refs/copilot/checkpoints/`. It includes the stash ref, and it adds older stash entries from the stash list. It shows no reflog entries by default. Source: DeepWiki on gitextensions/gitextensions, 2026-10-11.

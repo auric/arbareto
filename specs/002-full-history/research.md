@@ -96,7 +96,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - A 001 HistoryRow takes about 600-790 bytes in Bun/JSC. **experiment**
   - A compact topology row takes about 40 bytes (investigation estimate). **unverified**
   - The design counts about 48 bytes per commit for SHA-1 (60 for SHA-256): OID 20, hash slots about 12, idToRow and rowToId 8, CSR about 8.4. That is about 48 MB at 1M commits. **unverified**
-  - Git alone can use 100-300 MB during a search on 1M commits without a commit-graph. The design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep`, so the limited walk keeps every commit buffer. **unverified** (P0.4 measures it; plan.md open item O-1)
+  - Git alone uses 446.5 MiB during a search on 1M commits without a commit-graph, and 145.9 to 166.4 MiB otherwise (R14). **experiment** The design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep`, so the limited walk keeps every commit buffer. **unverified** (plan.md open item O-1)
   - Linux Git memory is not part of the Windows process tree. The WSL scope `memory.peak` can record it. **unverified**
 - **Alternatives considered**: A JS `Map` of OID strings. Rejected for its memory per commit. The investigation proposed a 32 MiB text cache. The design uses 8 MiB of `bytes` as a measurement knob.
 
@@ -140,7 +140,8 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - WSL gets an empty `WSLENV` (001 §11), so no Windows variable reaches Linux. **documented**
   - WSL polls do not run `readRefs` (001 §11). So a ref change shows at the next focus return, Refresh, or mutation outcome (spec SC-012). **documented**
   - Each text read costs one `wsl.exe` start, about 250 ms. **unverified**
-  - PCRE2 and the C.UTF-8 locale in each distro, the order facts with the distro Git, and the relay throughput for a 1M drain. **unverified** until the distro runs
+  - Ubuntu-26.04 (Git 2.55.0) has the C.UTF-8 locale, gives the probe matches, and gives the R15 order facts. Its view bytes equal the Windows Git bytes. **experiment** (T010)
+  - PCRE2 and the C.UTF-8 locale in other distros, and the relay throughput for a 1M drain. **unverified** until the distro runs
 - **Alternatives considered**: A long-lived `cat-file` in the distro. Left out. Add it when WSL misses SC-014.
 
 ## R11 Git Extensions comparison
@@ -175,9 +176,9 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 ## R13 Open facts
 
 These stay **unverified** until the named step runs:
-- Git peak memory during load and search: P0.4.
+- Git peak memory during load and search: P0.4 measured it on Windows (R14, **experiment**). Linux Git memory stays open: P8.
 - About 48 bytes per commit in the service, and the service CPU during the drain: P3 and P8.
-- The `save_commit_buffer` recollection: P0.4.
+- The `save_commit_buffer` recollection: open. P0.4 measured the extra search memory (R14), but no plan step reads the Git source yet (plan.md O-1).
 - `init --template=` copies nothing; an explicit `--git-dir` skips the ownership check: P0.5 showed both on Git 2.56.0.windows.1 (R4, **experiment**).
 - `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: P3.
 - The maximum layout height in WebView2: P6.
@@ -187,3 +188,51 @@ These stay **unverified** until the named step runs:
 ## Results
 
 P0 to P8 record their results here as R14 and later. Record times and ratios as numbers, never as comparative adjectives.
+
+## R14 Git peak memory
+
+T006, 2026-10-12, Git 2.56.0.windows.1, H1M (1,000,000 commits), `tests/windows/history-git-memory.test.ts`. The value is `PeakPagefileUsage` (peak private bytes) through `GetProcessMemoryInfo`. The test samples every 100 ms and reads each open handle again after the process exits. Five runs per row. **experiment**
+
+| H1M variant | Command | Peaks of the largest Git process (MiB) | Median (MiB) |
+|---|---|---|---|
+| no commit-graph | topology `rev-list --parents --date-order --stdin` | 166.3, 166.4, 166.3, 166.4, 166.4 | 166.4 |
+| no commit-graph | search `rev-list --date-order --fixed-strings --regexp-ignore-case --grep=marker --stdin` | 446.5, 446.5, 446.5, 446.5, 446.6 | 446.5 |
+| commit-graph | topology | 145.9, 145.9, 145.9, 145.9, 145.9 | 145.9 |
+| commit-graph | search | 148.2, 148.2, 148.1, 148.2, 148.2 | 148.2 |
+
+- A second set of five runs gave the medians 166.4, 446.6, 145.9, and 148.1 MiB, in the table order.
+- Each run has two Git processes. `C:\Git\cmd\git.exe` is a launcher with a peak of 1.4 MiB. Its child `git.exe` does the walk and holds the peak above.
+- The walking Git process of every row is above the 128 MiB of SC-002. The search without a commit-graph is 3.5 times the budget. **experiment**
+- The search without a commit-graph uses 280 MiB more than the topology. This agrees with the `save_commit_buffer` recollection of R6. The Git source is not read yet, so the cause stays **unverified**.
+- The search argv is the contract Δ3 argv with `LC_ALL=C.UTF-8`. The search on H1M matches 20,000 rows.
+
+## R15 Order facts (P0.2)
+
+T003 (Windows Git 2.56.0.windows.1) and T010 (Ubuntu-26.04 Git 2.55.0), 2026-10-12. Fixtures: the 19 small fixtures, H200K, and H1M (H1M on Windows only), each with and without a commit-graph. Start points go to stdin in ascending lowercase hex. **experiment**
+
+| Fact | Windows (T003) | Ubuntu-26.04 (T010) |
+|---|---|---|
+| Two runs give the same bytes. | 42 of 42 | 40 of 40 |
+| `--skip=k` equals the suffix. | 42 of 42 | 40 of 40 |
+| The output is equal with and without a commit-graph. | 21 of 21 | 20 of 20 |
+| A shuffled stdin gives the same bytes. | 40 of 42; fails on equal-dates (both variants) | 38 of 40; fails on equal-dates (both variants) |
+| A reversed stdin gives the same bytes. | 40 of 42; fails on equal-dates (both variants) | 38 of 40; fails on equal-dates (both variants) |
+| `--grep` equals the full order without the non-matches. | 42 of 42 | 40 of 40 |
+| The distro view bytes equal the Windows Git bytes of the same repository. | not applicable | 40 of 40 |
+
+- The `--skip` values on H200K were k = 1, 255, 256, 257, 19,393 (a merge run), and 199,999. On H1M they were k = 1, 255, 256, 257, 101,159 (a merge run), and 999,999.
+- On equal-dates, another stdin order gives the same row set in another order. The first difference is at row 0 or 1. So the ascending start-point order of R1 stays a requirement.
+- `rev-list --stdin` with no start point exits 0 and prints nothing (empty fixture, both Gits).
+- T010 copies each Windows-built repository into the owned distro folder through a `tar` stream. So both Gits read byte-equal repositories.
+
+## R16 Fixtures and layout (P0.1, P0.3)
+
+- T001, 2026-10-12: H200K and H1M have 200,000 and 1,000,000 commits. Each variant has the expected commit-graph state. The two variants are two builds of one stream. Their refs, index entries, and working files are equal. **experiment**
+- Measurement note: a sampler in the work session measured the next three items. It is not in the repository, and no repository test prints these numbers.
+  - Build time per variant, from the folder creation to the manifest write: H200K 9.8 s and 10.3 s; H1M 55.1 s and 59.3 s (without and with a commit-graph). Disk size: H200K 35.2 MiB and 46.7 MiB; H1M 176.3 MiB and 233.5 MiB.
+  - During the H1M build, the largest Git process peaked at 205 MiB of private bytes (2-second samples).
+  - T003 on H1M holds about 2 GiB of private bytes in the Bun test process. The host then had 4,790 MB available.
+- T005 on H200K, before the O-5 fix: 2,173 rows were limited. Only 93 of them need more than 24 lanes. The other 2,080 had 9 to 24 open lanes, but a lane at index 24 or above stayed open. **experiment**
+- T005 now asserts that a row is limited exactly when it needs more than 24 lanes. A row needs its open lanes above, plus one lane for a new node, and its open lanes below. On the old layout, this check fails on 2,080 H200K rows and on 24 octopus-65 rows. **experiment**
+- After the O-5 fix, a limited row closes the free lane slots and keeps the lane order (plan.md O-5). T005 on H200K: 200,000 rows; each cell rebuilt from a checkpoint equals the fold. 199,899 lanes end at their parent nodes through the cells. 93 rows are limited. octopus-65 has 43 limited rows of 68, and tips-50 has 103 of 151. **experiment**
+- T010: Ubuntu-26.04 has the C.UTF-8 locale (`locale charmap` gives `UTF-8`). Both probe runs give the contract matches with the distro Git and `LC_ALL=C.UTF-8`. **experiment**

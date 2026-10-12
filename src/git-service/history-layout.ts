@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // plan.md D3 and data-model.md §4: the lane layout as a pure step over the rows of one `rev-list --parents --date-order` stream.
-// The lane rules are those of `layoutHistory` in `src/frontend/history/lanes.ts`. In a complete stream every parent is a later row, so no lane ends outside the stream.
+// The lane rules are those of `layoutHistory` in `src/frontend/history/lanes.ts`, except that a limited row closes the free lane slots (plan.md O-5). In a complete stream every parent is a later row, so no lane ends outside the stream.
 
 import { GRAPH_LANES } from "../contracts/limits";
 
@@ -89,8 +89,9 @@ export function layoutStep(state: LaneState, row: LayoutRow): { cell: Cell; stat
   const merge = row.parents.length > 1;
   return {
     // 001 plan.md: a row above the limit has a node in one lane, with no edge. The state keeps the lane of every parent.
+    // A limited row draws no edge, so its output closes the free slots and keeps the lane order.
     cell: limited ? { node: 0, color: 0, merge, limited, segments: [], marks } : { node, color, merge, limited, segments, marks },
-    state: { open: work, lanes: Math.min(GRAPH_LANES, Math.max(state.lanes, width)) },
+    state: { open: limited ? work.filter((lane) => lane !== null) : work, lanes: Math.min(GRAPH_LANES, Math.max(state.lanes, width)) },
   };
 }
 
@@ -104,10 +105,6 @@ export class HistoryLayout {
 
   get rows(): number {
     return this.loaded;
-  }
-
-  get lanes(): number {
-    return this.state.lanes;
   }
 
   /** Steps the state to `rows` loaded rows. */

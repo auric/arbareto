@@ -24,7 +24,11 @@ export type ShortcutAction =
   | { type: "focusSection"; direction: "next" | "previous" }
   | { type: "focusMenuBar" }
   | { type: "selectHunk"; direction: "next" | "previous" }
-  | { type: "commit" };
+  | { type: "commit" }
+  // Feature 002 plan.md D6 "Shortcuts".
+  | { type: "focusFilter" }
+  | { type: "match"; direction: "next" | "previous" }
+  | { type: "toggleScope" };
 
 export type ShortcutContext = {
   messageField: object | null;
@@ -56,6 +60,7 @@ const NONE = "0000";
 const CTRL = "1000";
 const SHIFT = "0100";
 const ALT = "0010";
+const CTRL_SHIFT = "1100";
 
 /** One handler per page. It keeps the lone-Alt state between events. */
 export function createShortcutHandler() {
@@ -91,6 +96,10 @@ export function createShortcutHandler() {
     if (e.key === "F5" && m === NONE) return { type: "refresh" };
     if (e.key === "F6" && (m === NONE || m === SHIFT)) return { type: "focusSection", direction: m === SHIFT ? "previous" : "next" };
     if (e.key === "Enter" && m === CTRL) return inMessage && context.commitEnabled ? { type: "commit" } : null;
+    // These keys type no text, so they work in text fields too. The 001 accelerator handler turns off the WebView2 find keys.
+    if (e.key === "F3" && (m === NONE || m === SHIFT)) return { type: "match", direction: m === SHIFT ? "previous" : "next" };
+    if (m === CTRL && e.key.toLowerCase() === "f") return { type: "focusFilter" };
+    if (m === CTRL_SHIFT && e.key.toLowerCase() === "b") return { type: "toggleScope" };
     if (editable) return null;
     // `key` is the letter of the active layout (UI Events KeyboardEvent key). Caps Lock gives the capital without Shift.
     const letter = m === CTRL ? e.key.toLowerCase() : null;

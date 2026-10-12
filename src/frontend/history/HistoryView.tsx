@@ -35,7 +35,7 @@ export const branchName = (target: string) => (target.startsWith("refs/heads/") 
 const encodingText = (encoding: string) => `Declared encoding: ${encoding}`;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-type Counted = { category: ChangeEntry["category"] };
+export type Counted = { category: ChangeEntry["category"] };
 
 /** plan.md "History graph design": the change counts of the latest complete read. */
 function countText(entries: readonly Counted[]): { conflicted: string | null; rest: string } {
@@ -286,7 +286,7 @@ export type HistoryViewProps = {
 };
 
 /** plan.md "History graph design": the visible parts of the Working directory and Index rows. Null parts show Loading. */
-function specialParts(entries: readonly Counted[] | null): { working: string[]; conflicted: string | null; index: string[] } {
+export function specialParts(entries: readonly Counted[] | null): { working: string[]; conflicted: string | null; index: string[] } {
   if (entries === null) return { working: ["Working directory", LOADING], conflicted: null, index: ["Index", LOADING] };
   let conflicted = 0;
   let working = 0;

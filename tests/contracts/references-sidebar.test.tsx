@@ -4,11 +4,12 @@
 // T358 and T362: the read-only references sidebar of `src/frontend/refs/ReferencesSidebar.tsx` (FR-057; plan.md "References sidebar", "Long text",
 // "Keyboard and focus" References sidebar row, "Task flow and command placement" Browse references row, "Required visible states" References, and "Status and fallback texts").
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { stubLayout } from "./history-fake";
 
 printOrigin("../../src/frontend/refs/ReferencesSidebar.tsx", import.meta.dir);
 registerDom();
@@ -334,5 +335,78 @@ describe("constrained profile", () => {
     await click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(host.querySelector('[role="tree"]')).not.toBeNull();
+  });
+});
+
+// T062: the virtual references tree (feature 002 spec FR-055, plan.md D6 "References sidebar").
+describe("virtual tree", () => {
+  let restore: () => void = () => {};
+  beforeAll(() => void (restore = stubLayout(800)));
+  afterAll(() => restore());
+  const many = (n: number): RefsResult => ({
+    ...REFS,
+    // The branches, then the 5 remote and tag refs of REFS, in Git's refname order. `n` is the record count.
+    refs: [...Array.from({ length: n - 5 }, (_, i) => ref("branch", `branch-${String(i).padStart(5, "0")}`, i % 2 === 0 ? A : B)), ...REFS.refs.filter((r) => r.kind !== "branch")],
+    current: { name: "branch-00000", objectId: A },
+  });
+  const settle = () =>
+    act(async () => {
+      for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  const focused = () => document.activeElement?.getAttribute("aria-label") ?? "";
+
+  test("the DOM holds only the rows near the visible area, and the element count is equal for 1,000 and 10,000 refs", async () => {
+    const counts: number[] = [];
+    for (const n of [1_000, 10_000]) {
+      const { host } = await sidebar({ refs: many(n) });
+      await settle();
+      counts.push(items(host).length);
+    }
+    expect(counts[0]).toBe(counts[1]!);
+    expect(counts[0]!).toBeLessThan(80);
+  });
+
+  test("each treeitem carries aria-level, aria-posinset, and aria-setsize", async () => {
+    const { host } = await sidebar({ refs: many(10_000) });
+    await settle();
+    expect(item(host, "Branches").getAttribute("aria-level")).toBe("1");
+    expect(item(host, "Branches").getAttribute("aria-posinset")).toBe("1");
+    expect(item(host, "Branches").getAttribute("aria-setsize")).toBe("3");
+    const entry = item(host, "branch-00003,");
+    expect([entry.getAttribute("aria-level"), entry.getAttribute("aria-posinset"), entry.getAttribute("aria-setsize")]).toEqual(["2", "4", "9995"]);
+  });
+
+  test("End, Home, ArrowUp, and ArrowLeft to a parent reach rows outside the window, and the focused row exists and has focus", async () => {
+    const { host } = await sidebar({ refs: many(10_000) });
+    await settle();
+    await act(async () => item(host, "Branches").focus());
+    await key(item(host, "Branches"), "End");
+    await settle();
+    expect(focused()).toBe("Tags, 1");
+    await key(document.activeElement as HTMLElement, "ArrowUp");
+    await key(document.activeElement as HTMLElement, "ArrowUp");
+    await settle();
+    expect(focused()).toStartWith("branch-09994,");
+    await key(document.activeElement as HTMLElement, "ArrowLeft");
+    await settle();
+    expect(focused()).toBe("Branches, 9995");
+    await key(document.activeElement as HTMLElement, "End");
+    await settle();
+    await key(document.activeElement as HTMLElement, "Home");
+    await settle();
+    expect(focused()).toBe("Branches, 9995");
+  });
+
+  test("the filter and the expanded state cover refs outside the window", async () => {
+    const { host } = await sidebar({ refs: many(10_000) });
+    await settle();
+    await type(host, "09994");
+    await settle();
+    expect(names(host)).toContain("branch-09994, local branch");
+    await type(host, "");
+    await settle();
+    await click(item(host, "Branches"));
+    await settle();
+    expect(names(host)).toEqual(["Branches, 9995", "Remotes, 4", "Tags, 1"]);
   });
 });

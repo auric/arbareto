@@ -319,6 +319,11 @@
   .list-row[aria-selected="true"] :is(button, input, select, textarea, [role="button"]) {
     border-color: transparent;
   }
+  /* Feature 002 plan.md D6: the history list keeps focus and marks its active option. */
+  .list-row[data-active] {
+    outline: var(--focus-width) solid var(--accent-role);
+    outline-offset: calc(-1 * var(--focus-width));
+  }
 
   .selected-hunk-bar {
     width: var(--hunk-bar-width);
@@ -378,6 +383,9 @@
 
 @media (forced-colors: active) {
   :focus-visible {
+    outline-color: Highlight;
+  }
+  .list-row[data-active] {
     outline-color: Highlight;
   }
   .list-row[aria-selected="true"] {

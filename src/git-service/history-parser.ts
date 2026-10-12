@@ -4,7 +4,7 @@
 // Contract §3 "HistoryPage result" and §5 history bounds. Pure parsers of untrusted Git output.
 
 import { HISTORY_BODY_BYTES } from "../contracts/envelope";
-import { HISTORY_COMMIT_OBJECT_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_PARENTS_PER_PAGE, HISTORY_STREAM_BYTES, HISTORY_STREAM_ROWS } from "../contracts/limits";
+import { HISTORY_COMMIT_OBJECT_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_PARENTS_PER_PAGE } from "../contracts/limits";
 import type { ObjectFormat } from "./commands";
 import type { Completeness, LimitName } from "./snapshot";
 
@@ -61,48 +61,6 @@ const bodyBuffer = new Uint8Array(HISTORY_BODY_BYTES);
 export function boundedBody(text: string): { body: string; bodyCut: boolean } {
   const { read } = new TextEncoder().encodeInto(text, bodyBuffer);
   return read === text.length ? { body: text, bodyCut: false } : { body: text.slice(0, read), bodyCut: true };
-}
-
-export interface TraversalRow {
-  oid: string;
-  // Effective parents in Git order. A shallow commit has none.
-  parents: string[];
-}
-
-export interface Traversal {
-  rows: TraversalRow[];
-  completeness: Completeness;
-}
-
-// Input: the stdout of `revListArgs` (`rev-list --parents`): one `<oid>[ <parent>]*` line per row, each ended by LF.
-// Contract §5: a bound keeps the rows before the first row that passes it. The first reached bound wins.
-export function parseTraversal(stdout: Uint8Array, objectFormat: ObjectFormat): Traversal {
-  const hex = OID_HEX[objectFormat];
-  const rows: TraversalRow[] = [];
-  const rowIndex = new Set<string>();
-  let references = 0;
-  let at = 0;
-  while (at < stdout.length) {
-    if (rows.length >= HISTORY_STREAM_ROWS) return { rows, completeness: limited("HISTORY_STREAM_ROWS") };
-    const eol = stdout.indexOf(LF, at);
-    // Contract §5 "History traversal stream": no byte after the bound is read.
-    if ((eol === -1 ? stdout.length : eol + 1) > HISTORY_STREAM_BYTES) return { rows, completeness: limited("HISTORY_STREAM_BYTES") };
-    if (eol === -1) return { rows, completeness: MALFORMED };
-    const fields = latin1(stdout.subarray(at, eol)).split(" ");
-    if (fields.length - 1 > HISTORY_PARENTS_PER_COMMIT) return { rows, completeness: limited("HISTORY_PARENTS_PER_COMMIT") };
-    // Contract §3: OID lengths follow the repository object format.
-    if (!fields.every((field) => hex.test(field))) return { rows, completeness: MALFORMED };
-    const [oid, ...parents] = fields as [string, ...string[]];
-    if (references + parents.length > HISTORY_PARENTS_PER_PAGE) return { rows, completeness: limited("HISTORY_PARENTS_PER_PAGE") };
-    // Contract §3 "Reject duplicate rows … and invalid in-page parent ordering". Data-model §4 "Row order": child before parent.
-    // So a parent must not be this row or an earlier row.
-    if (rowIndex.has(oid) || parents.some((parent) => parent === oid || rowIndex.has(parent))) return { rows, completeness: MALFORMED };
-    references += parents.length;
-    rowIndex.add(oid);
-    rows.push({ oid, parents });
-    at = eol + 1;
-  }
-  return { rows, completeness: COMPLETE };
 }
 
 export interface CommitObject {

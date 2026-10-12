@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { HISTORY_STREAM_ROWS } from "../contracts/limits";
-
 // Contract §7 "Missing objects": every app Git command starts with this option. Only the `gitProbe` arrays of `git-installation.ts` omit it.
 const NO_LAZY_FETCH = "--no-lazy-fetch";
 // Contract §7 "Missing objects" and T067: the global options of every read.
@@ -61,10 +59,6 @@ export function hooksPathArgs(): string[] {
 // Contract §6 "Registration bootstrap": the first discovery query, as a registered read with the read options.
 export function recheckArgs(): string[] {
   return read("rev-parse", "--is-bare-repository", "--is-inside-git-dir");
-}
-
-export function shallowPathArgs(): string[] {
-  return read("rev-parse", "--git-path", "shallow");
 }
 
 // Contract §7 "Configuration file paths": git-var(1) in the `gitProbe` context, once per admitted installation.
@@ -162,13 +156,6 @@ export function isOneLevelRefName(name: string): boolean {
 export function refExistsArgs(name: string): string[] {
   if (!isRefName(name)) throw new TypeError("ref name refused");
   return [NO_LAZY_FETCH, "show-ref", "--exists", name];
-}
-
-// Contract §3: the history read takes one captured full OID, never a revision expression.
-export function revListArgs(oid: string, objectFormat: ObjectFormat): string[] {
-  const pattern = Object.hasOwn(OID_PATTERNS, objectFormat) ? OID_PATTERNS[objectFormat] : undefined;
-  if (pattern === undefined || !pattern.test(oid)) throw new TypeError("object ID refused");
-  return read("rev-list", "--parents", `--max-count=${HISTORY_STREAM_ROWS}`, "--date-order", oid);
 }
 
 // Research R2: uppercase `-Z` frames input and output with NUL.

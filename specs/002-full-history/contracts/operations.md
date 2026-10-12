@@ -103,7 +103,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 - A newer text read cancels an unfinished one of the same view, by the 001 superseded-read rule (001 §5 "Pending reads").
 - A text read runs no fingerprint check, because commit text cannot change with the topology.
 - A failed text read makes the whole view stale (Δ8): a missing object gives `OBJECT_MISSING`, or `REPOSITORY_UNAVAILABLE` for a damaged store; unreadable commit text gives `MALFORMED_GIT_OUTPUT`, and a nonzero exit gives `GIT_FAILED`. Loads and searches of the view then refuse, and Refresh opens a new view.
-- The result stays within `HISTORY_PAGE_BYTES` (8 MiB). It sets `cut` when the bound cuts rows. It also carries `rowCount` (the rows that the view holds, data-model §1), `lanes` (the most lanes so far, at most 24), `complete`, and `bytes` for the renderer cache. `rows` is the row array.
+- The result stays within `HISTORY_PAGE_BYTES` (8 MiB). It sets `cut` when the bound cuts rows. It also carries `rowCount` (the rows that the view serves, data-model §1), `lanes` (the most lanes so far, at most 24), `complete`, and `bytes` for the renderer cache. `rows` is the row array.
 
 ### Refusal result
 
@@ -208,7 +208,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
   - the newest `readWorkspace.head` differs from the `head` of the view.
 - Stale conditions (spec FR-006). A stale view keeps its rows, refuses further loads and searches with its code, and offers Refresh:
   1. A view process fails, and the object check finds a missing commit: `OBJECT_MISSING` (reason `object-missing`). The text read is a view process too, so a failed text read makes the whole view stale.
-  2. `HISTORY_CHANGED` reason `topology`: the shallow digest, the grafts digest, or the replace records changed. The service checks this before each load step. A text read runs no check, because commit text cannot change with the topology.
+  2. `HISTORY_CHANGED` reason `topology`: the shallow digest, the grafts digest, or the replace records changed. The service checks this before each load step and before each search (Δ3 `searchHistory`). A text read runs no check, because commit text cannot change with the topology.
   3. `HISTORY_CHANGED` reason `order`: a re-read row differs from the held row, or Git exits with code 0 before the held row count.
   4. `MALFORMED_GIT_OUTPUT`, `GIT_FAILED`, or a diagnostic `OUTPUT_LIMIT`.
   5. The view was released (`UNKNOWN_TARGET`), or the service session ended.

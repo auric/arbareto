@@ -251,9 +251,6 @@
   --marker-width: 2px;
   --icon-size: 16px;
   --boundary-width: 2px;
-  --boundary-stub: 6px;
-  --boundary-bar: 8px;
-  --boundary-bar-gap: 2px;
 }
 
 @layer base {

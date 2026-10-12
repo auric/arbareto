@@ -4,7 +4,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
-import { HISTORY_STREAM_ROWS } from "../../src/contracts/limits";
 import * as commands from "../../src/git-service/commands";
 import {
   batchCommandArgs,
@@ -14,8 +13,6 @@ import {
   indexFlagArgs,
   indexListArgs,
   objectCheckArgs,
-  revListArgs,
-  shallowPathArgs,
   statusArgs,
 } from "../../src/git-service/commands";
 import { useFixtureRoot } from "../git/fixture-root";
@@ -36,11 +33,9 @@ const SERVICE_TIMEOUT_MS = 120_000;
 const READ_BUILDERS: [string, () => string[]][] = [
   ["configListArgs", () => configListArgs()],
   ["hooksPathArgs", () => hooksPathArgs()],
-  ["shallowPathArgs", () => shallowPathArgs()],
   ["statusArgs", () => statusArgs()],
   ["indexListArgs", () => indexListArgs()],
   ["indexFlagArgs", () => indexFlagArgs()],
-  ["revListArgs", () => revListArgs(SHA1, "sha1")],
   ["batchCommandArgs", () => batchCommandArgs()],
   ["objectCheckArgs", () => objectCheckArgs()],
   ["indexEntryArgs", () => commands.indexEntryArgs()],
@@ -103,9 +98,8 @@ describe("read builders (contract §7)", () => {
     expect(commands.refsArgs()).not.toBe(commands.refsArgs());
   });
 
-  test("hooksPathArgs and shallowPathArgs are the exact rev-parse --git-path arrays", () => {
+  test("hooksPathArgs is the exact rev-parse --git-path array", () => {
     expect(hooksPathArgs()).toEqual([...R, "rev-parse", "--git-path", "hooks"]);
-    expect(shallowPathArgs()).toEqual([...R, "rev-parse", "--git-path", "shallow"]);
   });
 
   test("statusArgs is the exact porcelain v2 read and carries --ignore-submodules=dirty", () => {
@@ -119,29 +113,6 @@ describe("read builders (contract §7)", () => {
     expect(flags.slice(0, 4)).toEqual([...R, "ls-files"]);
     expect(flags).not.toContain("--");
     for (const option of flags.slice(4)) expect(option).toStartWith("-");
-  });
-
-  test(`revListArgs takes one full OID of the object format and reads at most ${HISTORY_STREAM_ROWS} rows`, () => {
-    expect(revListArgs(SHA1, "sha1")).toEqual([...R, "rev-list", "--parents", `--max-count=${HISTORY_STREAM_ROWS}`, "--date-order", SHA1]);
-    expect(revListArgs(SHA256, "sha256")).toEqual([...R, "rev-list", "--parents", `--max-count=${HISTORY_STREAM_ROWS}`, "--date-order", SHA256]);
-  });
-
-  test.each([
-    ["HEAD", "sha1"],
-    ["main", "sha1"],
-    ["--all", "sha1"],
-    ["a..b", "sha1"],
-    [`${SHA1}..${SHA1}`, "sha1"],
-    ["-n1", "sha1"],
-    [SHA1.toUpperCase(), "sha1"],
-    [SHA1.slice(1), "sha1"],
-    [`${SHA1}0`, "sha1"],
-    [SHA256, "sha1"],
-    [SHA1, "sha256"],
-    [SHA256.toUpperCase(), "sha256"],
-    ["", "sha1"],
-  ] as const)("revListArgs refuses %j for %s with TypeError", (oid, objectFormat) => {
-    expect(() => revListArgs(oid, objectFormat)).toThrow(TypeError);
   });
 
   test("refPathArgs asks Git for the absolute file of one ref (T088 decision E7)", () => {
@@ -223,7 +194,7 @@ describe("discovery profiles (contract §6 `repositoryDiscovery`, research.md R2
 test("every builder of commands.ts without a parameter starts each array with --no-lazy-fetch", () => {
   const arrays = zeroParameterArrays();
   const names = new Set(arrays.map((a) => a.name));
-  for (const name of ["discoveryProfiles", "configListArgs", "hooksPathArgs", "shallowPathArgs", "statusArgs", "indexListArgs", "indexFlagArgs", "batchCommandArgs", "objectCheckArgs"]) {
+  for (const name of ["discoveryProfiles", "configListArgs", "hooksPathArgs", "statusArgs", "indexListArgs", "indexFlagArgs", "batchCommandArgs", "objectCheckArgs"]) {
     expect(names).toContain(name);
   }
   for (const { name, args } of arrays) {

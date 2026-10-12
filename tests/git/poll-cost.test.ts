@@ -4,7 +4,7 @@
 import { describe, expect } from "bun:test";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { batchCommandArgs, configListArgs, discoveryLayoutArgs, discoveryProfiles, hooksPathArgs, refsArgs, revListArgs, shallowPathArgs, statusArgs } from "../../src/git-service/commands";
+import { configListArgs, discoveryLayoutArgs, discoveryProfiles, historyRefsArgs, hooksPathArgs, refsArgs, statusArgs, topologyPathArgs } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { copyPerfFixture, ensurePerfFixture, PERF_L, PERF_M, type PerfFacts, type PerfSpec } from "../windows/perf-fixtures";
 import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
@@ -333,8 +333,8 @@ for (const spec of [PERF_M, PERF_L]) {
                 console.log(`OBSERVATION ${TASK}: fixture ${fixture} run ${run}: tuple facts differ, so readRefs runs its own listing: ${refsDifferences.join("; ")}`);
                 expect(sharedRefs.calls.filter((c) => isListing(c.arguments)).length).toBe(2);
               }
-              // Contract §7 "Held history steps": each history step runs once.
-              for (const args of [shallowPathArgs(), revListArgs(facts.tip, full.result.identity.objectFormat), batchCommandArgs()]) expect({ args, runs: countOf(shared.calls, args) }).toEqual({ args, runs: 1 });
+              // Contract §7 "Held history steps" and feature 002 contract Δ3 `openHistory` capture: each capture step runs once.
+              for (const args of [historyRefsArgs(), topologyPathArgs()]) expect({ args, runs: countOf(shared.calls, args) }).toEqual({ args, runs: 1 });
               const changeCalls = service.runner.fileFactCalls.length;
               const changes = await readFacts(service, () => service.readWorkspace(repositoryId, CHANGES));
               // Contract §8 "Change check": an unknown or changed tuple fact requires a full read.

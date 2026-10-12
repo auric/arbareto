@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T006: the T005 Git facts (a) to (l) inside the WSL distro (plan.md P0.2). The fixtures live in the owned distro folder and use the distro Git, never `/mnt`.
+// T006: the T005 Git facts (a) to (m) inside the WSL distro (plan.md P0.2). The fixtures live in the owned distro folder and use the distro Git, never `/mnt`.
 // Each fact prints `OBSERVATION T006` lines. A `match=false` line is a finding for research.md, not a failure.
 
 import { expect } from "bun:test";

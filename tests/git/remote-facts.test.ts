@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T005: the Git facts (a) to (l) of plan.md P0.2 with the Git under test. Each fact prints `OBSERVATION T005` lines. A `match=false` line is a finding for research.md, not a failure.
+// T005: the Git facts (a) to (m) of plan.md P0.2 with the Git under test. Each fact prints `OBSERVATION T005` lines. A `match=false` line is a finding for research.md, not a failure.
 
 import { expect, test } from "bun:test";
 import { describeGit } from "./git-binary";

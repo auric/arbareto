@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The Git facts (a) to (l) of plan.md P0.2 (tasks.md T005, T006). Each fact runs on a `GitHost`, so Windows and WSL share the cases.
+// The Git facts (a) to (m) of plan.md P0.2 (tasks.md T005, T006). Each fact runs on a `GitHost`, so Windows and WSL share the cases.
 // Exit codes, porcelain fields, and repository reads decide each fact, never message text. A failed fact is a finding: it prints `match=false` and the test stays green.
 
 import {
@@ -477,6 +477,40 @@ function factK(h: GitHost): Observation[] {
   return [obs("k.fetch-all-remote-set", { remotes: expected, exit: 0 }, { remotes: observed, exit: fetch.exitCode })];
 }
 
+// ---- (m) non-boolean skip and mirror values ----
+
+function factM(h: GitHost): Observation[] {
+  const fixture = once(h, "fetch-all", () => buildFetchAll(h));
+  const fetchedRemotes = (repo: string) => [...new Set(Object.keys(refMap(h, repo, ["refs/remotes"])).map((r) => r.split("/")[2]!))];
+  const exitKind = (r: GitResult) => (r.exitCode === 0 ? 0 : "nonzero");
+  const out: Observation[] = [];
+  for (const key of ["skipFetchAll", "skipDefaultUpdate"]) {
+    const repo = copyOf(h, fixture);
+    gitRun(h, repo, ["config", "--replace-all", `remote.r2.${key}`, "maybe"]);
+    const all = run(h, repo, ["--no-lazy-fetch", "fetch", "--all", "--no-recurse-submodules"]);
+    out.push(obs(`m.fetch-all-invalid-${key}`, { exit: "nonzero", remotes: [] }, { exit: exitKind(all), remotes: fetchedRemotes(repo) }));
+    const one = run(h, repo, ["--no-lazy-fetch", "fetch", "--no-recurse-submodules", "--", "r1"]);
+    out.push(obs(`m.fetch-other-remote-invalid-${key}`, { exit: "nonzero", remotes: [] }, { exit: exitKind(one), remotes: fetchedRemotes(repo) }));
+  }
+  const repo = copyOf(h, fixture);
+  gitRun(h, repo, ["--no-lazy-fetch", "fetch", "--no-recurse-submodules", "--", "r1"]);
+  const source = Object.keys(refMap(h, repo, ["refs/remotes/r1"]))[0]!;
+  const bare = gitOut(h, repo, ["config", "--get", "remote.r1.url"]).trim();
+  const pushTo = (dst: string) => run(h, repo, ["push", "--porcelain", "--no-recurse-submodules", "--", "r1", `${source}:refs/heads/${dst}`]);
+  const created = (dst: string) => `refs/heads/${dst}` in refMap(h, bare, ["refs/heads"]);
+  // Control: the same push without the mirror value creates the ref.
+  const control = pushTo("control");
+  out.push(obs("m.push-control-without-mirror", { exit: 0, created: true }, { exit: exitKind(control), created: created("control") }));
+  gitRun(h, repo, ["config", "remote.r1.mirror", "maybe"]);
+  const push = pushTo("m");
+  out.push(obs("m.push-invalid-mirror", { exit: "nonzero", created: false }, { exit: exitKind(push), created: created("m") }));
+  gitRun(h, repo, ["config", "--unset-all", "remote.r1.mirror"]);
+  gitRun(h, repo, ["config", "remote.r2.mirror", "maybe"]);
+  const other = pushTo("other");
+  out.push(obs("m.push-other-remote-invalid-mirror", { exit: "nonzero", created: false }, { exit: exitKind(other), created: created("other") }));
+  return out;
+}
+
 // ---- (l) rebase --skip ----
 
 function factL(h: GitHost): Observation[] {
@@ -523,5 +557,6 @@ export const FACTS: Fact[] = [
   { id: "j", title: "%(upstream) is empty for an unconfigured remote", run: factJ },
   { id: "k", title: "fetch --all remote set with skipFetchAll and skipDefaultUpdate", run: factK },
   { id: "l", title: "rebase --skip leaves the index and files equal to HEAD", run: factL },
+  { id: "m", title: "non-boolean skipFetchAll, skipDefaultUpdate, and mirror values", run: factM },
 ];
 

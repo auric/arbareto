@@ -1843,11 +1843,11 @@ Skips. Each capability skip is `unverified`:
 - `bun install --frozen-lockfile`, `bunx --bun tsc --noEmit`, `export-schemas.ts --check`, and `bun run build` passed. The startup chunk was 633.37 kB, and the About chunk was 527.57 kB.
 - `bun run test:contracts`: 58 files, 2,872 pass, 29 skip, 0 fail, 118 s.
 - `bun run test:all` with 6 workers and the WSL distro `Ubuntu-26.04` reported 136 of 136 files and 4,767 tests, in about 95 min. Parallel step: 123 files, 4,480 pass, 36 skip, 0 todo, 0 fail, 3,018.8 s. Serial step: 13 files, 245 pass, 6 skip, 0 fail, 2,664.0 s.
-- `tests/wsl/registration.test.ts` on `Ubuntu-24.04`: 38 pass, 4 skip, 0 fail. `bun run test:windows`: 70 pass, 1 skip, 0 fail, 484 s.
+- `tests/wsl/registration.test.ts` on `Ubuntu-24.04` with Git 2.43.0: 38 pass, 4 skip, 0 fail. `bun run test:windows`: 70 pass, 1 skip, 0 fail, 484 s.
 - `cargo test --locked`: 435 passed, 0 failed, 4 ignored. The ignored tests are 3 child entries and the T370 load probe, so that probe did not run. Clippy with `-D warnings` and `cargo fmt --check` printed no finding.
 - Each of the 58 Git blocks printed `C:\Git\cmd\git.exe` and `git version 2.56.0.windows.1`, built from commit `49d759b698127791a5f3f2759c69b983846711dd`. No test skipped for an absent Git.
 - 1,215 `ORIGIN` lines, all under `D:\dev\rozvio`. 1,213 point into `src`, 729 of them into `src\git-service`. 8 `GLOBAL_ORIGIN` lines.
-- The skips are the same as in the table above. No `test.todo` case remains in `tests/`.
+- The test skips are the same as in the table above. The Rust run ignores 3 child entries and the T370 load probe. No `test.todo` case remains in `tests/`.
 - The T370 load probe ran alone at main `5a27e51`: `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib a_child_without_descendants -- --ignored` exited with code 0, 1 passed, 0 failed, 10.43 s test time. Control mutation in a scratch worktree: `Supervisor::active_descendants` counted every listed process, with the exited child. The probe then failed with exit code 101, because 1 of 1600 exit replies counted a process.
 
 Earlier runs of this batch:

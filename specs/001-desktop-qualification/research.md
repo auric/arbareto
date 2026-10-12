@@ -1846,6 +1846,9 @@ Earlier runs of this batch:
 - Run 5 at `ec6699a`: a Rust test failed in the full `cargo test` run and passed alone. An exit reply counted the exited child as an active descendant, because Windows removes a process from its Job after its handle signals. T370 (commit `18c7a8f`) fixed it.
 - Run 6 at `f29e2be`: `dispose()` failed with "WSL Jobs still hold processes [[48544,55412]] after 30000 ms", then `EBUSY`. Cause: the double started each `wsl.exe` in the runner `launch` folder. Its `wslhost.exe` inherits that current directory and lives until the Linux relay closes the interop channel. WSL sets no bound for that lifetime. So the Job wait waited on an unbounded process.
 - Fix after run 6: the double starts each `wsl.exe` in the temporary directory, as the shell starts it in its own launch folder (`process_requests.rs` `wsl_host`). It has no WSL Job wait. The case "the launch folder can move while a WSL commit hook runs" in `tests/wsl/mutations.test.ts` gave `EBUSY` before the fix and passes after it. With `launchDirectory` back at the Git call site, it gives `EBUSY` again.
+- Run 7 at `a55f1e6`: Claude Code stopped `test:all` for low host memory in its last serial file, `tests/wsl/submodules.test.ts`. All other steps passed.
+- Run 7b at `a55f1e6`, 4 workers: the parallel step passed, with 4,516 tests, 4,480 pass, 0 fail, and 36 skip. The memory guard stopped the serial step in the same file. Cause: the F31 fixtures of the silent-fetch and big-clone cases stayed on disk until `afterAll`. Their Linux page cache grew the WSL VM by about 3.5 GB. The fix removes each case's F31 fixtures after the case.
+- Proof run of the fix, `tests/wsl/submodules.test.ts` alone on Ubuntu-26.04: 13 pass and 0 fail. The vmmemWSL peak was 3,873 MB, the minimum host available memory was 5,003 MB, and Linux `Cached` fell back to about 265 MB after each large case.
 
 Batch 3 `OBSERVATION` lines, verbatim. T093 and T094 hold the F03 and F10 observations:
 

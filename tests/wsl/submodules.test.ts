@@ -37,10 +37,16 @@ useFixtureRoot();
 useWslFolder();
 
 let runners: BunRunner[] = [];
+let caseHost: WslHost | undefined;
 // Each dispose ends the WSL scopes of the runner through `wsl.exe`, so the hook takes the case bound.
+// An F31 folder holds up to 2 GB. Its Linux page cache stays until the files go, so each case removes its F31 folders.
 afterEach(async () => {
   for (const runner of runners) await runner.dispose();
   runners = [];
+  const host = caseHost;
+  caseHost = undefined;
+  if (host === undefined) return;
+  inDistro(host.distro, ["/usr/bin/find", host.folder, "-mindepth", "1", "-maxdepth", "1", "-name", "f31-*", "-exec", "/usr/bin/rm", "-rf", "--one-file-system", "--", "{}", "+"], { timeoutMs: 120_000 });
 }, CASE_TIMEOUT_MS);
 
 // Prints the ORIGIN line of each module under test and loads it.
@@ -51,7 +57,16 @@ async function underTest(): Promise<void> {
   }
 }
 
-const wslCase = (name: string, body: (host: WslHost) => Promise<void>) => wslTest(name, NEEDS, body, CASE_TIMEOUT_MS);
+const wslCase = (name: string, body: (host: WslHost) => Promise<void>) =>
+  wslTest(
+    name,
+    NEEDS,
+    (host) => {
+      caseHost = host;
+      return body(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
 
 function setup(host: WslHost): { runner: BunRunner; s: WslSession } {
   const runner = createBunRunner({ git: GIT ?? "git", directory: fixtureDir(`runner-${crypto.randomUUID()}`), environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });

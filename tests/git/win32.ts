@@ -52,6 +52,7 @@ const PROCESS_TERMINATE = 0x1;
 const PROCESS_SET_QUOTA = 0x100;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const SYNCHRONIZE = 0x0010_0000;
+const WAIT_OBJECT_0 = 0;
 const WAIT_TIMEOUT = 0x102;
 const TERMINATE_WAIT_MS = 5000;
 
@@ -187,8 +188,8 @@ export function ownTree(pid: number): ProcessTree {
   const handle = openProcess(pid, PROCESS_SET_QUOTA | PROCESS_TERMINATE);
   const assigned = handle !== null && kernel32().AssignProcessToJobObject(job, handle) !== 0;
   const error = kernel32().GetLastError();
-  // A root that already exited has no tree to own.
-  const exited = handle !== null && creationTime(handle) === null;
+  // A root that already exited has no tree to own. An exiting root can refuse the assignment before its handle signals.
+  const exited = handle !== null && !assigned && kernel32().WaitForSingleObject(handle, TERMINATE_WAIT_MS) === WAIT_OBJECT_0;
   if (handle) kernel32().CloseHandle(handle);
   if (!assigned && !exited) {
     kernel32().CloseHandle(job);

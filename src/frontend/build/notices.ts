@@ -121,9 +121,17 @@ export function cargoShipped(tree: string, metadata: CargoMetadata): { crates: C
 }
 
 /** The `third-party-licenses` folder key for one exact ecosystem, name, and version, when that folder exists. */
-export function vendoredKey(keys: ReadonlySet<string>, ecosystem: "npm" | "cargo" | "runtime", name: string, version: string): string | undefined {
+export function vendoredKey(keys: ReadonlySet<string>, ecosystem: "npm" | "cargo" | "runtime" | "tools", name: string, version: string): string | undefined {
   const key = `${ecosystem}/${name}@${version}`;
   return keys.has(key) ? key : undefined;
+}
+
+// research.md R10 (T366): Bun 1.4.3 embeds the typescript-go type checker, so Apache-2.0 §4(d) requires its NOTICE.txt.
+export const BUN_RUNTIME_FILES = ["LICENSE.md", "typescript-go-NOTICE.txt"] as const;
+
+/** The required Bun runtime files that the vendored runtime folder does not hold. */
+export function missingRuntimeFiles(names: readonly string[]): string[] {
+  return BUN_RUNTIME_FILES.filter((name) => !names.includes(name));
 }
 
 // No npm or Cargo manifest field names the licence file of a package (cargo `license_file` is empty for every shipped crate).
@@ -204,6 +212,26 @@ async function readLicenseFiles(dir: string, named: string | undefined | null): 
   return Promise.all(names.map(async (name) => ({ name, text: await Bun.file(`${dir}/${name}`).text() })));
 }
 
+// Tauri bundler 2.10.0 nsis/mod.rs:38-41 pins nsis-3.11.zip. research.md R10 records the vendored COPYING.
+export const NSIS_VERSION = "3.11";
+
+/**
+ * The NSIS entry from `third-party-licenses/tools/nsis@<NSIS_VERSION>`. `beforeBuildCommand` runs before the bundler downloads NSIS, so the build cannot read the bundler copy.
+ * A bundler copy at `<localAppData>/tauri/NSIS/COPYING` that differs from the vendored text is a problem: a bundler upgrade brought another NSIS.
+ */
+export async function nsisShipped(vendored: string, keys: ReadonlySet<string>, localAppData: string | undefined): Promise<{ shipped: Shipped; problems: string[] }> {
+  const key = vendoredKey(keys, "tools", "nsis", NSIS_VERSION);
+  const files = key === undefined ? [] : await readLicenseFiles(`${vendored}/${key}`, null);
+  const problems: string[] = [];
+  // Tauri bundler 2.10.0 nsis/mod.rs:81-86: the NSIS toolset folder is `dirs::cache_dir()/tauri/NSIS`, which is %LOCALAPPDATA% on Windows.
+  const bundlerCopy = localAppData === undefined ? undefined : Bun.file(`${localAppData}/tauri/NSIS/COPYING`);
+  const copying = files.find((f) => f.name === "COPYING")?.text;
+  if (copying !== undefined && bundlerCopy !== undefined && (await bundlerCopy.exists()) && (await bundlerCopy.text()) !== copying) {
+    problems.push(`NSIS ${NSIS_VERSION}: %LOCALAPPDATA%\\tauri\\NSIS\\COPYING differs from third-party-licenses/tools/nsis@${NSIS_VERSION}/COPYING`);
+  }
+  return { shipped: { name: "NSIS", license: "zlib/libpng, bzip2, CPL-1.0", files }, problems };
+}
+
 async function main(): Promise<number> {
   const root = `${import.meta.dir}/../../..`;
   const manifest = (await Bun.file(`${root}/package.json`).json()) as { repository?: { url?: string } };
@@ -244,13 +272,14 @@ async function main(): Promise<number> {
     const files = await filesOf(await readLicenseFiles(c.dir, c.licenseFile), vendoredKey(vendoredKeys, "cargo", c.name, c.version));
     shipped.push({ name: c.name, version: c.version, license: c.license, files });
   }
-  // Tauri bundler 2.10.0 nsis/mod.rs:81-86: the NSIS toolset folder is `dirs::cache_dir()/tauri/NSIS`, which is %LOCALAPPDATA% on Windows.
-  const nsis = `${process.env.LOCALAPPDATA ?? ""}/tauri/NSIS`;
-  const nsisCopying = process.env.LOCALAPPDATA !== undefined && (await Bun.file(`${nsis}/COPYING`).exists());
-  shipped.push({ name: "NSIS", license: "zlib/libpng, bzip2, CPL-1.0", files: nsisCopying ? await readLicenseFiles(nsis, "COPYING") : [] });
+  const nsis = await nsisShipped(vendored, vendoredKeys, process.env.LOCALAPPDATA);
+  shipped.push(nsis.shipped);
+  problems.push(...nsis.problems);
   // research.md R7: Bun is MIT, and it statically links LGPL-2 JavaScriptCore and WebKit and other libraries. Its LICENSE.md lists them.
   const bunKey = vendoredKey(vendoredKeys, "runtime", "bun", Bun.version);
-  shipped.push({ name: "Bun runtime and linked components", version: Bun.version, license: "MIT, LGPL-2.0 (JavaScriptCore, WebKit), and linked-library licences", files: await filesOf([], bunKey) });
+  const bunFiles = await filesOf([], bunKey);
+  for (const name of missingRuntimeFiles(bunFiles.map((f) => f.name))) problems.push(`Bun runtime ${Bun.version}: no ${name}`);
+  shipped.push({ name: "Bun runtime and linked components", version: Bun.version, license: "MIT, LGPL-2.0 (JavaScriptCore, WebKit), and linked-library licences", files: bunFiles });
   // research.md R9 and R10: the shipped Shiki grammars and themes come from these releases, and every shipped entry is MIT.
   // The vite.config.ts bundle check refuses Oniguruma WASM in the build, so it needs no notice.
   for (const [name, version] of [["tm-grammars", TM_GRAMMARS_VERSION], ["tm-themes", TM_THEMES_VERSION]] as const) {

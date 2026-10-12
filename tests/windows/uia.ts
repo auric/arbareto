@@ -53,7 +53,11 @@ const CLSID_CUIAutomation = "ff48dba4-60ef-4201-aa87-54103eef594e";
 const IID_IUIAutomation = "30cbe57d-d9d0-452a-ab13-7ac5ac4825ee";
 const IID_IUIAutomationInvokePattern = "fb377fbe-8ea6-46d5-9c73-6499642d3059";
 const IID_IUIAutomationTextPattern = "32eba289-3583-42c9-9c59-3b6d9a1e9b6a";
+const IID_IUIAutomationSelectionItemPattern = "a8efa66a-0fda-421a-9194-38021f3578ea";
+const IID_IUIAutomationValuePattern = "a94cd8b1-0844-4cd6-9d2d-640537ab39e9";
 const UIA_InvokePatternId = 10000;
+const UIA_ValuePatternId = 10002;
+const UIA_SelectionItemPatternId = 10010;
 const UIA_TextPatternId = 10014;
 const UIA_NamePropertyId = 30005;
 const UIA_LiveSettingPropertyId = 30135;
@@ -72,6 +76,7 @@ const SLOT = {
   // IUIAutomationTreeWalker
   GetParentElement: 3,
   // IUIAutomationElement
+  SetFocus: 3,
   FindFirst: 5,
   FindAll: 6,
   GetCurrentPatternAs: 14,
@@ -82,6 +87,11 @@ const SLOT = {
   GetElement: 4,
   // IUIAutomationInvokePattern
   Invoke: 3,
+  // IUIAutomationSelectionItemPattern
+  Select: 3,
+  get_CurrentIsSelected: 6,
+  // IUIAutomationValuePattern
+  SetValue: 3,
   // IUIAutomationTextPattern
   get_DocumentRange: 7,
   // IUIAutomationTextRange
@@ -183,6 +193,13 @@ export class Element {
   }
 }
 
+// The caller frees the result with SysFreeString.
+function allocBstr(value: string): Pointer {
+  const allocated = lib().oleaut32.SysAllocString(ptr(Buffer.from(`${value}\0`, "utf16le")));
+  if (typeof allocated !== "number") throw new UiaError("COM_FAILED", "SysAllocString returned null");
+  return allocated;
+}
+
 function propertyCondition(property: number, value: number | string): Pointer {
   const variant = Buffer.alloc(VARIANT_BYTES);
   let text: Pointer | null = null;
@@ -190,9 +207,7 @@ function propertyCondition(property: number, value: number | string): Pointer {
     variant.writeUInt16LE(VT_I4, 0);
     variant.writeInt32LE(value, 8);
   } else {
-    const allocated = lib().oleaut32.SysAllocString(ptr(Buffer.from(`${value}\0`, "utf16le")));
-    if (typeof allocated !== "number") throw new UiaError("COM_FAILED", "SysAllocString returned null");
-    text = allocated;
+    text = allocBstr(value);
     variant.writeUInt16LE(VT_BSTR, 0);
     variant.writeBigUInt64LE(BigInt(text), 8);
   }
@@ -314,14 +329,46 @@ function pattern(element: Element, id: number, iid: string): Pointer | null {
   return outCall(element.self, "GetCurrentPatternAs", [i32, P], [id, ptr(guid(iid))]);
 }
 
-export function invoke(element: Element): void {
-  const invoker = pattern(element, UIA_InvokePatternId, IID_IUIAutomationInvokePattern);
-  if (invoker === null) throw new UiaError("NO_PATTERN", `${JSON.stringify(element.name)} has no Invoke pattern`);
+function withPattern<T>(element: Element, id: number, iid: string, label: string, body: (self: Pointer) => T): T {
+  const self = pattern(element, id, iid);
+  if (self === null) throw new UiaError("NO_PATTERN", `${JSON.stringify(element.name)} has no ${label} pattern`);
   try {
-    hr("Invoke", slotCall(invoker, SLOT.Invoke, [], []));
+    return body(self);
   } finally {
-    release(invoker);
+    release(self);
   }
+}
+
+export function invoke(element: Element): void {
+  withPattern(element, UIA_InvokePatternId, IID_IUIAutomationInvokePattern, "Invoke", (self) => hr("Invoke", slotCall(self, SLOT.Invoke, [], [])));
+}
+
+export function focus(element: Element): void {
+  hr("SetFocus", slotCall(element.self, SLOT.SetFocus, [], []));
+}
+
+export function select(element: Element): void {
+  withPattern(element, UIA_SelectionItemPatternId, IID_IUIAutomationSelectionItemPattern, "SelectionItem", (self) => hr("Select", slotCall(self, SLOT.Select, [], [])));
+}
+
+export function isSelected(element: Element): boolean {
+  return withPattern(element, UIA_SelectionItemPatternId, IID_IUIAutomationSelectionItemPattern, "SelectionItem", (self) => {
+    const value = new Int32Array(1);
+    hr("get_CurrentIsSelected", slotCall(self, SLOT.get_CurrentIsSelected, [P], [ptr(value)]));
+    return value[0] !== 0;
+  });
+}
+
+export function setValue(element: Element, text: string): void {
+  if (typeof text !== "string") throw new UiaError("BAD_ARGUMENT", "text is not a string");
+  withPattern(element, UIA_ValuePatternId, IID_IUIAutomationValuePattern, "Value", (self) => {
+    const value = allocBstr(text);
+    try {
+      hr("SetValue", slotCall(self, SLOT.SetValue, [P], [value]));
+    } finally {
+      lib().oleaut32.SysFreeString(value);
+    }
+  });
 }
 
 // The Text pattern text, or else the Names of all descendants in tree order, joined without a separator.

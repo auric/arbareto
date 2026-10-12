@@ -8,13 +8,13 @@
 //   bun tests/windows/capture.ts --analyze <dir> --start <qpc> [--settled <hash>]
 // A run writes `frames.json` and `settled.png` into <dir>. `--analyze` applies the start event of `inject.ts` or the T244 helper.
 
-import { CFunction, dlopen, FFIType, ptr, read, toArrayBuffer, type Pointer } from "bun:ffi";
+import { CFunction, dlopen, FFIType, JSCallback, ptr, read, toArrayBuffer, type Pointer } from "bun:ffi";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { qpc, qpcFrequency } from "./inject";
 
-type Code = "BAD_ARGUMENT" | "NOT_WINDOWS" | "COM_FAILED" | "ACCESS_LOST" | "NO_REFRESH_RATE" | "ROTATED" | "DPI_SCALED" | "POINTER";
+type Code = "BAD_ARGUMENT" | "NOT_WINDOWS" | "COM_FAILED" | "ACCESS_LOST" | "NO_REFRESH_RATE" | "ROTATED" | "DPI_SCALED" | "POINTER" | "NO_DISPLAY_STATE";
 
 export class CaptureError extends Error {
   constructor(
@@ -220,6 +220,11 @@ const open = () => ({
     SetCursorPos: { args: [i32, i32], returns: i32 },
     SetProcessDpiAwarenessContext: { args: [FFIType.i64], returns: i32 },
   }).symbols,
+  kernel32: dlopen("kernel32.dll", { SetThreadExecutionState: { args: [u32], returns: u32 } }).symbols,
+  powrprof: dlopen("powrprof.dll", {
+    PowerSettingRegisterNotification: { args: [P, u32, P, P], returns: u32 },
+    PowerSettingUnregisterNotification: { args: [P], returns: u32 },
+  }).symbols,
 });
 let dlls: ReturnType<typeof open> | undefined;
 // `windef.h` DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2. A DPI-unaware process gets scaled `DesktopCoordinates` and cursor positions, so regions use physical pixels only after this call.
@@ -293,6 +298,61 @@ function guid(text: string): Buffer {
   bytes.writeUInt16LE(parseInt(hex.slice(12, 16), 16), 6);
   Buffer.from(hex.slice(16), "hex").copy(bytes, 8);
   return bytes;
+}
+
+// ---- Display power state ----
+
+// `winbase.h` ES_CONTINUOUS and ES_DISPLAY_REQUIRED. The request holds for the calling thread until `releaseDisplay`.
+const ES_CONTINUOUS = 0x80000000;
+const ES_DISPLAY_REQUIRED = 0x00000002;
+
+export function keepDisplayOn(): void {
+  if (lib().kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED) === 0) throw new CaptureError("NO_DISPLAY_STATE", "SetThreadExecutionState failed");
+}
+
+export function releaseDisplay(): void {
+  if (lib().kernel32.SetThreadExecutionState(ES_CONTINUOUS) === 0) throw new CaptureError("NO_DISPLAY_STATE", "SetThreadExecutionState failed");
+}
+
+// Power setting GUIDs: GUID_CONSOLE_DISPLAY_STATE carries 0 (off), 1 (on), or 2 (dimmed).
+const GUID_CONSOLE_DISPLAY_STATE = "6fe69556-704a-47a0-8f24-c28d936fda47";
+export const DISPLAY_OFF = 0;
+// `winuser.h` DEVICE_NOTIFY_CALLBACK and PBT_POWERSETTINGCHANGE.
+const DEVICE_NOTIFY_CALLBACK = 2;
+const PBT_POWERSETTINGCHANGE = 0x8013;
+// `winuser.h` POWERBROADCAST_SETTING: PowerSetting GUID (16 bytes), DataLength (u32), Data.
+const SETTING_DATA_OFFSET = 20;
+// Safety cap only. The first callback arrived after about 10 ms in a probe.
+const DISPLAY_STATE_WAIT_MS = 2000;
+
+// The registration calls back once with the current value (PowerSettingRegisterNotification docs).
+export async function displayState(): Promise<number> {
+  const { powrprof } = lib();
+  let value: number | undefined;
+  const callback = new JSCallback(
+    (_context: Pointer, type: number, setting: Pointer) => {
+      if (type === PBT_POWERSETTINGCHANGE) value ??= read.u32(setting, SETTING_DATA_OFFSET);
+      return 0;
+    },
+    { args: [P, u32, P], returns: u32, threadsafe: true },
+  );
+  try {
+    const setting = guid(GUID_CONSOLE_DISPLAY_STATE);
+    // `powrprof.h` DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS: Callback, Context.
+    const parameters = new BigUint64Array([BigInt(callback.ptr!), 0n]);
+    const handle = new BigUint64Array(1);
+    const result = powrprof.PowerSettingRegisterNotification(ptr(setting), DEVICE_NOTIFY_CALLBACK, ptr(parameters), ptr(handle));
+    if (result !== 0) throw new CaptureError("NO_DISPLAY_STATE", `PowerSettingRegisterNotification returned ${result}`);
+    try {
+      for (const end = performance.now() + DISPLAY_STATE_WAIT_MS; value === undefined && performance.now() < end; ) await Bun.sleep(10);
+    } finally {
+      powrprof.PowerSettingUnregisterNotification(Number(handle[0]) as Pointer);
+    }
+  } finally {
+    callback.close();
+  }
+  if (value === undefined) throw new CaptureError("NO_DISPLAY_STATE", `no GUID_CONSOLE_DISPLAY_STATE callback within ${DISPLAY_STATE_WAIT_MS} ms`);
+  return value;
 }
 
 const methods = new Map<string, (...args: unknown[]) => number>();

@@ -3,7 +3,7 @@
 
 // Only the live app case injects input, and it runs only with ARBARETO_LIVE_INPUT=1 in the measurement account.
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { inflateSync, crc32 } from "node:zlib";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,10 +21,14 @@ import {
   buildMask,
   CaptureError,
   deltaSeconds,
+  DISPLAY_OFF,
+  displayState,
   encodePng,
   hashImage,
+  keepDisplayOn,
   openDuplication,
   parseArgs,
+  releaseDisplay,
   stopReason,
   type BlockRun,
   type Duplication,
@@ -228,9 +232,14 @@ function boundingRect(element: Element): Region {
   return { x: rect[0]!, y: rect[1]!, width: rect[2]! - rect[0]!, height: rect[3]! - rect[1]! };
 }
 
+// Desktop duplication gives no frames while the display is off. The request keeps an on display on during the live cases.
+if (process.platform === "win32") keepDisplayOn();
+const displayOff = process.platform === "win32" && (await displayState()) === DISPLAY_OFF;
+
 describe.skipIf(process.platform !== "win32")("T242 capture.ts live", () => {
+  afterAll(releaseDisplay);
   // This first open also makes the test process per-monitor DPI aware, so the UIA rectangles below are physical pixels.
-  const opened = tryOpen({ x: 0, y: 0, width: 16, height: 16 });
+  const opened: Opened = displayOff ? { skip: "display-off", hresult: null } : tryOpen({ x: 0, y: 0, width: 16, height: 16 });
   if ("skip" in opened) console.log(`SKIP desktop duplication: missing capability ${opened.skip}`);
 
   test.skipIf("skip" in opened)(

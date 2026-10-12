@@ -213,6 +213,64 @@ describe("topology table", () => {
       }
     }
   });
+
+  // T028: the exact stop row of plan.md D2. The rest of the frame stays unparsed.
+  test("push stops after the stop row, keeps the rest unparsed, and the stop applies only after the re-read rows", () => {
+    const random = rng(7);
+    const lines = randomLines("sha1", 400, random);
+    for (const stop of [1, 2, 133, 399]) {
+      const topology = new HistoryTopology("sha1");
+      topology.beginStep();
+      expect(topology.push(encode(lines), stop)).toBeNull();
+      expect({ stop, rows: topology.rows, rest: topology.rest }).toEqual({ stop, rows: stop, rest: true });
+      expectRows(topology, lines.slice(0, stop));
+      // A later push past the stop row parses nothing and reports the rest.
+      expect(topology.push(encode(lines.slice(stop)), stop)).toBeNull();
+      expect({ rows: topology.rows, rest: topology.rest }).toEqual({ rows: stop, rest: true });
+    }
+    const exact = new HistoryTopology("sha1");
+    exact.beginStep();
+    expect(exact.push(encode(lines.slice(0, 50)), 50)).toBeNull();
+    expect({ rows: exact.rows, rest: exact.rest }).toEqual({ rows: 50, rest: false });
+    // The next step re-reads the 50 held rows before the stop of 50 applies.
+    exact.beginStep();
+    expect(exact.push(encode(lines), 50)).toBeNull();
+    expect({ rows: exact.rows, rest: exact.rest }).toEqual({ rows: 50, rest: true });
+    const changed = new HistoryTopology("sha1");
+    changed.beginStep();
+    changed.push(encode(lines.slice(0, 50)));
+    changed.beginStep();
+    expect(changed.push(encode([lines[1]!, ...lines.slice(1)]), 50)).toEqual(ORDER);
+  });
+
+  // T028: the numeric accessors of `ReducedGraph.step`, the intern of the search merge (contract Δ3 `searchHistory`), and the details `children`.
+  test("idOf, parentIdsOf, rowOfId, intern, knownOids, and childRows", () => {
+    const lines = [`${a} ${b} ${c}`, `${b} ${c}`, `${c}`];
+    const topology = new HistoryTopology("sha1");
+    topology.beginStep();
+    // An interned OID before its row is no pending parent.
+    const early = topology.intern(d);
+    expect(early).toBeGreaterThanOrEqual(0);
+    expect(topology.rowOfId(early)).toBe(-1);
+    expect(topology.push(encode(lines))).toBeNull();
+    expect(topology.pending).toBe(0);
+    expect(topology.end()).toBeNull();
+    expect([0, 1, 2].map((row) => topology.rowOfId(topology.idOf(row)))).toEqual([0, 1, 2]);
+    expect(Array.from(topology.parentIdsOf(0))).toEqual([topology.idOf(1), topology.idOf(2)]);
+    expect(topology.intern(c)).toBe(topology.idOf(2));
+    expect(topology.intern("C".repeat(40))).toBe(-1);
+    expect(topology.intern(c.slice(1))).toBe(-1);
+    expect([...topology.knownOids()].sort()).toEqual([a, b, c].sort());
+    expect([0, 1, 2].map((row) => topology.childRows(row))).toEqual([[], [0], [0, 1]]);
+    // A search match interned before its row: the row then streams, and no pending count changes.
+    const later = new HistoryTopology("sha1");
+    later.beginStep();
+    later.intern(b);
+    expect(later.push(encode([`${a} ${b}`]))).toBeNull();
+    expect(later.pending).toBe(1);
+    expect(later.push(encode([b]))).toBeNull();
+    expect({ pending: later.pending, end: later.end() }).toEqual({ pending: 0, end: null });
+  });
 });
 
 describeGit("topology table on Git output", (git) => {

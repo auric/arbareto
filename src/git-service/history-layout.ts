@@ -107,6 +107,11 @@ export class HistoryLayout {
     return this.loaded;
   }
 
+  /** The most lanes over the loaded rows (data-model.md §1). */
+  get lanes(): number {
+    return this.state.lanes;
+  }
+
   /** Steps the state to `rows` loaded rows. */
   extend(rows: number): void {
     while (this.loaded < rows) {

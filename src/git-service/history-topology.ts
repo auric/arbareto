@@ -64,9 +64,11 @@ export class HistoryTopology {
   private readonly partial: Uint8Array;
   private partialLength = 0;
   private readonly scratch: Uint8Array;
-  // True when the last `intern` found an existing ID.
-  private isOld = false;
+  // 1 for an ID that a parent field named. `intern` can also add an ID for a search match, and such an ID is no pending parent.
+  private named = new Uint8Array(1024);
   private failure: TopologyFailure | null = null;
+  /** True when the last `push` reached its stop row with bytes left in the frame. Those bytes stay unparsed. */
+  rest = false;
 
   constructor(objectFormat: ObjectFormat) {
     this.rawLength = objectFormat === "sha1" ? 20 : 32;
@@ -84,10 +86,17 @@ export class HistoryTopology {
     this.partialLength = 0;
   }
 
-  /** Parses one stdout frame. A failure is final for the view. */
-  push(frame: Uint8Array): TopologyFailure | null {
+  /** Parses one stdout frame. A failure is final for the view. The parse stops when the table holds `stopRow` rows, and the rest of the frame stays unparsed. */
+  push(frame: Uint8Array, stopRow = Infinity): TopologyFailure | null {
     let at = 0;
+    this.rest = false;
     while (this.failure === null && at < frame.length) {
+      // The re-read lines below the held row count add no row, so the stop applies after them.
+      if (this.streamed >= this.held && this.rows >= stopRow) {
+        this.rest = true;
+        this.partialLength = 0;
+        break;
+      }
       const lf = frame.indexOf(LF, at);
       const end = lf === -1 ? frame.length : lf;
       if (this.partialLength + end - at >= this.lineCap) {
@@ -130,6 +139,48 @@ export class HistoryTopology {
     return Array.from(this.parentIds.subarray(this.parentStart[row]!, this.parentStart[row + 1]!), (id) => this.hex(id));
   }
 
+  /** The numeric ID of row `row`. `ReducedGraph.step` takes these IDs. */
+  idOf(row: number): number {
+    return this.rowToId[row]!;
+  }
+
+  /** The parent IDs of row `row`, in Git order. The view stays valid until the next `push`. */
+  parentIdsOf(row: number): Int32Array {
+    return this.parentIds.subarray(this.parentStart[row]!, this.parentStart[row + 1]!);
+  }
+
+  /** The row of ID `id`, or -1 while it is not a row. */
+  rowOfId(id: number): number {
+    return this.idToRow[id]!;
+  }
+
+  /** The ID of `oid`. A new ID is no row and no pending parent. -1 for text that is not an OID of the object format. */
+  intern(oid: string): number {
+    const bytes = new TextEncoder().encode(oid);
+    if (bytes.length !== this.hexLength || !this.decode(bytes, 0, 1)) return -1;
+    return this.internAt(0);
+  }
+
+  /** The OIDs of every ID: the rows and the parents that Git named. */
+  *knownOids(): Generator<string> {
+    for (let id = 0; id < this.ids; id++) if (this.named[id] === 1 || this.idToRow[id] !== PENDING) yield this.hex(id);
+  }
+
+  /** The rows below `row` that list it as a parent, in row order. */
+  childRows(row: number): number[] {
+    const id = this.rowToId[row]!;
+    const children: number[] = [];
+    for (let r = 0; r < row; r++) {
+      for (let k = this.parentStart[r]!; k < this.parentStart[r + 1]!; k++) {
+        if (this.parentIds[k] === id) {
+          children.push(r);
+          break;
+        }
+      }
+    }
+    return children;
+  }
+
   /** The row of `oid`, or -1 when the view holds no such row. */
   rowOf(oid: string): number {
     const bytes = new TextEncoder().encode(oid);
@@ -161,15 +212,14 @@ export class HistoryTopology {
     if (parents > HISTORY_PARENTS_PER_COMMIT) return PARENTS_LIMIT;
     if (this.streamed < this.held) return this.same(this.streamed++, parents) ? null : ORDER;
     this.streamed++;
-    const id = this.intern(0);
-    const wasPending = this.isOld;
+    const id = this.internAt(0);
     if (this.idToRow[id]! !== PENDING) return MALFORMED;
     // A parent that already showed as a row, this row included (data-model.md §3). The checks run before the row enters, so a failed line adds no row.
     for (let p = 1; p <= parents; p++) {
       const parent = this.find(p * this.rawLength);
       if (parent === id || (parent >= 0 && this.idToRow[parent]! !== PENDING)) return MALFORMED;
     }
-    if (wasPending) this.pending--;
+    if (this.named[id] === 1) this.pending--;
     const row = this.rows++;
     this.rowToId = grow(this.rowToId, this.rows);
     this.rowToId[row] = id;
@@ -177,8 +227,12 @@ export class HistoryTopology {
     const first = this.parentStart[row]!;
     this.parentIds = grow(this.parentIds, first + parents);
     for (let p = 1; p <= parents; p++) {
-      this.parentIds[first + p - 1] = this.intern(p * this.rawLength);
-      if (!this.isOld) this.pending++;
+      const parent = this.internAt(p * this.rawLength);
+      this.parentIds[first + p - 1] = parent;
+      if (this.named[parent] === 0) {
+        this.named[parent] = 1;
+        this.pending++;
+      }
     }
     this.parentStart = grow(this.parentStart, this.rows + 1);
     this.parentStart[this.rows] = first + parents;
@@ -219,15 +273,15 @@ export class HistoryTopology {
     return -1;
   }
 
-  private intern(at: number): number {
+  private internAt(at: number): number {
     const found = this.find(at);
-    this.isOld = found >= 0;
     if (found >= 0) return found;
     const id = this.ids++;
     this.oids = grow(this.oids, this.ids * this.rawLength);
     this.oids.set(this.scratch.subarray(at, at + this.rawLength), id * this.rawLength);
     this.idToRow = grow(this.idToRow, this.ids);
     this.idToRow[id] = PENDING;
+    this.named = grow(this.named, this.ids);
     // Load factor at most 1/2.
     if (this.ids * 2 > this.slots.length) this.rehash(this.slots.length * 2);
     else this.place(id);

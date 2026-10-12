@@ -17,12 +17,12 @@ console.log(`BUN ${Bun.version} ${Bun.revision} ${process.execPath} ${process.pl
 const root = mkdtempSync(join(tmpdir(), "arbareto-probe-watch-"));
 console.log(`ROOT ${root}`);
 
-type Seen = { at: number; event: string; name: string | null };
+type Seen = { at: number; event: string; name: string | null | undefined };
 function watched(dir: string): { watcher: FSWatcher; events: Seen[]; errors: string[] } {
   const events: Seen[] = [];
   const errors: string[] = [];
   const watcher = watch(dir, { recursive: true });
-  watcher.on("change", (event, name) => events.push({ at: performance.now(), event, name: name === null ? null : String(name) }));
+  watcher.on("change", (event, name) => events.push({ at: performance.now(), event, name: name == null ? name : String(name) }));
   watcher.on("error", (error) => errors.push(String(error)));
   return { watcher, events, errors };
 }
@@ -39,7 +39,7 @@ async function removal(): Promise<{ after: Seen[]; errors: string[]; removedAt: 
   await Bun.sleep(WINDOW_MS);
   w.watcher.close();
   const after = w.events.filter((e) => e.at >= removedAt);
-  for (const e of after.slice(0, 10)) console.log(`  +${(e.at - removedAt).toFixed(0)} ms ${e.event} ${e.name === null ? "null" : JSON.stringify(e.name)}`);
+  for (const e of after.slice(0, 10)) console.log(`  +${(e.at - removedAt).toFixed(0)} ms ${e.event} ${e.name == null ? String(e.name) : JSON.stringify(e.name)}`);
   console.log(`  ${after.length} events after removal, ${w.errors.length} errors${w.errors.length > 0 ? `: ${w.errors.join("; ")}` : ""}`);
   return { after, errors: w.errors, removedAt };
 }

@@ -12,7 +12,8 @@ import { nativeHost, type GitHost } from "./remote-fixtures";
 useFixtureRoot();
 
 const TASK = "T005";
-const EXPECTED_VERSION = "2.56.0.windows.1";
+// Plan P0.2 names Windows Git 2.56 and requires no exact build. Other hosts record the version only.
+const EXPECTED_VERSION = process.platform === "win32" ? "2.56.x" : "record";
 const FACT_MS = 600_000;
 
 describeGit("Git facts for remote sync (T005)", (git) => {
@@ -21,7 +22,8 @@ describeGit("Git facts for remote sync (T005)", (git) => {
 
   test("Git version", () => {
     const version = gitVersion(h());
-    console.log(observationLine(TASK, version, { fact: "version", expected: EXPECTED_VERSION, observed: version, match: version === EXPECTED_VERSION }));
+    const match = EXPECTED_VERSION === "record" || version.startsWith("2.56.");
+    console.log(observationLine(TASK, version, { fact: "version", expected: EXPECTED_VERSION, observed: version, match }));
   });
 
   for (const fact of FACTS) {

@@ -46,8 +46,9 @@ describe("boot view", () => {
     expect(html).toMatch(/<dt>Build<\/dt><dd>0\.1\.0 c{40}-dirty<\/dd>/);
     for (const label of labels) expect(html).not.toContain(`<p>${label}`);
     // A screen reader reads the blocked line before its details.
-    expect(html.indexOf("Git unavailable: GIT_UNAVAILABLE")).toBeGreaterThan(-1);
-    expect(html.indexOf("Git unavailable: GIT_UNAVAILABLE")).toBeLessThan(html.indexOf("<dl"));
+    const blocked = html.search(/Git unavailable: <code[^>]*>GIT_UNAVAILABLE<\/code>/);
+    expect(blocked).toBeGreaterThan(-1);
+    expect(blocked).toBeLessThan(html.indexOf("<dl"));
     const select = html.match(/<button\b[^>]*>Select Git<\/button>/)?.[0] ?? "";
     expect(select).toContain('data-slot="button"');
     expect(select).toContain("bg-primary");
@@ -61,7 +62,12 @@ describe("boot view", () => {
   });
 
   test("the unavailable state names the code", () => {
-    expect(renderToStaticMarkup(<BootView state="unavailable" code="SERVICE_UNAVAILABLE" />)).toContain("Git service not connected: SERVICE_UNAVAILABLE");
+    // B4-4: plan.md "Status and fallback texts": each code shows in the code font.
+    expect(renderToStaticMarkup(<BootView state="unavailable" code="SERVICE_UNAVAILABLE" />)).toMatch(/Git service not connected: <code[^>]*>SERVICE_UNAVAILABLE<\/code>/);
+  });
+
+  test("B4-4: the blocked Git state shows its code in the code font", () => {
+    expect(render(environment({ gitCode: "GIT_UNSUPPORTED" }))).toMatch(/: <code[^>]*>GIT_UNSUPPORTED<\/code>/);
   });
 
   test("the facts state shows the build identity and the T064 labels", () => {
@@ -233,7 +239,10 @@ describe("marker dismissal start", () => {
 
 describe("no network request", () => {
   test("no frontend source opens a network API", async () => {
-    const network = /\b(fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\b/;
+    // A network API used as an identifier or by bracket access. A quote, a hyphen, or a word character next to a bare name marks a contract string or another name.
+    const network = /(?<![\w"'`-])(fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)(?![\w"'`-])|\[\s*["'`](fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)["'`]\s*\]/;
+    for (const source of ["fetch(url)", "window.fetch(url)", "const f = fetch;", "new WebSocket(u)", 'globalThis["fetch"]', "window['fetch']", "self[`fetch`]"]) expect({ source, hit: network.test(source) }).toEqual({ source, hit: true });
+    for (const source of ['"fetch"', "'fetch-checkout'", "--no-lazy-fetch"]) expect({ source, hit: network.test(source) }).toEqual({ source, hit: false });
     const sources = await Array.fromAsync(new Bun.Glob("src/frontend/**/*.{ts,tsx,html}").scan({ cwd: `${import.meta.dir}/../..` }));
     expect(sources.length).toBeGreaterThan(0);
     for (const path of sources) expect({ path, hit: network.exec(await Bun.file(`${import.meta.dir}/../../${path}`).text())?.[0] }).toEqual({ path, hit: undefined });

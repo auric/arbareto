@@ -5,7 +5,8 @@
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
 // T206 adds the contract §11 WSL process requests. T212 takes their types from the zod frames of `src/contracts/channel.ts`.
 
-import { mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
@@ -350,6 +351,9 @@ const sameIdentity = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stri
 
 export function createBunRunner(options: BunRunnerOptions) {
   const launchDirectory = join(options.directory, "launch");
+  // Each `wsl.exe` starts here, as the shell starts it in its own launch folder (src-tauri/src/process_requests.rs).
+  // Its `wslhost.exe` inherits the folder and lives until WSL closes the interop channel, with no bound. So no test deletes this folder.
+  const wslDirectory = tmpdir();
   // A fixture process writes `<pid>-<creation time>` here (`recordProcess` of `HOST_SCRIPT`).
   const recordsDirectory = join(options.directory, "processes");
   const recoveryFolder = join(options.directory, "recovery");
@@ -540,7 +544,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     const existing = wslAnchors.get(operationId);
     if (existing) return existing;
     const proc = Bun.spawn([WSL_EXE, ...wslHead(inst.distro), WSL_TEXTS.anchor, "sh", inst.systemctl, operationId], {
-      cwd: launchDirectory,
+      cwd: wslDirectory,
       env: wslEnvironment(),
       stdin: "pipe",
       stdout: "pipe",
@@ -790,10 +794,10 @@ export function createBunRunner(options: BunRunnerOptions) {
       pipes.forEach(closePipe);
       throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED");
     }
-    // A WSL call keeps its own end path: a killed `wsl.exe` ends its scopes (contract §11).
+    // A WSL call keeps its own end path: a killed `wsl.exe` ends its scopes (contract §11). It gets no Job.
     let tree: ReturnType<typeof ownTree> | undefined;
     try {
-      tree = argv[0] === WSL_EXE ? undefined : ownTree(proc.pid);
+      if (argv[0] !== WSL_EXE) tree = ownTree(proc.pid);
     } catch (error) {
       proc.kill();
       pipes.forEach(closePipe);
@@ -969,7 +973,7 @@ export function createBunRunner(options: BunRunnerOptions) {
             void anchor.ask().then((answer) => samples.get(call)?.(answer?.[1] ?? null));
           }, 1_000)
         : undefined;
-    const exit = await execute(call, [WSL_EXE, ...args], launchDirectory, wslEnvironment(), recorded).finally(() => clearInterval(poll));
+    const exit = await execute(call, [WSL_EXE, ...args], wslDirectory, wslEnvironment(), recorded).finally(() => clearInterval(poll));
     await inject.afterWslExit?.(call);
     // The anchor count after the exit of an execution process becomes `activeDescendants`.
     // Without an answer, or with an unknown count, the exit carries no count (contract §6).
@@ -1291,7 +1295,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       const seam = inject.wslProbe;
       let exit: GitExit;
       // The probe takes the Linux path of the context (gaps.md W1).
-      if (!seam) exit = await execute(asCall, [WSL_EXE, ...wslHead(call.distro), WSL_TEXTS.probe, "sh", parts.linux], launchDirectory, wslEnvironment());
+      if (!seam) exit = await execute(asCall, [WSL_EXE, ...wslHead(call.distro), WSL_TEXTS.probe, "sh", parts.linux], wslDirectory, wslEnvironment());
       else {
         for (let held = holding(startBarriers, asCall); held; held = holding(startBarriers, asCall)) await held.promise;
         if (closing) throw unknownTarget();
@@ -1367,7 +1371,6 @@ export function createBunRunner(options: BunRunnerOptions) {
       return hold(stdoutBarriers, match);
     },
     // Ends every recorded live process by PID and every running process, then waits a bounded time for their exits and the drains.
-    // A killed anchor `wsl.exe` can leave a `wslhost.exe` that keeps the launch folder open. So each anchor first ends at count 0.
     async dispose(): Promise<void> {
       closing = true;
       end(() => true);
@@ -1391,16 +1394,6 @@ export function createBunRunner(options: BunRunnerOptions) {
       await Promise.race([Promise.all([...drains]), Bun.sleep(DISPOSE_WAIT_MS)]);
       for (const tree of trees.values()) tree.close();
       trees.clear();
-      // A child `wsl.exe` of an ended `wsl.exe` keeps the launch folder open for a short time. Windows refuses a folder rename while a process holds the folder.
-      for (const until = performance.now() + DISPOSE_WAIT_MS; performance.now() < until; await Bun.sleep(50)) {
-        try {
-          renameSync(launchDirectory, `${launchDirectory}-free`);
-        } catch {
-          continue;
-        }
-        renameSync(`${launchDirectory}-free`, launchDirectory);
-        break;
-      }
     },
   };
 }

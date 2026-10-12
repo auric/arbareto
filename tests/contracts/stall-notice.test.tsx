@@ -33,7 +33,7 @@ const BASE: Fields = { operation: null, worktreeRoot: ROOT, head: { state: "bran
 
 const KINDS = [
   { kind: "commit", remedy: COMMIT_REMEDY, progress: { phase: "commit-handoff", counters: {} } },
-  { kind: "updateSubmodules", remedy: STEP_REMEDY, progress: { phase: "fetch", counters: { rowIndex: 1, rowCount: 2 } } },
+  { kind: "updateSubmodules", remedy: STEP_REMEDY, progress: { phase: "fetch", path: "libs/solo", counters: { rowIndex: 1, rowCount: 2 } } },
 ] as const;
 
 const unmounts: (() => Promise<void>)[] = [];
@@ -80,7 +80,7 @@ async function mount(kind: (typeof KINDS)[number], remedy: Remedy = kind.remedy)
     host.remove();
   });
   const event = async (stalled: boolean, counters: Record<string, number> = kind.progress.counters) => {
-    const progress = { requestId: op.requestId, operationId: OPERATION_ID, state: "running", phase: kind.progress.phase, counters, stalled };
+    const progress = { requestId: op.requestId, operationId: OPERATION_ID, state: "running", ...kind.progress, counters, stalled };
     await act(async () => set((p) => ({ ...p, operation: { ...op, progress } as never })));
     await settle();
   };

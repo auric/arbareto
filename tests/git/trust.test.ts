@@ -8,7 +8,7 @@ import { basename, delimiter, dirname, join, relative, resolve } from "node:path
 import type { FileFact } from "../../src/contracts/channel";
 import { foldAscii } from "../../src/contracts/fold-ascii";
 import { NATIVE, PATH_RULES } from "../../src/contracts/native-path";
-import { RECONCILIATION_TARGET_MS, TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILES, TRUST_DIGEST_TOTAL_BYTES, TRUST_INPUT_BYTES, TRUST_LINK_HOPS } from "../../src/contracts/limits";
+import { RECONCILIATION_TARGET_MS, TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILES, TRUST_DIGEST_TOTAL_BYTES, TRUST_INPUT_BYTES, TRUST_LINK_HOPS, TRUST_REPORT_ENTRIES, TRUST_REPORT_HOOKS } from "../../src/contracts/limits";
 import { configListArgs, hooksPathArgs } from "../../src/git-service/commands";
 import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
 import { RunnerRefusal, type GitRunner } from "../../src/git-service/git-runner";
@@ -1287,6 +1287,26 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
       }),
     TIMEOUT_MS,
   );
+
+  // Contract §5 "Trust report rows": a report above a row bound is refused whole, with no entry.
+  for (const [rows, reason, bound, record] of [
+    ["entries", "TRUST_REPORT_ENTRIES", TRUST_REPORT_ENTRIES, (i: number) => `[t372]\n\tk${i} = v\n`],
+    ["hooks", "TRUST_REPORT_HOOKS", TRUST_REPORT_HOOKS, (i: number) => `[hook "t372-${i}"]\n\tevent = pre-commit\n`],
+  ] as const)
+    caseTest("T372", `${rows}: a report at the bound passes, and one more row gives OUTPUT_LIMIT with reason ${reason}`, W, () => withService({ name: `t372-${rows}` }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), `t372-${rows}`));
+      const file = resolve(repo, git(repo, ["rev-parse", "--git-path", "config"]).trim());
+      const { repositoryId } = await service.register(repo);
+      const base = (await service.readTrust(repositoryId)).result![rows].length;
+      const original = readFileSync(file, "utf8");
+      const write = (count: number) => writeFileSync(file, original + Array.from({ length: count }, (_, i) => record(i)).join(""));
+      write(bound - base);
+      const at = await service.readTrust(repositoryId);
+      expect({ ...outcome(at), rows: at.result?.[rows].length }).toEqual({ state: "succeeded", code: undefined, rows: bound });
+      write(bound - base + 1);
+      const above = await service.readTrust(repositoryId);
+      expect({ ...outcome(above), result: above.result }).toEqual({ state: "failed", code: "OUTPUT_LIMIT", result: { reason } as never });
+    }), TIMEOUT_MS);
 });
 
 describe("program file digests (contract §7 \"Program file digests\")", () => {

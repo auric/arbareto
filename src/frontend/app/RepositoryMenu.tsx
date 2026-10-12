@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useState, type ComponentProps, type ReactNode } from "react";
+import { useId, useState, type ComponentProps, type ReactNode, type Ref } from "react";
 import type { BridgeResponse } from "../bridge";
 import { MenubarContent, MenubarGroup, MenubarItem, MenubarLabel, MenubarMenu, MenubarSeparator, MenubarShortcut, MenubarTrigger } from "../components/ui/menubar";
 import { codeText } from "./RepositoryStates";
@@ -39,12 +39,18 @@ export type RepositoryMenuProps = {
   onSelectGit(): void;
   onReviewTrust(): void;
   revokeTrust(trustId: string): Promise<BridgeResponse>;
+  /** Update submodules: opens the submodule review (contract §12). The item stays disabled without it. */
+  onUpdateSubmodules?(): void;
+  /** The reason of a workbench state that blocks mutations, or null. The item then stays focusable and does nothing (plan.md "Unavailable control"). */
+  updateSubmodulesReason?: string | null;
   onOpenChange?(open: boolean): void;
+  triggerRef?: Ref<HTMLButtonElement>;
   finalFocus?: ComponentProps<typeof MenubarContent>["finalFocus"];
 };
 
 /** The repository menu of the header menu bar. Render it inside `Menubar`. */
-export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOpenRecent, onSelectGit, onReviewTrust, revokeTrust, onOpenChange, finalFocus }: RepositoryMenuProps) {
+export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOpenRecent, onSelectGit, onReviewTrust, revokeTrust, onUpdateSubmodules, updateSubmodulesReason = null, onOpenChange, triggerRef, finalFocus }: RepositoryMenuProps) {
+  const updateReasonId = useId();
   const [revoked, setRevoked] = useState<ReactNode>(null);
   const [revoking, setRevoking] = useState(false);
 
@@ -57,7 +63,7 @@ export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOp
 
   return (
     <MenubarMenu onOpenChange={onOpenChange}>
-      <MenubarTrigger>Repository</MenubarTrigger>
+      <MenubarTrigger ref={triggerRef}>Repository</MenubarTrigger>
       <MenubarContent finalFocus={finalFocus} className={MENU_CONTENT}>
         <MenubarGroup>
           <MenubarItem aria-keyshortcuts="Control+O" onClick={onOpenRepository}>
@@ -82,6 +88,21 @@ export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOp
           <MenubarLabel role="status" className="whitespace-normal">
             {revoked}
           </MenubarLabel>
+        </MenubarGroup>
+        <MenubarSeparator />
+        <MenubarGroup>
+          <MenubarItem
+            disabled={onUpdateSubmodules === undefined || updateSubmodulesReason !== null}
+            aria-describedby={updateSubmodulesReason === null ? undefined : updateReasonId}
+            onClick={updateSubmodulesReason === null ? onUpdateSubmodules : undefined}
+          >
+            Update submodules
+          </MenubarItem>
+          {updateSubmodulesReason === null ? null : (
+            <MenubarLabel id={updateReasonId} className="whitespace-normal text-muted-text">
+              {updateSubmodulesReason}
+            </MenubarLabel>
+          )}
         </MenubarGroup>
       </MenubarContent>
     </MenubarMenu>

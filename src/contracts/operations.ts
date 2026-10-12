@@ -112,7 +112,10 @@ export const ProgressFields = z.strictObject({
   path: Text.optional(),
 });
 // Contract §11 "Distro start": `distro` is the listed name of the starting distro.
-export const ProgressEvent = ProgressFields.extend({ distro: DistroName.optional() }).refine((e) => (e.phase === "wsl-starting") === (e.distro !== undefined));
+// Contract §2: only phases `fetch` and `update` carry `path`, and they always carry it.
+export const ProgressEvent = ProgressFields.extend({ distro: DistroName.optional() })
+  .refine((e) => (e.phase === "wsl-starting") === (e.distro !== undefined))
+  .refine((e) => (e.phase === "fetch" || e.phase === "update") === (e.path !== undefined));
 export type ProgressEvent = z.infer<typeof ProgressEvent>;
 
 // Contract §9 "Commit failure output": an output tail stays within 16 KiB and 100 lines.

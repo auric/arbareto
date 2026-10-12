@@ -10,7 +10,7 @@ import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
 import { ComparisonView as Comparison, resultOf, showsDiff } from "../changes/ComparisonView";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
-import { HunkControls, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, HunkControls, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
 import { CommitTray } from "../commit/CommitTray";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
@@ -59,8 +59,10 @@ import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes,
 import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
-import { isTrustReport, SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
-import { blockingText, NoticeBand, WarningIcon } from "./NoticeBand";
+import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
+import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
+import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
+import { blockingText, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
@@ -86,6 +88,8 @@ export type WorkbenchBridge = RequestBridge &
     | "reviewCommit"
     | "commit"
     | "getOperation"
+    | "reviewSubmodules"
+    | "updateSubmodules"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -161,10 +165,6 @@ export type WorkbenchProps = {
 // plan.md "Required visible states", No file-action decision.
 export const NO_DECISION = "This entry has no file-action decision";
 export const NO_DECISION_PENDING = "Its comparison is still loading.";
-// The place of the T235 and T236 controls until they exist.
-export const LATER = {
-  submodules: "Update submodules is available after batch 3.",
-};
 // plan.md "Required visible states", No selection.
 export const DOCK_HINT = "Select the Working directory row to commit, or a commit to see its details.";
 const NO_REPOSITORY = "No repository open";
@@ -515,7 +515,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [paneStatus, setPaneStatus] = useState<string | null>(null);
   // The selected history row. A repository open clears it (FR-034), and a refresh keeps a commit while the new page holds it.
   const [row, setRow] = useState<{ repository: RequestState["repository"]; id: string | null; epoch: number }>({ repository: state.repository, id: null, epoch: 0 });
-  const modalOpen = trust?.open === true;
+  // The submodule review of the T236 dialog, with the target and snapshot of its `reviewSubmodules` request.
+  const [submoduleReview, setSubmoduleReview] = useState<{ value: SubmoduleReviewValue; target: { repositoryId: string; repositoryGeneration: number }; snapshotId: string; open: boolean } | null>(null);
+  const modalOpen = trust?.open === true || submoduleReview?.open === true;
   const switcher = useRef<HTMLDivElement>(null);
   const menubar = useRef<HTMLDivElement>(null);
   const beforeMenu = useRef<HTMLElement | null>(null);
@@ -539,6 +541,22 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const comparisonPane = useRef<HTMLDivElement>(null);
   const statusRegion = useRef<StatusRegionHandle>(null);
   const bandRef = useRef<HTMLDivElement>(null);
+  const noticeButton = useRef<HTMLButtonElement | null>(null);
+  // React detaches a ref before it removes the node, so the focus test sees the button that leaves.
+  const bandFocusLost = useRef(false);
+  const [bindNoticeButton] = useState(() => (element: HTMLButtonElement) => {
+    noticeButton.current = element;
+    return () => {
+      if (document.activeElement === element) bandFocusLost.current = true;
+      noticeButton.current = null;
+    };
+  });
+  const repositoryTrigger = useRef<HTMLButtonElement>(null);
+  // The opener of the submodule review, and a guard against a second `reviewSubmodules` while one runs.
+  const reviewOpener = useRef<"notice" | "menu">("notice");
+  const reviewing = useRef(false);
+  // The request ID of the `updateSubmodules` request that the review dialog sent.
+  const reviewRequest = useRef<string | null>(null);
   // The pending commit trust gate (plan.md Commit row). After an approval it waits in `approvalRead` until the read that
   // `trustApproved` starts ends with any result, so the review names the snapshot after the approval (contract §3).
   // Every other dialog close resolves it as canceled.
@@ -617,7 +635,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (repositoryId === null) return;
     let current = true;
     void bridge.readTrust({ repositoryId }).then((response) => {
-      if (!current || response.state !== "succeeded" || !isTrustReport(response.result)) return;
+      if (!current) return;
+      if (response.state !== "succeeded" || !isTrustReport(response.result)) return setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
       const report = response.result;
       const first = trustShown.current !== repositoryId;
       trustShown.current = repositoryId;
@@ -630,6 +649,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // plan.md "Required visible states", Succeeded: the outcome text stays until another repository opens. A service session keeps it.
   useEffect(() => {
     setOperation(null);
+    setSubmoduleReview(null);
     setAnchor(null);
     setFileFailure(null);
     approvalRead.current?.(false);
@@ -718,15 +738,17 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   });
 
   // plan.md "Keyboard and focus", Pane navigation: F6 moves through the visible sections in the T346 order.
-  function moveSection(direction: "next" | "previous") {
+  function moveSection(direction: "next" | "previous", from?: Section) {
     const root = sections.current;
     if (!root) return;
     const present = new Map<Section, HTMLElement>();
     for (const element of root.querySelectorAll<HTMLElement>(SECTION_SELECTOR)) if (!element.closest("[hidden]")) present.set(element.dataset.section as Section, element);
+    // plan.md "Notice band": a band without rows renders no heading and is no F6 stop. The recovery row counts too.
+    if (!bandRef.current?.querySelector("h2")) present.delete("noticeHeading");
     // plan.md "Status area": an empty status region is no F6 stop.
     if (!live.current.statusStop) present.delete("statusRegion");
     const active = document.activeElement as HTMLElement | null;
-    const current = (active?.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined) ?? "header";
+    const current = from ?? (active?.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined) ?? "header";
     const order: Section[] = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "commitDetails", "statusRegion"];
     const hidden = order.filter((s) => !present.has(s));
     const target = nextSection({ panel: live.current.panel ?? "details", hidden, bandRows: present.has("noticeHeading") ? 1 : 0, status: { text: present.has("statusRegion"), toggle: false, cancel: false } }, current, direction);
@@ -741,6 +763,14 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const focus = remembered?.isConnected && element.contains(remembered) ? remembered : target === "noticeHeading" ? element.querySelector<HTMLElement>("h2") : element.querySelector<HTMLElement>(TABBABLE);
     (focus ?? element).focus();
   }
+  // plan.md "Notice band": when a band row with focus leaves, focus moves to the band heading while the band keeps a row, else to the next F6 stop.
+  useLayoutEffect(() => {
+    if (!bandFocusLost.current) return;
+    bandFocusLost.current = false;
+    const heading = bandRef.current?.querySelector<HTMLElement>("h2");
+    if (heading) heading.focus();
+    else moveSection("next", "noticeHeading");
+  });
   const onSectionFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     const section = target.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined;
@@ -793,7 +823,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       fromCommit.current = false;
       setTrust({ report: response.result, open: true });
     }
-    else setNotice(codeText("Trust review did not complete: ", responseCode(response)));
+    else setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
   }
 
   // A canceled selection keeps the current Git and shows nothing (contract §3 `chooseGit`).
@@ -801,6 +831,36 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const response = await onSelectGit?.();
     if (response !== undefined && response.state !== "succeeded" && response.state !== "canceled") setNotice(codeText("Select Git did not complete: ", responseCode(response)));
   }
+
+  // Contract §12: the review names the snapshot of the shown read.
+  async function reviewSubmodules(from: "notice" | "menu") {
+    if (workspace === null || state.repository === null || reviewing.current) return;
+    reviewing.current = true;
+    reviewOpener.current = from;
+    const target = { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation };
+    const snapshotId = workspace.snapshotId;
+    const response = await bridge.reviewSubmodules(target, { snapshotId });
+    reviewing.current = false;
+    if (requests.state().repository?.repositoryId !== target.repositoryId) return;
+    if (response.state === "succeeded") setSubmoduleReview({ value: response.result as SubmoduleReviewValue, target, snapshotId, open: true });
+    else setNotice(codeText("Submodule review did not complete: ", responseCode(response)));
+  }
+  // plan.md "Keyboard and focus", Submodule review dialog row: the opener, else the nearest surviving logical control.
+  // A gone notice button gives the band heading while the band keeps a row (plan.md "Notice band"), else the repository menu, which holds the same action.
+  const submoduleOpener = () => {
+    if (reviewOpener.current === "notice") {
+      const target = noticeButton.current?.isConnected ? noticeButton.current : bandRef.current?.querySelector<HTMLElement>("h2");
+      if (target) return target;
+    }
+    return repositoryTrigger.current;
+  };
+  const statusCancel = () => statusRegion.current?.cancel() ?? null;
+  const onSubmoduleOperation = (op: StatusOperation) => {
+    reviewRequest.current = op.requestId;
+    if (passedAcceptance(op)) setSubmoduleReview((r) => (r !== null && r.open ? { ...r, open: false } : r));
+    setOperation(op);
+    if (op.response !== null) onEnded("updateSubmodules", op.response);
+  };
 
   // The menu shows the outcome text. A new trust read gives the new trust state and trust ID.
   async function revokeTrust(trustId: string) {
@@ -878,9 +938,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The states that block mutations (plan.md "Required visible states": Busy, State unknown, Conflicted/unfinished operation, Limited output).
   const running = operation !== null && operation.response === null;
   const loading = workspace === null || state.entries.length < workspace.entryCount;
-  const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : state.blocked ? "unknown" : workspace !== null && workspace.operationState !== "normal" ? "conflicted" : null;
+  const stateBlocked: Blocked = state.blocked ? "unknown" : workspace !== null && workspace.operationState !== "normal" ? "conflicted" : null;
+  const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;
+  const blockedReason = blocked === null ? null : BLOCKED_TEXT[blocked];
+  // The own request of the review dialog does not block Start update. A state block still does.
+  const reviewBlocked = running && operation.requestId === reviewRequest.current ? stateBlocked : blocked;
   const stagingBlocked: Blocked = blocked ?? (loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null);
-  const onEnded = (kind: "applyHunk" | "applyFile" | "commit", response: BridgeResponse) => requests.mutationEnded(kind, response);
+  const onEnded = (kind: "applyHunk" | "applyFile" | "commit" | "updateSubmodules", response: BridgeResponse) => requests.mutationEnded(kind, response);
   const staging: Staging = {
     bridge,
     target: state.repository !== null && state.capability !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: state.capability.repositoryGeneration } : null,
@@ -1085,7 +1149,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             <RepositorySwitcher
               bridge={bridge}
               worktreeRoot={path}
-              busy={false}
+              busy={running}
               open={switcherOpen}
               instant={switcherInstant}
               onOpenChange={(open, instant = false) => {
@@ -1121,6 +1185,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             <Menubar className="h-auto border-0 p-0">
               <RepositoryMenu
                 key={repositoryId}
+                triggerRef={repositoryTrigger}
                 repositoryOpen={path !== null}
                 trustId={trust?.report.trustId ?? null}
                 onOpenRepository={() => void openRepository()}
@@ -1131,6 +1196,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 onSelectGit={() => void selectGit()}
                 onReviewTrust={() => void reviewTrust()}
                 revokeTrust={revokeTrust}
+                onUpdateSubmodules={workspace === null ? undefined : () => void reviewSubmodules("menu")}
+                updateSubmodulesReason={blockedReason}
                 onOpenChange={onMenuOpen("repository")}
                 finalFocus={finalFocus}
               />
@@ -1224,22 +1291,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
         <main className={`flex min-h-0 flex-1 flex-col ${scrolls ? "overflow-y-auto" : "overflow-clip"}`}>
           {/* plan.md "Overflow": the band shows at most its two reserved rows and scrolls inside them. */}
-          <div ref={bandRef} data-slot="notice-band" data-section={bandRows > 0 ? "noticeHeading" : undefined} className="shrink-0 overflow-y-auto" style={{ maxHeight: 2 * m.bandRow }}>
+          <div ref={bandRef} data-slot="notice-band" data-section="noticeHeading" className="shrink-0 overflow-y-auto" style={{ maxHeight: 2 * m.bandRow }}>
             {workspace === null ? null : (
               <NoticeBand
                 operationState={workspace.operationState}
                 conflicted={conflicted}
                 recovery={recovery !== null && recovery.repositoryId === state.repository?.repositoryId ? recovery.statement : undefined}
-                submoduleRow={
-                  submodules > 0 ? (
-                    <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
-                      <WarningIcon />
-                      <span>
-                        Some submodules are not initialized or not at their recorded commit. Count: {submodules}. {LATER.submodules}
-                      </span>
-                    </p>
-                  ) : undefined
-                }
+                submoduleRow={submodules > 0 ? <SubmoduleNotice count={submodules} onUpdate={() => void reviewSubmodules("notice")} buttonRef={bindNoticeButton} blockedReason={blockedReason} /> : undefined}
               />
             )}
           </div>
@@ -1277,6 +1335,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             onFocusMessageField={() => messageField.current?.focus()}
             onClearMessage={() => worktreeKey !== null && void drafts.clear(worktreeKey)}
             onRefresh={() => requests.refresh()}
+            declinedFocus={submoduleOpener}
             areaMaxHeight={statusAreaMax}
             notice={statusText}
           >
@@ -1301,6 +1360,25 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               setTrustRead((n) => n + 1);
             }}
             onFailed={(response) => setNotice(codeText("Trust approval did not complete: ", responseCode(response)))}
+          />
+        )}
+        {submoduleReview === null ? null : (
+          <SubmoduleReview
+            open={submoduleReview.open}
+            bridge={bridge}
+            target={submoduleReview.target}
+            current={() => {
+              // A null workspace keeps the values of the opened review. The service then answers with its own code.
+              const w = requests.state().workspace;
+              return w === null ? { repositoryGeneration: submoduleReview.target.repositoryGeneration, snapshotId: submoduleReview.snapshotId } : { repositoryGeneration: w.generation, snapshotId: w.snapshotId };
+            }}
+            review={submoduleReview.value}
+            client={client}
+            finalFocus={submoduleOpener}
+            startFocus={statusCancel}
+            onCancel={() => setSubmoduleReview((r) => (r === null ? r : { ...r, open: false }))}
+            onOperation={onSubmoduleOperation}
+            blockedReason={reviewBlocked === null ? null : BLOCKED_TEXT[reviewBlocked]}
           />
         )}
         {aboutOpen && environment !== null ? (

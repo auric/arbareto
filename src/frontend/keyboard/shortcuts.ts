@@ -43,7 +43,7 @@ type Target = { tagName?: string; type?: string; isContentEditable?: boolean };
 // HTML input types that take no typed text.
 const NON_TEXT_INPUTS = new Set(["button", "submit", "reset", "checkbox", "radio", "image", "file", "color", "range", "hidden"]);
 
-function isEditable(target: Target | undefined): boolean {
+export function isEditable(target: Target | undefined): boolean {
   if (!target) return false;
   if (target.isContentEditable === true) return true;
   const tag = target.tagName?.toUpperCase();

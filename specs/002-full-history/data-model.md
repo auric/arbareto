@@ -44,14 +44,14 @@ any state ──closeHistory / new openHistory / session end──▶ released
 
 | Field | Type | Rule |
 |---|---|---|
-| `head` | `{kind: "branch" \| "detached" \| "unborn", name?, oid?}` | From the 001 `captureHead` steps. |
+| `head` | `{state: "branch", target, oid}`, `{state: "detached", oid}`, or `{state: "unborn", target}` | The 001 `Head` shape that `readWorkspace.head` uses (contract Δ8 compares them). From the 001 `captureHead` steps. |
 | `records` | list of `{refname, objectname, commitId?, kind}` | The 001 §3 eight-field records of the FR-047 namespaces. At most 10,000 records. |
 | `startPoints` | sorted OIDs | `all`: unique `commitId` values plus the HEAD OID. `current`: the HEAD OID. Ascending lowercase hex. |
 | `refsDigest` | SHA-256 hex | Over `refname NUL objectname LF` of each FR-047 record, in Git's output order. |
 | `fingerprint` | `{shallow, grafts, replace}` | SHA-256 of each file, or `absent`, plus the `refs/replace/` records. |
 
 Validation:
-- `kind` is `head`, `remote`, `tag`, or `stash`. A `refs/replace/` record enters only `fingerprint`.
+- `kind` is `branch`, `remote`, `tag`, or `stash`, as 001 `RefEntry.kind`. A `refs/replace/` record has the parser kind `replace` and enters only `fingerprint`.
 - A record under `refs/stash/` is skipped.
 - A tag that ends at a tree or a blob has no `commitId`. It adds no start point and no label.
 - A symbolic ref adds no label (spec FR-050).
@@ -68,13 +68,14 @@ Typed arrays. No JS `Map` of OID strings.
 | `idToRow`, `rowToId` | Row index maps | 8 |
 | CSR parents | Offsets and parent row IDs | about 8.4 |
 
-The total is about 48 bytes per commit for SHA-1 and 60 for SHA-256 (research R6, unverified).
+For SHA-1, the total is about 46 bytes per commit when the typed arrays are nearly full, and about 80 to 90 bytes just after a doubling. SHA-256 adds 12 bytes per commit (research R6, unverified).
 
-The table grows only when a load adds rows, and it never shrinks during a view (plan.md D3). ponytail: about 192 MB at `HISTORY_VIEW_COMMITS`.
+The table grows only when a load adds rows, and it never shrinks during a view (plan.md D3). ponytail: about 185 to 360 MB (about 46 B per commit when the typed arrays are nearly full, about 90 B just after a doubling) at `HISTORY_VIEW_COMMITS`.
 
 Validation (contract Δ3 `loadHistory`):
 - A row OID that already exists gives `MALFORMED_GIT_OUTPUT`.
 - A parent that already showed as a row gives `MALFORMED_GIT_OUTPUT`.
+- A parent that repeats inside one line is no error, because a repository that Git accepts must stay viewable. The table keeps the parent list as Git prints it. The layout and the reduced graph use the distinct parents, in the order of first occurrence, so a repeated parent gives one edge. Whether Git prints a repeated parent is unverified (T003 records it).
 - A parent still pending at exit 0 gives `MALFORMED_GIT_OUTPUT`.
 - A line with more than 64 parents gives `OUTPUT_LIMIT` reason `HISTORY_PARENTS_PER_COMMIT`.
 - On a later step, the first N streamed rows are compared with the N held rows at the same index, in OID and parents. They do not enter the table again. A difference, or a Git exit 0 before row N, gives `HISTORY_CHANGED` reason `order`. The rows from N on enter the table.
@@ -87,8 +88,10 @@ Validation (contract Δ3 `loadHistory`):
 - A rebuilt cell equals the first one (spec FR-011, FR-014).
 
 Graph cell fields: `node`, `color`, `merge`, `limited`, `segments`, `marks`.
+- `merge` is true only for a row with two or more distinct parents (§3).
 - `limited` is true exactly when the row needs more than 24 lanes. A row needs the larger of two counts: its open lanes above plus one lane for a new node, and its open lanes below. A limited row draws no edge. Its output lane array drops the free slots and keeps the lane order. A new lane takes the lowest free slot. The row states the limit (spec FR-016, plan.md O-5).
 - `marks` hold the root and shallow-boundary marks (spec FR-015).
+- In filter mode, each `line` segment of an edge with `direct` false (§7) carries `skip: true`.
 - In filter mode, a skip edge has a dashed style and an accessible text that says it skips commits (spec FR-034).
 
 ## 5. History row (result form)
@@ -108,7 +111,7 @@ Text comes from the commit object by OID. Commit objects never change, so a rere
 
 | Field | Type | Rule |
 |---|---|---|
-| `searchId` | opaque §2 identifier | One running search per view. |
+| `searchId` | opaque §2 identifier | The `operationId` of its `searchHistory` request (001 §2 accepted event). One running search per view. Contract Δ3 lists when it ends. |
 | `text` | string | 1 to 1,024 UTF-8 bytes. Contract Δ3 lists the refusals. |
 | `matches` | rising row indices, plus a FIFO of OIDs whose rows are not known yet | Contract Δ3 "Merge into the view". |
 | `count` | integer | Final only in the terminal response (spec FR-039). |

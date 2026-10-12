@@ -5,13 +5,15 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 ## Δ1 Transport (001 §1)
 
 - Five new renderer operations: `openHistory`, `loadHistory`, `readHistoryRows`, `searchHistory`, `closeHistory`. Each has one Tauri command and one zod schema, as 001 §1 "Renderer request body" and "Schemas" require.
-- Rust typify drops numeric ranges. Keep explicit range checks in Rust, as 001 §1 requires.
+- The five operations are not native-first. The shell reads only `operation` and `requestId`, and it forwards the body unchanged (001 §1 steps 4, 5, and 7). The service zod schemas check every payload range and give `INVALID_REQUEST`. The shell keeps only the 001 §5 request bound of 1 MiB (`FRAME_LIMIT`).
 - No new channel frame.
 
 ## Δ2 Envelope (001 §2)
 
 - `openHistory` carries `repositoryId` and `repositoryGeneration`. A stale generation gives `REPOSITORY_CHANGED` at acceptance, as for 001 `readHistory`.
 - `loadHistory`, `readHistoryRows`, `searchHistory`, and `closeHistory` carry `repositoryId`. Their target is `viewId`, an opaque §2 identifier that the service issues.
+- `searchId` is the `operationId` of a `searchHistory` request. The renderer takes it from the accepted event of that request (001 §2). So the renderer can read filter rows from the first match on.
+- 001 §2 "Only `cancel` and `getOperation` name an issued one" adds `readHistoryRows` `searchId`.
 
 ## Δ3 Public operations (001 §3)
 
@@ -36,6 +38,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - Git gets the OIDs on stdin, one per line, through the 001 streamed input (001 §6 "Channel frames").
 - Result: `{viewId, scope, generation, head, startCount, refsDigest, shallow}`.
   - `refsDigest` is a SHA-256 over `refname NUL objectname LF` of each FR-047 record, in Git's output order.
+  - `head` is the 001 `Head` shape, as `readWorkspace.head`.
 - One live view per service session. A new `openHistory` releases the old view. Its running operations end `canceled`. Its `viewId` then gives `UNKNOWN_TARGET`.
 - An empty repository gives a view with `startCount` 0.
 
@@ -56,6 +59,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 - A view holds at most 4,000,000 commits (`HISTORY_VIEW_COMMITS`). At that bound, the service ends the load `limited` with `OUTPUT_LIMIT` and that reason. The loaded rows stay. The view states the limit, and a later `loadHistory` gives the same result without a Git process.
 - The service keeps no raw bytes beyond one partial line. The line bound and the commit bound together bound the stream. This replaces the 001 §5 "History page" bound for this stream only.
 - These cases give `MALFORMED_GIT_OUTPUT` and a stale view: a duplicate row, a parent that already showed, and a parent still pending at exit 0.
+- A parent that repeats inside one line is no error. The topology keeps the parent list as Git prints it. The layout and the reduced graph draw one edge for it (data-model §3).
 - Pending parents at a stop row, a cancel, or a `DEADLINE` get no check. They stay with the view. The next step re-reads the held rows unchanged, so it continues with the same pending parents. The pending-parent check runs only at a Git exit 0 at or after row N.
 - A nonzero exit before S runs the 001 `checkFailedRead` steps (001 §7 "Missing objects"):
   - a missing object in a partial clone gives `OBJECT_MISSING`;
@@ -75,12 +79,14 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - `count`: 1 to 512.
   - `text`: `"none"`, `"rows"`, or `"details"`. `"details"` requires `count` 1.
 - Target resolution:
+  - It returns `target: "found"` with the rows. Only `found` carries rows.
   - While the target is unknown and a load or search of the view runs, the request waits.
   - It returns `target: "unknown"` when nothing runs.
   - It returns `target: "none"` when no such row exists. This covers spec FR-038 and the FR-008 case where the new refs do not reach the commit.
 - Each row holds:
   - `index`, `oid`, `parents`;
   - `cell {node, color, merge, limited, segments, marks}`;
+  - In filter mode, each `line` segment of an edge with `direct` false carries `skip: true`. Other segments omit `skip`.
   - `labels [{kind, name, invalidUtf8}]` and `checkout`;
   - `match` (true, false, or null) when the payload has `searchId`;
   - with `text: "rows"`: `subject`, `author`, `date`, `encoding`, and `invalidUtf8`, or `textLimit` for an object above 256 KiB;
@@ -88,7 +94,11 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 - In filter mode, a row that is not settled yet has `cell: null`.
 - Text comes from one `cat-file --batch-command -Z` with `contents` lines. Deadline 30 s. `text: "none"` starts no Git process.
 - A newer text read cancels an unfinished one of the same view, by the 001 superseded-read rule (001 §5 "Pending reads").
-- The result stays within `HISTORY_PAGE_BYTES` (8 MiB). It sets `cut` when the bound cuts rows. It also carries `lanes` (the most lanes so far, at most 24), `rows`, `complete`, and `bytes` for the renderer cache.
+- The result stays within `HISTORY_PAGE_BYTES` (8 MiB). It sets `cut` when the bound cuts rows. It also carries `rowCount` (the rows that the view holds, data-model §1), `lanes` (the most lanes so far, at most 24), `complete`, and `bytes` for the renderer cache. `rows` is the row array.
+
+### Refusal result
+
+A view operation that ends without its result value carries `{reason?, remedy?}`. `reason` names the reason of the response code (Δ9). An `OUTPUT_LIMIT` reason is the `limits.ts` export name. `remedy` is `{text, command}`, and `command` is null or a copyable command. `loadHistory` carries `reason` and `remedy` beside `rows` and `complete` in each result.
 
 ### `searchHistory {viewId, text}`
 
@@ -97,11 +107,14 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - U+000A or U+000D: reason `line-break`;
   - U+0000: reason `nul`;
   - U+005C followed by U+0045: reason `quote-end`.
+- The first invalid character in text order gives the reason. The byte bound is checked last.
+- The service makes these checks. The payload schema bounds no length, and the shell does not read `text` (Δ1).
 - Empty text is no search. The renderer sends none (spec FR-027).
 - The fingerprint check of `loadHistory` runs first.
 - The matching probe runs before the first search of each `gitInstallationId` in a service session ("Matching probe" below).
 - Command: `--no-lazy-fetch --no-optional-locks --literal-pathspecs -c i18n.logOutputEncoding=UTF-8 rev-list --date-order --fixed-strings --regexp-ignore-case --grep=<text> --stdin`. Stdin holds the start-point bytes of the view. Policy `search`. Deadline 120,000 ms.
 - It takes no read slot. One search runs per view. A new search of the view cancels the old one (spec FR-030).
+- The `searchId` stays valid while the search runs and after it ends `succeeded`. A cancel, a failure, a `limited` end, a newer `searchHistory` of the view, `closeHistory`, and a view release end it. A `readHistoryRows` with an ended or unknown `searchId` gives `UNKNOWN_TARGET`.
 - Merge into the view:
   - The service interns each match OID in the OID table of the view.
   - When the row of a match is known, its index must be above the index of the previous match. When it is not known yet, the match joins a FIFO queue.
@@ -152,7 +165,7 @@ New limits:
 | Text and details read deadline | 30 s |
 | Rows per request | 512 |
 | Parents per commit (`HISTORY_PARENTS_PER_COMMIT`) | 64 |
-| Commits per view (`HISTORY_VIEW_COMMITS`) | 4,000,000. About 192 MB of service memory at 48 bytes per loaded commit (unverified). A reviewer default. |
+| Commits per view (`HISTORY_VIEW_COMMITS`) | 4,000,000. Service memory of about 185 to 360 MB (about 46 B per commit when the typed arrays are nearly full, about 90 B just after a doubling) (unverified). A reviewer default. |
 | Load read-ahead (`HISTORY_LOAD_MARGIN`) | 1,024 rows. A scroll load starts when fewer loaded rows lie below the last needed row. A reviewer default and a measurement knob. |
 | Filter text | 1,024 UTF-8 bytes |
 | Text object above which a row carries `textLimit` | 256 KiB |
@@ -206,6 +219,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
 | `SEARCH_UNSUPPORTED` | `matching` | The matching probe failed. The result carries a remedy. |
 
 - New `OUTPUT_LIMIT` reasons: `HISTORY_PARENTS_PER_COMMIT` and `HISTORY_VIEW_COMMITS`.
+- An `UNSUPPORTED_FILTER_TEXT` refusal carries `found`. `found` names the refused characters: the first invalid character, `\E` for `quote-end`, or the lone surrogate. It is null for the byte bound. A lone surrogate is possible only in the renderer check.
 
 ## Δ10 Required contract checks (001 §10)
 

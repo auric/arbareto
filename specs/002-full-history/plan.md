@@ -41,7 +41,7 @@ Git alone uses more than 128 MiB on 1,000,000 commits (research.md R14). The use
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-Checked against `.specify/memory/constitution.md` version 2.0.0, before research and again after Phase 1.
+Checked against `.specify/memory/constitution.md` version 3.0.0, before research and again after Phase 1.
 
 | Principle | How the design meets it | Status |
 |---|---|---|
@@ -51,7 +51,7 @@ Checked against `.specify/memory/constitution.md` version 2.0.0, before research
 | IV. Real Git verification | Real fixtures. Failure, cancel, and external-change cases: ref moves, shallow, replace, missing objects. | Pass |
 | V. Untrusted repositories | No repository program runs. `rev-list` and `cat-file` run without filters. The trust gate runs at open. Text shows as plain text. The search text enters no log. | Pass |
 | VI. Platform evidence | Packaged Windows evidence. WSL stays unverified until the distro runs. | Pass |
-| VII. Accessible and measured | Keyboard: Ctrl+F, Enter, Escape, F3 and Shift+F3, End. Marks do not depend on color. Budgets are fixed before measurement. See notes N-2, N-3, and N-5. | Pass, with notes N-2, N-3, and N-5 |
+| VII. Accessible and measured | Keyboard: Ctrl+F, Enter, Escape, F3 and Shift+F3, End, Ctrl+Shift+B. Marks do not depend on color. Budgets are fixed before measurement. See notes N-2, N-3, and N-5. | Pass, with notes N-2, N-3, and N-5 |
 | VIII. Locked dependencies | No new dependency. | Pass |
 | IX. One planning process | All artifacts stay in `specs/002-full-history`. The 002 contract lists only deltas and cites 001 sections. | Pass |
 
@@ -65,7 +65,7 @@ Notes from the second check:
 No violation, so Complexity Tracking stays empty. Five items carry ponytail ceilings:
 - the compact OID table;
 - the fixed-height window;
-- the 4,000,000-commit view bound, about 192 MB of service memory at 48 bytes per commit (unverified). A larger bound needs a measured memory design;
+- the 4,000,000-commit view bound, about 185 to 360 MB (about 46 B per commit when the typed arrays are nearly full, about 90 B just after a doubling) of service memory (unverified; D3). A larger bound needs a measured memory design;
 - the topology of every loaded row, which stays for the life of the view (D3);
 - End or a search that cancels a running scroll load, which loses at most one Git walk without a commit-graph (D2).
 
@@ -129,7 +129,7 @@ tests/
 | P0.4 Git memory record | new `tests/windows/history-git-memory.test.ts` (Windows; `GetProcessMemoryInfo` through `bun:ffi` in this file, because 001 T165 has not created `inject.ts` yet) | None. | Peak private bytes of the topology `rev-list` and the search `rev-list --grep`, on H1M with and without a commit-graph. Also the peak up to line S₀ of the first load step of D2, 2,089 for n = 40. T061 also records the re-read cost of a later step at 1,000,000 commits. | It decides O-1 before the budget work starts. |
 | P0.5 Matching facts | new `src/contracts/matching-probe.ts` (the fixed fast-import stream and the expected OIDs). Test in `tests/git/history-search-facts.test.ts`. | None. | The FR-023 and FR-024 cases on Windows Git and each WSL distro. Also checks that `init --template=` copies nothing and that an explicit `--git-dir` gets no ownership refusal. | A distro without the C.UTF-8 locale or without PCRE2. |
 | P1 Pure algorithms | new `src/git-service/history-topology.ts` (OID table, CSR parents, line parser, order checks), new `src/git-service/history-reduced.ts`, new `src/contracts/filter-text.ts` | Algorithms only. | Topology checks: a duplicate row, a parent that already showed, a non-empty frontier at the end. Reduced graph against a brute-force BFS oracle on the small fixtures and H200K. Filter-text refusals. | Memory per commit. Mitigation: typed arrays, no JS `Map` of OID strings. |
-| P2 Contracts | `src/contracts/{limits.ts, envelope.ts, errors.ts, operations.ts, git-environment.json, channel.ts, wsl-process.json}`, `schemas/`, `tests/vectors/` | Adds 5 operations, 3 codes, the `search` policy, the WSL mode `search`, and the `matchingProbe` script. | Schema tests and golden vectors in Bun and Rust. | Rust typify drops ranges. Keep explicit checks, as 001 §1 requires. |
+| P2 Contracts | `src/contracts/{limits.ts, envelope.ts, errors.ts, operations.ts, git-environment.json, channel.ts, wsl-process.json}`, `schemas/`, `tests/vectors/` | Adds 5 operations, 3 codes, the `search` policy, the WSL mode `search`, and the `matchingProbe` script. | Schema tests and golden vectors in Bun and Rust. | The shell reads no payload of the five operations (contract Δ1). The service schemas check the ranges. |
 | P3 Service view | `src/git-service/commands.ts` (argv builders), `refs-parser.ts` (kinds `stash`, `replace`; `refsDigest`), `refs.ts` (`refs/stash`), new `history-view.ts`, `session.ts` (handlers). Reuses `captureHead`, `sharedListing`, and `checkFailedRead` from `history.ts:255-397`. | `openHistory`, `loadHistory` with the D2 stop rule, `readHistoryRows`, `closeHistory`. | SC-001, SC-003, SC-004, and SC-015 on the small fixtures and H200K. Load cancel and resume. The D2 stop rule: a load ends at its stop row, no process of the load remains, and the next load runs the same argv with no `--skip`. A re-read row that differs from the held row gives `HISTORY_CHANGED` reason `order`. The `HISTORY_VIEW_COMMITS` bound with a lowered test bound. The stale cases. The trust gate. `REPOSITORY_CHANGED`. SC-013 byte identity. | Service CPU during an End load of 1M rows (about 1,350 frames of 64 KiB, unverified). The shell routes `succeeded` after the service closed the load Job (unverified). |
 | P4 Shell | `src-tauri/src/ipc.rs` and `src-tauri/build.rs` (5 commands), `git_env.rs` (policy `search`), `wsl.rs` (mode `search`, `matchingProbe`), `src-tauri/src/service.rs` (test only) | Data and enum changes only. No new frame. | cargo tests for the allowlist, the policy, and the wrapper mode. | Local only. Rust work stays off cloud sessions. |
 | P5 Search | new `src/git-service/history-search.ts` (search, probe, merge, reduced settlement). `session.ts` gets one handler. | `searchHistory`. | SC-007 (Windows and each distro), SC-008, SC-009 (no Git process starts), SC-010 search cancel, the order-mismatch refusal. | The subsequence order is only an experiment fact. The runtime check refuses on a mismatch. |
@@ -177,7 +177,7 @@ Each phase writes its tests first. P0.2, P0.3, and P0.4 are the riskiest proofs 
 
 - Rows are addressed by their position in the one stream of a view. A streamed row never changes.
 - The cell of row i is `layoutStep(state_i, row_i)`. `state_i` is rebuilt from the checkpoint at ⌊i/256⌋·256. The function is pure, so a rebuilt cell equals the first one.
-- The state holds the output lane array and the lane count. It holds no set of sent OIDs, because `--date-order` sends no parent before its children (git-rev-list(1)). The topology table checks duplicate rows and repeated parents (data-model §3, T012).
+- The state holds the output lane array and the lane count. It holds no set of sent OIDs, because `--date-order` sends no parent before its children (git-rev-list(1)). The topology table checks duplicate rows and parents that already showed as rows. A parent that repeats inside one line gives one edge (data-model §3, T012).
 - A row is limited exactly when it needs more than 24 lanes. A limited row closes the free lane slots and keeps the lane order (O-5, data-model §4).
 - Text is read again by OID. Commit objects never change.
 - In a complete stream, every parent is a later row. So the 001 "outside page" branch never runs (`lanes.ts:52-55, 84-102`).
@@ -185,7 +185,7 @@ Each phase writes its tests first. P0.2, P0.3, and P0.4 are the riskiest proofs 
 - A load that ends at its stop row keeps the live lane state. The next load continues the fold from it. The cell of row i depends only on rows 0 to i, so load steps change no cell.
 - The service stores no cell and no row text.
 - The topology table stays for the life of the view. Rebuilding the table would cost one more read from row 0. The lane state of row N depends on every row above it. The hash slots carry the duplicate check, `at: {oid}`, and the search merge. The re-read compare of each later step needs the held rows (D2).
-- ponytail: about 48 bytes per loaded row, 192 MB at `HISTORY_VIEW_COMMITS`. Upgrade path: drop the rows below the window plus M after a return to the top, and reload them by the D2 re-read rule. Add it when a qualified fixture above 1,000,000 commits must fit SC-002 after End.
+- ponytail: for SHA-1, about 46 bytes per loaded row when the typed arrays are nearly full, and about 80 to 90 bytes just after a doubling (unverified). That is about 185 to 360 MB (about 46 B per commit when the typed arrays are nearly full, about 90 B just after a doubling) at `HISTORY_VIEW_COMMITS`. Upgrade path: drop the rows below the window plus M after a return to the top, and reload them by the D2 re-read rule. Add it when a qualified fixture above 1,000,000 commits must fit SC-002 after End.
 - The plan tests what Git does not document (rev-list-options.adoc:916): the P0.2 facts, plus a resume after a cancel at each chunk boundary on H200K, compared with one uninterrupted run.
 
 ### D4 Filter-mode reduced graph
@@ -224,15 +224,16 @@ The reduced graph needs the full topology stream beside the search stream, becau
 - **Scroll range while the count is unknown**: `total` is the loaded row count plus one more-rows row. That row states that more commits exist (FR-010). No estimate enters `total`. When the view is complete, the more-rows row goes, and the count text shows the final row count. A scrollbar drag reaches only loaded rows and the more-rows row.
 - **Load trigger**: The first load after `openHistory` sends n = the last row index of the first window (rows that fit `clientHeight`). Later, n is the last commit row in the window, or the loaded row count when the more-rows row shows. The renderer sends `loadHistory {need: {row: n}}` when the view is not complete, no load or search runs, and fewer than M loaded rows lie below n. After a canceled load or a `DEADLINE`, it waits until the more-rows row shows.
 - **Loads to the end or to a commit**: End sends `{end: true}`, then reads `at: {end: true}`. Refresh and a scope switch with a selected commit send `{oid}`. With an active filter, the renderer sends only `searchHistory`. End and a search first cancel a running scroll load and wait for its terminal response.
+- **Branch scope** (spec FR-049): no tabs. The default is all branches. A View menu checkbox "Current branch only" switches the scope, with the shortcut Ctrl+Shift+B (a reviewer default, spec Assumptions). The branch context menu shows "Show only this branch's history" only on the current branch. While the scope is the current branch, the history heading shows the removable chip "Current branch only ✕". Removal of the chip selects all branches. Each switch opens a new view (contract Δ3 `openHistory`). UI reference: the approved mockup canvas https://claude.ai/artifact/Ffaf1d13daeFsU3Ski3E54 (user decision 2026-10-12, spec Clarifications).
 - **Count growth**: when `total` changes, the window keeps `virtualTop` and sets `scrollTop` by the inverse rule. No visible row moves.
 - **References sidebar** (spec FR-055): the flattened tree rows go through `@tanstack/react-virtual`, as in ChangesPane. The R8 rebuild cost does not apply, because the count is at most 10,000 (`REF_LISTING_RECORDS`) and changes only on expand, collapse, or a filter change. Each `treeitem` carries `aria-level`, `aria-posinset`, and `aria-setsize` (WAI-ARIA 1.2 "tree"). Keyboard navigation scrolls the target row into the window before it moves focus.
-- **Shortcuts**: Ctrl+F focuses the filter. F3 and Shift+F3 move to the next and the previous match. The 001 map (001 plan.md "Keyboard and focus", `src/frontend/keyboard/shortcuts.ts`) uses none of these keys. The 001 accelerator handler turns off the WebView2 find keys, so Ctrl+F and F3 reach the page. T038 records conflicts with the 001 keyboard map before T040. These keys are reviewer defaults, not user decisions.
+- **Shortcuts**: Ctrl+F focuses the filter. F3 and Shift+F3 move to the next and the previous match. Ctrl+Shift+B toggles "Current branch only". The 001 map (001 plan.md "Keyboard and focus", `src/frontend/keyboard/shortcuts.ts`) uses none of these keys. The 001 accelerator handler turns off the WebView2 find keys, so Ctrl+F and F3 reach the page. T038 records conflicts with the 001 keyboard map before T040. These keys are reviewer defaults, not user decisions.
 - **Listbox**: focus stays on the list element with `aria-activedescendant`. Options carry `aria-posinset`. `aria-setsize` is -1 until the count is known (WAI-ARIA 1.2).
 - **Cache**: pages of 128 rows in LRU order up to 8 MiB of `bytes`. The visible pages always stay. Row reads follow the latest-wins rule, one in flight per view.
 - **Graph column**: its width is the `lanes` value, at most 24. It never shrinks during a view (FR-016).
 - **Labels**: they come from the rows, so the 001 chip-pairing rule goes.
 - **Working directory line**: the dotted lead-in shows only when HEAD is row 0.
-- **Memory**: the renderer holds O(visible + cache) only. The service holds about 48 bytes per loaded commit for SHA-1, 60 for SHA-256 (unverified). That is about 100 KB near the top, and about 48 MB at 1M commits after End or a search.
+- **Memory**: the renderer holds O(visible + cache) only. For SHA-1, the service holds about 46 bytes per loaded commit when the typed arrays are nearly full, and about 80 to 90 bytes just after a doubling (unverified, D3). That is about 100 to 200 KB near the top, and about 46 to 90 MB at 1M commits after End or a search.
 
 ### D7 Responsiveness
 
@@ -280,8 +281,8 @@ The reduced graph needs the full topology stream beside the search stream, becau
 | Batch | Steps | Content |
 |---|---|---|
 | 0 | P0.1 to P0.5 | Fixtures and the Git facts. Results go into research.md. |
-| 1 | P1, P2 | Pure algorithms and contracts. |
-| 2 | P3, P4 | Service view and shell. |
+| 1 | P1, P2, P4, and the `readRefs` part of P3 | Pure algorithms, contracts, the shell, and `readRefs`. |
+| 2 | P3 | Service view. |
 | 3 | P5 | Search. |
 | 4 | P6, P7 | Frontend, and the retirement of 001 `readHistory`. |
 | 5 | P8 | Packaged qualification. |
@@ -294,15 +295,17 @@ The reduced graph needs the full topology stream beside the search stream, becau
 | WP1 | implementer-xhigh | `tests/git/history-fixtures.ts`, `tests/git/history-order.test.ts`, `tests/git/history-search-facts.test.ts`, `src/contracts/matching-probe.ts`, `tests/wsl/history-wsl.test.ts` (P0.2 and P0.5 facts) | P0.1, P0.2, P0.5 |
 | WP2 | implementer | `tests/windows/history-git-memory.test.ts` | P0.4, and the T061 first-step record. Local Windows run. |
 | WP3 | implementer-xhigh | `src/git-service/history-{topology,layout,reduced}.ts`, `src/contracts/filter-text.ts`, their tests | P0.3, P1 |
-| WP4 | implementer | `src/contracts/{limits,envelope,errors,operations,channel}.ts`, `git-environment.json`, `wsl-process.json`, `schemas/`, `tests/vectors/` | P2 |
-| WP5 | implementer | `src-tauri/src/{ipc,git_env,wsl,service}.rs`, `src-tauri/build.rs` | P4. Local only. |
+| WP4 | implementer | `src/contracts/{limits,envelope,errors,operations,channel}.ts`, `git-environment.json`, `wsl-process.json`, `schemas/`, `tests/vectors/`, `src/git-service/{commands,refs-parser,refs}.ts` (`readRefs` only) | P2 |
+| WP5 | implementer | `src-tauri/src/{ipc,git_env,wsl,service}.rs`, `src-tauri/build.rs`, `src/frontend/bridge.ts` (the five calls), `tests/contracts/bridge.test.ts` | P4. Local only. |
 | WP6 | implementer-xhigh | `src/git-service/{commands,refs-parser,refs,history-view,session}.ts`, view tests | P3 |
 | WP7 | implementer-xhigh | `src/git-service/history-search.ts`, search tests | P5 |
 | WP8 | frontend-implementer (loads arbareto-ux and vercel-react-best-practices) | `src/frontend/{bridge.ts, state/history-view.ts, history/*, app/Workbench.tsx, NoticeBand.tsx, refs/ReferencesSidebar.tsx}`, `tests/contracts/history-*.test.tsx`, `tests/contracts/references-sidebar.test.tsx` | P6 |
 | WP9 | implementer | Retire `readHistory` | P7 |
 | WP10 | implementer, with the runs done by scout | `tests/windows/history-perf.test.ts`, the Git Extensions harness, the view and search cases of `tests/wsl/history-wsl.test.ts` | P8 |
 
-Two packages are not file-disjoint:
+These packages are not file-disjoint:
+- WP4 edits `commands.ts`, `refs-parser.ts`, and `refs.ts` for `readRefs` in batch 1. WP6 edits them later in batch 2.
+- WP5 adds the five calls to `bridge.ts`. WP8 uses them and runs later.
 - WP7 adds one `searchHistory` handler line to `session.ts`. It runs strictly after WP6.
 - WP9 edits files of WP4, WP5, and WP6. It runs strictly after those three.
 

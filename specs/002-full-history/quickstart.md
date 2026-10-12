@@ -61,6 +61,7 @@ Use only the README "Development" commands:
 4. Type "fix" in the message filter and press Enter. Expect matches in history order and a count that states that it is final at the end.
 5. Switch to highlight mode. Expect no new search. Press F3 and Shift+F3 (plan.md D6 shortcuts: Ctrl+F focuses the filter, F3 and Shift+F3 move between matches; research R13 lists the conflict check as unverified). Expect the selection to move across matches without wrap.
 6. Create a branch in a terminal. Expect the "References changed" notice. Select Refresh. Expect the new branch label.
+7. Check the branch scope (plan.md D6). Expect no scope tabs and all branches by default. Select View > "Current branch only", or press Ctrl+Shift+B. Expect only the history of HEAD and the chip "Current branch only ✕" in the history heading. Remove the chip. Expect all branches again. Open the context menu of the current branch in the sidebar. Expect "Show only this branch's history". Open the context menu of another branch. Expect no such item.
 
 ## Evidence
 

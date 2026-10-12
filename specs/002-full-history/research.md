@@ -57,7 +57,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 - **Decision**: The service runs the lane layout as a pure step `layoutStep(lanes, row)`. It stores a checkpoint every 256 rows. The cell of row i comes from the checkpoint at ⌊i/256⌋·256.
 - **Rationale**:
   - The 001 layout (`lanes.ts`) can run row by row with equal results, when the state carries the output lane array and the lane count. One rule changes: a limited row closes the free lane slots (plan.md O-5). T005 shows equal cells from checkpoints on every graph fixture and on H200K (R16). **experiment**
-  - The state needs no set of sent OIDs. With `--date-order`, no parent comes before its children (git-rev-list(1)), so such a set changes no cell. The topology table checks duplicate rows and repeated parents (data-model §3, T012). **documented**
+  - The state needs no set of sent OIDs. With `--date-order`, no parent comes before its children (git-rev-list(1)), so such a set changes no cell. The topology table checks duplicate rows and parents that already showed as rows. A parent that repeats inside one line gives one edge (data-model §3, T012). **documented**
   - A complete walk lists every effective parent later. So the 001 "outside page" branch never runs (`lanes.ts:50-110`, `lanes.ts:52-55, 84-102`). **documented** (code)
   - The page-wide width limit of 001 must become a rule for each row. **documented** (code)
 - **Alternatives considered**: Layout in the renderer. Rejected, because renderer work then grows with the history (R8).
@@ -104,7 +104,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 - **Rationale**:
   - A 001 HistoryRow takes about 600-790 bytes in Bun/JSC. **experiment**
   - A compact topology row takes about 40 bytes (investigation estimate). **unverified**
-  - The design counts about 48 bytes per commit for SHA-1 (60 for SHA-256): OID 20, hash slots about 12, idToRow and rowToId 8, CSR about 8.4. That is about 48 MB at 1M commits. **unverified**
+  - The design counts the parts per commit for SHA-1: OID 20, hash slots about 12, idToRow and rowToId 8, CSR about 8.4. SHA-256 adds 12 bytes. The typed arrays grow by doubling. So a loaded commit takes about 46 bytes when the arrays are nearly full, and about 80 to 90 bytes just after a doubling. That is about 46 to 90 MB at 1M commits, and about 185 to 360 MB (about 46 B per commit when the typed arrays are nearly full, about 90 B just after a doubling) at 4,000,000. **unverified**
   - Git alone uses 446.5 MiB during a search on 1M commits without a commit-graph, and 145.9 to 166.4 MiB otherwise (R14). **experiment** The design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep`, so the limited walk keeps every commit buffer. **unverified** (plan.md O-1, background)
   - Linux Git memory is not part of the Windows process tree. The WSL scope `memory.peak` can record it. **unverified**
   - With load steps, the view holds at most 2·n + 2·M + 1 rows until End or a search (plan.md D2). Near the top, that is about 2,089 rows. **documented** (arithmetic)
@@ -192,7 +192,8 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 
 These stay **unverified** until the named step runs:
 - Git peak memory during load and search: P0.4 measured it on Windows (R14, **experiment**). Linux Git memory stays open: P8.
-- About 48 bytes per commit in the service, and the service CPU during an End load: P3 and P8.
+- The bytes per commit in the service (about 46 to 90, R6), and the service CPU during an End load: P3 and P8.
+- Whether Git prints a repeated parent in one `rev-list --parents` line for a commit object that it accepts: T003.
 - The `save_commit_buffer` recollection: open. P0.4 measured the extra search memory (R14), but no plan step reads the Git source yet (plan.md O-1).
 - `init --template=` copies nothing; an explicit `--git-dir` skips the ownership check: P0.5 showed both on Git 2.56.0.windows.1 (R4, **experiment**).
 - `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: P3.

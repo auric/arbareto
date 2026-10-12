@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { describe, expect, test } from "bun:test";
-import { cargoShipped, cssPackages, inventory, licenseFileNames, missingRuntimeFiles, npmClosure, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { cargoShipped, cssPackages, inventory, licenseFileNames, missingRuntimeFiles, npmClosure, NSIS_VERSION, nsisShipped, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
 import { TM_GRAMMARS_VERSION, TM_THEMES_VERSION } from "../../src/frontend/highlight/set";
 import { printOrigin } from "../origin";
 
@@ -150,6 +153,36 @@ describe("vendored licence texts (T338)", () => {
   test("a runtime folder without the typescript-go NOTICE is a refusal", () => {
     expect(missingRuntimeFiles(["LICENSE.md"])).toEqual(["typescript-go-NOTICE.txt"]);
     expect(missingRuntimeFiles([])).toEqual(["LICENSE.md", "typescript-go-NOTICE.txt"]);
+  });
+
+  describe("NSIS", () => {
+    const vendored = `${import.meta.dir}/../../third-party-licenses`;
+    const keys = new Set([...new Bun.Glob("**/*").scanSync({ cwd: vendored, onlyFiles: true })].map((file) => file.replaceAll("\\", "/").replace(/\/[^/]*$/, "")));
+    let localAppData = "";
+    beforeEach(() => {
+      localAppData = mkdtempSync(join(tmpdir(), "arbareto-nsis-"));
+    });
+    afterEach(() => rmSync(localAppData, { recursive: true, force: true }));
+
+    test("a machine without the bundler NSIS folder still gets the vendored licence text", async () => {
+      const { shipped, problems } = await nsisShipped(vendored, keys, localAppData);
+      expect(problems).toEqual([]);
+      expect(shipped.files.map((f) => f.name)).toEqual(["COPYING"]);
+      expect(shipped.files[0]?.text).toStartWith("COPYRIGHT");
+      expect(inventory([shipped], REPO, PROJECT).problems).toEqual([]);
+    });
+
+    test("an absent vendored folder is a refusal", async () => {
+      const { shipped } = await nsisShipped(vendored, new Set(), localAppData);
+      expect(inventory([shipped], REPO, PROJECT).problems).toEqual(["NSIS: no licence text"]);
+    });
+
+    test("a bundler NSIS licence that differs from the vendored copy is a refusal", async () => {
+      mkdirSync(join(localAppData, "tauri", "NSIS"), { recursive: true });
+      writeFileSync(join(localAppData, "tauri", "NSIS", "COPYING"), "another NSIS release");
+      const { problems } = await nsisShipped(vendored, keys, localAppData);
+      expect(problems).toEqual([`NSIS ${NSIS_VERSION}: %LOCALAPPDATA%\\tauri\\NSIS\\COPYING differs from third-party-licenses/tools/nsis@${NSIS_VERSION}/COPYING`]);
+    });
   });
 });
 

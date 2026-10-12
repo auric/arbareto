@@ -170,18 +170,11 @@ export function terminateRecorded(pid: number, created: bigint): boolean {
 const JOB_ACCOUNTING_CLASS = 1;
 const JOB_ACCOUNTING_BYTES = 48;
 const JOB_ACTIVE_OFFSET = 40;
-// `JOBOBJECT_BASIC_PROCESS_ID_LIST`: two `DWORD` counts, then the x64 `ULONG_PTR` PIDs from byte 8.
-const JOB_PID_LIST_CLASS = 3;
-const JOB_PID_LIST_MAX = 64;
 const JOB_POLL_MS = 10;
 
 export interface ProcessTree {
   // Ends every process of the tree and waits a bounded time for their exits.
   end(): void;
-  // The count of live processes in the tree, or null when the query fails.
-  active(): number | null;
-  // The PIDs of the live processes, or null when the query fails.
-  pids(): number[] | null;
   close(): void;
 }
 
@@ -203,20 +196,13 @@ export function ownTree(pid: number): ProcessTree {
   }
   const active = () => {
     const info = new Uint8Array(JOB_ACCOUNTING_BYTES);
-    if (!kernel32().QueryInformationJobObject(job, JOB_ACCOUNTING_CLASS, ptr(info), JOB_ACCOUNTING_BYTES, null)) return null;
+    if (!kernel32().QueryInformationJobObject(job, JOB_ACCOUNTING_CLASS, ptr(info), JOB_ACCOUNTING_BYTES, null)) return 0;
     return new DataView(info.buffer).getUint32(JOB_ACTIVE_OFFSET, true);
   };
   return {
     end() {
       if (!kernel32().TerminateJobObject(job, 1)) return;
-      for (const until = performance.now() + TERMINATE_WAIT_MS; (active() ?? 0) > 0 && performance.now() < until; ) Bun.sleepSync(JOB_POLL_MS);
-    },
-    active,
-    pids() {
-      const list = new BigUint64Array(1 + JOB_PID_LIST_MAX);
-      if (!kernel32().QueryInformationJobObject(job, JOB_PID_LIST_CLASS, ptr(list), list.byteLength, null)) return null;
-      const listed = new DataView(list.buffer).getUint32(4, true);
-      return [...list.subarray(1, 1 + listed)].map(Number);
+      for (const until = performance.now() + TERMINATE_WAIT_MS; active() > 0 && performance.now() < until; ) Bun.sleepSync(JOB_POLL_MS);
     },
     close() {
       kernel32().CloseHandle(job);

@@ -110,7 +110,7 @@ export function SubmoduleReview({ open, bridge, target, current, review, client,
   const [accepted, setAccepted] = useState(false);
   // The code of a failed new review after `APPROVAL_EXPIRED`. The token is then dead.
   const [rereadFailed, setRereadFailed] = useState<string | null>(null);
-  // The code of a rejection other than `APPROVAL_EXPIRED`. The token stays unconsumed (contract §12 "Update protocol" step 2), so Start update stays enabled.
+  // The code of a rejection other than `APPROVAL_EXPIRED`. A rejected response is a refusal at or before acceptance and consumes no review token (contract §9), so Start update stays enabled.
   const [rejected, setRejected] = useState<string | null>(null);
   const sent = useRef(false);
   const toStart = useRef(false);

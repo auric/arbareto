@@ -6,6 +6,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
+import { SearchHistoryResult } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { createFake, oid, stubLayout, TARGET, type FakeOptions } from "./history-fake";
@@ -159,5 +160,15 @@ describe("spec FR-032 to FR-035: filter mode", () => {
     await key(input, "Enter");
     expect(view.getState().search?.state).toBe("refused");
     expect(text(host)).toContain(`Search is not available here. ${remedy.text}`);
+  });
+
+  test("a service UNSUPPORTED_FILTER_TEXT refusal carries only its reason, and the reason names the character (contract Δ9)", async () => {
+    expect(SearchHistoryResult.safeParse({ reason: "quote-end" }).success).toBe(true);
+    expect(SearchHistoryResult.safeParse({ reason: "quote-end", found: "\\E" }).success).toBe(false);
+    const { input, host, view } = await mount({ total: 30, loaded: 30, searchResponse: () => ({ requestId: "r", state: "failed", code: "UNSUPPORTED_FILTER_TEXT", result: { reason: "quote-end" } }) });
+    await type(input, "Commit");
+    await key(input, "Enter");
+    expect(view.getState().search).toMatchObject({ state: "refused", code: "UNSUPPORTED_FILTER_TEXT", reason: "quote-end" });
+    expect(text(host)).toContain('Cannot search this text. It holds a backslash followed by "E" (\\E).');
   });
 });

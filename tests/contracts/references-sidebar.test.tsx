@@ -79,7 +79,7 @@ async function sidebar(props: Props = {}) {
   // A new repository key for each mount, unless a case passes one: the expansion lasts per repository.
   const repository = props.repository ?? `repository-${++repositories}`;
   const shown = await show(
-    <ReferencesSidebar refs={REFS} failure={null} unpaired={0} loaded={LOADED} onSelectCommit={(oid: string) => void selected.push(oid)} onRefresh={() => void refreshes.push(1)} repository={repository} {...props} />,
+    <ReferencesSidebar refs={REFS} failure={null} loaded={LOADED} onSelectCommit={(oid: string) => void selected.push(oid)} onRefresh={() => void refreshes.push(1)} repository={repository} {...props} />,
   );
   return { ...shown, selected, refreshes, repository };
 }
@@ -314,15 +314,6 @@ describe("states", () => {
       expect(refreshes).toEqual([1]);
     });
   }
-
-  test("an unpaired result keeps the list and adds the reading note; a second one asks for Refresh", async () => {
-    const first = await sidebar({ unpaired: 1 });
-    expect(text(first.host)).toContain("References changed. Arbareto is reading them again.");
-    expect(items(first.host).length).toBeGreaterThan(3);
-    const second = await sidebar({ unpaired: 2 });
-    expect(text(second.host)).toContain("The history and the references show different HEAD states. Select Refresh (F5).");
-    expect(text(second.host)).not.toContain("References changed.");
-  });
 });
 
 describe("constrained profile", () => {

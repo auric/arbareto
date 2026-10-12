@@ -226,7 +226,8 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
 | `SEARCH_UNSUPPORTED` | `matching` | The matching probe failed. The result carries a remedy. |
 
 - New `OUTPUT_LIMIT` reasons: `HISTORY_PARENTS_PER_COMMIT` and `HISTORY_VIEW_COMMITS`.
-- An `UNSUPPORTED_FILTER_TEXT` refusal carries `found`. `found` names the refused characters: the first invalid character, `\E` for `quote-end`, or the lone surrogate. It is null for the byte bound. A lone surrogate is possible only in the renderer check.
+- The renderer check (`src/contracts/filter-text.ts`) gives `found`. `found` names the refused characters: the first invalid character, `\E` for `quote-end`, or the lone surrogate. It is null for the byte bound. A lone surrogate is possible only in the renderer check.
+- The service `UNSUPPORTED_FILTER_TEXT` refusal carries `reason` only (`HistoryViewRefusal`). The reason names the refused character.
 
 ## Δ10 Required contract checks (001 §10)
 

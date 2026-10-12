@@ -117,7 +117,6 @@
     "tests/git/git-installation.test.ts",
     "tests/git/git-oracle.test.ts",
     "tests/git/git-runner.test.ts",
-    "tests/git/history-lanes.test.ts",
     "tests/git/history-parser.test.ts",
     "tests/git/history-refs.test.ts",
     "tests/git/history-search-facts.test.ts",

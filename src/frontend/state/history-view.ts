@@ -261,6 +261,13 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
       });
   }
 
+  /** The OIDs of the cached rows. The references sidebar selects only these. */
+  function cachedOids(): Set<string> {
+    const oids = new Set<string>();
+    for (const page of pages.values()) for (const r of page.rows) oids.add(r.oid);
+    return oids;
+  }
+
   /** The cached row of list index `i`, or undefined while it is not loaded. */
   function row(i: number): ViewRow | undefined {
     return pages.get(Math.floor(i / PAGE_ROWS))?.rows[i % PAGE_ROWS];
@@ -365,8 +372,11 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     pages.clear();
     cacheBytes = 0;
     loading = null;
-    set({ ...INITIAL, scope, opening: true, selection: state.selection, version: state.version + 1 });
-    const response = await bridge.openHistory(target(), { scope });
+    // Spec FR-034: a repository open shows no selected row.
+    set({ ...INITIAL, scope, opening: true, selection: keep ? state.selection : null, version: state.version + 1 });
+    let response = await bridge.openHistory(target(), { scope });
+    // Feature 001 contract §9 rule, kept by plan.md P7: REPOSITORY_CHANGED sends one new request with the current generation.
+    if (mine === epoch && response.code === "REPOSITORY_CHANGED") response = await bridge.openHistory(target(), { scope });
     if (mine !== epoch) return;
     const result = response.result as (Opened & Refusal) | undefined;
     if (response.state !== "succeeded" || result?.viewId === undefined) {
@@ -551,6 +561,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     end,
     cancelLoad,
     row,
+    cachedOids,
     listRows,
     listComplete,
     filterMode,

@@ -26,8 +26,6 @@ const GROUPS: { kind: Exclude<Kind, "stash">; label: string; empty: string; noun
 const LOADING = "Loading references…";
 const NO_MATCH = "No reference matches the filter.";
 const NOT_LOADED = "Not in the loaded history page";
-const UNPAIRED = "References changed. Arbareto is reading them again.";
-const STILL_UNPAIRED = "The history and the references show different HEAD states. Select Refresh (F5).";
 const REFUSAL: Record<string, string> = {
   REF_LISTING_RECORDS: "This repository has more than 10,000 references. This version does not list them.",
   REF_LISTING_BYTES: "The reference list is larger than this version can show.",
@@ -61,8 +59,6 @@ export type ReferencesSidebarProps = {
   refs: RefsResult | null;
   /** The newest `readRefs` refusal. */
   failure: BridgeResponse | null;
-  /** `RequestState.refsUnpaired`. */
-  unpaired: number;
   /** The OIDs of the loaded history page. */
   loaded: ReadonlySet<string>;
   /** Selects the history row of a commit on the page and docks its details. Focus stays in the sidebar. */
@@ -130,7 +126,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory }: ReferencesSidebarProps) {
+export function ReferencesSidebar({ refs, failure, loaded, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), notLoaded: useId() };
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
@@ -372,7 +368,6 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
     if (refs === null) return <p className="p-2 text-muted-text">{LOADING}</p>;
     return (
       <>
-        {unpaired === 0 ? null : <p className="px-2 text-muted-text">{unpaired === 1 ? UNPAIRED : STILL_UNPAIRED}</p>}
         <div role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
           {treeRows()}
         </div>

@@ -214,7 +214,7 @@ describe("spec FR-049: the branch context menu", () => {
 
   async function sidebar() {
     const calls: number[] = [];
-    const host = await show(<ReferencesSidebar refs={REFS} failure={null} unpaired={0} loaded={new Set()} onSelectCommit={() => {}} onRefresh={() => {}} repository="menu-repository" onShowBranchHistory={() => void calls.push(1)} />);
+    const host = await show(<ReferencesSidebar refs={REFS} failure={null} loaded={new Set()} onSelectCommit={() => {}} onRefresh={() => {}} repository="menu-repository" onShowBranchHistory={() => void calls.push(1)} />);
     return { host, calls };
   }
 

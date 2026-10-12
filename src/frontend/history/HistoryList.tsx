@@ -11,11 +11,10 @@ import { Button } from "../components/ui/button";
 import { IconButton } from "../components/icon-button";
 import { metrics, type Density, type Profile } from "../layout/profiles";
 import { SPECIAL_ROWS, type Head, type HistoryView, type Scope, type SearchState, type ViewRow } from "../state/history-view";
-import { columnWidth, LANE_SPACING, ViewCell, WorkingLineCell } from "./AncestryCell";
+import { BOUNDARY_TEXT, columnWidth, LANE_SPACING, ViewCell, WorkingLineCell } from "./AncestryCell";
 import { INVALID_UTF8_TEXT, LOCAL_DATE } from "./CommitDetails";
 import { countText, HistoryFilter } from "./HistoryFilter";
 import { branchName, INDEX_ROW, LIMIT_TEXT, specialParts, WORKING_ROW, type Counted } from "./HistoryView";
-import { BOUNDARY_TEXT } from "./lanes";
 
 // Feature 002 plan.md D6 (list, scroll range, load trigger, branch scope, listbox, graph column, labels, working directory line), spec FR-005 to FR-016, FR-049, FR-050.
 
@@ -398,6 +397,16 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
             </span>
           ))}
         </span>
+        {row.encoding == null ? null : (
+          <span aria-hidden="true" className="shrink-0 text-muted-text">
+            {row.encoding}
+          </span>
+        )}
+        {row.invalidUtf8 ? (
+          <span aria-hidden="true" className="shrink-0 text-muted-text">
+            Invalid UTF-8
+          </span>
+        ) : null}
         <span aria-hidden="true" className="shrink-0 font-mono text-muted-text">
           {shortId(row.oid)}
         </span>
@@ -412,6 +421,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           </>
         ) : null}
       </>,
+      { "data-row-id": row.oid },
     );
   };
 
@@ -428,9 +438,15 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
             <span aria-hidden="true" className="flex min-w-0 flex-1 items-center gap-2 whitespace-nowrap">
               <span className="shrink-0">{special.working[0]}</span>
               <span className="truncate text-muted-text">{special.working[1]}</span>
-              {special.conflicted === null ? null : <span className="shrink-0">{special.conflicted}</span>}
+              {special.conflicted === null ? null : (
+                <span className="flex shrink-0 items-center gap-1">
+                  <WarningIcon />
+                  {special.conflicted}
+                </span>
+              )}
             </span>
           </>,
+          { "data-row-id": WORKING_ROW },
         ),
       );
     else if (item === 1)
@@ -446,6 +462,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
               <span className="truncate text-muted-text">{special.index[1]}</span>
             </span>
           </>,
+          { "data-row-id": INDEX_ROW },
         ),
       );
     else if (more && item === total - 1) {

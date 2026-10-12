@@ -33,6 +33,8 @@ export type FakeOptions = {
   /** The terminal response of the next load, instead of a success. */
   loadResponse?: (payload: Record<string, unknown>) => BridgeResponse | null;
   searchResponse?: (text: string) => BridgeResponse | null;
+  /** Fields that replace the `text: "rows"` fields of row i. */
+  text?: (i: number) => Partial<ViewRow>;
   /** Fields that replace the `text: "details"` fields of row i. */
   details?: (i: number) => Partial<ViewRow>;
   /** The `lanes` value of each row read. */
@@ -100,7 +102,7 @@ export function createFake(options: FakeOptions) {
       ...(search ? { match: searchDone || i < loaded ? isMatch(i) : null } : {}),
     };
     if (text === "none") return row;
-    Object.assign(row, { subject: `Commit ${i}`, author: { name: "Ada", email: "ada@example.invalid" }, date: 1577836800 + i, encoding: null, invalidUtf8: false });
+    Object.assign(row, { subject: `Commit ${i}`, author: { name: "Ada", email: "ada@example.invalid" }, date: 1577836800 + i, encoding: null, invalidUtf8: false, ...options.text?.(i) });
     if (text === "details")
       Object.assign(row, { body: options.matches ? "" : `Body of ${i}`, bodyCut: false, committer: { name: "Grace", email: "grace@example.invalid" }, committerDate: 1577840400 + i, children: i === 0 ? [] : [oid(i - 1)], ...options.details?.(i) });
     return row;

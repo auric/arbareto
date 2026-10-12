@@ -47,7 +47,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 
 - **Decision**: The service runs the lane layout as a pure step `layoutStep(lanes, row)`. It stores a checkpoint every 256 rows. The cell of row i comes from the checkpoint at ⌊i/256⌋·256.
 - **Rationale**:
-  - The 001 layout (`lanes.ts`) can run row by row with equal results, when the state carries the output lane array and the lane count. This is a proof from the code. No test has shown it. **unverified** (P0.3 tests it)
+  - The 001 layout (`lanes.ts`) can run row by row with equal results, when the state carries the output lane array and the lane count. One rule changes: a limited row closes the free lane slots (plan.md O-5). T005 shows equal cells from checkpoints on every graph fixture and on H200K (R16). **experiment**
   - The state needs no set of sent OIDs. With `--date-order`, no parent comes before its children (git-rev-list(1)), so such a set changes no cell. The topology table checks duplicate rows and repeated parents (data-model §3, T012). **documented**
   - A complete walk lists every effective parent later. So the 001 "outside page" branch never runs (`lanes.ts:50-110`, `lanes.ts:52-55, 84-102`). **documented** (code)
   - The page-wide width limit of 001 must become a rule for each row. **documented** (code)
@@ -228,11 +228,11 @@ T003 (Windows Git 2.56.0.windows.1) and T010 (Ubuntu-26.04 Git 2.55.0), 2026-10-
 ## R16 Fixtures and layout (P0.1, P0.3)
 
 - T001, 2026-10-12: H200K and H1M have 200,000 and 1,000,000 commits. Each variant has the expected commit-graph state. The two variants are two builds of one stream. Their refs, index entries, and working files are equal. **experiment**
-- Measurement note: a sampler in the work session measured the next three items. It is not in the repository, and no repository test prints these numbers.
+- Measurement note: a sampler in the work session measured the next three items. It is not in the repository, and no repository test prints these numbers. These items are **experiment** results of a work-session sampler. No repository test reproduces them.
   - Build time per variant, from the folder creation to the manifest write: H200K 9.8 s and 10.3 s; H1M 55.1 s and 59.3 s (without and with a commit-graph). Disk size: H200K 35.2 MiB and 46.7 MiB; H1M 176.3 MiB and 233.5 MiB.
   - During the H1M build, the largest Git process peaked at 205 MiB of private bytes (2-second samples).
   - T003 on H1M holds about 2 GiB of private bytes in the Bun test process. The host then had 4,790 MB available.
 - T005 on H200K, before the O-5 fix: 2,173 rows were limited. Only 93 of them need more than 24 lanes. The other 2,080 had 9 to 24 open lanes, but a lane at index 24 or above stayed open. **experiment**
-- T005 now asserts that a row is limited exactly when it needs more than 24 lanes. A row needs its open lanes above, plus one lane for a new node, and its open lanes below. On the old layout, this check fails on 2,080 H200K rows and on 24 octopus-65 rows. **experiment**
+- T005 now asserts that a row is limited exactly when it needs more than 24 lanes. A row needs the larger of two counts: its open lanes above plus one lane for a new node, and its open lanes below. On the old layout, this check fails on 2,080 H200K rows and on 24 octopus-65 rows. **experiment**
 - After the O-5 fix, a limited row closes the free lane slots and keeps the lane order (plan.md O-5). T005 on H200K: 200,000 rows; each cell rebuilt from a checkpoint equals the fold. 199,899 lanes end at their parent nodes through the cells. 93 rows are limited. octopus-65 has 43 limited rows of 68, and tips-50 has 103 of 151. **experiment**
 - T010: Ubuntu-26.04 has the C.UTF-8 locale (`locale charmap` gives `UTF-8`). Both probe runs give the contract matches with the distro Git and `LC_ALL=C.UTF-8`. **experiment**

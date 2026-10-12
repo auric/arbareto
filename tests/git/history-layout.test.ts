@@ -84,7 +84,7 @@ function prove(label: string, rows: readonly LayoutRow[]): Proof {
       const { cell, before, after } = reference();
       sameCell(i, cells[i - loaded], cell, "the cell rebuilt from a checkpoint");
 
-      // FR-016 and data-model.md §4: distinct commits need distinct lanes. The row needs the lanes above it, plus a new lane for its node, and the lanes below it.
+      // FR-016 and data-model.md §4: distinct commits need distinct lanes. A row needs the larger of two counts: its open lanes above plus one lane for a new node, and its open lanes below.
       const above = frontier.size + (frontier.has(row.oid) ? 0 : 1);
       frontier.delete(row.oid);
       for (const p of row.parents) frontier.add(p);

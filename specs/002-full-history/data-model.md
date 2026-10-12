@@ -83,7 +83,7 @@ Validation (contract Δ3 `loadHistory`):
 - A rebuilt cell equals the first one (spec FR-011, FR-014).
 
 Graph cell fields: `node`, `color`, `merge`, `limited`, `segments`, `marks`.
-- `limited` is true when the row needs more than 24 lanes. The row states the limit (spec FR-016).
+- `limited` is true exactly when the row needs more than 24 lanes. A row needs the larger of two counts: its open lanes above plus one lane for a new node, and its open lanes below. A limited row draws no edge. Its output lane array drops the free slots and keeps the lane order. A new lane takes the lowest free slot. The row states the limit (spec FR-016, plan.md O-5).
 - `marks` hold the root and shallow-boundary marks (spec FR-015).
 - In filter mode, a skip edge has a dashed style and an accessible text that says it skips commits (spec FR-034).
 

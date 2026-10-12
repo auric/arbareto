@@ -160,6 +160,7 @@ Each phase writes its tests first. P0.2, P0.3, and P0.4 are the riskiest proofs 
 - Rows are addressed by their position in the one stream of a view. A streamed row never changes.
 - The cell of row i is `layoutStep(state_i, row_i)`. `state_i` is rebuilt from the checkpoint at ⌊i/256⌋·256. The function is pure, so a rebuilt cell equals the first one.
 - The state holds the output lane array and the lane count. It holds no set of sent OIDs, because `--date-order` sends no parent before its children (git-rev-list(1)). The topology table checks duplicate rows and repeated parents (data-model §3, T012).
+- A row is limited exactly when it needs more than 24 lanes. A limited row closes the free lane slots and keeps the lane order (O-5, data-model §4).
 - Text is read again by OID. Commit objects never change.
 - In a complete stream, every parent is a later row. So the 001 "outside page" branch never runs (`lanes.ts:52-55, 84-102`).
 - Merges and multiple tips need no special rule. Git's single stream already orders them.

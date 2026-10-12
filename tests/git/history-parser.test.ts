@@ -7,7 +7,6 @@ import {
   HISTORY_COMMIT_OBJECT_BYTES,
   HISTORY_PARENTS_PER_COMMIT,
   HISTORY_PARENTS_PER_PAGE,
-  HISTORY_STREAM_ROWS,
 } from "../../src/contracts/limits";
 import { batchCommandArgs, type ObjectFormat } from "../../src/git-service/commands";
 import type { Completeness } from "../../src/git-service/snapshot";
@@ -69,7 +68,7 @@ interface Row {
 }
 
 // Oracle traversal: `git log` with `%H %P` in Git date order. In a shallow repository `%P` gives the effective parents.
-function oracleRows(repo: string, tip: string, count = HISTORY_STREAM_ROWS): Row[] {
+function oracleRows(repo: string, tip: string, count = 100): Row[] {
   const out = git(repo, ["log", "--date-order", `--max-count=${count}`, "--format=%H %P", tip]).toString("latin1");
   return out
     .split("\n")

@@ -185,7 +185,7 @@ New limits:
 
 Reused: `GRAPH_LANES` 24 per row, `REF_LISTING_*` for the capture (10,000 records, 4 MiB), `HISTORY_PAGE_BYTES` 8 MiB for each `readHistoryRows` result, the object bounds, and the 16 KiB body bound. A ref set above 10,000 records gives `OUTPUT_LIMIT` with reason `REF_LISTING_RECORDS`.
 
-Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bound its segments.
+Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History traversal stream' bound (`HISTORY_STREAM_ROWS`, `HISTORY_STREAM_BYTES`). The lanes of a row already bound its segments. The `loadHistory` line bound and `HISTORY_VIEW_COMMITS` bound the new stream.
 
 ## Δ6 Private native process requests (001 §6)
 

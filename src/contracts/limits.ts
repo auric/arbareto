@@ -27,8 +27,6 @@ export const STATUS_PAGE_BYTES = 8 * MIB;
 export const MUTATION_RAW_INDEX_BYTES = 64 * MIB;
 export const ATTRIBUTION_EVIDENCE_BYTES = 4 * MIB;
 export const ATTRIBUTION_EVIDENCE_RECORDS = 10_000;
-export const HISTORY_STREAM_ROWS = 100;
-export const HISTORY_STREAM_BYTES = 128 * KIB;
 // Also the feature 002 contract Δ5 bound of a `rev-list --parents` line.
 export const HISTORY_PARENTS_PER_COMMIT = 64;
 export const HISTORY_PARENTS_PER_PAGE = 1024;

@@ -78,7 +78,7 @@ Inputs: counts after the fetch, `pull.ff`, `branch.<name>.rebase`, `pull.rebase`
 |---|---|---|---|
 | behind 0 | any | any | `up-to-date`, no integration |
 | ahead 0, behind > 0 | any except `false` | any | `fast-forward` |
-| ahead 0, behind > 0 | `false` | none or `merge` | `fast-forward` per FR-027; `merge --no-ff` if O-2 picks Git |
+| ahead 0, behind > 0 | `false` | none or `merge` | `merge --no-ff` (FR-027, reviewer default O-2) |
 | both > 0 | `only` | any | refusal `ff-only` |
 | both > 0 | unset | unset and no payload | `mode-required` |
 | both > 0 | any | `true`, `merges`, payload `rebase` | `rebase` (`--rebase-merges` for `merges`) |

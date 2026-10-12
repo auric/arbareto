@@ -54,7 +54,7 @@ Use only the README "Development" commands:
 | Q19 | WSL fetch, pull, push, cancel, close. | `tests/wsl/sync-wsl.test.ts` | SC-001 results. No process remains in the distro. | SC-009 |
 | Q20 | Counts timing on the 200-branch fixture, packaged. | `tests/windows/sync-perf.test.ts` | All counts within 1 s after the sidebar shows. Cold and warm runs. | SC-003 |
 | Q21 | Input response during a fetch, a push, and a clone, packaged. | `tests/windows/sync-packaged.test.ts` | 95% within 100 ms, all within 500 ms. | SC-008 |
-| Q22 | 30 minutes with focus returns and no network action. | `tests/windows/no-network.test.ts` | The `git daemon` log and the SSH log show no connection. | SC-013, FR-041 |
+| Q22 | 30 minutes with focus returns and no network action. | `tests/windows/no-network.test.ts` | The `git daemon` access-hook counter, the HTTP request counter, and the SSH connection counter stay at 0. | SC-013, FR-041 |
 | Q23 | Requirement-to-test review. | review of tasks.md | No outcome decided by message text or timing. | SC-010 |
 | Q24 | Component tests: toolbar, counts, push panel, notices, force confirmation, conflict actions, Mark resolved, clone panel, settings. | `tests/contracts/sync-*.test.tsx` | Keyboard, focus, text alternatives, Cancel focus, destructive styling. | FR-020, FR-024, FR-039 |
 

@@ -1,0 +1,457 @@
+---
+
+description: "Task list for the Remote Sync feature"
+---
+
+# Tasks: Remote Sync
+
+**Input**: Design documents from `specs/003-remote-sync/`
+
+**Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/operations.md, quickstart.md, and checklists/requirements.md.
+
+**Tests**: The spec (SC-001 to SC-014) and plan.md "Steps" require tests. Each step writes its tests first (plan.md "Steps (riskiest proof first)"). A failing-test task comes before each implementation task, or the task names its failing case first. No test passes by default.
+
+**Organization**: Phases follow the seven batches of plan.md "Phases": (0) fixtures and the Git and PuTTY facts P0.1 to P0.3, (1) pure logic and contracts P1 and P2, (2) shell and service core P3 and P4, (3) pull, conflict actions, and Mark resolved P5 and P6, (4) clone, terminal, and frontend A P7 and P8, (5) frontend B and C P9 and P10, (6) WSL and packaged qualification P11 and P12. Story phases carry `[USn]` labels. Batch 0, batch 1, and the cross-cutting qualification tasks carry no label.
+
+## Format: `[ID] [P?] [Story] Description`
+
+- **[P]**: The task touches different files from the other `[P]` tasks in its group and depends on no incomplete task. A `[P]` group starts after all tasks above it finish. A sub-heading starts a new group. "Dependencies & Execution Order" names the exceptions.
+- **[Story]**: The user story from spec.md (US1 to US8).
+- **Open item O-5**: T008 waits for a user decision only when T007 shows that `ssh2` does not run under Bun. Otherwise the reviewer default stands, and T008 only records it.
+- **Reviewer defaults O-1 to O-4 and O-6 to O-11**: plan.md "Open items" fixes them. The task texts carry them. No task asks the user about them. A batch 0 fact that breaks one of them stops the batch: record it in research.md, then change the contract before P4 (plan.md P0.2).
+- **Blocked by 001 (user environment)**: 001 T152, T154, T165, T240, and T242 are open. T076 follows the T154 procedure. T012 and T080 need the T152 Sandbox. T077 needs T240. T078 needs T165, T240, and T242. T079 needs T165 and T240. Batch 6 cannot finish before them.
+- **Blocked by 002**: The 002 frontend must be merged first. T057 and T064 need 002 T043 to T047 (`state/history-view.ts`, `history/HistoryView.tsx`). T058 and T063 need 002 T027 (`readRefs.refsDigest`). Without them, WP10 leaves out the history part, and T057 and T064 stay open (plan.md "Work packages").
+- **Local tags**: `Local: Rust` needs the local Rust toolchain. `Local: Windows` needs the Windows reference host. `Local: package` needs the packaged Windows build. `Local: WSL` needs the `Ubuntu-26.04` distro with Git 2.55. `Local: Sandbox` needs Windows Sandbox with the 001 T152 configuration. `Local: PuTTY` needs PuTTY 0.75 or later in the folder that `ARBARETO_TEST_PUTTY_DIR` names. Cloud sessions do not run these tasks (CLAUDE.md "Tool boundaries"). A batch verification that sets `ARBARETO_WSL_DISTRO` or runs `test:windows` carries the matching tag. A skip never counts as a pass.
+- Each task names its files, its spec IDs, its plan step (P0.1 to P12), and its dependencies.
+
+## Path Conventions
+
+- Paths follow plan.md "Project Structure": `src/contracts/`, `src/git-service/`, `src/frontend/`, `src-tauri/src/`, `tests/support/`, `tests/contracts/`, `tests/git/`, `tests/vectors/`, `tests/windows/`, `tests/wsl/`, and `tests/fixtures/ssh/`.
+- Feature evidence goes only into `specs/003-remote-sync/research.md`, as R16 and later (research.md "Results").
+
+## Test harness rules
+
+- The 001 "Test harness rules" stay in force (`specs/001-desktop-qualification/tasks.md`). They cover `printOrigin`, the control mutation, Git discovery through `tests/git/git-binary.ts`, capability skips, `tests/groups.json`, `OBSERVATION` lines, owned fixture roots, `tests/git/git-oracle.ts`, and the source headers.
+- No test contacts a public host or the user's real remotes. Remotes are local bare repositories as plain paths, the T004 HTTP remote and `git daemon` on 127.0.0.1, and the T011 SSH server on 127.0.0.1.
+- Tests never set `protocol.file.allow`. The `remote` policy keeps Git's default (plan.md D14). This differs from the 001 submodule tests, which keep their rule.
+- Each test uses an owned `GIT_CONFIG_GLOBAL` and an owned `GIT_CONFIG_SYSTEM`. Every `tests/git` sync test records the system, global, and local configuration bytes before and after each case with the T002 helper. They must be equal, except the `branch.<name>.remote` and `branch.<name>.merge` values of a selected Set upstream (SC-006).
+- Oracles: Git's own command on a copy of the same fixture. Compare refs, full logical index entries, the SHA-256 of every working file, and the operation markers with `tests/git/git-oracle.ts`. Commit OIDs differ by time, so trees and parents decide for new commits (plan.md D14).
+- A connection counts only by a counter: the T004 HTTP server counts requests, the T004 `git daemon` access hook counts service requests, and the T011 SSH server counts connections. No log text, message text, or timing decides a test.
+- Tests never start Pageant on the host, never write the PuTTY registry key on the host, and never load a key into the user's Pageant. These cases run only in Windows Sandbox (`Local: Sandbox`). On the host they skip with the capability `sandbox`.
+- Capabilities: `putty` is present when `ARBARETO_TEST_PUTTY_DIR` holds `plink.exe`, `pageant.exe`, and `puttygen.exe`. `local-ssh-server` is present after T011. `sandbox` is present only inside Windows Sandbox, when `ARBARETO_TEST_SANDBOX=1` is set by the T152 configuration. A capability gate decides by file existence or exit status, never by message text.
+- A fact test (P0.2, P0.3) has no implementation. A failed fact is a finding, not a red task. The test prints `OBSERVATION <task ID>: <fact>`, and the batch verification copies it into research.md with its mark (documented, experiment, or unverified).
+- A timing assertion uses a test-only limit seam, as the 001 submodule tests do (`tests/git/submodule-lifecycle.test.ts`). A file that asserts wall time goes into the `serial` group of `tests/groups.json` with its reason.
+- App runs set `ARBARETO_PROFILE_ROOT` to a scratch folder.
+- A task is ticked only after a green full run (`bun run test:all`) on Windows that verifies it, with `ORIGIN` lines in the checkout under test. A `tests/windows` task is ticked only after a green `bun run test:windows` on the reference host.
+- Batch verification tasks use only the README "Development" commands. A task that needs another command adds it to README "Development" only after it runs green (CLAUDE.md "Tool boundaries").
+
+## Batch-to-story mapping
+
+| Batch | Phase | Plan steps | Tasks | Stories | Scope |
+| --- | --- | --- | --- | --- | --- |
+| 0. Fixtures and facts | 1 | P0.1 to P0.3 | T001–T013 | Setup | Remote fixtures, HTTP and daemon remotes, Git facts (a) to (k) on Windows and WSL, O-5, SSH server, PuTTY facts. |
+| 1. Pure logic and contracts | 2 | P1, P2 | T014–T025 | Foundational | Argv builders, porcelain and tracking parsers, the D4 and D6 rules, clone name, the `resolve` decision, contract deltas Δ1 to Δ11. |
+| 2. Shell and service core | 3 | P3, P4 | T026–T043 | US1, US2, US3, US4, US6, US7 | Policies, PuTTY shell work, clone context, `readTracking`, `reviewSync`, `sync` for fetch, fetch-all, push, and force-push, trust class `sync`. |
+| 3. Pull, conflicts, Mark resolved | 4 | P5, P6 | T044–T051 | US4, US5 | Pull, integrate, abort, continue, skip, `applyFile` direction `resolve`. |
+| 4. Clone, terminal, frontend A | 5 | P7, P8 | T052–T066 | US1, US2, US3, US4, US6, US7, US8 | `clone`, `connectInTerminal`, toolbar, counts, push panel, push-rejected notice, force confirmation, Commit and push, history labels (after 002). |
+| 5. Frontend B and C | 6 | P9, P10 | T067–T074 | US5, US6, US7 | Pull mode choice, conflict actions, Mark resolved, clone panel, SSH and clone settings. |
+| 6. WSL and packaged qualification | 7 | P11, P12 | T075–T083 | Cross-cutting | SC-003 timing, SC-004, SC-007, SC-008, SC-009, SC-010, SC-013. Blocked by open 001 T152, T154, T165, T240, T242. |
+
+Work packages (plan.md "Work packages"): WP1 is T001 to T006. WP2 is T007 and T009 to T012 (T008 is the O-5 record). WP3 is T014 to T018 and T020 to T023. WP4 is T019 and T024. WP5 is T026 to T031. WP6 is T032 to T042. WP7 is T044 to T046, T049, and T050. WP8 is T047 and T048. WP9 is T052 to T055. WP10 is T056 to T065. WP11 is T067 to T069 and T072. WP12 is T070, T071, and T073. WP13 is T075. WP14 is T076 to T082.
+
+---
+
+## Phase 1: Fixtures and facts (Batch 0, P0.1 to P0.3)
+
+**Purpose**: Build the remote fixtures and record the Git and PuTTY facts that the design rests on. These are the riskiest proofs, so they run first. Results go into research.md.
+
+### Remote fixtures (P0.1)
+
+- [ ] T001 Write the failing self-check `tests/git/remote-fixtures.test.ts` for `tests/git/remote-fixtures.ts` (P0.1). For each fixture, assert the ref values with `for-each-ref`, the ahead and behind values with `rev-list --left-right --count`, and the operation markers through `tests/git/git-oracle.ts`. Cover the T002 list. Assert that the configuration helper gives equal digests for unchanged system, global, and local files, and different digests after one `git config` write. Assert that the unrelated branch has 20,000 commits. Add the file to `tests/groups.json` `parallel`. Spec: SC-001, SC-002, SC-003, SC-006, SC-012, SC-014. No dependency.
+- [ ] T002 Create `tests/git/remote-fixtures.ts` (P0.1). Reuse the owned global configuration and `fiCommit` of `tests/git/fixtures.ts`, and the owned root of `tests/git/fixture-root.ts`. Build bare remotes with clones: ahead, behind, diverged, equal, no upstream, upstream gone, a remote name and a branch name with slashes, a moderate repository with 200 local branches that track 200 remote branches, and a branch with an unrelated history of 20,000 commits. Build through `fast-import` and the 001 fixture cache where the build is slow. Build merge and rebase conflicts with the unmerged kinds UU, AA, AU, UA, DU, UD, and DD, a symbolic link stage, stages with different exec bits, a path with a `filter` attribute, and a resolved file that holds text like conflict markers. Build a remote `pre-receive` hook that refuses, and one that prints a message with ESC sequences. Build the `push.default` matrix (`simple`, unset, `current`, `matching`, `upstream`, `tracking`, `nothing`, an invalid value), `remote.<name>.push` refspecs, `branch.<name>.pushRemote`, `remote.pushDefault`, a remote with two push URLs, and a mirror remote. Build a partial clone, a pull that moves a gitlink, a remote URL with a user name and a password, a test credential helper, a remote with a submodule commit, an empty remote, `rebase.autoStash=true` and `merge.autoStash=true`, and `pull.ff` and `pull.rebase` and `branch.<name>.rebase` combinations of data-model §6. Export a copy helper that makes a second equal fixture for the oracle. Export a configuration helper that reads the bytes and SHA-256 of the system, global, and local configuration files (SC-006). Make T001 pass. Spec: SC-001, SC-002, SC-003, SC-006, SC-011, SC-012, SC-014. Depends on T001.
+- [ ] T003 [P] Write the failing self-check `tests/git/remote-servers.test.ts` for `tests/support/http-remote.ts` and `tests/support/git-daemon.ts` (P0.1). HTTP: a clone with the right Basic credentials from the T002 test helper exits 0. A clone with a wrong password exits non-zero, and the server request counter rises. The server binds only 127.0.0.1. A pause switch holds a response with no byte, and a throttle switch sends bytes slowly. Daemon: `git daemon --verbose --base-path=<owned root> --export-all --access-hook=<owned script>` on 127.0.0.1 and a free port. A `ls-remote git://127.0.0.1:<port>/<repo>` raises the access-hook counter by one. The test reads the counter from the file that the hook writes, never from the daemon log. Stopping each server leaves no process; check by PID. Add the file to `tests/groups.json` `parallel`. Spec: SC-005, SC-013. Depends on T002.
+- [ ] T004 Create `tests/support/http-remote.ts` and `tests/support/git-daemon.ts` (P0.1). `http-remote.ts` runs `git http-backend` as CGI behind `Bun.serve` on 127.0.0.1, with Basic sign-in, a request counter, a pause switch, and a throttle switch. Pass the CGI variables as git-http-backend(1) documents them. `git-daemon.ts` starts and stops `git daemon` with an access hook that appends one line to an owned counter file per service request. Both helpers return their PIDs, and stop ends each process by PID within a bounded wait. Make T003 pass. Spec: SC-005, SC-013. Depends on T003.
+
+### Git facts (P0.2)
+
+- [ ] T005 [P] Write the fact test `tests/git/remote-facts.test.ts` (P0.2). Use the T002 fixtures and owned configuration. Record these facts, each with the Git version. (a) `fetch --porcelain` line grammar on stdout matches the contract Δ3 fetch line grammar for each flag; with `--progress`, whether stderr still carries the untranslated counter. (b) `push --porcelain`: `from` and `to` are full ref names; the `To` and `Done` lines; `[rejected]`; `[remote rejected]` from the T002 `pre-receive`; a lease refusal as `[rejected]`. (c) `%(upstream:track,nobracket)` grammar under `LANG=de_DE.UTF-8` and `LC_ALL=de_DE.UTF-8` matches the contract Δ3 track pattern, and equals `rev-list --left-right --count` on each branch of every count fixture. (d) The D4 destination equals the `to` field of Git's own `push --dry-run --porcelain` for every T002 configuration fixture, against a local bare remote. (e) The D6 pull equals Git's own `pull` on copies for each data-model §6 row: tree, parents, index, and working files; also `--ff-only` precedence over rebase and `rebase --fork-point` equality. (f) `GIT_EDITOR=:` with `commit --quiet` in a merge keeps `MERGE_MSG` without comment lines. (g) `GIT_PROTOCOL_FROM_USER=0` blocks a fetch from a local-path remote, and an unset variable lets it pass. (h) `merge` and `rebase` ignore `submodule.recurse=true`. (i) `update-index --add --remove -z --stdin` on each unmerged kind gives the same `ls-files --stage` as `git add`, and record the stage-0 mode. (j) `%(upstream)` is empty when `branch.<name>.remote` names an unconfigured remote. (k) The remote set of `git fetch --all` with `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, compared with the O-4 rule. Decide each fact by exit codes, porcelain fields, and repository reads, never by message text. Print each fact as an `OBSERVATION T005` line. Expect Git 2.56.0.windows.1, and record another version as an observation. Add the file to `tests/groups.json` `parallel`. Spec: FR-005, FR-007, FR-008, FR-011, FR-014, FR-015, FR-019, FR-027, FR-031, FR-053. Depends on T002.
+- [ ] T006 Write `tests/wsl/sync-wsl.test.ts` with the T005 facts (a) to (k) in the distro (P0.2). `Local: WSL`. Find the distro through `tests/wsl/wsl-host.ts`. Build the fixtures inside the owned distro folder with the distro Git, not through `/mnt`. Print each fact and the distro Git version as an `OBSERVATION T006` line. Add the file to `tests/groups.json` `serial` with the reason "runs Git fact cases inside the distro". Spec: FR-010, SC-009. Depends on T002 and T005.
+
+### SSH server and PuTTY facts (P0.3)
+
+- [ ] T007 [P] Check whether `ssh2` runs under Bun (P0.3, O-5). Work in a scratch folder outside the checkout. Do not change `package.json` or `bun.lock` of the repository. Install the newest `ssh2` release that is at least two weeks old with `bun add`. Start a server on 127.0.0.1 with a generated host key, and fetch from a bare repository through Git's own `ssh.exe` with `-i <test key>` and `-o UserKnownHostsFile=<owned file>`. Never write `~/.ssh`. Report the `ssh2` version, the Bun version, the exit codes, and the pass or fail result. Spec: SC-007. Plan: O-5. No dependency.
+- [ ] T008 Record O-5 (P0.3). When T007 passes, record the reviewer default in plan.md O-5 and research.md: the test devDependency `ssh2` with its version. When T007 fails, ask the user to choose: (a) a WSL `sshd`, which needs `openssh-server` installed with sudo by the user, or (b) no SSH server, so the SSH cases stay unverified. Do not decide for the user, and do not install a package. Record the answer in plan.md O-5. Spec: SC-007. Plan: O-5. Depends on T007.
+- [ ] T009 [P] Create the inert fixtures in `tests/fixtures/ssh/` (P0.3): a host key pair, an OpenSSH client key pair, and the same client key as a `.ppk` file without a passphrase. Create the `.ppk` with the PuTTYgen of `ARBARETO_TEST_PUTTY_DIR`, or another `puttygen` that exists on the host. Add `tests/fixtures/ssh/README.md` with the tool, its version, and a statement that these keys are test-only and grant no access. Commit no executable. Spec: SC-007. No dependency.
+- [ ] T010 Write the failing self-check `tests/git/ssh-server.test.ts` for `tests/support/ssh-server.ts` (P0.3). Capability `local-ssh-server`. A fetch through Git's own `ssh.exe` with the T009 client key and an owned known-hosts file exits 0. A fetch with another key exits non-zero. A push into a bare remote changes the remote ref. The connection counter rises by one per Git process. The server binds only 127.0.0.1, and stop leaves no process. Add the file to `tests/groups.json` `parallel`. Spec: SC-007, SC-013. Depends on T008 and T009.
+- [ ] T011 Create `tests/support/ssh-server.ts` (P0.3) by the T008 choice. For `ssh2`, add it as a devDependency to `package.json`, run `bun install`, and commit `bun.lock` with it (CLAUDE.md, plan.md VIII). The server runs `git-upload-pack` and `git-receive-pack` for the requested path under the owned root only, with argument arrays and literal paths. It refuses every other command. It counts connections. Make T010 pass. Spec: SC-007, SC-013. Depends on T010.
+- [ ] T012 Write the fact test `tests/windows/putty-facts.test.ts` (P0.3). `Local: Windows`. `Local: PuTTY`. `Local: Sandbox` for the Pageant and stored-host-key cases. Use the T011 server and the T009 keys. Host cases: a plink `-batch` fetch with an unknown host key exits non-zero within 5 s, and the PuTTY registry key `HKCU\Software\SimonTatham\PuTTY` has equal bytes before and after (export it to an owned file). `GIT_SSH_COMMAND` with a plink path that holds a space and U+0027, in POSIX single quotes with `'\''`, plus ` -batch`, and `GIT_SSH_VARIANT=plink`, reaches the server; count the connection. Read the file version resource of the installed `pageant.exe`, and record it for O-6. Sandbox cases: `pageant.exe --encrypted <ppk>` with no running Pageant starts an agent that `WaitForInputIdle` reports idle within 30 s; the same command with a running Pageant exits; a fetch with the key in Pageant and a stored host key exits 0. Decide each case by exit codes, `WaitForInputIdle` results, and counters. Print each fact as an `OBSERVATION T012` line. Do not add the file to `tests/groups.json`. Spec: FR-033, FR-034, FR-035, SC-006, SC-007. Plan: O-6, O-7. Depends on T009, T011, and 001 T152.
+
+### Batch 0 verification
+
+- [ ] T013 Run the batch 0 verification: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`, then the T012 Sandbox cases in Windows Sandbox. `Local: Windows`. `Local: WSL`. `Local: PuTTY`. `Local: Sandbox`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every batch 0 `OBSERVATION` line into research.md as R16 and later, each with its mark. Update research.md R15 for each fact that changed from unverified. A failed fact stops the batch. Record it, then change plan.md, contracts/operations.md, and data-model.md before batch 2 starts, and run `/speckit-analyze`. Control mutation: in `tests/git/remote-fixtures.ts`, add one commit to the remote side of the diverged fixture. `tests/git/remote-fixtures.test.ts` must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 0 is recorded in research.md. Spec: all batch 0 IDs of T001 to T012. Depends on T001 to T012.
+
+**Checkpoint**: research.md holds the Git facts (a) to (k) on Windows and WSL, the O-5 record, and the PuTTY facts.
+
+---
+
+## Phase 2: Pure logic and contracts (Batch 1, P1 and P2)
+
+**Purpose**: Argv builders, parsers, rules, and contracts that every story uses.
+
+**CRITICAL**: No story work starts before this phase is complete.
+
+### Tests (write first; they must fail)
+
+- [ ] T014 [P] Write failing argv vector tests in `tests/contracts/sync-commands.test.ts` for `src/git-service/sync-commands.ts` (P1). Assert the exact arrays of contract Δ3: the `readTracking` `for-each-ref` format; the D4 review `for-each-ref` record; `remote`; `remote get-url --push --all -- <R>`; the lease reads `rev-list --count <T> ^<HEAD>` and `rev-list --max-count=100 <T> ^<HEAD>`; the sync refs listing `for-each-ref --format=%(refname)%00%(objectname)`; fetch; push with and without `--set-upstream` and `--force-with-lease=<dst>:<expect>`; `rev-list --left-right --count <HEAD>...<U>`; the three integrate forms with `--ff`, `--no-ff`, and `--rebase-merges`; abort, continue, and skip; clone. Every array starts with `--no-lazy-fetch`. Every read array also has `--no-optional-locks`. A remote name, URL, or refspec that starts with "-" stays after `--`. Clone carries `--no-recurse-submodules`, and fetch and push carry `--no-recurse-submodules`. No array carries `--prune`, `--tags`, `--no-tags`, `--autostash`, or `--force` without a lease. Add the file to `tests/groups.json` `parallel`. Spec: FR-007, FR-011, FR-014, FR-025, FR-027, FR-029, FR-048. Contract: Δ3, Δ10, Δ12. Depends on T013.
+- [ ] T015 [P] Write failing parser tests in `tests/contracts/sync-parsers.test.ts` for `src/git-service/sync-parsers.ts` (P1). Fetch porcelain: each flag of the contract Δ3 grammar, SHA-1 and SHA-256 OIDs, random frame splits, and a broken line gives `MALFORMED_GIT_OUTPUT`. Up to 1,000 lines listed per remote (`SYNC_FETCH_LISTED_REFS`), with counts by flag for all lines. Push porcelain: the `To` and `Done` lines, the one status line whose `from:to` equals the refspec, the flags ` `, `+`, `*`, `=`, and `!`, and the summaries `[rejected]`, `[remote rejected]`, and `[remote failure]`. Another or a missing line with a non-zero exit gives status `none`. The parenthesized reason passes through as `reasonText` and changes no status (FR-015). Tracking records: each contract Δ3 record check, each refusal with `MALFORMED_GIT_OUTPUT`, the track pattern, and the data-model §1 entry with `upstreamObjectId` from the same output. Counts: `rev-list --left-right --count` output "ahead TAB behind". Use the T005 recorded outputs as golden inputs. Add the file to `tests/groups.json` `parallel`. Spec: FR-005, FR-012, FR-015, FR-018, FR-019. Contract: Δ3. Depends on T013.
+- [ ] T016 [P] Write failing rule tests in `tests/contracts/sync-rules.test.ts` for the D4 destination rule and the D6 decision in `src/git-service/sync-parsers.ts` (P1). D4: each step of plan.md D4 with the T005 (d) fixture values. Empty `%(push:remotename)` or empty `%(push)` gives "panel". A remote not in `git remote` gives `remote-missing`. A mirror remote gives `mirror`. A filled `%(push:remoteref)` gives source `remote-push-refspec`. `upstream` and `tracking` give `%(upstream:remoteref)` and need `%(upstream:remotename)` = R, else `push-remote-differs`. `simple`, unset, `current`, and `matching` give `refs/heads/<branch>`. Any other value, `nothing` included, gives `invalid-config`. The last `push.default` value wins. More than one push URL gives `push-urls` (O-11). D6: every row of data-model §6. With only behind and `pull.ff=false`, the result is a merge commit (`merge --no-ff`), as FR-027 and O-2 state. Diverged with no mode gives `mode-required`. `pull.ff=only` and diverged gives `ff-only`. `interactive` gives `interactive-rebase`. `merges` gives `--rebase-merges`. The payload mode wins over `branch.<name>.rebase`, which wins over `pull.rebase`. An invalid value gives `invalid-config`. The result names the mode source `payload`, `branch`, `pull`, or `pull-ff`. Several `branch.<name>.merge` values give `several-merge-refs`. Add the file to `tests/groups.json` `parallel`. Spec: FR-014, FR-016, FR-027, FR-028. Plan: D4, D6, O-2, O-11. Depends on T013.
+- [ ] T017 [P] Write failing tests in `tests/contracts/clone-name.test.ts` for `suggestCloneName` in `src/contracts/clone-name.ts` (P1). `https://example.test/team/tool.git` with the last parent `D:\src` gives `D:\src\tool`. The parent is the last clone parent, else the default clone folder, else empty. The name is the last segment after `/`, `\`, or `:`, without trailing separators and one `.git`. `tool.git.git` gives `tool.git`. A URL with no path segment or only separators gives an empty name. The function never changes a character to make a name valid. An SCP-like URL `git@host:team/tool.git` gives `tool`. Add the file to `tests/groups.json` `parallel`. Spec: FR-054. Depends on T013.
+- [ ] T018 [P] Write failing tests in `tests/contracts/file-action.test.ts` for the decision `{direction: "resolve"}` in `src/contracts/file-action.ts` (P1). A conflicted entry with XY in `UU`, `AA`, `AU`, `UA`, `DU`, or `UD`, a regular working file, no `120000` or `160000` mode, no `filter` attribute, and size within 512 MiB gives `resolve`. DD and a missing working file give reason `missing`. A symbolic link gives `symlink`, a gitlink gives `submodule`, and the other data-model §9 refusals give their reasons. The decision reads no file text. Stage file still refuses conflicted entries (001 FR-038). Spec: FR-052, FR-053. Contract: Δ4. Depends on T013.
+- [ ] T019 [P] Write failing contract tests in `tests/contracts/sync-contract.test.ts`, `tests/contracts/envelope.test.ts`, `tests/contracts/schemas.test.ts`, and `tests/contracts/vectors.test.ts`, with golden vectors in `tests/vectors/` (P2). Cover each payload and result of contract Δ3: `readTracking {}`, each `reviewSync` action form, `sync {syncReviewToken, start: true}` with any other `start` refused as `INVALID_REQUEST`, `applyFile` direction `resolve`, `clone {url, destination, keyFile}` with `url` of 1 to 4,096 UTF-8 bytes and no control character, `connectInTerminal {operationId}`, and the five shell-only settings operations. `readTracking`, `reviewSync`, `sync`, and `connectInTerminal` carry `repositoryId`. `readTracking` and `reviewSync` carry `repositoryGeneration`. `MUTATIONS` holds `sync`. The repeat key of `sync` is its token. The phases `sync-fetch`, `sync-merge`, `sync-rebase`, `sync-push`, `sync-continue`, `clone`, and `pageant`, with `percent`, `remoteIndex`, `remoteCount`, and `stalled`, and no remote name, URL, path, or Git text. The codes and reasons of contract Δ9 and the file action reason `missing`. Each contract Δ5 limit value. The policies `remote` and `integrate` in `src/contracts/git-environment.json` by contract Δ7. The wrapper modes `remote` and `integrate` in `src/contracts/wsl-process.json` and the `wslFiles` mode `destination` (Δ11). The private requests `destinationFacts`, `pageant`, and `terminal` with their replies (Δ6). Unknown fields give `INVALID_REQUEST`. Add `tests/contracts/sync-contract.test.ts` to `tests/groups.json` `parallel`. Spec: FR-001, FR-002, FR-003, FR-008. Contract: Δ1 to Δ11. Depends on T013.
+
+### Implementation
+
+- [ ] T020 [P] Create `src/git-service/sync-commands.ts` with every argv builder of contract Δ3 (P1). Reuse `isRefName` of `src/git-service/commands.ts` for branch checks. Make T014 pass. Spec: FR-007, FR-011, FR-014, FR-025, FR-027, FR-029, FR-048. Depends on T014.
+- [ ] T021 [P] Create `src/git-service/sync-parsers.ts` (P1): the fetch and push porcelain parsers, the tracking record parser, the count parser, the D4 destination rule, and the D6 decision. Read configuration values by Git's last-value rule, and booleans with `parseMaybeBool` (`src/git-service/trust.ts:65`). Classify nothing by message text. Make T015 and T016 pass. Spec: FR-005, FR-012, FR-014, FR-015, FR-016, FR-018, FR-019, FR-027. Depends on T015 and T016.
+- [ ] T022 [P] Create `src/contracts/clone-name.ts` with the pure function `suggestCloneName` (P1). It starts no process and reads no file. Make T017 pass. Spec: FR-054. Depends on T017.
+- [ ] T023 [P] Add the decision `resolve` and the reason `missing` to `src/contracts/file-action.ts` (P1). Keep the 001 refusal of conflicted entries for Stage file (`file-action.ts:146-148`). Make T018 pass. Spec: FR-052, FR-053. Depends on T018.
+- [ ] T024 [P] Implement the contract deltas (P2) in `src/contracts/operations.ts`, `envelope.ts`, `errors.ts`, `limits.ts`, `channel.ts`, `git-environment.json`, and `wsl-process.json`. Add every contract Δ5 bound as a named constant with its exact value: `SYNC_FETCH_LISTED_REFS` (1,000), `SYNC_REMOTES` (256), `SYNC_LEASE_COMMITS` (100), `TRACKING_COUNT_DISPLAY` (10,000), the sync refs listing (100,000 records, 32 MiB), Pageant readiness (30 s), the clone URL (4,096 UTF-8 bytes), and key file entries (256). Keep the 001 `network` policy for `updateSubmodules` only. Run `bun run export:schemas` to update `src/contracts/schemas/`. Make T019 pass. Spec: FR-001, FR-002, FR-003, FR-008. Contract: Δ1 to Δ11. Depends on T019.
+
+### Batch 1 verification
+
+- [ ] T025 Run the batch 1 verification: `bun run typecheck`, `bun run export:schemas --check`, and `bun run test:all`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Control mutation: in the D4 rule of `src/git-service/sync-parsers.ts`, map `push.default=nothing` to `refs/heads/<branch>`. `tests/contracts/sync-rules.test.ts` must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 1 is recorded in research.md. Spec: all batch 1 IDs of T014 to T024. Depends on T014 to T024.
+
+**Checkpoint**: The argv builders, parsers, rules, and contracts exist. No handler uses them yet.
+
+---
+
+## Phase 3: Shell and service core (Batch 2, P3 and P4) (Priority: P1)
+
+**Goal**: The shell runs the new policies, PuTTY requests, and the clone context. The service reads tracking, reviews and runs fetch, fetch-all, push, and force-push, and reconciles each outcome.
+
+**Independent Test**: Run fetch, push, and force-push against local bare remotes. Compare refs, the remote branch, and the configuration bytes with Git's own commands on copies. Compare every count with `rev-list --left-right --count`.
+
+WP5 (shell) and WP6 (service) touch disjoint files and may run in parallel worktrees (plan.md "Work packages").
+
+### Tests for the shell (write first; they must fail)
+
+- [ ] T026 [P] [US1] Write failing cargo tests in `src-tauri/src/git_env.rs`, `src-tauri/src/process_requests.rs`, `src-tauri/src/ipc.rs`, `src-tauri/src/wsl.rs`, `src-tauri/src/settings.rs`, and `src-tauri/src/close.rs` (P3). `Local: Rust`. The policies `remote` and `integrate` build by contract Δ7: `remote` equals `network` without `GIT_PROTOCOL_FROM_USER`, and `integrate` adds `GIT_EDITOR=:`. Both take the network limits (`run_limits`, `process_requests.rs:2655`) and pass the `registeredOperation` policy fit (`process_requests.rs:738-745`). The WSL modes `remote` and `integrate` exist, and WSLENV stays empty. The allowlist holds `read_tracking`, `review_sync`, `sync`, `clone`, `connect_in_terminal`, and the five settings commands. Rust checks the ranges that typify drops: the clone URL at most 4,096 UTF-8 bytes and no control character, and at most 256 key file entries. The T024 golden vectors decode in Rust. The marker kind `sync` exists (`settings.rs:759`). The close prompt covers a running `sync` and `clone`. Spec: FR-001, FR-003, FR-008, FR-010. Contract: Δ1, Δ6, Δ7, Δ11. Depends on T025.
+- [ ] T027 [P] [US6] Write failing cargo tests in `src-tauri/src/putty.rs` and `src-tauri/src/settings.rs` (P3). `Local: Rust`. With `sshClient` `plink`, a `remote` run on a Windows context gets `GIT_SSH_COMMAND` = the plink path in POSIX single quotes, U+0027 written as `'\''`, then ` -batch`, and `GIT_SSH_VARIANT=plink`. No other policy and no WSL run gets them. With `sshClient` `git`, no run gets an SSH variable. Settings round trip: `sshClient`, `plinkPath`, up to 256 `remoteKeyFiles` keyed by `worktreeKey` and remote, `defaultCloneFolder`, and `lastCloneParent`, and no passphrase field. `pageant.exe` and `puttygen.exe` resolve in the plink folder (O-7). A missing program gives `PUTTY_UNAVAILABLE` reason `missing` with the program and the path. A Pageant file version below 0.75 gives reason `version` (O-6); find PuTTY at test time and skip with the capability `putty` when absent. The `pageant` request starts the process outside every Job and returns `ready` when the process exits or `WaitForInputIdle` returns 0 within 30 s, else `failed` with reason `not-ready`; the Pageant start case runs only with the capability `sandbox`, and a probe GUI child of the test binary covers the wait elsewhere. The `terminal` request builds a Windows PowerShell 5.1 start from the system folder with `CREATE_NEW_CONSOLE`, `-NoProfile -NoExit`, the constant script of contract Δ6, and the values only in `ARBARETO_GIT`, `ARBARETO_DIR`, `ARBARETO_TARGET`, `GIT_SSH_COMMAND` without `-batch`, and `GIT_SSH_VARIANT=plink`; assert that no value is on the command line. `launchPuttygen` starts `puttygen.exe` with no argument outside every Job. A repository-controlled `remote.<name>.puttykeyfile` is only an initial value and is never used before a save (O-8). Spec: FR-032, FR-033, FR-035, FR-036, FR-037. Contract: Δ3, Δ6. Plan: O-6, O-7, O-8. Depends on T025.
+- [ ] T028 [P] [US7] Write failing cargo tests for the clone context and `destinationFacts` in `src-tauri/src/process_requests.rs`, `src-tauri/src/ipc.rs`, `src-tauri/src/dialogs.rs`, and `src-tauri/src/wsl.rs` (P3). `Local: Rust`. `destinationFacts` replies `absent`, `empty`, `not-empty`, `file`, `other` for a link or a junction, and `error {code}`, from OS facts on owned folders. The `clone` context accepts only the fixed clone array with the bound destination as the last item. The cwd is the application-owned launch folder, or `/` in WSL. The path text follows the 001 Windows rules or the §11 WSL route. The shell binds a `repositoryDiscovery` context for the path. With `keyFile: "picked"`, a canceled `.ppk` picker ends `canceled`. A successful finish stores the recent entry and `lastCloneParent`. The WSL `wslFiles` mode `destination` runs `lstat`, then one `readdir` entry check. Spec: FR-046, FR-047, FR-049, FR-050, FR-051, FR-054. Contract: Δ3, Δ6, Δ11. Depends on T025.
+
+### Implementation for the shell
+
+- [ ] T029 [US1] Implement the policies, limits, allowlist, range checks, marker kind, and close prompt (P3) in `src-tauri/src/git_env.rs`, `process_requests.rs`, `ipc.rs`, `wsl.rs`, `settings.rs`, `close.rs`, and `src-tauri/build.rs`. `Local: Rust`. Register the new commands in `AppManifest::commands`, commit the generated permission files, and grant them in `src-tauri/capabilities/main.json`. Make T026 pass. Spec: FR-001, FR-003, FR-008, FR-010. Depends on T024 and T026.
+- [ ] T030 [US6] Create `src-tauri/src/putty.rs`, and add the settings fields, the five settings commands, the native pickers, the `pageant` and `terminal` requests, and the PuTTY environment pair (P3). `Local: Rust`. Write nothing into Git configuration, the Windows environment, or the registry. Make T027 pass. Spec: FR-032, FR-033, FR-035, FR-036, FR-037. Depends on T027 and T029.
+- [ ] T031 [US7] Add the clone context, the `clone` native-first step, `destinationFacts`, and the `wslFiles` mode `destination` (P3) to `src-tauri/src/process_requests.rs`, `ipc.rs`, `dialogs.rs`, `settings.rs`, and `wsl.rs`. `Local: Rust`. Make T028 pass. Spec: FR-046, FR-047, FR-049, FR-050, FR-051. Depends on T028 and T030.
+
+### Tests for the service (write first; they must fail)
+
+- [ ] T032 [P] [US2] Write failing tests in `tests/git/tracking.test.ts` for `readTracking` through `withService` (P4). On every count fixture, each entry equals `rev-list --left-right --count` of the branch and its upstream (SC-003). Cover ahead, behind, diverged, equal (counts 0 and 0), no upstream (`none`), upstream gone (`gone`), remote and branch names with slashes, the 20,000-commit unrelated branch (counts above 10,000 stay exact in the result), and a detached HEAD (no `current` entry). `upstreamObjectId` is null when the upstream record is absent. The 200-branch fixture uses one Git process; count the runner spawns. A record that breaks a contract Δ3 check gives `MALFORMED_GIT_OUTPUT`. More than `REF_LISTING_RECORDS` gives `OUTPUT_LIMIT`. The read starts no network process. Add the file to `tests/groups.json` `parallel`. Spec: FR-019, FR-021, SC-003. Contract: Δ3 `readTracking`. Depends on T025.
+- [ ] T033 [P] [US1] Write failing tests in `tests/git/sync-fetch.test.ts` for `reviewSync` and `sync` with `fetch` and `fetch-all` (P4). SC-001: after a fetch, every remote-tracking ref equals Git's own `fetch` on a copy. The remote is `branch.<branch>.remote`, else `origin`, and `origin` on a detached HEAD (D3). A remote not in `git remote` gives `SYNC_UNAVAILABLE` reason `remote-missing`, the value `.` gives `local-upstream`, and no Git process starts. Fetch all runs one process per remote in `git remote` order, skips `skipFetchAll` remotes by the T005 (k) fact, and gives each remote its own state; a failed remote does not stop the next. The result lists created, updated, and deleted refs from the porcelain lines, states "nothing changed" when no line exists, and states the counts and the limit above 1,000 lines. A ref change that the lines do not list gives `completed-with-effects` with the observed list. The user's prune and tag settings apply, and the app adds no option (FR-011). The fetch never recurses into a submodule. Progress uses phase `sync-fetch`, and the percentage comes only from Git's counter. Cancel at each step and the inactivity end (test-only limit seam, T004 pause switch) reach a reconciled state within 5 s, list the observed changes, and claim no rollback (SC-004, FR-004). The stall event shows after the stall limit with no output and no I/O, with a remedy from `buildRemedyCommand`. A failure from an unreachable remote shows the redacted output tail and the remedy, and no local branch, index entry, or working file changes. A second mutation during a fetch gives `BUSY`, and reads stay available (FR-001). The fetch from a local-path remote works with Git's default `protocol.file.allow` (FR-008). The configuration bytes stay equal (SC-006). A canceled fetch leaves no process after 5 s. Add the file to `tests/groups.json` `serial` with the reason "asserts reconciliation within 5 s and the stall event time". Spec: FR-001 to FR-008, FR-011, FR-012, FR-041, SC-001, SC-004, SC-006, SC-010. Depends on T025.
+- [ ] T034 [P] [US3] Write failing tests in `tests/git/sync-push.test.ts` for `reviewSync` and `sync` with `push` (P4). SC-001: the remote branch and the local tracking ref equal Git's own push on a copy. The destination equals the `to` field of Git's `push --dry-run --porcelain` for each T002 configuration fixture, or the review gives `plan.needsDestination` and no token (FR-016). A panel destination with `setUpstream: true` writes only `branch.<name>.remote` and `branch.<name>.merge`, and `upstreamWritten` is true; with `false`, the configuration bytes stay equal (SC-006). A branch name that fails `isRefName` gives `INVALID_REQUEST`. Refusals before any process: `detached`, `unborn`, `remote-missing`, `mirror`, `push-urls` (O-11), `push-remote-differs`, `invalid-config`, and `OPERATION_IN_PROGRESS` (FR-017). Only the current branch is pushed, with full ref names, no tag, and `--no-follow-tags`, also under `push.default=matching` (spec edge cases). A `pre-receive` refusal gives `PUSH_REJECTED` reason `remote-rejected`, the reason text as plain text without ESC sequences, and no pull or force choice (FR-015, FR-006). A non-fast-forward gives reason `rejected`. After a push, the tracking ref shows the value that the push reports (FR-018). A canceled push says that the remote can hold the push. The tracking ref of a branch with a slash in its remote name is correct. The configuration bytes stay equal except a selected Set upstream. Add the file to `tests/groups.json` `parallel`. Spec: FR-006, FR-014 to FR-018, SC-001, SC-006, SC-010. Plan: D4, O-11. Depends on T025.
+- [ ] T035 [P] [US4] Write failing tests in `tests/git/sync-rejected.test.ts` for the rejected-push flow and `force-push` (P4). A diverged remote gives `PUSH_REJECTED` reason `rejected`. The `fetch` choice with `remote` = the push remote equals Git's own fetch on a copy (SC-002). The `force-push` review reads the tracking OID T, the exact count `rev-list --count T ^HEAD`, and up to 100 subjects. Without T, the reason is `no-lease`. A force push with an unchanged remote replaces the remote branch with the local branch, and the result names the replaced commit (US4 scenario 6). A changed T between review and `sync` gives `STALE_REVIEW` and starts no process. A remote that moved after the last fetch refuses the lease: reason `stale-lease`, and the remote keeps every commit; compare the remote refs and objects before and after (SC-002, FR-025). No action offers a force push without a lease. Add the file to `tests/groups.json` `parallel`. Spec: FR-023 to FR-025, SC-002, SC-010. Plan: D5. Depends on T025.
+- [ ] T036 [P] [US1] Write failing tests in `tests/git/sync-trust.test.ts` for the trust class `sync` (P4). A repository-controlled hook of `SYNC_EVENTS`, a filter, a command-valued `core.fsmonitor`, a signing program, a transport program (`core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, `remote.<name>.receivepack`), and a `protocol.allow` or `protocol.<name>.allow` entry each set `approvalRequired.sync`. `sync` then refuses with `TRUST_REQUIRED` or `TRUST_CHANGED` before any process; a canary program never runs. After approval, the pre-push hook runs, and a hook refusal shows its output and changes no remote ref (US3 scenario 3). `readTrust` shows the transport values redacted. A repository with a repository-controlled transport program sees a new fingerprint once. Clone needs no trust. Add the file to `tests/groups.json` `parallel`. Spec: FR-009, SC-010. Plan: D11, N-1. Depends on T025.
+- [ ] T037 [P] [US1] Write failing tests in `tests/git/sync-credentials.test.ts` (P4). Use the T004 HTTP remote with a password in the URL and with the T002 credential helper. Run fetch, push, a failed fetch, a canceled fetch, a stall, and a failed clone. Scan every result, progress event, log entry, diagnostic, remedy, and output tail for the secret bytes and for the user name in the URL. None may hold them. A remedy for a URL with user information is text only. Logs hold no URL, remote name, ref name, or output tail (contract Δ7). The app stores no credential. Add the file to `tests/groups.json` `parallel`. Spec: FR-006, FR-008, SC-005. Depends on T025.
+
+### Implementation for the service
+
+- [ ] T038 [US1] Add the policies `remote` and `integrate` to `EnvironmentPolicy` in `src/git-service/git-runner.ts`, and the class `sync` to `src/git-service/trust.ts` (P4). `SYNC_EVENTS` is the 001 `COMMIT_EVENTS` (`trust.ts:576`) plus `pre-push`, `pre-merge-commit`, `post-merge`, `post-checkout`, `pre-rebase`, and `post-rewrite`. Use the transport programs of `programKey` (`trust.ts:311-317`) in the main listing. Add the redacted transport values to the display allowlist. Make the trust-class cases of T036 pass. Spec: FR-008, FR-009. Plan: D2, D11. Depends on T024 and T036.
+- [ ] T039 [US2] Create `src/git-service/tracking.ts` and add the `readTracking` handler to `src/git-service/session.ts` (P4). One read slot, held step, and read gate, as `readRefs`. Make T032 pass. Spec: FR-019, FR-021, SC-003. Depends on T020, T021, T024, and T032.
+- [ ] T040 [US1] Create `src/git-service/sync-review.ts` and `src/git-service/sync.ts`, and add the `reviewSync` and `sync` handlers to `src/git-service/session.ts` (P4). Implement the contract Δ3 `reviewSync` reads and the `sync` protocol steps 1 to 7 for `fetch` and `fetch-all`. Bind the data-model §2 values with a one-use token of 60 s. Run every `sync` Git process in its own Job with the 001 network limits. Build the output tail with `buildSubmoduleOutputTail` (`src/contracts/submodules.ts:192`) and redact with `redactUrlUserInfo` (`submodules.ts:146`). Parse the percentage with `parseSubmoduleProgress` (`submodules.ts:133`). Reconcile from the before and after listings by data-model §8. Keep a connect target for a failed `sync` under `plink` (data-model §11). Send `pageant` before the run for a remote with a key file under `plink`. Make T033 and the fetch cases of T036 and T037 pass. Spec: FR-001 to FR-012, FR-035, FR-041, SC-001, SC-004, SC-005, SC-006, SC-010. Plan: D2, D3. Depends on T020, T021, T024, T033, T037, T038, and T039.
+- [ ] T041 [US3] Add `push` to `src/git-service/sync-review.ts` and `src/git-service/sync.ts` (P4). Apply the D4 rule, the one push URL check (O-11), the Set upstream panel values, and the porcelain status of data-model §5. Make T034 and the push cases of T036 and T037 pass. Spec: FR-014 to FR-018, SC-001, SC-006. Plan: D4. Depends on T034 and T040.
+- [ ] T042 [US4] Add `force-push` to `src/git-service/sync-review.ts` and `src/git-service/sync.ts` (P4). Read the lease commits with the 001 `cat-file --batch-command` reader. Re-read T at `sync`. Send `--force-with-lease=<dst>:<T>`. A `[rejected]` status with a lease gives reason `stale-lease`. Make T035 pass. Spec: FR-023 to FR-025, SC-002. Plan: D5. Depends on T035 and T041.
+
+### Batch 2 verification
+
+- [ ] T043 Run the batch 2 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked --manifest-path src-tauri/Cargo.toml`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: Rust`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. When README "Development" does not list the `cargo test` command yet, add it after it runs green. Control mutation: drop the `--force-with-lease` argument from the force-push builder in `src/git-service/sync-commands.ts`. The lease case of `tests/git/sync-rejected.test.ts` must fail, because the remote loses a commit. Undo the edit and rerun green. The task passes only after one independent review of batch 2 is recorded in research.md. Spec: all batch 2 IDs of T026 to T042. Depends on T026 to T042.
+
+**Checkpoint**: Fetch, Fetch all, Push, Force push with lease, and the counts work in the service. The renderer does not use them yet.
+
+---
+
+## Phase 4: Pull, conflict actions, and Mark resolved (Batch 3, P5 and P6) (Priority: P1)
+
+**Goal**: Pull fetches, counts, decides, and integrates. Abort, Continue, and Skip act on a merge or rebase in progress. Mark resolved stages one conflicted path through the 001 staging path.
+
+**Independent Test**: Pull into fast-forward, diverged, and conflicting fixtures with each mode. Compare HEAD, the index, working files, and the operation state with Git's own pull and conflict commands on copies. Compare Mark resolved with `git add` on a copy.
+
+WP7 (pull and conflicts) and WP8 (Mark resolved) touch disjoint files and may run in parallel worktrees.
+
+### Tests (write first; they must fail)
+
+- [ ] T044 [P] [US5] Write failing tests in `tests/git/sync-pull.test.ts` for `pull` and `integrate` (P5). For each data-model §6 row, HEAD, the index, working files, and the operation state equal Git's own `pull` on a copy (SC-001); trees and parents decide. Only behind fast-forwards with no merge commit. Only behind with `pull.ff=false` makes a merge commit, as Git does (O-2). Diverged with a configured mode uses it, and the result names the mode source. Diverged with no mode gives `integration: mode-required` after the fetch, and a later `integrate` with a mode needs no second fetch; count the fetch processes. The decision uses the counts after the fetch (FR-027). No configuration changes; compare the bytes (SC-006). Refusals: `detached`, `unborn`, `no-upstream`, `remote-missing`, `upstream-gone` after the fetch effects, `several-merge-refs`, `ff-only`, `interactive-rebase`, and `invalid-config` (FR-028). Uncommitted changes that Git refuses to overwrite give integration `refused`; the index and working files stay as Git left them, and no stash entry appears, also with `rebase.autoStash=true` and `merge.autoStash=true` (FR-029). A conflict gives `failed-with-effects`, `integration: stopped`, the kind from the 001 markers, and the unmerged count (FR-030). The merge message is "Merge remote-tracking branch '<remote>/<branch>'" (O-3), and commit hooks, merge hooks, and signing run (FR-031). A pull that moves a gitlink shows the 001 submodule notice through `readWorkspace`, and no Git runs inside the submodule (FR-007). A partial clone that lacks objects starts no lazy fetch. Cancel during the merge or rebase re-reads HEAD, the index, and the markers, and claims no rollback. Phases `sync-fetch`, `sync-merge`, and `sync-rebase`. Add the file to `tests/groups.json` `serial` with the reason "asserts reconciliation within 5 s". Spec: FR-004, FR-007, FR-027 to FR-031, SC-001, SC-004, SC-006, SC-010. Plan: D6, O-2, O-3. Depends on T043.
+- [ ] T045 [P] [US5] Write failing tests in `tests/git/sync-conflicts.test.ts` for `abort`, `continue`, and `skip` (P5). On each merge and rebase conflict fixture, each action gives the same HEAD, index, working files, and operation state as the same Git command by hand on a copy (SC-012). Continue reviews refuse with `CONFLICTED` and the count while the index has an unmerged entry, also when a resolved file holds text like conflict markers. A merge Continue uses `MERGE_MSG` without comment lines (T005 f). A rebase that stops again gives `stopped` again. Skip is refused with reason `not-rebasing` for a merge. Every action needs a merge or rebase in progress, else reason `no-operation`. `rebase-apply/applying` gives no action. The actions apply to a merge or rebase that a terminal started. Continue stages no file. Each action is a mutation (FR-001). Add the file to `tests/groups.json` `parallel`. Spec: FR-001, FR-004, FR-030, FR-042 to FR-045, SC-012. Plan: D7. Depends on T043.
+- [ ] T046 [P] [US4] Extend `tests/git/sync-rejected.test.ts` with the pull choices of the notice (P5). After a rejected push, `pull` with `mode: "rebase"` and with `mode: "merge"` each equal Git's own `pull --rebase` and `pull --no-rebase` on a copy. After their success, a push succeeds (FR-026). Spec: FR-026, SC-002. Depends on T043.
+- [ ] T047 [P] [US5] Write failing tests in `tests/git/mark-resolved.test.ts` for `applyFile` direction `resolve` (P6). For each accepted unmerged kind, the index equals Git's own `git add -- <path>` on a copy, with one stage-0 entry in the T005 (i) mode, and every other entry unchanged, also other unmerged stages (SC-014). The SHA-256 of every working file stays equal. A file that holds text like conflict markers stages normally. Stale cases refuse with `STALE_SELECTION` and change no index entry: another process changes the file bytes, replaces the file, stages the path, or resolves it after the selection. A missing working file and DD give reason `missing`. A symbolic link stage, a gitlink, a `filter` path, and a file above 512 MiB give their refusals. The bound operation state must equal the observed state. A changed state gives `STALE_SELECTION`. Mark resolved is a mutation (FR-001). Hunk staging on a non-conflicted path works while other paths keep unmerged stages (`hunk-publish.ts:628-635`). Add the file to `tests/groups.json` `parallel`. Spec: FR-001, FR-004, FR-052, FR-053, SC-014. Contract: Δ4. Depends on T043.
+
+### Implementation
+
+- [ ] T048 [P] [US5] Add the direction `resolve` to `src/git-service/comparison.ts`, `src/git-service/file-publish.ts`, and `src/git-service/hunk-publish.ts` (P6). `readComparison` of a conflicted entry gives `{direction: "resolve"}`. Step 5 runs `update-index --add --remove -z --stdin` on the candidate. Step 6 accepts exactly one stage-0 entry in the T005 (i) mode and no stage 1 to 3 for the path, then the blob proof. Acceptance checks the bound operation state for equality instead of the 001 `CONFLICTED` and `OPERATION_IN_PROGRESS` refusals (`file-publish.ts:219-220`) for `resolve` only. Remove the no-stage-above-0 assumption of `hunk-publish.ts:628-635`. Read no file text for a decision. Make T047 pass. Spec: FR-052, FR-053, SC-014. Plan: D7. Depends on T023 and T047.
+- [ ] T049 [P] [US5] Create `src/git-service/sync-integrate.ts` with pull and integrate, and add its one handler line to `src/git-service/session.ts` (P5). Run the D3 fetch, read U from the post-fetch listing, count, decide by the D6 rule, and integrate under the policy `integrate`. Reconcile by plan.md D6 step 6. Make T044 and T046 pass. Spec: FR-004, FR-007, FR-026 to FR-031, SC-001, SC-002. Plan: D6. Depends on T040, T044, and T046.
+- [ ] T050 [US5] Add abort, continue, and skip to `src/git-service/sync-integrate.ts` and `src/git-service/sync-review.ts` (P5). Take the kind from the 001 markers (`commands.ts:117`, `status.ts:260`). Continue reviews and `sync` require a fresh index with no unmerged entry. Make T045 pass. Spec: FR-030, FR-042 to FR-045, SC-012. Plan: D7. Depends on T045 and T049.
+
+### Batch 3 verification
+
+- [ ] T051 Run the batch 3 verification: `bun run typecheck` and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: WSL`. Pass condition: both commands exit 0 with `ORIGIN` lines under this checkout. Control mutation: remove `--no-autostash` from the merge builder in `src/git-service/sync-commands.ts`. The FR-029 autostash case of `tests/git/sync-pull.test.ts` must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 3 is recorded in research.md. Spec: all batch 3 IDs of T044 to T050. Depends on T044 to T050.
+
+**Checkpoint**: Every sync action and Mark resolved work in the service.
+
+---
+
+## Phase 5: Clone, terminal, and frontend A (Batch 4, P7 and P8)
+
+**Goal**: The service clones and opens Connect in a terminal. The renderer shows the toolbar, the counts, the push panel, the push-rejected notice, the force confirmation, Commit and push, and the history labels.
+
+**Independent Test**: Clone local bare remotes into missing, empty, and non-empty folders and compare with Git's own clone. Drive the components with a fake bridge.
+
+WP10 runs as `frontend-implementer` and loads `arbareto-ux`, `vercel-react-best-practices`, `web-design-guidelines`, and `shadcn`. A new shadcn component uses only `bunx --bun shadcn@4.21.0 add <component>` (001 T345).
+
+### Tests for clone and terminal (write first; they must fail)
+
+- [ ] T052 [P] [US7] Write failing tests in `tests/git/clone.test.ts` for `clone` (P7). Use the shell double. A clone into a missing folder and into an empty folder equals Git's own clone of the same URL in another folder: refs, HEAD, configuration values, index, and working files (SC-011). The new repository holds only the configuration that Git's clone writes (SC-006). A non-empty folder, a file, and a junction give `DESTINATION_NOT_EMPTY` with `not-empty`, `file`, or `other`; no Git process starts, and every destination file stays byte-equal (FR-047). A URL that starts with "-" stays literal after `--`. Exit 0 runs the 001 discovery and registration, and the top level must equal the destination; the 001 trust decision comes before the first read (FR-051). An empty remote opens with an unborn branch. A remote with a submodule commit clones no submodule, and the repository offers Update submodules (FR-048). Cancel and the inactivity end (T004 pause switch) give the result `{exists, empty}` from OS facts, equal to the folder on disk, and the app deletes, moves, and opens no file (FR-050). A failure from the T004 HTTP remote shows the redacted output tail and the remedy, or text only for a URL with user information. With `keyFile: "picked"` under `plink`, the shell double receives `pageant` before the clone and saves no key file (FR-049). Progress uses phase `clone`. Add the file to `tests/groups.json` `serial` with the reason "asserts reconciliation within 5 s". Spec: FR-046 to FR-051, SC-004, SC-006, SC-011. Plan: D10. Depends on T051.
+- [ ] T053 [P] [US6] Write failing tests in `tests/git/connect-terminal.test.ts` for `connectInTerminal` (P7). Use the shell double. A failed `sync` or `clone` under `plink` keeps one connect target (data-model §11). `connectInTerminal` sends `terminal` with the remote name for fetch and pull, the push URL for push, and the URL for clone. Without a target, the result is `UNKNOWN_TARGET`. A shell failure gives `PUTTY_UNAVAILABLE`. Under `git`, no target is kept. The target URL reaches no result, log, or event. Add the file to `tests/groups.json` `parallel`. Spec: FR-034, FR-037. Plan: D9, O-9, O-10. Depends on T051.
+
+### Implementation for clone and terminal
+
+- [ ] T054 [US7] Create `src/git-service/clone.ts` and add the `clone` handler line to `src/git-service/session.ts` (P7). Follow contract Δ3 `clone` steps 1 to 5. Keep a connect target for a failed clone under `plink`. Make T052 pass. Spec: FR-046 to FR-051. Plan: D10. Depends on T031, T050, and T052.
+- [ ] T055 [US6] Add the `connectInTerminal` handler line to `src/git-service/session.ts` (P7). Read the connect target that T040 and T054 keep, and send the `terminal` request. Make T053 pass. Spec: FR-034. Plan: D9. Depends on T030, T053, and T054.
+
+### Tests for frontend A (write first; they must fail)
+
+- [ ] T056 [P] [US1] Write failing component tests in `tests/contracts/sync-toolbar.test.tsx` and extend `tests/contracts/bridge.test.ts` (P8). The bridge sends every new operation with the T024 schemas. The toolbar shows Fetch, Pull, and Push as icon buttons with Hugeicons, tooltips that name the action and its key, and a menu beside Fetch with Fetch all remotes (FR-039). Unavailable reasons come from `readWorkspace` and `readTracking`: detached, unborn, no upstream for Pull, and an operation in progress (FR-017, FR-028). A missing remote shows at the review. The step texts "Fetching from <remote>…", "Pulling from <remote>…", "Rebasing…", "Merging…", and "Pushing to <remote>…" come from the review result, with Cancel, and a percentage only from the event `percent` (FR-002). The stall notice names a hidden prompt or a sign-in window and offers Cancel and the copyable command (FR-003). After each outcome, the renderer runs `readWorkspace`, `readRefs`, and `readTracking` (FR-004). Fetch all lists each remote with its outcome. No fetch starts at open, at focus return, or on a timer; count the bridge calls (FR-041). Record the conflict check of the keys Ctrl+Shift+Down, Ctrl+Down, and Ctrl+Up against the 001 keyboard map (`tests/contracts/shortcuts.test.ts`) and the 002 keys before T061, and report it for research.md. Spec: FR-001 to FR-004, FR-017, FR-028, FR-039, FR-041. Plan: D12. Depends on T051.
+- [ ] T057 [P] [US1] Write failing component tests in `tests/contracts/sync-history.test.tsx` for the history part (P8). After a fetch outcome, the 002 view refreshes with `{oid}` of the selected commit, keeps the selection when the new refs reach it, and shows no refs-changed notice (FR-013). After each outcome, the history refreshes by the 002 rules (FR-040). Each local branch label in the history shows its counts with the T058 label rule, joined by branch name with the 002 row labels (FR-019). Spec: FR-013, FR-019, FR-020, FR-040. Depends on T051 and 002 T043 to T047.
+- [ ] T058 [P] [US2] Write failing component tests in `tests/contracts/sync-counts.test.tsx` for `src/frontend/state/tracking.ts`, the toolbar counts, and the sidebar entries (P8). Labels: `↑N ↓M` with the text "N ahead, M behind", the equal mark for 0 and 0, "No upstream", "Upstream gone", and "10000+" above 10,000. Status never depends on color alone (FR-020). A count shows only when `objectId` and `upstreamObjectId` equal the newest `readRefs` values; otherwise it shows no number (FR-021). Triggers: each new `readRefs.refsDigest`, each outcome, and each focus return. The tooltip states that counts compare with the last fetch (FR-022). A detached HEAD shows "No branch checked out" and no counts. Spec: FR-019 to FR-022. Plan: D8. Depends on T051 and 002 T027.
+- [ ] T059 [P] [US3] Write failing component tests in `tests/contracts/sync-push.test.tsx` for the push panel (P8). For `plan.needsDestination`, the panel lists the remotes with a choice and the branch name defaulting to the local name, and shows "Set upstream" selected with the text that it writes the upstream into the repository configuration. Push starts only at the explicit start (FR-016). A `remote-rejected` result shows "Rejected by the remote" with the remote message as plain text and offers no pull or force choice (FR-015). After a push, the counts show "↑0". Spec: FR-014 to FR-016. Depends on T051.
+- [ ] T060 [P] [US4] Write failing component tests in `tests/contracts/sync-rejected.test.tsx` for the push-rejected notice and the force confirmation (P8). The notice band row states that the remote has commits that the local branch lacks or that the push cannot fast-forward, and offers Pull with rebase, Pull with merge, Fetch, and Force push with lease, in this order. Force push with lease shows an icon and text and never folds into More. The notice stays until a later push succeeds, the user dismisses it, or the HEAD target changes (FR-023). After a successful pull from the notice, it offers Push (FR-026). The modal names the destination, the count, and up to 100 subjects, and states that other people can lose work. Cancel has the initial focus (FR-024). A `stale-lease` result states that the remote branch changed since the last fetch and offers Fetch (FR-025). Spec: FR-023 to FR-026. Plan: D5. Depends on T051.
+- [ ] T061 [P] [US8] Write failing component tests in `tests/contracts/commit-and-push.test.tsx` for `src/frontend/commit/CommitTray.tsx` (P8). Commit and push sits beside Commit. The push review starts only after a reconciled `succeeded` commit. A failed, changed, or unknown commit starts no push and shows the 001 commit outcome. A rejected push after a commit keeps the commit and shows the T060 notice. Spec: FR-038. Depends on T051.
+
+### Implementation for frontend A
+
+- [ ] T062 [US1] Add every new operation to `src/frontend/bridge.ts`, and add the toolbar controls, progress, and Fetch all menu to `src/frontend/app/Workbench.tsx` and new `src/frontend/sync/SyncToolbar.tsx` (P8). Make T056 pass. Spec: FR-001 to FR-004, FR-017, FR-028, FR-039, FR-041. Depends on T024, T055, and T056.
+- [ ] T063 [US2] Create `src/frontend/state/tracking.ts`, and add the counts to the toolbar and to `src/frontend/refs/ReferencesSidebar.tsx` (P8). Make T058 pass. Spec: FR-019 to FR-022. Depends on T058, T062, and 002 T027.
+- [ ] T064 [US1] Add the history labels and the FR-013 refresh to `src/frontend/history/HistoryView.tsx` (P8). Make T057 pass. This task waits for the 002 frontend. Without it, WP10 leaves `HistoryView.tsx` unchanged, and this task stays open as the follow-up. Spec: FR-013, FR-019, FR-040. Depends on T057, T063, and 002 T043 to T047.
+- [ ] T065 [US3] Create `src/frontend/sync/PushPanel.tsx`, and add the push-rejected row to `src/frontend/app/NoticeBand.tsx` with new `src/frontend/sync/ForcePushConfirm.tsx` (P8). Use the existing `src/frontend/components/ui/dialog.tsx` for the modal. Add Commit and push to `src/frontend/commit/CommitTray.tsx`. Make T059, T060, and T061 pass. Spec: FR-014 to FR-016, FR-023 to FR-026, FR-038. Depends on T059 to T063.
+
+### Batch 4 verification
+
+- [ ] T066 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked --manifest-path src-tauri/Cargo.toml`, the `cargo test` command, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: Rust`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. When T064 is open because the 002 frontend is absent, record that in research.md, and the batch passes without it. Control mutation: in `src/frontend/state/tracking.ts`, skip the OID pairing check. The stale-count case of `tests/contracts/sync-counts.test.tsx` must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md, with `web-design-guidelines` for the UI diff. Spec: all batch 4 IDs of T052 to T065. Depends on T052 to T063 and T065.
+
+**Checkpoint**: The app fetches, pushes, recovers from a rejected push, clones in the service, and shows the counts.
+
+---
+
+## Phase 6: Frontend B and C (Batch 5, P9 and P10)
+
+**Goal**: The renderer asks for the pull mode, offers the conflict actions and Mark resolved, and shows the clone panel and the SSH and clone settings.
+
+**Independent Test**: Drive the components with a fake bridge. Then run the quickstart.md "Manual check in the app".
+
+WP11 and WP12 run as `frontend-implementer` with the WP10 skills. Both edit `src/frontend/app/NoticeBand.tsx`, so WP12 runs after WP11.
+
+### Tests (write first; they must fail)
+
+- [ ] T067 [P] [US5] Write failing component tests in `tests/contracts/sync-pull-mode.test.tsx` for `src/frontend/sync/PullModeChoice.tsx` (P9). `integration: mode-required` shows the choice Rebase or Merge for this pull, states that no configuration changes, and sends `reviewSync {action: "integrate", mode}`. Keyboard reaches both choices, and Escape cancels with no request. The result names the mode source. Spec: FR-027. Depends on T066.
+- [ ] T068 [P] [US5] Write failing component tests in `tests/contracts/sync-conflicts.test.tsx` for `src/frontend/sync/ConflictActions.tsx` and the conflict row of `src/frontend/app/NoticeBand.tsx` (P9). A merge or rebase in progress shows at once, with its kind from `readWorkspace`. The row offers Abort and Continue, and Skip only for a rebase. Abort opens a confirmation that states what Git restores, and for a merge, that Git can fail to restore uncommitted changes from before it. Cancel has the initial focus (FR-042). Continue is unavailable while the unmerged count is above 0 and states the count (FR-043). The Skip label or tooltip states that it leaves the current commit out (FR-044). A rebase that stops again shows the row again (FR-045). The 001 text "finish it outside Arbareto" no longer shows for merging and rebasing. Spec: FR-030, FR-042 to FR-045. Plan: D7, D12. Depends on T066.
+- [ ] T069 [P] [US5] Write failing component tests in `tests/contracts/mark-resolved.test.tsx` for `src/frontend/changes/ChangesPane.tsx` (P9). Each Conflicted entry offers Mark resolved only when the fresh comparison gives `resolve`. It sends `applyFile` with direction `resolve`. On success, the file leaves the Conflicted list and shows as staged. `STALE_SELECTION` asks for refresh and a new selection. A refusal names its reason, also `missing`. When no unmerged entry remains, Continue becomes available. Spec: FR-052, FR-053. Depends on T066.
+- [ ] T070 [P] [US7] Write failing component tests in `tests/contracts/clone-dialog.test.tsx` for `src/frontend/clone/CloneDialog.tsx`, `src/frontend/app/RepositoryMenu.tsx`, and `src/frontend/app/RepositoryStates.tsx` (P10). Clone shows in the start view and the repository menu (FR-046). The destination follows `suggestCloneName` on URL edits until the first destination edit, then stays (FR-054). Clone sends only the destination that the panel shows at the explicit start. The panel offers one optional PuTTY key file under `plink` and saves it nowhere (FR-049). "Cloning into <folder>…" shows with Cancel. `DESTINATION_NOT_EMPTY` names the destination. A failed or canceled clone states whether the folder exists and whether it is empty (FR-050). A failed clone under `plink` offers Connect in a terminal. Spec: FR-046 to FR-050, FR-054, SC-011. Depends on T066.
+- [ ] T071 [P] [US6] Write failing component tests in `tests/contracts/sync-settings.test.tsx` for `src/frontend/settings/SettingsDialog.tsx` and the Connect in a terminal action of `src/frontend/app/NoticeBand.tsx` (P10). The SSH client choice "Git's own configuration" is the default, and "PuTTY (plink)" asks for the plink program. The settings state that PuTTY applies only to Windows repositories and that a WSL repository uses the distro's SSH setup (FR-032). One key file per remote, with the GE `remote.<name>.puttykeyfile` value only as an initial value until the user saves (O-8). Generate or convert a key calls `launchPuttygen` (FR-036). `PUTTY_UNAVAILABLE` names the program and the path (FR-037). The default clone folder can be set and cleared. Every failed network operation under `plink` offers Connect in a terminal and names no cause (FR-034, O-10). Spec: FR-032 to FR-037. Plan: O-8, O-10. Depends on T066.
+
+### Implementation
+
+- [ ] T072 [US5] Create `src/frontend/sync/PullModeChoice.tsx` and `src/frontend/sync/ConflictActions.tsx`, add the conflict row to `src/frontend/app/NoticeBand.tsx`, and add Mark resolved to `src/frontend/changes/ChangesPane.tsx` (P9). Make T067, T068, and T069 pass. Spec: FR-027, FR-030, FR-042 to FR-045, FR-052, FR-053. Depends on T067 to T069.
+- [ ] T073 [US7] Create `src/frontend/clone/CloneDialog.tsx` and `src/frontend/settings/SettingsDialog.tsx`, add Clone to `src/frontend/app/RepositoryMenu.tsx` and `src/frontend/app/RepositoryStates.tsx`, and add Connect in a terminal to `src/frontend/app/NoticeBand.tsx` (P10). Make T070 and T071 pass. Spec: FR-032 to FR-037, FR-046 to FR-050, FR-054. Depends on T070 to T072.
+
+### Batch 5 verification
+
+- [ ] T074 Run the batch 5 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: WSL`. `Local: Windows` for the manual check. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Then run the quickstart.md "Manual check in the app" with `bun run dev` and a scratch `ARBARETO_PROFILE_ROOT`, and record each step. Step 5 needs `Local: PuTTY` and the T011 server; without them, record it as unverified. Control mutation: in `src/frontend/sync/ConflictActions.tsx`, make Continue available while the unmerged count is above 0. `tests/contracts/sync-conflicts.test.tsx` must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 5 is recorded in research.md, with `web-design-guidelines` for the UI diff. Spec: all batch 5 IDs of T067 to T073. Depends on T067 to T073.
+
+**Checkpoint**: Every story works in the development build.
+
+---
+
+## Phase 7: WSL and packaged qualification (Batch 6, P11 and P12, cross-cutting)
+
+**Purpose**: Record the WSL and packaged evidence for SC-003 timing, SC-004, SC-007, SC-008, SC-009, SC-010, and SC-013.
+
+The responsiveness workloads need the 001 tools `tests/windows/inject.ts` (001 T165), `tests/windows/uia.ts` (001 T240), and `tests/windows/capture.ts` (001 T242). The Sandbox runs need 001 T152.
+
+- [ ] T075 Extend `tests/wsl/sync-wsl.test.ts` with the operations through the distro Git (P11). `Local: WSL`. Fetch, pull with each mode, push, and force push with lease give the SC-001 results against bare remotes in the owned distro folder. Mark resolved on a WSL repository equals `git add` in the distro (SC-014). Cancel and window close leave no process of the operation in the distro; read the process records of the distro scope after the 001 §12 process-end fact (SC-009). Record whether the anchor CPU-time activity signal rises during a real fetch from the T004 pause switch remote served on the Windows side, and report it for research.md. A WSL repository gets no PuTTY variable. Clone into a WSL path runs through the §11 route and gives the T052 results. Spec: FR-010, FR-032, SC-001, SC-009, SC-014. Plan: D13. Depends on T074.
+- [ ] T076 Build and install the packaged Windows build by the 001 T154 procedure (P12). `Local: package`. Record the build identity, the Git version, the PuTTY version, and the WebView2 version in research.md. Spec: SC-003, SC-004, SC-007, SC-008, SC-013 precondition. Depends on T074 and 001 T154.
+- [ ] T077 Write `tests/windows/sync-perf.test.ts` with the SC-003 and SC-004 records (P12). `Local: package`. Write the statistic and the pass rule first on recorded sample data, and run them red. Then measure the time from the sidebar showing to all counts showing on the 200-branch fixture, by the UIA tree of the sidebar entries. Record cold runs after a reboot and warm runs after one discarded run, by the 001 rules (001 plan.md "Measurements and budgets"). Budget: 1 s (SC-003). Measure the time from Cancel or a limit to the reconciled or unknown outcome for fetch, pull, push, and clone, with budget 5 s, and the time from the last output or transfer to the stall notice, with budget 20 s (SC-004). Use the T004 pause switch. Spec: FR-003, SC-003, SC-004. Plan: N-2. Depends on T076 and 001 T240.
+- [ ] T078 Write `tests/windows/sync-packaged.test.ts` with the SC-008 workloads (P12). `Local: package`. During a fetch, a pull, a push, and a clone against the T004 throttled remote, send probe inputs every 100 ms with `inject.ts`, and capture with `capture.ts`. Assert the 001 SC-005 targets: at least 95% of inputs show a visible response within 100 ms, and every input within 500 ms. Network time has no target. Spec: SC-008. Depends on T076 and 001 T165, T240, and T242.
+- [ ] T079 Write `tests/windows/no-network.test.ts` for SC-013 (P12). `Local: package`. Configure remotes on the T004 `git daemon`, the T004 HTTP remote, and the T011 SSH server. Open the repositories, wait 30 minutes, and return focus at least five times with `uia.ts` or `inject.ts`, with no user network action. The daemon access-hook counter, the HTTP request counter, and the SSH connection counter stay at 0. Spec: FR-041, SC-013. Depends on T076 and 001 T165 and T240.
+- [ ] T080 Extend `tests/windows/putty-facts.test.ts` with the packaged PuTTY cases (P12). `Local: Sandbox`. `Local: package`. `Local: PuTTY`. In Windows Sandbox, install the T076 package. With "PuTTY (plink)" and a key file set for the remote, fetch, push, and clone through plink and Pageant against the T011 server. Each succeeds, and the shell sends `pageant` before the first Git process; check the Pageant process record before the Git process record. An unknown host key fails within 5 s and offers Connect in a terminal, which opens a visible console; check the console process record. The Git configuration files, the user environment key `HKCU\Environment`, and the PuTTY registry key stay byte-equal. Spec: FR-033, FR-034, FR-035, FR-049, SC-006, SC-007. Depends on T012, T076, and 001 T152.
+- [ ] T081 Review the requirement-to-test mapping for SC-010 (P12). Read the Coverage table and every outcome assertion of the 003 tests. Each outcome type must trace to a Git exit code that Git documents, a machine-readable Git output, an OS fact, or a repository read. List any outcome that a message text, a remote text, or a timing decides as a finding. Record the review in research.md. Spec: FR-005, SC-010. Depends on T074.
+
+### Records and verification
+
+- [ ] T082 Record every batch 6 result in research.md as R16 and later (P12). Give each SC its own row with `pass`, `fail`, or `unverified`, the build, the OS version, the architecture, the Git version, the PuTTY version, the distro, the fixture, the run count, and the numbers. Record times as numbers, never as comparative adjectives. Record each failure with its cause. Spec: SC-001 to SC-014. Depends on T075 and T077 to T081.
+- [ ] T083 Run the batch 6 verification on the reference host with the T076 package installed: `bun run build:service`, `bun run test:windows`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then the T080 cases in Windows Sandbox. `Local: package`. `Local: WSL`. `Local: Sandbox`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout, and research.md holds a row for each of SC-001 to SC-014. Control mutation: set the SC-003 budget in `tests/windows/sync-perf.test.ts` to 1 ms. The counts timing check must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 6 is recorded in research.md. Spec: SC-001 to SC-014. Depends on T082.
+
+**Checkpoint**: Batch 6 is complete. research.md holds concrete results, failures, and causes for every SC.
+
+---
+
+## Dependencies & Execution Order
+
+### Phase dependencies
+
+- **Phase 1 (batch 0)**: No dependency. T001 and T002 come first. T003, T005, and T007 form one [P] group after T002; T007 needs no fixture, so it may start first. T004 follows T003. T006 follows T005. T008 follows T007 and may wait for the user. T009 has no dependency. T010 follows T008 and T009, and T011 follows T010. T012 follows T009, T011, and 001 T152. T013 closes batch 0.
+- **Phase 2 (batch 1)**: Depends on T013. The tests T014 to T019 come first. T020 follows T014, T021 follows T015 and T016, T022 follows T017, T023 follows T018, and T024 follows T019. T025 closes batch 1.
+- **Phase 3 (batch 2)**: Depends on T025. Shell: the tests T026 to T028 come first. T029, T030, and T031 run in that order, because they share `ipc.rs`, `process_requests.rs`, and `settings.rs`. Service: the tests T032 to T037 come first. T038 to T042 run in order, because T039 to T042 share `session.ts`, `sync-review.ts`, and `sync.ts`. The shell chain and the service chain may run beside each other (WP5 and WP6). T043 closes batch 2.
+- **Phase 4 (batch 3)**: Depends on T043. The tests T044 to T047 come first. T048 (WP8) and T049 (WP7) touch disjoint files and run together. T050 follows T049 in the same file. T051 closes batch 3.
+- **Phase 5 (batch 4)**: Depends on T051. T052 and T053 come first. T054 follows T050 (`session.ts`), and T055 follows T054 (`session.ts`). The frontend tests T056 to T061 run beside the clone chain. T062 waits for T055, because the bridge needs the handlers. T063, T064, and T065 follow T062. T064 also waits for 002 T043 to T047, and T058 and T063 wait for 002 T027. T066 closes batch 4 and does not wait for T064.
+- **Phase 6 (batch 5)**: Depends on T066. The tests T067 to T071 come first. T072 (WP11) comes before T073 (WP12), because both edit `NoticeBand.tsx`. T074 closes batch 5.
+- **Phase 7 (batch 6)**: Depends on T074. T075 runs alone (WSL runs alone). T076 comes before every packaged measurement. T077 to T080 touch different files and may run in any order, one full run at a time. T081 may run any time after T074. T082 and T083 run last.
+
+### User story dependencies
+
+- **US1 (Fetch)**: Depends on batches 0 and 1. T040 is the base of every other `sync` action.
+- **US2 (Counts)**: Depends on batches 0 and 1. T039 is independent of `sync`. The renderer part T063 needs 002 T027. The history label part T064 needs 002 T043 to T047.
+- **US3 (Push)**: Depends on US1 T040.
+- **US4 (Rejected push)**: Depends on US3 T041 for force push and on US5 T049 for the pull choices.
+- **US5 (Pull, conflicts, Mark resolved)**: Pull depends on US1 T040. Mark resolved (T048) depends only on T023 and may run beside pull.
+- **US6 (PuTTY)**: The shell part T030 depends on T029. Connect in a terminal (T055) depends on US1 T040 and US7 T054.
+- **US7 (Clone)**: Depends on the shell T031 and on T050 for `session.ts` order.
+- **US8 (Commit and push)**: Depends on US3 T041 and the 001 commit.
+
+### Within each batch
+
+- Tests come first and must fail. Fact tests record facts and have no implementation.
+- Contracts come before service code. Argv builders in `src/git-service/sync-commands.ts` come before the modules that run Git.
+- Service code comes before renderer code.
+- The batch verification task comes last. It passes only after one independent review of the batch is recorded in research.md. No automatic review loop runs.
+
+### Parallel opportunities
+
+- Batch 0: T003, T005, and T007 together after T002. T009 beside them. T006 beside the HTTP and SSH chains.
+- Batch 1: T014 to T019 together. Then T020 to T024 together.
+- Batch 2: T026 to T028 and T032 to T037 together. The shell chain T029 to T031 beside the service chain T038 to T042.
+- Batch 3: T044 to T047 together. Then T048 beside T049.
+- Batch 4: T052, T053, and T056 to T061 together.
+- Batch 5: T067 to T071 together.
+- Batch 6: T077 to T080 in any order, one full run at a time.
+- Run one implementer at a time in one checkout. Parallel implementers need disjoint worktrees. Full runs and WSL runs run alone.
+
+## Parallel Example: Batch 2
+
+```bash
+# Batch 2 service tests together, before any service code:
+Task: "Write failing tests in tests/git/tracking.test.ts for readTracking"
+Task: "Write failing tests in tests/git/sync-fetch.test.ts"
+Task: "Write failing tests in tests/git/sync-push.test.ts"
+Task: "Write failing tests in tests/git/sync-rejected.test.ts"
+Task: "Write failing tests in tests/git/sync-trust.test.ts"
+Task: "Write failing tests in tests/git/sync-credentials.test.ts"
+```
+
+---
+
+## Coverage
+
+Each FR and SC maps to at least one task.
+
+| Spec ID | Tasks |
+| --- | --- |
+| FR-001 | T019, T026, T033, T045, T047, T056 |
+| FR-002 | T019, T033, T056 |
+| FR-003 | T019, T026, T033, T056, T077 |
+| FR-004 | T033, T044, T045, T047, T056 |
+| FR-005 | T005, T015, T033, T081 |
+| FR-006 | T034, T037 |
+| FR-007 | T005, T014, T033, T044 |
+| FR-008 | T005, T019, T026, T033, T037 |
+| FR-009 | T036 |
+| FR-010 | T006, T026, T075 |
+| FR-011 | T005, T014, T033 |
+| FR-012 | T015, T033 |
+| FR-013 | T057, T064 |
+| FR-014 | T005, T014, T016, T034, T059 |
+| FR-015 | T005, T015, T034, T059 |
+| FR-016 | T016, T034, T059 |
+| FR-017 | T034, T056 |
+| FR-018 | T015, T034 |
+| FR-019 | T005, T015, T032, T057, T058 |
+| FR-020 | T057, T058 |
+| FR-021 | T032, T058 |
+| FR-022 | T058 |
+| FR-023 | T035, T060 |
+| FR-024 | T035, T060 |
+| FR-025 | T014, T035, T060 |
+| FR-026 | T046, T060 |
+| FR-027 | T005, T016, T044, T067 |
+| FR-028 | T016, T044, T056 |
+| FR-029 | T014, T044 |
+| FR-030 | T044, T045, T068 |
+| FR-031 | T005, T044 |
+| FR-032 | T027, T071, T075 |
+| FR-033 | T012, T027, T080 |
+| FR-034 | T012, T053, T071, T080 |
+| FR-035 | T012, T027, T040, T080 |
+| FR-036 | T027, T071 |
+| FR-037 | T027, T053, T071 |
+| FR-038 | T061 |
+| FR-039 | T056 |
+| FR-040 | T057 |
+| FR-041 | T033, T056, T079 |
+| FR-042 | T045, T068 |
+| FR-043 | T045, T068 |
+| FR-044 | T045, T068 |
+| FR-045 | T045, T068 |
+| FR-046 | T028, T052, T070 |
+| FR-047 | T028, T052 |
+| FR-048 | T014, T052 |
+| FR-049 | T028, T052, T070, T080 |
+| FR-050 | T028, T052, T070 |
+| FR-051 | T028, T052 |
+| FR-052 | T018, T047, T069 |
+| FR-053 | T005, T018, T047, T069 |
+| FR-054 | T017, T028, T070 |
+| SC-001 | T001, T033, T034, T044, T075 |
+| SC-002 | T001, T035, T046 |
+| SC-003 | T001, T032, T077 |
+| SC-004 | T033, T044, T052, T077 |
+| SC-005 | T003, T037 |
+| SC-006 | T001, T012, T033, T034, T044, T052, T080 |
+| SC-007 | T007, T010, T012, T080 |
+| SC-008 | T078 |
+| SC-009 | T006, T075 |
+| SC-010 | T033, T034, T035, T036, T044, T081 |
+| SC-011 | T052, T070 |
+| SC-012 | T001, T045 |
+| SC-013 | T003, T079 |
+| SC-014 | T001, T047, T075 |
+
+---
+
+## Implementation Strategy
+
+### MVP first (User Stories 1 and 2)
+
+1. Complete batches 0 and 1.
+2. Complete the batch 2 shell chain and T038 to T040 (fetch) and T039 (counts).
+3. Complete T056, T058, T062, and T063 (toolbar Fetch and the counts).
+4. **Stop and validate**: fetch from a bare remote, and check every count against `rev-list --left-right --count`.
+
+### Incremental delivery
+
+1. US1 and US2: batches 0 to 2, then T062 and T063.
+2. US3 and US4: T041, T042, T059, T060, and T065.
+3. US5: batch 3, then T067 to T069 and T072.
+4. US7 and US6: T052 to T055, T070, T071, and T073.
+5. US8: T061 and T065.
+6. History labels: T057 and T064, after the 002 frontend.
+7. Qualification: batch 6.
+
+The spec requires all eight stories for qualification. No partial increment counts as qualified.
+
+---
+
+## Notes
+
+- `[P]` tasks touch different files and depend on no incomplete task.
+- `[Story]` labels map each task to a spec.md story for traceability.
+- Verify that each test fails before its implementation task starts.
+- The orchestrator session commits after each task or logical group. Never commit fixture repositories, PuTTY binaries, or executables. The `tests/fixtures/ssh/` keys are inert test data.
+- The application writes no Git configuration value except a selected Set upstream, never stashes, discards, or resets, and never deletes a clone folder (FR-008, FR-029, FR-050).

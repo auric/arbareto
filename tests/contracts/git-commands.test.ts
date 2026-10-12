@@ -503,3 +503,45 @@ test("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` wi
   for (const args of submodule) expect(args[0]).toBe("--no-lazy-fetch");
   for (const args of arrays) expect(args).not.toContain("--recursive");
 });
+
+// T021, feature 002 contract Δ3: the view arrays. Every array starts with `--no-lazy-fetch --no-optional-locks` (spec FR-045, FR-051).
+describe("history view arrays (feature 002 contract Δ3)", () => {
+  const FORMAT = "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)";
+
+  test("the openHistory capture uses the 001 HEAD steps, the eight-field for-each-ref over the FR-047 namespaces and refs/replace, and one rev-parse for the topology files", () => {
+    expect(commands.headTargetArgs()).toEqual([...R, "symbolic-ref", "-q", "HEAD"]);
+    expect(commands.headOidArgs()).toEqual([...R, "rev-parse", "--verify", "-q", "HEAD"]);
+    expect(commands.headRefExistsArgs("refs/heads/main")).toEqual([...R, "show-ref", "--exists", "refs/heads/main"]);
+    expect(commands.historyRefsArgs()).toEqual(["--no-lazy-fetch", "--no-optional-locks", "for-each-ref", FORMAT, "refs/heads", "refs/remotes", "refs/tags", "refs/stash", "refs/replace"]);
+    expect(commands.topologyPathArgs()).toEqual([...R, "rev-parse", "--git-path", "shallow", "--git-path", "info/grafts"]);
+  });
+
+  test("a later load step reads the replace records with the same record format", () => {
+    expect(commands.replaceRefsArgs()).toEqual(["--no-lazy-fetch", "--no-optional-locks", "for-each-ref", FORMAT, "refs/replace"]);
+  });
+
+  test("every load step runs the same rev-list array with the start points on stdin, and no step adds --skip or --max-count", () => {
+    const load = ["--no-lazy-fetch", "--no-optional-locks", "rev-list", "--parents", "--date-order", "--stdin"];
+    expect(commands.historyLoadArgs()).toEqual(load);
+    expect(commands.historyLoadArgs()).toEqual(commands.historyLoadArgs());
+    expect(commands.historyLoadArgs().some((item) => item.startsWith("--skip") || item.startsWith("--max-count"))).toBe(false);
+    expect(commands.historyLoadArgs.length).toBe(0);
+  });
+
+  test("the text read is one cat-file --batch-command -Z", () => {
+    expect(commands.batchCommandArgs()).toEqual([...R, "cat-file", "--batch-command", "-Z"]);
+  });
+
+  test.each([
+    ["historyRefsArgs", () => commands.historyRefsArgs()],
+    ["replaceRefsArgs", () => commands.replaceRefsArgs()],
+    ["topologyPathArgs", () => commands.topologyPathArgs()],
+    ["historyLoadArgs", () => commands.historyLoadArgs()],
+  ] as [string, () => string[]][])("%s starts with --no-lazy-fetch --no-optional-locks and returns a new array", (_name, build) => {
+    const first = build();
+    expect(first.slice(0, 2)).toEqual(["--no-lazy-fetch", "--no-optional-locks"]);
+    const copy = [...first];
+    first.push("--output=x");
+    expect(build()).toEqual(copy);
+  });
+});

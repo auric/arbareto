@@ -75,7 +75,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 
 - Payload: `{viewId, mode, searchId?, at, count, text}`.
   - `mode`: `"full"` or `"filter"`. `"filter"` requires `searchId`. Spec highlight mode is `mode: "full"` with `searchId`. Spec filter mode is `mode: "filter"`.
-  - `at`: `{row}`, `{oid}`, `{match: "next" | "previous", from}`, or `{end: true}`.
+  - `at`: `{row}`, `{oid}`, `{match: "next" | "previous", from}`, or `{end: true}`. `{match}` requires `searchId`. Without it, the request ends `rejected` with `INVALID_REQUEST`, and no Git process starts.
   - `count`: 1 to 512.
   - `text`: `"none"`, `"rows"`, or `"details"`. `"details"` requires `count` 1.
 - Target resolution:
@@ -242,4 +242,5 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
 - The maximum layout height in WebView2 is not verified.
 - Linux Git memory is not part of the Windows process tree.
 - `core.useReplaceRefs` in the repository config changes parents outside the fingerprint. The re-read compare reports it as reason `order`.
-- No Δ5 bound for `children` of a `details` row. Only `HISTORY_VIEW_COMMITS` limits it. T028 sets the bound.
+- No Δ5 bound for `children` of a `details` row. The plan gives none, so T028 sets none. Only `HISTORY_VIEW_COMMITS` and the `HISTORY_PAGE_BYTES` result bound limit it. A `details` row above `HISTORY_PAGE_BYTES` gives `cut` and no row.
+- A shallow or grafts file above 4 MiB has no view reason. `openHistory` and `loadHistory` then give `OUTPUT_LIMIT` without `reason`.

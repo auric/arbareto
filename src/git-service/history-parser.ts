@@ -130,7 +130,7 @@ export const HEADER_BYTES = 64 + " commit ".length + 20;
 
 // Upstream commit.c `parse_commit_buffer`: the header starts with one `tree` line, then the `parent` lines follow directly.
 // Upstream commit.c `get_header`: a header line ends at LF, and the header block ends at the first empty line.
-function readHeaders(content: Uint8Array, hex: RegExp): { tree: string; parents: string[]; encoding: string | null } | null {
+export function readHeaders(content: Uint8Array, hex: RegExp): { tree: string; parents: string[]; encoding: string | null } | null {
   const blank = Buffer.from(content.buffer, content.byteOffset, content.byteLength).indexOf("\n\n");
   const lines = latin1(content.subarray(0, blank === -1 ? content.length : blank)).split("\n");
   const tree = lines[0]!;

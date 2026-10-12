@@ -195,6 +195,26 @@ export function refsArgs(): string[] {
   ];
 }
 
+// Feature 002 contract Δ3 `openHistory` capture: the `refsArgs` array with `refs/replace`. A `refs/replace/` record enters only the topology fingerprint.
+export function historyRefsArgs(): string[] {
+  return [...refsArgs(), "refs/replace"];
+}
+
+// Feature 002 contract Δ3 `loadHistory`: the replace records of the topology fingerprint, with the same record format.
+export function replaceRefsArgs(): string[] {
+  return [...refsArgs().slice(0, 4), "refs/replace"];
+}
+
+// Feature 002 contract Δ3 `openHistory` capture step 3: Git prints one path per line, relative to the worktree root.
+export function topologyPathArgs(): string[] {
+  return read("rev-parse", "--git-path", "shallow", "--git-path", "info/grafts");
+}
+
+// Feature 002 contract Δ3 `loadHistory`: every load step runs this array, with the start points on stdin. It names no pathspec.
+export function historyLoadArgs(): string[] {
+  return [NO_LAZY_FETCH, "--no-optional-locks", "rev-list", "--parents", "--date-order", "--stdin"];
+}
+
 // A path is relative to the worktree root, where Git runs (research R3). An argv item cannot hold NUL, and an empty pathspec matches every path.
 function pathItem(path: string): string {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) throw new TypeError("path refused");

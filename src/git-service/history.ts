@@ -61,9 +61,9 @@ type Ran = { exit: GitExit; stdout: Bytes; stderrBytes: number };
 type Step = Ran | { refused: ErrorCode } | { aborted: true };
 
 // A held step chain that ends without a page. Only a passed gate lets it reach a response.
-type Stop = { stop: "canceled" | "deadline" } | { failed: ErrorCode };
+export type Stop = { stop: "canceled" | "deadline" } | { failed: ErrorCode };
 
-type Shallow = { kind: "absent" } | { kind: "file"; commits: ReadonlySet<string>; fingerprint: string } | { kind: "over" };
+export type Shallow = { kind: "absent" } | { kind: "file"; commits: ReadonlySet<string>; fingerprint: string } | { kind: "over" };
 
 // The output of the held steps. `traversal` is null for an unborn HEAD. `failedStep` names a nonzero exit of `rev-list` or `cat-file` below every bound.
 // `shallowChanged`: the shallow file changed between the first read and the recheck after the traversal.
@@ -87,7 +87,7 @@ const limited = (reason: LimitName): Completeness => ({ state: "limited", code: 
 // Spec FR-008: invalid UTF-8 shows replacement characters. A byte order mark stays text.
 const lossy = new TextDecoder("utf-8", { ignoreBOM: true });
 const exact = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const isStop = (value: unknown): value is Stop => typeof value === "object" && value !== null && ("stop" in value || "failed" in value);
+export const isStop = (value: unknown): value is Stop => typeof value === "object" && value !== null && ("stop" in value || "failed" in value);
 const isDigit = (byte: number) => byte >= 0x30 && byte <= 0x39;
 // The `encoding` label shows no C0 control, DEL, or C1 control.
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
@@ -139,7 +139,7 @@ function shallowCommits(bytes: Uint8Array, objectFormat: ObjectFormat): Set<stri
 }
 
 // Contract §5 "Shallow-boundary metadata".
-async function readShallow(path: string, objectFormat: ObjectFormat): Promise<Shallow | Stop> {
+export async function readShallow(path: string, objectFormat: ObjectFormat): Promise<Shallow | Stop> {
   const read = await readBounded(path, SHALLOW_METADATA_BYTES);
   if (read === "unavailable") return { failed: "REPOSITORY_UNAVAILABLE" };
   if (read === "absent" || read === "over") return { kind: read };
@@ -211,9 +211,11 @@ function identOf(line: Uint8Array): { name: Uint8Array; email: Uint8Array; date:
   return { name: line.subarray(0, nameEnd), email: line.subarray(lt + 1, gt), date };
 }
 
-// Contract §3 "HistoryPage result" row fields. The parents come from the traversal, never from the raw headers.
-// `shallow`: the shallow file lists the commit. `invalidUtf8` checks the raw bytes, before the lossy decode.
-function rowOf(oid: string, parents: readonly string[], object: CommitObject, shallow: boolean): HistoryRow | null {
+export type CommitText = Omit<HistoryRow, "oid" | "parents" | "shallow">;
+
+// Contract §3 "HistoryPage result" text fields of one commit object. `invalidUtf8` checks the raw bytes, before the lossy decode.
+// Feature 002 `readHistoryRows` uses the same fields. Null: Git finds no author or committer ident.
+export function commitTextOf(object: Pick<CommitObject, "content" | "encoding">): CommitText | null {
   const { author, committer, message } = commitText(object.content);
   const ident = author === null ? null : identOf(author);
   const committed = committer === null ? null : identOf(committer);
@@ -221,18 +223,24 @@ function rowOf(oid: string, parents: readonly string[], object: CommitObject, sh
   const subject = subjectOf(message);
   const body = messageBody(message);
   return {
-    oid,
-    parents: [...parents],
     subject: lossy.decode(subject),
     author: { name: lossy.decode(ident.name), email: lossy.decode(ident.email) },
     date: ident.date,
     encoding: object.encoding === null ? null : object.encoding.replace(CONTROLS, ""),
-    shallow,
     invalidUtf8: [subject, ident.name, ident.email, committed.name, committed.email, body].some((bytes) => !isUtf8(bytes)),
     committer: { name: lossy.decode(committed.name), email: lossy.decode(committed.email) },
     committerDate: committed.date,
     ...boundedBody(lossy.decode(body)),
   };
+}
+
+// Contract §3 "HistoryPage result" row fields. The parents come from the traversal, never from the raw headers.
+// `shallow`: the shallow file lists the commit.
+function rowOf(oid: string, parents: readonly string[], object: CommitObject, shallow: boolean): HistoryRow | null {
+  const text = commitTextOf(object);
+  if (text === null) return null;
+  const { subject, author, date, encoding, invalidUtf8, committer, committerDate, body, bodyCut } = text;
+  return { oid, parents: [...parents], subject, author, date, encoding, shallow, invalidUtf8, committer, committerDate, body, bodyCut };
 }
 
 async function runStep(runner: GitRunner, t: ProcessTarget, args: string[], stdout: Bytes, input?: Uint8Array): Promise<Step> {
@@ -299,6 +307,56 @@ export async function sharedListing(
   return trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
 }
 
+// `cat-file --batch-command -Z` with one `contents <oid>` command per object ID.
+async function readObjects(runner: GitRunner, t: ProcessTarget, oids: readonly string[], maxBytes: number): Promise<{ objects: CommitObjects; exitFailed: boolean } | Stop> {
+  const out = createCollector({ maxBytes });
+  const step = await runStep(runner, t, batchCommandArgs(), out, new TextEncoder().encode(oids.map((oid) => `contents ${oid}\0`).join("")));
+  const stop = stepStop(t.signal, [step]);
+  if (stop !== null) return stop;
+  const objects = parseCommitObjects(out.take(), oids, t.workspace.objectFormat);
+  // Contract §5: the first reached bound wins, also over a later Git failure. A cut output always reaches a bound first.
+  return { objects, exitFailed: !out.limited && (step as Ran).exit.exitCode !== 0 && objects.completeness.state !== "limited" };
+}
+
+// Contract §7 "Missing objects": `cat-file --batch-check` on the history commit IDs. The service never parses the Git message.
+async function objectCheck(runner: GitRunner, t: ProcessTarget, oids: readonly string[]): Promise<"missing" | "present" | "failed" | "canceled" | "deadline"> {
+  const out = createCollector({ maxBytes: oids.length * (HEADER_BYTES + 1) });
+  const step = await runStep(runner, t, objectCheckArgs(), out, objectCheckInput(oids));
+  if ("aborted" in step) return "canceled";
+  return objectCheckOutcome(step, out, oids);
+}
+
+// The input of `checkFailedRead`. `anchors`: the commits where the walk starts, HEAD for `readHistory` and the start points for a feature 002 view.
+// `named`: the rows and the parents that `rev-list` named. `objects`: the commit objects that `cat-file` read.
+export interface FailedRead {
+  anchors: readonly string[];
+  shallow: Shallow;
+  named: Iterable<string>;
+  objects: readonly CommitObject[];
+  failedStep: "rev-list" | "cat-file";
+}
+
+// A failed `rev-list` or `cat-file`. The check input holds the anchors, the rows, and the parents that `rev-list` named.
+// It also holds the raw parents of each read commit that the shallow file does not list. After a failed `rev-list`, the read commits are the anchors.
+// A shallow file above its bound hides which commits it lists, so no raw parent joins. Raw parents are check input only.
+export async function checkFailedRead(runner: GitRunner, t: ProcessTarget, read: FailedRead): Promise<"missing" | Stop> {
+  const { shallow } = read;
+  const rawParents = (object: CommitObject) => (shallow.kind === "over" || (shallow.kind === "file" && shallow.commits.has(object.oid)) ? [] : object.parents);
+  const oids = new Set<string>(read.anchors);
+  for (const oid of read.named) oids.add(oid);
+  for (const object of read.objects) for (const oid of rawParents(object)) oids.add(oid);
+  if (read.failedStep === "rev-list" && read.anchors.length > 0) {
+    const anchor = await readObjects(runner, t, read.anchors, read.anchors.length * (HISTORY_COMMIT_OBJECT_BYTES + HEADER_BYTES + 2));
+    if (isStop(anchor)) return anchor;
+    const answer = anchor.objects.completeness;
+    if (answer.state === "limited" && answer.code === "OBJECT_MISSING") return "missing";
+    for (const object of anchor.objects.objects) for (const oid of rawParents(object)) oids.add(oid);
+  }
+  const checked = await objectCheck(runner, t, [...oids]);
+  if (checked === "canceled" || checked === "deadline") return { stop: checked };
+  return checked === "missing" ? "missing" : { failed: "GIT_FAILED" };
+}
+
 export function createHistoryReader({ runner, trust, listingTuple, markUnavailable }: HistoryReaderOptions) {
   const run = (t: ProcessTarget, args: string[], stdout: Bytes, input?: Uint8Array) => runStep(runner, t, args, stdout, input);
 
@@ -313,17 +371,6 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
     const path = text === null ? null : NATIVE.path.resolve(t.workspace.worktreeRoot, text);
     if (path === null || !isChannelPath(path)) return { failed: "MALFORMED_GIT_OUTPUT" };
     return path;
-  }
-
-  // `cat-file --batch-command -Z` with one `contents <oid>` command per object ID.
-  async function readObjects(t: ProcessTarget, oids: readonly string[], maxBytes: number): Promise<{ objects: CommitObjects; exitFailed: boolean } | Stop> {
-    const out = createCollector({ maxBytes });
-    const step = await run(t, batchCommandArgs(), out, new TextEncoder().encode(oids.map((oid) => `contents ${oid}\0`).join("")));
-    const stop = stepStop(t.signal, [step]);
-    if (stop !== null) return stop;
-    const objects = parseCommitObjects(out.take(), oids, t.workspace.objectFormat);
-    // Contract §5: the first reached bound wins, also over a later Git failure. A cut output always reaches a bound first.
-    return { objects, exitFailed: !out.limited && (step as Ran).exit.exitCode !== 0 && objects.completeness.state !== "limited" };
   }
 
   // The held steps (contract §7 "Held history steps"). They run beside the trust listing and start no object check.
@@ -352,7 +399,7 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
     let objects: CommitObjects = { objects: [], completeness: COMPLETE };
     let failedStep: Held["failedStep"] = null;
     if (traversal.rows.length > 0) {
-      const read = await readObjects(t, traversal.rows.map((row) => row.oid), CAT_FILE_BYTES);
+      const read = await readObjects(runner, t, traversal.rows.map((row) => row.oid), CAT_FILE_BYTES);
       if (isStop(read)) return read;
       if (read.objects.completeness.state === "failed" && !read.exitFailed) return { failed: read.objects.completeness.code };
       objects = read.objects;
@@ -367,42 +414,14 @@ export function createHistoryReader({ runner, trust, listingTuple, markUnavailab
 
   const listingFor = (t: ReadHistoryTarget) => sharedListing({ trust, listingTuple }, t);
 
-  // Contract §7 "Missing objects": `cat-file --batch-check` on the history commit IDs. The service never parses the Git message.
-  async function objectCheck(t: ProcessTarget, oids: readonly string[]): Promise<"missing" | "present" | "failed" | "canceled" | "deadline"> {
-    const out = createCollector({ maxBytes: oids.length * (HEADER_BYTES + 1) });
-    const step = await run(t, objectCheckArgs(), out, objectCheckInput(oids));
-    if ("aborted" in step) return "canceled";
-    return objectCheckOutcome(step, out, oids);
-  }
-
-  // A failed `rev-list` or `cat-file`. The check input holds HEAD, the rows, and the parents that `rev-list` named.
-  // It also holds the raw parents of each read commit that the shallow file does not list. After a failed `rev-list`, the read commit is the HEAD commit.
-  // A shallow file above its bound hides which commits it lists, so no raw parent joins. Raw parents are check input only.
-  async function checkFailedRead(t: ReadHistoryTarget, held: Held & { head: { oid: string } }): Promise<"missing" | Stop> {
-    const { shallow } = held;
-    const rawParents = (object: CommitObject) => (shallow.kind === "over" || (shallow.kind === "file" && shallow.commits.has(object.oid)) ? [] : object.parents);
-    const oids = new Set<string>([held.head.oid]);
-    for (const row of held.traversal?.rows ?? []) for (const oid of [row.oid, ...row.parents]) oids.add(oid);
-    for (const object of held.objects.objects) for (const oid of rawParents(object)) oids.add(oid);
-    if (held.failedStep === "rev-list") {
-      const anchor = await readObjects(t, [held.head.oid], HISTORY_COMMIT_OBJECT_BYTES + HEADER_BYTES + 2);
-      if (isStop(anchor)) return anchor;
-      const answer = anchor.objects.completeness;
-      if (answer.state === "limited" && answer.code === "OBJECT_MISSING") return "missing";
-      for (const object of anchor.objects.objects) for (const oid of rawParents(object)) oids.add(oid);
-    }
-    const checked = await objectCheck(t, [...oids]);
-    if (checked === "canceled" || checked === "deadline") return { stop: checked };
-    return checked === "missing" ? "missing" : { failed: "GIT_FAILED" };
-  }
-
   // The page after a passed gate.
   async function pageOf(t: ReadHistoryTarget, listing: TrustListing, held: Held): Promise<HistoryOutcome> {
     const { head, shallow } = held;
     const traversal = held.traversal ?? { rows: [], completeness: COMPLETE };
     let objects = held.objects;
     if (held.failedStep !== null && head.state !== "unborn") {
-      const checked = await checkFailedRead(t, { ...held, head });
+      const named = (held.traversal?.rows ?? []).flatMap((row) => [row.oid, ...row.parents]);
+      const checked = await checkFailedRead(runner, t, { anchors: [head.oid], shallow, named, objects: held.objects.objects, failedStep: held.failedStep });
       if (checked !== "missing") return endOf(checked);
       objects = { objects: objects.objects, completeness: OBJECT_MISSING };
     }

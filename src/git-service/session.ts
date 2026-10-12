@@ -4,7 +4,7 @@
 import { Handshake } from "../contracts/channel";
 import { validateRequest, type Response, type ServiceRequest } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
-import { GIT_PROCESS_DEADLINE_MS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier, type OperationName } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
 import { isWindows } from "../contracts/native-path";
@@ -19,6 +19,7 @@ import { createExclusion } from "./exclusion";
 import { createFilePublisher, fileApproval } from "./file-publish";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import { createHistoryReader, type HistoryOutcome } from "./history";
+import { createHistoryViews } from "./history-view";
 import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from "./hunk-publish";
 import { createSessionLog, type DiagnosticCause } from "./log";
 import { createOperationRegistry } from "./operations";
@@ -66,6 +67,8 @@ export interface SessionOptions {
   // Test seam only. Production never sets it. The service awaits it before each folder check and clone check of an update row,
   // and before the program re-check of a nested active-set read.
   submoduleCheckpoint?: SubmoduleUpdaterOptions["submoduleCheckpoint"];
+  // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`. Tests set a lower value.
+  historyViewCommits?: number;
 }
 
 // The outcome forms of the reads that `read-scheduler.ts` runs. `cause` goes only into the session log entry (contract §8).
@@ -74,7 +77,7 @@ type ReadResult =
   | { result: "canceled" }
   | { result: "deadline" };
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -144,6 +147,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   });
   const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
+  const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, reject: (requestId, code) => reject(requestId, code) });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
@@ -175,6 +179,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       watchers.get(workspace.repositoryId)?.();
       watchers.delete(workspace.repositoryId);
       scheduler.release(workspace.repositoryId);
+      views.releaseRepository(workspace.repositoryId);
       reader.release(workspace.repositoryId);
       comparisons.release(workspace.repositoryId);
       reviews.release(workspace.repositoryId);
@@ -334,7 +339,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -396,6 +401,23 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       async (t) =>
         (await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } },
       { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } } satisfies HistoryOutcome,
+    );
+  };
+
+  // Feature 002 contract Δ2 and Δ3 `openHistory`: one read slot. The generation decides at acceptance as for `readHistory`.
+  const openHistory: Handler<"openHistory"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("openHistory", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    scheduleRead(
+      request,
+      (t) => views.open({ ...t, installation, workspace, generation: request.repositoryGeneration }, request.payload.scope),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: {} }),
+      { result: "failed", code: "GIT_FAILED", value: {} },
     );
   };
 
@@ -554,12 +576,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readWorkspace,
     readEntries,
     readHistory,
-    // T028 adds the feature 002 view handlers. Until then the service answers SERVICE_UNAVAILABLE.
-    openHistory: undefined,
-    loadHistory: undefined,
-    readHistoryRows: undefined,
+    openHistory,
+    loadHistory: (request) => views.load(request),
+    readHistoryRows: (request) => views.rows(request),
+    // T035 adds the search handler. Until then the service answers SERVICE_UNAVAILABLE.
     searchHistory: undefined,
-    closeHistory: undefined,
+    closeHistory: (request) => views.close(request),
     readRefs,
     readComparison,
     readTrust: (request) => {

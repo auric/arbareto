@@ -1842,6 +1842,9 @@ Earlier runs of this batch:
 
 - Run 1 at `667a1df`: the lane palette test failed, because it did not expect the Graphite dark lane values of T361. Commit `45be610` fixed the test. The F27 stall case failed under load, because the 10 s wait ended before the held checkout step. Commit `fa2b311` makes the wait end at the step or the response.
 - Run 2 at `f89768d`: the commit preflight deadline case at `mutation-lifecycle.test.ts:635` failed under load. The exit continuation ran before the due 1 ms deadline timer. Commit `fa2b311` makes the runner double end the call with the injected deadline when it passed before the exit.
+- Run 4: the fixture removal after the WSL cases failed with `EBUSY` on a runner `launch` folder. Commit `fa66530` added a wait for empty WSL Jobs to the `dispose()` of the double.
+- Run 6: `dispose()` failed with "WSL Jobs still hold processes [[48544,55412]] after 30000 ms", then `EBUSY`. Cause: the double started each `wsl.exe` in the runner `launch` folder. Its `wslhost.exe` inherits that current directory and lives until the Linux relay closes the interop channel. WSL sets no bound for that lifetime. So the Job wait waited on an unbounded process.
+- Fix after run 6: the double starts each `wsl.exe` in the temporary directory, as the shell starts it in its own launch folder (`process_requests.rs` `wsl_host`). It has no WSL Job wait. The case "the launch folder can move while a WSL commit hook runs" in `tests/wsl/mutations.test.ts` gave `EBUSY` before the fix and passes after it. With `launchDirectory` back at the Git call site, it gives `EBUSY` again.
 
 Batch 3 `OBSERVATION` lines, verbatim. T093 and T094 hold the F03 and F10 observations:
 

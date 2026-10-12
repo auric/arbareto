@@ -169,10 +169,6 @@ export function terminateRecorded(pid: number, created: bigint): boolean {
 export interface ProcessTree {
   // Ends every process of the tree and waits a bounded time for their exits.
   end(): void;
-  // The count of live processes in the tree, or null when the query fails.
-  active(): number | null;
-  // The PIDs of the live processes, or null when the query fails.
-  pids(): number[] | null;
   close(): void;
 }
 
@@ -180,24 +176,19 @@ export interface ProcessTree {
 // ponytail: an orphan of an ended root, and a child created during the walk, escape. A cgroup per run closes both.
 export function ownTree(pid: number): ProcessTree {
   const created = processCreationTime(pid);
-  const walk = () => {
-    if (created === null || processCreationTime(pid) !== created) return [];
-    const children = new Map<number, { pid: number; created: bigint }[]>();
-    for (const name of readdirSync("/proc")) {
-      if (!/^\d+$/.test(name)) continue;
-      const stat = procStat(Number(name));
-      if (stat) children.set(stat.parent, [...(children.get(stat.parent) ?? []), { pid: Number(name), created: stat.created }]);
-    }
-    const tree = [{ pid, created }];
-    for (let i = 0; i < tree.length; i++) tree.push(...(children.get(tree[i]!.pid) ?? []));
-    return tree;
-  };
   return {
     end() {
-      for (const p of walk()) terminateRecorded(p.pid, p.created);
+      if (created === null || processCreationTime(pid) !== created) return;
+      const children = new Map<number, { pid: number; created: bigint }[]>();
+      for (const name of readdirSync("/proc")) {
+        if (!/^\d+$/.test(name)) continue;
+        const stat = procStat(Number(name));
+        if (stat) children.set(stat.parent, [...(children.get(stat.parent) ?? []), { pid: Number(name), created: stat.created }]);
+      }
+      const tree = [{ pid, created }];
+      for (let i = 0; i < tree.length; i++) tree.push(...(children.get(tree[i]!.pid) ?? []));
+      for (const p of tree) terminateRecorded(p.pid, p.created);
     },
-    active: () => walk().length,
-    pids: () => walk().map((p) => p.pid),
     close() {},
   };
 }

@@ -53,7 +53,11 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - `{end: true}`, and the load inside a search: no stop row.
 - At S rows, the service waits for the fingerprint check of this load. It then sends the process `cancel` for the call and waits for `exit` (Δ6). It ignores that exit code. The load ends `succeeded` with `complete: false`.
 - A Git exit 0 at or after row N and before S is the end of the history. The end checks run, and the load ends `succeeded` with `complete: true`.
-- Before a later step, the service reads the topology fingerprint again. It starts `for-each-ref refs/replace` beside the Git start. A difference makes the view stale with `HISTORY_CHANGED` reason `topology`.
+- Before each load step, the service reads the topology fingerprint again. A difference makes the view stale with `HISTORY_CHANGED` reason `topology`.
+  - The service reads the shallow file and the grafts file before Git starts. A change there starts no Git process.
+  - The service runs `for-each-ref refs/replace` beside the Git start, in the Job of the load.
+  - At the stop row, the service waits for this check before it sends the process `cancel`. Reason: the `cancel` closes the load Job, and that Job also holds the check process.
+- The view serves only the rows of a load whose fingerprint check passed. When the check does not finish, for example after a quick cancel, the service keeps the streamed rows but does not serve them. The next load re-reads these rows, compares them, and serves them after its check passes.
 - Re-read rule. N is the row count that the view holds at the start. For each i below N, streamed row i must equal held row i in OID and parents. The first difference makes the view stale with `HISTORY_CHANGED` reason `order`. A Git exit 0 before row N gives the same result. A nonzero exit before row N follows the `checkFailedRead` rule below. A cancel or a `DEADLINE` before row N adds no row, and the view stays `idle`. The rows from N on append to the view. Reason: Git documents no unique order, so a one-row overlap check cannot prove the earlier rows (plan.md D2).
 - Each line holds at most 1 + 64 OIDs (`HISTORY_PARENTS_PER_COMMIT`). A longer line ends the load `limited` with `OUTPUT_LIMIT` and that reason.
 - A view holds at most 4,000,000 commits (`HISTORY_VIEW_COMMITS`). At that bound, the service ends the load `limited` with `OUTPUT_LIMIT` and that reason. The loaded rows stay. The view states the limit, and a later `loadHistory` gives the same result without a Git process.
@@ -65,11 +69,12 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - a missing object in a partial clone gives `OBJECT_MISSING`;
   - a damaged store without a promisor remote gives `REPOSITORY_UNAVAILABLE`;
   - other failures give `GIT_FAILED`.
+  - Known limit: the object check covers only the start points, their parents, and the commits that the view already holds or names as parents. A missing commit outside that set, several steps below every start point, gives `GIT_FAILED`, not `OBJECT_MISSING`. This is the feature 001 `checkFailedRead` limit.
 - Progress: phase `history-load`, counter `rows`, at most 4 events per second.
 - Results:
   - `succeeded` with `rows` and `complete`. `complete: true` gives the final row count (spec FR-010).
   - `canceled`: the rows stay, and the Job is closed.
-  - `failed` with `DEADLINE`: the rows stay. The result carries the copyable 001 remedy `& '<selected Git path>' --no-lazy-fetch -C '<worktree root>' commit-graph write --reachable`, quoted by the T262 builder (001 plan.md "Commit-graph variants"). The application never runs it (spec FR-044). For 002 views, `DEADLINE` is the trigger. The 001 trigger rule for other reads stays open (001 plan.md "Commit-graph variants" ties it to the contract §6 and §7 changes after 001 T280 to T283).
+  - `failed` with `DEADLINE`: the rows stay. The result carries the copyable 001 remedy `& '<selected Git path>' --no-lazy-fetch -C '<worktree root>' commit-graph write --reachable`, quoted by the T262 builder (001 plan.md "Commit-graph variants"). The application never runs it (spec FR-044). A WSL view gets the same remedy text with `command: null`, because no WSL form of the command exists. For 002 views, `DEADLINE` is the trigger. The 001 trigger rule for other reads stays open (001 plan.md "Commit-graph variants" ties it to the contract §6 and §7 changes after 001 T280 to T283).
 
 ### `readHistoryRows`
 
@@ -94,6 +99,8 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 - In filter mode, a row that is not settled yet has `cell: null`.
 - Text comes from one `cat-file --batch-command -Z` with `contents` lines. Deadline 30 s. `text: "none"` starts no Git process.
 - A newer text read cancels an unfinished one of the same view, by the 001 superseded-read rule (001 §5 "Pending reads").
+- A text read runs no fingerprint check, because commit text cannot change with the topology.
+- A failed text read makes the whole view stale (Δ8): a missing object gives `OBJECT_MISSING`, or `REPOSITORY_UNAVAILABLE` for a damaged store; unreadable commit text gives `MALFORMED_GIT_OUTPUT`, and a nonzero exit gives `GIT_FAILED`. Loads and searches of the view then refuse, and Refresh opens a new view.
 - The result stays within `HISTORY_PAGE_BYTES` (8 MiB). It sets `cut` when the bound cuts rows. It also carries `rowCount` (the rows that the view holds, data-model §1), `lanes` (the most lanes so far, at most 24), `complete`, and `bytes` for the renderer cache. `rows` is the row array.
 
 ### Refusal result
@@ -198,8 +205,8 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
   - the newest `readRefs.refsDigest` differs from the digest of the view; or
   - the newest `readWorkspace.head` differs from the `head` of the view.
 - Stale conditions (spec FR-006). A stale view keeps its rows, refuses further loads and searches with its code, and offers Refresh:
-  1. A view process fails, and the object check finds a missing commit: `OBJECT_MISSING` (reason `object-missing`).
-  2. `HISTORY_CHANGED` reason `topology`: the shallow digest, the grafts digest, or the replace records changed. The service checks this before each later view process.
+  1. A view process fails, and the object check finds a missing commit: `OBJECT_MISSING` (reason `object-missing`). The text read is a view process too, so a failed text read makes the whole view stale.
+  2. `HISTORY_CHANGED` reason `topology`: the shallow digest, the grafts digest, or the replace records changed. The service checks this before each load step. A text read runs no check, because commit text cannot change with the topology.
   3. `HISTORY_CHANGED` reason `order`: a re-read row differs from the held row, or Git exits with code 0 before the held row count.
   4. `MALFORMED_GIT_OUTPUT`, `GIT_FAILED`, or a diagnostic `OUTPUT_LIMIT`.
   5. The view was released (`UNKNOWN_TARGET`), or the service session ended.
@@ -233,6 +240,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
 - New fixed script `matchingProbe`.
 - WSL polls do not run `readRefs` (001 §11 "Change polling"). A change of a ref other than HEAD shows the notice at the next focus return, Refresh, or mutation outcome (spec SC-012).
 - Each text read costs one `wsl.exe` start (unverified, about 250 ms).
+- A `DEADLINE` of a WSL view carries the remedy text with `command: null`. No WSL form of the commit-graph command exists.
 
 ## Contract gaps
 
@@ -243,4 +251,6 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`. The lanes of a row already bo
 - Linux Git memory is not part of the Windows process tree.
 - `core.useReplaceRefs` in the repository config changes parents outside the fingerprint. The re-read compare reports it as reason `order`.
 - No Δ5 bound for `children` of a `details` row. The plan gives none, so T028 sets none. Only `HISTORY_VIEW_COMMITS` and the `HISTORY_PAGE_BYTES` result bound limit it. A `details` row above `HISTORY_PAGE_BYTES` gives `cut` and no row.
+- A missing commit several steps below every start point gives `GIT_FAILED`, not `OBJECT_MISSING` (Δ3 `loadHistory`, the feature 001 `checkFailedRead` limit).
+- A WSL view gets no copyable `DEADLINE` command (Δ11).
 - A shallow or grafts file above 4 MiB has no view reason. `openHistory` and `loadHistory` then give `OUTPUT_LIMIT` without `reason`.

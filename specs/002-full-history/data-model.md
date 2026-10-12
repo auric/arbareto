@@ -16,7 +16,7 @@ One per service session (contract Δ5).
 | `refs` | captured ref set (§2) | Fixed for the life of the view. |
 | `topology` | topology table (§3) | Grows in stream order only. |
 | `checkpoints` | lane states | One state every 256 rows (§4). |
-| `rowCount` | integer, 0 to 4,000,000 | Rows streamed so far. The bound is `HISTORY_VIEW_COMMITS` (contract Δ5). |
+| `rowCount` | integer, 0 to 4,000,000 | Rows that the view serves. They passed the fingerprint check of their load. The topology can hold more rows from a load whose check did not finish; the next load re-reads, compares, and serves them (contract Δ3 `loadHistory`). The bound is `HISTORY_VIEW_COMMITS` (contract Δ5). |
 | `complete` | boolean | True when Git exits 0 before the stop row of a load (contract Δ3). |
 | `load` | null or `{operationId, stop}` | `stop` is a row count, `open` for an `{oid}` need before the commit streams, or `end`. One load per view. |
 | `limited` | boolean | True after the load reached `HISTORY_VIEW_COMMITS`. The rows stay, and the view states the limit. |
@@ -38,6 +38,7 @@ any state ──closeHistory / new openHistory / session end──▶ released
 - A Git exit 0 before row N leads to `stale` with `HISTORY_CHANGED` reason `order`. A nonzero exit follows the 001 `checkFailedRead` steps (contract Δ3).
 - A stop row leads to `idle`. No load process runs in `idle`.
 - Cancel and `DEADLINE` lead to `idle`, never to `stale`.
+- A failed text read leads to `stale` for the whole view (contract Δ8).
 - A ref change or a HEAD move changes no state. The renderer shows a notice (contract Δ8).
 
 ## 2. Captured ref set

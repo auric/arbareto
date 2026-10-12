@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, SidebarLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
+import { DropdownMenu, DropdownMenuItem, DropdownMenuShortcut } from "../components/ui/dropdown-menu";
 
 // FR-057. plan.md "References sidebar", "Long text", "Keyboard and focus" (References sidebar row), "Task flow and command placement" (Browse references),
 // "Required visible states" (References), and "Status and fallback texts" (Sidebar texts). Contract §3 "References result". The sidebar is read-only.
+// Feature 002 spec FR-049 and FR-055, plan.md D6 "References sidebar" and "Branch scope".
 
 type Kind = RefEntry["kind"];
-const GROUPS: { kind: Kind; label: string; empty: string; noun: string }[] = [
+// Contract Δ3: the sidebar does not show the stash.
+const GROUPS: { kind: Exclude<Kind, "stash">; label: string; empty: string; noun: string }[] = [
   { kind: "branch", label: "Branches", empty: "No branches", noun: "local branch" },
   { kind: "remote", label: "Remotes", empty: "No remote-tracking branches", noun: "remote-tracking branch" },
   { kind: "tag", label: "Tags", empty: "No tags", noun: "tag" },
@@ -27,6 +32,13 @@ const REFUSAL: Record<string, string> = {
   REF_LISTING_RECORDS: "This repository has more than 10,000 references. This version does not list them.",
   REF_LISTING_BYTES: "The reference list is larger than this version can show.",
 };
+export const SHOW_BRANCH_HISTORY = "Show only this branch's history";
+// ponytail: plain rows up to this count, as ChangesPane does. TanStack Virtual takes larger trees.
+const VIRTUAL_MIN = 200;
+// The compact row height (plan.md density table). The parent passes the row height of the density.
+const ROW_HEIGHT = 26;
+const MENU_CONTENT =
+  "z-50 max-h-(--available-height) min-w-32 origin-(--transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:overflow-hidden data-closed:fade-out-0 data-closed:zoom-out-95";
 
 // Contract §3: `symref` and `upstream` are full reference names. Git's namespaces give the short name (git-check-ref-format(1)).
 const PREFIXES = ["refs/heads/", "refs/remotes/", "refs/tags/"];
@@ -60,6 +72,10 @@ export type ReferencesSidebarProps = {
   collapsible?: boolean;
   /** The open repository (its worktree key). The expansion lasts per repository for the window session. */
   repository: string;
+  /** The shared row height of the density. */
+  rowHeight?: number;
+  /** Feature 002 spec FR-049: the current-branch context menu item selects the current-branch history scope. Without it, no context menu opens. */
+  onShowBranchHistory?: () => void;
 };
 
 // plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
@@ -67,7 +83,8 @@ const sessionExpansion = new Map<string, ReadonlySet<string>>();
 
 /** One tree node: a group, a folder of one `/` level, or an entry. Keys are unique within the tree. */
 type Tree = { key: string; label: string; count: number; children: Tree[]; entry?: RefEntry };
-type Row = { node: Tree; level: number; kind: Kind; parent: number };
+/** `pos` and `size` are the WAI-ARIA tree position among the shown siblings. */
+type Row = { node: Tree; level: number; kind: Kind; parent: number; pos: number; size: number };
 
 const groupKey = (kind: Kind) => `group:${kind}`;
 const folderKey = (kind: Kind, path: string) => `folder:${kind}:${path}`;
@@ -75,15 +92,17 @@ const folderKey = (kind: Kind, path: string) => `folder:${kind}:${path}`;
 /** Git's reference hierarchy (git-check-ref-format(1)): each `/` of a name starts one level. Folders keep the order of their first entry. */
 function buildGroup(kind: Kind, label: string, entries: readonly RefEntry[]): Tree {
   const root: Tree = { key: groupKey(kind), label, count: 0, children: [] };
+  const folders = new Map<string, Tree>();
   for (const entry of entries) {
     const segments = entry.name.split("/");
     let at = root;
     root.count++;
     for (let i = 0; i < segments.length - 1; i++) {
       const key = folderKey(kind, segments.slice(0, i + 1).join("/"));
-      let folder = at.children.find((c) => c.key === key);
+      let folder = folders.get(key);
       if (folder === undefined) {
         folder = { key, label: segments[i]!, count: 0, children: [] };
+        folders.set(key, folder);
         at.children.push(folder);
       }
       folder.count++;
@@ -111,7 +130,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCommit, onRefresh, collapsible = false, repository }: ReferencesSidebarProps) {
+export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), notLoaded: useId() };
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
@@ -122,17 +141,21 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
   // The toggle state lasts for the window session and is not stored (plan.md "References sidebar").
   const [shown, setShown] = useState(!collapsible);
   const [activeKey, setActiveKey] = useState<string | null>(null);
+  // The key of the row whose context menu is open.
+  const [menu, setMenu] = useState<string | null>(null);
   const elements = useRef(new Map<string, HTMLElement>());
+  const scroller = useRef<HTMLDivElement>(null);
+  const toFocus = useRef<string | null>(null);
 
   const needle = query.toLowerCase();
   const matches = (entry: RefEntry) => entry.name.toLowerCase().includes(needle);
-  const groups = GROUPS.map((g) => ({ ...g, tree: buildGroup(g.kind, g.label, refs?.refs.filter((r) => r.kind === g.kind) ?? []) }));
+  const groups = useMemo(() => GROUPS.map((g) => ({ ...g, tree: buildGroup(g.kind, g.label, refs?.refs.filter((r) => r.kind === g.kind) ?? []) })), [refs]);
   const filterOpen = useMemo(() => {
     if (needle === "") return null;
     const open = new Set<string>();
     for (const g of groups) matchingPaths(g.tree, matches, open);
     return open;
-  }, [needle, refs]);
+  }, [needle, groups]);
   const open: ReadonlySet<string> = filterOpen !== null ? (filtered !== null && filtered.query === needle ? filtered.open : filterOpen) : (stored.open ?? defaultExpansion(refs?.current ?? null));
 
   function toggle(key: string, next: boolean) {
@@ -144,23 +167,56 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
     setStored({ repository, open: set });
   }
 
-  // The visible rows in tree order. While the filter has text, only nodes that hold a match show.
+  // The shown rows in tree order. While the filter has text, only nodes that hold a match show.
   const rows: Row[] = [];
-  const visit = (node: Tree, level: number, kind: Kind, parent: number) => {
-    if (filterOpen !== null && level > 1 && !(node.entry !== undefined ? matches(node.entry) : filterOpen.has(node.key))) return;
+  const shownNode = (node: Tree) => filterOpen === null || (node.entry !== undefined ? matches(node.entry) : filterOpen.has(node.key));
+  const visit = (node: Tree, level: number, kind: Kind, parent: number, pos: number, size: number) => {
     const index = rows.length;
-    rows.push({ node, level, kind, parent });
-    if (node.entry === undefined && open.has(node.key)) for (const child of node.children) visit(child, level + 1, kind, index);
+    rows.push({ node, level, kind, parent, pos, size });
+    if (node.entry !== undefined || !open.has(node.key)) return;
+    const children = node.children.filter(shownNode);
+    children.forEach((child, i) => visit(child, level + 1, kind, index, i + 1, children.length));
   };
-  for (const g of groups) if (filterOpen === null || filterOpen.has(g.tree.key)) visit(g.tree, 1, g.kind, -1);
+  const tops = groups.filter((g) => filterOpen === null || filterOpen.has(g.tree.key));
+  tops.forEach((g, i) => visit(g.tree, 1, g.kind, -1, i + 1, tops.length));
   const activeIndex = Math.max(0, rows.findIndex((r) => r.node.key === activeKey));
   const anyMatch = filterOpen !== null && filterOpen.size > 0;
+  const virtual = rows.length > VIRTUAL_MIN;
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    enabled: virtual,
+    getScrollElement: () => scroller.current,
+    estimateSize: () => rowHeight,
+    getItemKey: (i) => rows[i]!.node.key,
+    overscan: 8,
+    // React 19 refuses a flushSync from a layout effect, where keyboard navigation scrolls.
+    useFlushSync: false,
+    // The focused row stays mounted (plan.md "Keyboard and focus").
+    rangeExtractor: (range) => {
+      const shownRange = defaultRangeExtractor(range);
+      return shownRange.includes(activeIndex) ? shownRange : [...shownRange, activeIndex].sort((a, b) => a - b);
+    },
+  });
+
+  // plan.md D6: keyboard navigation scrolls the target row into the window before it moves focus.
+  useLayoutEffect(() => {
+    const key = toFocus.current;
+    const element = key === null ? undefined : elements.current.get(key);
+    if (!element) return;
+    toFocus.current = null;
+    element.focus();
+  });
 
   function focusRow(index: number) {
-    const row = rows[Math.min(rows.length - 1, Math.max(0, index))];
+    const to = Math.min(rows.length - 1, Math.max(0, index));
+    const row = rows[to];
     if (!row) return;
     setActiveKey(row.node.key);
-    elements.current.get(row.node.key)?.focus();
+    const element = elements.current.get(row.node.key);
+    if (element) return element.focus();
+    toFocus.current = row.node.key;
+    if (virtual) virtualizer.scrollToIndex(to);
   }
 
   function activate(row: Row) {
@@ -169,9 +225,21 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
     if (entry.commitId !== null && loaded.has(entry.commitId)) onSelectCommit(entry.commitId);
   }
 
+  const isCurrent = (row: Row) => row.kind === "branch" && row.node.entry !== undefined && refs?.current?.name === row.node.entry.name;
+  // Spec FR-049: the item shows only on the current branch, so no other row opens a menu.
+  const openMenu = (row: Row) => {
+    if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu(row.node.key);
+  };
+
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
     if (event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing) return;
     const row = rows[index]!;
+    // Windows sends Shift+F10 and the Menu key to the focused element.
+    if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
+      event.preventDefault();
+      return openMenu(row);
+    }
+    if (event.shiftKey) return;
     const branch = row.node.entry === undefined;
     const isOpen = branch && open.has(row.node.key);
     const moves: Record<string, () => void> = {
@@ -189,30 +257,37 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
     move();
   }
 
-  const rowView = (row: Row, index: number) => {
+  const rowView = (row: Row, index: number, style?: CSSProperties) => {
     const { node, level, kind } = row;
     const common = {
       ref: (element: HTMLElement | null) => void (element ? elements.current.set(node.key, element) : elements.current.delete(node.key)),
       role: "treeitem",
       "aria-level": level,
+      "aria-posinset": row.pos,
+      "aria-setsize": row.size,
       tabIndex: index === activeIndex ? 0 : -1,
       onFocus: () => setActiveKey(node.key),
       onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => onKeyDown(event, index),
-      onContextMenu: (event: { preventDefault(): void }) => event.preventDefault(),
+      onContextMenu: (event: { preventDefault(): void }) => {
+        event.preventDefault();
+        openMenu(row);
+      },
       onClick: () => activate(row),
-      style: { paddingLeft: 4 + (level - 1) * 12 },
+      style: { paddingLeft: 4 + (level - 1) * 12, ...style },
     };
     const entry = node.entry;
     if (entry === undefined) {
       const expanded = open.has(node.key);
       const group = level === 1;
+      // A virtual row has an absolute position, so a group heading row cannot stick.
+      const sticky = group && !virtual ? "sticky top-0 z-[1]" : "";
       return (
         <div
           key={node.key}
           {...common}
           aria-expanded={expanded}
           aria-label={group ? `${node.label}, ${node.count}` : `${node.label}, folder, ${node.count}`}
-          className={`list-row flex min-w-0 items-center gap-1 pr-2 ${group ? "sticky top-0 z-[1] bg-surface font-semibold" : ""}`}
+          className={`list-row flex min-w-0 items-center gap-1 pr-2 ${sticky} ${group ? "bg-surface font-semibold" : ""}`}
         >
           <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
           <span aria-hidden="true" className="min-w-0 truncate">
@@ -225,12 +300,19 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
       );
     }
     const noun = GROUPS.find((g) => g.kind === kind)!.noun;
-    const current = kind === "branch" && refs?.current !== null && refs?.current?.name === entry.name;
+    const current = isCurrent(row);
     const upstream = upstreamText(entry);
     const onPage = entry.commitId !== null && loaded.has(entry.commitId);
     const name = entry.symref === null ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream])].join(", ") : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
     return (
-      <div key={node.key} {...common} aria-label={name} aria-describedby={onPage ? undefined : ids.notLoaded} className="list-row flex min-w-0 items-center gap-2 pr-2">
+      <div
+        key={node.key}
+        {...common}
+        aria-label={name}
+        aria-describedby={onPage ? undefined : ids.notLoaded}
+        aria-haspopup={current && onShowBranchHistory !== undefined ? "menu" : undefined}
+        className="list-row flex min-w-0 items-center gap-2 pr-2"
+      >
         {entry.symref === null ? (
           <>
             <span aria-hidden="true" className="min-w-0 shrink truncate">
@@ -256,6 +338,24 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
     );
   };
 
+  const treeRows = () => {
+    if (virtual)
+      return (
+        <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
+          {virtualizer.getVirtualItems().map((item) => rowView(rows[item.index]!, item.index, { position: "absolute", top: 0, left: 0, right: 0, height: rowHeight, transform: `translateY(${item.start}px)` }))}
+        </div>
+      );
+    // Each group wraps its rows, so its heading row sticks only while the group scrolls.
+    const byGroup = GROUPS.map((g) => rows.map((row, index) => ({ row, index })).filter(({ row }) => row.kind === g.kind));
+    return byGroup.map((list, i) =>
+      list.length === 0 ? null : (
+        <div key={GROUPS[i]!.kind} role="none" className="flex flex-col">
+          {list.map(({ row, index }) => rowView(row, index))}
+        </div>
+      ),
+    );
+  };
+
   const body = () => {
     if (failure !== null && refs === null)
       return (
@@ -270,19 +370,11 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
         </div>
       );
     if (refs === null) return <p className="p-2 text-muted-text">{LOADING}</p>;
-    // Each group wraps its rows, so its heading row sticks only while the group scrolls.
-    const byGroup = GROUPS.map((g) => rows.map((row, index) => ({ row, index })).filter(({ row }) => row.kind === g.kind));
     return (
       <>
         {unpaired === 0 ? null : <p className="px-2 text-muted-text">{unpaired === 1 ? UNPAIRED : STILL_UNPAIRED}</p>}
         <div role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
-          {byGroup.map((list, i) =>
-            list.length === 0 ? null : (
-              <div key={GROUPS[i]!.kind} role="none" className="flex flex-col">
-                {list.map(({ row, index }) => rowView(row, index))}
-              </div>
-            ),
-          )}
+          {treeRows()}
         </div>
         {groups.map((g) => (g.tree.count === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null))}
         {needle !== "" && !anyMatch ? <p className="px-2 text-muted-text">{NO_MATCH}</p> : null}
@@ -293,6 +385,7 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
     );
   };
 
+  const anchor = menu === null ? undefined : elements.current.get(menu);
   return (
     <section aria-labelledby={ids.heading} className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-1 px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
@@ -313,9 +406,31 @@ export function ReferencesSidebar({ refs, failure, unpaired, loaded, onSelectCom
               setFiltered(null);
             }}
           />
-          <div className="min-h-0 flex-1 overflow-y-auto">{body()}</div>
+          <div ref={scroller} data-references-scroll="" className="min-h-0 flex-1 overflow-y-auto">
+            {body()}
+          </div>
         </>
       ) : null}
+      {onShowBranchHistory === undefined ? null : (
+        <DropdownMenu open={anchor !== undefined} onOpenChange={(next) => (next ? undefined : setMenu(null))}>
+          <MenuPrimitive.Portal>
+            <MenuPrimitive.Positioner anchor={anchor} side="bottom" align="start" sideOffset={2} className="isolate z-50 outline-none">
+              <MenuPrimitive.Popup data-slot="dropdown-menu-content" finalFocus={{ current: anchor ?? null }} className={MENU_CONTENT}>
+                <DropdownMenuItem
+                  aria-keyshortcuts="Control+Shift+B"
+                  onClick={() => {
+                    setMenu(null);
+                    onShowBranchHistory();
+                  }}
+                >
+                  {SHOW_BRANCH_HISTORY}
+                  <DropdownMenuShortcut>Ctrl+Shift+B</DropdownMenuShortcut>
+                </DropdownMenuItem>
+              </MenuPrimitive.Popup>
+            </MenuPrimitive.Positioner>
+          </MenuPrimitive.Portal>
+        </DropdownMenu>
+      )}
     </section>
   );
 }

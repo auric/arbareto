@@ -8,11 +8,13 @@ import { act, type ReactNode } from "react";
 import type { HistoryPage, HistoryRow } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { createFake, oid as fakeOid, TARGET } from "./history-fake";
 
 printOrigin("../../src/frontend/history/CommitDetails.tsx", import.meta.dir);
 registerDom();
 const { createRoot } = await import("react-dom/client");
-const { CommitDetails } = await import("../../src/frontend/history/CommitDetails");
+const { CommitDetails, ViewCommitDetails } = await import("../../src/frontend/history/CommitDetails");
+const { createHistoryView } = await import("../../src/frontend/state/history-view");
 const { layoutHistory } = await import("../../src/frontend/history/lanes");
 
 const unmounts: (() => Promise<void>)[] = [];
@@ -160,5 +162,40 @@ describe("Selected commit", () => {
     const invalid = page([row(1, [], { invalidUtf8: true })]);
     expect(text(await details(1, invalid))).toContain("Some bytes of this commit are not valid UTF-8 and show as replacement characters.");
     expect(text(await details(1, invalid))).not.toContain("Declared encoding");
+  });
+});
+
+// T042: the feature 002 details pane reads the body only when it shows the commit (spec FR-017, FR-018).
+describe("Selected commit of a feature 002 view", () => {
+  const settle = () =>
+    act(async () => {
+      for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  async function opened(details?: Parameters<typeof createFake>[0]["details"]) {
+    const fake = createFake({ total: 10, loaded: 10, details });
+    const view = createHistoryView(fake.bridge, TARGET);
+    await act(async () => void (await view.open("all", false)));
+    return { fake, view };
+  }
+  const detailReads = (fake: ReturnType<typeof createFake>) => fake.of("readHistoryRows").filter((p) => p.text === "details");
+
+  test("the body comes only from readHistoryRows with text details, when the pane shows the commit", async () => {
+    const { fake, view } = await opened();
+    expect(detailReads(fake)).toHaveLength(0);
+    const host = await show(<ViewCommitDetails view={view} oid={fakeOid(3)} dateFormat={dateFormat} />);
+    await settle();
+    expect(detailReads(fake)).toEqual([{ viewId: "view-1", mode: "full", at: { oid: fakeOid(3) }, count: 1, text: "details" }]);
+    expect(text(host)).toContain("Body of 3");
+    expect(text(field(host, "Parents"))).toContain(fakeOid(4));
+    expect(text(field(host, "Children"))).toContain(fakeOid(2));
+    expect(text(host)).not.toContain("Arbareto shows the first 16 KiB of this message.");
+  });
+
+  test("a cut body states that it is cut, and a root commit says so", async () => {
+    const { view } = await opened((i) => (i === 9 ? { body: "x".repeat(16 * 1024), bodyCut: true } : {}));
+    const host = await show(<ViewCommitDetails view={view} oid={fakeOid(9)} dateFormat={dateFormat} />);
+    await settle();
+    expect(text(host)).toContain("Arbareto shows the first 16 KiB of this message.");
+    expect(text(field(host, "Parents"))).toContain("None. This is a root commit.");
   });
 });

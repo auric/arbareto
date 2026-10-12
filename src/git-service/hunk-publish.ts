@@ -398,22 +398,28 @@ export function hunkApprovals(c: RetainedComparison, s: ChangeSnapshot, w: Works
 
 // ---- Execution ----
 
-// Keeps the `activeDescendants` count of the last exit reply (contract §6 "Lingering Jobs"). Null: no exit reply since the start or the last `reset`.
-export type Recording<R extends GitRunner> = R & { readonly last: number | null; reset(): void };
+// Keeps the `activeDescendants` count of the last exit reply. `execution` keeps it only for `mutation` runs, the execution processes of contract §6 "Lingering Jobs". Null: no such exit reply since the start or the last `reset`.
+export type Recording<R extends GitRunner> = R & { readonly last: number | null; readonly execution: number | null; reset(): void };
 export function recording<R extends GitRunner>(runner: R): Recording<R> {
   let last: number | null = null;
+  let execution: number | null = null;
   return {
     ...runner,
     async run(call) {
       const exit = await runner.run(call);
       last = exit.activeDescendants;
+      if (call.environmentPolicy === "mutation") execution = exit.activeDescendants;
       return exit;
     },
     get last() {
       return last;
     },
+    get execution() {
+      return execution;
+    },
     reset() {
       last = null;
+      execution = null;
     },
   };
 }
@@ -957,7 +963,7 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     // Research R3 steps 6 to 10.
     registry.progress(operationId, "candidate-verification");
     const prepared = await prepareCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest, comparison: c, hunk });
-    run.executionLast = rec.last ?? 0;
+    run.executionLast = rec.execution ?? 0;
     if (!prepared.ok) {
       run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
       const refused = candidateRefusal(prepared.failure);

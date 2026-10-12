@@ -12,7 +12,7 @@ import { dialogSize, type Size } from "../layout/profiles";
 // plan.md "Required visible states" (Trust required/changed), "Dialog sizes", and "Keyboard and focus" (Trust dialog row). Contract §3 `readTrust` and `approveTrust`, and §7.
 
 // Type-only imports keep zod out of the renderer bundle.
-export type TrustReport = Exclude<z.infer<typeof ReadTrustResult>, { remedy: unknown }>;
+export type TrustReport = Exclude<z.infer<typeof ReadTrustResult>, { remedy: unknown } | { reason: unknown }>;
 type TrustApproved = { trustId: string; persistence: "stored" | "session"; saveFailed: boolean };
 type Bridge = Pick<ReturnType<typeof createBridge>, "approveTrust">;
 
@@ -38,6 +38,12 @@ export function SaveFailedNotice() {
 
 // Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
 export const isTrustReport = (value: unknown): value is TrustReport => typeof value === "object" && value !== null && typeof (value as { fingerprint?: unknown }).fingerprint === "string";
+
+/** The code of a failed `readTrust`. Contract §5 "Trust report rows": an `OUTPUT_LIMIT` refusal adds its bound name. */
+export function trustFailureCode(response: { state: string; code?: string; result?: unknown }): string {
+  const reason = (response.result as { reason?: unknown } | null | undefined)?.reason;
+  return `${response.code ?? response.state}${typeof reason === "string" ? ` ${reason}` : ""}`;
+}
 
 /** Contract §7 "Mutation trust": commit review shows the dialog first only when commit needs an approval that the workspace lacks. */
 export function trustBeforeReview(report: TrustReport): boolean {

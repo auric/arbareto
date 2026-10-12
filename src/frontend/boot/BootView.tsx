@@ -6,7 +6,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button";
 import type { Environment } from "../../contracts/envelope";
-import { wslStartingText } from "../app/RepositoryStates";
+import { codeText, wslStartingText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 
 // Contract §3 `getEnvironment`. A type-only import keeps zod out of the renderer bundle.
@@ -106,9 +106,7 @@ export function BootView(props: BootProps) {
     const text = !props.session ? "Git service not connected" : props.code === "SERVICE_UNAVAILABLE" ? "Environment not available yet" : "Environment request failed";
     return (
       <Frame>
-        <p>
-          {text}: {props.code}
-        </p>
+        <p>{codeText(`${text}: `, props.code)}</p>
       </Frame>
     );
   }
@@ -135,9 +133,7 @@ export function BootView(props: BootProps) {
     <Frame>
       {blocked !== undefined && (
         <section className="flex flex-wrap items-center gap-2">
-          <p className="font-semibold">
-            {blocked}: {env.gitCode}
-          </p>
+          <p className="font-semibold">{codeText(`${blocked}: `, env.gitCode!)}</p>
           <Button onClick={selectGit}>Select Git</Button>
           {refused === null ? null : <GitRefused response={refused} />}
         </section>

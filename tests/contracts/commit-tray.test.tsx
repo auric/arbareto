@@ -240,10 +240,29 @@ describe("commit flow", () => {
       await t.answer("reviewCommit", { requestId: crypto.randomUUID(), state, code } as BridgeResponse);
       expect(t.ops()).toEqual(["readTrust", "reviewCommit"]);
       expect(t.host.querySelector('[role="status"]')?.textContent).toBe(`Commit did not start: ${code}`);
+      // B4-4: plan.md "Status and fallback texts": each code shows in the code font.
+      expect(t.host.querySelector('[role="status"] code')?.textContent).toBe(code);
       expect(document.activeElement).toBe(t.field);
       expect(t.field.value).toBe("Fix the parser");
     });
   }
+
+  test("B4-4 and B4-5: a failed trust read at Commit shows the code in the code font, with no final period", async () => {
+    const t = await ready();
+    await act(async () => t.commit.click());
+    await t.answer("readTrust", { requestId: crypto.randomUUID(), state: "failed", code: "DEADLINE" } as BridgeResponse);
+    expect(t.ops()).toEqual(["readTrust"]);
+    expect(t.host.querySelector('[role="status"]')?.textContent).toBe("Trust review did not complete: DEADLINE");
+    expect(t.host.querySelector('[role="status"] code')?.textContent).toBe("DEADLINE");
+  });
+
+  test("T372: a trust read above a report row bound shows OUTPUT_LIMIT with the bound name", async () => {
+    const t = await ready();
+    await act(async () => t.commit.click());
+    await t.answer("readTrust", { requestId: crypto.randomUUID(), state: "failed", code: "OUTPUT_LIMIT", result: { reason: "TRUST_REPORT_ENTRIES" } } as BridgeResponse);
+    expect(t.ops()).toEqual(["readTrust"]);
+    expect(t.host.querySelector('[role="status"]')?.textContent).toBe("Trust review did not complete: OUTPUT_LIMIT TRUST_REPORT_ENTRIES");
+  });
 
   test("the live element stays mounted and only its text changes", async () => {
     const t = await ready();

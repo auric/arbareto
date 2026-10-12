@@ -11,6 +11,7 @@ import {
   NativeFirstEnvelope,
   OperationResult,
   ProgressEvent,
+  ReadTrustResult,
   RendererEnvelope,
   Response,
   ServiceEnvelope,
@@ -19,7 +20,7 @@ import {
 } from "../../src/contracts/envelope";
 import { Handshake, MutationRequest, ProcessReply, ProcessRequest, TrustRecord, TrustReply, TrustRequest } from "../../src/contracts/channel";
 import { EXPORTED, renderSchemas, staleSchemaFiles } from "../../src/contracts/export-schemas";
-import { COMMIT_MESSAGE_BYTES } from "../../src/contracts/limits";
+import { COMMIT_MESSAGE_BYTES, TRUST_REPORT_ENTRIES, TRUST_REPORT_HOOKS } from "../../src/contracts/limits";
 import { isWindows } from "../../src/contracts/native-path";
 import { OPERATIONS, SHELL_ONLY } from "../../src/contracts/operations";
 import { getEnvironment } from "../../src/git-service/environment";
@@ -32,6 +33,7 @@ printOrigin("../../src/contracts/channel.ts", import.meta.dir);
 printOrigin("../../src/contracts/export-schemas.ts", import.meta.dir);
 printOrigin("../../src/contracts/native-path.ts", import.meta.dir);
 printOrigin("../../src/git-service/environment.ts", import.meta.dir);
+printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
 const id = () => crypto.randomUUID();
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
@@ -232,6 +234,28 @@ describe("channel schemas", () => {
       expect(MutationRequest.safeParse({ ...started, kind }).success).toBe(true);
       expect(MutationRequest.safeParse({ ...started, kind, direction: "stage" }).success).toBe(false);
     }
+  });
+});
+
+describe("trust report rows (contract §5 \"Trust report rows\", T372)", () => {
+  const report = (entries: number, hooks: number) => ({
+    generation: 1,
+    fingerprint: "a".repeat(64),
+    state: "untrusted",
+    persistence: "stored",
+    approvalRequired: { reads: true, commit: true },
+    entries: Array.from({ length: entries }, () => ({ key: "a", scope: "local", origin: "file:" })),
+    hooks: Array.from({ length: hooks }, () => ({ event: "x", path: "h", repositoryControlled: true })),
+  });
+
+  test("a report at both bounds is valid, and one more row is refused", () => {
+    expect(ReadTrustResult.safeParse(report(TRUST_REPORT_ENTRIES, TRUST_REPORT_HOOKS)).success).toBe(true);
+    expect(ReadTrustResult.safeParse(report(TRUST_REPORT_ENTRIES + 1, 0)).success).toBe(false);
+    expect(ReadTrustResult.safeParse(report(0, TRUST_REPORT_HOOKS + 1)).success).toBe(false);
+  });
+
+  test("a refused report names only its bound", () => {
+    expect(["TRUST_REPORT_ENTRIES", "TRUST_REPORT_HOOKS", "TRUST_INPUT_BYTES"].map((reason) => ReadTrustResult.safeParse({ reason }).success)).toEqual([true, true, false]);
   });
 });
 

@@ -5,7 +5,8 @@
 // The T214 routes of `hunk-publish.ts`, `file-publish.ts`, and `commit.ts` come with T214. The oracle is the distro Git in a disposable copy.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { dirname, win32 } from "node:path";
+import { existsSync, renameSync, rmdirSync } from "node:fs";
+import { dirname, join, win32 } from "node:path";
 import type { WslFileResult, WslFilesCall } from "../../src/contracts/channel";
 import type { WalkStop } from "../../src/git-service/git-runner";
 import { STEP_FAILED_TEXT } from "../../src/git-service/hunk-publish";
@@ -22,6 +23,8 @@ import { inDistro, missingCapability, uncPath, useWslFolder, WSL_EXE, wslExec, w
 
 const TASK = "T213";
 const CASE_TIMEOUT_MS = 240_000;
+// Upper bound of the wait for the start of a pre-commit hook. The hook itself sleeps 20 s.
+const HOOK_START_MS = 60_000;
 const NEEDS: WslCapability[] = ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "distro-git-2.55"];
 // Contract §4 "Limitation remedies".
 const REMEDY_TEXT = "This command stages or unstages the whole file with your Git settings. Run it in a terminal.";
@@ -71,7 +74,8 @@ interface FilesEntry {
 
 // The double logs no `wslFiles` request and has no stop after the read (seam gap). The wrapper adds both before `startSession` copies the runner.
 function setup(host: WslHost, stop: Stop | null = null) {
-  const runner = createBunRunner({ git: GIT ?? "git", directory: fixtureDir(`runner-${crypto.randomUUID()}`), environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });
+  const directory = fixtureDir(`runner-${crypto.randomUUID()}`);
+  const runner = createBunRunner({ git: GIT ?? "git", directory, environment: serviceEnv(), wslGlobalConfig: globalConfig(host) });
   runners.push(runner);
   const files: FilesEntry[] = [];
   const wslFiles = runner.wslFiles;
@@ -97,7 +101,7 @@ function setup(host: WslHost, stop: Stop | null = null) {
     if (transaction !== undefined) indexFiles.push({ operationId: call.operationId, indexFile: transaction.indexFile });
     return false;
   });
-  return { runner, s, files, seam, indexFiles };
+  return { runner, directory, s, files, seam, indexFiles };
 }
 
 const modesOf = (files: FilesEntry[], operationId: string) => files.filter((f) => f.request.operationId === operationId).map((f) => f.request.mode);
@@ -120,7 +124,7 @@ async function register(s: WslSession, r: WslRepo): Promise<string> {
 
 async function readWs(s: WslSession, repositoryId: string): Promise<Read> {
   const response = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }));
-  expect(response.state).toBe("succeeded");
+  expect(outcome(response)).toEqual(SUCCEEDED);
   return response.result as unknown as Read;
 }
 
@@ -764,11 +768,38 @@ describe("WSL repository state and processes (contract §4, §6 \"Lingering Jobs
       await underTest("commit");
       const { repo } = buildF21(host);
       writeLinux(host, `${repo.dir}/.git/hooks/post-commit`, `#!/bin/sh\n'${host.probe.paths.setsid}' /usr/bin/sleep 60 >/dev/null 2>&1 &\nexit 0\n`, "755");
-      const { s } = setup(host);
+      const { runner, directory, s } = setup(host);
       const id = await register(s, repo);
       await approve(s, id);
       const response = await commit(s, id, "T213 lingering\n");
       expect({ ...outcome(response), lingering: one<number>(response.result, "lingeringDescendants") }).toEqual({ ...SUCCEEDED, lingering: 1 });
+      // No `wsl.exe` or `wslhost.exe` of the double has the launch folder as its current directory.
+      runners = runners.filter((r) => r !== runner);
+      await runner.dispose();
+      rmdirSync(join(directory, "launch"));
+    },
+  );
+
+  wslCase(
+    `the launch folder can move while a WSL commit hook runs`,
+    NEEDS,
+    async (host) => {
+      await underTest("commit");
+      const { repo } = buildF21(host);
+      const started = `${repo.dir}/.git/arbareto-hook-started`;
+      writeLinux(host, `${repo.dir}/.git/hooks/pre-commit`, `#!/bin/sh\n: > '${started}'\n/usr/bin/sleep 20\nexit 0\n`, "755");
+      const { directory, s } = setup(host);
+      const id = await register(s, repo);
+      await approve(s, id);
+      const response = commit(s, id, "T117 launch folder\n");
+      for (const until = performance.now() + HOOK_START_MS; !existsSync(uncPath(host, started)); await Bun.sleep(100)) {
+        if (performance.now() > until) throw new Error(`the pre-commit hook did not start within ${HOOK_START_MS} ms`);
+      }
+      // Windows refuses to rename a folder that a live process has as its current directory.
+      const launch = join(directory, "launch");
+      renameSync(launch, `${launch}-moved`);
+      renameSync(`${launch}-moved`, launch);
+      expect(outcome(await response)).toEqual(SUCCEEDED);
     },
   );
 

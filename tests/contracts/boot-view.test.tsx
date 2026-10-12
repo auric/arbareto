@@ -46,8 +46,9 @@ describe("boot view", () => {
     expect(html).toMatch(/<dt>Build<\/dt><dd>0\.1\.0 c{40}-dirty<\/dd>/);
     for (const label of labels) expect(html).not.toContain(`<p>${label}`);
     // A screen reader reads the blocked line before its details.
-    expect(html.indexOf("Git unavailable: GIT_UNAVAILABLE")).toBeGreaterThan(-1);
-    expect(html.indexOf("Git unavailable: GIT_UNAVAILABLE")).toBeLessThan(html.indexOf("<dl"));
+    const blocked = html.search(/Git unavailable: <code[^>]*>GIT_UNAVAILABLE<\/code>/);
+    expect(blocked).toBeGreaterThan(-1);
+    expect(blocked).toBeLessThan(html.indexOf("<dl"));
     const select = html.match(/<button\b[^>]*>Select Git<\/button>/)?.[0] ?? "";
     expect(select).toContain('data-slot="button"');
     expect(select).toContain("bg-primary");
@@ -61,7 +62,12 @@ describe("boot view", () => {
   });
 
   test("the unavailable state names the code", () => {
-    expect(renderToStaticMarkup(<BootView state="unavailable" code="SERVICE_UNAVAILABLE" />)).toContain("Git service not connected: SERVICE_UNAVAILABLE");
+    // B4-4: plan.md "Status and fallback texts": each code shows in the code font.
+    expect(renderToStaticMarkup(<BootView state="unavailable" code="SERVICE_UNAVAILABLE" />)).toMatch(/Git service not connected: <code[^>]*>SERVICE_UNAVAILABLE<\/code>/);
+  });
+
+  test("B4-4: the blocked Git state shows its code in the code font", () => {
+    expect(render(environment({ gitCode: "GIT_UNSUPPORTED" }))).toMatch(/: <code[^>]*>GIT_UNSUPPORTED<\/code>/);
   });
 
   test("the facts state shows the build identity and the T064 labels", () => {

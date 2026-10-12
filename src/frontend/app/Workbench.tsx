@@ -10,7 +10,7 @@ import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
 import { ComparisonView as Comparison, resultOf, showsDiff } from "../changes/ComparisonView";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
-import { HunkControls, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, HunkControls, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
 import { CommitTray } from "../commit/CommitTray";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
@@ -60,8 +60,8 @@ import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
-import { SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
-import { isTrustReport, SaveFailedNotice, TrustDialog, type TrustReport } from "../trust/TrustDialog";
+import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
+import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
 import { blockingText, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
@@ -555,6 +555,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The opener of the submodule review, and a guard against a second `reviewSubmodules` while one runs.
   const reviewOpener = useRef<"notice" | "menu">("notice");
   const reviewing = useRef(false);
+  // The request ID of the `updateSubmodules` request that the review dialog sent.
+  const reviewRequest = useRef<string | null>(null);
   // The pending commit trust gate (plan.md Commit row). After an approval it waits in `approvalRead` until the read that
   // `trustApproved` starts ends with any result, so the review names the snapshot after the approval (contract §3).
   // Every other dialog close resolves it as canceled.
@@ -633,7 +635,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (repositoryId === null) return;
     let current = true;
     void bridge.readTrust({ repositoryId }).then((response) => {
-      if (!current || response.state !== "succeeded" || !isTrustReport(response.result)) return;
+      if (!current) return;
+      if (response.state !== "succeeded" || !isTrustReport(response.result)) return setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
       const report = response.result;
       const first = trustShown.current !== repositoryId;
       trustShown.current = repositoryId;
@@ -820,7 +823,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       fromCommit.current = false;
       setTrust({ report: response.result, open: true });
     }
-    else setNotice(codeText("Trust review did not complete: ", responseCode(response)));
+    else setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
   }
 
   // A canceled selection keeps the current Git and shows nothing (contract §3 `chooseGit`).
@@ -851,10 +854,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     }
     return repositoryTrigger.current;
   };
-  const statusCancel = () => [...(sections.current?.querySelectorAll<HTMLElement>("footer button") ?? [])].find((b) => b.textContent === "Cancel") ?? null;
+  const statusCancel = () => statusRegion.current?.cancel() ?? null;
   const onSubmoduleOperation = (op: StatusOperation) => {
-    // The first progress event means acceptance, and the dialog closes (contract §9).
-    if (op.progress !== null) setSubmoduleReview((r) => (r !== null && r.open ? { ...r, open: false } : r));
+    reviewRequest.current = op.requestId;
+    if (passedAcceptance(op)) setSubmoduleReview((r) => (r !== null && r.open ? { ...r, open: false } : r));
     setOperation(op);
     if (op.response !== null) onEnded("updateSubmodules", op.response);
   };
@@ -935,7 +938,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The states that block mutations (plan.md "Required visible states": Busy, State unknown, Conflicted/unfinished operation, Limited output).
   const running = operation !== null && operation.response === null;
   const loading = workspace === null || state.entries.length < workspace.entryCount;
-  const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : state.blocked ? "unknown" : workspace !== null && workspace.operationState !== "normal" ? "conflicted" : null;
+  const stateBlocked: Blocked = state.blocked ? "unknown" : workspace !== null && workspace.operationState !== "normal" ? "conflicted" : null;
+  const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;
+  const blockedReason = blocked === null ? null : BLOCKED_TEXT[blocked];
+  // The own request of the review dialog does not block Start update. A state block still does.
+  const reviewBlocked = running && operation.requestId === reviewRequest.current ? stateBlocked : blocked;
   const stagingBlocked: Blocked = blocked ?? (loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null);
   const onEnded = (kind: "applyHunk" | "applyFile" | "commit" | "updateSubmodules", response: BridgeResponse) => requests.mutationEnded(kind, response);
   const staging: Staging = {
@@ -1142,7 +1149,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             <RepositorySwitcher
               bridge={bridge}
               worktreeRoot={path}
-              busy={false}
+              busy={running}
               open={switcherOpen}
               instant={switcherInstant}
               onOpenChange={(open, instant = false) => {
@@ -1190,6 +1197,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 onReviewTrust={() => void reviewTrust()}
                 revokeTrust={revokeTrust}
                 onUpdateSubmodules={workspace === null ? undefined : () => void reviewSubmodules("menu")}
+                updateSubmodulesReason={blockedReason}
                 onOpenChange={onMenuOpen("repository")}
                 finalFocus={finalFocus}
               />
@@ -1289,7 +1297,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 operationState={workspace.operationState}
                 conflicted={conflicted}
                 recovery={recovery !== null && recovery.repositoryId === state.repository?.repositoryId ? recovery.statement : undefined}
-                submoduleRow={submodules > 0 ? <SubmoduleNotice count={submodules} onUpdate={() => void reviewSubmodules("notice")} buttonRef={bindNoticeButton} /> : undefined}
+                submoduleRow={submodules > 0 ? <SubmoduleNotice count={submodules} onUpdate={() => void reviewSubmodules("notice")} buttonRef={bindNoticeButton} blockedReason={blockedReason} /> : undefined}
               />
             )}
           </div>
@@ -1359,13 +1367,18 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             open={submoduleReview.open}
             bridge={bridge}
             target={submoduleReview.target}
-            snapshotId={submoduleReview.snapshotId}
+            current={() => {
+              // A null workspace keeps the values of the opened review. The service then answers with its own code.
+              const w = requests.state().workspace;
+              return w === null ? { repositoryGeneration: submoduleReview.target.repositoryGeneration, snapshotId: submoduleReview.snapshotId } : { repositoryGeneration: w.generation, snapshotId: w.snapshotId };
+            }}
             review={submoduleReview.value}
             client={client}
             finalFocus={submoduleOpener}
             startFocus={statusCancel}
             onCancel={() => setSubmoduleReview((r) => (r === null ? r : { ...r, open: false }))}
             onOperation={onSubmoduleOperation}
+            blockedReason={reviewBlocked === null ? null : BLOCKED_TEXT[reviewBlocked]}
           />
         )}
         {aboutOpen && environment !== null ? (

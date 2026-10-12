@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type Ref } from "react";
+import { useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import type { TerminalState } from "../../contracts/errors";
 import { COMMIT_MESSAGE_BYTES } from "../../contracts/limits";
+import { codeText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { BLOCKED_TEXT, STALE_TEXT, type Blocked, type StagingTarget } from "../changes/HunkControls";
 import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
 import type { createDrafts } from "../state/drafts";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
-import { isTrustReport, trustBeforeReview, type TrustReport } from "../trust/TrustDialog";
+import { isTrustReport, trustBeforeReview, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
 
 // plan.md "Task flow and command placement" (Compose a commit, Commit, Commit outcome) and "Keyboard and focus" (Message, Unavailable control).
 
@@ -79,7 +80,7 @@ export function CommitTray(props: CommitTrayProps) {
   const [busy, setBusy] = useState(false);
   const [composing, setComposing] = useState(false);
   // A refusal text of this tray: a trust read failure, a refused review, or the Stale selection text.
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<ReactNode>(null);
   const draft = useSyncExternalStore(drafts.subscribe, () => (worktreeKey === null ? null : drafts.draft(worktreeKey)));
   const failure = useSyncExternalStore(drafts.subscribe, () => (worktreeKey === null ? null : drafts.failure(worktreeKey)));
   const text = draft?.text ?? "";
@@ -100,7 +101,7 @@ export function CommitTray(props: CommitTrayProps) {
       // plan.md Commit row: the Trust dialog opens first when `commit` needs an approval that the workspace lacks.
       const trust = await bridge.readTrust({ repositoryId: target.repositoryId });
       if (trust.state !== "succeeded" || !isTrustReport(trust.result)) {
-        setNotice(`Trust review did not complete: ${trust.code ?? trust.state}.`);
+        setNotice(codeText("Trust review did not complete: ", trustFailureCode(trust)));
         return focusField();
       }
       if (trustBeforeReview(trust.result) && !(await props.requestTrust(trust.result))) return focusField();
@@ -115,7 +116,7 @@ export function CommitTray(props: CommitTrayProps) {
       const token = review.state === "succeeded" ? (review.result as { reviewToken?: unknown } | undefined)?.reviewToken : undefined;
       if (typeof token !== "string") {
         // Contract §3 `reviewCommit`: a result without `reviewToken` reviewed an empty staged scope, so the shown Staged list is stale.
-        setNotice(review.state === "succeeded" || review.code === "STALE_REVIEW" ? STALE_TEXT : `Commit did not start: ${review.code ?? review.state}`);
+        setNotice(review.state === "succeeded" || review.code === "STALE_REVIEW" ? STALE_TEXT : codeText("Commit did not start: ", review.code ?? review.state));
         props.onEnded?.(review);
         return focusField();
       }

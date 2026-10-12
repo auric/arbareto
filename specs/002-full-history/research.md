@@ -220,7 +220,7 @@ T006, 2026-10-12, Git 2.56.0.windows.1, H1M (1,000,000 commits), `tests/windows/
 
 - A second set of five runs gave the medians 166.4, 446.6, 145.9, and 148.1 MiB, in the table order.
 - Each run has two Git processes. `C:\Git\cmd\git.exe` is a launcher with a peak of 1.4 MiB. Its child `git.exe` does the walk and holds the peak above.
-- The walking Git process of every row is above the 128 MiB of SC-002. The search without a commit-graph is 3.5 times the budget. **experiment**
+- The walking Git process of every row is above the 128 MiB of SC-002. The search without a commit-graph is 3.5 times the budget. **experiment** On 2026-10-12, the user decided that SC-002 excludes Git's child processes (plan.md O-1). These peaks stay recorded, without a bound.
 - The search without a commit-graph uses 280 MiB more than the topology. This agrees with the `save_commit_buffer` recollection of R6. The Git source is not read yet, so the cause stays **unverified**.
 - The search argv is the contract Δ3 argv with `LC_ALL=C.UTF-8`. The search on H1M matches 20,000 rows.
 

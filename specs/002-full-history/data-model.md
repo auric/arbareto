@@ -164,7 +164,8 @@ The renderer holds O(visible + cache) only. It holds no structure of the history
 
 | Field | Rule |
 |---|---|
-| Base | The same workspace before history opens (spec SC-002). The design proposes a twin worktree with a one-commit history. That base waits for plan.md open item O-1. |
+| Base | The same worktree with a one-commit history (spec SC-002, plan.md O-1, reviewer default, spec Assumptions). |
+| Budget scope | The Arbareto processes only: the shell, the service, and the WebView2 processes. Git's child processes have no bound. |
 | Samples | Private bytes over the complete process tree, every 100 ms. |
 | Git processes | Recorded apart, next to the peak of the same Git command run alone. |
 | Checkpoints | After the first load step ends (its `loadHistory` result arrived), no Git process of the view runs, and the view adds at most 16 MiB; after End; after a return to the top; during a filter search (spec SC-002). |

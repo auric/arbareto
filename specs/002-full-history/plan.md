@@ -15,7 +15,7 @@ Three facts drive the choices (research R2, R8):
 - Without a commit-graph, Git sorts the whole graph before its first row (Git revision.c:3195-3196, 4053-4057). An ended Git frees that memory at once. Each later step pays the walk again (D2).
 - The installed list virtualizer rebuilds O(n) arrays on every count change and has no fix for the maximum element height. The history list uses fixed-height row arithmetic. ChangesPane keeps `@tanstack/react-virtual`.
 
-One spec target is at risk: SC-002 counts Git's own processes. Git alone can use more than 128 MiB during a search on 1,000,000 commits (unverified estimate). Open item O-1 handles it.
+Git alone uses more than 128 MiB on 1,000,000 commits (research.md R14). The user decided on 2026-10-12 that SC-002 excludes Git's child processes (O-1, closed).
 
 ## Technical Context
 
@@ -33,7 +33,7 @@ One spec target is at risk: SC-002 counts Git's own processes. Git alone can use
 
 **Performance Goals**: Spec SC-005, SC-006, SC-011, and SC-014. SC-011 uses the 001 statistic: the upper 95% bound of the median ratio (001 plan.md "Matched-condition comparisons").
 
-**Constraints**: SC-002 over the complete process tree: 16 MiB after the first load step ends, with no Git process of the view (proposed, O-2), and 128 MiB after End, after a return to the top, and during a search (O-1). No renderer work grows with the history size. Every Git process has a deadline and its own Job. Read-only Git with `--no-optional-locks` and `--no-lazy-fetch`.
+**Constraints**: SC-002 over the Arbareto processes (shell, service, WebView2), with Git's child processes recorded but not bounded (O-1): 16 MiB after the first load step ends, with no Git process of the view (proposed, O-2), and 128 MiB after End, after a return to the top, and during a search. No renderer work grows with the history size. Every Git process has a deadline and its own Job. Read-only Git with `--no-optional-locks` and `--no-lazy-fetch`.
 
 **Scale/Scope**: Fixtures of 200,000 commits for correctness and timings, and 1,000,000 commits for the memory and responsiveness records. One view per service session. At most 4,000,000 commits per view, 10,000 refs, 64 parents per commit, 24 lanes per row, and 1,024 UTF-8 bytes of filter text. Memory grows with histories above 1,000,000 commits (spec Assumptions).
 
@@ -57,7 +57,7 @@ Checked against `.specify/memory/constitution.md` version 2.0.0, before research
 
 Notes from the second check:
 - **N-1 (III, "Operations MUST bound output")**: Closed. A view holds at most 4,000,000 commits (`HISTORY_VIEW_COMMITS`, contract Δ5). At that bound, the load ends `limited` with `OUTPUT_LIMIT`. The loaded rows stay, and the view states the limit. Each line holds at most 65 OIDs, and the service keeps no raw bytes beyond one partial line. The search stream lists only commits of the view, so the same bound covers it. The bound is a reviewer default (spec Assumptions).
-- **N-2 (VII, "complete process-tree memory")**: The SI-1 candidate text in O-1 takes Git out of the budget. The measurement still records each Git process. So the measurement stays complete, but the budget changes. The user decides this in O-1.
+- **N-2 (VII, "complete process-tree memory")**: Closed 2026-10-12. SC-002 adopts the SI-1 text of O-1, so the budget excludes Git's child processes. The measurement still samples the complete process tree and records each Git process apart, so VII holds. The user approved the changed target as an explicit product trade-off (VII), before any budget run.
 - **N-3 (VII, "CPU")**: P8 records the CPU time of each process in the tree, from the WPR CPU trace of each workload run, with Git processes apart.
 - **N-4 (Delivery Gates)**: The plan defines safety tests (SC-013, SC-010), trust boundaries (Δ7), accessibility checks (FR-031, FR-040, SC-014), performance budgets (SC-002, SC-006, SC-011, SC-014), and the platform qualification (P8, WSL).
 - **N-5 (VII, "cold/warm timings")**: P8 records cold and warm runs for SC-005, SC-006, and SC-014, by the 001 rules.
@@ -135,7 +135,7 @@ tests/
 | P5 Search | new `src/git-service/history-search.ts` (search, probe, merge, reduced settlement). `session.ts` gets one handler. | `searchHistory`. | SC-007 (Windows and each distro), SC-008, SC-009 (no Git process starts), SC-010 search cancel, the order-mismatch refusal. | The subsequence order is only an experiment fact. The runtime check refuses on a mismatch. |
 | P6 Frontend | `src/frontend/bridge.ts`, new `state/history-view.ts`, `history/HistoryView.tsx`, new `history/HistoryFilter.tsx`, `history/AncestryCell.tsx`, `history/CommitDetails.tsx`, `app/Workbench.tsx`, `NoticeBand.tsx`, `refs/ReferencesSidebar.tsx` | A virtual list, the D6 load trigger and the more-rows row, the filter, the two modes, the notices, the scope switch, the details pane. The references sidebar becomes a virtual list (D6). | Component tests: keyboard, refusals, notices, stable rows after eviction (FR-011), a fake count of 1M rows with no O(n) structure. The D6 trigger, the more-rows row, End and a search after a running scroll load, and stable rows when the count grows. The sidebar with 10,000 refs (FR-055). | Compressed scrolling at the 1M scale. |
 | P7 Retire 001 `readHistory` | `operations.ts`, `envelope.ts` (`ReadHistory`), `history.ts` (`readHistory`, `pageOf`), `session.ts`, `ipc.rs`, `src/frontend/history/lanes.ts`, their tests | One history path only. | The full run stays green. | 001 evidence names `readHistory`. Keep the 001 artifacts as records. |
-| P8 Qualification | `tests/windows/history-perf.test.ts`, responsiveness workloads, the Git Extensions harness, `tests/wsl/history-wsl.test.ts` | None. | SC-002, SC-014, and the SC-001 End case on H1M. SC-005, SC-006, and SC-011 on H200K. SC-010 and SC-012 in the packaged build. CPU for each workload (N-3). Cold and warm runs for SC-005, SC-006, and SC-014, by the 001 rules (001 plan.md "Measurements and budgets"). | Git memory (O-1). The filter ratio is close to 1.0. Open 001 tools and the measurement environment (001 T154, T165, T180, T240, T242, T244). |
+| P8 Qualification | `tests/windows/history-perf.test.ts`, responsiveness workloads, the Git Extensions harness, `tests/wsl/history-wsl.test.ts` | None. | SC-002, SC-014, and the SC-001 End case on H1M. SC-005, SC-006, and SC-011 on H200K. SC-010 and SC-012 in the packaged build. CPU for each workload (N-3). Cold and warm runs for SC-005, SC-006, and SC-014, by the 001 rules (001 plan.md "Measurements and budgets"). | Git memory is recorded, not bounded (O-1, closed). The filter ratio is close to 1.0. Open 001 tools and the measurement environment (001 T154, T165, T180, T240, T242, T244). |
 
 Each phase writes its tests first. P0.2, P0.3, and P0.4 are the riskiest proofs and run first.
 
@@ -256,18 +256,18 @@ The reduced graph needs the full topology stream beside the search stream, becau
   - SC-004: the P0.3 equivalence.
   - SC-008: the BFS oracle and `rev-list --grep`.
   - SC-015: the ref fixture.
-- RAM: SC-002 sums private bytes over the process tree, sampled every 100 ms, with Git processes recorded apart. The base follows SC-002 until O-1 is decided. It records the four SC-002 checkpoints and the loaded row count at each.
+- RAM: SC-002 samples private bytes over the complete process tree every 100 ms. The budget sums only the Arbareto processes: the shell, the service, and the WebView2 processes. Git processes are recorded apart and have no bound (O-1). The base is the same worktree with a one-commit history (SC-002). It records the four SC-002 checkpoints and the loaded row count at each.
 - Git Extensions (SC-011): matched work on H200K, with the maintained commit-graph variant and the 001 ABBA and run rules. The gate is the upper 95% bound of the median ratio (001 plan.md "Matched-condition comparisons").
   - Full scroll: start at F5 with the list at the top. The harness then sends Ctrl+End every 100 ms in both tools, until the root commit row shows.
   - Message filter: the GE toolbar message filter with Ignore case. It runs `--grep`, `--regexp-ignore-case`, `--all`, and `--parents` (`FilterInfo.GetRevisionFilter`, DeepWiki 2026-10-11). Use an ASCII-letter word, so that the regular-expression and literal matches are the same. Confirm GE's argv from the WPR process trace.
 
 ## Open items
 
-- **O-1 SC-002 and Git memory.** The user confirmed 128 MiB for the complete process tree. SC-002 stays unchanged. The P0.4 measurement of Git's own peak memory comes first. The user then decides whether Git's processes stay inside the budget.
+- **O-1 SC-002 and Git memory.** Closed 2026-10-12 with choice (b) of T007. The user said: "no, we should not count git own memory, we can do nothing about it". SC-002 now holds the SI-1 candidate text below. The user decided only the process scope: both SC-002 bounds count the Arbareto processes and exclude Git's child processes. The record keeps the Git peaks, without a bound. The one-commit twin-worktree base is a reviewer default (spec Assumptions), not a user decision.
   - Background: the design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep` (unverified). Without a commit-graph, the limited walk then keeps every commit buffer.
-  - P0.4 result (T006, research.md R14, experiment): on H1M with Git 2.56.0.windows.1, the median peak private bytes of the walking Git process are 166.4 MiB (topology) and 446.5 MiB (search) without a commit-graph, and 145.9 MiB (topology) and 148.2 MiB (search) with one. Five runs vary by at most 0.1 MiB. Each command alone is above 128 MiB. The decision is still open (T007).
-  - Candidate text (design SI-1, not adopted): "The view adds at most 128 MiB of private memory to the Arbareto processes: the shell, the service, and the WebView2 processes. The base is the same worktree with a one-commit history. The record states the peak private memory of each Git process next to the peak of the same Git command run alone."
-  - Constitution note N-2 applies to the candidate.
+  - P0.4 result (T006, research.md R14, experiment): on H1M with Git 2.56.0.windows.1, the median peak private bytes of the walking Git process are 166.4 MiB (topology) and 446.5 MiB (search) without a commit-graph, and 145.9 MiB (topology) and 148.2 MiB (search) with one. Five runs vary by at most 0.1 MiB. Each command alone is above 128 MiB.
+  - Candidate text (design SI-1, adopted 2026-10-12 into spec.md SC-002): "The view adds at most 128 MiB of private memory to the Arbareto processes: the shell, the service, and the WebView2 processes. The base is the same worktree with a one-commit history. The record states the peak private memory of each Git process next to the peak of the same Git command run alone."
+  - Constitution note N-2 applies, and it is closed. Principle VII needs no amendment.
 - **O-2 SC-002 first-screen, SC-006, and SC-010 values.** The spec proposes 16 MiB for the SC-002 first screen and 10% or 500 ms for SC-006. The spec proposes 1 s to stop and 5 s to no remaining process for SC-010. The plan confirms them before measurement (spec Assumptions).
 - **O-3 Unverified facts.** Research R13 lists them, with the step that checks each one.
 - **O-4 Load during a search.** Closed. The service loads to the end itself when a search starts on an incomplete view (D5, contract Δ3 `searchHistory`, data-model §6). The renderer starts nothing extra.

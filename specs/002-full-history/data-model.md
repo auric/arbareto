@@ -27,7 +27,7 @@ One per service session (contract Δ5).
 **State transitions**
 
 ```text
-open ──openHistory──▶ idle ──loadHistory──▶ loading ──Git exit 0 before the stop row──▶ complete
+open ──openHistory──▶ idle ──loadHistory──▶ loading ──Git exit 0 at or after row N, before the stop row──▶ complete
                         ▲                     │ ──stop row reached (service ends Git)──▶ idle
                         └──cancel / DEADLINE──┤
                                               └──4,000,000 rows──▶ limited (rows stay; no further load or search)
@@ -35,6 +35,7 @@ any state ──stale condition──▶ stale (rows stay; load and search refus
 any state ──closeHistory / new openHistory / session end──▶ released
 ```
 
+- A Git exit 0 before row N leads to `stale` with `HISTORY_CHANGED` reason `order`. A nonzero exit follows the 001 `checkFailedRead` steps (contract Δ3).
 - A stop row leads to `idle`. No load process runs in `idle`.
 - Cancel and `DEADLINE` lead to `idle`, never to `stale`.
 - A ref change or a HEAD move changes no state. The renderer shows a notice (contract Δ8).

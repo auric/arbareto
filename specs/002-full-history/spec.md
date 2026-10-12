@@ -231,7 +231,7 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 - **Commit details**: The full message of one selected commit, up to the 16 KiB bound, with the feature 001 encoding rules.
 - **Message search**: The filter text, its mode, and its state: running, finished, stopped, or refused. It holds its matches in history order and the match count with a final flag.
 - **Reduced graph**: The matches of one search and the edges to their nearest matching ancestors. Each edge records whether it skips commits.
-- **Memory budget**: The limit for the whole history view in the complete process tree, and the measured use at each checkpoint.
+- **Memory budget**: The limit for the history view in the Arbareto processes (the shell, the service, and the WebView2 processes), and the measured use at each checkpoint. The measurement samples the complete process tree and records each Git process apart, without a bound.
 
 ## Success Criteria *(mandatory)*
 

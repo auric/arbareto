@@ -105,7 +105,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - A 001 HistoryRow takes about 600-790 bytes in Bun/JSC. **experiment**
   - A compact topology row takes about 40 bytes (investigation estimate). **unverified**
   - The design counts about 48 bytes per commit for SHA-1 (60 for SHA-256): OID 20, hash slots about 12, idToRow and rowToId 8, CSR about 8.4. That is about 48 MB at 1M commits. **unverified**
-  - Git alone uses 446.5 MiB during a search on 1M commits without a commit-graph, and 145.9 to 166.4 MiB otherwise (R14). **experiment** The design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep`, so the limited walk keeps every commit buffer. **unverified** (plan.md open item O-1)
+  - Git alone uses 446.5 MiB during a search on 1M commits without a commit-graph, and 145.9 to 166.4 MiB otherwise (R14). **experiment** The design recalls that `builtin/rev-list.c` sets `save_commit_buffer` for `--grep`, so the limited walk keeps every commit buffer. **unverified** (plan.md O-1, background)
   - Linux Git memory is not part of the Windows process tree. The WSL scope `memory.peak` can record it. **unverified**
   - With load steps, the view holds at most 2·n + 2·M + 1 rows until End or a search (plan.md D2). Near the top, that is about 2,089 rows. **documented** (arithmetic)
   - The topology table never shrinks during a view (plan.md D3).

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // The Git facts (a) to (m) of plan.md P0.2 (tasks.md T005, T006). Each fact runs on a `GitHost`, so Windows and WSL share the cases.
-// Exit codes, porcelain fields, and repository reads decide each fact, never message text. A failed fact is a finding: it prints `match=false` and the test stays green.
+// Exit codes, porcelain fields, and repository reads decide each fact, never message text. A failed fact is a finding: it prints `match=false` and the test stays green, except for an `asserted` observation.
 
 import {
   buildCounts,
@@ -41,6 +41,8 @@ export interface Observation {
   expected: unknown;
   observed: unknown;
   match: boolean;
+  // The plan depends on this fact, so the test fails on `match=false`.
+  asserted?: boolean;
 }
 
 export interface Fact {
@@ -477,37 +479,56 @@ function factK(h: GitHost): Observation[] {
   return [obs("k.fetch-all-remote-set", { remotes: expected, exit: 0 }, { remotes: observed, exit: fetch.exitCode })];
 }
 
-// ---- (m) non-boolean skip and mirror values ----
+// ---- (m) non-boolean remote values ----
+
+// remote.c `handle_config` reads these keys with `git_config_bool` (research R16 m).
+const M_KEYS = ["mirror", "skipFetchAll", "skipDefaultUpdate", "prune", "pruneTags"] as const;
+const M_COMMANDS = {
+  "fetch-all": ["--no-lazy-fetch", "fetch", "--all", "--no-recurse-submodules"],
+  "fetch-r1": ["--no-lazy-fetch", "fetch", "--no-recurse-submodules", "--", "r1"],
+  "push-r1": ["--no-lazy-fetch", "push", "--porcelain", "--no-recurse-submodules", "--no-follow-tags", "--", "r1", "refs/heads/src:refs/heads/DST"],
+  remote: ["remote"],
+} as const;
+type MCommand = keyof typeof M_COMMANDS;
+
+// A fixture copy with `refs/heads/src` from r1 and no remote-tracking ref, so a passing fetch or push changes a ref.
+function factMBase(h: GitHost): { repo: string; bare: string } {
+  const repo = copyOf(h, once(h, "fetch-all", () => buildFetchAll(h)));
+  const bare = gitOut(h, repo, ["config", "--get", "remote.r1.url"]).trim();
+  // A URL instead of the remote name updates no remote-tracking ref.
+  gitRun(h, repo, ["--no-lazy-fetch", "fetch", "--no-recurse-submodules", "--", bare, "+refs/heads/main:refs/heads/src"]);
+  if (Object.keys(refMap(h, repo, ["refs/remotes"])).length !== 0) throw new Error("fact m base holds a remote-tracking ref");
+  return { repo, bare };
+}
+
+let mPushes = 0;
+function factMCase(h: GitHost, base: { repo: string; bare: string }, config: [string, string] | null, command: MCommand) {
+  const repo = copyOf(h, base.repo);
+  if (config !== null) gitRun(h, repo, ["config", "--replace-all", ...config]);
+  const args = M_COMMANDS[command].map((a) => a.replace("DST", `m-${++mPushes}`));
+  const local = refMap(h, repo);
+  const remote = refMap(h, base.bare);
+  const r = run(h, repo, args);
+  return { exit: r.exitCode, localChanged: !same(local, refMap(h, repo)), remoteChanged: !same(remote, refMap(h, base.bare)) };
+}
 
 function factM(h: GitHost): Observation[] {
-  const fixture = once(h, "fetch-all", () => buildFetchAll(h));
-  const fetchedRemotes = (repo: string) => [...new Set(Object.keys(refMap(h, repo, ["refs/remotes"])).map((r) => r.split("/")[2]!))];
-  const exitKind = (r: GitResult) => (r.exitCode === 0 ? 0 : "nonzero");
-  const out: Observation[] = [];
-  for (const key of ["skipFetchAll", "skipDefaultUpdate"]) {
-    const repo = copyOf(h, fixture);
-    gitRun(h, repo, ["config", "--replace-all", `remote.r2.${key}`, "maybe"]);
-    const all = run(h, repo, ["--no-lazy-fetch", "fetch", "--all", "--no-recurse-submodules"]);
-    out.push(obs(`m.fetch-all-invalid-${key}`, { exit: "nonzero", remotes: [] }, { exit: exitKind(all), remotes: fetchedRemotes(repo) }));
-    const one = run(h, repo, ["--no-lazy-fetch", "fetch", "--no-recurse-submodules", "--", "r1"]);
-    out.push(obs(`m.fetch-other-remote-invalid-${key}`, { exit: "nonzero", remotes: [] }, { exit: exitKind(one), remotes: fetchedRemotes(repo) }));
+  const base = once(h, "fact-m", () => factMBase(h));
+  const commands = Object.keys(M_COMMANDS) as MCommand[];
+  const stopped = { exit: 128, localChanged: false, remoteChanged: false };
+  const control: Record<MCommand, unknown> = {
+    "fetch-all": { exit: 0, localChanged: true, remoteChanged: false },
+    "fetch-r1": { exit: 0, localChanged: true, remoteChanged: false },
+    // Push updates the remote-tracking ref of the pushed ref (git-push(1)).
+    "push-r1": { exit: 0, localChanged: true, remoteChanged: true },
+    remote: { exit: 0, localChanged: false, remoteChanged: false },
+  };
+  const asserted = (fact: string, expected: unknown, observed: unknown): Observation => ({ ...obs(fact, expected, observed), asserted: true });
+  const out = commands.map((c) => asserted(`m.control.${c}`, control[c], factMCase(h, base, null, c)));
+  for (const key of M_KEYS) {
+    for (const c of commands) out.push(asserted(`m.r2-${key}-maybe.${c}`, stopped, factMCase(h, base, [`remote.r2.${key}`, "maybe"], c)));
   }
-  const repo = copyOf(h, fixture);
-  gitRun(h, repo, ["--no-lazy-fetch", "fetch", "--no-recurse-submodules", "--", "r1"]);
-  const source = Object.keys(refMap(h, repo, ["refs/remotes/r1"]))[0]!;
-  const bare = gitOut(h, repo, ["config", "--get", "remote.r1.url"]).trim();
-  const pushTo = (dst: string) => run(h, repo, ["push", "--porcelain", "--no-recurse-submodules", "--", "r1", `${source}:refs/heads/${dst}`]);
-  const created = (dst: string) => `refs/heads/${dst}` in refMap(h, bare, ["refs/heads"]);
-  // Control: the same push without the mirror value creates the ref.
-  const control = pushTo("control");
-  out.push(obs("m.push-control-without-mirror", { exit: 0, created: true }, { exit: exitKind(control), created: created("control") }));
-  gitRun(h, repo, ["config", "remote.r1.mirror", "maybe"]);
-  const push = pushTo("m");
-  out.push(obs("m.push-invalid-mirror", { exit: "nonzero", created: false }, { exit: exitKind(push), created: created("m") }));
-  gitRun(h, repo, ["config", "--unset-all", "remote.r1.mirror"]);
-  gitRun(h, repo, ["config", "remote.r2.mirror", "maybe"]);
-  const other = pushTo("other");
-  out.push(obs("m.push-other-remote-invalid-mirror", { exit: "nonzero", created: false }, { exit: exitKind(other), created: created("other") }));
+  out.push(asserted("m.r1-mirror-maybe.push-r1", stopped, factMCase(h, base, ["remote.r1.mirror", "maybe"], "push-r1")));
   return out;
 }
 
@@ -557,6 +578,6 @@ export const FACTS: Fact[] = [
   { id: "j", title: "%(upstream) is empty for an unconfigured remote", run: factJ },
   { id: "k", title: "fetch --all remote set with skipFetchAll and skipDefaultUpdate", run: factK },
   { id: "l", title: "rebase --skip leaves the index and files equal to HEAD", run: factL },
-  { id: "m", title: "non-boolean skipFetchAll, skipDefaultUpdate, and mirror values", run: factM },
+  { id: "m", title: "non-boolean mirror, skipFetchAll, skipDefaultUpdate, prune, and pruneTags values", run: factM },
 ];
 

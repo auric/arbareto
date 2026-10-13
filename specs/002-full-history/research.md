@@ -118,8 +118,8 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - for-each-ref uses refname order, `%00`, and `*` peeling (001 §3; T356). **documented** and **experiment** (T356)
   - `%(*objecttype)` gives the end of the tag chain (T356 probe on 2.56.0). **experiment**
   - Patterns match from the beginning up to a slash (git-for-each-ref(1)). **documented**
-  - The pattern `refs/stash` can also match `refs/stash/x`. The service skips such records. **unverified**
-  - `%(objectname)` of a symbolic ref gives the target OID. **unverified**
+  - The pattern `refs/stash` also matches `refs/stash/x`. The service skips such records. **experiment** (T023, R19)
+  - `%(objectname)` of a symbolic ref gives the target OID. **experiment** (T023, R19)
   - 10,000 SHA-256 lines need about 650 KB, so a large set uses the 001 streamed input. **documented** (arithmetic)
   - A set `GIT_REPLACE_REF_BASE` moves replace refs outside the fingerprint. **documented** (Git environment); a contract gap
   - `core.useReplaceRefs` in the repository config changes parents outside the fingerprint. The re-read compare reports it as reason `order`. A load after `core.useReplaceRefs false` keeps the topology fingerprint equal and gives `HISTORY_CHANGED` reason `order` (T024). **unverified**; a contract gap
@@ -192,11 +192,11 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 
 These stay **unverified** until the named step runs:
 - Git peak memory during load and search: P0.4 measured it on Windows (R14, **experiment**). Linux Git memory stays open: P8.
-- The bytes per commit in the service (about 46 to 90, R6), and the service CPU during an End load: P3 and P8.
+- The bytes per commit in the service (about 46 to 90, R6), and the service CPU during an End load: P3 and P8. T012 measured the topology table alone at 59.0 bytes per commit on H200K (R18). The bytes per loaded commit of the whole view and the End load CPU stay open for T030.
 - Whether Git prints a repeated parent in one `rev-list --parents` line for a commit object that it accepts: T003.
 - The `save_commit_buffer` recollection: open. P0.4 measured the extra search memory (R14), but no plan step reads the Git source yet (plan.md O-1).
 - `init --template=` copies nothing; an explicit `--git-dir` skips the ownership check: P0.5 showed both on Git 2.56.0.windows.1 (R4, **experiment**).
-- `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: P3.
+- `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: P3. T023 showed both (R19, **experiment**).
 - The maximum layout height in WebView2: P6.
 - `IsHungAppWindow` covers the Tauri main window: P8.
 - The shortcut conflicts with the 001 keyboard map (Ctrl+F for the filter, F3, Shift+F3, Ctrl+Shift+B; plan.md D6): P6.
@@ -227,19 +227,21 @@ T006, 2026-10-12, Git 2.56.0.windows.1, H1M (1,000,000 commits), `tests/windows/
 
 ## R15 Order facts (P0.2)
 
-T003 (Windows Git 2.56.0.windows.1) and T010 (Ubuntu-26.04 Git 2.55.0), 2026-10-12. Fixtures: the 19 small fixtures, H200K, and H1M (H1M on Windows only), each with and without a commit-graph. Start points go to stdin in ascending lowercase hex. **experiment**
+T003 (Windows Git 2.56.0.windows.2) and T010 (Ubuntu-26.04 Git 2.55.0), verification run of f002-b0 96c486e, 2026-10-13 (R20). Fixtures: the 19 small fixtures and H200K, each with and without a commit-graph. Start points go to stdin in ascending lowercase hex. **experiment**
 
 | Fact | Windows (T003) | Ubuntu-26.04 (T010) |
 |---|---|---|
-| Two runs give the same bytes. | 42 of 42 | 40 of 40 |
-| `--skip=k` equals the suffix. | 42 of 42 | 40 of 40 |
-| The output is equal with and without a commit-graph. | 21 of 21 | 20 of 20 |
-| A shuffled stdin gives the same bytes. | 40 of 42; fails on equal-dates (both variants) | 38 of 40; fails on equal-dates (both variants) |
-| A reversed stdin gives the same bytes. | 40 of 42; fails on equal-dates (both variants) | 38 of 40; fails on equal-dates (both variants) |
-| `--grep` equals the full order without the non-matches. | 42 of 42 | 40 of 40 |
+| Two runs give the same bytes. | 40 of 40 | 40 of 40 |
+| `--skip=k` equals the suffix. | 40 of 40 | 40 of 40 |
+| The output is equal with and without a commit-graph. | 20 of 20 | 20 of 20 |
+| A shuffled stdin gives the same bytes. | 38 of 40; fails on equal-dates (both variants) | 38 of 40; fails on equal-dates (both variants) |
+| A reversed stdin gives the same bytes. | 38 of 40; fails on equal-dates (both variants) | 38 of 40; fails on equal-dates (both variants) |
+| `--grep` equals the full order without the non-matches. | 40 of 40 | 40 of 40 |
 | The distro view bytes equal the Windows Git bytes of the same repository. | not applicable | 40 of 40 |
 
-- The `--skip` values on H200K were k = 1, 255, 256, 257, 19,393 (a merge run), and 199,999. On H1M they were k = 1, 255, 256, 257, 101,159 (a merge run), and 999,999.
+- T003 expects Git 2.56.0.windows.1. The run found Git 2.56.0.windows.2, so the Windows facts above hold for 2.56.0.windows.2. **experiment**
+- The H1M case of T003 skipped in this run (`ARBARETO_HISTORY_FIXTURES=H200K`). It ran once on 2026-10-12 with Git 2.56.0.windows.1. All facts held on both H1M variants. So the Windows counts of that run were 42 of 42, 21 of 21, and 40 of 42 for the shuffled and the reversed stdin. **experiment**
+- The `--skip` values on H200K were k = 1, 255, 256, 257, 19,393 (a merge run), and 199,999. On equal-dates and merges-only, the merge run is at k = 2. On H1M (2026-10-12) they were k = 1, 255, 256, 257, 101,159 (a merge run), and 999,999.
 - On equal-dates, another stdin order gives the same row set in another order. The first difference is at row 0 or 1. So the ascending start-point order of R1 stays a requirement.
 - `rev-list --stdin` with no start point exits 0 and prints nothing (empty fixture, both Gits).
 - T010 copies each Windows-built repository into the owned distro folder through a `tar` stream. So both Gits read byte-equal repositories.
@@ -247,14 +249,132 @@ T003 (Windows Git 2.56.0.windows.1) and T010 (Ubuntu-26.04 Git 2.55.0), 2026-10-
 ## R16 Fixtures and layout (P0.1, P0.3)
 
 - T001, 2026-10-12: H200K and H1M have 200,000 and 1,000,000 commits. Each variant has the expected commit-graph state. The two variants are two builds of one stream. Their refs, index entries, and working files are equal. **experiment**
+- T001, 2026-10-13 (R20): the small fixture and H200K cases pass. The H1M case did not run, because it runs only on request (`ARBARETO_HISTORY_FIXTURES=H1M`).
 - Measurement note: a sampler in the work session measured the next three items. It is not in the repository, and no repository test prints these numbers. These items are **experiment** results of a work-session sampler. No repository test reproduces them.
   - Build time per variant, from the folder creation to the manifest write: H200K 9.8 s and 10.3 s; H1M 55.1 s and 59.3 s (without and with a commit-graph). Disk size: H200K 35.2 MiB and 46.7 MiB; H1M 176.3 MiB and 233.5 MiB.
   - During the H1M build, the largest Git process peaked at 205 MiB of private bytes (2-second samples).
   - T003 on H1M holds about 2 GiB of private bytes in the Bun test process. The host then had 4,790 MB available.
 - T005 on H200K, before the O-5 fix: 2,173 rows were limited. Only 93 of them need more than 24 lanes. The other 2,080 had 9 to 24 open lanes, but a lane at index 24 or above stayed open. **experiment**
 - T005 now asserts that a row is limited exactly when it needs more than 24 lanes. A row needs the larger of two counts: its open lanes above plus one lane for a new node, and its open lanes below. On the old layout, this check fails on 2,080 H200K rows and on 24 octopus-65 rows. **experiment**
-- After the O-5 fix, a limited row closes the free lane slots and keeps the lane order (plan.md O-5). T005 on H200K: 200,000 rows; each cell rebuilt from a checkpoint equals the fold. 199,899 lanes end at their parent nodes through the cells. 93 rows are limited. octopus-65 has 43 limited rows of 68, and tips-50 has 103 of 151. **experiment**
-- T010: Ubuntu-26.04 has the C.UTF-8 locale (`locale charmap` gives `UTF-8`). Both probe runs give the contract matches with the distro Git and `LC_ALL=C.UTF-8`. **experiment**
+- After the O-5 fix, a limited row closes the free lane slots and keeps the lane order (plan.md O-5). T005, 2026-10-13 (R20): on every fixture, each cell rebuilt from a checkpoint equals the fold. "Traced lanes" end at their parent nodes through the cells. The edges of the limited rows start and end through the lane state. **experiment**
+
+| Fixture | Rows | Traced lanes | Limited rows | Edges started by limited rows | Lanes ended by limited rows | Roots | Shallow boundaries | Lane count |
+|---|---|---|---|---|---|---|---|---|
+| equal-dates | 601 | 598 | 0 | 0 | 0 | 1 | 0 | 5 |
+| clock-skew | 81 | 79 | 0 | 0 | 0 | 1 | 0 | 3 |
+| criss-cross | 10 | 8 | 0 | 0 | 0 | 1 | 0 | 3 |
+| octopus-10 | 23 | 22 | 0 | 0 | 0 | 1 | 0 | 10 |
+| octopus-65 | 68 | 24 | 43 | 107 | 43 | 1 | 0 | 24 |
+| merges-only | 302 | 300 | 0 | 0 | 0 | 2 | 0 | 3 |
+| tips-50 | 151 | 24 | 103 | 103 | 77 | 1 | 0 | 24 |
+| shallow | 3 | 2 | 0 | 0 | 0 | 0 | 1 | 1 |
+| tag-chains | 4 | 3 | 0 | 0 | 0 | 1 | 0 | 1 |
+| tag-tree-blob | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 1 |
+| stash | 5 | 4 | 0 | 0 | 0 | 1 | 0 | 2 |
+| notes | 3 | 2 | 0 | 0 | 0 | 1 | 0 | 1 |
+| pull-ref | 3 | 2 | 0 | 0 | 0 | 1 | 0 | 1 |
+| unborn-beside | 4 | 2 | 0 | 0 | 0 | 1 | 0 | 2 |
+| empty | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| detached | 3 | 2 | 0 | 0 | 0 | 1 | 0 | 1 |
+| remote-head | 4 | 3 | 0 | 0 | 0 | 1 | 0 | 1 |
+| long-body | 3 | 2 | 0 | 0 | 0 | 1 | 0 | 1 |
+| refs-10001 | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 1 |
+| H200K | 200,000 | 199,899 | 93 | 96 | 93 | 1 | 0 | 24 |
+
+- T010, 2026-10-13 (R20): Ubuntu-26.04 has Git 2.55.0 and the C.UTF-8 locale (`LC_ALL=C.UTF-8 locale charmap` gives `UTF-8` with exit 0). Both probe runs give the contract matches with the distro Git and `LC_ALL=C.UTF-8` (2 of 2, R17). **experiment**
+
+## R17 Matching facts (P0.5)
+
+T004 (Windows Git 2.56.0.windows.2) and T010 (Ubuntu-26.04 Git 2.55.0), 2026-10-13 (R20). The R4 facts marked T004 came from Git 2.56.0.windows.1 on 2026-10-12. This run shows them again on 2.56.0.windows.2. **experiment**
+
+- Probe run 1 (виправлення є і ї ґ ß) and probe run 2 (ВИПРАВЛЕННЯ Є І Ї Ґ ẞ) both match: windows-1251 Виправлення, ẞ, ß, Ґ, ґ, Ї, ї, І, і, Є, є, ВИПРАВЛЕННЯ, виправлення. Neither matches SS or ascii. The Windows Git and the Ubuntu-26.04 Git give the same sets.
+- `init --bare --template=` writes only `HEAD` and `config`. The default template adds `description`, 14 `hooks/*.sample` files, and `info/exclude`. `init --template=` adds none of them.
+- With another owner, discovery exits 128, and an explicit `--git-dir` exits 0. The probe runs then give the contract matches.
+- With `grep.patternType=perl`, `--grep=probe.` matches 15 of 15 probe commits without `--fixed-strings` and 0 with it.
+- With an inherited `GIT_CONFIG_PARAMETERS`, `config --get` gives `ISO-8859-1` alone and `UTF-8` with `-c`. The probe runs give the contract matches.
+- With `LC_ALL=C`, the Windows probe runs give the contract matches.
+
+## R18 Topology table and reduced graph (P1)
+
+T012 and T013, 2026-10-13 (R20), Windows Git 2.56.0.windows.2. **experiment**
+
+- T012 on H200K: 200,000 rows. The topology table holds 11,801,562 bytes of typed arrays, 59.0 bytes per commit (SHA-1, allocated capacity). The batch 1 run of 2026-10-12 gave 11,539,418 bytes, 57.7 bytes per commit.
+- T013 runs 7 match sets on each fixture: none, all, one, p0.5, p0.1, p0.01, and p0.3 with the parentless rows. The table gives the sums over the 7 sets. On every fixture, the reduced edges equal the BFS oracle.
+
+| Fixture | Rows | Matches | Reduced edges | Skip commits | "No earlier matching commit" | Matching roots | Matching shallow boundaries | Step time (ms) | With oracle checks (ms) |
+|---|---|---|---|---|---|---|---|---|---|
+| equal-dates | 601 | 1,144 | 1,454 | 558 | 6 | 3 | 0 | 3 | 8 |
+| clock-skew | 81 | 161 | 172 | 60 | 3 | 3 | 0 | 0 | 1 |
+| criss-cross | 10 | 26 | 34 | 9 | 1 | 4 | 0 | 0 | 0 |
+| octopus-10 | 23 | 48 | 59 | 13 | 8 | 2 | 0 | 0 | 0 |
+| octopus-65 | 68 | 119 | 177 | 7 | 35 | 2 | 0 | 0 | 0 |
+| merges-only | 302 | 579 | 2,053 | 1,233 | 4 | 4 | 0 | 1 | 3 |
+| tips-50 | 151 | 295 | 232 | 30 | 61 | 2 | 0 | 0 | 1 |
+| shallow | 3 | 6 | 2 | 0 | 2 | 0 | 2 | 0 | 0 |
+| tag-chains | 4 | 8 | 4 | 0 | 1 | 3 | 0 | 0 | 0 |
+| tag-tree-blob | 2 | 6 | 2 | 0 | 0 | 4 | 0 | 0 | 0 |
+| stash | 5 | 13 | 10 | 1 | 1 | 3 | 0 | 0 | 0 |
+| notes | 3 | 6 | 2 | 0 | 2 | 2 | 0 | 0 | 0 |
+| pull-ref | 3 | 6 | 2 | 0 | 2 | 2 | 0 | 0 | 0 |
+| unborn-beside | 4 | 8 | 4 | 0 | 1 | 3 | 0 | 0 | 0 |
+| empty | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| detached | 3 | 6 | 2 | 0 | 2 | 2 | 0 | 0 | 0 |
+| remote-head | 4 | 8 | 4 | 0 | 1 | 3 | 0 | 0 | 0 |
+| long-body | 3 | 6 | 2 | 0 | 2 | 2 | 0 | 0 | 0 |
+| refs-10001 | 2 | 6 | 2 | 0 | 0 | 4 | 0 | 0 | 0 |
+| H200K | 200,000 | 382,109 | 879,711 | 599,876 | 13 | 3 | 0 | 204 | 10,418 |
+
+- The times come from one run on a test worker. They are records, not gates.
+
+## R19 Ref capture and view (P3)
+
+T023 and T024, 2026-10-13 (R20), Windows Git 2.56.0.windows.2. **experiment**
+
+- `%(objectname)` of the symbolic ref `refs/remotes/origin/HEAD` gives the target OID (R7).
+- The `for-each-ref` pattern `refs/stash` matches `refs/stash/x` (R7). The service skips such records.
+- A load cancel on H200K without a commit-graph ends in 12 ms. T024 asserts at most 1,000 ms.
+
+## R20 Verification run of f002-b0 96c486e
+
+Run of 2026-10-12 and 2026-10-13 for T011, T020, T030, and T050. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2 (`C:\Program Files\Git\ucrt64\bin\git.exe`). WSL: Ubuntu-26.04 with Git 2.55.0. The four tasks stay open. Each waits for its independent batch review and a green `test:windows`.
+
+| Step | Exit | Counts |
+|---|---|---|
+| `bun install --frozen-lockfile` | 0 | no changes |
+| `bun run typecheck` | 0 | |
+| `bun run export:schemas --check` | 0 | schema files current |
+| `bun run build` and `bun run build:service` | 0 | |
+| `cargo check --locked --manifest-path src-tauri/Cargo.toml` | 0 | |
+| `cargo test --locked --manifest-path src-tauri/Cargo.toml` | 0 | 441 passed, 0 failed, 4 ignored |
+| cargo clippy with `-D warnings` | 0 | |
+| cargo fmt check | 0 | |
+| `bun run test:all`, `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, `ARBARETO_HISTORY_FIXTURES=H200K`, `ARBARETO_TEST_WORKERS=6` | 0 | 151 files, 4,928 tests, 0 fail. Parallel step: 130 files, 4,573 pass, 36 skip, 2,027.4 s. Serial step: 21 files, 311 pass, 8 skip, 2,382.2 s. |
+| `tests/wsl/registration.test.ts` on Ubuntu-24.04 | not in the log | 42 tests: 38 pass, 4 skip, 0 fail |
+| `bun run test:windows` | 1 | 10 files, 112 tests: 107 pass, 4 skip, 1 fail |
+
+- `ORIGIN`: `test:all` prints 1,256 lines, all under `C:\Projects\arbareto-l1`. Each control mutation run also prints its lines under this checkout.
+- `test:all` skips (44): golden vectors of another platform 29; POSIX-only cases 2; Linux `F_SETPIPE_SZ` 1; `ssh-server` 3; `history-fixture-h1m` 2 (T001, T003); `distro-git-below-2.55` 2; `two-test-distros` 1; `other-account-owner` 1; `disposable-volume` 1; `fifo` 1; `restart-keeps-lingering` 1.
+- Ubuntu-24.04 skips (4): `distro-git-2.55` 4.
+- `test:windows` skips (4): `display-off` 1; live input needs the measurement account 2; `history-fixture-h1m` 1 (T006).
+- `rg -n "readHistory\b|layoutHistory" src` prints nothing. In `src-tauri/src` and `tests`, it finds only the T048 assertions: the test module of `src-tauri/src/ipc.rs`, `tests/contracts/operation-registry.test.ts`, and `tests/contracts/envelope.test.ts`.
+- `test:all` prints 209 `OBSERVATION` lines. 96 lines belong to 002 tasks (T001, T003, T004, T005, T010, T012, T013, T023, T024), and R15 to R19 hold them. The other 113 lines belong to 001 tasks.
+- The T286 observation retired with `HISTORY_STREAM_BYTES`. Commit 517aa41 removed its line, and b8cabe9 removed the constant. `tests/git/history-parser.test.ts` keeps `TASK = "T286"` for its `SKIP` lines.
+
+Control mutations. Each run went red with the edit, and green after the undo.
+
+| Task | Edit | Red | Green |
+|---|---|---|---|
+| T011 | `cellsOf` in `src/git-service/history-layout.ts` starts from `EMPTY_STATE`. | `tests/git/history-layout.test.ts`: 2 of 3 fail (every small fixture, H200K). | 3 pass |
+| T020 | `src/contracts/filter-text.ts:23` accepts U+005C followed by U+0045. | `tests/contracts/filter-text.test.ts`: 2 of 5 fail. | 5 pass |
+| T030 | `src/git-service/history-topology.ts:213` compares only the last held row. | `tests/git/history-stale.test.ts`: 2 of 16 fail (a difference at row 0, and inside the held rows). | 16 pass |
+| T050 | `virtualTopOf` in `src/frontend/history/HistoryList.tsx:32` returns `scrollTop`. | `tests/contracts/history-list.test.tsx`: 3 of 29 fail (the last-row case at 1,000,000 rows and 34 DIPs, and at 4,000,000 rows and 26 and 34 DIPs). | 29 pass |
+
+Open items:
+- `test:windows` fails T240 "installed app selects Git, opens and cancels the folder picker, and reads the status regions": `TIMEOUT: no focus on "Open folder… (Ctrl+O)"` after 10,000 ms. The test drives the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA-256 `d21b7a5f…`). That build comes from main, not from this checkout. The cause is under investigation.
+- The independent reviews of batches 0, 2, and 4 are not recorded.
+- T030: the CPU of an End load and the bytes per loaded commit on H200K are not recorded.
+- T038: the shortcut conflict record (R13) is not written.
+- T050: the quickstart.md "Manual check in the app" did not run.
 
 ## Batch reviews
 

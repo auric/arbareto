@@ -5,7 +5,8 @@
 // It follows the contract Δ3 stop rule S = max(n + 1 + 2·M, 2·L₀) for `{row: n}`.
 
 import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
-import { HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
+import { filterText } from "../../src/contracts/filter-text";
+import { FILTER_TEXT_BYTES, HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
 import type { Head, HistoryBridge, ViewRow } from "../../src/frontend/state/history-view";
 
 export const oid = (i: number) => i.toString(16).padStart(40, "0");
@@ -49,6 +50,8 @@ export function createFake(options: FakeOptions) {
   let operations = 0;
   let viewId = "";
   let searchDone = false;
+  // Contract Δ3: the `searchId` of the running or finished search. A cancel, a failure, a `limited` end, a newer search, `closeHistory`, and a view release end it.
+  let liveSearch: string | null = null;
   // Contract Δ3: a match read waits while the search of the view runs.
   let searching = false;
   const waiters: (() => void)[] = [];
@@ -112,6 +115,8 @@ export function createFake(options: FakeOptions) {
   // Row reads in flight, and the most at one time.
   let reads = 0;
   let maxReads = 0;
+  let cancelText: (() => void) | null = null;
+  let canceledTexts = 0;
   const ok = (result: unknown): BridgeResponse => ({ requestId: "r", state: "succeeded", result });
   const later = <T,>(value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), 0));
 
@@ -121,10 +126,16 @@ export function createFake(options: FakeOptions) {
     return Math.min(total, Math.max((need.row as number) + 1 + 2 * HISTORY_LOAD_MARGIN, 2 * loaded));
   }
 
+  const unknownTarget = (): Promise<BridgeResponse> => later({ requestId: "r", state: "rejected", code: "UNKNOWN_TARGET" });
+  // Contract Δ3: a read with an ended or unknown `searchId` gives UNKNOWN_TARGET.
+  const ended = (payload: Parameters<HistoryBridge["readHistoryRows"]>[1]) => payload.viewId !== viewId || (payload.searchId !== undefined && payload.searchId !== liveSearch);
+
   async function readRows(payload: Parameters<HistoryBridge["readHistoryRows"]>[1]): Promise<BridgeResponse> {
+    if (ended(payload)) return unknownTarget();
     const at = payload.at as Record<string, unknown>;
     if ("match" in at) {
       for (;;) {
+        if (ended(payload)) return unknownTarget();
         const step = at.match === "next" ? 1 : -1;
         for (let i = at.from as number; i >= 0 && i < loaded; i += step) if (isMatch(i)) return later(ok({ target: "found", rows: [rowOf(i, i, payload.text, true)], cut: false, ...rowsState(), bytes: 1024 }));
         if (!searching) return later(ok({ target: searchDone ? "none" : "unknown", ...rowsState() }));
@@ -135,7 +146,6 @@ export function createFake(options: FakeOptions) {
   }
 
   function readOther(payload: Parameters<HistoryBridge["readHistoryRows"]>[1]): Promise<BridgeResponse> {
-    if (payload.viewId !== viewId) return later({ requestId: "r", state: "failed", code: "UNKNOWN_TARGET", result: {} } as BridgeResponse);
     const at = payload.at as Record<string, unknown>;
     const filter = payload.mode === "filter";
     const search = payload.searchId !== undefined;
@@ -166,6 +176,7 @@ export function createFake(options: FakeOptions) {
       viewId = `view-${++views}`;
       loaded = options.loaded ?? 0;
       searchDone = false;
+      liveSearch = null;
       return later(ok({ viewId, scope: payload.scope, generation: 1, head, startCount: options.startCount ?? (total === 0 ? 0 : 1), refsDigest: options.refsDigest ?? "a".repeat(64), shallow: options.shallow ?? false }));
     },
     loadHistory: (_target, payload, onProgress?: OnProgress) => {
@@ -185,7 +196,17 @@ export function createFake(options: FakeOptions) {
       calls.push({ operation: "readHistoryRows", payload });
       maxReads = Math.max(maxReads, ++reads);
       try {
-        return await readRows(payload);
+        if (payload.text === "none") return await readRows(payload);
+        // Contract Δ3: a newer text read cancels an unfinished one of the same view.
+        cancelText?.();
+        let cancel = () => {};
+        const canceled = new Promise<BridgeResponse>((resolve) => (cancel = () => (canceledTexts++, resolve({ requestId: "r", state: "canceled" }))));
+        cancelText = cancel;
+        try {
+          return await Promise.race([readRows(payload), canceled]);
+        } finally {
+          if (cancelText === cancel) cancelText = null;
+        }
       } finally {
         reads--;
       }
@@ -194,9 +215,17 @@ export function createFake(options: FakeOptions) {
 
       calls.push({ operation: "searchHistory", payload });
       const operationId = `search-${++operations}`;
+      liveSearch = null;
+      // Contract Δ3 and Δ9: the service refuses the text before any Git process, so the request ends `rejected`.
+      const checked = filterText(payload.text, FILTER_TEXT_BYTES);
+      if (checked.kind !== "search") return later({ requestId: "r", operationId, state: "rejected", code: "UNSUPPORTED_FILTER_TEXT", result: checked.kind === "refused" ? { reason: checked.reason } : {} });
+      liveSearch = operationId;
       onProgress?.({ requestId: "r", operationId, state: "accepted", counters: { matches: 0, settled: 0 } });
       const custom = options.searchResponse?.(payload.text);
-      if (custom) return later(custom);
+      if (custom) {
+        if (custom.state !== "succeeded") liveSearch = null;
+        return later(custom);
+      }
       const finish = (): BridgeResponse => {
         loaded = total;
         searchDone = true;
@@ -212,12 +241,14 @@ export function createFake(options: FakeOptions) {
     },
     closeHistory: (_target, payload) => {
       calls.push({ operation: "closeHistory", payload });
+      liveSearch = null;
       return later(ok({}));
     },
     cancel: (payload) => {
       calls.push({ operation: "cancel", payload });
       const at = held.findIndex((h) => h.operationId === payload.operationId);
       if (at >= 0) held.splice(at, 1)[0]!.resolve({ requestId: "r", state: "canceled", result: { rows: loaded, complete: complete() } });
+      if (payload.operationId === liveSearch) liveSearch = null;
       setTimeout(wake, 0);
       return later(ok({}));
     },
@@ -234,6 +265,8 @@ export function createFake(options: FakeOptions) {
     },
     held: () => held.length,
     maxReads: () => maxReads,
+    /** The text reads that a newer text read canceled. */
+    canceledTexts: () => canceledTexts,
     loaded: () => loaded,
     setLoaded(n: number) {
       loaded = n;

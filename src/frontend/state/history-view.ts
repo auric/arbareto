@@ -47,6 +47,8 @@ export type Selection = { id: string; index: number | null; mode: "full" | "filt
 export type HistoryState = {
   scope: Scope;
   view: Opened | null;
+  /** The `performance.now()` time when the `openHistory` response arrived. Only reads sent later can be newer than the view (contract Δ8). */
+  openedAt: number;
   opening: boolean;
   openFailure: { code: string; reason?: string; remedy?: Remedy } | null;
   /** The rows that the view holds (contract Δ3 `rowCount`). */
@@ -61,6 +63,8 @@ export type HistoryState = {
   limit: { reason: string } | null;
   /** The remedy of a `DEADLINE` load. */
   deadline: Remedy | null;
+  /** A load failure that no other rule handles. It halts loads like a Cancel (plan.md D6). */
+  loadFailure: { code: string; reason?: string } | null;
   stale: { code: string; reason?: string } | null;
   search: SearchState | null;
   /** Spec FR-038: the last match move found no earlier or later match. */
@@ -75,9 +79,12 @@ export type HistoryState = {
 };
 
 type Page = { rows: ViewRow[]; bytes: number; settled: boolean };
+/** A details read: the row of a `found` target, another contract Δ3 target, a canceled read, a failure code, or a view that ended. */
+export type Details = { state: "found"; row: ViewRow } | { state: "none" | "unknown" | "canceled" | "ended" } | { state: "failed"; code: string };
 
 const INITIAL: Omit<HistoryState, "scope"> = {
   view: null,
+  openedAt: 0,
   opening: false,
   openFailure: null,
   viewRows: 0,
@@ -87,6 +94,7 @@ const INITIAL: Omit<HistoryState, "scope"> = {
   halted: false,
   limit: null,
   deadline: null,
+  loadFailure: null,
   stale: null,
   search: null,
   matchEnd: null,
@@ -101,7 +109,7 @@ export const SPECIAL_ROWS = 2;
 
 /** Contract Δ8: the view keeps its rows and states its reason. */
 const STALE_CODES = new Set(["HISTORY_CHANGED", "OBJECT_MISSING", "MALFORMED_GIT_OUTPUT", "GIT_FAILED", "REPOSITORY_UNAVAILABLE", "UNKNOWN_TARGET", "STATE_UNKNOWN", "SERVICE_UNAVAILABLE"]);
-const sameHead = (a: Head, b: Head) => a.state === b.state && (a as { target?: string }).target === (b as { target?: string }).target && (a as { oid?: string }).oid === (b as { oid?: string }).oid;
+export const sameHead = (a: Head, b: Head) => a.state === b.state && (a as { target?: string }).target === (b as { target?: string }).target && (a as { oid?: string }).oid === (b as { oid?: string }).oid;
 
 /** Contract Δ8: a newer `readRefs.refsDigest` or `readWorkspace.head` than the view shows the "References changed" notice. */
 export function refsChanged(view: Pick<Opened, "refsDigest" | "head"> | null, refsDigest: string | null, head: Head | null): boolean {
@@ -120,6 +128,8 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
   let cacheBytes = 0;
   let cacheKey = "";
   let visible = { first: 0, last: -1 };
+  // True after the list reported its first window.
+  let shown = false;
   let moreShown = false;
   // A newer view or a newer search makes older responses void.
   let epoch = 0;
@@ -134,7 +144,12 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     for (const listener of listeners) listener();
   };
   const repository = () => ({ repositoryId: target().repositoryId });
-  const filterMode = () => state.search?.mode === "filter" && state.search.searchId !== null;
+  /** Contract Δ3: a `searchId` is valid only while its search runs and after it finished. A cancel, a failure, or a `limited` end ends it. */
+  const liveSearch = () => {
+    const search = state.search;
+    return search !== null && search.searchId !== null && (search.state === "running" || search.state === "finished") ? search : null;
+  };
+  const filterMode = () => liveSearch()?.mode === "filter";
   const searching = () => state.search?.state === "running";
   /** The commit rows of the shown list. Filter mode lists the matches (contract gap: filter rows count by match). */
   const listRows = () => (filterMode() ? state.search!.matches : state.viewRows);
@@ -143,6 +158,11 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
 
   function rowsState(result: { rowCount: number; complete: boolean; lanes: number }): Partial<HistoryState> {
     return { viewRows: Math.max(state.viewRows, result.rowCount), complete: state.complete || result.complete, lanes: Math.max(state.lanes, result.lanes) };
+  }
+
+  /** Contract Δ3: `UNKNOWN_TARGET` of a read with `searchId` can name the ended search, not the view. Only a read without `searchId` makes the view stale then. */
+  function readFailed(response: BridgeResponse, withSearch: boolean) {
+    if (!(withSearch && response.code === "UNKNOWN_TARGET")) stale(response);
   }
 
   function stale(response: BridgeResponse): boolean {
@@ -162,13 +182,13 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
   async function readAt(at: { row: number } | { oid: string } | { match: "next" | "previous"; from: number } | { end: true }, mode: "full" | "filter" = filterMode() ? "filter" : "full", text: "none" | "rows" | "details" = "rows") {
     const view = state.view;
     if (view === null) return null;
-    const searchId = state.search?.searchId ?? undefined;
+    const live = liveSearch();
     // `at: {match}` needs the search. Highlight rows carry `match`.
-    const withSearch = searchId !== undefined && (mode === "filter" || state.search?.mode === "highlight" || "match" in at);
-    const response = await bridge.readHistoryRows(repository(), { viewId: view.viewId, mode, ...(withSearch ? { searchId } : {}), at, count: 1, text });
+    const withSearch = live !== null && (mode === "filter" || live.mode === "highlight" || "match" in at);
+    const response = await bridge.readHistoryRows(repository(), { viewId: view.viewId, mode, ...(withSearch ? { searchId: live.searchId! } : {}), at, count: 1, text });
     if (view !== state.view) return null;
     if (response.state !== "succeeded") {
-      stale(response);
+      readFailed(response, withSearch);
       return null;
     }
     const result = response.result as Rows;
@@ -210,14 +230,18 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
   }
 
   /** The cache holds the rows of one list: the view, the mode, and the search of highlight rows. */
-  const keyNow = () => `${state.view?.viewId}:${filterMode() ? "filter" : "full"}:${state.search?.mode === "highlight" ? state.search.searchId : ""}`;
+  const keyNow = () => {
+    const live = liveSearch();
+    return `${state.view?.viewId}:${live?.mode === "filter" ? "filter" : "full"}:${live?.mode === "highlight" ? live.searchId : ""}`;
+  };
 
   /** One row read in flight per view. The newest window wins: a read starts for it when the previous one ends. */
   function pump() {
     const view = state.view;
     if (reading || view === null || state.stale !== null) return;
-    const searchId = state.search?.searchId ?? null;
-    const mode = filterMode() ? "filter" : "full";
+    const live = liveSearch();
+    const mode = live?.mode === "filter" ? "filter" : "full";
+    const searchId = live === null ? null : live.searchId;
     const key = keyNow();
     if (key !== cacheKey) {
       pages.clear();
@@ -242,9 +266,8 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     const first = missing[0]!;
     const count = Math.min(HISTORY_ROWS_PER_REQUEST, (missing.at(-1)! - first + 1) * PAGE_ROWS, total - first * PAGE_ROWS);
     reading = true;
-    void bridge
-      .readHistoryRows(repository(), { viewId: view.viewId, mode, ...(searchId !== null && (mode === "filter" || state.search?.mode === "highlight") ? { searchId } : {}), at: { row: first * PAGE_ROWS }, count, text: "rows" })
-      .then((response) => {
+    void textRead(() => bridge.readHistoryRows(repository(), { viewId: view.viewId, mode, ...(searchId !== null ? { searchId } : {}), at: { row: first * PAGE_ROWS }, count, text: "rows" })).then(
+      (response) => {
         reading = false;
         if (view !== state.view) return pump();
         const result = response.result as Rows | undefined;
@@ -257,15 +280,30 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
         }
         // A newer text read of the view cancels this one (contract Δ3).
         if (response.state === "canceled") return pump();
-        stale(response);
-      });
+        readFailed(response, searchId !== null);
+        if (keyNow() !== key) pump();
+      },
+    );
   }
 
-  /** The OIDs of the cached rows. The references sidebar selects only these. */
-  function cachedOids(): Set<string> {
-    const oids = new Set<string>();
-    for (const page of pages.values()) for (const r of page.rows) oids.add(r.oid);
-    return oids;
+  // Contract Δ3: a newer text read cancels an unfinished one of the same view. Page reads and details reads take turns, so they never cancel each other.
+  let textQueue: Promise<unknown> = Promise.resolve();
+  function textRead(run: () => Promise<BridgeResponse>): Promise<BridgeResponse> {
+    const next = textQueue.then(run);
+    textQueue = next.catch(() => {});
+    return next;
+  }
+
+  /** plan.md D7 History-ready frame: every visible commit row has its text and its cell. A known empty list is ready. */
+  function windowReady(): boolean {
+    if (state.view === null || !shown) return false;
+    const last = Math.min(visible.last, listRows() - 1);
+    if (last < visible.first) return listComplete();
+    for (let i = visible.first; i <= last; i++) {
+      const r = row(i);
+      if (r === undefined || r.cell === null || (r.subject === undefined && r.textLimit !== true)) return false;
+    }
+    return true;
   }
 
   /** The cached row of list index `i`, or undefined while it is not loaded. */
@@ -278,12 +316,12 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
   function runLoad(need: { row: number } | { oid: string } | { end: true }, kind: "scroll" | "end" | "oid"): Promise<BridgeResponse | null> {
     const view = state.view!;
     cancelWanted = false;
-    set({ load: { kind, rows: state.viewRows, operationId: null }, deadline: null });
+    set({ load: { kind, rows: state.viewRows, operationId: null }, deadline: null, loadFailure: null });
     const done = bridge
       .loadHistory(repository(), { viewId: view.viewId, need }, (event) => {
         if (view !== state.view || state.load === null) return;
-        const rows = event.counters.rows;
-        set({ load: { ...state.load, operationId: event.operationId, rows: rows ?? state.load.rows }, ...(rows === undefined ? {} : { viewRows: Math.max(state.viewRows, rows) }) });
+        // The progress `rows` can hold rows that the view does not serve yet (data-model §1 `rowCount`). It feeds only the progress text.
+        set({ load: { ...state.load, operationId: event.operationId, rows: event.counters.rows ?? state.load.rows } });
         if (cancelWanted) cancelLoad();
         else pump();
       })
@@ -296,7 +334,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
         else if (response.state === "canceled") set({ load: null, viewRows, halted: true });
         else if (response.code === "DEADLINE") set({ load: null, viewRows, halted: true, deadline: result?.remedy ?? null });
         else if (response.code === "OUTPUT_LIMIT") set({ load: null, viewRows, limit: { reason: result?.reason ?? "" } });
-        else if (!stale(response)) set({ load: null, viewRows });
+        else if (!stale(response)) set({ load: null, viewRows, halted: true, loadFailure: { code: response.code ?? response.state, reason: result?.reason } });
         pump();
         return response;
       });
@@ -325,6 +363,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (more && !moreShown && state.halted) set({ halted: false });
     moreShown = more;
     visible = { first, last };
+    shown = true;
     pump();
     if (state.view === null || filterMode() || state.complete || state.load !== null || searching() || state.stale !== null || state.limit !== null || state.halted) return;
     // plan.md D6: a load starts when fewer than M loaded rows lie below row n.
@@ -386,7 +425,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     // Contract Δ3: an empty repository gives a view with `startCount` 0. It has no commit to load.
     const again = search !== null && (search.state === "running" || search.state === "finished");
     // A running search blocks scroll loads from the first render of the new view: the filter sends only `searchHistory` (plan.md D6).
-    set({ view: result, opening: false, complete: result.startCount === 0, ...(again ? { search: { ...search, state: "running", searchId: null, matches: 0, settled: 0 } } : {}) });
+    set({ view: result, openedAt: performance.now(), opening: false, complete: result.startCount === 0, ...(again ? { search: { ...search, state: "running", searchId: null, matches: 0, settled: 0 } } : {}) });
     if (again) return void runSearch(search.text, search.mode, oid);
     if (oid === null) return pump();
     const loaded = await runLoad({ oid }, "oid");
@@ -425,10 +464,26 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
       await keepSelection(keepOid ?? (state.selection?.index !== null ? (state.selection?.id ?? null) : null));
       return;
     }
-    if (response.state === "canceled") return set({ search: { ...search, state: "stopped" } });
-    if (stale(response)) return set({ search: { ...search, state: "stopped" } });
+    if (response.state === "canceled") return endSearch({ ...search, state: "stopped" });
+    if (stale(response)) return endSearch({ ...search, state: "stopped" });
     const refused = response.code === "UNSUPPORTED_FILTER_TEXT" || response.code === "SEARCH_UNSUPPORTED" || response.code === "OUTPUT_LIMIT";
-    set({ search: { ...search, state: refused ? "refused" : "failed", code: response.code ?? response.state, reason: result?.reason, remedy: result?.remedy } });
+    await endSearch({ ...search, state: refused ? "refused" : "failed", code: response.code ?? response.state, reason: result?.reason, remedy: result?.remedy });
+  }
+
+  /** Contract Δ3: an ended search ends its `searchId`. The full list returns with the selected commit. */
+  async function endSearch(next: SearchState) {
+    const wasFilter = filterMode();
+    set({ search: next, waiting: false, version: state.version + 1 });
+    pump();
+    if (wasFilter) await toFull();
+  }
+
+  /** Maps a selection of the filter list to its row in the full list. */
+  async function toFull() {
+    const selection = state.selection;
+    if (selection === null || selection.index === null || selection.mode === "full") return;
+    const found = await readAt({ oid: selection.id }, "full", "none");
+    if (found?.target === "found" && state.selection?.id === selection.id) select(selection.id, found.rows[0]!.index, "full");
   }
 
   /** Spec FR-042: keep the selected commit. In filter mode, a commit that does not match moves to the next match, else to the last match. */
@@ -475,13 +530,9 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     const had = state.search;
     stopSearch();
     if (had === null) return;
-    const oid = state.selection !== null && state.selection.index !== null ? state.selection.id : null;
     set({ search: null, matchEnd: null, waiting: false, version: state.version + 1 });
     pump();
-    if (oid !== null && had.mode === "filter") {
-      const found = await readAt({ oid }, "full", "none");
-      if (found?.target === "found") select(oid, found.rows[0]!.index, "full");
-    }
+    await toFull();
   }
 
   /** Spec FR-041: a mode switch with unchanged text sends no new search. */
@@ -496,25 +547,44 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
 
   /** Spec FR-037, FR-038: Next match and Previous match. A target that is not loaded waits for the search with progress and Cancel. */
   async function match(direction: "next" | "previous") {
-    const search = state.search;
-    if (search === null || search.searchId === null) return;
+    const search = liveSearch();
+    if (search === null) return;
     const selection = state.selection;
-    const index = selection?.index ?? null;
-    if (search.mode === "filter") {
+    const end = direction === "next" ? "last" : "first";
+    if (search.mode === "filter" && (selection === null || selection.index === null || selection.mode === "filter")) {
+      const index = selection?.index ?? null;
       const to = direction === "next" ? (index ?? -1) + 1 : (index ?? 0) - 1;
       if (to < 0) return set({ matchEnd: "first" });
       if (to >= search.matches && search.state === "finished") return set({ matchEnd: "last" });
+      set({ waiting: searching() });
       const found = await readAt({ row: to }, "filter", "none");
+      set({ waiting: false });
       if (found?.target === "found") select(found.rows[0]!.oid, to, "filter");
+      else if (found?.target === "none") set({ matchEnd: end });
       return;
+    }
+    // Contract Δ3: `from` is a view row. A selection from the filter list maps to its view row by OID first.
+    let index = selection?.index ?? null;
+    if (selection !== null && index !== null && selection.mode === "filter") {
+      const full = await readAt({ oid: selection.id }, "full", "none");
+      if (full?.target !== "found") return;
+      index = full.rows[0]!.index;
     }
     const from = direction === "next" ? (index === null ? 0 : index + 1) : index === null ? -1 : index - 1;
     if (from < 0) return set({ matchEnd: "first" });
     set({ waiting: searching() });
     const found = await readAt({ match: direction, from }, "full", "none");
+    if (found?.target !== "found" || search.mode === "highlight") {
+      set({ waiting: false });
+      if (found?.target === "found") select(found.rows[0]!.oid, found.rows[0]!.index, "full");
+      else if (found?.target === "none") set({ matchEnd: end });
+      return;
+    }
+    // A filter list with a selection from the full list: the match position comes from its OID.
+    const oid = found.rows[0]!.oid;
+    const position = await readAt({ oid }, "filter", "none");
     set({ waiting: false });
-    if (found?.target === "found") select(found.rows[0]!.oid, found.rows[0]!.index, "full");
-    else if (found?.target === "none") set({ matchEnd: direction === "next" ? "last" : "first" });
+    if (position?.target === "found") select(oid, position.rows[0]!.index, "filter");
   }
 
   /** Cancels the running search. The loaded rows stay (contract Δ3). */
@@ -522,15 +592,27 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (searching() && state.search!.searchId !== null) void bridge.cancel({ operationId: state.search!.searchId });
   }
 
-  /** Selects a commit of the shown list by OID, as a details link does. */
-  async function selectOid(oid: string) {
+  /** Selects a commit of the shown list by OID, as a details link or a reference does. It gives the contract Δ3 target, or null without a result. */
+  async function selectOid(oid: string): Promise<"found" | "none" | "unknown" | null> {
     const found = await readAt({ oid }, filterMode() ? "filter" : "full", "none");
     if (found?.target === "found") select(oid, found.rows[0]!.index);
+    return found?.target ?? null;
   }
 
-  /** Spec FR-017: the body loads only when the details pane shows the commit. */
-  function readDetails(oid: string) {
-    return readAt({ oid }, "full", "details");
+  /** Spec FR-017: the body loads only when the details pane shows the commit. It gives the response state, and the row of a `found` target. */
+  async function readDetails(oid: string): Promise<Details> {
+    const view = state.view;
+    if (view === null) return { state: "ended" };
+    const response = await textRead(() => bridge.readHistoryRows(repository(), { viewId: view.viewId, mode: "full", at: { oid }, count: 1, text: "details" }));
+    if (view !== state.view) return { state: "ended" };
+    const result = response.result as Rows | undefined;
+    if (response.state === "succeeded" && result !== undefined && "target" in result) {
+      set(rowsState(result));
+      return result.target === "found" ? { state: "found", row: result.rows[0]! } : { state: result.target };
+    }
+    if (response.state === "canceled") return { state: "canceled" };
+    stale(response);
+    return { state: "failed", code: response.code ?? response.state };
   }
 
   /** Contract Δ8: after a service restart no view resumes. */
@@ -561,7 +643,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     end,
     cancelLoad,
     row,
-    cachedOids,
+    windowReady,
     listRows,
     listComplete,
     filterMode,

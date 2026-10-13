@@ -153,6 +153,48 @@ describe("spec FR-032 to FR-035: filter mode", () => {
     expect(text(host)).toContain("The search covered only the commits that this shallow clone holds.");
   });
 
+  test("Cancel of a running filter search ends its searchId: the full list returns, and the view does not go stale (contract Δ3)", async () => {
+    const { input, host, view, fake } = await mount({ total: 1_000, loaded: 1_000, matches: (i) => i % 100 === 5, hold: { search: true } });
+    await type(input, "Commit");
+    await key(input, "Enter");
+    expect(view.filterMode()).toBe(true);
+    const reads = fake.of("readHistoryRows").length;
+    const cancel = [...host.querySelectorAll("button")].find((b) => text(b) === "Cancel")!;
+    await act(async () => cancel.click());
+    await settle();
+    expect(view.getState().search?.state).toBe("stopped");
+    expect(view.getState().stale).toBeNull();
+    expect(view.filterMode()).toBe(false);
+    expect(commitNames(host)[0]).toContain("Commit 0,");
+    expect(fake.of("readHistoryRows").slice(reads).every((p) => p.searchId === undefined)).toBe(true);
+  });
+
+  for (const [name, response] of [
+    ["limited", { requestId: "r", state: "limited", code: "OUTPUT_LIMIT", result: { reason: "HISTORY_VIEW_COMMITS" } }],
+    ["failed", { requestId: "r", state: "failed", code: "DEADLINE", result: { remedy: { text: "Write a commit-graph.", command: null } } }],
+  ] as const)
+    test(`a ${name} search ends its searchId, so the full list stays and the view does not go stale`, async () => {
+      const { input, host, view, fake } = await mount({ total: 300, loaded: 300, matches: (i) => i % 10 === 5, searchResponse: () => response });
+      await type(input, "Commit");
+      await key(input, "Enter");
+      expect(view.filterMode()).toBe(false);
+      expect(view.getState().stale).toBeNull();
+      expect(commitNames(host)[0]).toContain("Commit 0,");
+      expect(fake.of("readHistoryRows").filter((p) => p.searchId !== undefined)).toHaveLength(0);
+    });
+
+  test("F3 in filter mode with a selection from the full list moves to the next match after it (contract Δ3 `from`)", async () => {
+    const { input, view } = await mount({ total: 2_000, loaded: 2_000, matches: (i) => i % 100 === 5, hold: { search: true } });
+    await act(async () => view.select(oid(1000), 1000, "full"));
+    await type(input, "Commit");
+    await key(input, "Enter");
+    expect(view.filterMode()).toBe(true);
+    expect(view.getState().selection).toMatchObject({ id: oid(1000), mode: "full" });
+    await act(async () => void (await view.match("next")));
+    await settle();
+    expect(view.getState().selection).toMatchObject({ id: oid(1005), index: 10, mode: "filter" });
+  });
+
   test("SEARCH_UNSUPPORTED shows its remedy", async () => {
     const remedy = { text: "Install the C.UTF-8 locale in Ubuntu-26.04, then press Enter again.", command: null };
     const { input, host, view } = await mount({ total: 30, loaded: 30, searchResponse: () => ({ requestId: "r", state: "failed", code: "SEARCH_UNSUPPORTED", result: { reason: "matching", remedy } }) });
@@ -165,7 +207,7 @@ describe("spec FR-032 to FR-035: filter mode", () => {
   test("a service UNSUPPORTED_FILTER_TEXT refusal carries only its reason, and the reason names the character (contract Δ9)", async () => {
     expect(SearchHistoryResult.safeParse({ reason: "quote-end" }).success).toBe(true);
     expect(SearchHistoryResult.safeParse({ reason: "quote-end", found: "\\E" }).success).toBe(false);
-    const { input, host, view } = await mount({ total: 30, loaded: 30, searchResponse: () => ({ requestId: "r", state: "failed", code: "UNSUPPORTED_FILTER_TEXT", result: { reason: "quote-end" } }) });
+    const { input, host, view } = await mount({ total: 30, loaded: 30, searchResponse: () => ({ requestId: "r", state: "rejected", code: "UNSUPPORTED_FILTER_TEXT", result: { reason: "quote-end" } }) });
     await type(input, "Commit");
     await key(input, "Enter");
     expect(view.getState().search).toMatchObject({ state: "refused", code: "UNSUPPORTED_FILTER_TEXT", reason: "quote-end" });

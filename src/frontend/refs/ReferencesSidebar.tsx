@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, SidebarLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
@@ -10,7 +9,7 @@ import type { RefEntry, RefsResult } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
-import { DropdownMenu, DropdownMenuItem, DropdownMenuShortcut } from "../components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuShortcut } from "../components/ui/dropdown-menu";
 
 // FR-057. plan.md "References sidebar", "Long text", "Keyboard and focus" (References sidebar row), "Task flow and command placement" (Browse references),
 // "Required visible states" (References), and "Status and fallback texts" (Sidebar texts). Contract §3 "References result". The sidebar is read-only.
@@ -25,7 +24,8 @@ const GROUPS: { kind: Exclude<Kind, "stash">; label: string; empty: string; noun
 ];
 const LOADING = "Loading references…";
 const NO_MATCH = "No reference matches the filter.";
-const NOT_LOADED = "Not in the loaded history rows";
+// Contract Δ3 `readHistoryRows` targets other than `found`.
+const NOT_SHOWN = { none: "Not in this history list", unknown: "Not in the loaded history rows" } as const;
 const REFUSAL: Record<string, string> = {
   REF_LISTING_RECORDS: "This repository has more than 10,000 references. This version does not list them.",
   REF_LISTING_BYTES: "The reference list is larger than this version can show.",
@@ -35,8 +35,6 @@ export const SHOW_BRANCH_HISTORY = "Show only this branch's history";
 const VIRTUAL_MIN = 200;
 // The compact row height (plan.md density table). The parent passes the row height of the density.
 const ROW_HEIGHT = 26;
-const MENU_CONTENT =
-  "z-50 max-h-(--available-height) min-w-32 origin-(--transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:overflow-hidden data-closed:fade-out-0 data-closed:zoom-out-95";
 
 // Contract §3: `symref` and `upstream` are full reference names. Git's namespaces give the short name (git-check-ref-format(1)).
 const PREFIXES = ["refs/heads/", "refs/remotes/", "refs/tags/"];
@@ -59,10 +57,8 @@ export type ReferencesSidebarProps = {
   refs: RefsResult | null;
   /** The newest `readRefs` refusal. */
   failure: BridgeResponse | null;
-  /** The OIDs of the loaded history page. */
-  loaded: ReadonlySet<string>;
-  /** Selects the history row of a commit on the page and docks its details. Focus stays in the sidebar. */
-  onSelectCommit(oid: string): void;
+  /** Selects the history row of a commit and docks its details. It gives the contract Δ3 read target, or null without a result. Focus stays in the sidebar. */
+  onSelectCommit(oid: string): Promise<"found" | "none" | "unknown" | null>;
   onRefresh(): void;
   /** The constrained profile: the section starts collapsed to its heading row with the Show references toggle. */
   collapsible?: boolean;
@@ -126,8 +122,8 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, loaded, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory }: ReferencesSidebarProps) {
-  const ids = { heading: useId(), node: useId(), notLoaded: useId() };
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory }: ReferencesSidebarProps) {
+  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId() };
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
   const [stored, setStored] = useState<{ repository: string; open: ReadonlySet<string> | null }>(() => ({ repository, open: sessionExpansion.get(repository) ?? null }));
@@ -139,6 +135,8 @@ export function ReferencesSidebar({ refs, failure, loaded, onSelectCommit, onRef
   const [activeKey, setActiveKey] = useState<string | null>(null);
   // The key of the row whose context menu is open.
   const [menu, setMenu] = useState<string | null>(null);
+  // The commits whose last selection gave no row, with the read target.
+  const [missing, setMissing] = useState<ReadonlyMap<string, "none" | "unknown">>(new Map());
   const elements = useRef(new Map<string, HTMLElement>());
   const scroller = useRef<HTMLDivElement>(null);
   const toFocus = useRef<string | null>(null);
@@ -218,7 +216,16 @@ export function ReferencesSidebar({ refs, failure, loaded, onSelectCommit, onRef
   function activate(row: Row) {
     const entry = row.node.entry;
     if (entry === undefined) return toggle(row.node.key, !open.has(row.node.key));
-    if (entry.commitId !== null && loaded.has(entry.commitId)) onSelectCommit(entry.commitId);
+    const commitId = entry.commitId;
+    if (commitId === null) return;
+    void onSelectCommit(commitId).then((target) =>
+      setMissing((old) => {
+        const next = new Map(old);
+        if (target === "none" || target === "unknown") next.set(commitId, target);
+        else next.delete(commitId);
+        return next;
+      }),
+    );
   }
 
   const isCurrent = (row: Row) => row.kind === "branch" && row.node.entry !== undefined && refs?.current?.name === row.node.entry.name;
@@ -298,14 +305,14 @@ export function ReferencesSidebar({ refs, failure, loaded, onSelectCommit, onRef
     const noun = GROUPS.find((g) => g.kind === kind)!.noun;
     const current = isCurrent(row);
     const upstream = upstreamText(entry);
-    const onPage = entry.commitId !== null && loaded.has(entry.commitId);
+    const notShown = entry.commitId === null ? undefined : missing.get(entry.commitId);
     const name = entry.symref === null ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream])].join(", ") : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
     return (
       <div
         key={node.key}
         {...common}
         aria-label={name}
-        aria-describedby={onPage ? undefined : ids.notLoaded}
+        aria-describedby={notShown === undefined ? undefined : ids[notShown]}
         aria-haspopup={current && onShowBranchHistory !== undefined ? "menu" : undefined}
         className="list-row flex min-w-0 items-center gap-2 pr-2"
       >
@@ -373,8 +380,11 @@ export function ReferencesSidebar({ refs, failure, loaded, onSelectCommit, onRef
         </div>
         {groups.map((g) => (g.tree.count === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null))}
         {needle !== "" && !anyMatch ? <p className="px-2 text-muted-text">{NO_MATCH}</p> : null}
-        <span id={ids.notLoaded} hidden>
-          {NOT_LOADED}
+        <span id={ids.none} hidden>
+          {NOT_SHOWN.none}
+        </span>
+        <span id={ids.unknown} hidden>
+          {NOT_SHOWN.unknown}
         </span>
       </>
     );
@@ -408,22 +418,18 @@ export function ReferencesSidebar({ refs, failure, loaded, onSelectCommit, onRef
       ) : null}
       {onShowBranchHistory === undefined ? null : (
         <DropdownMenu open={anchor !== undefined} onOpenChange={(next) => (next ? undefined : setMenu(null))}>
-          <MenuPrimitive.Portal>
-            <MenuPrimitive.Positioner anchor={anchor} side="bottom" align="start" sideOffset={2} className="isolate z-50 outline-none">
-              <MenuPrimitive.Popup data-slot="dropdown-menu-content" finalFocus={{ current: anchor ?? null }} className={MENU_CONTENT}>
-                <DropdownMenuItem
-                  aria-keyshortcuts="Control+Shift+B"
-                  onClick={() => {
-                    setMenu(null);
-                    onShowBranchHistory();
-                  }}
-                >
-                  {SHOW_BRANCH_HISTORY}
-                  <DropdownMenuShortcut>Ctrl+Shift+B</DropdownMenuShortcut>
-                </DropdownMenuItem>
-              </MenuPrimitive.Popup>
-            </MenuPrimitive.Positioner>
-          </MenuPrimitive.Portal>
+          <DropdownMenuContent anchor={anchor} sideOffset={2} finalFocus={{ current: anchor ?? null }} className="w-auto">
+            <DropdownMenuItem
+              aria-keyshortcuts="Control+Shift+B"
+              onClick={() => {
+                setMenu(null);
+                onShowBranchHistory();
+              }}
+            >
+              {SHOW_BRANCH_HISTORY}
+              <DropdownMenuShortcut>Ctrl+Shift+B</DropdownMenuShortcut>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
         </DropdownMenu>
       )}
     </section>

@@ -7,12 +7,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { createFake, oid as fakeOid, TARGET } from "./history-fake";
+import { useSyncExternalStore } from "react";
+import { createFake, oid as fakeOid, stubLayout, TARGET } from "./history-fake";
 
 printOrigin("../../src/frontend/history/CommitDetails.tsx", import.meta.dir);
 registerDom();
 const { createRoot } = await import("react-dom/client");
 const { ViewCommitDetails } = await import("../../src/frontend/history/CommitDetails");
+const { HistoryList } = await import("../../src/frontend/history/HistoryList");
 const { createHistoryView } = await import("../../src/frontend/state/history-view");
 type ViewRow = import("../../src/frontend/state/history-view").ViewRow;
 
@@ -170,5 +172,51 @@ describe("Selected commit of a feature 002 view", () => {
     await settle();
     expect(text(host)).toContain("Arbareto shows the first 16 KiB of this message.");
     expect(text(field(host, "Parents"))).toContain("None. This is a root commit.");
+  });
+});
+
+// Contract Δ3: a newer text read cancels an unfinished one of the same view. The fake models it.
+describe("details reads beside page reads", () => {
+  function Pair({ view }: { view: ReturnType<typeof createHistoryView> }) {
+    const state = useSyncExternalStore(view.subscribe, view.getState);
+    const id = state.selection?.id;
+    return (
+      <>
+        <HistoryList view={view} entries={[]} density="compact" profile="wide" onSelect={() => {}} onScope={() => {}} />
+        <div data-pane="">{id !== undefined && id.length === 40 ? <ViewCommitDetails view={view} oid={id} dateFormat={dateFormat} /> : null}</div>
+      </>
+    );
+  }
+
+  test("a held arrow key across pages never shows the not-in-list text, and the pane ends on the selected commit", async () => {
+    const restore = stubLayout(800);
+    try {
+      const fake = createFake({ total: 2_000, loaded: 2_000 });
+      const view = createHistoryView(fake.bridge, TARGET);
+      const host = await show(<Pair view={view} />);
+      await act(async () => void (await view.open("all", false)));
+      await settle();
+      const list = host.querySelector<HTMLElement>('[role="listbox"]')!;
+      const pane = host.querySelector<HTMLElement>("[data-pane]")!;
+      let wrong = 0;
+      const observer = new MutationObserver(() => void (text(pane).includes("not in the history list") && wrong++));
+      observer.observe(pane, { subtree: true, childList: true, characterData: true });
+      await act(async () => list.focus());
+      for (let i = 0; i < 400; i++) {
+        await act(async () => void list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+        if (i % 4 === 0) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
+      }
+      await settle();
+      await settle();
+      observer.disconnect();
+      expect(wrong).toBe(0);
+      // The page reads and the details reads never cancel each other.
+      expect(fake.canceledTexts()).toBe(0);
+      expect(fake.of("readHistoryRows").some((p) => p.text === "details")).toBe(true);
+      const selected = view.getState().selection!.id;
+      expect(text(pane)).toContain(`Body of ${parseInt(selected, 16)}`);
+    } finally {
+      restore();
+    }
   });
 });

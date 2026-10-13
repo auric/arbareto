@@ -75,6 +75,9 @@ export interface ProbeFacts {
   selfs?: string;
   selino?: string;
   selstat?: string;
+  // T378: the `$?` of `systemd-run --expand-environment=no --version`, and the verdict of the probe scope with the chosen flag.
+  noexpand?: string;
+  verbatim?: string;
 }
 
 export function parseProbe(text: string): ProbeFacts {
@@ -94,6 +97,8 @@ export function parseProbe(text: string): ProbeFacts {
     else if (kind === "selfs") facts.selfs = value;
     else if (kind === "selino") facts.selino = value;
     else if (kind === "selstat") facts.selstat = value;
+    else if (kind === "noexpand") facts.noexpand = value;
+    else if (kind === "verbatim") facts.verbatim = value;
   }
   return facts;
 }
@@ -462,7 +467,7 @@ function detect(): WslHost | { missing: WslCapability } {
     gitVersion: /^git version (\S+)$/.exec(facts.version ?? "")?.[1] ?? null,
     folder: `${home}/arbareto-fixtures-${crypto.randomUUID()}`,
   };
-  console.log(`WSL ${distro} ${key.guid} home=${home} git=${facts.paths.git ?? "absent"} ${facts.version ?? ""} scope=${facts.scope ?? "absent"}`);
+  console.log(`WSL ${distro} ${key.guid} home=${home} git=${facts.paths.git ?? "absent"} ${facts.version ?? ""} scope=${facts.scope ?? "absent"} noexpand=${facts.noexpand ?? "absent"} verbatim=${facts.verbatim ?? "absent"}`);
   return host;
 }
 

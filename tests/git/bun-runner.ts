@@ -40,6 +40,7 @@ import {
   type MarkerFailure,
   type MutationStarted,
   type ProcessContext,
+  type RefusedCode,
   type RegisterReply,
   type TrustRecord,
   type TrustRequest,
@@ -130,6 +131,8 @@ export interface WslInstallation {
   setsid: string;
   // Contract §11 "Git per distro": the approved `/usr/bin/sha256sum` target of the `wslFiles` digests.
   sha256sum: string;
+  // The probe fact `noexpand 0`. The wrapper then gets `noexp` 1 (contract §11 "Process launch").
+  noexpand: boolean;
 }
 
 // The native settings record of one approved WSL Git (contract §11 "Git per distro").
@@ -159,8 +162,12 @@ function wslParts(path: string): { distro: string; linux: string } | null {
 // Mirrors `RETAINED_BYTES` of `src-tauri/src/wsl.rs`: the shell parses at most 64 KiB of probe output.
 const WSL_PROBE_RETAINED_BYTES = 64 * 1024;
 const WSL_PROBED = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"];
-const WSL_PROBE_FACTS = ["pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat"];
+const WSL_PROBE_FACTS = ["pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat", "noexpand", "verbatim"];
 const WSL_FLOOR = [2n, 55n, 0n];
+// Contract §11 "Process launch": the wrapper writes this byte to stdout inside a started scope, before the program starts.
+const STARTED = 0x53;
+// Mirrors `src-tauri/src/wsl.rs` `started`: the stdout of a wrapped process after its start byte. Null: the scope did not start.
+const started = (bytes: Uint8Array): Uint8Array | null => (bytes[0] === STARTED ? bytes.subarray(1) : null);
 // gaps.md W3 and W4: the fixed programs of the identity and `fileFacts` probes.
 const WSL_STAT = "/usr/bin/stat";
 const WSL_PERL = "/usr/bin/perl";
@@ -206,12 +213,15 @@ function bindProbe(distro: string, bytes: Uint8Array): WslBound | null {
   const fileSystem = /^ef53:([0-9a-f]+)$/.exec(facts.get("gitfs") ?? "")?.[1];
   const gitfile = facts.get("gitfile") ?? "";
   const guid = registryKeys().find((k) => k.name === distro && k.version === 2)?.guid;
+  // T378: `noexpand` is a decimal `$?` from 0 to 255, and only `verbatim 0` binds.
+  const status = facts.get("noexpand") ?? "";
+  if (!/^(?:0|[1-9][0-9]{0,2})$/.test(status) || Number(status) > 255 || facts.get("verbatim") !== "0") return null;
   if (!git || !systemdRun || !systemctl || !setsid || !stat || !env || !perl || !sha256sum || facts.get("scope") !== "0" || !floor || !guid) return null;
   if (!fileSystem || /^0+$/.test(fileSystem) || !/^\d+:\d+:\d+$/.test(gitfile)) return null;
   // gaps.md W1: the context identity binds with the Git facts, or nothing binds.
   const identity = facts.get("selstat") === "ok" ? classifyIdentity(guid, facts.get("selino") ?? "", facts.get("selfs") ?? "") : null;
   if (identity === null || "code" in identity) return null;
-  return { distro, guid, git, systemdRun, systemctl, setsid, sha256sum, version: version[1]!, gitIdentity: `${fileSystem}:${gitfile}`, identity };
+  return { distro, guid, git, systemdRun, systemctl, setsid, sha256sum, noexpand: status === "0", version: version[1]!, gitIdentity: `${fileSystem}:${gitfile}`, identity };
 }
 
 // Mirrors `src-tauri/src/wsl.rs` `classify`: only type `ef53` with a nonzero ID, in the canonical form of gaps.md W2.
@@ -420,6 +430,10 @@ export function createBunRunner(options: BunRunnerOptions) {
     stdout: undefined as ((call: { arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
     // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
     exit: undefined as ((call: { arguments: readonly string[] }) => number | undefined) | undefined,
+    // A code refuses a call as the shell refuses it. No process starts (T377).
+    refuse: undefined as ((call: { operationId: string; arguments: readonly string[] }) => RefusedCode | undefined) | undefined,
+    // A path replaces the approved `systemd-run` of one WSL call, such as `/usr/bin/false` for a scope that does not start (T377).
+    wslRun: undefined as ((call: { operationId: string; arguments: readonly string[] }) => string | undefined) | undefined,
     // The `confirmRun` reply (contract §12 "Trust"). A function can hold the reply on a test barrier.
     confirmRun: "approved" as "approved" | "declined" | ((request: TrustRequest) => Promise<"approved" | "declined">),
     // A matching call reports `stalled` through `onActivity` before it starts (contract §6 "Activity and stall notice").
@@ -541,7 +555,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     wslUnits.set(operationId, { inst, n });
     OWN_SCOPE_OPERATIONS.add(operationId);
     const unit = `arbareto-${operationId}-${n}.scope`;
-    return [...wslHead(inst.distro), WSL_TEXTS.wrapper, "sh", unit, mode, index, inst.systemdRun, inst.systemctl, inst.setsid, program, ...args];
+    return [...wslHead(inst.distro), WSL_TEXTS.wrapper, "sh", unit, mode, index, inst.systemdRun, inst.systemctl, inst.setsid, inst.noexpand ? "1" : "", program, ...args];
   }
 
   // Starts the anchor of a WSL mutation or submodule update before its first Git process, in the operation's process set.
@@ -611,7 +625,10 @@ export function createBunRunner(options: BunRunnerOptions) {
     let lines: string[] = [];
     if (probed.length > 0) {
       const result = wslExec(wslWrapped(inst, operationId, "probe", "", "/bin/sh", ["-c", IDENTITY_TEXT, "sh", WSL_STAT, WSL_PERL, ...probed]), { env: wslEnvironment() });
-      lines = result.exitCode === 0 && result.stdout.endsWith("\n") ? result.stdout.slice(0, -1).split("\n") : [];
+      // A missing start byte fails every probed path, as in the shell.
+      const out = result.exitCode === 0 ? started(result.bytes) : null;
+      const text = out === null ? "" : new TextDecoder().decode(out);
+      lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : [];
       if (lines.length !== probed.length) lines = [];
     }
     let next = 0;
@@ -642,8 +659,9 @@ export function createBunRunner(options: BunRunnerOptions) {
     const extra = index ? [inst.sha256sum, ...(index.sharedIndex === undefined ? [] : [index.sharedIndex])] : [];
     const args = ["-e", FACTS_TEXT, "--", digest ? "1" : "0", ...linux, ...extra];
     const result = wslExec(wslWrapped(inst, operationId, "probe", "", WSL_PERL, args), { env: wslEnvironment(), input: factsInput(entries) });
-    if (!index) return { facts: mapFacts(result.exitCode === 0 ? parseFactRecords(result.bytes) : null, entries, digest) };
-    const parsed = result.exitCode === 0 ? parseIndexedFacts(result.bytes, entries.length, index.sharedIndex !== undefined) : null;
+    const out = result.exitCode === 0 ? started(result.bytes) : null;
+    if (!index) return { facts: mapFacts(out === null ? null : parseFactRecords(out), entries, digest) };
+    const parsed = out === null ? null : parseIndexedFacts(out, entries.length, index.sharedIndex !== undefined);
     // A failed fact check fails the index too, as in the shell.
     const facts = parsed === null ? null : checkFacts(parsed.records, entries, digest);
     return facts === null ? { facts: mapFacts(null, entries, digest), index: failed } : { facts, index: parsed!.index };
@@ -655,7 +673,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     if (linux === null) return wslFilesResults(null, new Uint8Array(), request);
     const args = ["-e", WSL_FILES_TEXT, "--", request.mode, ...linux, inst.git, inst.sha256sum];
     const result = wslExec(wslWrapped(inst, operationId, "probe", "", WSL_PERL, args), { env: wslEnvironment(), input: wslFilesInput(request) });
-    return wslFilesResults(result.exitCode, result.bytes, request);
+    const out = started(result.bytes);
+    return wslFilesResults(out === null ? null : result.exitCode, out ?? result.bytes, request);
   }
 
   // Test end: ends every scope of an operation that this double started.
@@ -733,8 +752,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     };
   }
 
-  // Starts one process after the start barriers and drains it as the shell does.
-  async function execute(call: GitCall, argv: string[], cwd: string, env: Record<string, string>, recorded?: RecordedCall): Promise<GitExit> {
+  // Starts one process after the start barriers and drains it as the shell does. `wrapped`: a WSL process of the §11 wrapper.
+  async function execute(call: GitCall, argv: string[], cwd: string, env: Record<string, string>, recorded?: RecordedCall, wrapped = false): Promise<GitExit> {
     for (let held = holding(startBarriers, call); held; held = holding(startBarriers, call)) await held.promise;
     if (closing) throw unknownTarget();
     call.signal.throwIfAborted();
@@ -756,10 +775,12 @@ export function createBunRunner(options: BunRunnerOptions) {
       return barrier && Promise.race([barrier.promise, stopped.promise]);
     };
     try {
+      const refused = inject.refuse?.(call);
+      if (refused !== undefined) throw new RunnerRefusal(refused, "injected");
       const exitCode = inject.exit?.({ arguments: call.arguments });
       if (exitCode !== undefined) return { exitCode, activeDescendants: 0 };
       const injected = inject.stdout?.({ arguments: call.arguments, input: call.input });
-      if (injected === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout);
+      if (injected === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout, wrapped);
       // Contract §5 "Native stdout/stderr chunk": at most 64 KiB in one chunk.
       for (let at = 0; at < injected.length && !halted; at += NATIVE_CHUNK_BYTES) {
         for (let barrier = heldStdout(); barrier; barrier = heldStdout()) await barrier;
@@ -784,6 +805,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     recorded: RecordedCall | undefined,
     halt: () => void,
     heldStdout: () => Promise<unknown> | null,
+    wrapped: boolean,
   ): Promise<GitExit> {
     const pipes = [createInboundPipe(NATIVE_CHUNK_BYTES), createInboundPipe(NATIVE_CHUNK_BYTES)];
     let proc: Subprocess<"pipe", "ignore", "ignore">;
@@ -881,12 +903,21 @@ export function createBunRunner(options: BunRunnerOptions) {
     touch();
     samples.set(call, sample);
     call.signal.addEventListener("abort", kill, { once: true });
+    // Mirrors `src-tauri/src/process_requests.rs` `read_stream`: the first stdout chunk of a wrapped run loses its start byte.
+    let first: boolean | undefined;
     const streams = [
       drain(
         pipes[0],
         (chunk) => {
+          let data = chunk;
+          if (wrapped && first === undefined) {
+            const rest = started(chunk);
+            first = rest !== null;
+            data = rest ?? chunk;
+          }
+          if (data.length === 0) return;
           touch();
-          call.stdout.push(chunk);
+          call.stdout.push(data);
           if (call.stdout.limited) kill();
         },
         heldStdout,
@@ -916,8 +947,11 @@ export function createBunRunner(options: BunRunnerOptions) {
     for (const stream of streams) stream.exit();
     await Promise.all(streams.map((s) => s.done));
     scan(call.operationId);
+    // Mirrors `src-tauri/src/process_requests.rs` `watch`: a wrapped process that ended by itself without the start byte did not start in its scope.
+    const exitCode = killed ? null : proc.exitCode;
+    if (wrapped && first !== true && exitCode !== null && expired === undefined) throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED", "no start byte");
     return {
-      exitCode: killed ? null : proc.exitCode,
+      exitCode,
       // Contract §6: a closed Job gives no count.
       activeDescendants: killed ? null : live((r) => r.operationId === call.operationId).length,
       ...(expired ? { deadline: expired } : {}),
@@ -965,7 +999,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     }
     // Contract §11 "Process launch": `--no-lazy-fetch` stays first, and `-C` takes the Linux directory.
     // Feature 002 contract Δ6: a script run gets `/bin/sh`, the script text, and the approved Git from the shell. `checkCall` checked its arguments.
-    const inst = target.wsl;
+    const run = inject.wslRun?.(call);
+    const inst = run === undefined ? target.wsl : { ...target.wsl, systemdRun: run };
     const dir = wslParts(target.cwd);
     const index = call.transaction ? wslParts(call.transaction.indexFile)?.linux : "";
     if (!dir || index === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL path");
@@ -982,7 +1017,7 @@ export function createBunRunner(options: BunRunnerOptions) {
             void anchor.ask().then((answer) => samples.get(call)?.(answer?.[1] ?? null));
           }, 1_000)
         : undefined;
-    const exit = await execute(call, [WSL_EXE, ...args], wslDirectory, wslEnvironment(), recorded).finally(() => clearInterval(poll));
+    const exit = await execute(call, [WSL_EXE, ...args], wslDirectory, wslEnvironment(), recorded, true).finally(() => clearInterval(poll));
     await inject.afterWslExit?.(call);
     // The anchor count after the exit of an execution process becomes `activeDescendants`.
     // Without an answer, or with an unknown count, the exit carries no count (contract §6).

@@ -131,7 +131,7 @@ export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installati
     const key = (path: string) => NATIVE.fold(resolve(path));
     return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, key, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined, launch: undefined };
   }
-  const { distro, guid, wslExecutable, path, systemdRun, systemctl, setsid } = w.wsl;
+  const { distro, guid, wslExecutable, path, systemdRun, systemctl, setsid, noexpand } = w.wsl;
   const route = routeWslPath(w.worktreeRoot, { listed: [distro], registry: [{ name: distro, guid, version: 2 }] });
   if (route.kind !== "wsl") throw new TypeError("a WSL workspace needs a Linux worktree root");
   return {
@@ -144,7 +144,7 @@ export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installati
     platform: "posix",
     gitPath: path,
     wsl: { wslExecutable, distro },
-    launch: { wslExecutable, distro, git: path, systemdRun, systemctl, setsid },
+    launch: { wslExecutable, distro, git: path, systemdRun, systemctl, setsid, noexpand },
   };
 }
 

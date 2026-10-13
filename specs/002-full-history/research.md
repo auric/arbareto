@@ -371,7 +371,8 @@ Control mutations. Each run went red with the edit, and green after the undo.
 
 Open items:
 - `test:windows` fails T240 "installed app selects Git, opens and cancels the folder picker, and reads the status regions": `TIMEOUT: no focus on "Open folder… (Ctrl+O)"` after 10,000 ms. The test drives the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA-256 `d21b7a5f…`). That build comes from main, not from this checkout. The cause is under investigation.
-- The independent reviews of batches 0, 2, and 4 are not recorded.
+- The independent reviews of batches 0 and 4 are not recorded.
+- T030 waits for the batch 2 review fixes and the End load records.
 - T030: the CPU of an End load and the bytes per loaded commit on H200K are not recorded.
 - T045: no comparison with the approved mockup canvas is recorded. The user compares the app with the canvas.
 - T050: the quickstart.md "Manual check in the app" did not run.

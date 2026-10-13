@@ -27,7 +27,7 @@ Git alone uses more than 128 MiB on 1,000,000 commits (research.md R14). The use
 
 **Testing**: Bun tests in real disposable repositories (`tests/git`), contract tests and golden vectors (`tests/contracts`, `tests/vectors`), Windows packaged tests (`tests/windows`), WSL tests (`tests/wsl`), and cargo tests for the shell allowlist, the policy, and the wrapper mode.
 
-**Target Platform**: Windows 11 x64 first, with Git for Windows. WSL2 repositories through the distro Git. The order facts are recorded on Git 2.56.0.windows.1 and WSL Ubuntu-26.04 Git 2.55.
+**Target Platform**: Windows 11 x64 first, with Git for Windows. WSL2 repositories through the distro Git. The order facts are recorded on Git 2.56.0.windows.2 and WSL Ubuntu-26.04 Git 2.55.0 (research R15).
 
 **Project Type**: Local-first desktop application: Tauri 2 shell, compiled Bun Git service, React renderer.
 
@@ -100,7 +100,7 @@ src/
 │                           # new: history-topology.ts, history-layout.ts, history-reduced.ts,
 │                           #      history-view.ts, history-search.ts
 └── frontend/               # bridge.ts, app/Workbench.tsx, NoticeBand.tsx,
-                            # history/HistoryView.tsx, AncestryCell.tsx, CommitDetails.tsx, lanes.ts (P7 retires it),
+                            # history/HistoryView.tsx (the 001 row helpers), AncestryCell.tsx, CommitDetails.tsx, lanes.ts (P7 retires it),
                             # refs/ReferencesSidebar.tsx
                             # new: state/history-view.ts, history/HistoryFilter.tsx, history/HistoryList.tsx
 src-tauri/
@@ -131,9 +131,9 @@ tests/
 | P1 Pure algorithms | new `src/git-service/history-topology.ts` (OID table, CSR parents, line parser, order checks), new `src/git-service/history-reduced.ts`, new `src/contracts/filter-text.ts` | Algorithms only. | Topology checks: a duplicate row, a parent that already showed, a non-empty frontier at the end. Reduced graph against a brute-force BFS oracle on the small fixtures and H200K. Filter-text refusals. | Memory per commit. Mitigation: typed arrays, no JS `Map` of OID strings. |
 | P2 Contracts | `src/contracts/{limits.ts, envelope.ts, errors.ts, operations.ts, git-environment.json, channel.ts, wsl-process.json}`, `schemas/`, `tests/vectors/` | Adds 5 operations, 3 codes, the `search` policy, the WSL mode `search`, and the `matchingProbe` script. | Schema tests and golden vectors in Bun and Rust. | The shell reads no payload of the five operations (contract Δ1). The service schemas check the ranges. |
 | P3 Service view | `src/git-service/commands.ts` (argv builders), `refs-parser.ts` (kinds `stash`, `replace`; `refsDigest`), `refs.ts` (`refs/stash`), new `history-view.ts`, `session.ts` (handlers). Reuses `captureHead`, `sharedListing`, and `checkFailedRead` from `history.ts:255-397`. | `openHistory`, `loadHistory` with the D2 stop rule, `readHistoryRows`, `closeHistory`. | SC-001, SC-003, SC-004, and SC-015 on the small fixtures and H200K. Load cancel and resume. The D2 stop rule: a load ends at its stop row, no process of the load remains, and the next load runs the same argv with no `--skip`. A re-read row that differs from the held row gives `HISTORY_CHANGED` reason `order`. The `HISTORY_VIEW_COMMITS` bound with a lowered test bound. The stale cases. The trust gate. `REPOSITORY_CHANGED`. SC-013 byte identity. | Service CPU during an End load of 1M rows (about 1,350 frames of 64 KiB, unverified). The shell routes `succeeded` after the service closed the load Job (unverified). |
-| P4 Shell | `src-tauri/src/ipc.rs` and `src-tauri/build.rs` (5 commands), `git_env.rs` (policy `search`), `wsl.rs` (mode `search`, `matchingProbe`), `src-tauri/src/service.rs` (test only), `src/frontend/bridge.ts` (the five calls), `tests/contracts/bridge.test.ts` | Data and enum changes only. No new frame. | cargo tests for the allowlist, the policy, and the wrapper mode. | Local only. Rust work stays off cloud sessions. |
-| P5 Search | new `src/git-service/history-search.ts` (search, probe, merge, reduced settlement). `session.ts` gets the handler and the test option `historyProbeRuns`. `history-view.ts` runs the search on the view. `git-runner.ts` allows the policy `search`. | `searchHistory`. | SC-007 (Windows and each distro), SC-008, SC-009 (no Git process starts), SC-010 search cancel, the order-mismatch refusal. | The subsequence order is only an experiment fact. The runtime check refuses on a mismatch. |
-| P6 Frontend | `src/frontend/bridge.ts`, new `state/history-view.ts`, `history/HistoryView.tsx`, new `history/HistoryFilter.tsx`, `history/AncestryCell.tsx`, `history/CommitDetails.tsx`, `app/Workbench.tsx`, `NoticeBand.tsx`, `refs/ReferencesSidebar.tsx` | A virtual list, the D6 load trigger and the more-rows row, the filter, the two modes, the notices, the scope switch, the details pane. The references sidebar becomes a virtual list (D6). | Component tests: keyboard, refusals, notices, stable rows after eviction (FR-011), a fake count of 1M rows with no O(n) structure. The D6 trigger, the more-rows row, End and a search after a running scroll load, and stable rows when the count grows. The sidebar with 10,000 refs (FR-055). | Compressed scrolling at the 1M scale. |
+| P4 Shell | `src-tauri/src/ipc.rs` and `src-tauri/build.rs` (5 commands), `git_env.rs` (policy `search`), `wsl.rs` (mode `search`, `matchingProbe`, `matching_probe_command`), `process_requests.rs` (the `run` field `script`), `src-tauri/src/service.rs` (test only), `src/frontend/bridge.ts` (the five calls), `tests/contracts/bridge.test.ts` | Data and enum changes, and the optional `run` field `script`. No new frame. | cargo tests for the allowlist, the policy, the wrapper mode, and the `script` route and refusals. | Local only. Rust work stays off cloud sessions. |
+| P5 Search | new `src/git-service/history-search.ts` (search, probe, merge, reduced settlement). `session.ts` gets the handler and the test option `historyProbeRuns`. `history-view.ts` runs the search on the view. `git-runner.ts` allows the policy `search` and the `run` field `script`. `commands.ts` gets `probeScriptArgs`. | `searchHistory`. The WSL matching probe runs through the `run` field `script` (D8). | SC-007 (Windows and each distro), SC-008, SC-009 (no Git process starts), SC-010 search cancel, the order-mismatch refusal. | The subsequence order is only an experiment fact. The runtime check refuses on a mismatch. |
+| P6 Frontend | `src/frontend/bridge.ts`, new `state/history-view.ts`, new `history/HistoryList.tsx` (the window and the two modes), `history/HistoryView.tsx` (the 001 row helpers), new `history/HistoryFilter.tsx`, `history/AncestryCell.tsx`, `history/CommitDetails.tsx`, `app/Workbench.tsx`, `NoticeBand.tsx`, `refs/ReferencesSidebar.tsx` | A virtual list, the D6 load trigger and the more-rows row, the filter, the two modes, the notices, the scope switch, the details pane. The references sidebar becomes a virtual list (D6). | Component tests: keyboard, refusals, notices, stable rows after eviction (FR-011), a fake count of 1M rows with no O(n) structure. The D6 trigger, the more-rows row, End and a search after a running scroll load, and stable rows when the count grows. The sidebar with 10,000 refs (FR-055). | Compressed scrolling at the 1M scale. |
 | P7 Retire 001 `readHistory` | `operations.ts`, `envelope.ts` (`ReadHistory`), `history.ts` (`readHistory`, `pageOf`), `session.ts`, `ipc.rs`, `src/frontend/history/lanes.ts`, their tests | One history path only. | The full run stays green. | 001 evidence names `readHistory`. Keep the 001 artifacts as records. |
 | P8 Qualification | `tests/windows/history-perf.test.ts`, responsiveness workloads, the Git Extensions harness, `tests/wsl/history-wsl.test.ts` | None. | SC-002, SC-014, and the SC-001 End case on H1M. SC-005, SC-006, and SC-011 on H200K. SC-010 and SC-012 in the packaged build. CPU for each workload (N-3). Cold and warm runs for SC-005, SC-006, and SC-014, by the 001 rules (001 plan.md "Measurements and budgets"). | Git memory is recorded, not bounded (O-1, closed). The filter ratio is close to 1.0. Open 001 tools and the measurement environment (001 T154, T165, T180, T240, T242, T244). |
 
@@ -167,7 +167,7 @@ Each phase writes its tests first. P0.2, P0.3, and P0.4 are the riskiest proofs 
 - At most 3 history processes run per view: the load, the search, and the text read. They take no read slot.
 - Each operation has its own Job. `cancel` closes that Job.
 - After a service restart, no view resumes. The renderer marks the view stale. Refresh opens a new one.
-- New: the `search` policy, the WSL wrapper mode `search`, the matching probe, and the process bound outside the read slots. No new channel frame.
+- New: the `search` policy, the WSL wrapper mode `search`, the matching probe, the optional `run` field `script` for the WSL probe, and the process bound outside the read slots. No new channel frame.
 - Left out:
   - a per-call output credit frame, because the stop row bounds each load;
   - `--max-count`, because an `{oid}` load learns its stop row only when the commit streams;
@@ -250,6 +250,7 @@ The reduced graph needs the full topology stream beside the search stream, becau
 - The same operations run through the wrapper. `search` is a new wrapper mode that adds `LC_ALL=C.UTF-8`, because no Windows variable reaches Linux.
 - Each text read costs one `wsl.exe` start, about 250 ms (unverified). A long-lived `cat-file` is left out. Add it when WSL misses SC-014.
 - A `DEADLINE` of a WSL view returns the remedy text with `command: null`. No WSL form of the commit-graph command exists (contract Δ11).
+- The matching probe runs as one `run` frame with the field `script: "matchingProbe"` (contract Δ3 "Matching probe", Δ6). The shell runs the fixed script through the wrapper in mode `search`, in the Job, deadline, and cancel rules of `run`. Four separate Git runs were rejected: no Git command removes the folder, `git init` re-inits an existing folder, and each run costs one more `wsl.exe` start.
 - Verify in each distro: the matching probe, the P0.2 order facts with that Git version, the `wsl.exe` relay throughput of an End load on H200K, the text latency, and Linux memory through the scope `memory.peak`. Without the last one, SC-002 stays unverified there.
 
 ### D9 Tests and fixtures
@@ -305,6 +306,9 @@ The reduced graph needs the full topology stream beside the search stream, becau
 | WP8 | frontend-implementer (loads arbareto-ux and vercel-react-best-practices) | `src/frontend/{state/history-view.ts, history/*, app/Workbench.tsx, NoticeBand.tsx, refs/ReferencesSidebar.tsx}`, `tests/contracts/history-*.test.tsx`, `tests/contracts/references-sidebar.test.tsx` | P6 |
 | WP9 | implementer | Retire `readHistory` | P7 |
 | WP10 | implementer, with the runs done by scout | `tests/windows/history-perf.test.ts`, the Git Extensions harness, the view and search cases of `tests/wsl/history-wsl.test.ts` | P8 |
+| WP11a | implementer-xhigh | `src-tauri/src/{wsl,process_requests}.rs`, `src/contracts/{channel.ts,wsl-process.json}`, `schemas/` | T063, Rust and contract. Local only. |
+| WP11b | implementer-xhigh | `src/git-service/{git-runner,native-runner,commands,matching-probe,history-search,history-view}.ts`, `tests/git/bun-runner.ts`, `tests/git/history-view-harness.ts`, their tests | T063, service and test double (P5). |
+| WP11c | implementer, with the runs done by scout | `tests/wsl/history-wsl.test.ts`, `tests/wsl/fixtures.ts` | T063, WSL cases. Local WSL run. |
 
 These packages are not file-disjoint:
 - WP4 edits `commands.ts`, `refs-parser.ts`, and `refs.ts` for `readRefs` in batch 1. WP6 edits them later in batch 2.
@@ -312,6 +316,7 @@ These packages are not file-disjoint:
 - WP4 (T027) adds `refsDigest` to the `readRefs` literals in `tests/contracts/history-view.test.tsx`, `references-sidebar.test.tsx`, and `renderer-freshness.test.ts`. WP8 edits the first two later.
 - WP7 changes `session.ts` and `history-view.ts`. It runs strictly after WP6.
 - WP9 edits files of WP4, WP5, and WP6. It runs strictly after those three.
+- WP11 edits files of WP4, WP5, and WP7. WP11a, WP11b, and WP11c run in that order, strictly after WP7.
 
 ## Complexity Tracking
 

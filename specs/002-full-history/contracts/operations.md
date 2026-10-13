@@ -141,7 +141,10 @@ A view operation that ends without its result value carries `{reason?, remedy?}`
 ### Matching probe
 
 - Windows: a `mkdtemp` folder in `os.tmpdir()`. Then `init --bare --template= --object-format=sha1`, `fast-import` of the fixed stream, two probe `rev-list` runs, and `fs.rm` of the folder.
-- WSL: one fixed `matchingProbe` script in a `/tmp/arbareto-probe-<uuid>` folder, through the wrapper in mode `search` (Δ11).
+- WSL: one `run` frame with the field `script: "matchingProbe"` runs the fixed `matchingProbe` script through the wrapper in mode `search` (Δ6, Δ11). The shell supplies `/bin/sh`, the script text, and the approved Git path.
+- WSL arguments: `[dir, tip, n, ...run1, ...run2]`. `dir` is `/tmp/arbareto-probe-<uuid>`, with a lowercase uuid from the service. `tip` is the 40-hex OID of the probe tip. `n` is the run length. `run1` and `run2` are the two search argv arrays of `n` items each. Each starts with `--no-lazy-fetch`. The `input` is the fixed stream.
+- WSL output: for each run, zero or more lines of 40 lowercase hex digits, then one `end <exit code>` line. The service accepts exactly two `end 0` lines and nothing after the last. Other output or a nonzero exit gives `GIT_FAILED`.
+- WSL cleanup: the script creates the folder with `mkdir` and no `-p`, so an existing folder fails. An `EXIT` trap set after `mkdir` removes the folder.
 - The fixed stream and the expected OID sets are contract values in `src/contracts/matching-probe.ts`. They cover "Виправлення" in both cases, є/Є, і/І, ї/Ї, ґ/Ґ, ß against ẞ and SS, and a windows-1251 message with an encoding header.
 - A mismatch gives `SEARCH_UNSUPPORTED` reason `matching`, with a remedy.
 - The probe writes nothing inside a user repository.
@@ -193,6 +196,9 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
 - History processes take no read slot. Polls and `readRefs` keep their two slots.
 - Each operation has its own Job. `cancel` closes that Job. The Windows Job ends every descendant. The WSL `SIGHUP` trap kills the scope (001 §6 "Process ownership", 001 §11 "Process ownership").
 - No new channel frame. No per-call output credit.
+- The `run` frame takes the optional field `script`. Its only value is `matchingProbe`. Only the `registeredOperation` context takes it (Δ3 "Matching probe").
+- The shell refuses a `script` run with `INVALID_REQUEST` and starts nothing for: a policy other than `search`, a transaction or an index file, a Windows Git, a folder other than `/tmp/arbareto-probe-<uuid>`, a tip that is not 40 lowercase hex digits, a run length that is not a decimal number of at least 1 without a leading zero, an argument count other than `3 + 2n`, and a run without `--no-lazy-fetch` first.
+- Otherwise a `script` run follows every `run` rule: Job, deadline, cancel, output bounds, and the `exit` reply.
 - A load ends at its stop row through the process `cancel` of its call. That closes the Job of the load operation (001 §6 "Channel frames"). A `succeeded` result follows.
 
 ## Δ7 Startup, trust, and environment (001 §7)
@@ -226,7 +232,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
 |---|---|---|
 | `HISTORY_CHANGED` | `order`, `topology` | Git gave another order, or the topology inputs changed. |
 | `UNSUPPORTED_FILTER_TEXT` | `line-break`, `nul`, `quote-end`, `length` | The service refuses the text. No Git process starts. |
-| `SEARCH_UNSUPPORTED` | `matching` | The matching probe failed. The result carries a remedy. |
+| `SEARCH_UNSUPPORTED` | `matching` | The matching probe gave a mismatch. The result carries a remedy. |
 
 - New `OUTPUT_LIMIT` reasons: `HISTORY_PARENTS_PER_COMMIT` and `HISTORY_VIEW_COMMITS`.
 - The renderer check (`src/contracts/filter-text.ts`) gives `found`. `found` names the refused characters: the first invalid character, `\E` for `quote-end`, or the lone surrogate. It is null for the byte bound. A lone surrogate is possible only in the renderer check.
@@ -234,14 +240,14 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
 
 ## Δ10 Required contract checks (001 §10)
 
-- Schema tests and golden vectors for the five operations, the three codes, the `search` policy, the WSL mode `search`, and the `matchingProbe` script. They run in Bun and in Rust.
+- Schema tests and golden vectors for the five operations, the three codes, the `search` policy, the WSL mode `search`, the `matchingProbe` script, and the `run` field `script`. They run in Bun and in Rust.
 - The shell allowlist holds the five commands.
 
 ## Δ11 WSL repositories (001 §11)
 
 - The same operations run through the wrapper (001 §11 "Process launch").
 - New wrapper mode `search` in `src/contracts/wsl-process.json`. It adds `LC_ALL=C.UTF-8`, because no Windows variable reaches Linux (001 §11 "Trust and environment").
-- New fixed script `matchingProbe`.
+- New fixed script `matchingProbe`. Only the `run` field `script` starts it. Its `init` and `fast-import` pass `--no-lazy-fetch`.
 - WSL polls do not run `readRefs` (001 §11 "Change polling"). A change of a ref other than HEAD shows the notice at the next focus return, Refresh, or mutation outcome (spec SC-012).
 - Each text read costs one `wsl.exe` start (unverified, about 250 ms).
 - A `DEADLINE` of a WSL view carries the remedy text with `command: null`. No WSL form of the commit-graph command exists.
@@ -258,5 +264,5 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
 - A missing commit several steps below every start point gives `GIT_FAILED`, not `OBJECT_MISSING` (Δ3 `loadHistory`, the feature 001 `checkFailedRead` limit).
 - A WSL view gets no copyable `DEADLINE` command (Δ11).
 - A shallow or grafts file above 4 MiB has no view reason. `openHistory` and `loadHistory` then give `OUTPUT_LIMIT` without `reason`.
-- WSL search: Δ3 "Matching probe" runs the fixed `matchingProbe` script through the wrapper in mode `search`. The shell has no route that runs it: `Texts` in `src-tauri/src/wsl.rs` has no `matchingProbe`, and `run` builds only Git argv. Δ1 and Δ6 add no new channel frame. Until a route exists, the service refuses a WSL search with `SEARCH_UNSUPPORTED` reason `matching`. Spec FR-046 is not met for search. A design for the route is in progress.
+- A cancel or a deadline of the WSL probe ends its scope with SIGKILL. The `/tmp/arbareto-probe-<uuid>` folder then stays. It holds only the probe objects.
 - Probe step failure: a failed probe step, such as `mkdtemp`, `init`, or `fast-import`, gives `GIT_FAILED`, not `SEARCH_UNSUPPORTED`.

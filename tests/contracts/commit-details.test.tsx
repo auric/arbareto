@@ -173,6 +173,30 @@ describe("Selected commit of a feature 002 view", () => {
     expect(text(host)).toContain("Arbareto shows the first 16 KiB of this message.");
     expect(text(field(host, "Parents"))).toContain("None. This is a root commit.");
   });
+
+  // plan.md D7: the Details-ready mark follows `onRead`, so only a painted `found` read runs it.
+  test("onRead runs for a found commit only, never for a failed read or a none or unknown target", async () => {
+    const reads = async (view: ReturnType<typeof createHistoryView>, oid: string) => {
+      let count = 0;
+      const host = await show(<ViewCommitDetails view={view} oid={oid} dateFormat={dateFormat} onRead={() => void count++} />);
+      await settle();
+      return { count, host };
+    };
+    const { view } = await opened();
+    const found = await reads(view, fakeOid(3));
+    expect(found.count).toBe(1);
+    expect(text(found.host)).toContain("Body of 3");
+    expect((await reads(view, fakeOid(999))).count).toBe(0);
+    const partial = createFake({ total: 10, loaded: 5 });
+    const unknown = createHistoryView(partial.bridge, TARGET);
+    await act(async () => void (await unknown.open("all", false)));
+    expect((await reads(unknown, fakeOid(7))).count).toBe(0);
+    const broken = createFake({ total: 10, loaded: 10 });
+    const failing = { ...broken.bridge, readHistoryRows: async () => ({ requestId: "r", state: "failed" as const, code: "GIT_FAILED" as const }) };
+    const failed = createHistoryView(failing, TARGET);
+    await act(async () => void (await failed.open("all", false)));
+    expect((await reads(failed, fakeOid(3))).count).toBe(0);
+  });
 });
 
 // Contract Δ3: a newer text read cancels an unfinished one of the same view. The fake models it.

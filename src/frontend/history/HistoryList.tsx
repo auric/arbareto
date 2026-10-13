@@ -581,6 +581,9 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
       <p key="load-failure" className="flex items-center gap-2">
         <WarningIcon />
         <span>{`Loading more commits stopped: ${state.loadFailure.code}${state.loadFailure.reason === undefined ? "" : ` ${state.loadFailure.reason}`}. Scroll to the end of the loaded rows to try again.`}</span>
+        <Button ref={bindLeaving} variant="outline" size="sm" onClick={view.retry}>
+          Retry
+        </Button>
       </p>,
     );
   if (state.limit !== null)

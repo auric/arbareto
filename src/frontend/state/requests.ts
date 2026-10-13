@@ -3,7 +3,7 @@
 
 import type { ChangeEntry, ReadEntriesResult, RefsResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { BridgeResponse, OnProgress } from "../bridge";
-import { sameHead } from "./history-view";
+import { nextRequestSeq, sameHead } from "./history-view";
 
 // Contract §2, §5 "Pending reads", §8, and §11 "Change polling". plan.md "Freshness and reconciliation". Feature 002 contract Δ3 and Δ8.
 
@@ -62,10 +62,10 @@ export type RequestState = {
   outcomes: readonly BridgeResponse[];
   /** Each repository open and user Refresh adds 1. The History-ready mark counts it. */
   historyEpoch: number;
-  /** The `performance.now()` time when the request of `refs` was sent. */
-  refsAt: number;
-  /** The HEAD of the newest `readWorkspace` result, and the time when its request was sent. */
-  headRead: { head: Head; at: number } | null;
+  /** The `nextRequestSeq()` value when the request of `refs` was sent. */
+  refsSeq: number;
+  /** The HEAD of the newest `readWorkspace` result, and the `nextRequestSeq()` value when its request was sent. */
+  headRead: { head: Head; seq: number } | null;
 };
 
 const POLL_MS = 1000;
@@ -90,7 +90,7 @@ const INITIAL: RequestState = {
   refreshing: false,
   outcomes: [],
   historyEpoch: 0,
-  refsAt: 0,
+  refsSeq: 0,
   headRead: null,
 };
 
@@ -186,7 +186,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     if (!isPoll) userRead();
     const e = epoch;
     const token = {};
-    const at = performance.now();
+    const seq = nextRequestSeq();
     const own: typeof poll = isPoll ? (poll = { operationId: null, cancel: false }) : null;
     pendingReads++;
     if (refresh) userReads++;
@@ -207,7 +207,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       if (refresh && userReads === 0) set({ refreshing: false });
       if (own && poll === own) poll = null;
       // Data-model "WSL start and poll transitions": a poll that the renderer canceled ends without a shown result.
-      if (!(own?.cancel && response.state === "canceled")) onWorkspace(response, refresh, token, own !== null, at);
+      if (!(own?.cancel && response.state === "canceled")) onWorkspace(response, refresh, token, own !== null, seq);
       if (own) armPoll();
       readEnded();
       onEnd?.();
@@ -242,7 +242,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     } else if (poll === null) armPoll();
   }
 
-  function onWorkspace(response: BridgeResponse, refresh: boolean, token: object, isPoll: boolean, at: number) {
+  function onWorkspace(response: BridgeResponse, refresh: boolean, token: object, isPoll: boolean, seq: number) {
     const result = response.result;
     if (reconciling === token) reconciling = null;
     if (!isSnapshot(result)) {
@@ -258,7 +258,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     if (refresh && response.state === "succeeded" && result.recoveryState === "ready") sessionBlocked = false;
     const headChanged = observedHead !== null && !sameHead(observedHead, result.head);
     observedHead = result.head;
-    if (state.headRead === null || at > state.headRead.at) set({ headRead: { head: result.head, at } });
+    if (state.headRead === null || seq > state.headRead.seq) set({ headRead: { head: result.head, seq } });
     // plan.md Refresh row: `readRefs` follows each full status result. A WSL poll result sends none.
     // A changed HEAD sends one, so the feature 002 "References changed" notice can show (contract Δ8).
     if (headChanged || (result.readKind === "full" && !(isPoll && result.location.kind === "wsl"))) requestRefs();
@@ -360,21 +360,21 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     const e = epoch;
     const token = {};
     latestRefs = token;
-    const at = performance.now();
+    const seq = nextRequestSeq();
     void bridge.readRefs({ repositoryId: repository.repositoryId, repositoryGeneration: generation }).then((response) => {
       // Contract §5 "Pending reads": a newer `readRefs` supersedes this one.
       if (e !== epoch || latestRefs !== token) return;
-      onRefs(response, at);
+      onRefs(response, seq);
     });
   }
 
-  function onRefs(response: BridgeResponse, at: number) {
+  function onRefs(response: BridgeResponse, seq: number) {
     const list = response.result;
     if (!isRefList(list)) {
       set({ refsFailure: response });
       return;
     }
-    set({ refs: list, refsAt: at, refsFailure: null });
+    set({ refs: list, refsSeq: seq, refsFailure: null });
   }
 
   // The Windows interval poll. A WSL workspace polls through `armPoll` instead (contract §11 "Change polling").

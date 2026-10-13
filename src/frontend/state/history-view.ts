@@ -47,8 +47,8 @@ export type Selection = { id: string; index: number | null; mode: "full" | "filt
 export type HistoryState = {
   scope: Scope;
   view: Opened | null;
-  /** The `performance.now()` time when the `openHistory` response arrived. Only reads sent later can be newer than the view (contract Δ8). */
-  openedAt: number;
+  /** The `nextRequestSeq()` value when the `openHistory` response arrived. Only reads sent later can be newer than the view (contract Δ8). */
+  openedSeq: number;
   opening: boolean;
   openFailure: { code: string; reason?: string; remedy?: Remedy } | null;
   /** The rows that the view holds (contract Δ3 `rowCount`). */
@@ -84,7 +84,7 @@ export type Details = { state: "found"; row: ViewRow } | { state: "none" | "unkn
 
 const INITIAL: Omit<HistoryState, "scope"> = {
   view: null,
-  openedAt: 0,
+  openedSeq: 0,
   opening: false,
   openFailure: null,
   viewRows: 0,
@@ -112,6 +112,10 @@ const STALE_CODES = new Set(["HISTORY_CHANGED", "OBJECT_MISSING", "MALFORMED_GIT
 export const sameHead = (a: Head, b: Head) => a.state === b.state && (a as { target?: string }).target === (b as { target?: string }).target && (a as { oid?: string }).oid === (b as { oid?: string }).oid;
 
 /** Contract Δ8: a newer `readRefs.refsDigest` or `readWorkspace.head` than the view shows the "References changed" notice. */
+let requestSeq = 0;
+/** Orders the read sends of `requests.ts` against the `openHistory` arrivals. WebView2 rounds `performance.now()`, so equal clock stamps cannot order them. */
+export const nextRequestSeq = () => ++requestSeq;
+
 export function refsChanged(view: Pick<Opened, "refsDigest" | "head"> | null, refsDigest: string | null, head: Head | null): boolean {
   if (view === null) return false;
   return (refsDigest !== null && refsDigest !== view.refsDigest) || (head !== null && !sameHead(head, view.head));
@@ -131,6 +135,8 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
   // True after the list reported its first window.
   let shown = false;
   let moreShown = false;
+  // The row n of the last `demand`.
+  let needed = 0;
   // A newer view or a newer search makes older responses void.
   let epoch = 0;
   let searchSeq = 0;
@@ -320,8 +326,9 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     const done = bridge
       .loadHistory(repository(), { viewId: view.viewId, need }, (event) => {
         if (view !== state.view || state.load === null) return;
-        // The progress `rows` can hold rows that the view does not serve yet (data-model §1 `rowCount`). It feeds only the progress text.
-        set({ load: { ...state.load, operationId: event.operationId, rows: event.counters.rows ?? state.load.rows } });
+        // Contract Δ3: the `history-load` progress `rows` counts the rows that the view serves.
+        const rows = event.counters.rows;
+        set({ load: { ...state.load, operationId: event.operationId, rows: rows ?? state.load.rows }, ...(rows === undefined ? {} : { viewRows: Math.max(state.viewRows, rows) }) });
         if (cancelWanted) cancelLoad();
         else pump();
       })
@@ -362,12 +369,19 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
   function demand(first: number, last: number, more: boolean, need: number) {
     if (more && !moreShown && state.halted) set({ halted: false });
     moreShown = more;
+    needed = need;
     visible = { first, last };
     shown = true;
     pump();
     if (state.view === null || filterMode() || state.complete || state.load !== null || searching() || state.stale !== null || state.limit !== null || state.halted) return;
     // plan.md D6: a load starts when fewer than M loaded rows lie below row n.
     if (state.viewRows - 1 - need < HISTORY_LOAD_MARGIN) void runLoad({ row: Math.max(0, need) }, "scroll");
+  }
+
+  /** Clears a halt and a load failure, then demands the last window again (plan.md D6). */
+  function retry() {
+    set({ halted: false, loadFailure: null });
+    demand(visible.first, visible.last, moreShown, needed);
   }
 
   /** Spec FR-009: End loads to the last commit, then selects it. */
@@ -425,7 +439,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     // Contract Δ3: an empty repository gives a view with `startCount` 0. It has no commit to load.
     const again = search !== null && (search.state === "running" || search.state === "finished");
     // A running search blocks scroll loads from the first render of the new view: the filter sends only `searchHistory` (plan.md D6).
-    set({ view: result, openedAt: performance.now(), opening: false, complete: result.startCount === 0, ...(again ? { search: { ...search, state: "running", searchId: null, matches: 0, settled: 0 } } : {}) });
+    set({ view: result, openedSeq: nextRequestSeq(), opening: false, complete: result.startCount === 0, ...(again ? { search: { ...search, state: "running", searchId: null, matches: 0, settled: 0 } } : {}) });
     if (again) return void runSearch(search.text, search.mode, oid);
     if (oid === null) return pump();
     const loaded = await runLoad({ oid }, "oid");
@@ -640,6 +654,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     refresh: () => open(state.scope),
     setScope: (scope: Scope) => (scope === state.scope ? Promise.resolve() : open(scope)),
     demand,
+    retry,
     end,
     cancelLoad,
     row,

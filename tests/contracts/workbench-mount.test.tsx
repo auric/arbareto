@@ -396,6 +396,11 @@ describe("submodule update mount", () => {
     const item = await openRepositoryMenu();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(describedBy(item)).toBe(RUNNING_TEXT);
+    // Base UI MenuGroupLabel names its group and hides itself. A reason or a status must not become a group name.
+    expect(item.closest('[role="group"]')!.hasAttribute("aria-labelledby")).toBe(false);
+    const status = document.querySelector<HTMLElement>('[data-slot="menubar-content"] [role="status"]')!;
+    expect(status.closest('[role="group"]')!.hasAttribute("aria-labelledby")).toBe(false);
+    expect(status.closest('[aria-hidden="true"]')).toBeNull();
     await act(async () => item.click());
     await settle();
     expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(reviews);

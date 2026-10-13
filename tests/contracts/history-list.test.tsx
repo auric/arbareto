@@ -163,6 +163,23 @@ describe("listbox and DOM bounds", () => {
     expect(done.host.querySelector("[data-more]")).toBeNull();
   });
 
+  test("history-load progress grows the scroll range before the load ends, and a lower progress count never shrinks it", async () => {
+    const { list, fake, view } = await mount({ total: 1_000_000, hold: { load: true } });
+    await act(async () => fake.release());
+    await settle();
+    await scrollTo(list, maxScrollTop(list));
+    expect(fake.held()).toBe(1);
+    const before = view.getState().viewRows;
+    await act(async () => fake.progress(before + 5_000));
+    await settle();
+    expect(fake.held()).toBe(1);
+    expect(view.getState().viewRows).toBe(before + 5_000);
+    expect(list.scrollHeight).toBe((before + 5_000 + 3) * 26);
+    await act(async () => fake.progress(before + 10));
+    await settle();
+    expect(list.scrollHeight).toBe((before + 5_000 + 3) * 26);
+  });
+
   test("the heading states that more rows exist until the count is final", async () => {
     const open = await mount({ total: 1_000_000 });
     expect(text(open.host)).toContain(`${open.fake.loaded().toLocaleString("en-US")} commits loaded. More commits exist.`);
@@ -249,6 +266,24 @@ describe("plan.md D6 load trigger", () => {
       expect(view.getState()).toMatchObject({ halted: true, loadFailure: { code } });
       expect(text(host)).toContain(`Loading more commits stopped: ${code}.`);
     });
+
+  test("Retry on a load failure clears the halt, demands the window again, and moves focus to the list", async () => {
+    let n = 0;
+    const { fake, host, view, list } = await mount({ total: 1_000_000, loadResponse: () => (++n === 1 ? { requestId: "r", state: "rejected", code: "BUSY" } : null) });
+    await settle();
+    expect(view.getState()).toMatchObject({ halted: true, loadFailure: { code: "BUSY" } });
+    const retry = [...host.querySelectorAll("button")].find((b) => text(b) === "Retry")!;
+    expect(retry.getAttribute("type")).toBe("button");
+    await act(async () => retry.focus());
+    await act(async () => retry.click());
+    await settle();
+    expect(fake.of("loadHistory")).toHaveLength(2);
+    expect(fake.of("loadHistory")[1]).toEqual(fake.of("loadHistory")[0]);
+    expect(view.getState()).toMatchObject({ halted: false, loadFailure: null });
+    expect(view.getState().viewRows).toBe(fake.loaded());
+    expect(text(host)).not.toContain("Loading more commits stopped");
+    expect(document.activeElement).toBe(list);
+  });
 
   test("End during a scroll load cancels it first and waits for its terminal response", async () => {
     const { list, fake } = await mount({ total: 1_000_000, hold: { load: true } });

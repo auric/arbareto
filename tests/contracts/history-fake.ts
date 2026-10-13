@@ -13,7 +13,7 @@ export const oid = (i: number) => i.toString(16).padStart(40, "0");
 export const indexOf = (o: string) => parseInt(o, 16);
 
 type Call = { operation: string; payload: Record<string, unknown> };
-type Held = { resolve(response: BridgeResponse): void; operationId: string; result: () => BridgeResponse };
+type Held = { resolve(response: BridgeResponse): void; operationId: string; result: () => BridgeResponse; onProgress?: OnProgress };
 
 export type FakeOptions = {
   /** The commits of the history. */
@@ -189,7 +189,7 @@ export function createFake(options: FakeOptions) {
         loaded = stop(payload.need as Record<string, unknown>);
         return ok({ rows: loaded, complete: complete() });
       };
-      if (options.hold?.load) return new Promise((resolve) => held.push({ resolve, operationId, result: finish }));
+      if (options.hold?.load) return new Promise((resolve) => held.push({ resolve, operationId, result: finish, onProgress }));
       return later(finish());
     },
     readHistoryRows: async (_target, payload) => {
@@ -264,6 +264,12 @@ export function createFake(options: FakeOptions) {
       next?.resolve(next.result());
     },
     held: () => held.length,
+    /** Sends a `history-load` progress event of the oldest held response. The view then serves `rows` rows (contract Δ3). */
+    progress(rows: number) {
+      const next = held[0]!;
+      loaded = rows;
+      next.onProgress?.({ requestId: "r", operationId: next.operationId, state: "running", phase: "history-load", counters: { rows } });
+    },
     maxReads: () => maxReads,
     /** The text reads that a newer text read canceled. */
     canceledTexts: () => canceledTexts,

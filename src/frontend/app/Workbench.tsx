@@ -954,8 +954,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const submodules = workspace?.submoduleNotice.count ?? 0;
   // Feature 002 contract Δ8: a newer `readRefs.refsDigest` or `readWorkspace.head` than the view.
   // A read sent before the view opened can be older than the view, so it never shows the notice.
-  const openedAt = historyState.openedAt;
-  const refsNotice = refsChanged(historyState.view, state.refsAt > openedAt ? (state.refs?.refsDigest ?? null) : null, state.headRead !== null && state.headRead.at > openedAt ? state.headRead.head : null);
+  const openedSeq = historyState.openedSeq;
+  const refsNotice = refsChanged(historyState.view, state.refsSeq > openedSeq ? (state.refs?.refsDigest ?? null) : null, state.headRead !== null && state.headRead.seq > openedSeq ? state.headRead.head : null);
   const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0) + (refsNotice ? 1 : 0);
   // plan.md "Icons": the Commit tooltip holds both counts, and Commit has no key.
   const commitLabel = `Commit: ${plural(working, "working change", "working changes")}, ${staged} staged`;

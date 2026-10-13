@@ -64,7 +64,7 @@ export type ViewCommitDetailsProps = {
   /** The selected commit. */
   oid: string;
   dateFormat?: Intl.DateTimeFormat;
-  /** Runs after the details read of `oid` returned and its result rendered. */
+  /** Runs after a `found` details read of `oid` rendered. A failed or absent target never runs it. */
   onRead?: () => void;
 };
 
@@ -88,7 +88,7 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }
   }, [view, oid, attempt, viewId]);
   const details = read?.oid === oid ? read.details : undefined;
   useEffect(() => {
-    if (details !== undefined && details.state !== "ended") onRead?.();
+    if (details?.state === "found") onRead?.();
   }, [details]);
   const row = details?.state === "found" ? details.row : details === undefined || details.state === "canceled" || details.state === "ended" ? undefined : null;
   const head = view.getState().view?.head;

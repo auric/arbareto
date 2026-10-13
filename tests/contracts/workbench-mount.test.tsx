@@ -1631,4 +1631,21 @@ describe("history scope and shortcuts", () => {
     await resolve(latest(double, "readRefs"), succeeded(refsList("0".repeat(64))));
     expect(band().textContent).not.toContain("References changed.");
   });
+
+  // WebView2 rounds `performance.now()`, so a refs read and the open response can get equal clock stamps.
+  test("a refs read sent after the open response shows the notice when both fall in the same clock tick", async () => {
+    const now = performance.now;
+    performance.now = () => 1000;
+    try {
+      const double = await opened();
+      const band = () => document.querySelector<HTMLElement>('[data-slot="notice-band"]')!;
+      await act(async () => void (window.dispatchEvent(new Event("blur")), window.dispatchEvent(new Event("focus"))));
+      await settle();
+      await resolve(latest(double, "readWorkspace"), succeeded(snapshot()));
+      await resolve(latest(double, "readRefs"), succeeded(refsList("1".repeat(64))));
+      expect(band().textContent).toContain("References changed. History still shows the references from when it opened.");
+    } finally {
+      performance.now = now;
+    }
+  });
 });

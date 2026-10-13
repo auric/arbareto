@@ -659,7 +659,7 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
         });
         const cwd = fixtureDir(`${name}-cwd`);
         const proc = Bun.spawnSync([Bun.which(shell)!, "-NoProfile", "-Command", command], { cwd, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-        expect({ shell, q, exit: proc.exitCode }).toEqual({ shell, q, exit: 0 });
+        expect({ shell, q, exit: proc.exitCode, stderr: proc.exitCode === 0 ? "" : proc.stderr.toString() }).toEqual({ shell, q, exit: 0, stderr: "" });
         const markers = [cwd, repo].flatMap((d) => readdirSync(d, { recursive: true }).map(String)).filter((p) => basename(p) === MARKER);
         expect({ shell, q, markers }).toEqual({ shell, q, markers: [] });
         expect({ shell, q, entries: indexEntries(gitPath(), repo) }).toEqual({ shell, q, entries: indexEntries(gitPath(), oracle) });

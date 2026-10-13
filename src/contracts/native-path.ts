@@ -13,6 +13,8 @@ export const PATH_RULES = {
     isAbsolute: (path: string) => /^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![.?][\\/])[^\\/]+[\\/][^\\/])/.test(path),
     // Contract §7 "Inside and outside". The same page: a UNC path and the `\\.\` and `\\?\` device paths start with two separators.
     isUncOrDevice: (path: string) => /^[\\/]{2}/.test(path),
+    // Git for Windows compat/win32/path-utils.h `has_dos_drive_prefix`: an ASCII letter and a colon.
+    hasDrivePrefix: (path: string) => /^[A-Za-z]:/.test(path),
     isGitExecutable: (path: string) => /[\\/]git\.exe$/i.test(path),
     // Contract §6 "File facts". Microsoft Learn "Naming Files, Paths, and Namespaces", "Naming Conventions": no character of `<>:"/\|?*`,
     // no U+0000 to U+001F, and no trailing space or period. So `.` and `..` fail too.
@@ -51,6 +53,8 @@ export const PATH_RULES = {
     isAbsolute: (path: string) => posix.isAbsolute(path),
     // POSIX has no UNC or device prefix.
     isUncOrDevice: (_path: string) => false,
+    // git-compat-util.h: `has_dos_drive_prefix` is 0 outside Windows.
+    hasDrivePrefix: (_path: string) => false,
     isGitExecutable: (path: string) => path.endsWith("/git"),
     // POSIX.1-2024 XBD 3.146 "Filename": no `/` and no NUL. The filenames dot and dot-dot have a special meaning.
     isComponent: (name: string) => name !== "." && name !== ".." && /^[^/\u0000]+$/.test(name),

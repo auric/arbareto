@@ -275,9 +275,11 @@ export interface PushDestination {
 export type PushDecision =
   | { kind: "destination"; destination: PushDestination }
   | { kind: "panel"; prefill: PushDestination | null }
-  | { kind: "refused"; reason: "remote-missing" | "mirror" | "push-remote-differs" | "invalid-config" };
+  | { kind: "refused"; reason: "remote-missing" | "mirror" | "push-remote-differs" | "several-merge-refs" | "invalid-config" };
 
 const PANEL: PushDecision = { kind: "panel", prefill: null };
+
+const severalMergeRefs = (config: readonly ConfigValue[], branch: string): boolean => config.filter((e) => e.key === `branch.${branch}.merge`).length > 1;
 
 // remote.c `remote_for_branch`: a push without an explicit remote goes to `origin` (git-push(1)).
 const DEFAULT_REMOTE = "origin";
@@ -297,15 +299,17 @@ function destinationSteps(r: PushRecord, remotes: readonly string[], config: rea
   const entry = lastEntry(config, "push.default");
   const mode = entry === undefined ? "simple" : entry.value;
   if (mode === "current") return to(branchRef, "push-default-branch");
+  // builtin/push.c `get_upstream_ref` stops on more than one `branch.<name>.merge` value.
+  const severalMerges = severalMergeRefs(config, r.branch);
   if (mode === "simple") {
     // builtin/push.c `is_same_remote`: Git pushes a triangular `simple` like `current`. `branch_get_push_1` gives no `%(push)` for it.
-    const fetchEntry = lastEntry(config, `branch.${r.branch}.remote`);
-    if (fetchEntry?.value === null) return { kind: "refused", reason: "invalid-config" };
-    if ((fetchEntry?.value ?? DEFAULT_REMOTE) !== remote) return to(branchRef, "push-default-triangular", null);
+    if ((lastEntry(config, `branch.${r.branch}.remote`)?.value ?? DEFAULT_REMOTE) !== remote) return to(branchRef, "push-default-triangular", null);
+    if (severalMerges) return { kind: "refused", reason: "several-merge-refs" };
     return r.push === "" ? PANEL : to(branchRef, "push-default-branch");
   }
   if (mode === "upstream" || mode === "tracking") {
     if (r.upstreamRemote !== remote) return { kind: "refused", reason: "push-remote-differs" };
+    if (severalMerges) return { kind: "refused", reason: "several-merge-refs" };
     return r.upstream === "" ? PANEL : to(r.upstreamRemoteRef, "push-default-upstream");
   }
   // Git pushes a `matching` branch only when the remote advertises its name at push time. The review contacts no remote.
@@ -313,19 +317,32 @@ function destinationSteps(r: PushRecord, remotes: readonly string[], config: rea
   return { kind: "refused", reason: "invalid-config" };
 }
 
-// remote.c `handle_config` reads these `remote.<name>` keys of every entry with `git_config_bool`, which stops `git remote`, fetch, push, and each `%(upstream)` or `%(push)` read on a bad value.
-// It skips a key without a remote name and a name that starts with "/" (research R16 m, contract Δ3 `reviewSync`).
+// remote.c `handle_config` (Git 2.56.0) reads every entry of these keys. A bad value stops `git remote`, fetch, push, and each `%(upstream)` or `%(push)` read.
+// It skips a `remote.<name>` key whose name starts with "/" (research R16 m, contract Δ3 `reviewSync`).
+// `git_config_bool` keys of `remote.<name>`.
 const BOOLEAN_REMOTE_KEYS: ReadonlySet<string> = new Set(["mirror", "skipdefaultupdate", "skipfetchall", "prune", "prunetags"]);
+// Keys that stop Git without a value, by section. `git_config_string`, `config_error_nonbool`, and `parse_transport_option` refuse them (exit 128).
+// `tagopt` and `followremotehead` pass the missing value to `strcmp` (exit 139 on 2.56.0.windows.2). `remote.pushdefault` has no subsection.
+const STRING_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["branch", new Set(["remote", "pushremote", "merge"])],
+  ["url", new Set(["insteadof", "pushinsteadof"])],
+  ["remote", new Set(["url", "pushurl", "push", "fetch", "receivepack", "uploadpack", "tagopt", "proxy", "proxyauthmethod", "vcs", "serveroption", "negotiationrestrict", "negotiationinclude", "followremotehead"])],
+]);
 
-function isBooleanRemoteKey(key: string): boolean {
-  if (!key.startsWith("remote.")) return false;
-  const dot = key.lastIndexOf(".");
-  return dot > "remote".length && key["remote.".length] !== "/" && BOOLEAN_REMOTE_KEYS.has(key.slice(dot + 1));
+function stopsGit({ key, value }: ConfigValue): boolean {
+  const first = key.indexOf(".");
+  const last = key.lastIndexOf(".");
+  const section = key.slice(0, first);
+  if (first === last) return key === "remote.pushdefault" && value === null;
+  if (section === "remote" && key[first + 1] === "/") return false;
+  const variable = key.slice(last + 1);
+  if (section === "remote" && BOOLEAN_REMOTE_KEYS.has(variable)) return parseMaybeBool(value) < 0;
+  return value === null && (STRING_KEYS.get(section)?.has(variable) ?? false);
 }
 
 // The check of every review, on the trust listing entries before the `remote` read. True gives `invalid-config`.
 export function invalidRemoteValue(config: readonly ConfigValue[]): boolean {
-  return config.some((e) => isBooleanRemoteKey(e.key) && parseMaybeBool(e.value) < 0);
+  return config.some(stopsGit);
 }
 
 export function decidePushDestination(record: PushRecord, remotes: readonly string[], config: readonly ConfigValue[]): PushDecision {
@@ -370,7 +387,7 @@ const refusePull = (reason: Extract<PullDecision, { kind: "refused" }>["reason"]
 
 export function decidePull(input: PullInput): PullDecision {
   const { config, branch } = input;
-  if (config.filter((e) => e.key === `branch.${branch}.merge`).length > 1) return refusePull("several-merge-refs");
+  if (severalMergeRefs(config, branch)) return refusePull("several-merge-refs");
 
   // `config_get_ff`: Git reads `pull.ff` first and stops on an invalid value.
   let ff: "--ff" | "--no-ff" | "--ff-only" | null = null;

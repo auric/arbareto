@@ -41,7 +41,11 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   removeRecentRepository: (b) => b.removeRecentRepository({ entryId: id() }),
   readWorkspace: (b) => b.readWorkspace(repo(), { refresh: false, check: "full" }),
   readEntries: (b) => b.readEntries(gen(), { snapshotId: id(), cursor: id() }),
-  readHistory: (b) => b.readHistory(gen()),
+  openHistory: (b) => b.openHistory(gen(), { scope: "all" }),
+  loadHistory: (b) => b.loadHistory(repo(), { viewId: id(), need: { row: 0 } }),
+  readHistoryRows: (b) => b.readHistoryRows(repo(), { viewId: id(), mode: "full", at: { row: 0 }, count: 1, text: "none" }),
+  searchHistory: (b) => b.searchHistory(repo(), { viewId: id(), text: "fix" }),
+  closeHistory: (b) => b.closeHistory(repo(), { viewId: id() }),
   readRefs: (b) => b.readRefs(gen()),
   readComparison: (b) => b.readComparison({ ...gen(), selectionId: id() }, { snapshotId: id(), entryId: id() }),
   readTrust: (b) => b.readTrust(repo()),
@@ -197,7 +201,7 @@ describe("frontend bridge", () => {
       answer: (command, request) => (command === "get_operation" ? { requestId: request.requestId, state: "succeeded", result: {} } : undefined),
     });
     const pendingCommit = h.bridge.commit(gen(), { reviewToken: id(), message: "m", confirmFullScope: true });
-    const pendingRead = h.bridge.readHistory(gen());
+    const pendingRead = h.bridge.openHistory(gen(), { scope: "all" });
     const done = await h.bridge.getOperation({ operationId: id() });
     expect((done as { state: string }).state).toBe("succeeded");
     await settle();
@@ -208,7 +212,7 @@ describe("frontend bridge", () => {
       expect(response.state).toBe("unknown");
       expect(response.code).toBe("STATE_UNKNOWN");
     }
-    const sent = h.calls.filter((c) => c.command === "commit" || c.command === "read_history").map((c) => c.request.requestId as string);
+    const sent = h.calls.filter((c) => c.command === "commit" || c.command === "open_history").map((c) => c.request.requestId as string);
     expect([commit.requestId, read.requestId]).toEqual(sent);
   });
 
@@ -255,7 +259,7 @@ describe("frontend bridge", () => {
   test("an operation-progress event for a settled or unknown requestId calls no handler", async () => {
     const h = harness();
     const events: unknown[] = [];
-    const response = (await h.bridge.readHistory(gen(), (event) => events.push(event))) as { state: string };
+    const response = (await h.bridge.openHistory(gen(), { scope: "all" }, (event) => events.push(event))) as { state: string };
     expect(response.state).toBe("succeeded");
     const requestId = h.calls.at(-1)!.request.requestId as string;
     h.emit("operation-progress", { requestId, operationId: id(), state: "running", counters: {} });

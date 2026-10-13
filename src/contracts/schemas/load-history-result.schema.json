@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "rows": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4000000
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "order",
+        "topology",
+        "line-break",
+        "nul",
+        "quote-end",
+        "length",
+        "matching",
+        "HISTORY_PARENTS_PER_COMMIT",
+        "HISTORY_VIEW_COMMITS",
+        "REF_LISTING_RECORDS",
+        "REF_LISTING_BYTES",
+        "object-missing"
+      ]
+    },
+    "remedy": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "text",
+        "command"
+      ],
+      "additionalProperties": false,
+      "title": "ViewRemedy"
+    }
+  },
+  "required": [
+    "rows",
+    "complete"
+  ],
+  "additionalProperties": false,
+  "title": "LoadHistoryResult"
+}

@@ -189,7 +189,7 @@ export const Base64 = z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2
 export const decodedBytes = (data: string) => Math.floor((data.length * 3) / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
 const InlineInput = Base64.refine((data) => decodedBytes(data) >= 1 && decodedBytes(data) <= INLINE_PROCESS_INPUT_BYTES);
 
-const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network"] as const;
+const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network", "search"] as const;
 // The `id` gives the shell one generated `EnvironmentPolicy` type for the three `run` context kinds.
 export const EnvironmentPolicy = z.enum(ENVIRONMENT_POLICIES).meta({ id: "EnvironmentPolicy" });
 
@@ -369,7 +369,8 @@ export const ProcessRequest = z.xor([
   z.union([
     z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
     z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
-    z.strictObject({ ...run, ...REGISTERED }).meta({ title: "RunRegistered" }),
+    // Feature 002 contract Δ6: only a registered run takes `script`.
+    z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).meta({ title: "RunRegistered" }),
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),

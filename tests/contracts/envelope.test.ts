@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { decodeRequest } from "../../src/contracts/envelope";
-import { PIPE_FRAME_BYTES, STATUS_PAGE_BYTES } from "../../src/contracts/limits";
+import { HISTORY_ROWS_PER_REQUEST, HISTORY_VIEW_COMMITS, PIPE_FRAME_BYTES, STATUS_PAGE_BYTES } from "../../src/contracts/limits";
 import { isWindows } from "../../src/contracts/native-path";
 import { OPERATIONS } from "../../src/contracts/operations";
 
@@ -35,8 +35,16 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
     renderer: () => ({ snapshotId: id(), cursor: id() }),
     service: () => ({ snapshotId: id(), cursor: id() }),
   },
-  readHistory: { renderer: () => ({}), service: () => ({}) },
   readRefs: { renderer: () => ({}), service: () => ({}) },
+  // Feature 002 contract Δ3.
+  openHistory: { renderer: () => ({ scope: "all" }), service: () => ({ scope: "all" }) },
+  loadHistory: { renderer: () => ({ viewId: id(), need: { row: 40 } }), service: () => ({ viewId: id(), need: { row: 40 } }) },
+  readHistoryRows: {
+    renderer: () => ({ viewId: id(), mode: "full", at: { row: 0 }, count: 128, text: "rows" }),
+    service: () => ({ viewId: id(), mode: "full", at: { row: 0 }, count: 128, text: "rows" }),
+  },
+  searchHistory: { renderer: () => ({ viewId: id(), text: "fix" }), service: () => ({ viewId: id(), text: "fix" }) },
+  closeHistory: { renderer: () => ({ viewId: id() }), service: () => ({ viewId: id() }) },
   readComparison: {
     renderer: () => ({ snapshotId: id(), entryId: id() }),
     service: () => ({ snapshotId: id(), entryId: id() }),
@@ -83,7 +91,7 @@ const NAMES = Object.keys(PAYLOADS);
 
 const GENERATION_REQUIRED = [
   "readEntries",
-  "readHistory",
+  "openHistory",
   "readRefs",
   "readComparison",
   "applyHunk",
@@ -99,7 +107,11 @@ const GENERATION_ABSENT = NAMES.filter((n) => !GENERATION_REQUIRED.includes(n) &
 const REPOSITORY_BOUND = [
   "readWorkspace",
   "readEntries",
-  "readHistory",
+  "openHistory",
+  "loadHistory",
+  "readHistoryRows",
+  "searchHistory",
+  "closeHistory",
   "readRefs",
   "readComparison",
   "readTrust",
@@ -146,9 +158,10 @@ const sidesOf = (name: string) =>
   (["renderer", "service"] as const).filter((side) => PAYLOADS[name][side] !== undefined);
 
 describe("operation list", () => {
-  test("holds exactly the 26 contract §3 operations", () => {
+  // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
+  test("holds exactly the 25 remaining contract §3 operations and the 5 feature 002 contract Δ3 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(26);
+    expect(OPERATIONS.length).toBe(30);
   });
 
   for (const name of NAMES) {
@@ -224,6 +237,8 @@ describe("operation names", () => {
     ["toString"],
     ["constructor"],
     [" readWorkspace"],
+    // Feature 002 plan.md P7: the 001 operation is retired.
+    ["readHistory"],
   ])("operation %j gives UNKNOWN_OPERATION", (operation) =>
     expectCode({ ...envelope("getEnvironment"), operation }, "UNKNOWN_OPERATION"),
   );
@@ -269,10 +284,10 @@ describe("repositoryGeneration", () => {
   }
 
   test.each([[-1], [1.5], ["1"], [null], [true]])("repositoryGeneration %j gives INVALID_REQUEST", (value) =>
-    expectCode({ ...envelope("readHistory"), repositoryGeneration: value }, "INVALID_REQUEST"),
+    expectCode({ ...envelope("openHistory"), repositoryGeneration: value }, "INVALID_REQUEST"),
   );
   test("repositoryGeneration above the safe range gives INVALID_REQUEST", () => {
-    const text = JSON.stringify(envelope("readHistory")).replace('"repositoryGeneration":3', '"repositoryGeneration":9007199254740992');
+    const text = JSON.stringify(envelope("openHistory")).replace('"repositoryGeneration":3', '"repositoryGeneration":9007199254740992');
     const result = decodeRequest(new TextEncoder().encode(text), "renderer");
     expect(result).toEqual({ ok: false, code: "INVALID_REQUEST" });
   });
@@ -382,7 +397,7 @@ describe("unknown and forbidden fields", () => {
     ["pattern", "refs/heads/*"],
     ["format", "%(refname)"],
   ])("payload field %s gives INVALID_REQUEST", (field, value) => {
-    for (const name of ["readComparison", "applyHunk", "applyFile", "commit", "readHistory", "readRefs"]) {
+    for (const name of ["readComparison", "applyHunk", "applyFile", "commit", "openHistory", "readRefs"]) {
       const request = envelope(name);
       expectCode({ ...request, payload: { ...(request.payload as Json), [field]: value } }, "INVALID_REQUEST");
     }
@@ -590,8 +605,8 @@ describe("readEntries", () => {
 });
 
 describe("other exact payloads", () => {
-  test.each([[{ limit: 100 }], [{ ref: "main" }], [{ cursor: id() }]])("readHistory payload %j gives INVALID_REQUEST", (payload) =>
-    expectCode(envelope("readHistory", "renderer", payload), "INVALID_REQUEST"),
+  test.each([[{ limit: 100 }], [{ ref: "main" }], [{ cursor: id() }]])("openHistory payload with %j gives INVALID_REQUEST", (payload) =>
+    expectCode(envelope("openHistory", "renderer", { scope: "all", ...payload }), "INVALID_REQUEST"),
   );
 
   test("reviewSubmodules accepts only a snapshot ID", () => {
@@ -608,5 +623,66 @@ describe("other exact payloads", () => {
       envelope("updateSubmodules", "renderer", { submoduleReviewToken: id(), start: true, path: "lib" }),
       "INVALID_REQUEST",
     );
+  });
+});
+
+// Feature 002 contract Δ2 and Δ3.
+describe("history view payloads", () => {
+  const rows = (payload: Json) => envelope("readHistoryRows", "renderer", { viewId: id(), mode: "full", at: { row: 0 }, count: 1, text: "none", ...payload });
+  const load = (need: unknown) => envelope("loadHistory", "renderer", { viewId: id(), need });
+
+  test("openHistory takes scope all or current", () => {
+    expectAccepted(envelope("openHistory", "renderer", { scope: "current" }));
+    expectCode(envelope("openHistory", "renderer", { scope: "branch" }), "INVALID_REQUEST");
+    expectCode(envelope("openHistory", "renderer", {}), "INVALID_REQUEST");
+  });
+
+  test("loadHistory need is a row from 0 to 4,000,000, an oid, or end true", () => {
+    for (const need of [{ row: 0 }, { row: HISTORY_VIEW_COMMITS }, { oid: "a".repeat(40) }, { oid: "b".repeat(64) }, { end: true }]) expectAccepted(load(need));
+    for (const need of [{ row: -1 }, { row: HISTORY_VIEW_COMMITS + 1 }, { row: 1.5 }, { oid: "A".repeat(40) }, { oid: "a".repeat(41) }, { end: false }, { row: 1, end: true }, {}])
+      expectCode(load(need), "INVALID_REQUEST");
+  });
+
+  test("a view operation without viewId gives INVALID_REQUEST", () => {
+    expectCode(envelope("loadHistory", "renderer", { need: { end: true } }), "INVALID_REQUEST");
+    expectCode(envelope("searchHistory", "renderer", { text: "fix" }), "INVALID_REQUEST");
+    expectCode(envelope("closeHistory", "renderer", {}), "INVALID_REQUEST");
+    expectCode(envelope("closeHistory", "renderer", { viewId: "view" }), "INVALID_REQUEST");
+  });
+
+  test("readHistoryRows count is 1 to 512", () => {
+    expectAccepted(rows({ count: HISTORY_ROWS_PER_REQUEST }));
+    expectCode(rows({ count: 0 }), "INVALID_REQUEST");
+    expectCode(rows({ count: HISTORY_ROWS_PER_REQUEST + 1 }), "INVALID_REQUEST");
+  });
+
+  test("readHistoryRows mode filter requires searchId, and mode full takes it for highlight", () => {
+    expectCode(rows({ mode: "filter" }), "INVALID_REQUEST");
+    expectAccepted(rows({ mode: "filter", searchId: id() }));
+    expectAccepted(rows({ mode: "full", searchId: id() }));
+    expectCode(rows({ mode: "graph" }), "INVALID_REQUEST");
+  });
+
+  test("readHistoryRows text details requires count 1", () => {
+    expectAccepted(rows({ text: "details", count: 1 }));
+    expectCode(rows({ text: "details", count: 2 }), "INVALID_REQUEST");
+    expectAccepted(rows({ text: "rows", count: 2 }));
+    expectCode(rows({ text: "body" }), "INVALID_REQUEST");
+  });
+
+  test("readHistoryRows at is a row, an oid, a match step, or end true", () => {
+    for (const at of [{ row: 7 }, { oid: "c".repeat(40) }, { match: "next", from: 3 }, { match: "previous", from: 0 }, { end: true }]) expectAccepted(rows({ at }));
+    for (const at of [{ row: -1 }, { match: "last", from: 0 }, { match: "next" }, { end: false }, { row: 1, oid: "c".repeat(40) }, {}]) expectCode(rows({ at }), "INVALID_REQUEST");
+  });
+
+  test("searchHistory takes any nonempty text, so the service can refuse it with UNSUPPORTED_FILTER_TEXT", () => {
+    for (const text of ["fix\nbug", "a\\Eb", "nul\u0000", "x".repeat(2048)]) expectAccepted(envelope("searchHistory", "renderer", { viewId: id(), text }));
+    expectCode(envelope("searchHistory", "renderer", { viewId: id(), text: "" }), "INVALID_REQUEST");
+    expectCode(envelope("searchHistory", "renderer", { viewId: id(), text: 7 }), "INVALID_REQUEST");
+  });
+
+  test("an unknown field in a nested payload object gives INVALID_REQUEST", () => {
+    expectCode(load({ row: 1, skip: 10 }), "INVALID_REQUEST");
+    expectCode(rows({ at: { row: 1, extra: true } }), "INVALID_REQUEST");
   });
 });

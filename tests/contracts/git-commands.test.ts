@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
-import { HISTORY_STREAM_ROWS } from "../../src/contracts/limits";
+import { MATCHING_PROBE_GREPS } from "../../src/contracts/matching-probe";
 import * as commands from "../../src/git-service/commands";
 import {
   batchCommandArgs,
@@ -14,8 +14,6 @@ import {
   indexFlagArgs,
   indexListArgs,
   objectCheckArgs,
-  revListArgs,
-  shallowPathArgs,
   statusArgs,
 } from "../../src/git-service/commands";
 import { useFixtureRoot } from "../git/fixture-root";
@@ -36,11 +34,9 @@ const SERVICE_TIMEOUT_MS = 120_000;
 const READ_BUILDERS: [string, () => string[]][] = [
   ["configListArgs", () => configListArgs()],
   ["hooksPathArgs", () => hooksPathArgs()],
-  ["shallowPathArgs", () => shallowPathArgs()],
   ["statusArgs", () => statusArgs()],
   ["indexListArgs", () => indexListArgs()],
   ["indexFlagArgs", () => indexFlagArgs()],
-  ["revListArgs", () => revListArgs(SHA1, "sha1")],
   ["batchCommandArgs", () => batchCommandArgs()],
   ["objectCheckArgs", () => objectCheckArgs()],
   ["indexEntryArgs", () => commands.indexEntryArgs()],
@@ -98,13 +94,13 @@ describe("read builders (contract §7)", () => {
       "refs/heads",
       "refs/remotes",
       "refs/tags",
+      "refs/stash",
     ]);
     expect(commands.refsArgs()).not.toBe(commands.refsArgs());
   });
 
-  test("hooksPathArgs and shallowPathArgs are the exact rev-parse --git-path arrays", () => {
+  test("hooksPathArgs is the exact rev-parse --git-path array", () => {
     expect(hooksPathArgs()).toEqual([...R, "rev-parse", "--git-path", "hooks"]);
-    expect(shallowPathArgs()).toEqual([...R, "rev-parse", "--git-path", "shallow"]);
   });
 
   test("statusArgs is the exact porcelain v2 read and carries --ignore-submodules=dirty", () => {
@@ -118,29 +114,6 @@ describe("read builders (contract §7)", () => {
     expect(flags.slice(0, 4)).toEqual([...R, "ls-files"]);
     expect(flags).not.toContain("--");
     for (const option of flags.slice(4)) expect(option).toStartWith("-");
-  });
-
-  test(`revListArgs takes one full OID of the object format and reads at most ${HISTORY_STREAM_ROWS} rows`, () => {
-    expect(revListArgs(SHA1, "sha1")).toEqual([...R, "rev-list", "--parents", `--max-count=${HISTORY_STREAM_ROWS}`, "--date-order", SHA1]);
-    expect(revListArgs(SHA256, "sha256")).toEqual([...R, "rev-list", "--parents", `--max-count=${HISTORY_STREAM_ROWS}`, "--date-order", SHA256]);
-  });
-
-  test.each([
-    ["HEAD", "sha1"],
-    ["main", "sha1"],
-    ["--all", "sha1"],
-    ["a..b", "sha1"],
-    [`${SHA1}..${SHA1}`, "sha1"],
-    ["-n1", "sha1"],
-    [SHA1.toUpperCase(), "sha1"],
-    [SHA1.slice(1), "sha1"],
-    [`${SHA1}0`, "sha1"],
-    [SHA256, "sha1"],
-    [SHA1, "sha256"],
-    [SHA256.toUpperCase(), "sha256"],
-    ["", "sha1"],
-  ] as const)("revListArgs refuses %j for %s with TypeError", (oid, objectFormat) => {
-    expect(() => revListArgs(oid, objectFormat)).toThrow(TypeError);
   });
 
   test("refPathArgs asks Git for the absolute file of one ref (T088 decision E7)", () => {
@@ -222,7 +195,7 @@ describe("discovery profiles (contract §6 `repositoryDiscovery`, research.md R2
 test("every builder of commands.ts without a parameter starts each array with --no-lazy-fetch", () => {
   const arrays = zeroParameterArrays();
   const names = new Set(arrays.map((a) => a.name));
-  for (const name of ["discoveryProfiles", "configListArgs", "hooksPathArgs", "shallowPathArgs", "statusArgs", "indexListArgs", "indexFlagArgs", "batchCommandArgs", "objectCheckArgs"]) {
+  for (const name of ["discoveryProfiles", "configListArgs", "hooksPathArgs", "statusArgs", "indexListArgs", "indexFlagArgs", "batchCommandArgs", "objectCheckArgs"]) {
     expect(names).toContain(name);
   }
   for (const { name, args } of arrays) {
@@ -251,7 +224,11 @@ describe("service arrays", () => {
         const { repositoryId, generation } = await service.register(repo);
         expect((await service.readTrust(repositoryId)).state).toBe("succeeded");
         expect((await service.readWorkspace(repositoryId)).state).toBe("succeeded");
-        expect((await service.readHistory(repositoryId, generation)).state).toBe("succeeded");
+        const viewFrom = service.runner.calls.length;
+        const view = await service.openHistory(repositoryId, generation);
+        expect(view.state).toBe("succeeded");
+        expect((await service.request("loadHistory", { viewId: view.result!.viewId, need: { end: true } }, { repositoryId })).state).toBe("succeeded");
+        expect((await service.request("readHistoryRows", { viewId: view.result!.viewId, mode: "full", at: { row: 0 }, count: 1, text: "details" }, { repositoryId })).state).toBe("succeeded");
         const calls = service.runner.calls;
         const probes = calls.filter((c) => c.contextKind === "gitProbe").map((c) => [...c.arguments]);
         expect(probes).toContainEqual(["version", "--build-options"]);
@@ -261,7 +238,9 @@ describe("service arrays", () => {
         for (const c of others) expect({ args: c.arguments, first: c.arguments[0] }).toEqual({ args: c.arguments, first: "--no-lazy-fetch" });
         const reads = others.filter((c) => c.environmentPolicy === "read");
         expect(reads.length).toBeGreaterThan(0);
-        for (const c of reads) expect({ args: c.arguments, global: c.arguments.slice(0, 3) }).toEqual({ args: c.arguments, global: R });
+        // Feature 002 contract Δ3: every view command carries `--no-lazy-fetch --no-optional-locks`. It names no pathspec.
+        const viewCalls = new Set(calls.slice(viewFrom));
+        for (const c of reads) expect({ args: c.arguments, global: c.arguments.slice(0, viewCalls.has(c) ? 2 : 3) }).toEqual({ args: c.arguments, global: viewCalls.has(c) ? R.slice(0, 2) : R });
       } finally {
         await service.dispose();
       }
@@ -501,4 +480,90 @@ test("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` wi
   expect(arrays.some((args) => ["config", "--file", ".gitmodules", "--null", "--list"].every((item) => args.includes(item)))).toBe(true);
   for (const args of submodule) expect(args[0]).toBe("--no-lazy-fetch");
   for (const args of arrays) expect(args).not.toContain("--recursive");
+});
+
+// T021 and T031, feature 002 contract Δ3: the view and search arrays. Every array starts with `--no-lazy-fetch --no-optional-locks` (spec FR-045, FR-051).
+describe("history view arrays (feature 002 contract Δ3)", () => {
+  const FORMAT = "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)";
+
+  test("the openHistory capture uses the 001 HEAD steps, the eight-field for-each-ref over the FR-047 namespaces and refs/replace, and one rev-parse for the topology files", () => {
+    expect(commands.headTargetArgs()).toEqual([...R, "symbolic-ref", "-q", "HEAD"]);
+    expect(commands.headOidArgs()).toEqual([...R, "rev-parse", "--verify", "-q", "HEAD"]);
+    expect(commands.headRefExistsArgs("refs/heads/main")).toEqual([...R, "show-ref", "--exists", "refs/heads/main"]);
+    expect(commands.historyRefsArgs()).toEqual(["--no-lazy-fetch", "--no-optional-locks", "for-each-ref", FORMAT, "refs/heads", "refs/remotes", "refs/tags", "refs/stash", "refs/replace"]);
+    expect(commands.topologyPathArgs()).toEqual([...R, "rev-parse", "--git-path", "shallow", "--git-path", "info/grafts"]);
+  });
+
+  test("a later load step reads the replace records with the same record format", () => {
+    expect(commands.replaceRefsArgs()).toEqual(["--no-lazy-fetch", "--no-optional-locks", "for-each-ref", FORMAT, "refs/replace"]);
+  });
+
+  test("every load step runs the same rev-list array with the start points on stdin, and no step adds --skip or --max-count", () => {
+    const load = ["--no-lazy-fetch", "--no-optional-locks", "rev-list", "--parents", "--date-order", "--stdin"];
+    expect(commands.historyLoadArgs()).toEqual(load);
+    expect(commands.historyLoadArgs()).toEqual(commands.historyLoadArgs());
+    expect(commands.historyLoadArgs().some((item) => item.startsWith("--skip") || item.startsWith("--max-count"))).toBe(false);
+    expect(commands.historyLoadArgs.length).toBe(0);
+  });
+
+  test("the text read is one cat-file --batch-command -Z", () => {
+    expect(commands.batchCommandArgs()).toEqual([...R, "cat-file", "--batch-command", "-Z"]);
+  });
+
+  // T031, contract Δ3 `searchHistory` (spec FR-022, FR-024).
+  const SEARCH = (...greps: string[]) => [...R, "-c", "i18n.logOutputEncoding=UTF-8", "rev-list", "--date-order", "--fixed-strings", "--regexp-ignore-case", ...greps.map((g) => `--grep=${g}`), "--stdin"];
+
+  test("the search runs the exact contract Δ3 array with the start points on stdin", () => {
+    expect(commands.historySearchArgs("fix")).toEqual(SEARCH("fix"));
+    expect(commands.historySearchArgs.length).toBe(1);
+  });
+
+  test.each(["-x", "--all", "--grep=y", "-c core.pager=x", "--end-of-options", "\"q\" 'q'", "a.*[b]\\(c)?$", " lead and trail ", "Виправлення"])("the text %j stays inside the one --grep= argument", (text) => {
+    const args = commands.historySearchArgs(text);
+    expect(args).toEqual(SEARCH(text));
+    expect(args.filter((item) => item.includes(text))).toEqual([`--grep=${text}`]);
+  });
+
+  test.each(["", "a\0b"])("the search builder refuses the text %j, which no argv item can hold", (text) => {
+    expect(() => commands.historySearchArgs(text)).toThrow(TypeError);
+  });
+
+  // Contract Δ3 "Matching probe": the steps in a new folder outside every repository. A probe run takes one --grep per pattern (src/contracts/matching-probe.ts).
+  test("the matching probe imports the fixed stream into a new bare repository and runs the search array with --git-dir", () => {
+    const dir = join("probe-root", "arbareto-probe-x");
+    expect(commands.probeInitArgs(dir)).toEqual(["--no-lazy-fetch", "init", "--bare", "-q", "--template=", "--object-format=sha1", dir]);
+    expect(commands.probeImportArgs(dir)).toEqual(["--no-lazy-fetch", `--git-dir=${dir}`, "fast-import", "--quiet"]);
+    expect(commands.probeSearchArgs(dir, ["є", "Є"])).toEqual(["--no-lazy-fetch", `--git-dir=${dir}`, ...SEARCH("є", "Є").slice(1)]);
+  });
+
+  // Contract Δ3 "Matching probe" in WSL: the `matchingProbe` script takes `[dir, tip, n, ...run1, ...run2]`.
+  test("the WSL matching probe passes the folder, the tip, the run length, and the two exact search arrays", () => {
+    const dir = "/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa";
+    const tip = "0123456789abcdef0123456789abcdef01234567";
+    expect(commands.probeScriptArgs(dir, tip, [["є", "і"], ["Є", "І"]])).toEqual([dir, tip, "12", ...SEARCH("є", "і"), ...SEARCH("Є", "І")]);
+    expect(commands.probeScriptArgs(dir, tip, MATCHING_PROBE_GREPS)).toEqual([dir, tip, "16", ...SEARCH(...MATCHING_PROBE_GREPS[0]), ...SEARCH(...MATCHING_PROBE_GREPS[1])]);
+  });
+
+  test.each([
+    [[["є"], ["Є", "І"]]],
+    [[["є", "і"], ["Є"]]],
+    [[["є"]]],
+    [[["є"], ["Є"], ["і"]]],
+  ])("the WSL matching probe refuses the runs %j, whose search arrays differ in length or count", (greps) => {
+    expect(() => commands.probeScriptArgs("/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa", "0123456789abcdef0123456789abcdef01234567", greps)).toThrow(TypeError);
+  });
+
+  test.each([
+    ["historyRefsArgs", () => commands.historyRefsArgs()],
+    ["replaceRefsArgs", () => commands.replaceRefsArgs()],
+    ["topologyPathArgs", () => commands.topologyPathArgs()],
+    ["historyLoadArgs", () => commands.historyLoadArgs()],
+    ["historySearchArgs", () => commands.historySearchArgs("fix")],
+  ] as [string, () => string[]][])("%s starts with --no-lazy-fetch --no-optional-locks and returns a new array", (_name, build) => {
+    const first = build();
+    expect(first.slice(0, 2)).toEqual(["--no-lazy-fetch", "--no-optional-locks"]);
+    const copy = [...first];
+    first.push("--output=x");
+    expect(build()).toEqual(copy);
+  });
 });

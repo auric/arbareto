@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import type { ChangeEntry, HistoryPage, WorkspaceSnapshot } from "../../src/contracts/envelope";
+import type { ChangeEntry, WorkspaceSnapshot } from "../../src/contracts/envelope";
 import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { printOrigin } from "../origin";
 import { createRequests } from "../../src/frontend/state/requests";
@@ -22,18 +22,24 @@ function bridgeDouble() {
     restoreWorkspace: () => record("restoreWorkspace"),
     readWorkspace: (target: Record<string, unknown>, payload: Record<string, unknown>, onProgress?: OnProgress) => record("readWorkspace", target, payload, onProgress),
     readEntries: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readEntries", target, payload),
-    readHistory: (target: Record<string, unknown>) => record("readHistory", target),
     readComparison: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readComparison", target, payload),
     readRefs: (target: Record<string, unknown>) => record("readRefs", target),
     cancel: (payload: Record<string, unknown>) => record("cancel", {}, payload),
   };
+  // The history view participant. Its `openHistory` request goes through `track`, as the workbench sends it (feature 002 contract Δ3).
+  let store: { track<T>(request: Promise<T>): Promise<T>; target(): { repositoryId: string; repositoryGeneration: number } | null } | null = null;
+  const history = {
+    open: () => store!.track(record("openHistory", store!.target() ?? {}, { scope: "all" })),
+    refresh: () => store!.track(record("openHistory", store!.target() ?? {}, { scope: "all" })),
+  };
+  const bind = <T extends NonNullable<typeof store>>(requests: T) => ((store = requests), requests);
   const of = (operation: string) => calls.filter((call) => call.operation === operation);
   const last = (operation: string) => {
     const found = of(operation).at(-1);
     if (!found) throw new Error(`no ${operation} call`);
     return found;
   };
-  return { bridge, calls, of, last };
+  return { bridge, calls, of, last, history, bind };
 }
 
 function clockDouble() {
@@ -110,15 +116,6 @@ function snapshot(generation: number, root: string, entries: ChangeEntry[]): Wor
   };
 }
 
-const PAGE: HistoryPage = {
-  generation: 1,
-  scope: "current-checkout",
-  head: { state: "branch", target: "refs/heads/main", oid: HEAD },
-  shallowFingerprint: null,
-  rows: [{ oid: HEAD, parents: [], subject: "First", author: { name: "A", email: "a@example.com" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.com" }, committerDate: 1_700_000_000, body: "", bodyCut: false }],
-  boundaries: { page: [], shallow: [] },
-  completeness: { state: "complete" },
-};
 
 const succeeded = (call: Call, result: unknown, fields: Partial<BridgeResponse> = {}) =>
   call.resolve({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", repositoryGeneration: 1, result, ...fields });
@@ -128,12 +125,12 @@ async function opened(root = WSL_ROOT, focused = true) {
   const double = bridgeDouble();
   const time = clockDouble();
   const focus = focusDouble(focused);
-  const requests = createRequests({ bridge: double.bridge, clock: time.clock, focus: focus.focus });
+  const requests = double.bind(createRequests({ bridge: double.bridge, history: double.history, clock: time.clock, focus: focus.focus }));
   requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
   await flush();
   const first = snapshot(1, root, [entry("a.txt"), entry("b.txt")]);
   succeeded(double.last("readWorkspace"), first);
-  succeeded(double.last("readHistory"), PAGE);
+  succeeded(double.last("openHistory"), {});
   await flush();
   const reads = () => double.of("readWorkspace");
   // Answers the newest `readWorkspace` with the same snapshot content and a new snapshot ID.
@@ -179,8 +176,8 @@ describe("WSL poll schedule", () => {
     await flush();
     const refresh = o.last("readWorkspace");
     expect(refresh.payload).toEqual({ refresh: true, check: "full" });
-    // The refresh in History mode also reads the history page.
-    succeeded(o.last("readHistory"), PAGE);
+    // The refresh also opens a new history view.
+    succeeded(o.last("openHistory"), {});
     await o.advance(2000);
     expect(o.reads()).toHaveLength(2);
     await o.answerRead(refresh);
@@ -307,7 +304,7 @@ describe("WSL poll cancel", () => {
     // The refresh, the history read, and each comparison read end, so no other read of the workspace runs.
     // The refresh result has a new snapshot, so the selected entry gets a second comparison read.
     await o.answerRead(o.of("readWorkspace").find((c) => c.payload.refresh === true)!);
-    succeeded(o.last("readHistory"), PAGE);
+    succeeded(o.last("openHistory"), {});
     for (const c of o.of("readComparison")) succeeded(c, { comparisonId: crypto.randomUUID(), snapshotId: o.first.snapshotId, hunks: [] }, { selectionId: c.target.selectionId as string });
     await flush();
     expect(o.of("readComparison")).toHaveLength(2);
@@ -353,11 +350,11 @@ describe("no workspace snapshot", () => {
     const double = bridgeDouble();
     const time = clockDouble();
     const focus = focusDouble(true);
-    const requests = createRequests({ bridge: double.bridge, clock: time.clock, focus: focus.focus });
+    const requests = double.bind(createRequests({ bridge: double.bridge, history: double.history, clock: time.clock, focus: focus.focus }));
     requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
     await flush();
     double.last("readWorkspace").resolve({ requestId: crypto.randomUUID(), state: "failed", code: "REPOSITORY_UNAVAILABLE" });
-    succeeded(double.last("readHistory"), PAGE);
+    succeeded(double.last("openHistory"), {});
     await flush();
     await time.advance(1000);
     expect(double.of("readWorkspace")).toHaveLength(2);

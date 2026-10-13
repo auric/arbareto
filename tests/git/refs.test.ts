@@ -4,6 +4,7 @@
 // T356: `readRefs` (contract §3 "References result", §5 "Reference listing" and "Reference result", §7 "Shared listing" and "Held history steps").
 
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { REF_RESULT_BYTES } from "../../src/contracts/envelope";
@@ -33,10 +34,10 @@ const gitPath = (): string => {
 
 // Contract §3 "References result": the exact argument array.
 const FORMAT = "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)";
-const CONTRACT_ARGS = ["--no-lazy-fetch", "--no-optional-locks", "for-each-ref", FORMAT, "refs/heads", "refs/remotes", "refs/tags"];
+const CONTRACT_ARGS = ["--no-lazy-fetch", "--no-optional-locks", "for-each-ref", FORMAT, "refs/heads", "refs/remotes", "refs/tags", "refs/stash"];
 
 interface RefEntry {
-  kind: "branch" | "remote" | "tag";
+  kind: "branch" | "remote" | "tag" | "stash";
   name: string;
   invalidUtf8: boolean;
   objectId: string;
@@ -53,6 +54,7 @@ interface RefsResult {
   generation?: number;
   refs?: RefEntry[];
   current?: { name: string; objectId: string } | null;
+  refsDigest?: string;
   completeness: { state: string; code?: string; reason?: string };
 }
 
@@ -75,15 +77,29 @@ const validUtf8 = (text: string) => {
   }
 };
 
+// Feature 002 contract Δ3 `readRefs`: Git's records without the records under `refs/stash/`, in Git's output order.
+const oracleRecords = (out: Uint8Array) =>
+  latin1(out)
+    .split("\n")
+    .slice(0, -1)
+    .map((line) => line.split("\0"))
+    .filter((fields) => !fields[0]!.startsWith("refs/stash/"));
+
+// Feature 002 contract Δ3: SHA-256 over `refname NUL objectname LF` of each record.
+const oracleDigest = (out: Uint8Array) =>
+  createHash("sha256")
+    .update(Buffer.from(oracleRecords(out).map(([refname, objectId]) => `${refname}\0${objectId}\n`).join(""), "latin1"))
+    .digest("hex");
+
 // Contract §3 "Result fields", applied to Git's own output. The fields are latin1 text, one character per byte.
 function oracleEntries(out: Uint8Array): { refs: RefEntry[]; current: { name: string; objectId: string } | null } {
-  const records = latin1(out).split("\n").slice(0, -1).map((line) => line.split("\0"));
+  const records = oracleRecords(out);
   for (const fields of records) expect(fields).toHaveLength(8);
   const names = new Set(records.map((f) => f[0]!));
   const KINDS: [string, RefEntry["kind"]][] = [["refs/heads/", "branch"], ["refs/remotes/", "remote"], ["refs/tags/", "tag"]];
   let current: { name: string; objectId: string } | null = null;
   const refs = records.map(([refname, objectId, objectType, peeledId, peeledType, symref, upstream, head]) => {
-    const [prefix, kind] = KINDS.find(([p]) => refname!.startsWith(p))!;
+    const [prefix, kind] = refname === "refs/stash" ? ["refs/", "stash" as const] : KINDS.find(([p]) => refname!.startsWith(p))!;
     const name = fromLatin1(refname!.slice(prefix.length));
     if (head === "*") current = { name, objectId: objectId! };
     const empty = (value: string) => (value === "" ? null : fromLatin1(value));
@@ -167,6 +183,7 @@ describe("F33 references (contract §3 \"References result\")", () => {
         expect(result.generation).toBe(generation);
         expect(result.completeness).toEqual({ state: "complete" });
         expect({ refs: result.refs, current: result.current }).toEqual(oracleEntries(oracleOutput(repo)));
+        expect(result.refsDigest).toBe(oracleDigest(oracleOutput(repo)));
         expect(canaryLines(built)).toEqual([]);
       }),
     TIMEOUT_MS,
@@ -200,7 +217,7 @@ describe("F33 references (contract §3 \"References result\")", () => {
         // The loose ref file with a broken name gives no entry.
         expect(result.refs!.filter((r) => r.name.includes(".."))).toEqual([]);
         // Git sorts the records by `refname` (git-for-each-ref(1)).
-        const full = result.refs!.map((r) => `${{ branch: "refs/heads/", remote: "refs/remotes/", tag: "refs/tags/" }[r.kind]}${r.name}`);
+        const full = result.refs!.map((r) => `${{ branch: "refs/heads/", remote: "refs/remotes/", tag: "refs/tags/", stash: "refs/" }[r.kind]}${r.name}`);
         expect(full).toEqual(full.toSorted((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))));
       }),
     TIMEOUT_MS,
@@ -239,6 +256,51 @@ describe("F33 references (contract §3 \"References result\")", () => {
         const b = await readRefs(service, reftable.repositoryId, reftable.generation);
         expect(outcome(b)).toEqual(SUCCEEDED);
         expect({ refs: b.result!.refs, current: b.result!.current }).toEqual({ refs: a.refs, current: a.current });
+      }),
+    TIMEOUT_MS,
+  );
+});
+
+describe("feature 002 readRefs (contract Δ3 `readRefs`)", () => {
+  caseTest(
+    "T027",
+    "refs/stash gives kind stash, a record under refs/stash/ is skipped, and refsDigest covers the other records in Git order",
+    ["shell-double"],
+    () =>
+      withService("t027-stash", async (service) => {
+        const { built, repo, repositoryId, generation } = await opened(service, "t027-stash", "base");
+        const { first, second } = built.facts.notes.commits as { first: string; second: string };
+        // The F33 canary hooks refuse every reference transaction, so the setup runs without hooks.
+        const updateRef = (...args: string[]) => git(repo, ["-c", `core.hooksPath=${join(built.root, "no-hooks")}`, "update-ref", ...args]);
+        const read = async () => {
+          const response = await readRefs(service, repositoryId, generation);
+          expect(outcome(response)).toEqual(SUCCEEDED);
+          return response.result!;
+        };
+        const names = (out: Uint8Array) => latin1(out).split("\n").map((line) => line.split("\0")[0]);
+        const before = await read();
+        expect(before.refsDigest).toBe(oracleDigest(oracleOutput(repo)));
+        // Git refuses `refs/stash` beside a name under `refs/stash/`, so each state has one of them.
+        updateRef("refs/stash/extra", first);
+        const nested = oracleOutput(repo);
+        expect(names(nested)).toContain("refs/stash/extra");
+        const skipped = await read();
+        expect(skipped.refs!.some((r) => r.kind === "stash" || r.name.includes("extra"))).toBe(false);
+        expect({ refs: skipped.refs, current: skipped.current }).toEqual(oracleEntries(nested));
+        expect(skipped.refsDigest).toBe(before.refsDigest);
+        updateRef("-d", "refs/stash/extra");
+        updateRef("refs/stash", second);
+        const stashed = oracleOutput(repo);
+        expect(names(stashed)).toContain("refs/stash");
+        const result = await read();
+        expect(result.refs!.filter((r) => r.kind === "stash")).toEqual([
+          { kind: "stash", name: "stash", invalidUtf8: false, objectId: second, objectType: "commit", peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId: second },
+        ]);
+        expect({ refs: result.refs, current: result.current }).toEqual(oracleEntries(stashed));
+        expect(result.refsDigest).toBe(oracleDigest(stashed));
+        expect(result.refsDigest).not.toBe(before.refsDigest);
+        updateRef("refs/stash", first);
+        expect((await read()).refsDigest).not.toBe(result.refsDigest);
       }),
     TIMEOUT_MS,
   );
@@ -283,6 +345,7 @@ describe("record checks and bounds (contract §3 \"Record checks\", §5)", () =>
     ["a record holds nine fields", (r) => void at(r, "refs/heads/main").push("")],
     ["an empty record", (r) => void r.splice(1, 0, [""])],
     ["refname outside refs/heads/, refs/remotes/, and refs/tags/", (r) => void (at(r, "refs/tags/light")[0] = "refs/notes/light")],
+    ["refname refs/stashed, outside the refs/stash pattern", (r) => void (at(r, "refs/tags/light")[0] = "refs/stashed")],
     ["objectname in uppercase", (r) => void (at(r, "refs/heads/main")[1] = at(r, "refs/heads/main")[1]!.toUpperCase())],
     ["objectname of another object format", (r) => void (at(r, "refs/heads/main")[1] = "a".repeat(64))],
     ["an unknown objecttype", (r) => void (at(r, "refs/heads/main")[2] = "bogus")],

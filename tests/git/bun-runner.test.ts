@@ -16,7 +16,7 @@ printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
 
 useFixtureRoot();
 
-const { processCreationTime } = require(HOST_SCRIPT) as typeof import("./win32");
+const { closePipe, createInboundPipe, ownTree, processCreationTime } = require(HOST_SCRIPT) as typeof import("./win32");
 
 const MIB = 1024 * 1024;
 const TEST_TIMEOUT_MS = 30_000;
@@ -368,6 +368,27 @@ describeGit("bun runner", (git) => {
     expect(store.persists).toEqual([true, true, true, false, true]);
     await second.dispose();
   });
+
+  test("ownTree does not throw for a fast Git command that exits during the assignment", async () => {
+    // The synchronous stall lets the child exit while the assignment runs. The pass condition does not use the timing.
+    const failures: string[] = [];
+    for (let stallMs = 20; stallMs <= 32; stallMs++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const pipes = [createInboundPipe(65536), createInboundPipe(65536)];
+        const proc = Bun.spawn([git, "--exec-path"], { stdin: "pipe", stdout: Bun.file(pipes[0]!.name), stderr: Bun.file(pipes[1]!.name) });
+        void proc.stdin.end();
+        for (const until = performance.now() + stallMs; performance.now() < until; );
+        try {
+          ownTree(proc.pid).close();
+        } catch (error) {
+          failures.push(`${stallMs} ms: ${(error as Error).message}`);
+        }
+        await proc.exited;
+        pipes.forEach(closePipe);
+      }
+    }
+    expect(failures).toEqual([]);
+  }, TEST_TIMEOUT_MS * 4);
 
   test("dispose ends each recorded live process", async () => {
     const records = readdirSync(runner.recordsDirectory).map((n) => n.split("-").map(BigInt));

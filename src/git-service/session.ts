@@ -4,7 +4,7 @@
 import { Handshake } from "../contracts/channel";
 import { validateRequest, type Response, type ServiceRequest } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
-import { GIT_PROCESS_DEADLINE_MS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier, type OperationName } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
 import { isWindows } from "../contracts/native-path";
@@ -18,7 +18,8 @@ import { getEnvironment } from "./environment";
 import { createExclusion } from "./exclusion";
 import { createFilePublisher, fileApproval } from "./file-publish";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
-import { createHistoryReader, type HistoryOutcome } from "./history";
+import type { ProbeRun } from "./history-search";
+import { createHistoryViews } from "./history-view";
 import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from "./hunk-publish";
 import { createSessionLog, type DiagnosticCause } from "./log";
 import { createOperationRegistry } from "./operations";
@@ -66,6 +67,10 @@ export interface SessionOptions {
   // Test seam only. Production never sets it. The service awaits it before each folder check and clone check of an update row,
   // and before the program re-check of a nested active-set read.
   submoduleCheckpoint?: SubmoduleUpdaterOptions["submoduleCheckpoint"];
+  // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`. Tests set a lower value.
+  historyViewCommits?: number;
+  // Feature 002 contract Δ3 "Matching probe": the probe commits that each run must list. Only tests set other sets.
+  historyProbeRuns?: readonly ProbeRun[];
 }
 
 // The outcome forms of the reads that `read-scheduler.ts` runs. `cause` goes only into the session log entry (contract §8).
@@ -74,7 +79,7 @@ type ReadResult =
   | { result: "canceled" }
   | { result: "deadline" };
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -142,8 +147,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     unknown: (w) => recovery.unknown(w),
     reconciling: (w) => exclusion.running(w.commonIdentity).some((operationId) => registry.get(operationId)?.state === "reconciling"),
   });
-  const history = createHistoryReader({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable });
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
+  const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }), reject: (requestId, code) => reject(requestId, code) });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
@@ -175,6 +180,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       watchers.get(workspace.repositoryId)?.();
       watchers.delete(workspace.repositoryId);
       scheduler.release(workspace.repositoryId);
+      views.releaseRepository(workspace.repositoryId);
       reader.release(workspace.repositoryId);
       comparisons.release(workspace.repositoryId);
       reviews.release(workspace.repositoryId);
@@ -334,7 +340,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "readHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -381,25 +387,24 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     );
   };
 
-  // Contract §3 `readHistory`. Contract §2 and §9: a `repositoryGeneration` other than the current workspace generation gives REPOSITORY_CHANGED at acceptance, and no Git process starts.
-  const readHistory: Handler<"readHistory"> = (request) => {
+  // Feature 002 contract Δ2 and Δ3 `openHistory`: one read slot. Contract §2 and §9: a `repositoryGeneration` other than the current workspace generation gives REPOSITORY_CHANGED at acceptance, and no Git process starts.
+  const openHistory: Handler<"openHistory"> = (request) => {
     const workspace = workspaceOf(request.repositoryId);
     const installation = installationOf(workspace);
     if (installation === null) return reject(request.requestId, gitCode());
     if (request.repositoryGeneration !== workspace.generation) {
-      const { operationId } = registry.start("readHistory", request.requestId);
+      const { operationId } = registry.start("openHistory", request.requestId);
       return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
     }
     scheduleRead(
       request,
-      (t) => history.readHistory({ ...t, installation, workspace, generation: request.repositoryGeneration }),
-      async (t) =>
-        (await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } },
-      { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } } satisfies HistoryOutcome,
+      (t) => views.open({ ...t, installation, workspace, generation: request.repositoryGeneration }, request.payload.scope),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: {} }),
+      { result: "failed", code: "GIT_FAILED", value: {} },
     );
   };
 
-  // Contract §3 `readRefs`. The generation decides at acceptance as for `readHistory`. Contract §5 "Pending reads": a new `readRefs` cancels each unfinished one of its workspace.
+  // Contract §3 `readRefs`. The generation decides at acceptance as for `openHistory`. Contract §5 "Pending reads": a new `readRefs` cancels each unfinished one of its workspace.
   const readRefs: Handler<"readRefs"> = (request) => {
     const workspace = workspaceOf(request.repositoryId);
     const installation = installationOf(workspace);
@@ -553,7 +558,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     restoreWorkspace: register,
     readWorkspace,
     readEntries,
-    readHistory,
+    openHistory,
+    loadHistory: (request) => views.load(request),
+    readHistoryRows: (request) => views.rows(request),
+    searchHistory: (request) => views.search(request),
+    closeHistory: (request) => views.close(request),
     readRefs,
     readComparison,
     readTrust: (request) => {

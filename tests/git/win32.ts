@@ -23,6 +23,7 @@ const open = () =>
     GetProcessTimes: { args: [P, P, P, P, P], returns: i32 },
     TerminateProcess: { args: [P, u32], returns: i32 },
     WaitForSingleObject: { args: [P, u32], returns: u32 },
+    GetExitCodeProcess: { args: [P, P], returns: i32 },
     SetFileTime: { args: [P, P, P, P], returns: i32 },
     GetLastError: { args: [], returns: u32 },
     CreateJobObjectW: { args: [P, P], returns: P },
@@ -38,7 +39,7 @@ function kernel32(): ReturnType<typeof open> {
   return (symbols ??= open());
 }
 
-// Microsoft Learn constants of `CreateNamedPipeW`, `CreateFileW`, `OpenProcess`, and `WaitForSingleObject`.
+// Microsoft Learn constants of `CreateNamedPipeW`, `CreateFileW`, `OpenProcess`, `WaitForSingleObject`, and `GetExitCodeProcess`.
 const PIPE_ACCESS_INBOUND = 0x1;
 const PIPE_REJECT_REMOTE_CLIENTS = 0x8;
 const FILE_READ_ATTRIBUTES = 0x80;
@@ -53,6 +54,7 @@ const PROCESS_SET_QUOTA = 0x100;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const SYNCHRONIZE = 0x0010_0000;
 const WAIT_TIMEOUT = 0x102;
+const STILL_ACTIVE = 259;
 const TERMINATE_WAIT_MS = 5000;
 
 // `INVALID_HANDLE_VALUE` comes back as a bigint, and a null handle as null.
@@ -136,6 +138,11 @@ function openProcess(pid: number, access: number): Pointer | null {
   return valid(handle) ? handle : null;
 }
 
+function exitCode(handle: Pointer): number | null {
+  const code = new Uint32Array(1);
+  return kernel32().GetExitCodeProcess(handle, ptr(code)) ? code[0]! : null;
+}
+
 // The `FILETIME` of the process start, or null when no live process has this PID.
 function creationTime(handle: Pointer): bigint | null {
   const times = new BigUint64Array(4);
@@ -187,8 +194,9 @@ export function ownTree(pid: number): ProcessTree {
   const handle = openProcess(pid, PROCESS_SET_QUOTA | PROCESS_TERMINATE);
   const assigned = handle !== null && kernel32().AssignProcessToJobObject(job, handle) !== 0;
   const error = kernel32().GetLastError();
-  // A root that already exited has no tree to own.
-  const exited = handle !== null && creationTime(handle) === null;
+  // A root that already exited has no tree to own. Per Microsoft Learn, `GetExitCodeProcess` returns STILL_ACTIVE until the process terminates, so a root that exits with 259 is refused.
+  const code = handle !== null && !assigned ? exitCode(handle) : null;
+  const exited = code !== null && code !== STILL_ACTIVE;
   if (handle) kernel32().CloseHandle(handle);
   if (!assigned && !exited) {
     kernel32().CloseHandle(job);

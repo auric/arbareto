@@ -7,6 +7,7 @@
     "export GIT_TERMINAL_PROMPT=0",
     "case $mode in",
     "probe) export LC_ALL=C ;;",
+    "search) export LC_ALL=C.UTF-8 ;;",
     "read | mutation) ;;",
     "network) export GIT_PROTOCOL_FROM_USER=0 ;;",
     "*) exit 125 ;;",
@@ -17,7 +18,7 @@
     "exec 3<&-",
     "wait $!",
     "status=$?",
-    "case $mode in probe | read) end ;; esac",
+    "case $mode in probe | read | search) end ;; esac",
     "exit $status"
   ],
   "anchor": [
@@ -114,6 +115,30 @@
     "    printf '\\n'",
     "  fi",
     "done"
+  ],
+  "matchingProbe": [
+    "git=$1 dir=$2 tip=$3 count=$4",
+    "shift 4",
+    "[ \"$#\" -eq $((2 * count)) ] || exit 125",
+    "mkdir -- \"$dir\" || exit 1",
+    "trap 'rm -rf -- \"$dir\"' EXIT",
+    "\"$git\" --no-lazy-fetch init --bare -q --template= --object-format=sha1 \"$dir\" || exit 1",
+    "\"$git\" --no-lazy-fetch --git-dir=\"$dir\" fast-import --quiet || exit 1",
+    "run() {",
+    "  n=$1",
+    "  shift",
+    "  i=0",
+    "  for a do",
+    "    [ \"$i\" -ge \"$n\" ] || set -- \"$@\" \"$a\"",
+    "    i=$((i + 1))",
+    "  done",
+    "  shift \"$i\"",
+    "  printf '%s\\n' \"$tip\" | \"$git\" --git-dir=\"$dir\" \"$@\"",
+    "  printf 'end %s\\n' \"$?\"",
+    "}",
+    "run \"$count\" \"$@\"",
+    "shift \"$count\"",
+    "run \"$count\" \"$@\""
   ],
   "perlHead": [
     "use strict;",

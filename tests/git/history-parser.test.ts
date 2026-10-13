@@ -7,16 +7,14 @@ import {
   HISTORY_COMMIT_OBJECT_BYTES,
   HISTORY_PARENTS_PER_COMMIT,
   HISTORY_PARENTS_PER_PAGE,
-  HISTORY_STREAM_BYTES,
-  HISTORY_STREAM_ROWS,
 } from "../../src/contracts/limits";
-import { batchCommandArgs, revListArgs, type ObjectFormat } from "../../src/git-service/commands";
+import { batchCommandArgs, type ObjectFormat } from "../../src/git-service/commands";
 import type { Completeness } from "../../src/git-service/snapshot";
-import { parseCommitObjects, parseTraversal } from "../../src/git-service/history-parser";
+import { parseCommitObjects } from "../../src/git-service/history-parser";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { cachedF16History } from "../windows/fixture-cache";
-import { buildF01, buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
+import { buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
 import { GIT } from "./git-binary";
 import { caseTest } from "./service-harness";
 
@@ -35,7 +33,7 @@ const gitPath = (): string => {
 };
 
 // Contract §5 history bounds that apply to the parser input. The keys are the export names in `limits.ts`.
-const BOUNDS = { HISTORY_STREAM_ROWS, HISTORY_STREAM_BYTES, HISTORY_PARENTS_PER_COMMIT, HISTORY_PARENTS_PER_PAGE, HISTORY_COMMIT_OBJECT_BYTES };
+const BOUNDS = { HISTORY_PARENTS_PER_COMMIT, HISTORY_PARENTS_PER_PAGE, HISTORY_COMMIT_OBJECT_BYTES };
 type HistoryBound = keyof typeof BOUNDS;
 
 // Contract §9: `limited` carries `OUTPUT_LIMIT` with the reached §5 bound, or `OBJECT_MISSING`. `failed` carries the specific code.
@@ -59,8 +57,7 @@ const formatOf = (repo: string): ObjectFormat => {
 };
 const headOf = (repo: string): string => git(repo, ["rev-parse", "--verify", "HEAD^{commit}"]).toString().trim();
 
-// The reads under test: exactly the T076 arrays.
-const revList = (repo: string, oid: string, format: ObjectFormat): Buffer => ownedGit(gitPath(), FIXTURE_ROOT, repo, revListArgs(oid, format));
+// The read under test: exactly the T076 array.
 // gitdoc git-cat-file "--batch-command" and "-Z": each command is `contents <object>` and ends with NUL.
 const batchInput = (oids: readonly string[]): Buffer => Buffer.from(oids.map((oid) => `contents ${oid}\0`).join(""), "latin1");
 const catFile = (repo: string, oids: readonly string[]): Buffer => ownedGit(gitPath(), FIXTURE_ROOT, repo, batchCommandArgs(), { input: batchInput(oids) });
@@ -71,7 +68,7 @@ interface Row {
 }
 
 // Oracle traversal: `git log` with `%H %P` in Git date order. In a shallow repository `%P` gives the effective parents.
-function oracleRows(repo: string, tip: string, count = HISTORY_STREAM_ROWS): Row[] {
+function oracleRows(repo: string, tip: string, count = 100): Row[] {
   const out = git(repo, ["log", "--date-order", `--max-count=${count}`, "--format=%H %P", tip]).toString("latin1");
   return out
     .split("\n")
@@ -81,23 +78,6 @@ function oracleRows(repo: string, tip: string, count = HISTORY_STREAM_ROWS): Row
       return { oid: oid!, parents };
     });
 }
-
-// Contract §5 "History page": the page keeps the rows before the first row that passes the bound.
-function boundedRows(rows: Row[]): { rows: Row[]; reason: HistoryBound | null } {
-  let references = 0;
-  for (const [i, row] of rows.entries()) {
-    if (i >= HISTORY_STREAM_ROWS) return { rows: rows.slice(0, i), reason: "HISTORY_STREAM_ROWS" };
-    if (row.parents.length > HISTORY_PARENTS_PER_COMMIT) return { rows: rows.slice(0, i), reason: "HISTORY_PARENTS_PER_COMMIT" };
-    references += row.parents.length;
-    if (references > HISTORY_PARENTS_PER_PAGE) return { rows: rows.slice(0, i), reason: "HISTORY_PARENTS_PER_PAGE" };
-  }
-  return { rows, reason: null };
-}
-
-const traversalOf = (parsed: { rows: readonly Row[]; completeness: object }) => ({
-  rows: parsed.rows.map((row) => ({ oid: row.oid, parents: row.parents })),
-  completeness: parsed.completeness,
-});
 
 interface ObjectFacts {
   oid: string;
@@ -145,8 +125,6 @@ const framedLength = (objects: readonly ObjectFacts[], type = "commit") =>
 
 const latin1 = (bytes: Uint8Array) => Buffer.from(bytes).toString("latin1");
 const bytes = (text: string) => Buffer.from(text, "latin1");
-const lines = (out: string) => out.split("\n").slice(0, -1);
-const text = (rows: string[]) => `${rows.join("\n")}\n`;
 
 // Replaces the header of the first frame. The content bytes stay.
 function withFirstHeader(out: Buffer, edit: (header: string) => string): Buffer {
@@ -163,210 +141,6 @@ function absentOid(repo: string, format: ObjectFormat): string {
 
 const F19_VARIANTS: F19Variant[] = ["linear", "merge", "octopus", "skewed", "roots", "long", "wide", "encoding", "shallow", "sha256"];
 
-// Each F16 history variant with the bound that its traversal reaches, or null.
-const F16_CASES: [F16HistoryVariant, HistoryBound | null][] = [
-  ["parents-64", null],
-  ["parents-65", "HISTORY_PARENTS_PER_COMMIT"],
-  ["parent-refs", "HISTORY_PARENTS_PER_PAGE"],
-  ["object-at-limit", null],
-  ["object-over-limit", null],
-  ["traversal", null],
-];
-
-describe("rev-list --parents rows (contract §3 \"HistoryPage result\")", () => {
-  for (const variant of F19_VARIANTS) {
-    caseTest(
-      TASK,
-      `F19 ${variant}: rows equal git log --date-order --format="%H %P" in Git row order, with full OIDs and ordered parents`,
-      [],
-      () => {
-        const built = buildF19(gitPath(), `t286-rows-f19-${variant}`, variant);
-        const repo = repoOf(built);
-        const format = formatOf(repo);
-        const tip = headOf(repo);
-        expect(tip).toBe(built.facts.notes.tip as string);
-        expect(format).toBe(variant === "sha256" ? "sha256" : "sha1");
-        const expected = oracleRows(repo, tip);
-        const parsed = traversalOf(parseTraversal(revList(repo, tip, format), format));
-        expect(parsed).toEqual({ rows: expected, completeness: COMPLETE });
-        if (variant === "long") expect(parsed.rows.length).toBe(HISTORY_STREAM_ROWS);
-        if (variant === "shallow") {
-          // The shallow commit is a row with no effective parent.
-          const shallow = (built.facts.notes.shallow as string[])[0]!;
-          expect(parsed.rows.find((row) => row.oid === shallow)?.parents).toEqual([]);
-        }
-      },
-      TIMEOUT_MS,
-    );
-  }
-
-  for (const [variant, reason] of F16_CASES) {
-    caseTest(
-      TASK,
-      reason === null
-        ? `F16 ${variant}: the traversal is complete and equals the oracle`
-        : `F16 ${variant}: the traversal gives limited with reason ${reason}, and the rows are the oracle rows before the first row that passes the bound`,
-      [],
-      () => {
-        const built = cachedF16History(gitPath(), `t286-rows-f16-${variant}`, variant).built;
-        const repo = repoOf(built);
-        const format = formatOf(repo);
-        const tip = headOf(repo);
-        expect(tip).toBe((built.facts.notes.commits as Record<string, string>).tip!);
-        const out = revList(repo, tip, format);
-        const oracle = oracleRows(repo, tip);
-        const bounded = boundedRows(oracle);
-        expect(bounded.reason).toBe(reason);
-        const parsed = traversalOf(parseTraversal(out, format));
-        expect(parsed).toEqual({ rows: bounded.rows, completeness: reason === null ? COMPLETE : limited(reason) });
-        if (reason !== null) expect(parsed.rows.length).toBeLessThan(oracle.length);
-        if (variant === "traversal") {
-          // Research.md line 1636 names the traversal output as the 128 KiB input. This output stays far below it.
-          expect(out.length).toBeLessThan(HISTORY_STREAM_BYTES);
-          console.log(`OBSERVATION ${TASK}: F16 history-traversal rev-list --parents output is ${out.length} bytes for ${parsed.rows.length} rows, below HISTORY_STREAM_BYTES ${HISTORY_STREAM_BYTES}`);
-        }
-      },
-      TIMEOUT_MS,
-    );
-  }
-
-  caseTest(
-    TASK,
-    "F01 empty and unborn-added: HEAD names no commit, so empty traversal and cat-file output give an empty complete result",
-    [],
-    () => {
-      for (const variant of ["empty", "unborn-added"] as const) {
-        const repo = repoOf(buildF01(gitPath(), `t286-f01-${variant}`, variant));
-        const format = formatOf(repo);
-        // `rev-parse --verify -q` exits 1 for an unborn HEAD, so no read has an OID to anchor.
-        git(repo, ["rev-parse", "--verify", "-q", "HEAD^{commit}"], { allowExit: [1] });
-        expect(git(repo, ["symbolic-ref", "HEAD"]).toString().trim()).toBe("refs/heads/main");
-        expect(traversalOf(parseTraversal(new Uint8Array(0), format))).toEqual({ rows: [], completeness: COMPLETE });
-        const objects = parseCommitObjects(new Uint8Array(0), [], format);
-        expect({ objects: factsOf(objects.objects), completeness: objects.completeness }).toEqual({ objects: [], completeness: COMPLETE });
-      }
-    },
-    TIMEOUT_MS,
-  );
-
-  caseTest(
-    TASK,
-    `F19 long: rev-list --max-count=${HISTORY_STREAM_ROWS + 1} output gives limited with reason HISTORY_STREAM_ROWS and the first ${HISTORY_STREAM_ROWS} rows`,
-    [],
-    () => {
-      const repo = repoOf(buildF19(gitPath(), "t286-rows-limit", "long"));
-      const format = formatOf(repo);
-      const tip = headOf(repo);
-      const out = git(repo, ["rev-list", "--parents", `--max-count=${HISTORY_STREAM_ROWS + 1}`, "--date-order", tip]);
-      expect(latin1(out).split("\n").filter((line) => line !== "").length).toBe(HISTORY_STREAM_ROWS + 1);
-      expect(traversalOf(parseTraversal(out, format))).toEqual({ rows: oracleRows(repo, tip), completeness: limited("HISTORY_STREAM_ROWS") });
-    },
-    TIMEOUT_MS,
-  );
-
-  caseTest(
-    TASK,
-    `F19 linear: the real rows and then one LF-ended line of 130 KiB give limited with reason HISTORY_STREAM_BYTES and keep the real rows`,
-    [],
-    () => {
-      const repo = repoOf(buildF19(gitPath(), "t286-rows-stream-bytes", "linear"));
-      const format = formatOf(repo);
-      const tip = headOf(repo);
-      const out = text([...lines(latin1(revList(repo, tip, format))), "a".repeat(130 * 1024)]);
-      expect(traversalOf(parseTraversal(bytes(out), format))).toEqual({ rows: oracleRows(repo, tip), completeness: limited("HISTORY_STREAM_BYTES") });
-    },
-    TIMEOUT_MS,
-  );
-
-  caseTest(
-    TASK,
-    `F19 long: ${HISTORY_STREAM_ROWS} real rows and then a row without its LF give limited with reason HISTORY_STREAM_ROWS, not a truncation result`,
-    [],
-    () => {
-      const repo = repoOf(buildF19(gitPath(), "t286-rows-limit-no-lf", "long"));
-      const format = formatOf(repo);
-      const tip = headOf(repo);
-      const out = git(repo, ["rev-list", "--parents", `--max-count=${HISTORY_STREAM_ROWS + 1}`, "--date-order", tip]).subarray(0, -1);
-      expect(traversalOf(parseTraversal(out, format))).toEqual({ rows: oracleRows(repo, tip), completeness: limited("HISTORY_STREAM_ROWS") });
-    },
-    TIMEOUT_MS,
-  );
-
-  caseTest(
-    TASK,
-    `F16 parents-65: one non-hex parent in the row with ${HISTORY_PARENTS_PER_COMMIT + 1} parents gives limited with reason HISTORY_PARENTS_PER_COMMIT, not a malformed result`,
-    [],
-    () => {
-      const repo = repoOf(cachedF16History(gitPath(), "t286-rows-parents-non-hex", "parents-65").built);
-      const format = formatOf(repo);
-      const tip = headOf(repo);
-      const all = lines(latin1(revList(repo, tip, format)));
-      const at = all.findIndex((line) => line.split(" ").length - 1 > HISTORY_PARENTS_PER_COMMIT);
-      const fields = all[at]!.split(" ");
-      fields[1] = `g${fields[1]!.slice(1)}`;
-      all[at] = fields.join(" ");
-      const bounded = boundedRows(oracleRows(repo, tip));
-      expect(bounded.reason).toBe("HISTORY_PARENTS_PER_COMMIT");
-      expect(traversalOf(parseTraversal(bytes(text(all)), format))).toEqual({ rows: bounded.rows, completeness: limited("HISTORY_PARENTS_PER_COMMIT") });
-    },
-    TIMEOUT_MS,
-  );
-});
-
-describe("rev-list --parents refusals (contract §3: \"Reject duplicate rows, malformed OIDs, and invalid in-page parent ordering\")", () => {
-  // One real traversal per case. `edit` derives the refused bytes from it.
-  const refusal = (name: string, variant: F19Variant, edit: (out: string, rows: Row[]) => string, format?: (actual: ObjectFormat) => ObjectFormat) =>
-    caseTest(
-      TASK,
-      name,
-      [],
-      () => {
-        const repo = repoOf(buildF19(gitPath(), `t286-refuse-${name.replace(/[^a-z0-9]+/gi, "-").slice(0, 48)}`, variant));
-        const actual = formatOf(repo);
-        const tip = headOf(repo);
-        const out = latin1(revList(repo, tip, actual));
-        const derived = edit(out, oracleRows(repo, tip));
-        // A format case keeps the real bytes and changes only the object format.
-        expect(derived !== out || format !== undefined).toBe(true);
-        expect(parseTraversal(bytes(derived), format?.(actual) ?? actual).completeness).toEqual(MALFORMED);
-      },
-      TIMEOUT_MS,
-    );
-
-  refusal("duplicate row: the last (root) line of F19 linear appended once more", "linear", (out) => text([...lines(out), lines(out).at(-1)!]));
-  refusal("duplicate row: the F19 merge side line repeated directly after itself", "merge", (out, rows) => {
-    const at = rows.findIndex((row) => row.parents.length === 1 && rows.some((r) => r.parents.length === 2 && r.parents[1] === row.oid));
-    const all = lines(out);
-    return text([...all.slice(0, at + 1), all[at]!, ...all.slice(at + 1)]);
-  });
-
-  // The rule: each parent that is a row of the page has a later row index than its child (Git child-before-parent order, data-model §4 "Row order").
-  refusal("invalid in-page parent order: the first two lines of F19 linear swapped", "linear", (out) => {
-    const [a, b, ...rest] = lines(out);
-    return text([b!, a!, ...rest]);
-  });
-  refusal("invalid in-page parent order: the F19 merge root line moved to the top", "merge", (out) => {
-    const all = lines(out);
-    return text([all.at(-1)!, ...all.slice(0, -1)]);
-  });
-  refusal("invalid in-page parent order: an F19 linear row names its own OID as parent", "linear", (out, rows) =>
-    out.replace(`${rows[0]!.oid} ${rows[0]!.parents[0]!}`, `${rows[0]!.oid} ${rows[0]!.oid}`),
-  );
-
-  refusal("object format: the real F19 sha256 output parsed as sha1", "sha256", (out) => out, () => "sha1");
-  refusal("object format: the real F19 linear sha1 output parsed as sha256", "linear", (out) => out, () => "sha256");
-  refusal("object format: the first row OID of F19 linear in uppercase", "linear", (out, rows) => out.replace(rows[0]!.oid, rows[0]!.oid.toUpperCase()));
-  refusal("object format: the first parent OID of F19 merge in uppercase", "merge", (out, rows) => out.replace(` ${rows[0]!.parents[0]!}`, ` ${rows[0]!.parents[0]!.toUpperCase()}`));
-  refusal("object format: one non-hex digit in the parent OID of the first F19 linear row", "linear", (out, rows) => out.replace(` ${rows[0]!.parents[0]!}`, ` g${rows[0]!.parents[0]!.slice(1)}`));
-  refusal("object format: the first row OID of F19 linear one digit short", "linear", (out, rows) => out.replace(`${rows[0]!.oid} `, `${rows[0]!.oid.slice(1)} `));
-  refusal("object format: the first parent OID of F19 sha256 one digit long", "sha256", (out, rows) => out.replace(` ${rows[0]!.parents[0]!}`, ` ${rows[0]!.parents[0]!}0`));
-
-  refusal("truncated stream: F19 linear output without its final LF", "linear", (out) => out.slice(0, -1));
-  refusal("truncated stream: F19 merge output cut inside the second row OID", "merge", (out) => out.slice(0, out.indexOf("\n") + 1 + 20));
-  refusal("framing: F19 linear output with CRLF line ends", "linear", (out) => out.replaceAll("\n", "\r\n"));
-  refusal("framing: F19 merge output with two spaces before the first parent", "merge", (out) => out.replace(" ", "  "));
-  refusal("framing: F19 linear output with an empty line after the first row", "linear", (out) => out.replace("\n", "\n\n"));
-});
 
 describe("cat-file --batch-command -Z framing by object type and byte length (research.md R2)", () => {
   const objectCase = (name: string, build: () => Built, bound: HistoryBound | null) =>
@@ -433,20 +207,17 @@ describe("cat-file --batch-command -Z framing by object type and byte length (re
 
   caseTest(
     TASK,
-    "F19 shallow: the shallow commit keeps its raw parent header, and its traversal row has no parent",
+    "F19 shallow: the shallow commit keeps its raw parent header",
     [],
     () => {
       const built = buildF19(gitPath(), "t286-shallow", "shallow");
       const repo = repoOf(built);
       const format = formatOf(repo);
-      const tip = headOf(repo);
       const shallow = (built.facts.notes.shallow as string[])[0]!;
       // The builder facts name the parent from the source repository, which the shallow clone lacks.
       const rawParent = (built.facts.notes.parents as Record<string, string[]>)[shallow]!;
       expect(rawParent.length).toBe(1);
       git(repo, ["cat-file", "-e", rawParent[0]!], { allowExit: [1, 128] });
-      const rows = parseTraversal(revList(repo, tip, format), format).rows;
-      expect(rows.find((row: Row) => row.oid === shallow)?.parents).toEqual([]);
       const objects = parseCommitObjects(catFile(repo, [shallow]), [shallow], format).objects;
       expect(objects.map((o: ParsedObject) => o.parents)).toEqual([rawParent]);
     },

@@ -77,8 +77,12 @@ describe("WSL reads (T208)", () => {
       const text = JSON.stringify(status.result);
       const own = distroGit(f21.repo, ["status", "--porcelain=v2", "--untracked-files=all"]);
       for (const line of sortedLines(own)) expect(text).toContain(line.split(" ").at(-1)!);
-      const history = await read(s, w, "readHistory", {}, true);
-      expect(history).toMatchObject({ state: "succeeded" });
+      const opened = await read(s, w, "openHistory", { scope: "current" }, true);
+      expect(opened).toMatchObject({ state: "succeeded" });
+      const viewId = (opened.result as { viewId: string }).viewId;
+      expect(await read(s, w, "loadHistory", { viewId, need: { end: true } })).toMatchObject({ state: "succeeded", result: { complete: true } });
+      const history = await read(s, w, "readHistoryRows", { viewId, mode: "full", at: { row: 0 }, count: 512, text: "rows" });
+      expect(history).toMatchObject({ state: "succeeded", result: { target: "found", cut: false } });
       for (const oid of sortedLines(distroGit(f21.repo, ["rev-list", "HEAD"]))) expect(JSON.stringify(history.result)).toContain(oid);
       const trust = await read(s, w, "readTrust");
       const keys = sortedLines(distroGit(f21.repo, ["config", "--list", "--name-only", "--show-scope"])).map((l) => l.split("\t").at(-1)!);
@@ -260,7 +264,7 @@ describe("WSL reads (T208)", () => {
         const { s } = setup(host);
         const w = await register(s, f21.paths[0]!);
         await read(s, w, "readWorkspace", { refresh: true, check: "full" });
-        await read(s, w, "readHistory", {}, true);
+        await read(s, w, "openHistory", { scope: "current" }, true);
         const gitDir = distroGit(f21.repo, ["rev-parse", "--absolute-git-dir"]).trim();
         const names = inDistro(host.distro, ["/usr/bin/ls", "-A", "--", gitDir]);
         expect(names).not.toContain("arbareto-candidate-");

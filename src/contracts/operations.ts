@@ -16,7 +16,12 @@ export const OPERATION_NAMES = [
   "removeRecentRepository",
   "readWorkspace",
   "readEntries",
-  "readHistory",
+  // Feature 002 contract Δ3.
+  "openHistory",
+  "loadHistory",
+  "readHistoryRows",
+  "searchHistory",
+  "closeHistory",
   "readRefs",
   "readComparison",
   "readTrust",
@@ -89,6 +94,9 @@ export const PHASES = [
   "fetch",
   "update",
   "reconciliation",
+  // Feature 002 contract Δ3 `loadHistory` and `searchHistory`.
+  "history-load",
+  "history-search",
 ] as const;
 export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;

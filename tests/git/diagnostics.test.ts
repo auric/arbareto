@@ -13,6 +13,7 @@ import { createBunRunner } from "./bun-runner";
 import { FIXTURE_ROOT, fixtureDir, fixtureEnv, fixtureGit, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF02, buildF17, put } from "./fixtures";
 import { GIT } from "./git-binary";
+import { load, rows } from "./history-view-harness";
 import { caseTest, openService, type Service } from "./service-harness";
 
 printOrigin("../../src/git-service/discovery.ts", import.meta.dir);
@@ -168,7 +169,7 @@ describe("credential canaries through the service (contract §7, data-model §7 
         expect(keys.some((key) => key.startsWith("url.") && key.includes("<redacted>"))).toBe(true);
         expect((await service.readWorkspace(repositoryId)).state).toBe("succeeded");
         expect((await service.readWorkspace(repositoryId, { refresh: true, check: "full" })).state).toBe("succeeded");
-        expect((await service.readHistory(repositoryId, (await service.readWorkspace(repositoryId)).result!.generation)).state).toBe("succeeded");
+        expect((await service.openHistory(repositoryId, (await service.readWorkspace(repositoryId)).result!.generation)).state).toBe("succeeded");
 
         // Git dies on a bad boolean value and prints that value. Discovery does not read `status.renames`, so only the status read fails.
         fixtureGit(git, repo, ["config", "status.renames", CANARIES.stderr]);
@@ -265,9 +266,12 @@ describe("inert repository text (contract §1, §9 \"Commit failure output\")", 
           const entry = untracked.find((e) => e.path === name);
           expect({ name, path: entry?.path, bytes: entry && Buffer.from(entry.pathBytes, "base64").toString("utf8") }).toEqual({ name, path: name, bytes: name });
         }
-        const history = await service.readHistory(repositoryId, read.result!.generation);
+        const view = await service.openHistory(repositoryId, read.result!.generation);
+        expect(view.state).toBe("succeeded");
+        const loaded = await load(service, repositoryId, view.result!.viewId, { end: true });
+        const history = await rows(service, repositoryId, view.result!.viewId, { row: 0 }, loaded.result!.rows, "rows");
         expect(history.state).toBe("succeeded");
-        const subjects = history.result!.rows.map((row) => row.subject);
+        const subjects = history.result!.rows!.map((row) => row.subject);
         expect(subjects).toContain(SUBJECT);
         expect(subjects).toContain("base <b>markup</b>");
         const found = (readdirSync(FIXTURE_ROOT, { recursive: true }) as string[]).filter((p) => basename(p) === "arbareto-t073-marker");

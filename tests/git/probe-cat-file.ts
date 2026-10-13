@@ -5,7 +5,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { batchCommandArgs, revListArgs } from "../../src/git-service/commands";
+import { batchCommandArgs } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { copyPerfFixture, ensurePerfFixture, PERF_M } from "../windows/perf-fixtures";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureEnv, ownedGit, realGlobalConfigDigests, removeFixtureRoot } from "./fixture-root";
@@ -38,7 +38,8 @@ interface Row {
   parents: string[];
 }
 function page(dir: string, anchor: string): Row[] {
-  const r = run(dir, revListArgs(anchor, "sha1"));
+  // The retired 001 `revListArgs` array of one history page.
+  const r = run(dir, ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "rev-list", "--parents", "--max-count=100", "--date-order", anchor]);
   if (r.exit !== 0) throw new Error(`rev-list exited ${r.exit}: ${r.stderr}`);
   return r.stdout.toString().trim().split("\n").map((l) => {
     const [oid, ...parents] = l.split(" ");

@@ -1,5 +1,0 @@
-{
-  "schema": "read-history-result",
-  "expected": "valid",
-  "text": "{\"completeness\":{\"state\":\"failed\",\"code\":\"REPOSITORY_UNAVAILABLE\"},\"remedy\":{\"text\":\"Git could not read objects that this history needs. This repository has no promisor remote, so its object store can be damaged. Run git fsck in a terminal to check it.\"}}"
-}

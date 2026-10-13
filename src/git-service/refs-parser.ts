@@ -4,12 +4,14 @@
 // Contract §3 "References result": the record checks and the result fields. A pure parser of untrusted Git output.
 
 import { isUtf8 } from "node:buffer";
+import { createHash } from "node:crypto";
 import type { RefEntry } from "../contracts/envelope";
 import { isObjectId, type ObjectFormat } from "./commands";
 
 export interface RefList {
   refs: RefEntry[];
   current: { name: string; objectId: string } | null;
+  refsDigest: string;
 }
 
 const KINDS: readonly [prefix: string, kind: RefEntry["kind"]][] = [
@@ -17,6 +19,8 @@ const KINDS: readonly [prefix: string, kind: RefEntry["kind"]][] = [
   ["refs/remotes/", "remote"],
   ["refs/tags/", "tag"],
 ];
+// Feature 002 contract Δ3: only the exact name `refs/stash` gives a stash record, with the name `stash`.
+const STASH: [prefix: string, kind: RefEntry["kind"]] = ["refs/", "stash"];
 const OBJECT_TYPES = new Set(["commit", "tag", "tree", "blob"]);
 const PEELED_TYPES = new Set(["commit", "tree", "blob"]);
 // Spec FR-008: invalid UTF-8 shows replacement characters. A byte order mark stays text.
@@ -26,29 +30,53 @@ const textOf = (latin1: string) => lossy.decode(bytesOf(latin1));
 const orNull = (latin1: string) => (latin1 === "" ? null : textOf(latin1));
 const isRefOrEmpty = (latin1: string) => latin1 === "" || latin1.startsWith("refs/");
 
+// Feature 002 contract Δ3 `openHistory`: the parser kind `replace`. A `refs/replace/` record enters only the topology fingerprint.
+const REPLACE = "refs/replace/";
+
 // Input: the stdout of `refsArgs`. Each record is eight fields with seven NUL separators, and LF ends it (git-for-each-ref(1) `%00`).
 // Null: one record breaks one record check, so the whole result is `MALFORMED_GIT_OUTPUT`.
+// `refsDigest` is SHA-256 over `refname NUL objectname LF` of each kept record, in Git's output order (feature 002 contract Δ3).
 export function parseRefs(stdout: Uint8Array, objectFormat: ObjectFormat): RefList | null {
+  return parse(stdout, objectFormat, null);
+}
+
+// Input: the stdout of `historyRefsArgs` or `replaceRefsArgs`. `replaceDigest` is SHA-256 over `refname NUL objectname LF` of each `refs/replace/` record, in Git's output order.
+export function parseHistoryRefs(stdout: Uint8Array, objectFormat: ObjectFormat): (RefList & { replaceDigest: string }) | null {
+  const replace = createHash("sha256");
+  const list = parse(stdout, objectFormat, replace);
+  return list === null ? null : { ...list, replaceDigest: replace.digest("hex") };
+}
+
+function parse(stdout: Uint8Array, objectFormat: ObjectFormat, replace: ReturnType<typeof createHash> | null): RefList | null {
   const text = Buffer.from(stdout.buffer, stdout.byteOffset, stdout.byteLength).toString("latin1");
   if (text !== "" && !text.endsWith("\n")) return null;
   const records = text === "" ? [] : text.slice(0, -1).split("\n").map((line) => line.split("\0"));
   const listed = new Set<string>();
   const parsed: { kind: RefEntry["kind"]; name: string; fields: string[] }[] = [];
   let current: RefList["current"] = null;
+  const digest = createHash("sha256");
   for (const fields of records) {
     if (fields.length !== 8) return null;
     const [refname, objectId, objectType, peeledId, peeledType, symref, upstream, head] = fields as [string, string, string, string, string, string, string, string];
-    const prefix = KINDS.find(([p]) => refname.startsWith(p));
-    if (prefix === undefined) return null;
+    // The pattern `refs/stash` also matches the names under `refs/stash/` (git-for-each-ref(1)).
+    if (refname.startsWith("refs/stash/")) continue;
+    const prefix = refname === "refs/stash" ? STASH : KINDS.find(([p]) => refname.startsWith(p));
+    if (prefix === undefined && !(replace !== null && refname.startsWith(REPLACE))) return null;
     if (!isObjectId(objectId, objectFormat) || !OBJECT_TYPES.has(objectType)) return null;
     const peeled = objectType === "tag" ? isObjectId(peeledId, objectFormat) && PEELED_TYPES.has(peeledType) : peeledId === "" && peeledType === "";
     if (!peeled || !isRefOrEmpty(symref) || !isRefOrEmpty(upstream)) return null;
     if (head !== "*" && head !== " ") return null;
+    if (prefix === undefined) {
+      if (head === "*") return null;
+      replace!.update(Buffer.from(`${refname}\0${objectId}\n`, "latin1"));
+      continue;
+    }
     if (head === "*") {
       if (current !== null || prefix[1] !== "branch") return null;
       current = { name: textOf(refname.slice(prefix[0].length)), objectId };
     }
     listed.add(refname);
+    digest.update(Buffer.from(`${refname}\0${objectId}\n`, "latin1"));
     parsed.push({ kind: prefix[1], name: refname.slice(prefix[0].length), fields });
   }
   const refs = parsed.map(({ kind, name, fields }): RefEntry => {
@@ -67,5 +95,5 @@ export function parseRefs(stdout: Uint8Array, objectFormat: ObjectFormat): RefLi
       commitId: objectType === "commit" ? objectId : peeledType === "commit" ? peeledId : null,
     };
   });
-  return { refs, current };
+  return { refs, current, refsDigest: digest.digest("hex") };
 }

@@ -13,7 +13,9 @@ import {
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../../src/contracts/limits";
+import { MATCHING_PROBE_GREPS, MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP, MATCHING_PROBE_WSL_FOLDER } from "../../src/contracts/matching-probe";
 import { isWindows } from "../../src/contracts/native-path";
+import { probeScriptArgs } from "../../src/git-service/commands";
 import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, type GitCall, type IdentityReply, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
 import { createNativeRunner } from "../../src/git-service/native-runner";
 
@@ -998,4 +1000,61 @@ test("the network policy is mutation without an index file plus GIT_PROTOCOL_FRO
   void channel.runner.run(call({ environmentPolicy: "network", limits: PROCESS_LIMITS.network }));
   const [run] = channel.bodies("run");
   expect(run).toMatchObject({ environmentPolicy: "network", limits: PROCESS_LIMITS.network });
+});
+
+// Feature 002 contract Δ3 "Matching probe" and Δ6: the `run` field `script`. `checkCall` makes the shell checks of `matching_probe_command`.
+describe("native runner matching probe script", () => {
+  const dir = () => `${MATCHING_PROBE_WSL_FOLDER}${id()}`;
+  const script = (fields: Partial<GitCall> = {}): GitCall =>
+    call({ script: "matchingProbe", arguments: probeScriptArgs(dir(), MATCHING_PROBE_TIP, MATCHING_PROBE_GREPS), input: MATCHING_PROBE_STREAM, environmentPolicy: "search", ...fields });
+  // Two runs of `count` items each. Each run starts with `--no-lazy-fetch`.
+  const runs = (count: number) => Array.from({ length: 2 }, () => Array.from({ length: count }, (_, i) => (i === 0 ? "--no-lazy-fetch" : "--stdin"))).flat();
+
+  test("a script call sends a run frame with script matchingProbe and the fixed stream that fits ProcessRequest", () => {
+    const channel = createChannelDouble();
+    const c = script();
+    void channel.runner.run(c);
+    const frame = channel.last("run");
+    expect(frame).toMatchObject({ script: "matchingProbe", contextKind: "registeredOperation", arguments: [...c.arguments], input: MATCHING_PROBE_STREAM.toBase64(), environmentPolicy: "search" });
+    expect(ProcessRequest.safeParse(frame).success).toBe(true);
+  });
+
+  test("checkCall refuses each broken script call and sends nothing", async () => {
+    const channel = createChannelDouble();
+    const args = script().arguments;
+    const n = Number(args[2]);
+    const edit = (at: number, value: string) => args.with(at, value);
+    const length = (value: string, count: number) => [dir(), MATCHING_PROBE_TIP, value, ...runs(count)];
+    const transaction = { transactionId: id(), indexFile: isWindows ? "C:\repo\.git\arbareto-candidate-1" : "/repo/.git/arbareto-candidate-1" };
+    const refused: [string, GitCall][] = [
+      ["another script value", script({ script: "identity" as "matchingProbe" })],
+      ["policy read", script({ environmentPolicy: "read" })],
+      ["policy mutation", script({ environmentPolicy: "mutation" })],
+      ["a transaction", script({ transaction })],
+      ["a repositoryDiscovery context", script({ context: { contextKind: "repositoryDiscovery", bootstrapId: id(), gitInstallationId: id() } })],
+      ["a gitProbe context", script({ context: { contextKind: "gitProbe", bootstrapId: id() }, environmentPolicy: "probe", arguments: ["--exec-path"] })],
+      ["a folder outside /tmp", script({ arguments: edit(0, `/var/tmp/arbareto-probe-${id()}`) })],
+      ["a relative folder", script({ arguments: edit(0, `arbareto-probe-${id()}`) })],
+      ["a folder with an uppercase uuid", script({ arguments: edit(0, `${MATCHING_PROBE_WSL_FOLDER}${id().toUpperCase()}`) })],
+      ["a folder below the probe folder", script({ arguments: edit(0, `${dir()}/x`) })],
+      ["a tip of 39 digits", script({ arguments: edit(1, MATCHING_PROBE_TIP.slice(1)) })],
+      ["an uppercase tip", script({ arguments: edit(1, MATCHING_PROBE_TIP.toUpperCase()) })],
+      ["run length 0", script({ arguments: length("0", 0) })],
+      ["run length 01", script({ arguments: length("01", 1) })],
+      ["run length +2", script({ arguments: length("+2", 2) })],
+      ["run length a[$(id)]", script({ arguments: length("a[$(id)]", 0) })],
+      ["one argument too few", script({ arguments: args.slice(0, -1) })],
+      ["one argument too many", script({ arguments: [...args, "--stdin"] })],
+      ["run 1 without --no-lazy-fetch first", script({ arguments: edit(3, "--no-optional-locks") })],
+      ["run 2 without --no-lazy-fetch first", script({ arguments: edit(3 + n, "--no-optional-locks") })],
+    ];
+    for (const [name, c] of refused) {
+      const result = channel.runner.run(c);
+      result.catch(() => {});
+      expect({ name, sent: channel.sent.length }).toEqual({ name, sent: 0 });
+      await expect(result).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    }
+    void channel.runner.run(script({ arguments: length("1", 1) }));
+    expect(channel.bodies("run").length).toBe(1);
+  });
 });

@@ -43,9 +43,11 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `bun run test:git`
 - `bun run test:windows` (needs `bun run build:service` first; skips without the service binary)
 - `bun run test:all` runs `tests/contracts`, `tests/git`, and `tests/wsl` in two steps: the parallel group, then the serial group of `tests/groups.json`. It fails when a test file is in no group or has no report. Set `ARBARETO_WSL_DISTRO` for the WSL tests. `ARBARETO_TEST_WORKERS` sets the worker count of the parallel step (default 8).
+- `ARBARETO_HISTORY_FIXTURES` is a comma list of the large history fixtures that a run may build: `H200K`, `H1M`, or `H200K,H1M`. A named fixture builds when the cache does not hold it, and its cases run. When the variable does not name H200K, the H200K cases run only when the cache holds both H200K variants. When the variable does not name H1M, the H1M cases skip with the capability `history-fixture-h1m`. A skip never counts as a pass.
 - `bun run test:fast` runs `tests/contracts` and the parser tests the same way, for edit loops.
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml`
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu` (Linux portability check)
+- `cargo test --locked --manifest-path src-tauri/Cargo.toml`
 - Run the app for development: `bun run dev`
 - `pwsh -File scripts/windows/measure-ram.ps1 [-RootPid <pid>]` prints the private working set, private bytes, and working set of each process in the running app's tree, with totals per group (Tauri, Bun, WebView2); the main number is the private working set (Task Manager "Memory").
 

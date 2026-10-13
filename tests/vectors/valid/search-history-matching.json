@@ -1,0 +1,5 @@
+{
+  "schema": "search-history-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"matching\",\"remedy\":{\"text\":\"This Git build does not fold the probe letters.\",\"command\":null}}"
+}

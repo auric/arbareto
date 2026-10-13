@@ -733,6 +733,17 @@ impl ProcessRequests {
             RepositoryDiscovery(RunDiscoveryLimits),
             RegisteredOperation(RunRegisteredLimits)
         );
+        // Feature 002 contract Δ6. typify drops the `const` value of `script`.
+        let script = match request {
+            RunGroup::RegisteredOperation {
+                script: Some(script),
+                ..
+            } if script != "matchingProbe" || !matches!(policy, EnvironmentPolicy::Search) => {
+                return Err(INVALID);
+            }
+            RunGroup::RegisteredOperation { script, .. } => script.is_some(),
+            _ => false,
+        };
         let mutation = matches!(policy, EnvironmentPolicy::Mutation);
         // Contract §12: `network` serves only the update processes of the `updateSubmodules` mutation.
         let changes = mutation || matches!(policy, EnvironmentPolicy::Network);
@@ -740,13 +751,18 @@ impl ProcessRequests {
             Kind::Bootstrap(_) => matches!(policy, EnvironmentPolicy::Probe),
             Kind::Registered => matches!(
                 policy,
-                EnvironmentPolicy::Read | EnvironmentPolicy::Mutation | EnvironmentPolicy::Network
+                EnvironmentPolicy::Read
+                    | EnvironmentPolicy::Mutation
+                    | EnvironmentPolicy::Network
+                    | EnvironmentPolicy::Search
             ),
         };
         if !policy_fits {
             return Err(INVALID);
         }
+        // `matching_probe_command` checks the script arguments.
         if kind == Kind::Registered
+            && !script
             && arguments.first().map(String::as_str) != Some("--no-lazy-fetch")
         {
             return Err(INVALID);
@@ -774,6 +790,9 @@ impl ProcessRequests {
             return Err(INVALID);
         }
         let target = self.target(&mut state, ids, kind, operation_id)?;
+        if script && target.wsl.is_none() {
+            return Err(INVALID);
+        }
         if let Some(file) = &index_file {
             let named = file
                 .file_name()
@@ -799,6 +818,7 @@ impl ProcessRequests {
                     index_file.as_deref(),
                     &arguments,
                     &input,
+                    script,
                 )?;
                 (Some(command), Vec::new(), Vec::new())
             }
@@ -1774,12 +1794,14 @@ impl ProcessRequests {
         index_file: Option<&Path>,
         arguments: &[String],
         input: &RunInput,
+        script: bool,
     ) -> Result<wsl::Command, Code> {
         let mode = match policy {
             EnvironmentPolicy::Probe => wsl::Mode::Probe,
             EnvironmentPolicy::Read => wsl::Mode::Read,
             EnvironmentPolicy::Mutation => wsl::Mode::Mutation,
             EnvironmentPolicy::Network => wsl::Mode::Network,
+            EnvironmentPolicy::Search => wsl::Mode::Search,
         };
         let index = index_file
             .map(|file| wsl::linux_path(file, &installation.distro).ok_or(INVALID))
@@ -1790,6 +1812,10 @@ impl ProcessRequests {
             RunInput::Bytes(bytes) => wsl::Stdin::Bytes(bytes.clone()),
             RunInput::Streamed(_) => wsl::Stdin::Open,
         };
+        if script {
+            let base = &self.config.base_environment;
+            return wsl::matching_probe_command(installation, &unit, arguments, base, stdin);
+        }
         wsl::git_command(
             installation,
             mode,
@@ -3657,6 +3683,38 @@ pub(crate) mod tests {
             refused(&call, "INVALID_REQUEST"),
             "argument with a lone surrogate"
         );
+    }
+
+    /// Feature 002 contract Δ7: the `search` policy serves registered runs only.
+    #[test]
+    fn the_search_policy_fits_a_registered_run_and_no_bootstrap_run() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let call = uuid();
+        harness.send(run_body(
+            &call,
+            &uuid(),
+            &workspace,
+            &["sleep", "10"],
+            "search",
+            json!({ "deadlineMs": 30_000 }),
+        ));
+        assert_eq!(harness.exit(&call, WAIT).expect("exit").1["exitCode"], 0);
+        let probe = |call: &str| {
+            let bootstrap = harness
+                .contexts
+                .create(ContextKind::GitProbe, &test_exe(), Instant::now())
+                .expect("context");
+            json!({
+                "type": "run", "callId": call, "operationId": uuid(), "contextKind": "gitProbe", "bootstrapId": bootstrap,
+                "arguments": ["version", "--build-options"], "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+            })
+        };
+        let cases: Vec<(&str, Edit)> = vec![(
+            "probe with the search policy",
+            set("environmentPolicy", json!("search")),
+        )];
+        expect_refusals(&harness, probe, cases, "INVALID_REQUEST");
     }
 
     // ---- T225, T228: the `network` policy and activity (contract §6 "Process fields", §12 "Deadlines and Cancel") ----
@@ -6951,6 +7009,96 @@ pub(crate) mod tests {
                 anchor.arguments,
                 git_command(wsl::Mode::Network, &network, 1, &arguments)
             ]
+        );
+    }
+
+    /// Feature 002 contract Δ3 "Matching probe", Δ6: a `script` run reaches the host as the probe command with its input bytes.
+    #[test]
+    fn a_wsl_script_run_reaches_the_host_as_the_matching_probe_and_a_broken_one_starts_nothing() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let windows = wsl.harness.child_workspace("repo");
+        let installation = match wsl.harness.requests.state().gits.get(&git) {
+            Some(Git::Wsl(installation)) => installation.clone(),
+            _ => panic!("WSL Git"),
+        };
+        let operation = uuid();
+        let arguments = [
+            "/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa",
+            "0123456789abcdef0123456789abcdef01234567",
+            "1",
+            "--no-lazy-fetch",
+            "--no-lazy-fetch",
+        ];
+        let input = b"blob\nmark :1\n";
+        let body = |call: &str| {
+            json!({
+                "type": "run", "callId": call, "operationId": operation, "contextKind": "registeredOperation",
+                "gitInstallationId": git, "repositoryId": repository, "script": "matchingProbe",
+                "arguments": arguments, "input": encode(input), "environmentPolicy": "search",
+                "limits": { "deadlineMs": 30_000 },
+            })
+        };
+        let before = wsl.host.commands().len();
+        let call = uuid();
+        wsl.harness.send(body(&call));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            refused(&call, "PROCESS_OWNERSHIP_FAILED"),
+            "the script host starts nothing"
+        );
+        let launched = wsl.host.commands()[before..].to_vec();
+        let unit = wsl::unit_name(&operation, 1).expect("unit");
+        let base = wsl.harness.requests.config.base_environment.clone();
+        let expected = wsl::matching_probe_command(
+            &installation,
+            &unit,
+            &arguments.map(String::from),
+            &base,
+            wsl::Stdin::Closed,
+        )
+        .expect("probe");
+        assert_eq!(launched.len(), 1, "no anchor");
+        assert_eq!(launched[0].arguments, expected.arguments);
+        let wsl::Stdin::Bytes(bytes) = &launched[0].stdin else {
+            panic!("stdin bytes");
+        };
+        assert_eq!(bytes.as_slice(), input);
+
+        let mut bad_length = arguments.map(Value::from);
+        bad_length[2] = json!("+1");
+        let cases: Vec<(&str, Edit)> = vec![
+            ("policy read", set("environmentPolicy", json!("read"))),
+            (
+                "a transaction",
+                both(
+                    set("transactionId", json!(uuid())),
+                    set(
+                        "indexFile",
+                        json!(format!(r"{WSL_PATH}\.git\arbareto-candidate-1")),
+                    ),
+                ),
+            ),
+            ("a bad run length", set("arguments", json!(bad_length))),
+            ("another script", set("script", json!("identity"))),
+            (
+                "a Windows Git",
+                both(
+                    set("gitInstallationId", json!(windows.git)),
+                    set("repositoryId", json!(windows.repository)),
+                ),
+            ),
+        ];
+        expect_refusals(&wsl.harness, body, cases, "INVALID_REQUEST");
+        assert_eq!(
+            wsl.host.commands().len(),
+            before + 1,
+            "a refused script run reaches no host"
+        );
+        assert_eq!(
+            wsl.harness.jobs.active_processes(&operation).unwrap_or(0),
+            0,
+            "a refused script run starts no process"
         );
     }
 

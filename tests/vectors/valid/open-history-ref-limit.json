@@ -1,0 +1,5 @@
+{
+  "schema": "open-history-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"REF_LISTING_RECORDS\"}"
+}

@@ -226,13 +226,6 @@ export function LimitedOutput({ completeness }: { completeness: Completeness }) 
   );
 }
 
-export const SCOPE_TEXT = "Up to 100 commits";
-
-/** The History scope limit: one page of the current checkout, without pagination or a total count. */
-export function LargeHistory() {
-  return <p className="p-2 text-muted-text">{SCOPE_TEXT}</p>;
-}
-
 /**
  * An unsupported or binary comparison. It shows the plan.md "Limitation text" sentence for the contract `support` reason. Only an entry that `applyFile` refuses shows the service remedy with Copy command.
  * `fileAction` `stage` or `unstage` means that `applyFile` accepts the entry.

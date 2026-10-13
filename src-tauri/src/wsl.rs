@@ -72,6 +72,8 @@ pub struct Texts {
     pub file_facts: String,
     /// Contract §6 "WSL file work": the Perl `wslFiles` text.
     pub wsl_files: String,
+    /// Feature 002 contract Δ3 "Matching probe": the `/bin/sh` probe text with the Git path and the probe arguments.
+    pub matching_probe: String,
 }
 
 pub fn texts() -> &'static Texts {
@@ -98,6 +100,7 @@ pub fn texts() -> &'static Texts {
             identity: text("identity"),
             file_facts: perl("fileFacts"),
             wsl_files: perl("wslFiles"),
+            matching_probe: text("matchingProbe"),
         }
     })
 }
@@ -350,6 +353,8 @@ pub enum Mode {
     Read,
     Mutation,
     Network,
+    /// Feature 002 contract Δ11: `read` with `LC_ALL=C.UTF-8`.
+    Search,
 }
 
 impl Mode {
@@ -359,6 +364,7 @@ impl Mode {
             Mode::Read => "read",
             Mode::Mutation => "mutation",
             Mode::Network => "network",
+            Mode::Search => "search",
         }
     }
 }
@@ -471,6 +477,51 @@ pub fn git_command(
         index,
         &installation.git,
         &git,
+        base,
+        stdin,
+    ))
+}
+
+/// Feature 002 contract Δ3 "Matching probe", Δ6: the fixed `matchingProbe` text through the wrapper in mode `search`.
+/// `arguments`: the probe folder, the tip, the run length `n`, and two runs of `n` items, each with `--no-lazy-fetch` first.
+pub fn matching_probe_command(
+    installation: &Installation,
+    unit: &str,
+    arguments: &[String],
+    base: &[(OsString, OsString)],
+    stdin: Stdin,
+) -> Result<Command, Code> {
+    let [folder, tip, n, runs @ ..] = arguments else {
+        return Err(INVALID);
+    };
+    // The script evaluates `$((2 * count))`. A bash `/bin/sh` runs a command in an array subscript there, so `n` holds only digits.
+    let count = Some(n.as_str())
+        .filter(|n| is_decimal(n) && !n.starts_with('0'))
+        .and_then(|n| n.parse::<usize>().ok())
+        .ok_or(INVALID)?;
+    let lazy_off = |at: usize| runs.get(at).map(String::as_str) == Some("--no-lazy-fetch");
+    // The folder starts with `/`, so `git init` never reads it as an option.
+    let owned = folder
+        .strip_prefix("/tmp/arbareto-probe-")
+        .is_some_and(is_identifier);
+    if !owned
+        || tip.len() != 40
+        || !is_hex(tip)
+        || count.checked_mul(2) != Some(runs.len())
+        || !lazy_off(0)
+        || !lazy_off(count)
+    {
+        return Err(INVALID);
+    }
+    let mut script = strings(&["-c", &texts().matching_probe, "sh", &installation.git]);
+    script.extend(arguments.iter().cloned());
+    Ok(wrapped(
+        installation,
+        Mode::Search,
+        unit,
+        None,
+        "/bin/sh",
+        &script,
         base,
         stdin,
     ))
@@ -2343,6 +2394,183 @@ mod tests {
         assert_eq!(texts().probe, json_text("probe"));
     }
 
+    /// Feature 002 contract Δ11: the wrapper mode `search` sets `LC_ALL=C.UTF-8`.
+    /// The fixed script `matchingProbe` exists in the contract file.
+    #[test]
+    fn the_search_mode_sets_a_c_utf8_locale_and_the_matching_probe_script_exists() {
+        let wrapper = json_text("wrapper");
+        let lines: Vec<&str> = wrapper.lines().collect();
+        assert!(
+            lines.contains(&"search) export LC_ALL=C.UTF-8 ;;"),
+            "{wrapper}"
+        );
+        let probe = json_text("matchingProbe");
+        let lines: Vec<&str> = probe.lines().collect();
+        assert_eq!(lines.first(), Some(&"git=$1 dir=$2 tip=$3 count=$4"));
+        assert!(lines.contains(&"trap 'rm -rf -- \"$dir\"' EXIT"), "{probe}");
+    }
+
+    const PROBE_DIR: &str = "/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa";
+    const PROBE_TIP: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// The folder, the tip, the run length 2, and two runs of 2 items.
+    fn probe_arguments() -> Vec<String> {
+        strings(&[
+            PROBE_DIR,
+            PROBE_TIP,
+            "2",
+            "--no-lazy-fetch",
+            "--grep=a",
+            "--no-lazy-fetch",
+            "--grep=b",
+        ])
+    }
+
+    /// Feature 002 contract Δ3 "Matching probe": the shell runs the fixed script through the wrapper in mode `search`.
+    #[test]
+    fn the_matching_probe_runs_the_contract_script_with_the_approved_git_in_search_mode() {
+        let input = b"blob\nmark :1\n".to_vec();
+        let command = matching_probe_command(
+            &installation(),
+            "arbareto-op-1.scope",
+            &probe_arguments(),
+            &base(),
+            Stdin::Bytes(input.clone()),
+        )
+        .expect("probe");
+        let (wrapper, probe) = (json_text("wrapper"), json_text("matchingProbe"));
+        let mut expected = strings(&[
+            "--distribution",
+            "Ubuntu-24.04",
+            "--cd",
+            "/",
+            "--exec",
+            "/bin/sh",
+            "-c",
+            &wrapper,
+            "sh",
+            "arbareto-op-1.scope",
+            "search",
+            "",
+            "/usr/bin/systemd-run",
+            "/usr/bin/systemctl",
+            "/usr/bin/setsid",
+            "/bin/sh",
+            "-c",
+            &probe,
+            "sh",
+            "/usr/local/bin/git",
+        ]);
+        expected.extend(probe_arguments());
+        assert_eq!(command.arguments, expected);
+        assert_eq!(texts().matching_probe, probe);
+        assert_eq!(command.environment, environment(&base()));
+        let Stdin::Bytes(bytes) = &command.stdin else {
+            panic!("stdin bytes");
+        };
+        assert_eq!(bytes.as_slice(), input.as_slice());
+    }
+
+    /// Feature 002 contract Δ6: each broken probe argument is refused, so no process sees it.
+    #[test]
+    fn the_matching_probe_refuses_each_broken_argument() {
+        let edit = |at: usize, value: &str| {
+            let mut arguments = probe_arguments();
+            arguments[at] = value.to_string();
+            arguments
+        };
+        let run_length = |n: &str| {
+            strings(&[
+                PROBE_DIR,
+                PROBE_TIP,
+                n,
+                "--no-lazy-fetch",
+                "--no-lazy-fetch",
+            ])
+        };
+        let cases = [
+            ("no arguments", Vec::new()),
+            (
+                "no runs and no run length",
+                strings(&[PROBE_DIR, PROBE_TIP]),
+            ),
+            (
+                "another folder",
+                edit(
+                    0,
+                    "/tmp/arbareto-other-0f0f0f0f-0000-4000-8000-0000000000aa",
+                ),
+            ),
+            (
+                "a folder without the leading slash",
+                edit(0, &PROBE_DIR[1..]),
+            ),
+            (
+                "an uppercase folder ID",
+                edit(
+                    0,
+                    "/tmp/arbareto-probe-0F0F0F0F-0000-4000-8000-0000000000AA",
+                ),
+            ),
+            (
+                "a folder below the probe folder",
+                edit(0, &format!("{PROBE_DIR}/x")),
+            ),
+            ("a folder without an ID", edit(0, "/tmp/arbareto-probe-")),
+            ("a short tip", edit(1, &PROBE_TIP[..39])),
+            ("an uppercase tip", edit(1, &PROBE_TIP.to_uppercase())),
+            ("a SHA-256 tip", edit(1, &"a".repeat(64))),
+            (
+                "a tip with a non-hex digit",
+                edit(1, &format!("{}g", &PROBE_TIP[..39])),
+            ),
+            ("run length 0", strings(&[PROBE_DIR, PROBE_TIP, "0"])),
+            ("run length 01", run_length("01")),
+            ("run length +2", edit(2, "+2")),
+            ("run length a[$(id)]", edit(2, "a[$(id)]")),
+            ("run length 1 with runs of 2", edit(2, "1")),
+            ("run length 3 with runs of 2", edit(2, "3")),
+            ("one item too many", {
+                let mut arguments = probe_arguments();
+                arguments.push("--grep=c".to_string());
+                arguments
+            }),
+            (
+                "a first run without --no-lazy-fetch first",
+                edit(3, "--grep=a"),
+            ),
+            (
+                "a second run without --no-lazy-fetch first",
+                edit(5, "--grep=b"),
+            ),
+        ];
+        for (name, arguments) in cases {
+            assert_eq!(
+                matching_probe_command(
+                    &installation(),
+                    "arbareto-op-1.scope",
+                    &arguments,
+                    &base(),
+                    Stdin::Closed
+                )
+                .err(),
+                Some(INVALID),
+                "{name}"
+            );
+        }
+        assert!(
+            matching_probe_command(
+                &installation(),
+                "arbareto-op-1.scope",
+                &run_length("1"),
+                &base(),
+                Stdin::Closed
+            )
+            .is_ok(),
+            "run length 1"
+        );
+    }
+
     #[test]
     fn every_mode_passes_the_setsid_path_and_only_a_mutation_passes_an_index_file() {
         let inst = installation();
@@ -2352,6 +2580,7 @@ mod tests {
             (Mode::Read, "read"),
             (Mode::Mutation, "mutation"),
             (Mode::Network, "network"),
+            (Mode::Search, "search"),
         ] {
             let command = git_command(
                 &inst,
@@ -2381,7 +2610,7 @@ mod tests {
         )
         .expect("mutation");
         assert_eq!(mutation.arguments[11], index);
-        for mode in [Mode::Probe, Mode::Read, Mode::Network] {
+        for mode in [Mode::Probe, Mode::Read, Mode::Network, Mode::Search] {
             assert_eq!(
                 git_command(
                     &inst,
@@ -2424,7 +2653,7 @@ mod tests {
         assert!(lines.contains(&"trap 'end; exit 129' HUP"));
         assert!(lines.contains(&"probe) export LC_ALL=C ;;"));
         assert!(lines.contains(&"network) export GIT_PROTOCOL_FROM_USER=0 ;;"));
-        assert!(lines.contains(&"case $mode in probe | read) end ;; esac"));
+        assert!(lines.contains(&"case $mode in probe | read | search) end ;; esac"));
         assert!(
             !json_text("anchor").contains("setsid"),
             "no setsid in the anchor"

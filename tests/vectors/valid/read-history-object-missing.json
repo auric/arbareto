@@ -1,5 +1,0 @@
-{
-  "schema": "read-history-result",
-  "expected": "valid",
-  "text": "{\"generation\":3,\"scope\":\"current-checkout\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},\"shallowFingerprint\":null,\"rows\":[],\"boundaries\":{\"page\":[],\"shallow\":[]},\"completeness\":{\"state\":\"limited\",\"code\":\"OBJECT_MISSING\"},\"remedy\":{\"text\":\"This partial clone lacks objects that Git needs here. Arbareto never downloads objects. Download them in a terminal, for example with git backfill, then use Refresh.\"}}"
-}

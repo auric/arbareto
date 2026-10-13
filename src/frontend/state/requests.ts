@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import type { ChangeEntry, HistoryPage, ReadEntriesResult, RefsResult, WorkspaceSnapshot } from "../../contracts/envelope";
+import type { ChangeEntry, ReadEntriesResult, RefsResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { BridgeResponse, OnProgress } from "../bridge";
+import { nextRequestSeq, sameHead } from "./history-view";
 
-// Contract §2, §3 "HistoryPage result", §5 "Pending reads", §8, and §11 "Change polling". plan.md "Freshness and reconciliation".
+// Contract §2, §5 "Pending reads", §8, and §11 "Change polling". plan.md "Freshness and reconciliation". Feature 002 contract Δ3 and Δ8.
 
 type Head = WorkspaceSnapshot["head"];
 type Check = "full" | "changes";
@@ -17,7 +18,6 @@ export type RequestBridge = {
   restoreWorkspace(onProgress?: OnProgress): Promise<BridgeResponse>;
   readWorkspace(target: { repositoryId: string }, payload: { refresh: boolean; check: Check }, onProgress?: OnProgress): Promise<BridgeResponse>;
   readEntries(target: Target, payload: { snapshotId: string; cursor: string }): Promise<BridgeResponse>;
-  readHistory(target: Target): Promise<BridgeResponse>;
   readRefs(target: Target): Promise<BridgeResponse>;
   readComparison(target: Target & { selectionId: string }, payload: { snapshotId: string; entryId: string }): Promise<BridgeResponse>;
   cancel(payload: { operationId: string }): Promise<BridgeResponse>;
@@ -29,6 +29,8 @@ export type Clock = {
   clearTimeout(id: unknown): void;
 };
 export type FocusSource = { hasFocus(): boolean; subscribe(listener: (focused: boolean) => void): () => void };
+/** The feature 002 history view. Its `openHistory` request goes through `track`, so it counts as a read of the workspace. */
+export type HistoryParticipant = { open(): unknown; refresh(): unknown };
 
 // The T331 `ReadComparisonResult` type is on another branch. These are the only fields that this module reads.
 type ComparisonHunk = { hunkId: string; digest: string };
@@ -44,14 +46,10 @@ export type RequestState = {
   entries: readonly ChangeEntry[];
   /** The newest `readWorkspace`, `readEntries`, or `restoreWorkspace` response without a snapshot. */
   readFailure: BridgeResponse | null;
-  history: HistoryPage | null;
-  historyFailure: BridgeResponse | null;
-  /** The newest `readRefs` list. The sidebar shows it also without a pair. */
+  /** The newest `readRefs` list. */
   refs: RefsResult | null;
   /** The newest `readRefs` refusal. A later list clears it. */
   refsFailure: BridgeResponse | null;
-  /** Consecutive `readRefs` lists without a pair with the shown page. 0 means paired. */
-  refsUnpaired: number;
   selection: Selection | null;
   comparison: ShownComparison | null;
   selectedHunk: string | null;
@@ -64,6 +62,10 @@ export type RequestState = {
   outcomes: readonly BridgeResponse[];
   /** Each repository open and user Refresh adds 1. The History-ready mark counts it. */
   historyEpoch: number;
+  /** The `nextRequestSeq()` value when the request of `refs` was sent. */
+  refsSeq: number;
+  /** The HEAD of the newest `readWorkspace` result, and the `nextRequestSeq()` value when its request was sent. */
+  headRead: { head: Head; seq: number } | null;
 };
 
 const POLL_MS = 1000;
@@ -78,11 +80,8 @@ const INITIAL: RequestState = {
   workspace: null,
   entries: [],
   readFailure: null,
-  history: null,
-  historyFailure: null,
   refs: null,
   refsFailure: null,
-  refsUnpaired: 0,
   selection: null,
   comparison: null,
   selectedHunk: null,
@@ -91,26 +90,19 @@ const INITIAL: RequestState = {
   refreshing: false,
   outcomes: [],
   historyEpoch: 0,
+  refsSeq: 0,
+  headRead: null,
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 // Contract §3: a `WorkspaceSnapshot` has `snapshotId`, and a `WorkspaceRefusal` has none.
 const isSnapshot = (value: unknown): value is WorkspaceSnapshot => isObject(value) && typeof value.snapshotId === "string";
-// Contract §3: a `HistoryPage` has `rows`, and a `HistoryRefusal` has none.
-const isHistoryPage = (value: unknown): value is HistoryPage => isObject(value) && Array.isArray(value.rows);
 // Contract §3: a `RefList` has `refs`, and a `RefsRefusal` has none.
 const isRefList = (value: unknown): value is RefsResult => isObject(value) && Array.isArray(value.refs);
 const isEntriesPage = (value: unknown): value is ReadEntriesResult => isObject(value) && Array.isArray(value.entries);
 export const isRegistration = (value: unknown): value is Registration => isObject(value) && typeof value.repositoryId === "string" && typeof value.generation === "number";
 const comparisonFields = (value: unknown): ComparisonFields | null =>
   isObject(value) && typeof value.comparisonId === "string" && typeof value.snapshotId === "string" && Array.isArray(value.hunks) ? (value as ComparisonFields) : null;
-const sameHead = (a: Head, b: Head) => a.state === b.state && (a as { target?: string }).target === (b as { target?: string }).target && (a as { oid?: string }).oid === (b as { oid?: string }).oid;
-
-/** Contract §3 "Pairing with the history page": a page pairs with a list whose `current` names the same branch and OID, or with a null `current` for a detached HEAD or an unborn branch. */
-export function refsPair(head: HistoryPage["head"], current: RefsResult["current"]): boolean {
-  if (head.state !== "branch") return current === null;
-  return current !== null && `refs/heads/${current.name}` === head.target && current.objectId === head.oid;
-}
 
 /** The distro of a WSL workspace, else null (data-model §2 `location`). */
 export function wslDistro(workspace: WorkspaceSnapshot | null): string | null {
@@ -138,7 +130,7 @@ const browserFocus: FocusSource = {
 };
 
 /** One request store for the open workspace. Responses bind to `repositoryGeneration` and `selectionId`. */
-export function createRequests({ bridge, clock = browserClock, focus = browserFocus }: { bridge: RequestBridge; clock?: Clock; focus?: FocusSource }) {
+export function createRequests({ bridge, clock = browserClock, focus = browserFocus, history }: { bridge: RequestBridge; clock?: Clock; focus?: FocusSource; history?: HistoryParticipant }) {
   let state = INITIAL;
   const listeners = new Set<() => void>();
   const set = (patch: Partial<RequestState>) => {
@@ -160,7 +152,6 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
   // The request facts of the shown comparison.
   let shown: { selectionId: string; generation: number; snapshotId: string } | null = null;
   let reconciling: object | null = null;
-  let latestHistory: object | null = null;
   let historyInFlight = 0;
   let latestRefs: object | null = null;
   let comparisonsInFlight = 0;
@@ -195,6 +186,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     if (!isPoll) userRead();
     const e = epoch;
     const token = {};
+    const seq = nextRequestSeq();
     const own: typeof poll = isPoll ? (poll = { operationId: null, cancel: false }) : null;
     pendingReads++;
     if (refresh) userReads++;
@@ -215,7 +207,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       if (refresh && userReads === 0) set({ refreshing: false });
       if (own && poll === own) poll = null;
       // Data-model "WSL start and poll transitions": a poll that the renderer canceled ends without a shown result.
-      if (!(own?.cancel && response.state === "canceled")) onWorkspace(response, refresh, token, own !== null);
+      if (!(own?.cancel && response.state === "canceled")) onWorkspace(response, refresh, token, own !== null, seq);
       if (own) armPoll();
       readEnded();
       onEnd?.();
@@ -250,7 +242,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     } else if (poll === null) armPoll();
   }
 
-  function onWorkspace(response: BridgeResponse, refresh: boolean, token: object, isPoll: boolean) {
+  function onWorkspace(response: BridgeResponse, refresh: boolean, token: object, isPoll: boolean, seq: number) {
     const result = response.result;
     if (reconciling === token) reconciling = null;
     if (!isSnapshot(result)) {
@@ -266,25 +258,24 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     if (refresh && response.state === "succeeded" && result.recoveryState === "ready") sessionBlocked = false;
     const headChanged = observedHead !== null && !sameHead(observedHead, result.head);
     observedHead = result.head;
-    // Contract §3 "HistoryPage result": a page stays only while its captured HEAD equals the newest observed HEAD.
-    const history = state.history && !sameHead(state.history.head, result.head) ? null : state.history;
-    if (headChanged && historyInFlight === 0) requestHistory(false, true);
+    if (state.headRead === null || seq > state.headRead.seq) set({ headRead: { head: result.head, seq } });
     // plan.md Refresh row: `readRefs` follows each full status result. A WSL poll result sends none.
-    if (result.readKind === "full" && !(isPoll && result.location.kind === "wsl")) requestRefs();
+    // A changed HEAD sends one, so the feature 002 "References changed" notice can show (contract Δ8).
+    if (headChanged || (result.readKind === "full" && !(isPoll && result.location.kind === "wsl"))) requestRefs();
     const known = result.snapshotId === state.workspace?.snapshotId || result.snapshotId === paging?.snapshot.snapshotId;
     if (known) {
-      update({ history, readFailure: null });
+      update({ readFailure: null });
       return;
     }
     paging = null;
     if (result.cursor === null) {
-      commit(result, result.entries, { history });
+      commit(result, result.entries, {});
       return;
     }
     // A change invalidates the approval before the replacement view arrives (contract §8).
     paging = { snapshot: result, entries: [...result.entries] };
     shown = null;
-    update({ history, readFailure: null });
+    update({ readFailure: null });
     fetchPage(paging, result.cursor);
   }
 
@@ -351,36 +342,17 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     update({ comparison: { ...response, entryId }, selectedHunk });
   }
 
-  /** `refs` sends `readRefs` after the page arrives: a changed HEAD starts this read. */
-  function requestHistory(retried: boolean, refs = false) {
-    if (!repository) return;
+  /** An `openHistory` request of the history view. It takes a read slot (feature 002 contract Δ3), so the poll rules count it. */
+  function track<T>(request: Promise<T>): Promise<T> {
+    if (!repository) return request;
     userRead();
     const e = epoch;
-    const token = {};
-    latestHistory = token;
     historyInFlight++;
-    void bridge.readHistory({ repositoryId: repository.repositoryId, repositoryGeneration: generation }).then((response) => {
+    return request.finally(() => {
       if (e !== epoch) return;
       historyInFlight--;
-      onHistory(response, token, retried);
-      if (refs && latestHistory === token) requestRefs();
       readEnded();
     });
-  }
-
-  function onHistory(response: BridgeResponse, token: object, retried: boolean) {
-    const latest = latestHistory === token;
-    if (response.code === "REPOSITORY_CHANGED" && !retried) {
-      if (latest) requestHistory(true);
-      return;
-    }
-    const page = response.result;
-    if (!isHistoryPage(page)) {
-      if (latest) set({ historyFailure: response });
-      return;
-    }
-    if (observedHead === null || sameHead(page.head, observedHead)) set({ history: page, historyFailure: null, ...(state.refs !== null && refsPair(page.head, state.refs.current) ? { refsUnpaired: 0 } : {}) });
-    else if (latest && historyInFlight === 0) requestHistory(false);
   }
 
   function requestRefs() {
@@ -388,29 +360,21 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     const e = epoch;
     const token = {};
     latestRefs = token;
+    const seq = nextRequestSeq();
     void bridge.readRefs({ repositoryId: repository.repositoryId, repositoryGeneration: generation }).then((response) => {
       // Contract §5 "Pending reads": a newer `readRefs` supersedes this one.
       if (e !== epoch || latestRefs !== token) return;
-      onRefs(response);
+      onRefs(response, seq);
     });
   }
 
-  function onRefs(response: BridgeResponse) {
+  function onRefs(response: BridgeResponse, seq: number) {
     const list = response.result;
     if (!isRefList(list)) {
       set({ refsFailure: response });
       return;
     }
-    const page = state.history;
-    const paired = page !== null && refsPair(page.head, list.current);
-    // Without a page, the pair waits for it. A page that arrives later pairs in `onHistory`.
-    const unpaired = paired || page === null ? 0 : state.refsUnpaired + 1;
-    set({ refs: list, refsFailure: null, refsUnpaired: unpaired });
-    // Contract §3: without a pair, one `readHistory` and one `readRefs` go out.
-    if (unpaired === 1) {
-      requestHistory(false);
-      requestRefs();
-    }
+    set({ refs: list, refsSeq: seq, refsFailure: null });
   }
 
   // The Windows interval poll. A WSL workspace polls through `armPoll` instead (contract §11 "Change polling").
@@ -436,13 +400,14 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     focused = focus.hasFocus();
   }
 
-  function start(registration: Registration) {
+  /** Feature 002 contract Δ8: after a service restart no view resumes, so `openView` is false then. */
+  function start(registration: Registration, openView: boolean) {
     repository = registration;
     generation = registration.generation;
     observedHead = null;
     watch();
     readWorkspace(false, "full");
-    requestHistory(false);
+    if (openView) history?.open();
   }
 
   function reset() {
@@ -453,7 +418,6 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     paging = null;
     shown = null;
     reconciling = null;
-    latestHistory = null;
     latestRefs = null;
     historyInFlight = 0;
     comparisonsInFlight = 0;
@@ -465,27 +429,30 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
 
   return {
     state: () => state,
+    /** The repository and the newest generation of the open workspace (contract §2), or null. */
+    target: () => (repository === null ? null : { repositoryId: repository.repositoryId, repositoryGeneration: generation }),
+    track,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => void listeners.delete(listener);
     },
 
-    /** A repository open. It shows no selected row (FR-034), and `readHistory` goes out beside the first full read. */
+    /** A repository open. It shows no selected row (FR-034), and the history view opens beside the first full read. */
     open(registration: Registration) {
       reset();
       latestSelectionId = null;
       sessionBlocked = false;
       state = { ...INITIAL, outcomes: state.outcomes, historyEpoch: state.historyEpoch + 1 };
       set({ repository: registration });
-      start(registration);
+      start(registration, true);
     },
 
     /** The user Refresh action: F5, the header Refresh button, or the State unknown Refresh. */
     refresh() {
       if (!repository) return;
-      // plan.md Refresh row: F5 requests `readWorkspace` with `refresh: true` and `readHistory` together.
+      // plan.md Refresh row: F5 requests `readWorkspace` with `refresh: true` and a new history view together.
       readWorkspace(true, "full");
-      requestHistory(false);
+      history?.refresh();
       set({ historyEpoch: state.historyEpoch + 1 });
     },
 
@@ -519,15 +486,17 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
 
     /** Contract §8 "Service restart": run `restoreWorkspace` again and block mutations until a `refresh: true` read succeeds. */
     serviceSession() {
+      const shownKey = repository?.worktreeKey ?? null;
       reset();
       sessionBlocked = true;
       const e = epoch;
-      update({ repository: null, workspace: null, entries: [], history: null, comparison: null, selectedHunk: null, refreshing: false });
+      update({ repository: null, workspace: null, entries: [], comparison: null, selectedHunk: null, refreshing: false });
       void bridge.restoreWorkspace().then((response) => {
         if (e !== epoch) return;
         if (response.state !== "succeeded" || !isRegistration(response.result)) return update({ readFailure: response });
         set({ repository: response.result });
-        start(response.result);
+        // The stale view of the same worktree stays until Refresh. Another worktree gets its own view.
+        start(response.result, response.result.worktreeKey !== shownKey);
       });
     },
 

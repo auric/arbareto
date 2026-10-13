@@ -3,13 +3,14 @@
 
 import { describe, expect, test } from "bun:test";
 import type { BridgeResponse } from "../../src/frontend/bridge";
-import type { ChangeEntry, HistoryPage, WorkspaceSnapshot } from "../../src/contracts/envelope";
+import type { ChangeEntry, WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { printOrigin } from "../origin";
+import { createHistoryView } from "../../src/frontend/state/history-view";
 import { createRequests } from "../../src/frontend/state/requests";
 
 printOrigin("../../src/frontend/state/requests.ts", import.meta.dir);
 
-// Contract §2, §3 "HistoryPage result", §5 "Pending reads", and §8. plan.md "Freshness and reconciliation".
+// Contract §2, §5 "Pending reads", and §8. plan.md "Freshness and reconciliation". Feature 002 contract Δ3 and Δ8.
 
 type Call = { operation: string; target: Record<string, unknown>; payload: Record<string, unknown>; resolve(response: BridgeResponse): void };
 
@@ -22,18 +23,24 @@ function bridgeDouble() {
     restoreWorkspace: () => record("restoreWorkspace"),
     readWorkspace: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readWorkspace", target, payload),
     readEntries: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readEntries", target, payload),
-    readHistory: (target: Record<string, unknown>) => record("readHistory", target),
     readComparison: (target: Record<string, unknown>, payload: Record<string, unknown>) => record("readComparison", target, payload),
     readRefs: (target: Record<string, unknown>) => record("readRefs", target),
     cancel: (payload: Record<string, unknown>) => record("cancel", {}, payload),
   };
+  // The history view participant. Its `openHistory` request goes through `track`, as the workbench sends it (feature 002 contract Δ3).
+  let store: { track<T>(request: Promise<T>): Promise<T>; target(): { repositoryId: string; repositoryGeneration: number } | null } | null = null;
+  const history = {
+    open: () => store!.track(record("openHistory", store!.target() ?? {}, { scope: "all" })),
+    refresh: () => store!.track(record("openHistory", store!.target() ?? {}, { scope: "all" })),
+  };
+  const bind = <T extends NonNullable<typeof store>>(requests: T) => ((store = requests), requests);
   const of = (operation: string) => calls.filter((call) => call.operation === operation);
   const last = (operation: string) => {
     const found = of(operation).at(-1);
     if (!found) throw new Error(`no ${operation} call`);
     return found;
   };
-  return { bridge, calls, of, last };
+  return { bridge, calls, of, last, history, bind };
 }
 
 function clockDouble() {
@@ -114,18 +121,6 @@ function snapshot(generation: number, entries: ChangeEntry[], fields: Partial<Wo
   };
 }
 
-function page(generation: number, head: string): HistoryPage {
-  return {
-    generation,
-    scope: "current-checkout",
-    head: { state: "branch", target: "refs/heads/main", oid: head },
-    shallowFingerprint: null,
-    rows: [{ oid: head, parents: [], subject: "First", author: { name: "A", email: "a@example.com" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.com" }, committerDate: 1_700_000_000, body: "", bodyCut: false }],
-    boundaries: { page: [], shallow: [] },
-    completeness: { state: "complete" },
-  };
-}
-
 // The T331 comparison value: the shipped `src/git-service/comparison.ts` value plus `digest` on each hunk (data-model §5 Hunk).
 function comparison(snapshotId: string, entryId: string, digests: string[]) {
   return {
@@ -159,12 +154,12 @@ async function opened(entries: ChangeEntry[] = [entry("unstaged", "a.txt"), entr
   const double = bridgeDouble();
   const time = clockDouble();
   const focus = focusDouble(focused);
-  const requests = createRequests({ bridge: double.bridge, clock: time.clock, focus: focus.focus });
+  const requests = double.bind(createRequests({ bridge: double.bridge, history: double.history, clock: time.clock, focus: focus.focus }));
   requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
   await flush();
   const first = snapshot(1, entries);
   workspaceResponse(double.last("readWorkspace"), first);
-  echo(double.last("readHistory"), { result: page(1, HEAD_A) });
+  echo(double.last("openHistory"), { result: {} });
   await flush();
   return { ...double, ...time, focus, requests, first };
 }
@@ -181,14 +176,14 @@ async function shown(entries?: ChangeEntry[]) {
 }
 
 describe("obsolete responses", () => {
-  test("the first read is a full read without refresh, and readHistory goes out beside it", async () => {
+  test("the first read is a full read without refresh, and openHistory goes out beside it", async () => {
     const double = bridgeDouble();
     const time = clockDouble();
-    const requests = createRequests({ bridge: double.bridge, clock: time.clock, focus: focusDouble(true).focus });
+    const requests = double.bind(createRequests({ bridge: double.bridge, history: double.history, clock: time.clock, focus: focusDouble(true).focus }));
     requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
     await flush();
     expect(double.of("readWorkspace").map((c) => c.payload)).toEqual([{ refresh: false, check: "full" }]);
-    expect(double.of("readHistory").map((c) => c.target)).toEqual([{ repositoryId: REPOSITORY, repositoryGeneration: 1 }]);
+    expect(double.of("openHistory").map((c) => [c.target, c.payload])).toEqual([[{ repositoryId: REPOSITORY, repositoryGeneration: 1 }, { scope: "all" }]]);
     requests.dispose();
   });
 
@@ -347,65 +342,60 @@ describe("service session", () => {
   });
 });
 
-describe("history responses", () => {
-  test("an older-generation history response replaces the view when its captured HEAD equals the newest observed HEAD", async () => {
-    const double = bridgeDouble();
-    const requests = createRequests({ bridge: double.bridge, clock: clockDouble().clock, focus: focusDouble(true).focus });
-    requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
-    await flush();
-    const history = double.last("readHistory");
-    workspaceResponse(double.last("readWorkspace"), snapshot(2, []));
-    await flush();
-    const late = page(1, HEAD_A);
-    echo(history, { result: late });
-    await flush();
-    expect(requests.state().history).toEqual(late);
-    requests.dispose();
+// Feature 002 contract Δ8: a HEAD move never replaces the view, so the 001 page-to-HEAD binding is gone. The 001 REPOSITORY_CHANGED rule holds for openHistory.
+describe("history view opens", () => {
+  function opener(responses: string[]) {
+    const targets: unknown[] = [];
+    let generation = 1;
+    const ok = (result: unknown) => Promise.resolve({ requestId: "r", state: "succeeded", result } as BridgeResponse);
+    const view = createHistoryView(
+      {
+        openHistory: (target) => {
+          targets.push(target);
+          const code = responses.shift();
+          if (code !== undefined) return Promise.resolve({ requestId: "r", state: "rejected", code, repositoryGeneration: 1 } as BridgeResponse);
+          return ok({ viewId: "view-1", scope: "all", generation, head: { state: "branch", target: "refs/heads/main", oid: HEAD_A }, startCount: 1, refsDigest: "0".repeat(64), shallow: false });
+        },
+        loadHistory: () => ok({ rows: 0, complete: false }),
+        readHistoryRows: () => ok({ target: "unknown", rowCount: 0, lanes: 1, complete: false, bytes: 0 }),
+        searchHistory: () => ok({ matches: 0, shallow: false }),
+        closeHistory: () => ok({}),
+        cancel: () => ok({}),
+      },
+      () => ({ repositoryId: REPOSITORY, repositoryGeneration: generation }),
+    );
+    return { view, targets, setGeneration: (n: number) => void (generation = n) };
+  }
+
+  test("REPOSITORY_CHANGED for openHistory sends one new request with the current generation", async () => {
+    const o = opener(["REPOSITORY_CHANGED"]);
+    const opened = o.view.open("all", false);
+    o.setGeneration(2);
+    await opened;
+    expect(o.targets).toEqual([
+      { repositoryId: REPOSITORY, repositoryGeneration: 1 },
+      { repositoryId: REPOSITORY, repositoryGeneration: 2 },
+    ]);
+    expect(o.view.getState().view?.viewId).toBe("view-1");
   });
 
-  test("a history response with another HEAD never replaces the view", async () => {
-    const double = bridgeDouble();
-    const requests = createRequests({ bridge: double.bridge, clock: clockDouble().clock, focus: focusDouble(true).focus });
-    requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
-    await flush();
-    const history = double.last("readHistory");
-    workspaceResponse(double.last("readWorkspace"), snapshot(2, [], { head: { state: "branch", target: "refs/heads/main", oid: HEAD_B } }));
-    await flush();
-    echo(history, { result: page(1, HEAD_A) });
-    await flush();
-    expect(requests.state().history).toBeNull();
-    requests.dispose();
+  test("REPOSITORY_CHANGED for the retried openHistory sets openFailure", async () => {
+    const o = opener(["REPOSITORY_CHANGED", "REPOSITORY_CHANGED"]);
+    await o.view.open("all", false);
+    expect(o.targets).toHaveLength(2);
+    expect(o.view.getState().openFailure?.code).toBe("REPOSITORY_CHANGED");
   });
 
-  test("REPOSITORY_CHANGED for readHistory sends one new request with the current generation", async () => {
-    const double = bridgeDouble();
-    const requests = createRequests({ bridge: double.bridge, clock: clockDouble().clock, focus: focusDouble(true).focus });
-    requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
+  test("a HEAD move keeps the view: no new openHistory goes out, and readRefs follows", async () => {
+    const o = await opened();
+    const opens = o.of("openHistory").length;
+    const refs = o.of("readRefs").length;
+    await o.advance(1000);
+    workspaceResponse(o.last("readWorkspace"), snapshot(1, o.first.entries, { readKind: "retained", head: { state: "branch", target: "refs/heads/main", oid: HEAD_B } }));
     await flush();
-    const history = double.last("readHistory");
-    workspaceResponse(double.last("readWorkspace"), snapshot(2, []));
-    await flush();
-    const before = double.of("readHistory").length;
-    history.resolve({ requestId: crypto.randomUUID(), state: "rejected", code: "REPOSITORY_CHANGED", repositoryGeneration: 1 });
-    await flush();
-    expect(double.of("readHistory").slice(before).map((c) => c.target)).toEqual([{ repositoryId: REPOSITORY, repositoryGeneration: 2 }]);
-    requests.dispose();
-  });
-
-  test("REPOSITORY_CHANGED for the retried readHistory sets historyFailure", async () => {
-    const double = bridgeDouble();
-    const requests = createRequests({ bridge: double.bridge, clock: clockDouble().clock, focus: focusDouble(true).focus });
-    requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
-    await flush();
-    const changed = (call: Call) => call.resolve({ requestId: crypto.randomUUID(), state: "rejected", code: "REPOSITORY_CHANGED", repositoryGeneration: 1 });
-    changed(double.last("readHistory"));
-    await flush();
-    expect(double.of("readHistory")).toHaveLength(2);
-    changed(double.last("readHistory"));
-    await flush();
-    expect(double.of("readHistory")).toHaveLength(2);
-    expect(requests.state().historyFailure?.code).toBe("REPOSITORY_CHANGED");
-    requests.dispose();
+    expect(o.of("openHistory")).toHaveLength(opens);
+    expect(o.of("readRefs")).toHaveLength(refs + 1);
+    o.requests.dispose();
   });
 });
 
@@ -463,7 +453,7 @@ describe("focus return on a Windows workspace", () => {
 describe("status paging", () => {
   test("a non-null cursor fetches readEntries pages bound to the first page until the cursor is null", async () => {
     const double = bridgeDouble();
-    const requests = createRequests({ bridge: double.bridge, clock: clockDouble().clock, focus: focusDouble(true).focus });
+    const requests = double.bind(createRequests({ bridge: double.bridge, history: double.history, clock: clockDouble().clock, focus: focusDouble(true).focus }));
     requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
     await flush();
     const [e1, e2, e3] = [entry("unstaged", "1"), entry("unstaged", "2"), entry("staged", "3")];
@@ -487,7 +477,7 @@ describe("status paging", () => {
 
   test("a page of an older snapshot never joins the view", async () => {
     const double = bridgeDouble();
-    const requests = createRequests({ bridge: double.bridge, clock: clockDouble().clock, focus: focusDouble(true).focus });
+    const requests = double.bind(createRequests({ bridge: double.bridge, history: double.history, clock: clockDouble().clock, focus: focusDouble(true).focus }));
     requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
     await flush();
     const old = snapshot(1, [entry("unstaged", "1")], { entryCount: 2, cursor: crypto.randomUUID() });
@@ -509,7 +499,7 @@ describe("status paging", () => {
   for (const code of ["UNKNOWN_TARGET", "REPOSITORY_CHANGED"] as const) {
     test(`${code} during paging drops the partial pages and runs readWorkspace again`, async () => {
       const double = bridgeDouble();
-      const requests = createRequests({ bridge: double.bridge, clock: clockDouble().clock, focus: focusDouble(true).focus });
+      const requests = double.bind(createRequests({ bridge: double.bridge, history: double.history, clock: clockDouble().clock, focus: focusDouble(true).focus }));
       requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
       await flush();
       const e1 = entry("unstaged", "1");
@@ -558,18 +548,17 @@ describe("superseded comparison reads", () => {
   });
 });
 
-// T358: contract §3 "References result" and "Pairing with the history page"; plan.md Refresh row.
+// T358: contract §3 "References result"; plan.md Refresh row. Feature 002 contract Δ3 retires the pairing with the history page.
 describe("reference reads", () => {
-  const refs = (generation: number, current: { name: string; objectId: string } | null) => ({ generation, refs: [], current, completeness: { state: "complete" as const } });
+  const refs = (generation: number, current: { name: string; objectId: string } | null) => ({ generation, refs: [], current, refsDigest: "0".repeat(64), completeness: { state: "complete" as const } });
 
-  test("readRefs follows a full readWorkspace result with its generation, and the paired result shows", async () => {
+  test("readRefs follows a full readWorkspace result with its generation, and the result shows", async () => {
     const o = await opened();
     expect(o.of("readRefs").map((c) => c.target)).toEqual([{ repositoryId: REPOSITORY, repositoryGeneration: 1 }]);
     const value = refs(1, { name: "main", objectId: HEAD_A });
     echo(o.last("readRefs"), { result: value });
     await flush();
     expect(o.requests.state().refs).toEqual(value);
-    expect(o.requests.state().refsUnpaired).toBe(0);
     o.requests.dispose();
   });
 
@@ -588,7 +577,7 @@ describe("reference reads", () => {
   test("a WSL poll result sends no readRefs, and a user full read on WSL does", async () => {
     const double = bridgeDouble();
     const time = clockDouble();
-    const requests = createRequests({ bridge: double.bridge, clock: time.clock, focus: focusDouble(true).focus });
+    const requests = double.bind(createRequests({ bridge: double.bridge, history: double.history, clock: time.clock, focus: focusDouble(true).focus }));
     requests.open({ repositoryId: REPOSITORY, generation: 1, worktreeKey: WORKTREE_KEY });
     await flush();
     const wsl = { location: { kind: "wsl", distro: "Ubuntu-26.04", git: { path: "/usr/bin/git", version: "2.55.0" } } } as unknown as Partial<WorkspaceSnapshot>;
@@ -601,36 +590,6 @@ describe("reference reads", () => {
     await flush();
     expect(double.of("readRefs")).toHaveLength(1);
     requests.dispose();
-  });
-
-  test("readRefs follows each readHistory that a changed HEAD starts", async () => {
-    const o = await opened();
-    const before = o.of("readRefs").length;
-    await o.advance(1000);
-    workspaceResponse(o.last("readWorkspace"), snapshot(1, o.first.entries, { readKind: "retained", head: { state: "branch", target: "refs/heads/main", oid: HEAD_B } }));
-    await flush();
-    expect(o.of("readRefs")).toHaveLength(before);
-    echo(o.last("readHistory"), { result: page(1, HEAD_B) });
-    await flush();
-    expect(o.of("readRefs")).toHaveLength(before + 1);
-    o.requests.dispose();
-  });
-
-  test("without a pair, one readHistory and one readRefs go out; a second unpaired result sends nothing", async () => {
-    const o = await opened();
-    const histories = o.of("readHistory").length;
-    echo(o.last("readRefs"), { result: refs(1, { name: "main", objectId: HEAD_B }) });
-    await flush();
-    expect(o.requests.state().refsUnpaired).toBe(1);
-    expect(o.of("readHistory")).toHaveLength(histories + 1);
-    expect(o.of("readRefs")).toHaveLength(2);
-    echo(o.last("readHistory"), { result: page(1, HEAD_A) });
-    echo(o.last("readRefs"), { result: refs(1, { name: "other", objectId: HEAD_A }) });
-    await flush();
-    expect(o.requests.state().refsUnpaired).toBe(2);
-    expect(o.of("readHistory")).toHaveLength(histories + 1);
-    expect(o.of("readRefs")).toHaveLength(2);
-    o.requests.dispose();
   });
 
   test("a newer readRefs supersedes an older one", async () => {
@@ -664,14 +623,14 @@ describe("reference reads", () => {
 
 // T354: one view without modes. The History-ready mark (`arbareto:history-painted`) counts `historyEpoch`.
 describe("refresh in the one view", () => {
-  test("a user Refresh sends readWorkspace with refresh true and readHistory together, and adds 1 to historyEpoch", async () => {
+  test("a user Refresh sends readWorkspace with refresh true and openHistory together, and adds 1 to historyEpoch", async () => {
     const o = await opened();
     const epoch = o.requests.state().historyEpoch;
-    const histories = o.of("readHistory").length;
+    const histories = o.of("openHistory").length;
     o.requests.refresh();
     await flush();
     expect(o.last("readWorkspace").payload).toEqual({ refresh: true, check: "full" });
-    expect(o.of("readHistory")).toHaveLength(histories + 1);
+    expect(o.of("openHistory")).toHaveLength(histories + 1);
     expect(o.requests.state().historyEpoch).toBe(epoch + 1);
     expect("mode" in o.requests.state()).toBe(false);
     o.requests.dispose();

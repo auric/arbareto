@@ -1,0 +1,5 @@
+{
+  "schema": "read-refs-result",
+  "expected": "valid",
+  "text": "{\"generation\":3,\"refs\":[{\"kind\":\"stash\",\"name\":\"stash\",\"invalidUtf8\":false,\"objectId\":\"0123456789abcdef0123456789abcdef01234567\",\"objectType\":\"commit\",\"peeledId\":null,\"peeledType\":null,\"symref\":null,\"upstream\":null,\"upstreamPresent\":false,\"commitId\":\"0123456789abcdef0123456789abcdef01234567\"}],\"refsDigest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"current\":null,\"completeness\":{\"state\":\"complete\"}}"
+}

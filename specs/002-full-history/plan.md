@@ -13,7 +13,7 @@ The full history reads one `rev-list` order per view in load steps. A step reads
 Three facts drive the choices (research R2, R8):
 - The shell has no per-call output flow control, and the service handles each frame before it reads the next. A paused stream would stall the service pipe for every operation. So a load ends Git at its stop row and never pauses it.
 - Without a commit-graph, Git sorts the whole graph before its first row (Git revision.c:3195-3196, 4053-4057). An ended Git frees that memory at once. Each later step pays the walk again (D2).
-- The installed list virtualizer rebuilds O(n) arrays on every count change and has no fix for the maximum element height. The history list uses fixed-height row arithmetic. ChangesPane keeps `@tanstack/react-virtual`.
+- The installed list virtualizer rebuilds O(n) arrays on every count change and has no fix for the maximum element height. The history list uses fixed-height row arithmetic. ChangesPane and the references sidebar keep `@tanstack/react-virtual`.
 
 Git alone uses more than 128 MiB on 1,000,000 commits (research.md R14). The user decided on 2026-10-12 that SC-002 excludes Git's child processes (O-1, closed).
 
@@ -21,7 +21,7 @@ Git alone uses more than 128 MiB on 1,000,000 commits (research.md R14). The use
 
 **Language/Version**: The 001 versions stay: TypeScript `7.0.2`, Bun `1.4.2` (exact), Rust/Cargo `1.98.0` (001 plan.md "Technical Context").
 
-**Primary Dependencies**: No new dependency. React `19.3.0`, zod `4.6.5`, Tauri `2.12.0` as in 001. `@tanstack/react-virtual` stays for ChangesPane only (research R8).
+**Primary Dependencies**: No new dependency. React `19.3.0`, zod `4.6.5`, Tauri `2.12.0` as in 001. ChangesPane and the references sidebar keep `@tanstack/react-virtual`. The history list does not use it (research R8, D6).
 
 **Storage**: None new. All view, search, and cache data lives in the service session or renderer memory. The application writes no repository data (spec FR-044).
 
@@ -102,7 +102,7 @@ src/
 └── frontend/               # bridge.ts, app/Workbench.tsx, NoticeBand.tsx,
                             # history/HistoryView.tsx, AncestryCell.tsx, CommitDetails.tsx, lanes.ts (P7 retires it),
                             # refs/ReferencesSidebar.tsx
-                            # new: state/history-view.ts, history/HistoryFilter.tsx
+                            # new: state/history-view.ts, history/HistoryFilter.tsx, history/HistoryList.tsx
 src-tauri/
 ├── build.rs
 └── src/                    # ipc.rs, git_env.rs, wsl.rs
@@ -132,7 +132,7 @@ tests/
 | P2 Contracts | `src/contracts/{limits.ts, envelope.ts, errors.ts, operations.ts, git-environment.json, channel.ts, wsl-process.json}`, `schemas/`, `tests/vectors/` | Adds 5 operations, 3 codes, the `search` policy, the WSL mode `search`, and the `matchingProbe` script. | Schema tests and golden vectors in Bun and Rust. | The shell reads no payload of the five operations (contract Δ1). The service schemas check the ranges. |
 | P3 Service view | `src/git-service/commands.ts` (argv builders), `refs-parser.ts` (kinds `stash`, `replace`; `refsDigest`), `refs.ts` (`refs/stash`), new `history-view.ts`, `session.ts` (handlers). Reuses `captureHead`, `sharedListing`, and `checkFailedRead` from `history.ts:255-397`. | `openHistory`, `loadHistory` with the D2 stop rule, `readHistoryRows`, `closeHistory`. | SC-001, SC-003, SC-004, and SC-015 on the small fixtures and H200K. Load cancel and resume. The D2 stop rule: a load ends at its stop row, no process of the load remains, and the next load runs the same argv with no `--skip`. A re-read row that differs from the held row gives `HISTORY_CHANGED` reason `order`. The `HISTORY_VIEW_COMMITS` bound with a lowered test bound. The stale cases. The trust gate. `REPOSITORY_CHANGED`. SC-013 byte identity. | Service CPU during an End load of 1M rows (about 1,350 frames of 64 KiB, unverified). The shell routes `succeeded` after the service closed the load Job (unverified). |
 | P4 Shell | `src-tauri/src/ipc.rs` and `src-tauri/build.rs` (5 commands), `git_env.rs` (policy `search`), `wsl.rs` (mode `search`, `matchingProbe`), `src-tauri/src/service.rs` (test only), `src/frontend/bridge.ts` (the five calls), `tests/contracts/bridge.test.ts` | Data and enum changes only. No new frame. | cargo tests for the allowlist, the policy, and the wrapper mode. | Local only. Rust work stays off cloud sessions. |
-| P5 Search | new `src/git-service/history-search.ts` (search, probe, merge, reduced settlement). `session.ts` gets one handler. | `searchHistory`. | SC-007 (Windows and each distro), SC-008, SC-009 (no Git process starts), SC-010 search cancel, the order-mismatch refusal. | The subsequence order is only an experiment fact. The runtime check refuses on a mismatch. |
+| P5 Search | new `src/git-service/history-search.ts` (search, probe, merge, reduced settlement). `session.ts` gets the handler and the test option `historyProbeRuns`. `history-view.ts` runs the search on the view. `git-runner.ts` allows the policy `search`. | `searchHistory`. | SC-007 (Windows and each distro), SC-008, SC-009 (no Git process starts), SC-010 search cancel, the order-mismatch refusal. | The subsequence order is only an experiment fact. The runtime check refuses on a mismatch. |
 | P6 Frontend | `src/frontend/bridge.ts`, new `state/history-view.ts`, `history/HistoryView.tsx`, new `history/HistoryFilter.tsx`, `history/AncestryCell.tsx`, `history/CommitDetails.tsx`, `app/Workbench.tsx`, `NoticeBand.tsx`, `refs/ReferencesSidebar.tsx` | A virtual list, the D6 load trigger and the more-rows row, the filter, the two modes, the notices, the scope switch, the details pane. The references sidebar becomes a virtual list (D6). | Component tests: keyboard, refusals, notices, stable rows after eviction (FR-011), a fake count of 1M rows with no O(n) structure. The D6 trigger, the more-rows row, End and a search after a running scroll load, and stable rows when the count grows. The sidebar with 10,000 refs (FR-055). | Compressed scrolling at the 1M scale. |
 | P7 Retire 001 `readHistory` | `operations.ts`, `envelope.ts` (`ReadHistory`), `history.ts` (`readHistory`, `pageOf`), `session.ts`, `ipc.rs`, `src/frontend/history/lanes.ts`, their tests | One history path only. | The full run stays green. | 001 evidence names `readHistory`. Keep the 001 artifacts as records. |
 | P8 Qualification | `tests/windows/history-perf.test.ts`, responsiveness workloads, the Git Extensions harness, `tests/wsl/history-wsl.test.ts` | None. | SC-002, SC-014, and the SC-001 End case on H1M. SC-005, SC-006, and SC-011 on H200K. SC-010 and SC-012 in the packaged build. CPU for each workload (N-3). Cold and warm runs for SC-005, SC-006, and SC-014, by the 001 rules (001 plan.md "Measurements and budgets"). | Git memory is recorded, not bounded (O-1, closed). The filter ratio is close to 1.0. Open 001 tools and the measurement environment (001 T154, T165, T180, T240, T242, T244). |
@@ -301,7 +301,7 @@ The reduced graph needs the full topology stream beside the search stream, becau
 | WP4 | implementer | `src/contracts/{limits,envelope,errors,operations,channel}.ts`, `git-environment.json`, `wsl-process.json`, `schemas/`, `tests/vectors/`, `src/git-service/{commands,refs-parser,refs}.ts` (`readRefs` only) | P2 |
 | WP5 | implementer | `src-tauri/src/{ipc,git_env,wsl,service}.rs`, `src-tauri/build.rs`, `src/frontend/bridge.ts` (the five calls), `tests/contracts/bridge.test.ts` | P4. Local only. |
 | WP6 | implementer-xhigh | `src/git-service/{commands,refs-parser,refs,history-view,session}.ts`, view tests | P3 |
-| WP7 | implementer-xhigh | `src/git-service/history-search.ts`, search tests | P5 |
+| WP7 | implementer-xhigh | `src/git-service/history-search.ts`, `history-view.ts`, `session.ts`, `git-runner.ts`, `tests/git/bun-runner.ts`, `tests/git/service-harness.ts`, search tests | P5 |
 | WP8 | frontend-implementer (loads arbareto-ux and vercel-react-best-practices) | `src/frontend/{state/history-view.ts, history/*, app/Workbench.tsx, NoticeBand.tsx, refs/ReferencesSidebar.tsx}`, `tests/contracts/history-*.test.tsx`, `tests/contracts/references-sidebar.test.tsx` | P6 |
 | WP9 | implementer | Retire `readHistory` | P7 |
 | WP10 | implementer, with the runs done by scout | `tests/windows/history-perf.test.ts`, the Git Extensions harness, the view and search cases of `tests/wsl/history-wsl.test.ts` | P8 |
@@ -310,7 +310,7 @@ These packages are not file-disjoint:
 - WP4 edits `commands.ts`, `refs-parser.ts`, and `refs.ts` for `readRefs` in batch 1. WP6 edits them later in batch 2.
 - WP5 adds the five calls to `bridge.ts`. WP8 uses them and runs later.
 - WP4 (T027) adds `refsDigest` to the `readRefs` literals in `tests/contracts/history-view.test.tsx`, `references-sidebar.test.tsx`, and `renderer-freshness.test.ts`. WP8 edits the first two later.
-- WP7 adds one `searchHistory` handler line to `session.ts`. It runs strictly after WP6.
+- WP7 changes `session.ts` and `history-view.ts`. It runs strictly after WP6.
 - WP9 edits files of WP4, WP5, and WP6. It runs strictly after those three.
 
 ## Complexity Tracking

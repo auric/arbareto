@@ -143,7 +143,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 - **Rationale**:
   - Windows reports a window as not responding after 5 seconds without message processing (Win32 documentation). **documented**
   - `IsHungAppWindow` covers the Tauri main window. **unverified**
-  - The planned shortcuts (Ctrl+F for the filter, F3, Shift+F3; plan.md D6) do not conflict with the 001 keyboard map. **unverified**
+  - The planned shortcuts (Ctrl+F, F3, Shift+F3, Ctrl+Shift+B; plan.md D6) do not conflict with the 001 keyboard map (T038 record, R13). **documented** for WebView2 and the code. The packaged-app key check stays **unverified**.
 
 ## R10 WSL
 
@@ -196,13 +196,13 @@ These stay **unverified** until the named step runs:
 - Whether Git prints a repeated parent in one `rev-list --parents` line for a commit object that it accepts: T003.
 - The `save_commit_buffer` recollection: open. P0.4 measured the extra search memory (R14), but no plan step reads the Git source yet (plan.md O-1).
 - `init --template=` copies nothing; an explicit `--git-dir` skips the ownership check: P0.5 showed both on Git 2.56.0.windows.1 (R4, **experiment**).
-- `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: P3. T023 showed both (R19, **experiment**).
+- `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: closed. R19 records both (T023, **experiment**).
 - The maximum layout height in WebView2: P6.
 - `IsHungAppWindow` covers the Tauri main window: P8.
-- The shortcut conflicts with the 001 keyboard map (Ctrl+F for the filter, F3, Shift+F3, Ctrl+Shift+B; plan.md D6): P6.
+- Shortcut conflicts, T038 record, 2026-10-13. The app key map (`src/frontend/keyboard/shortcuts.ts`) gives each key one action: F10, F5, F6, Shift+F6, Ctrl+Enter, F3, Shift+F3, Ctrl+F, Ctrl+Shift+B, Ctrl+O, Ctrl+R, and Alt+Up/Down. No other handler of the page uses these keys with these modifiers. `tests/contracts/history-list.test.tsx` checks the four new keys and the 001 keys. The shell sets `AreBrowserAcceleratorKeysEnabled` to false and `IsBrowserAcceleratorKeyEnabled` to false for every key (`src-tauri/src/webview.rs`). Microsoft Learn lists Ctrl+F, F3, and Shift+F3 as keys that this setting turns off. It lists Ctrl+Shift+B ("Show Favorites Bar") as a key whose feature does not apply to WebView2. Result: no conflict. **documented** The check of the four keys in the packaged app, and with a non-Latin keyboard layout, stays **unverified** until a live key check.
 - The re-read cost of a later step at 1,000,000 commits: T061.
 - The memory after the first load step, with no Git process: P8.
-- The Rust shell routes `succeeded` after the service closed the load Job: T055. The cargo case `a_succeeded_response_of_an_operation_reaches_the_renderer_by_its_request_id` in `src-tauri/src/ipc.rs` covers only the routing by `requestId`. It closes no Job. T055 owns the end-to-end check in the packaged app.
+- The Rust shell routes `succeeded` after the service closed the load Job: T055. T025 first result, 2026-10-12: the cargo case `a_succeeded_response_after_a_cancel_closed_the_operation_job_reaches_the_renderer` (dcd9d5d, `src-tauri/src/process_requests.rs`) passed on its first run after T029. Before T029, the shell allowlist has no `loadHistory`, so the case cannot run. Commit 17a8340 replaced it with `a_succeeded_response_of_an_operation_reaches_the_renderer_by_its_request_id` in `src-tauri/src/ipc.rs`. A Job close changes no routing state: only `submit`, `deliver`, and `set_session(None)` change the pending requests. The case passed in the 96c486e run (R20, cargo test). It covers only the routing by `requestId`. **experiment** T055 owns the end-to-end check in the packaged app.
 
 ## Results
 
@@ -239,7 +239,7 @@ T003 (Windows Git 2.56.0.windows.2) and T010 (Ubuntu-26.04 Git 2.55.0), verifica
 | `--grep` equals the full order without the non-matches. | 40 of 40 | 40 of 40 |
 | The distro view bytes equal the Windows Git bytes of the same repository. | not applicable | 40 of 40 |
 
-- T003 expects Git 2.56.0.windows.1. The run found Git 2.56.0.windows.2, so the Windows facts above hold for 2.56.0.windows.2. **experiment**
+- The Windows facts above hold for Git 2.56.0.windows.2, the version that T003 expects. **experiment**
 - The H1M case of T003 skipped in this run (`ARBARETO_HISTORY_FIXTURES=H200K`). It ran once on 2026-10-12 with Git 2.56.0.windows.1. All facts held on both H1M variants. So the Windows counts of that run were 42 of 42, 21 of 21, and 40 of 42 for the shuffled and the reversed stdin. **experiment**
 - The `--skip` values on H200K were k = 1, 255, 256, 257, 19,393 (a merge run), and 199,999. On equal-dates and merges-only, the merge run is at k = 2. On H1M (2026-10-12) they were k = 1, 255, 256, 257, 101,159 (a merge run), and 999,999.
 - On equal-dates, another stdin order gives the same row set in another order. The first difference is at row 0 or 1. So the ascending start-point order of R1 stays a requirement.
@@ -250,7 +250,7 @@ T003 (Windows Git 2.56.0.windows.2) and T010 (Ubuntu-26.04 Git 2.55.0), verifica
 
 - T001, 2026-10-12: H200K and H1M have 200,000 and 1,000,000 commits. Each variant has the expected commit-graph state. The two variants are two builds of one stream. Their refs, index entries, and working files are equal. **experiment**
 - T001, 2026-10-13 (R20): the small fixture and H200K cases pass. The H1M case did not run, because it runs only on request (`ARBARETO_HISTORY_FIXTURES=H1M`).
-- Measurement note: a sampler in the work session measured the next three items. It is not in the repository, and no repository test prints these numbers. These items are **experiment** results of a work-session sampler. No repository test reproduces them.
+- Measurement note: a work-session sampler measured the next three items. No repository test reproduces them. **experiment**
   - Build time per variant, from the folder creation to the manifest write: H200K 9.8 s and 10.3 s; H1M 55.1 s and 59.3 s (without and with a commit-graph). Disk size: H200K 35.2 MiB and 46.7 MiB; H1M 176.3 MiB and 233.5 MiB.
   - During the H1M build, the largest Git process peaked at 205 MiB of private bytes (2-second samples).
   - T003 on H1M holds about 2 GiB of private bytes in the Bun test process. The host then had 4,790 MB available.
@@ -336,7 +336,7 @@ T023 and T024, 2026-10-13 (R20), Windows Git 2.56.0.windows.2. **experiment**
 
 ## R20 Verification run of f002-b0 96c486e
 
-Run of 2026-10-12 and 2026-10-13 for T011, T020, T030, and T050. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2 (`C:\Program Files\Git\ucrt64\bin\git.exe`). WSL: Ubuntu-26.04 with Git 2.55.0. The four tasks stay open. Each waits for its independent batch review and a green `test:windows`.
+Run of 2026-10-12 and 2026-10-13 for T011, T020, T030, and T050. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2 (`C:\Program Files\Git\ucrt64\bin\git.exe`). WSL: Ubuntu-26.04 with Git 2.55.0. T020 meets its pass condition, and the batch 1 review is recorded. T011 waits for a green `test:windows`, the H1M cases, and the batch 0 review. T030 waits for the batch 2 review fixes and the End load records. T050 waits for the batch 4 review fixes, the manual check, and batch 3.
 
 | Step | Exit | Counts |
 |---|---|---|
@@ -367,13 +367,13 @@ Control mutations. Each run went red with the edit, and green after the undo.
 | T011 | `cellsOf` in `src/git-service/history-layout.ts` starts from `EMPTY_STATE`. | `tests/git/history-layout.test.ts`: 2 of 3 fail (every small fixture, H200K). | 3 pass |
 | T020 | `src/contracts/filter-text.ts:23` accepts U+005C followed by U+0045. | `tests/contracts/filter-text.test.ts`: 2 of 5 fail. | 5 pass |
 | T030 | `src/git-service/history-topology.ts:213` compares only the last held row. | `tests/git/history-stale.test.ts`: 2 of 16 fail (a difference at row 0, and inside the held rows). | 16 pass |
-| T050 | `virtualTopOf` in `src/frontend/history/HistoryList.tsx:32` returns `scrollTop`. | `tests/contracts/history-list.test.tsx`: 3 of 29 fail (the last-row case at 1,000,000 rows and 34 DIPs, and at 4,000,000 rows and 26 and 34 DIPs). | 29 pass |
+| T050 | `virtualTopOf` in `src/frontend/history/HistoryList.tsx` returns `scrollTop`. | `tests/contracts/history-list.test.tsx`: 3 of 29 fail (the last-row case at 1,000,000 rows and 34 DIPs, and at 4,000,000 rows and 26 and 34 DIPs). | 29 pass |
 
 Open items:
 - `test:windows` fails T240 "installed app selects Git, opens and cancels the folder picker, and reads the status regions": `TIMEOUT: no focus on "Open folder… (Ctrl+O)"` after 10,000 ms. The test drives the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA-256 `d21b7a5f…`). That build comes from main, not from this checkout. The cause is under investigation.
 - The independent reviews of batches 0, 2, and 4 are not recorded.
 - T030: the CPU of an End load and the bytes per loaded commit on H200K are not recorded.
-- T038: the shortcut conflict record (R13) is not written.
+- T045: no comparison with the approved mockup canvas is recorded. The user compares the app with the canvas.
 - T050: the quickstart.md "Manual check in the app" did not run.
 
 ## Batch reviews

@@ -56,7 +56,7 @@ import { Splitter } from "../layout/Splitter";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { ReferencesSidebar } from "../refs/ReferencesSidebar";
 import { createHistoryView, refsChanged, type HistoryBridge, type HistoryView as HistoryStore } from "../state/history-view";
-import { createRequests, isRegistration, wslDistro, type RequestBridge, type Requests, type RequestState } from "../state/requests";
+import { createRequests, isRegistration, wslDistro, type Clock, type RequestBridge, type Requests, type RequestState } from "../state/requests";
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
 import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
@@ -167,6 +167,8 @@ export type WorkbenchProps = {
   textScale?: number;
   /** The draft memory (plan.md "Stored drafts"). The default stores a copy in IndexedDB. */
   drafts?: ReturnType<typeof createDrafts>;
+  /** The timers of the change poll. The default uses the browser timers. */
+  clock?: Clock;
 };
 
 // plan.md "Required visible states", No file-action decision.
@@ -452,7 +454,7 @@ class AboutBoundary extends Component<{ onClose(): void; children: ReactNode }, 
   }
 }
 
-export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit, onEnvironment, textScale = 1, drafts: givenDrafts }: WorkbenchProps) {
+export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit, onEnvironment, textScale = 1, drafts: givenDrafts, clock }: WorkbenchProps) {
   // plan.md "Required visible states", Recovery statement: the statement stays until the next `refresh: true` read or another repository.
   const [recovery, setRecovery] = useState<{ repositoryId: string; statement: RecoveryStatement } | null>(null);
   // Contract §11 "Distro start": a registration, restore, or marker dismissal in phase `wsl-starting`, until its response. No event marks the probe end.
@@ -472,6 +474,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     // The two stores refer to each other: the requests open the view, and the view's `openHistory` counts as a workspace read.
     let view: HistoryStore | null = null;
     const requests = createRequests({
+      clock,
       history: { open: () => void view!.open(view!.getState().scope, false), refresh: () => void view!.refresh() },
       bridge: {
         restoreWorkspace: () => bridge.restoreWorkspace(onStart).then(endStart),

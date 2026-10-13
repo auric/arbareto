@@ -77,6 +77,8 @@ afterEach(async () => {
 // Lets the responses settle, React commit, and the next animation frame run.
 const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 50))));
 const text = () => (document.body.textContent ?? "").replace(/\s+/g, " ");
+// The change poll never fires, so a test that counts reads sees only the reads it starts.
+const NO_POLL = { setInterval: () => 0, clearInterval: () => {}, setTimeout: (run: () => void, ms: number) => setTimeout(run, ms), clearTimeout: (id: unknown) => clearTimeout(id as number) };
 
 async function mount(restore: unknown, environment: Environment | null = null) {
   const double = bridgeDouble();
@@ -91,6 +93,7 @@ async function mount(restore: unknown, environment: Environment | null = null) {
         ChangesPane={ChangesPaneMount}
         ComparisonView={ComparisonViewMount}
         HistoryView={HistoryViewMount}
+        clock={NO_POLL}
       />,
     ),
   );

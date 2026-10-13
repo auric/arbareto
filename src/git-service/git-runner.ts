@@ -44,6 +44,7 @@ import {
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
+import { MATCHING_PROBE_WSL_FOLDER } from "../contracts/matching-probe";
 import { NATIVE } from "../contracts/native-path";
 import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operations";
 import wslProcess from "../contracts/wsl-process.json";
@@ -89,6 +90,8 @@ export interface GitCall {
   environmentPolicy: EnvironmentPolicy;
   // Contract §6: only the `mutation` policy. `indexFile` is a candidate index in the registered Git directory.
   transaction?: { transactionId: string; indexFile: string };
+  // Feature 002 contract Δ6: the shell runs its fixed WSL script, and `arguments` are the script arguments.
+  script?: "matchingProbe";
   limits: ProcessLimits;
   stdout: Collector;
   stderr: Collector;
@@ -240,7 +243,9 @@ export function checkCall(call: GitCall): void {
   // The service has no executable path, so the empty program gives the smallest possible command line.
   if (commandLineUnits("", args) > WINDOWS_COMMAND_LINE_UNITS) refuse("command line");
   const bootstrap = context.contextKind !== "registeredOperation";
-  if (context.contextKind === "gitProbe") {
+  if (call.script !== undefined) {
+    checkProbeScript(call);
+  } else if (context.contextKind === "gitProbe") {
     const probe = args.length === 1 ? args[0] === "--exec-path" : args.length === 2 && args[0] === "version" && args[1] === "--build-options";
     // Contract §6 `gitProbe`: the shell also admits the two exact `git var` arrays of §7 "Configuration file paths".
     const paths = [configSystemPathArgs(), configGlobalPathArgs()].some((known) => known.length === args.length && known.every((arg, i) => arg === args[i]));
@@ -253,6 +258,25 @@ export function checkCall(call: GitCall): void {
   if (transaction !== undefined && !(policy === "mutation" && fits(Transaction, transaction))) refuse("transaction");
   // Contract §6 "Channel frames" `limits`. The WSL distro start cap waits for §11.
   if (!fits(policy === "network" ? NetworkLimits : bootstrap ? BootstrapLimits : RegisteredLimits, call.limits)) refuse("limits");
+}
+
+// Feature 002 contract Δ6: the checks of src-tauri/src/wsl.rs `matching_probe_command` and the `run` route of the shell.
+// The script evaluates `$((2 * count))`, and a bash `/bin/sh` runs a command in an array subscript there, so the run length holds only digits.
+function checkProbeScript(call: GitCall): void {
+  const [folder = "", tip = "", length = "", ...runs] = call.arguments;
+  const count = /^[1-9][0-9]*$/.test(length) ? Number(length) : 0;
+  const owned = folder.startsWith(MATCHING_PROBE_WSL_FOLDER) && isIdentifier(folder.slice(MATCHING_PROBE_WSL_FOLDER.length));
+  const valid =
+    call.script === "matchingProbe" &&
+    call.context.contextKind === "registeredOperation" &&
+    call.environmentPolicy === "search" &&
+    owned &&
+    /^[0-9a-f]{40}$/.test(tip) &&
+    count >= 1 &&
+    runs.length === 2 * count &&
+    runs[0] === "--no-lazy-fetch" &&
+    runs[count] === "--no-lazy-fetch";
+  if (!valid) refuse("matchingProbe");
 }
 
 export function checkIdentityPaths(paths: readonly string[]): void {

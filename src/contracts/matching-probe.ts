@@ -58,6 +58,9 @@ export const MATCHING_PROBE_COMMITS: readonly ProbeCommit[] = [
 
 export const MATCHING_PROBE_TIP = MATCHING_PROBE_COMMITS[MATCHING_PROBE_COMMITS.length - 1]!.oid;
 
+// Contract Δ6: the WSL probe folder is this prefix and a lowercase uuid. The shell refuses every other folder.
+export const MATCHING_PROBE_WSL_FOLDER = "/tmp/arbareto-probe-";
+
 // Both runs expect the same sets: each case holds both letter cases, so each run matches each case once through folding.
 export const MATCHING_PROBE_RUNS = MATCHING_PROBE_GREPS.map((grep) => ({
   grep,

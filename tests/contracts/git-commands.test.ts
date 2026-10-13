@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
+import { MATCHING_PROBE_GREPS } from "../../src/contracts/matching-probe";
 import * as commands from "../../src/git-service/commands";
 import {
   batchCommandArgs,
@@ -533,6 +534,23 @@ describe("history view arrays (feature 002 contract Δ3)", () => {
     expect(commands.probeInitArgs(dir)).toEqual(["--no-lazy-fetch", "init", "--bare", "-q", "--template=", "--object-format=sha1", dir]);
     expect(commands.probeImportArgs(dir)).toEqual(["--no-lazy-fetch", `--git-dir=${dir}`, "fast-import", "--quiet"]);
     expect(commands.probeSearchArgs(dir, ["є", "Є"])).toEqual(["--no-lazy-fetch", `--git-dir=${dir}`, ...SEARCH("є", "Є").slice(1)]);
+  });
+
+  // Contract Δ3 "Matching probe" in WSL: the `matchingProbe` script takes `[dir, tip, n, ...run1, ...run2]`.
+  test("the WSL matching probe passes the folder, the tip, the run length, and the two exact search arrays", () => {
+    const dir = "/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa";
+    const tip = "0123456789abcdef0123456789abcdef01234567";
+    expect(commands.probeScriptArgs(dir, tip, [["є", "і"], ["Є", "І"]])).toEqual([dir, tip, "12", ...SEARCH("є", "і"), ...SEARCH("Є", "І")]);
+    expect(commands.probeScriptArgs(dir, tip, MATCHING_PROBE_GREPS)).toEqual([dir, tip, "16", ...SEARCH(...MATCHING_PROBE_GREPS[0]), ...SEARCH(...MATCHING_PROBE_GREPS[1])]);
+  });
+
+  test.each([
+    [[["є"], ["Є", "І"]]],
+    [[["є", "і"], ["Є"]]],
+    [[["є"]]],
+    [[["є"], ["Є"], ["і"]]],
+  ])("the WSL matching probe refuses the runs %j, whose search arrays differ in length or count", (greps) => {
+    expect(() => commands.probeScriptArgs("/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa", "0123456789abcdef0123456789abcdef01234567", greps)).toThrow(TypeError);
   });
 
   test.each([

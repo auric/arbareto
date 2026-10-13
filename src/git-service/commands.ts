@@ -224,6 +224,13 @@ export function probeSearchArgs(dir: string, patterns: readonly string[]): strin
   return [NO_LAZY_FETCH, `--git-dir=${pathItem(dir)}`, ...searchArgs(patterns).slice(1)];
 }
 
+// Contract Δ3 "Matching probe" in WSL: the `matchingProbe` script arguments `[dir, tip, n, ...run1, ...run2]`. Each run holds `n` items.
+export function probeScriptArgs(dir: string, tip: string, greps: readonly (readonly string[])[]): string[] {
+  const runs = greps.map(searchArgs);
+  if (runs.length !== 2 || runs[0]!.length !== runs[1]!.length) throw new TypeError("probe runs refused");
+  return [pathItem(dir), treeItem(tip, "sha1"), String(runs[0]!.length), ...runs.flat()];
+}
+
 // A path is relative to the worktree root, where Git runs (research R3). An argv item cannot hold NUL, and an empty pathspec matches every path.
 function pathItem(path: string): string {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) throw new TypeError("path refused");

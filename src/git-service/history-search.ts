@@ -6,9 +6,9 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
-import { MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP } from "../contracts/matching-probe";
+import { MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP, MATCHING_PROBE_WSL_FOLDER } from "../contracts/matching-probe";
 import { NATIVE } from "../contracts/native-path";
-import { isObjectId, probeImportArgs, probeInitArgs, probeSearchArgs, type ObjectFormat } from "./commands";
+import { isObjectId, probeImportArgs, probeInitArgs, probeScriptArgs, probeSearchArgs, type ObjectFormat } from "./commands";
 import { RunnerRefusal, type Collector, type GitRunner } from "./git-runner";
 import { small, type Stop } from "./history";
 import { HistoryLayout, type Cell } from "./history-layout";
@@ -19,8 +19,6 @@ import { contextOf, latin1, type ReadTarget } from "./read-steps";
 const LF = 0x0a;
 
 export const MATCHING_REMEDY = "Git did not match the probe messages as the search requires. Use a Git build with PCRE2 and a UTF-8 locale. Then search again.";
-// Contract gap: no shell frame runs the fixed `matchingProbe` script of `wsl-process.json`, so no probe can run in a distro.
-export const WSL_MATCHING_REMEDY = "Message search does not support repositories in WSL yet. The matching probe cannot run in the distro.";
 
 /** The stdout of a search: one `<oid>` line per match. A malformed line sets `malformed`, and `limited` then stops Git. */
 export function matchStream(objectFormat: ObjectFormat, onOid: (oid: string) => void) {
@@ -252,20 +250,40 @@ export class SearchMerge {
 /** One probe run: the patterns and the probe commits that the run must list. */
 export type ProbeRun = { readonly grep: readonly string[]; readonly matches: readonly string[] };
 
+const sameSet = (found: ReadonlySet<string>, expected: readonly string[]) => found.size === expected.length && expected.every((oid) => found.has(oid));
+
 /**
- * Contract Δ3 "Matching probe" on the service host: a new folder in `os.tmpdir()`, the fixed stream, one run per pattern set, and the removal of the folder.
+ * Contract Δ3 "Matching probe" WSL output: for each run, OID lines and then `end <exit code>`.
+ * Only exactly two `end 0` lines with nothing after the last give an answer. An `end` line with another exit code gives GIT_FAILED.
+ */
+function probeOutput(stdout: ReturnType<typeof small>, runs: readonly ProbeRun[]): "pass" | "mismatch" | Stop {
+  const lines = latin1(stdout.take()).split("\n");
+  if (stdout.limited || lines.pop() !== "") return { failed: "MALFORMED_GIT_OUTPUT" };
+  let done = 0;
+  let found = new Set<string>();
+  let same = true;
+  for (const line of lines) {
+    if (done === runs.length) return { failed: "MALFORMED_GIT_OUTPUT" };
+    if (isObjectId(line, "sha1")) found.add(line);
+    else if (line === "end 0") {
+      same = sameSet(found, runs[done]!.matches) && same;
+      done++;
+      found = new Set();
+    } else if (/^end [1-9][0-9]*$/.test(line)) return { failed: "GIT_FAILED" };
+    else return { failed: "MALFORMED_GIT_OUTPUT" };
+  }
+  if (done !== runs.length) return { failed: "MALFORMED_GIT_OUTPUT" };
+  return same ? "pass" : "mismatch";
+}
+
+/**
+ * Contract Δ3 "Matching probe". On the service host: a new folder in `os.tmpdir()`, the fixed stream, one run per pattern set, and the removal of the folder.
+ * In WSL: one run of the `matchingProbe` script, which creates and removes its own folder in the distro.
  * `mismatch`: every step exited 0, and a run listed other commits. A failed step gives its `Stop`, so the probe gives no answer.
- * `removeFailed` runs when the folder removal fails.
+ * `removeFailed` runs when the folder removal on the service host fails.
  */
 export async function probeMatching(runner: GitRunner, t: ReadTarget, runs: readonly ProbeRun[], removeFailed: () => void): Promise<"pass" | "mismatch" | Stop> {
-  let dir: string;
-  try {
-    dir = await mkdtemp(NATIVE.path.join(tmpdir(), "arbareto-probe-"));
-  } catch {
-    // Contract gap: no code names a failed probe folder. GIT_FAILED is the generic failure of a read.
-    return { failed: "GIT_FAILED" };
-  }
-  const run = async (args: string[], input: Uint8Array | undefined, stdout: Collector): Promise<number | null | Stop> => {
+  const run = async (args: string[], input: Uint8Array | undefined, stdout: Collector, script?: "matchingProbe"): Promise<number | null | Stop> => {
     if (t.signal.aborted) return { stop: "canceled" };
     try {
       const exit = await runner.run({
@@ -273,6 +291,7 @@ export async function probeMatching(runner: GitRunner, t: ReadTarget, runs: read
         context: contextOf(t.workspace),
         arguments: args,
         ...(input === undefined ? {} : { input }),
+        ...(script === undefined ? {} : { script }),
         environmentPolicy: "search",
         limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
         stdout,
@@ -289,6 +308,20 @@ export async function probeMatching(runner: GitRunner, t: ReadTarget, runs: read
       throw error;
     }
   };
+  if (t.workspace.wsl !== undefined) {
+    const stdout = small();
+    const args = probeScriptArgs(`${MATCHING_PROBE_WSL_FOLDER}${crypto.randomUUID()}`, MATCHING_PROBE_TIP, runs.map((probe) => probe.grep));
+    const exit = await run(args, MATCHING_PROBE_STREAM, stdout, "matchingProbe");
+    if (exit !== 0) return typeof exit === "object" && exit !== null ? exit : { failed: "GIT_FAILED" };
+    return probeOutput(stdout, runs);
+  }
+  let dir: string;
+  try {
+    dir = await mkdtemp(NATIVE.path.join(tmpdir(), "arbareto-probe-"));
+  } catch {
+    // Contract gap: no code names a failed probe folder. GIT_FAILED is the generic failure of a read.
+    return { failed: "GIT_FAILED" };
+  }
   try {
     for (const [args, input] of [
       [probeInitArgs(dir), undefined],
@@ -304,7 +337,7 @@ export async function probeMatching(runner: GitRunner, t: ReadTarget, runs: read
       const exit = await run(probeSearchArgs(dir, probe.grep), new TextEncoder().encode(`${MATCHING_PROBE_TIP}\n`), out);
       if (exit !== 0) return typeof exit === "object" && exit !== null ? exit : { failed: "GIT_FAILED" };
       if (out.malformed) return { failed: "MALFORMED_GIT_OUTPUT" };
-      same &&= found.size === probe.matches.length && probe.matches.every((oid) => found.has(oid));
+      same &&= sameSet(found, probe.matches);
     }
     return same ? "pass" : "mismatch";
   } finally {

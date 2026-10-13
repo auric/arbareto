@@ -9,12 +9,18 @@ import { existsSync, writeFileSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { MATCHING_PROBE_COMMITS, MATCHING_PROBE_RUNS, MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP } from "../../src/contracts/matching-probe";
+import { GIT_PROCESS_DEADLINE_MS } from "../../src/contracts/limits";
+import { MATCHING_PROBE_COMMITS, MATCHING_PROBE_GREPS, MATCHING_PROBE_RUNS, MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP, MATCHING_PROBE_WSL_FOLDER } from "../../src/contracts/matching-probe";
+import { isIdentifier } from "../../src/contracts/operations";
+import { probeScriptArgs } from "../../src/git-service/commands";
+import { RunnerRefusal, type GitCall, type GitExit, type GitRunner } from "../../src/git-service/git-runner";
+import { probeMatching } from "../../src/git-service/history-search";
+import type { Workspace } from "../../src/git-service/registration";
 import { printOrigin } from "../origin";
 import { FIXED_IDENTITY, FIXTURE_HOME, fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { GIT } from "./git-binary";
 import { repositoryDigest } from "./history-fixtures";
-import { allFilterRows, git, gitPath, grepOracle, isProbe, isReplaceRead, isSearch, opened, oracle, search, waitFor, type Searched } from "./history-view-harness";
+import { allFilterRows, git, gitPath, grepOracle, isProbe, isReplaceRead, isSearch, opened, oracle, probeLabel as label, probeOidsOf as oidsOf, SC007_CASES as CASES, search, waitFor, type Searched } from "./history-view-harness";
 import { caseTest, openService, type OpenOptions, type Service, type ServiceResponse } from "./service-harness";
 
 printOrigin("../../src/git-service/history-search.ts", import.meta.dir);
@@ -45,27 +51,6 @@ function probeRepo(name: string): string {
   expect(oracle(repo).map((r) => r.oid).toSorted()).toEqual(MATCHING_PROBE_COMMITS.map((c) => c.oid).toSorted());
   return repo;
 }
-
-const oidsOf = (labels: readonly string[]) => labels.map((label) => MATCHING_PROBE_COMMITS.find((c) => c.label === label)!.oid).toSorted();
-const label = (oid: string) => MATCHING_PROBE_COMMITS.find((c) => c.oid === oid)!.label;
-
-// SC-007: each FR-023 and FR-024 case with the probe commits that the text must match.
-const LEGACY = "windows-1251 Виправлення";
-const CASES: [string, string[]][] = [
-  ["Виправлення", ["виправлення", "ВИПРАВЛЕННЯ", LEGACY]],
-  ["ВИПРАВЛЕННЯ", ["виправлення", "ВИПРАВЛЕННЯ", LEGACY]],
-  ["є", ["є", "Є"]],
-  ["Є", ["є", "Є"]],
-  ["і", ["і", "І"]],
-  ["І", ["і", "І"]],
-  ["ї", ["ї", "Ї"]],
-  ["Ї", ["ї", "Ї"]],
-  ["ґ", ["ґ", "Ґ"]],
-  ["Ґ", ["ґ", "Ґ"]],
-  ["ß", ["ß", "ẞ"]],
-  ["ẞ", ["ß", "ẞ"]],
-  ["SS", ["SS"]],
-];
 
 type Outcome = { state: string; code?: string; oids: string[] };
 
@@ -229,6 +214,107 @@ describe("matching probe (contract Δ3 \"Matching probe\")", () => {
       }),
     TIMEOUT_MS,
   );
+});
+
+// T063: the WSL probe is one `run` with `script: "matchingProbe"` (contract Δ3 "Matching probe", Δ6). A stub runner gives the script output.
+describe("WSL matching probe script (contract Δ3 \"Matching probe\", Δ6)", () => {
+  const TIP_LINE = `${MATCHING_PROBE_TIP}\n`;
+  const lines = (oids: readonly string[]) => oids.map((oid) => `${oid}\n`).join("");
+  const CONTRACT = MATCHING_PROBE_RUNS.map((run) => `${lines(run.matches)}end 0\n`).join("");
+  const workspace = {
+    repositoryId: crypto.randomUUID(),
+    gitInstallationId: crypto.randomUUID(),
+    wsl: { distro: "Ubuntu-26.04", path: "/usr/bin/git" },
+  } as unknown as Workspace;
+
+  type Reply = { stdout?: string; exit?: Partial<GitExit>; during?: () => void };
+  function stub(reply: Reply) {
+    const calls: GitCall[] = [];
+    const runner = {
+      async run(call: GitCall): Promise<GitExit> {
+        calls.push(call);
+        reply.during?.();
+        if (reply.stdout !== undefined) call.stdout.push(new TextEncoder().encode(reply.stdout));
+        return { exitCode: 0, activeDescendants: 0, ...reply.exit };
+      },
+    } as unknown as GitRunner;
+    return { runner, calls };
+  }
+
+  async function probe(reply: Reply, controller = new AbortController()) {
+    const { runner, calls } = stub(reply);
+    const folder = spyOn(fsp, "mkdtemp");
+    let removeFailed = 0;
+    try {
+      const result = await probeMatching(runner, { operationId: crypto.randomUUID(), signal: controller.signal, workspace }, MATCHING_PROBE_RUNS, () => removeFailed++);
+      return { result, calls, folders: folder.mock.calls.length, removeFailed };
+    } finally {
+      folder.mockRestore();
+    }
+  }
+
+  test("the probe is one search run of the matchingProbe script with the fixed stream, and the contract output passes", async () => {
+    const { result, calls, folders, removeFailed } = await probe({ stdout: CONTRACT });
+    expect({ result, calls: calls.length, folders, removeFailed }).toEqual({ result: "pass", calls: 1, folders: 0, removeFailed: 0 });
+    const call = calls[0]!;
+    const dir = call.arguments[0]!;
+    expect(dir.slice(0, MATCHING_PROBE_WSL_FOLDER.length)).toBe(MATCHING_PROBE_WSL_FOLDER);
+    expect(isIdentifier(dir.slice(MATCHING_PROBE_WSL_FOLDER.length))).toBe(true);
+    expect({ script: call.script, policy: call.environmentPolicy, context: call.context, limits: call.limits, transaction: call.transaction }).toEqual({
+      script: "matchingProbe",
+      policy: "search",
+      context: { contextKind: "registeredOperation", gitInstallationId: workspace.gitInstallationId, repositoryId: workspace.repositoryId },
+      limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
+      transaction: undefined,
+    });
+    expect([...call.arguments]).toEqual(probeScriptArgs(dir, MATCHING_PROBE_TIP, MATCHING_PROBE_GREPS));
+    expect(Buffer.from(call.input!).equals(Buffer.from(MATCHING_PROBE_STREAM))).toBe(true);
+    // Each probe takes a new folder.
+    expect((await probe({ stdout: CONTRACT })).calls[0]!.arguments[0]).not.toBe(dir);
+  });
+
+  test.each([
+    ["one expected OID missing from run 2", `${lines(MATCHING_PROBE_RUNS[0]!.matches)}end 0\n${lines(MATCHING_PROBE_RUNS[1]!.matches.slice(1))}end 0\n`],
+    ["a non-matching probe commit in run 1", `${lines([...MATCHING_PROBE_RUNS[0]!.matches, MATCHING_PROBE_RUNS[0]!.nonMatches[0]!])}end 0\n${lines(MATCHING_PROBE_RUNS[1]!.matches)}end 0\n`],
+    ["an empty run 1", `end 0\n${lines(MATCHING_PROBE_RUNS[1]!.matches)}end 0\n`],
+  ])("an exact output with %s gives mismatch", async (_name, stdout) => {
+    expect((await probe({ stdout })).result).toBe("mismatch");
+  });
+
+  test.each([
+    ["an end 1 line", `${lines(MATCHING_PROBE_RUNS[0]!.matches)}end 1\n${lines(MATCHING_PROBE_RUNS[1]!.matches)}end 0\n`, { failed: "GIT_FAILED" }],
+    ["an end 128 line in run 2", `${lines(MATCHING_PROBE_RUNS[0]!.matches)}end 0\nend 128\n`, { failed: "GIT_FAILED" }],
+    ["a malformed line", `${lines(MATCHING_PROBE_RUNS[0]!.matches)}end 0\nfatal: x\nend 0\n`, { failed: "MALFORMED_GIT_OUTPUT" }],
+    ["an uppercase OID", `${MATCHING_PROBE_TIP.toUpperCase()}\n${CONTRACT}`, { failed: "MALFORMED_GIT_OUTPUT" }],
+    ["an end line with a leading zero", `${lines(MATCHING_PROBE_RUNS[0]!.matches)}end 00\n${lines(MATCHING_PROBE_RUNS[1]!.matches)}end 0\n`, { failed: "MALFORMED_GIT_OUTPUT" }],
+    ["a third run", `${CONTRACT}end 0\n`, { failed: "MALFORMED_GIT_OUTPUT" }],
+    ["an OID after the last end line", `${CONTRACT}${TIP_LINE}`, { failed: "MALFORMED_GIT_OUTPUT" }],
+    ["one end line", `${lines(MATCHING_PROBE_RUNS[0]!.matches)}end 0\n${lines(MATCHING_PROBE_RUNS[1]!.matches)}`, { failed: "MALFORMED_GIT_OUTPUT" }],
+    ["no final line feed", CONTRACT.slice(0, -1), { failed: "MALFORMED_GIT_OUTPUT" }],
+    ["no output", "", { failed: "MALFORMED_GIT_OUTPUT" }],
+  ])("%s gives no answer", async (_name, stdout, failed) => {
+    expect((await probe({ stdout })).result as unknown).toEqual(failed);
+  });
+
+  test("a nonzero script exit, a deadline, a diagnostic limit, a refusal, and a cancel give no answer", async () => {
+    expect((await probe({ stdout: CONTRACT, exit: { exitCode: 1 } })).result).toEqual({ failed: "GIT_FAILED" });
+    expect((await probe({ stdout: CONTRACT, exit: { exitCode: 125 } })).result).toEqual({ failed: "GIT_FAILED" });
+    expect((await probe({ stdout: CONTRACT, exit: { exitCode: null, deadline: "deadline" } })).result).toEqual({ stop: "deadline" });
+    expect((await probe({ stdout: CONTRACT, exit: { diagnosticLimit: true } })).result).toEqual({ failed: "OUTPUT_LIMIT" });
+    const refusing = {
+      run: async () => {
+        throw new RunnerRefusal("INVALID_REQUEST", "matchingProbe");
+      },
+    } as unknown as GitRunner;
+    expect(await probeMatching(refusing, { operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace }, MATCHING_PROBE_RUNS, () => {})).toEqual({ failed: "INVALID_REQUEST" });
+    const controller = new AbortController();
+    const canceled = await probe({ stdout: CONTRACT, exit: { exitCode: null }, during: () => controller.abort() }, controller);
+    expect({ result: canceled.result, calls: canceled.calls.length }).toEqual({ result: { stop: "canceled" }, calls: 1 });
+    const before = new AbortController();
+    before.abort();
+    const early = await probe({ stdout: CONTRACT }, before);
+    expect({ result: early.result, calls: early.calls.length }).toEqual({ result: { stop: "canceled" }, calls: 0 });
+  });
 });
 
 describe("matching rules (FR-022 to FR-024, SC-007)", () => {

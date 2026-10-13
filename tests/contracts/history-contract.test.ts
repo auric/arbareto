@@ -128,7 +128,12 @@ describe("contract Δ3 results", () => {
     const command = "& 'C:\\Git\\cmd\\git.exe' --no-lazy-fetch -C 'C:\\repo' commit-graph write --reachable";
     expect(LoadHistoryResult.safeParse({ rows: 10, complete: false, remedy: { text: "Write a commit-graph.", command } }).success).toBe(true);
     expect(LoadHistoryResult.safeParse({ rows: limits.HISTORY_VIEW_COMMITS + 1, complete: false }).success).toBe(false);
-    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "order" }).success).toBe(false);
+    // Contract Δ3 "Refusal result" and Δ8: a refused load of a stale complete view keeps `complete: true` and carries the stale reason.
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "order" }).success).toBe(true);
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "object-missing", remedy: { text: "x", command: null } }).success).toBe(true);
+    // An `OUTPUT_LIMIT` bound stops the load, so its view is never complete.
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "HISTORY_VIEW_COMMITS" }).success).toBe(false);
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "HISTORY_PARENTS_PER_COMMIT" }).success).toBe(false);
     expect(LoadHistoryResult.safeParse({ rows: 10 }).success).toBe(false);
     expect(LoadHistoryResult.safeParse({ rows: 10, complete: false, reason: "HISTORY_STREAM_ROWS" }).success).toBe(false);
   });

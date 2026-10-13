@@ -1919,6 +1919,39 @@ OBSERVATION T233: the F31 read hook reached stalled 3038 ms after its checkout s
 - Remedy and quoting cases (unsaved-commits and checkout remedies in PowerShell, detach note, rows without a command, fetch remedy): the cases check texts and commands, not an update result.
 - F30 silent-hook deadlines, SSH cases, stall, and BUSY: the cases check a deadline, a step, or a notice. The F27 and F30 oracle cases cover their fixtures.
 
+**T149 tool versions, 2026-10-13.** The T149 run used main `e951ad2` in the main checkout `C:\Projects\arbareto`. Read-only commands read these values on the same host after the run.
+
+| Tool | Source | Value | Minimum | Result |
+| --- | --- | --- | --- | --- |
+| Rust | `rustc --version` | `rustc 1.99.0 (b940084d7 2026-09-28)` | `1.98.0` | pass |
+| Cargo | `cargo --version` | `cargo 1.99.0 (5f94df478 2026-08-27)` | `1.98.0` | pass |
+| Tauri CLI | `cargo tauri --version` | `tauri-cli 2.12.0` | `2.12.0` | pass |
+| Bun | `bun --version`, and `bun test v1.4.3 (c6da4a4d3)` in the run log | `1.4.3` | exactly `1.4.3` | pass |
+| MSVC toolset | `vswhere` and `Microsoft.VCToolsVersion.default.txt` of Visual Studio Enterprise 2022 `17.14.36221.1`, the only installation. The release `arbareto.exe` has linker version 14.44 and Rich build 35207. | `14.44.35207` | `14.51.36231` | fail |
+| Windows SDK | `Windows Kits\10\Lib`. Only this version has `um\x64\kernel32.lib`. | `10.0.19041.0` | `10.0.26100.0` | fail |
+| NSIS | `makensis.exe /VERSION` in `%LOCALAPPDATA%\tauri\NSIS`, extracted by this run's bundler | `v3.11` | `3.11` | pass |
+| Git | Run log, 58 Git blocks | `git version 2.56.0.windows.2` at `C:\Program Files\Git\ucrt64\bin\git.exe`, built from commit `cc4dbf752a05efdc0e04e71fd3e8110d11bdd35c` | `2.55.0.windows.3` | pass |
+| WebView2 | Registry value `pv` of `HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`. The HKLM and HKCU keys do not exist. | `154.0.4258.62` | `154.0.4258.37` | pass |
+
+- The MSVC toolset and the Windows SDK are below the plan.md minimums. The build still exited 0.
+
+**T149 notice entries outside both lists, 2026-10-13.** `bun run build:notices` wrote 209 entries. The first list is the source-map package names of `bunx --bun vite build --sourcemap`, 37 maps, plus `tailwindcss`, `tw-animate-css`, and `shadcn` from `src/frontend/index.css`: 49 names. The second list is the T149 `cargo tree` command: 131 crates without `arbareto`. Each name on either list has an inventory entry. These 30 entries are on neither list:
+
+| Entries | Path into the inventory | Reason for neither list |
+| --- | --- | --- |
+| `@types/hast` 3.0.5, `@types/mdast` 4.0.4, `@types/unist` 3.0.3 | Dependencies of `shiki`, `@shikijs/*`, `hast-util-to-html`, and `mdast-util-to-hast` | Types only. Each package holds only `index.d.ts`, and its `main` is empty. |
+| `mdast-util-to-hast` 13.2.1 | `@pierre/diffs` > `hast-util-to-html` | `hast-util-to-html` is its only dependent. It names the package only in JSDoc `@import` comments (`lib/handle/raw.js:3`, `lib/handle/text.js:3`). |
+| `@ungap/structured-clone` 1.4.0, `devlop` 1.1.0, `dequal` 2.0.3, `micromark-util-character` 2.1.1, `micromark-util-encode` 2.0.1, `micromark-util-sanitize-uri` 2.0.1, `micromark-util-symbol` 2.0.1, `micromark-util-types` 2.0.3, `trim-lines` 3.0.1, `unist-util-is` 6.0.1, `unist-util-position` 5.0.0, `unist-util-stringify-position` 4.0.0, `unist-util-visit` 5.1.0, `unist-util-visit-parents` 6.0.2, `vfile` 6.0.3, `vfile-message` 4.0.3 | `mdast-util-to-hast` and its dependencies | In `bun.lock`, every dependent of these packages is `mdast-util-to-hast` or a package below it. |
+| `shiki` 4.5.0 | Root `dependencies` | `vite.config.ts` aliases `shiki`, `shiki/engine/oniguruma`, and `shiki/wasm` to `src/frontend/highlight/`. The other reached entries, `shiki/core` and `shiki/engine/javascript`, only re-export `@shikijs/core` and `@shikijs/engine-javascript`. `shiki` declares `sideEffects: false`. |
+| `@shikijs/engine-oniguruma` 4.5.0 | `shiki` | Only the `shiki/dist` modules `index`, `engine-oniguruma`, `wasm`, and `core-unwasm` import it. The aliases replace the first three entries. `core-unwasm` loads only under the `unwasm` export condition. The `guard.ts` `REFUSED` list fails the build on any module of this package. |
+| `@pierre/theme` 2.0.0 | `@pierre/diffs` | Only `@pierre/theming/dist/collections/pierre.js` imports it, through `themes.js`. `vite.config.ts` aliases `@pierre/theming/themes`. The `guard.ts` `REFUSED` list fails the build on both modules. |
+| `@babel/runtime` 7.29.7 | `@base-ui/react` and `@base-ui/utils` | Only the CommonJS `.js` files of both packages require it: 435 files, no `.mjs` file. The `import` condition of their `exports` maps to the `.mjs` files. |
+| `reselect` 5.3.0 | `@base-ui/react` > `@base-ui/utils` | Only `@base-ui/utils/store/createSelectorMemoized` imports it. `@base-ui/react` 1.8.0 imports only `ReactStore` from `@base-ui/utils/store`. `@base-ui/utils` declares `sideEffects: false`. |
+| `zod` 4.6.5 | Root `dependencies` | The renderer imports it only with `import type` (`TrustDialog.tsx:5`). `build:service` compiles it into the service executable. That executable holds `ZodError`. T149 lists neither that executable nor its packages. |
+| `tm-grammars` 1.32.22, `tm-themes` 1.12.12 | Separate rule in `notices.ts` (`TM_GRAMMARS_VERSION`, `TM_THEMES_VERSION`) | They are not installed packages. The shipped `@shikijs/langs` and `@shikijs/themes` files come from these releases (T338 record in "Dependency reviews"). |
+| Bun runtime and linked components 1.4.3 | Separate rule in `notices.ts` | The service executable embeds the Bun runtime. The typescript-go notice is the file `typescript-go-NOTICE.txt` of this entry, not a separate entry. |
+| NSIS | Separate rule in `notices.ts` (`nsisShipped`) | The installer is an NSIS 3.11 executable. |
+
 ### Scenario records
 
 This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.

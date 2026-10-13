@@ -28,10 +28,12 @@ for (let i = 0; i < 16; i++) HEX_VALUE[HEX_DIGITS.charCodeAt(i)] = i;
 const LINE_OIDS = 1 + HISTORY_PARENTS_PER_COMMIT;
 const PENDING = -1;
 
-function grow<T extends Uint8Array | Int32Array>(array: T, length: number): T {
+/** `array`, or a copy with at least `length` elements and at least twice the capacity. The new elements hold `fill`. */
+export function grow<T extends Uint8Array | Int32Array | Uint32Array>(array: T, length: number, fill = 0): T {
   if (length <= array.length) return array;
   const next = new (array.constructor as new (length: number) => T)(Math.max(length, array.length * 2));
   next.set(array);
+  if (fill !== 0) next.fill(fill, array.length);
   return next;
 }
 
@@ -60,6 +62,8 @@ export class HistoryTopology {
   // The held row count at the start of the step, and the rows that the step streamed.
   private held = 0;
   private streamed = 0;
+  /** The rows from row 0 that this step compared equal to the held rows or appended. A failed line does not count. */
+  compared = 0;
   // At most one partial line across frames.
   private readonly partial: Uint8Array;
   private partialLength = 0;
@@ -83,6 +87,7 @@ export class HistoryTopology {
   beginStep(): void {
     this.held = this.rows;
     this.streamed = 0;
+    this.compared = 0;
     this.partialLength = 0;
   }
 
@@ -210,7 +215,11 @@ export class HistoryTopology {
     if (length % width !== 0 || !this.decode(bytes, start, length / width)) return MALFORMED;
     const parents = length / width - 1;
     if (parents > HISTORY_PARENTS_PER_COMMIT) return PARENTS_LIMIT;
-    if (this.streamed < this.held) return this.same(this.streamed++, parents) ? null : ORDER;
+    if (this.streamed < this.held) {
+      if (!this.same(this.streamed++, parents)) return ORDER;
+      this.compared++;
+      return null;
+    }
     this.streamed++;
     const id = this.internAt(0);
     if (this.idToRow[id]! !== PENDING) return MALFORMED;
@@ -236,6 +245,7 @@ export class HistoryTopology {
     }
     this.parentStart = grow(this.parentStart, this.rows + 1);
     this.parentStart[this.rows] = first + parents;
+    this.compared++;
     return null;
   }
 

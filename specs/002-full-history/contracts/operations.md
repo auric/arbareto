@@ -99,6 +99,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - with `text: "rows"`: `subject`, `author`, `date`, `encoding`, and `invalidUtf8`, or `textLimit` for an object above 256 KiB;
   - with `text: "details"`: also `body`, `bodyCut`, `committer`, `committerDate`, and `children`. `body` and `bodyCut` follow 001 §3 "HistoryPage result" and the 001 §5 "History message body" bound of 16 KiB.
 - In filter mode, a row that is not settled yet has `cell: null`.
+- In filter mode, `parents` holds the Git parents of the row. The cell draws the reduced parents (data-model §7).
 - Text comes from one `cat-file --batch-command -Z` with `contents` lines. Deadline 30 s. `text: "none"` starts no Git process.
 - A newer text read cancels an unfinished one of the same view, by the 001 superseded-read rule (001 §5 "Pending reads").
 - A text read runs no fingerprint check, because commit text cannot change with the topology.
@@ -129,7 +130,7 @@ A view operation that ends without its result value carries `{reason?, remedy?}`
   - When the row of a match is known, its index must be above the index of the previous match. When it is not known yet, the match joins a FIFO queue.
   - A streamed row that is in the queue must be at its head.
   - When the load completes, the queue must be empty.
-  - Any break fails the search with `HISTORY_CHANGED` reason `order`. The view stays.
+  - Any break fails the search with `HISTORY_CHANGED` reason `order`, and the view becomes stale (Δ8), as for a re-read difference.
 - The reduced graph needs the full topology stream beside the search stream (plan.md D4). When a search starts on an incomplete view, the service loads to the end itself, by the `loadHistory` rules with no stop row. That load belongs to the search operation: its progress and Cancel go with the search. A cancel of the search keeps the loaded rows. The renderer starts nothing extra.
 - A `loadHistory` while the search load runs gives `BUSY`. A `searchHistory` while a load of the view runs gives `BUSY`. The renderer cancels its scroll load first (plan.md D6).
 - A view that stopped at `HISTORY_VIEW_COMMITS` has no full topology. A search on it ends `limited` with `OUTPUT_LIMIT` reason `HISTORY_VIEW_COMMITS`, and no Git process starts.
@@ -209,7 +210,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
 - Stale conditions (spec FR-006). A stale view keeps its rows, refuses further loads and searches with its code, and offers Refresh:
   1. A view process fails, and the object check finds a missing commit: `OBJECT_MISSING` (reason `object-missing`). The text read is a view process too, so a failed text read makes the whole view stale.
   2. `HISTORY_CHANGED` reason `topology`: the shallow digest, the grafts digest, or the replace records changed. The service checks this before each load step and before each search (Δ3 `searchHistory`). A text read runs no check, because commit text cannot change with the topology.
-  3. `HISTORY_CHANGED` reason `order`: a re-read row differs from the held row, or Git exits with code 0 before the held row count.
+  3. `HISTORY_CHANGED` reason `order`: a re-read row differs from the held row, Git exits with code 0 before the held row count, or the search merge breaks (Δ3 `searchHistory`).
   4. `MALFORMED_GIT_OUTPUT`, `GIT_FAILED`, or a diagnostic `OUTPUT_LIMIT`.
   5. The view was released (`UNKNOWN_TARGET`), or the service session ended.
 - Cancel and `DEADLINE` do not make the view stale. A later demand resumes the load.
@@ -257,3 +258,5 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
 - A missing commit several steps below every start point gives `GIT_FAILED`, not `OBJECT_MISSING` (Δ3 `loadHistory`, the feature 001 `checkFailedRead` limit).
 - A WSL view gets no copyable `DEADLINE` command (Δ11).
 - A shallow or grafts file above 4 MiB has no view reason. `openHistory` and `loadHistory` then give `OUTPUT_LIMIT` without `reason`.
+- WSL search: Δ3 "Matching probe" runs the fixed `matchingProbe` script through the wrapper in mode `search`. The shell has no route that runs it: `Texts` in `src-tauri/src/wsl.rs` has no `matchingProbe`, and `run` builds only Git argv. Δ1 and Δ6 add no new channel frame. Until a route exists, the service refuses a WSL search with `SEARCH_UNSUPPORTED` reason `matching`. Spec FR-046 is not met for search. A design for the route is in progress.
+- Probe step failure: a failed probe step, such as `mkdtemp`, `init`, or `fast-import`, gives `GIT_FAILED`, not `SEARCH_UNSUPPORTED`.

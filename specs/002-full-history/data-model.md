@@ -101,7 +101,7 @@ The row form of `readHistoryRows` (contract Δ3).
 
 | Field | Presence |
 |---|---|
-| `index`, `oid`, `parents`, `cell`, `labels`, `checkout` | Always. `cell` is null for a filter row that is not settled yet. |
+| `index`, `oid`, `parents`, `cell`, `labels`, `checkout` | Always. `cell` is null for a filter row that is not settled yet. In filter mode, `parents` holds the Git parents, and `cell` draws the reduced parents (§7). |
 | `match` | With `searchId`: true, false, or null. |
 | `subject`, `author`, `date`, `encoding`, `invalidUtf8` | `text: "rows"` or `"details"`. `textLimit` replaces them for an object above 256 KiB. |
 | `body`, `bodyCut`, `committer`, `committerDate`, `children` | `text: "details"` only (spec FR-017, FR-018). |
@@ -130,7 +130,7 @@ Text comes from the commit object by OID. Commit objects never change, so a rere
                ──probe mismatch──▶ refused (SEARCH_UNSUPPORTED)
                ──start──▶ running ──exit 0, FIFO empty at load end──▶ finished
                            running ──cancel / new text / Escape / close──▶ stopped
-                           running ──order break──▶ failed (HISTORY_CHANGED order; the view stays)
+                           running ──order break──▶ failed (HISTORY_CHANGED order; the view becomes stale)
 ```
 
 A `stopped` or `failed` search never shows its count as final.
@@ -149,6 +149,8 @@ Rows are processed in stream order, when their match state is known.
 | `P` | Maps each referenced commit that is not processed yet to a sorted array of match sequence numbers. Arrays are shared and never changed. |
 | Edge | `m → q`, with `direct` true when the matching row is a parent of m. Otherwise it skips commits. 8 bytes per edge. |
 | Settled prefix | The minimum of the next unprocessed match sequence and the smallest first element over the arrays in `P`. |
+
+The reduced parents of a match are in rising match order.
 
 Plan D4 gives the algorithm and its proof. A match without a matching ancestor shows "No earlier matching commit", unless it is a true root or a shallow boundary.
 

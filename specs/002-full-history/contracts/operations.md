@@ -70,7 +70,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
   - a damaged store without a promisor remote gives `REPOSITORY_UNAVAILABLE`;
   - other failures give `GIT_FAILED`.
   - Known limit: the object check covers only the start points, their parents, and the commits that the view already holds or names as parents. A missing commit outside that set, several steps below every start point, gives `GIT_FAILED`, not `OBJECT_MISSING`. This is the feature 001 `checkFailedRead` limit.
-- Progress: phase `history-load`, counter `rows`, at most 4 events per second.
+- Progress: phase `history-load`, counter `rows`, at most 4 events per second. `rows` is the served row count.
 - Results:
   - `succeeded` with `rows` and `complete`. `complete: true` gives the final row count (spec FR-010).
   - `canceled`: the rows stay, and the Job is closed.
@@ -143,7 +143,7 @@ A view operation that ends without its result value carries `{reason?, remedy?}`
 - Windows: a `mkdtemp` folder in `os.tmpdir()`. Then `init --bare --template= --object-format=sha1`, `fast-import` of the fixed stream, two probe `rev-list` runs, and `fs.rm` of the folder.
 - WSL: one `run` frame with the field `script: "matchingProbe"` runs the fixed `matchingProbe` script through the wrapper in mode `search` (Δ6, Δ11). The shell supplies `/bin/sh`, the script text, and the approved Git path.
 - WSL arguments: `[dir, tip, n, ...run1, ...run2]`. `dir` is `/tmp/arbareto-probe-<uuid>`, with a lowercase uuid from the service. `tip` is the 40-hex OID of the probe tip. `n` is the run length. `run1` and `run2` are the two search argv arrays of `n` items each. Each starts with `--no-lazy-fetch`. The `input` is the fixed stream.
-- WSL output: for each run, zero or more lines of 40 lowercase hex digits, then one `end <exit code>` line. The service accepts exactly two `end 0` lines and nothing after the last. Other output or a nonzero exit gives `GIT_FAILED`.
+- WSL output: for each run, zero or more lines of 40 lowercase hex digits, then one `end <exit code>` line. The service accepts exactly two `end 0` lines and nothing after the last. Output in another form gives `MALFORMED_GIT_OUTPUT`. A nonzero script exit or an `end` line with a nonzero code gives `GIT_FAILED`.
 - WSL cleanup: the script creates the folder with `mkdir` and no `-p`, so an existing folder fails. An `EXIT` trap set after `mkdir` removes the folder.
 - The fixed stream and the expected OID sets are contract values in `src/contracts/matching-probe.ts`. They cover "Виправлення" in both cases, є/Є, і/І, ї/Ї, ґ/Ґ, ß against ẞ and SS, and a windows-1251 message with an encoding header.
 - A mismatch gives `SEARCH_UNSUPPORTED` reason `matching`, with a remedy.
@@ -207,6 +207,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
 - `openHistory` may reuse the trust listing, as 001 `readHistory` does (001 §7 "Shared listing", "Held history steps").
 - No repository program runs. `rev-list` and `cat-file` run without filters.
 - The search text enters no log or diagnostic.
+- A revoked or changed trust refuses each later view read with its gate code, and starts no Git process.
 
 ## Δ8 Freshness, cancellation, and outcome (001 §8)
 
@@ -217,7 +218,7 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
   1. A view process fails, and the object check finds a missing commit: `OBJECT_MISSING` (reason `object-missing`). The text read is a view process too, so a failed text read makes the whole view stale.
   2. `HISTORY_CHANGED` reason `topology`: the shallow digest, the grafts digest, or the replace records changed. The service checks this before each load step and before each search (Δ3 `searchHistory`). A text read runs no check, because commit text cannot change with the topology.
   3. `HISTORY_CHANGED` reason `order`: a re-read row differs from the held row, Git exits with code 0 before the held row count, or the search merge breaks (Δ3 `searchHistory`).
-  4. `MALFORMED_GIT_OUTPUT`, `GIT_FAILED`, or a diagnostic `OUTPUT_LIMIT`.
+  4. `MALFORMED_GIT_OUTPUT`, `GIT_FAILED`, or a diagnostic `OUTPUT_LIMIT`. A failed matching probe step counts too. The service keeps no probe answer, so the search of the new view runs the probe again.
   5. The view was released (`UNKNOWN_TARGET`), or the service session ended.
 - Cancel and `DEADLINE` do not make the view stale. A later demand resumes the load.
 - After a service restart (001 §8 "Service restart"), no view resumes. The renderer marks the view stale, and Refresh opens a new one.
@@ -265,4 +266,5 @@ Retired with `readHistory`: `GRAPH_PATH_SEGMENTS`, and the 001 §5 'History trav
 - A WSL view gets no copyable `DEADLINE` command (Δ11).
 - A shallow or grafts file above 4 MiB has no view reason. `openHistory` and `loadHistory` then give `OUTPUT_LIMIT` without `reason`.
 - A cancel or a deadline of the WSL probe ends its scope with SIGKILL. The `/tmp/arbareto-probe-<uuid>` folder then stays. It holds only the probe objects.
-- Probe step failure: a failed probe step, such as `mkdtemp`, `init`, or `fast-import`, gives `GIT_FAILED`, not `SEARCH_UNSUPPORTED`.
+- Probe step failure: a `mkdtemp` failure or a nonzero exit of a probe step gives `GIT_FAILED`, not `SEARCH_UNSUPPORTED`. Probe output in another form gives `MALFORMED_GIT_OUTPUT`.
+- The session log cause `probe-folder-remove` records a failed removal of the probe folder. The 001 §7 cause list does not name it.

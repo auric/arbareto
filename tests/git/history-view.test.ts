@@ -258,6 +258,10 @@ describe("view bound (contract Δ3 `loadHistory`, Δ5 `HISTORY_VIEW_COMMITS`)", 
             release();
             const canceled = await service.response(request);
             expect({ state: canceled.state, result: canceled.result }).toEqual({ state: "canceled", result: { rows: 0, complete: false } });
+            // Contract Δ3: the progress counter `rows` is the served row count, so the unchecked rows do not count.
+            const counted = (service.progress as { operationId: string; phase?: string; counters: { rows?: number } }[]).filter((e) => e.operationId === operationId && e.phase === "history-load").map((e) => e.counters.rows);
+            expect(counted.length).toBeGreaterThan(0);
+            expect(counted.every((rows) => rows === 0)).toBe(true);
           } finally {
             release();
           }

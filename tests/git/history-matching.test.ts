@@ -122,7 +122,7 @@ describe("matching probe (contract Δ3 \"Matching probe\")", () => {
 
   caseTest(
     TASK,
-    "a failed probe folder or probe step gives GIT_FAILED, not SEARCH_UNSUPPORTED, removes the folder, and keeps no probe answer",
+    "a failed probe folder or probe step gives GIT_FAILED, not SEARCH_UNSUPPORTED, makes the view stale, removes the folder, and keeps no probe answer",
     SHELL,
     () =>
       withService("t033-step-failed", async (service) => {
@@ -140,10 +140,15 @@ describe("matching probe (contract Δ3 \"Matching probe\")", () => {
         }
         expect({ state: noFolder.state, code: noFolder.code }).toEqual({ state: "failed", code: "GIT_FAILED" });
         expect(service.runner.calls.filter(isProbe)).toEqual([]);
+        // Contract Δ8 condition 4: the view is stale, so a later search of it refuses with the same code and starts no probe.
+        const again = await search(service, repositoryId, view.viewId, "probe");
+        expect({ state: again.state, code: again.code, probes: service.runner.calls.filter(isProbe).length }).toEqual({ state: "failed", code: "GIT_FAILED", probes: 0 });
+        // Refresh opens a new view.
+        const second = await opened(service, repositoryId, generation);
         service.runner.inject.exit = (call) => (isProbe(call) && call.arguments[1] === "init" ? 128 : undefined);
         let noInit: ServiceResponse<Searched>;
         try {
-          noInit = await search(service, repositoryId, view.viewId, "probe");
+          noInit = await search(service, repositoryId, second.viewId, "probe");
         } finally {
           service.runner.inject.exit = undefined;
         }
@@ -152,8 +157,9 @@ describe("matching probe (contract Δ3 \"Matching probe\")", () => {
         expect(init.length).toBe(1);
         expect(existsSync(init[0]!.arguments.at(-1)!)).toBe(false);
         expect(service.runner.calls.filter(isSearch)).toEqual([]);
-        // No answer was kept, so the next search runs the probe again.
-        expect((await search(service, repositoryId, view.viewId, "probe")).state).toBe("succeeded");
+        // No answer was kept, so the search of the next view runs the probe again.
+        const third = await opened(service, repositoryId, generation);
+        expect((await search(service, repositoryId, third.viewId, "probe")).state).toBe("succeeded");
         expect(service.runner.calls.filter(isProbe).length).toBe(1 + 2 + MATCHING_PROBE_RUNS.length);
       }),
     TIMEOUT_MS,

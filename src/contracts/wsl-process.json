@@ -1,7 +1,7 @@
 {
   "wrapper": [
-    "unit=$1 mode=$2 index=$3 run=$4 ctl=$5 setsid=$6",
-    "shift 6",
+    "unit=$1 mode=$2 index=$3 run=$4 ctl=$5 setsid=$6 noexp=$7",
+    "shift 7",
     "end() { \"$ctl\" --user kill --signal=SIGKILL -- \"$unit\" >/dev/null 2>&1; }",
     "trap 'end; exit 129' HUP",
     "export GIT_TERMINAL_PROMPT=0",
@@ -14,7 +14,7 @@
     "esac",
     "[ -z \"$index\" ] || export GIT_INDEX_FILE=\"$index\"",
     "exec 3<&0",
-    "\"$run\" --user --scope --quiet --collect --unit=\"$unit\" -- \"$setsid\" --wait \"$@\" <&3 3<&- &",
+    "\"$run\" --user --scope --quiet --collect ${noexp:+--expand-environment=no} --unit=\"$unit\" -- \"$setsid\" --wait /bin/sh -c 'printf S >&4 && exec \"$@\" >&4 4>&-' sh \"$@\" <&3 3<&- 4>&1 >&2 &",
     "exec 3<&-",
     "wait $!",
     "status=$?",
@@ -102,6 +102,8 @@
     "if [ -n \"$run\" ] && [ -n \"$ctl\" ]; then",
     "  \"$run\" --user --scope --quiet --collect -- /bin/sh -c : >/dev/null 2>&1",
     "  printf 'scope %s\\n' \"$?\"",
+    "  \"$run\" --expand-environment=no --version >/dev/null 2>&1",
+    "  printf 'noexpand %s\\n' \"$?\"",
     "fi"
   ],
   "identity": [

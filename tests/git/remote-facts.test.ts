@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T005: the Git facts (a) to (m) of plan.md P0.2 with the Git under test. Each fact prints `OBSERVATION T005` lines. A `match=false` line is a finding for research.md, not a failure.
+// T005: the Git facts (a) to (m) of plan.md P0.2 with the Git under test. Each fact prints `OBSERVATION T005` lines. A `match=false` line is a finding for research.md, not a failure, unless the observation is `asserted`.
 
 import { expect, test } from "bun:test";
 import { describeGit } from "./git-binary";
@@ -32,6 +32,7 @@ describeGit("Git facts for remote sync (T005)", (git) => {
       const observations = fact.run(h());
       expect(observations.length).toBeGreaterThan(0);
       for (const o of observations) console.log(observationLine(TASK, version, o));
+      expect(observations.filter((o) => o.asserted && !o.match).map((o) => o.fact)).toEqual([]);
     }, FACT_MS);
   }
 });

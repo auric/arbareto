@@ -34,6 +34,17 @@
     "allow-request-close",
     "allow-current-session",
     "allow-dismiss-recovery-marker",
+    "allow-read-tracking",
+    "allow-review-sync",
+    "allow-sync",
+    "allow-clone",
+    "allow-connect-in-terminal",
+    "allow-read-sync-settings",
+    "allow-set-ssh-client",
+    "allow-set-default-pull-action",
+    "allow-choose-sync-path",
+    "allow-clear-sync-path",
+    "allow-launch-puttygen",
     "core:event:allow-listen"
   ]
 }

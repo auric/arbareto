@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-connect-in-terminal"
+description = "Enables the connect_in_terminal command without any pre-configured scope."
+commands.allow = ["connect_in_terminal"]
+
+[[permission]]
+identifier = "deny-connect-in-terminal"
+description = "Denies the connect_in_terminal command without any pre-configured scope."
+commands.deny = ["connect_in_terminal"]

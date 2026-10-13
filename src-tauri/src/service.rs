@@ -955,12 +955,14 @@ fn mutation(
             operation_id,
             kind,
             direction,
+            action,
             worktree_root,
             common_directory,
             ..
         } => {
             let call_id = call_id.ok_or(MutationCode::InvalidRequest)?;
-            let mutation = Mutation::of(kind, direction).ok_or(MutationCode::InvalidRequest)?;
+            let mutation =
+                Mutation::of(kind, direction, action).ok_or(MutationCode::InvalidRequest)?;
             let common = PathBuf::from(common_directory.as_str());
             // A service exit after the frame read changes the epoch, and the late finish then takes no mutex.
             let epoch = markers.epoch();

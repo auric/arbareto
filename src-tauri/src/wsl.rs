@@ -357,6 +357,10 @@ pub enum Mode {
     Network,
     /// Feature 002 contract Δ11: `read` with `LC_ALL=C.UTF-8`.
     Search,
+    /// Feature 003 contract Δ11: no export beyond `GIT_TERMINAL_PROMPT=0`.
+    Remote,
+    /// Feature 003 contract Δ11: `GIT_EDITOR=:`.
+    Integrate,
 }
 
 impl Mode {
@@ -367,6 +371,8 @@ impl Mode {
             Mode::Mutation => "mutation",
             Mode::Network => "network",
             Mode::Search => "search",
+            Mode::Remote => "remote",
+            Mode::Integrate => "integrate",
         }
     }
 }
@@ -2153,6 +2159,28 @@ mod tests {
                 Stdin::Closed,
             )
             .expect("read"),
+            git_command(
+                &inst,
+                Mode::Remote,
+                "arbareto-x-3.scope",
+                None,
+                "/r",
+                &read,
+                &base(),
+                Stdin::Closed,
+            )
+            .expect("remote"),
+            git_command(
+                &inst,
+                Mode::Integrate,
+                "arbareto-x-4.scope",
+                None,
+                "/r",
+                &read,
+                &base(),
+                Stdin::Closed,
+            )
+            .expect("integrate"),
             wrapped(
                 &inst,
                 Mode::Probe,
@@ -2628,6 +2656,8 @@ mod tests {
             (Mode::Mutation, "mutation"),
             (Mode::Network, "network"),
             (Mode::Search, "search"),
+            (Mode::Remote, "remote"),
+            (Mode::Integrate, "integrate"),
         ] {
             let command = git_command(
                 &inst,
@@ -2658,7 +2688,14 @@ mod tests {
         )
         .expect("mutation");
         assert_eq!(mutation.arguments[11], index);
-        for mode in [Mode::Probe, Mode::Read, Mode::Network, Mode::Search] {
+        for mode in [
+            Mode::Probe,
+            Mode::Read,
+            Mode::Network,
+            Mode::Search,
+            Mode::Remote,
+            Mode::Integrate,
+        ] {
             assert_eq!(
                 git_command(
                     &inst,
@@ -2713,6 +2750,9 @@ mod tests {
         assert!(lines.contains(&"trap 'end; exit 129' HUP"));
         assert!(lines.contains(&"probe) export LC_ALL=C ;;"));
         assert!(lines.contains(&"network) export GIT_PROTOCOL_FROM_USER=0 ;;"));
+        // Feature 003 contract Δ11: `remote` exports nothing more, and `integrate` exports `GIT_EDITOR=:`.
+        assert!(lines.contains(&"read | mutation | remote) ;;"));
+        assert!(lines.contains(&"integrate) export GIT_EDITOR=: ;;"));
         assert!(lines.contains(&"case $mode in probe | read | search) end ;; esac"));
         assert!(
             !json_text("anchor").contains("setsid"),

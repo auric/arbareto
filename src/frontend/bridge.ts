@@ -115,6 +115,19 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     // Contract §3: both `currentSession` results carry `textScale`.
     currentSession: (onProgress?: OnProgress) => send("currentSession", { payload: {} }, onProgress),
     dismissRecoveryMarker: (payload: Payload<"dismissRecoveryMarker">, onProgress?: OnProgress) => call("dismissRecoveryMarker", {}, payload, onProgress),
+    // Feature 003 contract Δ1.
+    readTracking: (target: Target<"readTracking">, onProgress?: OnProgress) => call("readTracking", target, {}, onProgress),
+    reviewSync: (target: Target<"reviewSync">, payload: Payload<"reviewSync">, onProgress?: OnProgress) => call("reviewSync", target, payload, onProgress),
+    sync: (target: Target<"sync">, payload: Payload<"sync">, onProgress?: OnProgress) => call("sync", target, payload, onProgress),
+    clone: (payload: Payload<"clone">, onProgress?: OnProgress) => call("clone", {}, payload, onProgress),
+    connectInTerminal: (target: Target<"connectInTerminal">, payload: Payload<"connectInTerminal">, onProgress?: OnProgress) =>
+      call("connectInTerminal", target, payload, onProgress),
+    readSyncSettings: (onProgress?: OnProgress) => call("readSyncSettings", {}, {}, onProgress),
+    setSshClient: (payload: Payload<"setSshClient">, onProgress?: OnProgress) => call("setSshClient", {}, payload, onProgress),
+    setDefaultPullAction: (payload: Payload<"setDefaultPullAction">, onProgress?: OnProgress) => call("setDefaultPullAction", {}, payload, onProgress),
+    chooseSyncPath: (payload: Payload<"chooseSyncPath">, onProgress?: OnProgress) => call("chooseSyncPath", {}, payload, onProgress),
+    clearSyncPath: (payload: Payload<"clearSyncPath">, onProgress?: OnProgress) => call("clearSyncPath", {}, payload, onProgress),
+    launchPuttygen: (onProgress?: OnProgress) => call("launchPuttygen", {}, {}, onProgress),
   };
 }
 

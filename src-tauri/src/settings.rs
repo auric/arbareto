@@ -756,7 +756,13 @@ pub const MARKER_BYTES: usize = 4096;
 pub const MARKER_LIMIT: usize = 64;
 
 /// The mutation names of contract §3, as `src/contracts/operations.ts` `MUTATIONS` lists them.
-pub(crate) const MUTATIONS: [&str; 4] = ["applyHunk", "applyFile", "commit", "updateSubmodules"];
+pub(crate) const MUTATIONS: [&str; 5] = [
+    "applyHunk",
+    "applyFile",
+    "commit",
+    "updateSubmodules",
+    "sync",
+];
 
 /// One recovery marker. Its file is `<markerId>.json` in the `recovery` folder and holds the handshake form.
 #[derive(Clone, Debug, PartialEq)]
@@ -3272,6 +3278,35 @@ mod tests {
             entries(&recovery),
             sorted(&[&format!("{a}.json"), &format!("{b}.json")])
         );
+    }
+
+    /// Feature 003 contract Δ2 and Δ6: the marker kinds equal `MUTATIONS` of `src/contracts/operations.ts`, so a `sync` marker loads.
+    #[test]
+    fn the_marker_kinds_equal_the_contract_mutations_and_a_sync_marker_loads() {
+        let contract = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/contracts/operations.ts"
+        ))
+        .expect("operations.ts");
+        let (list, _) = contract
+            .split_once("MUTATION_NAMES = [")
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .expect("MUTATION_NAMES");
+        let names: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        assert_eq!(names, MUTATIONS);
+        let fixture = Fixture::new();
+        let repository = repository(&fixture, "repo");
+        let recovery = folder(&fixture, "recovery");
+        let id = write_marker(&recovery, &repository, 1, 0);
+        let path = recovery.join(format!("{id}.json"));
+        let mut marker: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        marker["kind"] = json!("sync");
+        std::fs::write(&path, marker.to_string()).expect("write");
+        let scan = Markers::open(&recovery).scan();
+        assert_eq!((scan.markers.len(), scan.damaged.len()), (1, 0));
+        assert_eq!(scan.markers[0].kind, "sync");
+        assert_eq!(scan.markers[0].handshake(), marker);
     }
 
     #[test]

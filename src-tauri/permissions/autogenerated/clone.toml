@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clone"
+description = "Enables the clone command without any pre-configured scope."
+commands.allow = ["clone"]
+
+[[permission]]
+identifier = "deny-clone"
+description = "Denies the clone command without any pre-configured scope."
+commands.deny = ["clone"]

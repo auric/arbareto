@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-sync-path"
+description = "Enables the clear_sync_path command without any pre-configured scope."
+commands.allow = ["clear_sync_path"]
+
+[[permission]]
+identifier = "deny-clear-sync-path"
+description = "Denies the clear_sync_path command without any pre-configured scope."
+commands.deny = ["clear_sync_path"]

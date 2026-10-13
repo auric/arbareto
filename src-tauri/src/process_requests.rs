@@ -695,8 +695,10 @@ impl ProcessRequests {
                     Some(repository_id.as_str()),
                 ],
             ),
+            // Feature 003 contract Δ6: T031 adds the `clone` context.
+            RunGroup::Clone { .. } => return Err(INVALID),
         };
-        // The three context kinds hold the same `run` fields, each in its own generated type.
+        // The context kinds hold the same `run` fields, each in its own generated type.
         macro_rules! run_fields {
             ($($variant:ident($limits:ident)),*) => {
                 match request {$(
@@ -735,7 +737,8 @@ impl ProcessRequests {
         let (operation_id, arguments, policy, limits, input, input_bytes, transaction, index_file) = run_fields!(
             GitProbe(RunGitProbeLimits),
             RepositoryDiscovery(RunDiscoveryLimits),
-            RegisteredOperation(RunRegisteredLimits)
+            RegisteredOperation(RunRegisteredLimits),
+            Clone(RunCloneLimits)
         );
         // Feature 002 contract Δ6. typify drops the `const` value of `script`.
         let script = match request {
@@ -750,7 +753,14 @@ impl ProcessRequests {
         };
         let mutation = matches!(policy, EnvironmentPolicy::Mutation);
         // Contract §12: `network` serves only the update processes of the `updateSubmodules` mutation.
-        let changes = mutation || matches!(policy, EnvironmentPolicy::Network);
+        // Feature 003 contract Δ3: `remote` and `integrate` serve only the steps of the `sync` mutation.
+        let changes = mutation
+            || matches!(
+                policy,
+                EnvironmentPolicy::Network
+                    | EnvironmentPolicy::Remote
+                    | EnvironmentPolicy::Integrate
+            );
         let policy_fits = match kind {
             Kind::Bootstrap(_) => matches!(policy, EnvironmentPolicy::Probe),
             Kind::Registered => matches!(
@@ -759,6 +769,8 @@ impl ProcessRequests {
                     | EnvironmentPolicy::Mutation
                     | EnvironmentPolicy::Network
                     | EnvironmentPolicy::Search
+                    | EnvironmentPolicy::Remote
+                    | EnvironmentPolicy::Integrate
             ),
         };
         if !policy_fits {
@@ -1808,6 +1820,8 @@ impl ProcessRequests {
             EnvironmentPolicy::Mutation => wsl::Mode::Mutation,
             EnvironmentPolicy::Network => wsl::Mode::Network,
             EnvironmentPolicy::Search => wsl::Mode::Search,
+            EnvironmentPolicy::Remote => wsl::Mode::Remote,
+            EnvironmentPolicy::Integrate => wsl::Mode::Integrate,
         };
         let index = index_file
             .map(|file| wsl::linux_path(file, &installation.distro).ok_or(INVALID))
@@ -2688,15 +2702,18 @@ struct RunLimits {
 }
 
 /// Each limit within its contract cap. `stallMs` exists only in `registeredOperation`.
-/// The `network` policy carries the inactivity limit and the ceiling, and no other policy carries them.
-/// typify drops the integer ranges and the `stallMs` const, so this check keeps them.
+/// The `network`, `remote`, and `integrate` policies carry the inactivity limit and the ceiling (feature 003 contract Δ6).
+/// No other policy carries them. typify drops the integer ranges and the `stallMs` const, so this check keeps them.
 fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<RunLimits, Code> {
     let stall = |ms: f64| {
         (kind == Kind::Registered && ms == STALL_MS as f64)
             .then_some(Duration::from_millis(STALL_MS))
             .ok_or(INVALID)
     };
-    let network = matches!(policy, EnvironmentPolicy::Network);
+    let network = matches!(
+        policy,
+        EnvironmentPolicy::Network | EnvironmentPolicy::Remote | EnvironmentPolicy::Integrate
+    );
     match limits {
         Limits::Network(inactivity, ceiling, stall_ms)
             if network && inactivity <= INACTIVITY_MS && ceiling <= CEILING_MS =>
@@ -3796,6 +3813,93 @@ pub(crate) mod tests {
             )
         };
         expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+    }
+
+    /// Feature 003 contract Δ6: `remote` and `integrate` take the network limits and fit only a registered run.
+    /// Each serves a step of the `sync` mutation, so each needs its `started` reply first.
+    #[test]
+    fn remote_and_integrate_runs_take_the_network_limits_and_fit_only_a_registered_run() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started(&operation, &workspace);
+        for policy in ["remote", "integrate"] {
+            let call = uuid();
+            harness.send(run_body(
+                &call,
+                &operation,
+                &workspace,
+                &["sleep", "10"],
+                policy,
+                network_limits(30_000, 60_000),
+            ));
+            let exit = harness.exit(&call, WAIT).expect("exit").1;
+            assert_eq!(exit["exitCode"], 0, "{policy}");
+            let cases: Vec<(&str, Edit)> = vec![
+                (
+                    "deadlineMs",
+                    set(
+                        "limits",
+                        json!({ "deadlineMs": 30_000, "stallMs": STALL_MS }),
+                    ),
+                ),
+                (
+                    "inactivityMs above 300 s",
+                    set("limits", network_limits(INACTIVITY_MS + 1, 1000)),
+                ),
+                (
+                    "ceilingMs above 4 h",
+                    set("limits", network_limits(1000, CEILING_MS + 1)),
+                ),
+                (
+                    "stallMs missing",
+                    set("limits", json!({ "inactivityMs": 1000, "ceilingMs": 1000 })),
+                ),
+                ("before started", set("operationId", json!(uuid()))),
+            ];
+            let base = |call: &str| {
+                run_body(
+                    call,
+                    &operation,
+                    &workspace,
+                    &["sleep", "10"],
+                    policy,
+                    network_limits(1000, 1000),
+                )
+            };
+            expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+            let probe = |call: &str| {
+                let bootstrap = harness
+                    .contexts
+                    .create(ContextKind::GitProbe, &test_exe(), Instant::now())
+                    .expect("context");
+                json!({
+                    "type": "run", "callId": call, "operationId": uuid(), "contextKind": "gitProbe", "bootstrapId": bootstrap,
+                    "arguments": ["version", "--build-options"], "environmentPolicy": policy, "limits": network_limits(1000, 1000),
+                })
+            };
+            let cases: Vec<(&str, Edit)> = vec![("a bootstrap run", remove("transactionId"))];
+            expect_refusals(&harness, probe, cases, "INVALID_REQUEST");
+        }
+    }
+
+    /// Feature 003 contract Δ6: the schema holds the `clone` context, and the shell refuses its `run` until T031 adds it.
+    #[test]
+    fn a_clone_context_run_gets_invalid_request() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let destination = workspace.worktree.join("clone");
+        let body = |call: &str| {
+            json!({
+                "type": "run", "callId": call, "operationId": uuid(), "contextKind": "clone", "cloneId": uuid(),
+                "gitInstallationId": workspace.git, "environmentPolicy": "remote", "limits": network_limits(1000, 1000),
+                "arguments": ["--no-lazy-fetch", "clone", "--progress", "--no-recurse-submodules", "--", "https://example.test/a.git", destination],
+            })
+        };
+        assert!(typed::<frame::ProcessRequest>(&body(&uuid())).is_some());
+        let cases: Vec<(&str, Edit)> = vec![("a clone run", remove("transactionId"))];
+        expect_refusals(&harness, body, cases, "INVALID_REQUEST");
+        assert!(!destination.exists(), "no clone ran");
     }
 
     #[test]
@@ -7067,6 +7171,44 @@ pub(crate) mod tests {
                 git_command(wsl::Mode::Network, &network, 1, &arguments)
             ]
         );
+
+        // Feature 003 contract Δ11: a `sync` step starts the anchor too, and the wrapper runs in the mode of its policy.
+        for (policy, mode) in [
+            ("remote", wsl::Mode::Remote),
+            ("integrate", wsl::Mode::Integrate),
+        ] {
+            let sync = uuid();
+            let common = wsl::WslIdentity {
+                guid: WSL_GUID.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "4243".to_string(),
+            };
+            wsl.harness
+                .requests
+                .tag(&sync, crate::bootstrap::PhysicalIdentity::Wsl(common));
+            let before = wsl.host.commands().len();
+            let call = uuid();
+            wsl.harness.send(json!({
+                "type": "run", "callId": call, "operationId": sync, "contextKind": "registeredOperation",
+                "gitInstallationId": git, "repositoryId": repository, "arguments": arguments,
+                "environmentPolicy": policy, "limits": { "inactivityMs": INACTIVITY_MS, "ceilingMs": CEILING_MS, "stallMs": STALL_MS },
+            }));
+            assert_eq!(
+                wsl.harness.reply(&call),
+                refused(&call, "PROCESS_OWNERSHIP_FAILED"),
+                "{policy}"
+            );
+            let anchor = wsl::anchor_command(&installation, &sync, &base).expect("anchor");
+            let launched: Vec<Vec<String>> = wsl.host.commands()[before..]
+                .iter()
+                .map(|command| command.arguments.clone())
+                .collect();
+            assert_eq!(
+                launched,
+                vec![anchor.arguments, git_command(mode, &sync, 1, &arguments)],
+                "{policy}"
+            );
+        }
     }
 
     /// Feature 002 contract Δ3 "Matching probe", Δ6: a `script` run reaches the host as the probe command with its input bytes.
@@ -7166,13 +7308,21 @@ pub(crate) mod tests {
     fn a_wsl_run_forwards_stdout_after_the_start_byte_and_a_run_without_it_is_refused() {
         let wsl = wsl_harness(true);
         let (git, repository) = wsl_repository(&wsl);
-        let start = |call: &str, operation: &str, child: &[&str], script: bool| {
+        let start_with = |call: &str,
+                          operation: &str,
+                          child: &[&str],
+                          script: bool,
+                          policy: &str| {
             let mode = child.iter().map(|s| s.to_string()).collect();
             *wsl.host.child.lock().expect("child") = Some((Arc::clone(&wsl.harness.jobs), mode));
+            let limits = match policy {
+                "read" => json!({ "deadlineMs": 30_000 }),
+                _ => network_limits(30_000, 60_000),
+            };
             let mut body = json!({
                 "type": "run", "callId": call, "operationId": operation, "contextKind": "registeredOperation",
                 "gitInstallationId": git, "repositoryId": repository, "arguments": ["--no-lazy-fetch", "status"],
-                "environmentPolicy": "read", "limits": { "deadlineMs": 30_000 },
+                "environmentPolicy": policy, "limits": limits,
             });
             if script {
                 body["script"] = json!("matchingProbe");
@@ -7186,6 +7336,9 @@ pub(crate) mod tests {
                 ]);
             }
             wsl.harness.send(body);
+        };
+        let start = |call: &str, operation: &str, child: &[&str], script: bool| {
+            start_with(call, operation, child, script, "read");
         };
         let end = |call: &str| {
             wsl.harness
@@ -7215,6 +7368,35 @@ pub(crate) mod tests {
                 refused(&call, "PROCESS_OWNERSHIP_FAILED"),
                 "{stdout:?} exit {code}"
             );
+        }
+        // Feature 003 contract Δ11: the `remote` and `integrate` runs take the same wrapper, so the start byte rule holds for them.
+        for policy in ["remote", "integrate"] {
+            for (stdout, forwarded) in [("Sout", Some("out")), ("out", None)] {
+                let (call, operation) = (uuid(), uuid());
+                let common = wsl::WslIdentity {
+                    guid: WSL_GUID.to_string(),
+                    file_system_id: "fedc9aa3bd65bc57".to_string(),
+                    inode: "4243".to_string(),
+                };
+                wsl.harness
+                    .requests
+                    .tag(&operation, crate::bootstrap::PhysicalIdentity::Wsl(common));
+                start_with(&call, &operation, &["emit", stdout, "3"], false, policy);
+                let last = end(&call);
+                match forwarded {
+                    Some(forwarded) => {
+                        assert_eq!(last["exitCode"], 3, "{policy}");
+                        assert_eq!(
+                            wsl.harness.output(&call, "stdout"),
+                            forwarded.as_bytes(),
+                            "{policy}"
+                        );
+                    }
+                    None => {
+                        assert_eq!(last, refused(&call, "PROCESS_OWNERSHIP_FAILED"), "{policy}")
+                    }
+                }
+            }
         }
         // A cancel closes the Job. The sleeping child prints no start byte.
         let (call, operation) = (uuid(), uuid());

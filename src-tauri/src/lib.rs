@@ -111,6 +111,17 @@ pub fn run() {
             ipc::request_close,
             ipc::current_session,
             ipc::dismiss_recovery_marker,
+            ipc::read_tracking,
+            ipc::review_sync,
+            ipc::sync,
+            ipc::clone,
+            ipc::connect_in_terminal,
+            ipc::read_sync_settings,
+            ipc::set_ssh_client,
+            ipc::set_default_pull_action,
+            ipc::choose_sync_path,
+            ipc::clear_sync_path,
+            ipc::launch_puttygen,
         ])
         .setup(move |app| start(app, root.as_deref()))
         .on_window_event(|window, event| {

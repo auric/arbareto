@@ -128,6 +128,7 @@ Text comes from the commit object by OID. Commit objects never change, so a rere
 ```text
 (text at Enter) ──refusal──▶ refused (no Git process)
                ──probe mismatch──▶ refused (SEARCH_UNSUPPORTED)
+               ──probe step failure──▶ failed (GIT_FAILED or MALFORMED_GIT_OUTPUT; the view becomes stale)
                ──start──▶ running ──exit 0, FIFO empty at load end──▶ finished
                            running ──cancel / new text / Escape / close──▶ stopped
                            running ──order break──▶ failed (HISTORY_CHANGED order; the view becomes stale)

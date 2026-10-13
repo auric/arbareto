@@ -153,6 +153,7 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
   - WSL polls do not run `readRefs` (001 §11). So a ref change shows at the next focus return, Refresh, or mutation outcome (spec SC-012). **documented**
   - Each text read costs one `wsl.exe` start, about 250 ms. **unverified**
   - Ubuntu-26.04 (Git 2.55.0) has the C.UTF-8 locale, gives the probe matches, and gives the R15 order facts. Its view bytes equal the Windows Git bytes. **experiment** (T010)
+  - WSL search runs the matching probe through the `run` field `script` (T063, R22). On Ubuntu-26.04 (glibc 2.43), an empty `LOCPATH` folder does not hide C.UTF-8: `LC_ALL=C.UTF-8 locale charmap` still gives `UTF-8`. So no test can remove the locale this way, and T063 case (c) skips. **experiment** (finding, T063)
   - PCRE2 and the C.UTF-8 locale in other distros, and the relay throughput of an End load on H200K. **unverified** until the distro runs
 - **Alternatives considered**: A long-lived `cat-file` in the distro. Left out. Add it when WSL misses SC-014.
 
@@ -192,15 +193,15 @@ The investigation scripts were in a session scratchpad. They may be gone. Step P
 
 These stay **unverified** until the named step runs:
 - Git peak memory during load and search: P0.4 measured it on Windows (R14, **experiment**). Linux Git memory stays open: P8.
-- The bytes per commit in the service (about 46 to 90, R6), and the service CPU during an End load: P3 and P8. T012 measured the topology table alone at 59.0 bytes per commit on H200K (R18). The bytes per loaded commit of the whole view and the End load CPU stay open for T030.
-- Whether Git prints a repeated parent in one `rev-list --parents` line for a commit object that it accepts: T003.
+- The bytes per commit in the service (about 46 to 90, R6), and the service CPU during an End load: P3 and P8. T012 measured the topology table alone at 59.0 bytes per commit on H200K (R18). Closed for H200K: T030 recorded the End load CPU and 59.0 bytes per loaded commit (R19, R21). The memory record at 1,000,000 commits stays with T054.
+- Whether Git prints a repeated parent in one `rev-list --parents` line for a commit object that it accepts: closed. `hash-object -t commit -w` accepts it, and `rev-list --parents` prints the parent twice (T003, R15, **experiment**).
 - The `save_commit_buffer` recollection: open. P0.4 measured the extra search memory (R14), but no plan step reads the Git source yet (plan.md O-1).
 - `init --template=` copies nothing; an explicit `--git-dir` skips the ownership check: P0.5 showed both on Git 2.56.0.windows.1 (R4, **experiment**).
 - `refs/stash` as a pattern matches `refs/stash/x`; `%(objectname)` of a symbolic ref gives the target OID: closed. R19 records both (T023, **experiment**).
 - The maximum layout height in WebView2: P6.
 - `IsHungAppWindow` covers the Tauri main window: P8.
 - Shortcut conflicts, T038 record, 2026-10-13. The app key map (`src/frontend/keyboard/shortcuts.ts`) gives each key one action: F10, F5, F6, Shift+F6, Ctrl+Enter, F3, Shift+F3, Ctrl+F, Ctrl+Shift+B, Ctrl+O, Ctrl+R, and Alt+Up/Down. No other handler of the page uses these keys with these modifiers. `tests/contracts/history-list.test.tsx` checks the four new keys and the 001 keys. The shell sets `AreBrowserAcceleratorKeysEnabled` to false and `IsBrowserAcceleratorKeyEnabled` to false for every key (`src-tauri/src/webview.rs`). Microsoft Learn lists Ctrl+F, F3, and Shift+F3 as keys that this setting turns off. It lists Ctrl+Shift+B ("Show Favorites Bar") as a key whose feature does not apply to WebView2. Result: no conflict. **documented** The check of the four keys in the packaged app, and with a non-Latin keyboard layout, stays **unverified** until a live key check.
-- The re-read cost of a later step at 1,000,000 commits: T061.
+- The re-read cost of a later step at 1,000,000 commits: closed. T061 recorded the Git time to output lines 1, 2,089, 500,000, and 1,000,000 on H1M (R14, **experiment**).
 - The memory after the first load step, with no Git process: P8.
 - The Rust shell routes `succeeded` after the service closed the load Job: T055. T025 first result, 2026-10-12: the cargo case `a_succeeded_response_after_a_cancel_closed_the_operation_job_reaches_the_renderer` (dcd9d5d, `src-tauri/src/process_requests.rs`) passed on its first run after T029. Before T029, the shell allowlist has no `loadHistory`, so the case cannot run. Commit 17a8340 replaced it with `a_succeeded_response_of_an_operation_reaches_the_renderer_by_its_request_id` in `src-tauri/src/ipc.rs`. A Job close changes no routing state: only `submit`, `deliver`, and `set_session(None)` change the pending requests. The case passed in the 96c486e run (R20, cargo test). It covers only the routing by `requestId`. **experiment** T055 owns the end-to-end check in the packaged app.
 
@@ -224,6 +225,28 @@ T006, 2026-10-12, Git 2.56.0.windows.1, H1M (1,000,000 commits), `tests/windows/
 - The walking Git process of every row is above the 128 MiB of SC-002. The search without a commit-graph is 3.5 times the budget. **experiment** On 2026-10-12, the user decided that SC-002 excludes Git's child processes (plan.md O-1). These peaks stay recorded, without a bound.
 - The search without a commit-graph uses 280 MiB more than the topology. This agrees with the `save_commit_buffer` recollection of R6. The Git source is not read yet, so the cause stays **unverified**.
 - The search argv is the contract Δ3 argv with `LC_ALL=C.UTF-8`. The search on H1M matches 20,000 rows.
+- T006, 2026-10-13, Git 2.56.0.windows.2, the 64fee42 run (R21), five runs per row. The medians are 166.3 MiB (topology) and 446.4 MiB (search) without a commit-graph, and 145.8 MiB (topology) and 148.2 MiB (search) with one. The peaks are 166.3 (5 runs); 446.6, 446.4, 446.4, 446.4, 446.4; 145.8 (5 runs); and 148.1, 148.2, 148.2, 148.2, 148.1 MiB. **experiment**
+
+T061, 2026-10-13, Git 2.56.0.windows.2, H1M, `tests/windows/history-git-memory.test.ts`, the 64fee42 run (R21). The command is the topology `rev-list --parents --date-order --stdin` with no `--skip`. Five runs per row. A record, not a gate. **experiment**
+
+| H1M variant | Peak of the walking Git process up to line 2,089, then ended (MiB) | Median (MiB) |
+|---|---|---|
+| no commit-graph | 166.3, 166.3, 166.3, 166.3, 166.3 | 166.3 |
+| commit-graph | 145.8, 145.7, 145.7, 145.8, 145.8 | 145.8 |
+
+| H1M variant | Output line | Times from the start (ms) | Median (ms) |
+|---|---|---|---|
+| no commit-graph | 1 | 4,032, 4,049, 4,041, 4,053, 4,053 | 4,049 |
+| no commit-graph | 2,089 | 4,040, 4,052, 4,053, 4,056, 4,057 | 4,053 |
+| no commit-graph | 500,000 | 4,939, 5,141, 5,117, 4,915, 5,162 | 5,117 |
+| no commit-graph | 1,000,000 | 5,807, 6,227, 6,206, 5,788, 6,269 | 6,206 |
+| commit-graph | 1 | 645, 649, 650, 652, 647 | 649 |
+| commit-graph | 2,089 | 649, 653, 653, 658, 650 | 653 |
+| commit-graph | 500,000 | 1,482, 1,713, 1,491, 1,702, 1,485 | 1,491 |
+| commit-graph | 1,000,000 | 2,337, 2,802, 2,358, 2,768, 2,361 | 2,361 |
+
+- The first-step peak equals the T006 topology peak of the whole walk on both variants. Without a commit-graph, Git walks the whole graph before the first line (R1).
+- A later step that re-reads to line N pays the time to line N. At 1,000,000 commits, the median re-read to the last line is 6,206 ms without a commit-graph and 2,361 ms with one.
 
 ## R15 Order facts (P0.2)
 
@@ -241,7 +264,9 @@ T003 (Windows Git 2.56.0.windows.2) and T010 (Ubuntu-26.04 Git 2.55.0), verifica
 
 - The Windows facts above hold for Git 2.56.0.windows.2, the version that T003 expects. **experiment**
 - The H1M case of T003 skipped in this run (`ARBARETO_HISTORY_FIXTURES=H200K`). It ran once on 2026-10-12 with Git 2.56.0.windows.1. All facts held on both H1M variants. So the Windows counts of that run were 42 of 42, 21 of 21, and 40 of 42 for the shuffled and the reversed stdin. **experiment**
-- The `--skip` values on H200K were k = 1, 255, 256, 257, 19,393 (a merge run), and 199,999. On equal-dates and merges-only, the merge run is at k = 2. On H1M (2026-10-12) they were k = 1, 255, 256, 257, 101,159 (a merge run), and 999,999.
+- The 64fee42 run (R21, `ARBARETO_HISTORY_FIXTURES=H200K,H1M`) ran T003 on H1M with Git 2.56.0.windows.2. The Windows counts were 42 of 42 (two runs, `--skip`, `--grep`), 21 of 21 (commit-graph), and 40 of 42 (shuffled and reversed stdin, both equal-dates variants fail). T010 gave the Ubuntu-26.04 counts of the table again. **experiment**
+- Repeated parent (data-model §3), T003, Git 2.56.0.windows.2, the 64fee42 run: `hash-object -t commit -w` exits 0 for a commit object with the same `parent` line twice. `rev-list --parents` then prints that parent twice in the commit's line. **experiment**
+- The `--skip` values on H200K were k = 1, 255, 256, 257, 19,393 (a merge run), and 199,999. On equal-dates and merges-only, the merge run is at k = 2. On H1M (2026-10-12 and the 64fee42 run) they were k = 1, 255, 256, 257, 101,159 (a merge run), and 999,999, on both variants.
 - On equal-dates, another stdin order gives the same row set in another order. The first difference is at row 0 or 1. So the ascending start-point order of R1 stays a requirement.
 - `rev-list --stdin` with no start point exits 0 and prints nothing (empty fixture, both Gits).
 - T010 copies each Windows-built repository into the owned distro folder through a `tar` stream. So both Gits read byte-equal repositories.
@@ -250,6 +275,7 @@ T003 (Windows Git 2.56.0.windows.2) and T010 (Ubuntu-26.04 Git 2.55.0), verifica
 
 - T001, 2026-10-12: H200K and H1M have 200,000 and 1,000,000 commits. Each variant has the expected commit-graph state. The two variants are two builds of one stream. Their refs, index entries, and working files are equal. **experiment**
 - T001, 2026-10-13 (R20): the small fixture and H200K cases pass. The H1M case did not run, because it runs only on request (`ARBARETO_HISTORY_FIXTURES=H1M`).
+- T001, the 64fee42 run (R21, `ARBARETO_HISTORY_FIXTURES=H200K,H1M`): the small fixture, H200K, and H1M cases pass. That run built H1M. T005 gave the table below again. **experiment**
 - Measurement note: a work-session sampler measured the next three items. No repository test reproduces them. **experiment**
   - Build time per variant, from the folder creation to the manifest write: H200K 9.8 s and 10.3 s; H1M 55.1 s and 59.3 s (without and with a commit-graph). Disk size: H200K 35.2 MiB and 46.7 MiB; H1M 176.3 MiB and 233.5 MiB.
   - During the H1M build, the largest Git process peaked at 205 MiB of private bytes (2-second samples).
@@ -325,6 +351,7 @@ T012 and T013, 2026-10-13 (R20), Windows Git 2.56.0.windows.2. **experiment**
 | H200K | 200,000 | 382,109 | 879,711 | 599,876 | 13 | 3 | 0 | 204 | 10,418 |
 
 - The times come from one run on a test worker. They are records, not gates.
+- The 64fee42 run (R21) gave the same counts on every fixture. H200K took 192 ms in the step and 10,335 ms with the oracle checks. T012 gave 11,801,562 bytes again, 59.0 bytes per commit.
 
 ## R19 Ref capture and view (P3)
 
@@ -332,7 +359,14 @@ T023 and T024, 2026-10-13 (R20), Windows Git 2.56.0.windows.2. **experiment**
 
 - `%(objectname)` of the symbolic ref `refs/remotes/origin/HEAD` gives the target OID (R7).
 - The `for-each-ref` pattern `refs/stash` matches `refs/stash/x` (R7). The service skips such records.
-- A load cancel on H200K without a commit-graph ends in 12 ms. T024 asserts at most 1,000 ms.
+- A load cancel on H200K without a commit-graph ends in 12 ms. T024 asserts at most 1,000 ms. The 64fee42 run (R21) gave 14 ms.
+- T023, the 64fee42 run: both ref facts above held again.
+
+T030 records, 2026-10-13, the 64fee42 run (R21), Windows Git 2.56.0.windows.2, H200K without a commit-graph. **experiment**
+- An End load of 200,000 rows took 2,097.3 ms wall time. CPU time: 2,125.0 ms in the service process and 1,312.5 ms in 2 Git processes. The service runs inside the test process, so the service CPU includes the test harness.
+- After the End load, the view topology holds 11,801,562 bytes of typed arrays for 200,000 rows: 59.0 bytes per loaded commit (SHA-1, allocated capacity). The lane checkpoints are JS objects, and the count leaves them out.
+- The End load sent 5 `history-load` progress events in 2,097.3 ms. The contract allows at most 4 per second (Δ3 `loadHistory`).
+- An earlier run of the same test on 62c027f gave 2,194.7 ms wall time, 2,109.0 ms service CPU, and 1,375.0 ms Git CPU in 2 processes.
 
 ## R20 Verification run of f002-b0 96c486e
 
@@ -377,8 +411,73 @@ Open items:
 - T045: no comparison with the approved mockup canvas is recorded. The user compares the app with the canvas.
 - T050: the quickstart.md "Manual check in the app" did not run.
 
+## R21 Verification run of f002-b3 64fee42
+
+Run of 2026-10-13, 06:21 to 07:40 local, in `C:\Projects\arbareto-l4` at 64fee42, for T001 to T003, T006, T011, T030 to T037, T050, T061, and T063. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2 (`C:\Program Files\Git\ucrt64\bin\git.exe`). WSL: Ubuntu-26.04 with Git 2.55.0, and Ubuntu-24.04 with Git 2.43.0 for the registration file. The run built H1M. Each batch review of 002 is recorded ("Batch reviews").
+
+| Step | Exit | Counts |
+|---|---|---|
+| `bun install --frozen-lockfile` | 0 | no changes |
+| `bun run typecheck` | 0 | |
+| `bun run export:schemas --check` | 0 | schema files current |
+| `bun run build` and `bun run build:service` | 0 | |
+| `cargo check --locked --manifest-path src-tauri/Cargo.toml` | 0 | |
+| `cargo test --locked --manifest-path src-tauri/Cargo.toml` | 0 | 444 passed, 0 failed, 4 ignored |
+| cargo clippy with `-D warnings` | 0 | |
+| cargo fmt check | 0 | |
+| `bun run test:all`, `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, `ARBARETO_HISTORY_FIXTURES=H200K,H1M`, `ARBARETO_TEST_WORKERS=6` | 1 | 154 files, 5,014 tests. Parallel step: 132 files, 4,634 pass, 36 skip, 2 fail, 2,028.2 s. Serial step: 22 files, 335 pass, 7 skip, 0 fail, 2,682.2 s. |
+| `test:all` rerun on 270a0a8 | | <result pending> |
+| `tests/wsl/registration.test.ts` on Ubuntu-24.04 | 0 | 42 tests: 38 pass, 4 skip, 0 fail |
+| `bun run test:windows`, `ARBARETO_HISTORY_FIXTURES=H200K,H1M` | 0 | 10 files, 113 tests: 110 pass, 3 skip, 0 fail |
+
+- The two `test:all` failures are outside 002. (1) The portability ban test "shared source outside the platform files holds no native path rule" found a `process.platform` check in `notices.ts`; 14675a1 on main fixed it. (2) The held-arrow case of `tests/contracts/commit-details.test.tsx` hit the 5 s test timeout under six workers; 8908d08 fixed it. 270a0a8 holds both fixes.
+- `ORIGIN`: `test:all` prints 1,290 lines, all under `C:\Projects\arbareto-l4`. Each control mutation run also prints its lines under this checkout.
+- `test:all` skips (43). Parallel step (36): golden vectors of another platform 29; `distro-git-below-2.55` 2; POSIX-only cases 2; `other-account-owner` 1; `disposable-volume` 1; `two-test-distros` 1. Serial step (7): `ssh-server` 3; Linux `F_SETPIPE_SZ` 1; `fifo` 1; `restart-keeps-lingering` 1; `empty-locpath-hides-c-utf8` 1 (T063 case (c)).
+- The T063 case (c) skip is a finding. On Ubuntu-26.04 (glibc 2.43), `LC_ALL=C.UTF-8 locale charmap` with an empty `LOCPATH` folder gives `UTF-8` with exit 0, not `ANSI_X3.4-1968`. So an empty `LOCPATH` does not hide C.UTF-8, and the case cannot make the locale missing (R10, R22).
+- No `history-fixture-h1m` skip remains: the T001, T003, T006, and T061 H1M cases ran.
+- Ubuntu-24.04 skips (4): `distro-git-2.55` 4.
+- `test:windows` skips (3): `display-off` 1; live input needs the measurement account 2.
+- `rg -n "readHistory\b|layoutHistory" src` prints nothing. In `src-tauri/src` and `tests`, it finds only the T048 assertions: the test module of `src-tauri/src/ipc.rs`, `tests/contracts/operation-registry.test.ts`, and `tests/contracts/envelope.test.ts`.
+- `test:all` prints 215 `OBSERVATION` lines. 102 lines belong to 002 tasks (T003, T004, T005, T010, T012, T013, T023, T024, T030, T032, T063). The other 113 lines belong to 001 tasks. `test:windows` prints 48 lines, all of 002 (T006, T061). R10 and R14 to R19 and R22 hold the 002 lines.
+
+Control mutations. Each run went red with the edit, and green after the undo.
+
+| Task | Edit | Red | Green |
+|---|---|---|---|
+| T011 | `cellsOf` in `src/git-service/history-layout.ts` starts from `EMPTY_STATE`. | `tests/git/history-layout.test.ts`: 2 of 3 fail (every small fixture, H200K). | 3 pass |
+| T020 | `src/contracts/filter-text.ts` accepts U+005C followed by U+0045. | `tests/contracts/filter-text.test.ts`: 2 of 5 fail. | 5 pass |
+| T030 | `src/git-service/history-topology.ts` compares only the last held row. | `tests/git/history-stale.test.ts`: 3 of 19 fail (a difference at row 0, inside the held rows, and inside the rows that the view does not serve yet). | 19 pass |
+| T037 | The search argv builder in `src/git-service/commands.ts` drops `--regexp-ignore-case`. | `tests/git/history-matching.test.ts`: 5 of 22 fail. | 22 pass |
+| T050 | `virtualTopOf` in `src/frontend/history/HistoryList.tsx` returns `scrollTop`. | `tests/contracts/history-list.test.tsx`: 4 of 35 fail (the last-row case at 1,000,000 rows and 34 DIPs, and at 4,000,000 rows and 26 and 34 DIPs; the short list). | 35 pass |
+| T063 | `matching_probe_command` in `src-tauri/src/wsl.rs` drops the run-length digit check. | cargo test: 2 fail (`wsl::tests::the_matching_probe_refuses_each_broken_argument`, `process_requests::tests::a_wsl_script_run_reaches_the_host_as_the_matching_probe_and_a_broken_one_starts_nothing`). | 444 pass |
+| T063 | `matchingProbe` drops the `trap 'rm -rf -- "$dir"' EXIT` line. | `tests/wsl/history-wsl.test.ts`: case (a) fails at line 253. | 8 pass, 1 skip (case (c)) |
+
+Open items:
+- The `test:all` rerun on 270a0a8: <result pending>.
+- T045: no comparison with the approved mockup canvas is recorded. The user compares the app with the canvas.
+- T050: the quickstart.md "Manual check in the app" did not run.
+
+## R22 Search (P5)
+
+T032 and T063, the 64fee42 run (R21), Windows Git 2.56.0.windows.2 and Ubuntu-26.04 Git 2.55.0. **experiment**
+
+- T032, H200K, text "marker": 4,000 matches. 1,351 filter rows draw an edge that skips commits.
+- T032, H200K with a commit-graph, text "commit" on a new view: 198,400 matches. The search queue (data-model §6) held at most 98,650 matches.
+- T032: a search cancel on H200K without a commit-graph ends in 11 ms. The test asserts at most 1,000 ms.
+- T063: WSL search on Ubuntu-26.04 runs one `script` call with `matchingProbe`, then the search. Cases (a), (b), and (d) pass. Case (c) skips: an empty `LOCPATH` does not hide C.UTF-8 on glibc 2.43 (finding, R10).
+
 ## Batch reviews
 
-T020 passes only after one independent review of batch 1 is recorded here.
+Each batch verification task passes only after one independent review of its batch is recorded here.
 
 **Batch 1, 2026-10-12.** Independent batch 1 review, reviewer agent (Opus), 2026-10-12. Scope: commits adccfa0 (T015, T018) and dcd9d5d (T014, T025, T027, T029, review fixes) on f002-b0, for src, src-tauri, tests, and README.md, without the merges of main. Verdict: pass. Open items: the cancel guard case proves only routing by requestId (R13 stays unverified until T055); the search policy gate gets its cargo case in this fix; labels and segments are bounded in this fix; children is a contract gap; at: {match} without searchId is a contract gap for T028.
+
+**Batch 0, 2026-10-13.** Independent batch 0 review, reviewer agent (Opus), 2026-10-13. Scope: commits 864d8df and d3d1818 (T001 to T006, T008 to T010) on f002-b0 at 96c486e, for the fixture builder, the fact tests, `history-layout.ts`, and `matching-probe.ts`, without the merges of main. Verdict: pass for the code; T011 stays open. Items and state: the repeated-parent fact for `hash-object` and `rev-list --parents` is closed (62c027f adds the T003 case, R15 holds the fact); the `test:windows` T240 failure outside batch 0 is closed (main T376; R21 `test:windows` 110 pass, 0 fail); the T006 H1M evidence is closed (R14, the 64fee42 run); the Git version of R15 is closed (R15 names 2.56.0.windows.2, and 280d6c8 sets it in `history-order.test.ts`); the T011 mutation line is closed (T011 names `cellsOf`, not a line). Open: T011 waits for the `test:all` rerun on 270a0a8 (R21).
+
+**Batch 2, 2026-10-13.** Independent batch 2 review, reviewer agent (Opus), 2026-10-13. Scope: commit 2908430 (T021 to T024, T026, T028) with the decisions of a154a6a and fe788e5 on f002-b0 at 96c486e, for `history-view.ts`, `history-topology.ts`, `refs-parser.ts`, `commands.ts`, the `session.ts` handlers, and their tests. No earlier batch 2 review exists. Verdict: fix first. Items and state, all fixed in 62c027f: the view served held rows from an unchecked load before the re-read compared them (contract Δ3 `loadHistory`), and now serves only the compared rows, with a test of rows that the view does not serve yet; T030 has the End load CPU and the bytes per loaded commit on H200K (R19); a stop row equal to `HISTORY_VIEW_COMMITS` ends `complete`, not `limited`; a test covers the `history-load` progress rate (R19); the trust revoke gates an open view with `TRUST_REQUIRED` (contract Δ7); `step` and `small` come from `history.ts`. Not verified, no fix: `checkFailedRead` builds a set of up to 4,000,000 OIDs after a nonzero exit (memory and deadline); the lane checkpoints with hundreds of open lanes (memory). The replace check beside the Git start can miss a change in the step that completes; contract Δ3 `loadHistory` allows it. Open: T030 waits for the `test:all` rerun on 270a0a8 (R21).
+
+**Batch 3, 2026-10-13.** Independent batch 3 review, reviewer agent (Opus), 2026-10-13. Scope: commit 17f2ae8 (T031 to T036) on f002-b3, diff 96c486e..17f2ae8, for src and tests. Verdict: fail until four items close. Blocking items and state: `SearchMerge.advance` skipped the first unserved row after the queue emptied, fixed in 62c027f with a unit test; a failed probe step gave `SEARCH_UNSUPPORTED` reason `matching`, and now gives `GIT_FAILED` or `MALFORMED_GIT_OUTPUT` and makes the view stale (62c027f, 280d6c8; contract Δ8 condition 4); WSL search refused, and T063 adds the route through the `run` field `script` (3b2f88a, a203b1d; contract Δ3 "Matching probe", Δ6, Δ11); T031 to T036 are not ticked yet, and they wait for the `test:all` rerun on 270a0a8 (R21). Other items, all fixed: a search merge break makes the view stale (decision 2026-10-13, spec Assumptions; 62c027f); the frontend no longer labels `settled` as commits searched (ee815a4); the filter test fake answers a refused text `rejected` (ee815a4); data-model §7 states that reduced parents are in rising match order (5a3cb8d); an unexpected runner exception aborts the inner load, and the search waits for it (62c027f, 280d6c8); `tests/git/history-matching.test.ts` covers the probe folder removal after a failed step, after a cancel, and a failed removal with the log cause `probe-folder-remove`. Verified: the search argv equals contract Δ3; the `search` policy equals Δ7 in Bun and Rust; the H200K search cancel ends within 1,000 ms with no process left; the probe writes nothing in the user repository. Open contract gaps (contract "Contract gaps"): the 001 §7 cause list does not name `probe-folder-remove`; a canceled WSL probe leaves its `/tmp/arbareto-probe-<uuid>` folder.
+
+**Batch 4, 2026-10-13.** Independent batch 4 review, reviewer agent (Opus), 2026-10-13. Scope: commits 418fa43, de03011, ace1c19, 517aa41, and b8cabe9 on f002-b0 at 96c486e, for the history frontend, the references sidebar, the notice band, the Workbench wiring, the bridge, and the retirement of `readHistory`. Verdict: fail. Blocking items, all fixed in ee815a4: a stopped or failed search ends its `searchId`, and the list returns to the full view (contract Δ3, data-model §6); a load failure with an unhandled code halts the load and shows its code, so no load loop starts; the details pane says that the commit is not in the list only for `target: "none"`; "No earlier matching commit" never shows on a limited row; F3 maps a selection from the other list mode by its OID first. Other items and state: the progress `rows` counter no longer sets the served row count (ee815a4), and its served row count only raises the list height (6cea578); the history-painted and details-ready marks follow plan D7 (ee815a4), and details-ready fires only for a found details read (6cea578); the sidebar takes the density row height (ee815a4); a ref click selects through `selectOid` (ee815a4); filter-mode F3 shows its wait and end states (ee815a4); focus moves to the list when the chip, Cancel, or Refresh unmounts (ee815a4); T044, T046, T047, and T050 name `HistoryList.tsx` (cf5682d); `history-parser.test.ts` keeps `TASK = "T286"`, because its `SKIP` lines use it (R20). The four UI search assumptions agree with the contract text. No live code needs the retired 001 traversal. Not verified: a References notice flash after Refresh (6cea578 orders the reads by a request sequence counter); Ctrl+F and Ctrl+Shift+B on a Cyrillic layout (R13, live key check); "No commits yet" twice in an empty repository. Open: T045 (mockup canvas comparison) and the T050 manual check.
+
+**Re-review, 2026-10-13.** Independent re-review of the batch 2, 3, and 4 fixes, reviewer agent (Opus), 2026-10-13. Scope: commits 62c027f, ee815a4, 3b2f88a, a203b1d, and 00d55ec on f002-b3 at bba6409. Verdict: fix three items first; every earlier blocking item of batches 2, 3, and 4 is closed. Items and state, all fixed: F1, the References notice ordered its reads by `performance.now()`, so equal stamps hid a newer read; a request sequence counter orders them now (6cea578). F2, contract Δ3 named no output code for the WSL probe; Δ3 "Matching probe" now gives `MALFORMED_GIT_OUTPUT` for output in another form and `GIT_FAILED` for a nonzero exit (280d6c8). F3, a failed probe step did not make the view stale in the service; it does now (280d6c8, contract Δ8 condition 4). F5, T061 now imports `HISTORY_LOAD_MARGIN` from `limits.ts` (280d6c8). S1, the search awaits its aborted inner load after a runner exception (280d6c8). S2 and S4, `history-load` progress sends the served row count, and the list grows from it (280d6c8, 6cea578). S3, details-ready fires only for a found details read (6cea578). The Δ7 trust gate of an open view is contract text (280d6c8). The repeated-parent fact is in R15. Verified: the T063 shell checks each script input; the search text reaches no shell parser. Open: T031 to T036 wait for the `test:all` rerun on 270a0a8 (R21); the `probe-folder-remove` cause stays a contract gap (contract "Contract gaps"); `TASK = "T286"` stays.

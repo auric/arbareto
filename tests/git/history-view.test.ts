@@ -4,21 +4,25 @@
 // T022: `openHistory`, `loadHistory`, `readHistoryRows`, and `closeHistory` through the in-process service (plan.md P3, D2, D3; contract Δ3, Δ5).
 // Spec FR-001, FR-003, FR-004, FR-009, FR-010, FR-011, FR-014, FR-017, FR-018, FR-054, SC-001, SC-003, SC-004, SC-013.
 
-import { describe, expect } from "bun:test";
+import { describe, expect, spyOn } from "bun:test";
 import { join } from "node:path";
 import { HISTORY_BODY_BYTES } from "../../src/contracts/envelope";
-import { HISTORY_COMMIT_OBJECT_BYTES, HISTORY_LOAD_MARGIN, HISTORY_PAGE_BYTES } from "../../src/contracts/limits";
+import { HISTORY_COMMIT_OBJECT_BYTES, HISTORY_LOAD_MARGIN, HISTORY_PAGE_BYTES, HISTORY_PROGRESS_EVENTS_PER_SECOND } from "../../src/contracts/limits";
+import { HistoryTopology } from "../../src/git-service/history-topology";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, fixtureDir, useFixtureRoot } from "./fixture-root";
 import { fiCommit } from "./fixtures";
 import { buildSmallFixtures, H200K, LONG_BODY_WORD, largeCase, repositoryDigest, shallowCommits, startPoints, type SmallName } from "./history-fixtures";
-import { allRows, commitGraphFiles, copyLarge, fold, git, gitPath, gitText, isLoad, isTextRead, load, loadSteps, opened, openView, oracle, rows } from "./history-view-harness";
+import { allRows, commitGraphFiles, copyLarge, fold, git, gitPath, gitText, isLoad, isReplaceRead, isTextRead, load, loadSteps, opened, openView, oracle, rows, waitFor } from "./history-view-harness";
 import { caseTest, openService, type Service } from "./service-harness";
 
 printOrigin("../../src/git-service/history-view.ts", import.meta.dir);
+printOrigin("../../src/git-service/history-topology.ts", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
 const TASK = "T022";
+// The batch 2 verification records of research.md R13.
+const T030 = "T030";
 const SHELL = ["shell-double"] as const;
 const TIMEOUT_MS = 300_000;
 const LARGE_TIMEOUT_MS = 20 * 60_000;
@@ -47,6 +51,15 @@ async function unchanged(repo: string, body: () => Promise<void>): Promise<void>
 }
 
 const small = (folder: string, name: SmallName) => buildSmallFixtures(gitPath(), folder, [name])[0]!;
+
+// One line of `count` commits with rising dates.
+function chainRepo(name: string, count: number): string {
+  const repo = fixtureDir(`${name}/repo`);
+  git(repo, ["init", "-q", "-b", "main"]);
+  git(repo, ["fast-import", "--quiet"], { input: Buffer.concat(Array.from({ length: count }, (_, i) => fiCommit({ mark: i + 1, time: 1_767_225_600 + i, message: `c${i + 1}\n`, from: i === 0 ? undefined : i }))) });
+  git(repo, ["reset", "-q", "--hard"]);
+  return repo;
+}
 
 describe("H200K (SC-001, SC-003, SC-004, FR-054, plan.md D2)", () => {
   largeCase(
@@ -125,8 +138,41 @@ describe("H200K (SC-001, SC-003, SC-004, FR-054, plan.md D2)", () => {
           // End: a new view loads to the end in one step. It releases the old view.
           const end = await opened(service, repositoryId, generation);
           expect((await load(service, repositoryId, view.viewId, { row: 0 })).code).toBe("UNKNOWN_TARGET");
-          const all = await load(service, repositoryId, end.viewId, { end: true });
+          // T030 records (research.md R13): the CPU of an End load, and the typed-array bytes of the view topology, measured as T012 measures them (R18).
+          let topology: HistoryTopology | null = null;
+          const beginStep = HistoryTopology.prototype.beginStep;
+          const spy = spyOn(HistoryTopology.prototype, "beginStep").mockImplementation(function (this: HistoryTopology) {
+            topology = this;
+            beginStep.call(this);
+          });
+          const firstCall = service.runner.calls.length;
+          const cpu = process.cpuUsage();
+          const started = performance.now();
+          let all: Awaited<ReturnType<typeof load>>;
+          try {
+            all = await load(service, repositoryId, end.viewId, { end: true });
+          } finally {
+            spy.mockRestore();
+          }
+          const wallMs = performance.now() - started;
+          const own = process.cpuUsage(cpu);
           expect(all.result).toEqual({ rows: expected.length, complete: true });
+          const gitCalls = service.runner.calls.slice(firstCall).filter((c) => c.operationId === all.operationId);
+          const gitMs = gitCalls.reduce((sum, c) => sum + (c.cpuMicros ?? 0), 0) / 1000;
+          console.log(
+            `OBSERVATION ${T030}: H200K without a commit-graph: an End load of ${expected.length} rows took ${wallMs.toFixed(1)} ms wall; CPU ${((own.user + own.system) / 1000).toFixed(1)} ms in the service process (the test process, in-process service) and ${gitMs.toFixed(1)} ms in ${gitCalls.length} Git processes (experiment)`,
+          );
+          const table = topology as HistoryTopology | null;
+          expect(table?.rows).toBe(expected.length);
+          const bytes = Object.values(table!).reduce((sum: number, v) => sum + (ArrayBuffer.isView(v) ? v.byteLength : 0), 0);
+          console.log(`OBSERVATION ${T030}: H200K: after the End load, the view topology holds ${bytes} bytes of typed arrays for ${table!.rows} rows, ${(bytes / table!.rows).toFixed(1)} bytes per loaded commit (SHA-1, allocated capacity; lane checkpoints are JS objects and not counted) (experiment)`);
+          // Contract Δ3 and Δ5: phase `history-load` sends at most HISTORY_PROGRESS_EVENTS_PER_SECOND events. Each event follows the one before it by at least 1000 / HISTORY_PROGRESS_EVENTS_PER_SECOND ms of the same clock, inside the measured wall time.
+          const events = (service.progress as { operationId: string; phase?: string; counters: { rows?: number } }[]).filter((e) => e.operationId === all.operationId && e.phase === "history-load");
+          expect(events.length).toBeGreaterThan(0);
+          expect(events.length).toBeLessThanOrEqual(1 + Math.floor((wallMs * HISTORY_PROGRESS_EVENTS_PER_SECOND) / 1000));
+          const counted = events.map((e) => e.counters.rows!);
+          expect(counted).toEqual(counted.toSorted((a, b) => a - b));
+          console.log(`OBSERVATION ${T030}: H200K: the End load sent ${events.length} history-load progress events in ${wallMs.toFixed(1)} ms (at most ${HISTORY_PROGRESS_EVENTS_PER_SECOND} per second) (experiment)`);
           const last = await rows(service, repositoryId, end.viewId, { end: true }, 3);
           expect(last.result!.rows!.map((r) => r.oid)).toEqual(expected.slice(-3).map((r) => r.oid));
           expect(service.runner.liveRecorded()).toBe(0);
@@ -160,6 +206,69 @@ describe("H200K (SC-001, SC-003, SC-004, FR-054, plan.md D2)", () => {
         { historyViewCommits: 1000 },
       ),
     LARGE_TIMEOUT_MS,
+  );
+});
+
+describe("view bound (contract Δ3 `loadHistory`, Δ5 `HISTORY_VIEW_COMMITS`)", () => {
+  // S = n + 1 + 2·M for the first load. With n = BOUND - 1 - 2·M, the stop row equals the bound.
+  const BOUND = 2100;
+
+  caseTest(
+    TASK,
+    "a stop row equal to the view bound on a history of exactly that many commits ends complete, and a later load gives the same result without a Git process",
+    SHELL,
+    () =>
+      withService(
+        "t022-stop-bound",
+        async (service) => {
+          const repo = chainRepo("t022-stop-bound", BOUND);
+          const { repositoryId, generation } = await service.register(repo);
+          const view = await opened(service, repositoryId, generation);
+          const first = await load(service, repositoryId, view.viewId, { row: BOUND - 1 - 2 * M });
+          expect({ state: first.state, result: first.result }).toEqual({ state: "succeeded", result: { rows: BOUND, complete: true } });
+          const calls = service.runner.calls.length;
+          const again = await load(service, repositoryId, view.viewId, { row: BOUND - 1 });
+          expect({ state: again.state, result: again.result }).toEqual({ state: "succeeded", result: { rows: BOUND, complete: true } });
+          expect(service.runner.calls.length).toBe(calls);
+        },
+        { historyViewCommits: BOUND },
+      ),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a load canceled at the view bound before its check ended, then loaded again, compares every held row and serves the bound",
+    SHELL,
+    () =>
+      withService(
+        "t022-held-bound",
+        async (service) => {
+          const repo = chainRepo("t022-held-bound", BOUND);
+          const expected = oracle(repo);
+          const { repositoryId, generation } = await service.register(repo);
+          const view = await opened(service, repositoryId, generation);
+          // The first load reaches the bound with rows after it, and waits for its replace read, which cannot start.
+          const release = service.runner.holdStart(isReplaceRead);
+          try {
+            const request = service.send("loadHistory", { viewId: view.viewId, need: { end: true } }, { repositoryId });
+            const operationId = await service.operationId(request);
+            await waitFor("the stream of the first load", () => service.runner.calls.filter(isLoad)[0]?.exit !== undefined);
+            await service.cancel(operationId);
+            release();
+            const canceled = await service.response(request);
+            expect({ state: canceled.state, result: canceled.result }).toEqual({ state: "canceled", result: { rows: 0, complete: false } });
+          } finally {
+            release();
+          }
+          const limited = await load(service, repositoryId, view.viewId, { end: true });
+          expect({ state: limited.state, code: limited.code, result: limited.result }).toEqual({ state: "limited", code: "OUTPUT_LIMIT", result: { rows: 1000, complete: false, reason: "HISTORY_VIEW_COMMITS" } });
+          const held = await allRows(service, repositoryId, view.viewId, 1000);
+          expect(held.map((r) => r.oid)).toEqual(expected.slice(0, 1000).map((r) => r.oid));
+        },
+        { historyViewCommits: 1000 },
+      ),
+    TIMEOUT_MS,
   );
 });
 

@@ -168,18 +168,12 @@ export function objectCheckArgs(): string[] {
   return read("cat-file", "--batch-check");
 }
 
+// Contract §3 "References result": the eight-field record format.
+const REFS_FORMAT = "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)";
+
 // Contract §3 "References result": the one fixed array. It names no pathspec, so it carries no `--literal-pathspecs`.
 export function refsArgs(): string[] {
-  return [
-    NO_LAZY_FETCH,
-    "--no-optional-locks",
-    "for-each-ref",
-    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)",
-    "refs/heads",
-    "refs/remotes",
-    "refs/tags",
-    "refs/stash",
-  ];
+  return [NO_LAZY_FETCH, "--no-optional-locks", "for-each-ref", REFS_FORMAT, "refs/heads", "refs/remotes", "refs/tags", "refs/stash"];
 }
 
 // Feature 002 contract Δ3 `openHistory` capture: the `refsArgs` array with `refs/replace`. A `refs/replace/` record enters only the topology fingerprint.
@@ -189,7 +183,7 @@ export function historyRefsArgs(): string[] {
 
 // Feature 002 contract Δ3 `loadHistory`: the replace records of the topology fingerprint, with the same record format.
 export function replaceRefsArgs(): string[] {
-  return [...refsArgs().slice(0, 4), "refs/replace"];
+  return [NO_LAZY_FETCH, "--no-optional-locks", "for-each-ref", REFS_FORMAT, "refs/replace"];
 }
 
 // Feature 002 contract Δ3 `openHistory` capture step 3: Git prints one path per line, relative to the worktree root.

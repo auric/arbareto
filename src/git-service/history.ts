@@ -202,7 +202,13 @@ async function runStep(runner: GitRunner, t: ProcessTarget, args: string[], stdo
   return "refused" in step ? step : { ...step, stdout };
 }
 
-const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+export const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+
+// One read-policy Git step. A refusal, an abort, a deadline, or a diagnostic limit gives its `Stop`.
+export async function readStep(runner: GitRunner, t: ProcessTarget, args: string[], stdout: Bytes): Promise<GitExit | Stop> {
+  const step = await runStep(runner, t, args, stdout);
+  return stepStop(t.signal, [step]) ?? (step as Ran).exit;
+}
 
 // Contract §7 "Held history steps": `symbolic-ref` and `rev-parse --verify`. git-symbolic-ref(1) `-q`: only exit 1 without output is a detached HEAD.
 // A failed `rev-parse` with a symbolic target is an unborn branch only when `show-ref --exists` gives the missing status.

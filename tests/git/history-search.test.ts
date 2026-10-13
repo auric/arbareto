@@ -4,10 +4,12 @@
 // T032: `searchHistory` and `readHistoryRows` mode `filter` through the in-process service (plan.md P5, D4, D5; contract Δ3 `searchHistory`, data-model §6 and §7).
 // Spec FR-019, FR-020, FR-021, FR-030, FR-032, FR-033, FR-035, FR-039, FR-045, SC-008, SC-009, SC-010, SC-013.
 
-import { describe, expect } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { cpSync } from "node:fs";
 import { HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
 import { EMPTY_STATE, layoutStep, type Cell } from "../../src/git-service/history-layout";
+import { SearchMerge } from "../../src/git-service/history-search";
+import { HistoryTopology } from "../../src/git-service/history-topology";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, fixtureDir, fixturePath, useFixtureRoot } from "./fixture-root";
 import { fiCommit } from "./fixtures";
@@ -46,6 +48,8 @@ const LARGE_TIMEOUT_MS = 30 * 60_000;
 // Spec SC-010 (proposed, O-2): a search cancel stops within 1 s, and no process of it remains after 5 s.
 const CANCEL_MS = 1_000;
 const END_MS = 5_000;
+// `history-fixtures.ts` `largeMessage`: each H200K message outside the FR-023 cases starts with this word.
+const COMMON_WORD = "commit";
 
 useFixtureRoot();
 
@@ -169,6 +173,24 @@ describe("filter mode against Git and the BFS oracle (SC-008, FR-032, FR-033)", 
           expect(last.result).toMatchObject({ target: "found", rowCount: view.length, complete: true });
           expect(last.result!.rows!.map((r) => [r.index, r.oid])).toEqual([[greps.length - 1, greps.at(-1)!]]);
           checkProgress(service, searchId, greps.length);
+
+          // A record, not a gate: the most matches that wait for their rows during a search of a common word on a new view (contract Δ3 "Merge into the view").
+          const common = grepOracle(repo, COMMON_WORD).length;
+          const add = SearchMerge.prototype.add;
+          let peak = 0;
+          const spy = spyOn(SearchMerge.prototype, "add").mockImplementation(function (this: SearchMerge, oid: string, served: number) {
+            add.call(this, oid, served);
+            peak = Math.max(peak, this.waiting);
+          });
+          let wide: ServiceResponse<Searched>;
+          try {
+            const fresh = await opened(service, repositoryId, generation);
+            wide = await search(service, repositoryId, fresh.viewId, COMMON_WORD);
+          } finally {
+            spy.mockRestore();
+          }
+          expect({ state: wide.state, result: wide.result }).toEqual({ state: "succeeded", result: { matches: common, shallow: false } });
+          console.log(`OBSERVATION ${TASK}: H200K with a commit-graph "${COMMON_WORD}" on a new view: ${common} matches; the search queue held at most ${peak} matches (experiment)`);
         });
       }),
     LARGE_TIMEOUT_MS,
@@ -374,26 +396,73 @@ describe("search lifecycle (FR-030, FR-035, FR-039, contract Δ3 and Δ7)", () =
 
   caseTest(
     TASK,
-    "a broken match order fails the search with HISTORY_CHANGED reason order, and the view stays usable",
+    "a broken match order fails the search with HISTORY_CHANGED reason order, and the view goes stale: it keeps its rows and refuses loads and searches",
     SHELL,
     () =>
       withService("t032-order", async (service) => {
-        const [fixture] = small("t032-order", ["merges-only"]);
-        const greps = grepOracle(fixture!.repo, MARKER_WORD);
-        const { repositoryId, generation } = await service.register(fixture!.repo);
+        const repo = chainRepo("t032-order-repo");
+        const greps = grepOracle(repo, MARKER_WORD);
+        const { repositoryId, generation } = await service.register(repo);
         const opening = await opened(service, repositoryId, generation);
-        expect((await load(service, repositoryId, opening.viewId, { end: true })).result!.complete).toBe(true);
-        // The double answers the search with Git's matches in reverse order.
+        const first = await load(service, repositoryId, opening.viewId, { row: 0 });
+        expect(first.result).toEqual({ rows: 1 + 2 * HISTORY_LOAD_MARGIN, complete: false });
+        // The double answers the search with Git's matches in reverse order. The load of the search holds its stdout, so the view stays incomplete.
         service.runner.inject.stdout = (call) => (isSearch(call) ? Buffer.from(greps.toReversed().map((o) => `${o}\n`).join("")) : undefined);
-        const { request, searchId } = await startSearch(service, repositoryId, opening.viewId, MARKER_WORD);
-        const broken = await service.response<Searched>(request);
+        const release = service.runner.pauseStdout(isLoad);
+        let broken: ServiceResponse<Searched>;
+        let searchId: string;
+        try {
+          const started = await startSearch(service, repositoryId, opening.viewId, MARKER_WORD);
+          searchId = started.searchId;
+          broken = await service.response<Searched>(started.request);
+        } finally {
+          release();
+          service.runner.inject.stdout = undefined;
+        }
         expect({ state: broken.state, code: broken.code, result: broken.result }).toEqual({ state: "failed", code: "HISTORY_CHANGED", result: { reason: "order" } });
         expect((await filterRows(service, repositoryId, opening.viewId, searchId, { row: 0 }, 1)).code).toBe("UNKNOWN_TARGET");
-        // Contract Δ3 "Merge into the view": the view stays.
-        expect((await load(service, repositoryId, opening.viewId, { row: 0 })).state).toBe("succeeded");
+        // Contract Δ8 condition 3: a stale view keeps its rows and refuses loads and searches with its code, and no Git process starts.
+        const calls = service.runner.calls.length;
+        const refusedLoad = await load(service, repositoryId, opening.viewId, { row: 0 });
+        expect({ state: refusedLoad.state, code: refusedLoad.code, result: refusedLoad.result }).toEqual({ state: "failed", code: "HISTORY_CHANGED", result: { ...first.result!, reason: "order" } });
+        const refusedSearch = await search(service, repositoryId, opening.viewId, MARKER_WORD);
+        expect({ state: refusedSearch.state, code: refusedSearch.code, result: refusedSearch.result }).toEqual({ state: "failed", code: "HISTORY_CHANGED", result: { reason: "order" } });
+        expect(service.runner.calls.length).toBe(calls);
         expect((await rows(service, repositoryId, opening.viewId, { row: 0 }, 1)).result).toMatchObject({ target: "found" });
-        service.runner.inject.stdout = undefined;
-        expect((await search(service, repositoryId, opening.viewId, MARKER_WORD)).result).toEqual({ matches: greps.length, shallow: false });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "an unexpected runner error of the search process ends the load of the search, so the view takes a new load",
+    SHELL,
+    () =>
+      withService("t032-throw", async (service) => {
+        const repo = chainRepo("t032-throw-repo");
+        const { repositoryId, generation } = await service.register(repo);
+        const opening = await opened(service, repositoryId, generation);
+        // The load of the search holds its stdout, and the search process starts only after the load process.
+        const paused = service.runner.pauseStdout(isLoad);
+        const held = service.runner.holdStart(isSearch);
+        try {
+          const { request } = await startSearch(service, repositoryId, opening.viewId, MARKER_WORD);
+          await waitFor("the load of the search", () => service.runner.calls.some(isLoad));
+          service.runner.inject.stdout = (call) => {
+            if (isSearch(call)) throw new Error("unexpected runner error");
+            return undefined;
+          };
+          held();
+          const failed = await service.response<Searched>(request);
+          expect({ state: failed.state, code: failed.code }).toEqual({ state: "failed", code: "GIT_FAILED" });
+          await waitFor("the end of the load of the search", () => service.runner.calls.find(isLoad)!.exit !== undefined, 5_000);
+        } finally {
+          service.runner.inject.stdout = undefined;
+          held();
+          paused();
+        }
+        const next = await load(service, repositoryId, opening.viewId, { end: true });
+        expect({ state: next.state, code: next.code, result: next.result }).toEqual({ state: "succeeded", code: undefined, result: { rows: CHAIN, complete: true } });
       }),
     TIMEOUT_MS,
   );
@@ -453,4 +522,20 @@ describe("search lifecycle (FR-030, FR-035, FR-039, contract Δ3 and Δ7)", () =
       }),
     LARGE_TIMEOUT_MS,
   );
+});
+
+describe("SearchMerge (contract Δ3 \"Merge into the view\")", () => {
+  test("a match that waits for the row at which the queue emptied is merged when that row is served", () => {
+    const oid = (n: number) => n.toString(16).padStart(40, "0");
+    const topology = new HistoryTopology("sha1");
+    topology.beginStep();
+    expect(topology.push(new TextEncoder().encode(`${oid(1)} ${oid(2)}\n${oid(2)} ${oid(3)}\n`))).toBeNull();
+    const merge = new SearchMerge(topology, () => false, 1000);
+    merge.add(oid(1), 0);
+    merge.advance(1);
+    merge.add(oid(2), 1);
+    merge.advance(2);
+    merge.endStream(2);
+    expect({ count: merge.count, waiting: merge.waiting, final: merge.final, broken: merge.broken }).toEqual({ count: 2, waiting: 0, final: true, broken: false });
+  });
 });

@@ -68,7 +68,7 @@ const REFS: RefsResult = {
   refsDigest: "0".repeat(64),
   completeness: { state: "complete" },
 };
-// The loaded history page holds A and B, not C.
+// The history list reads A and B. C is not loaded yet (contract Δ3 target `unknown`).
 const LOADED = new Set([A, B]);
 
 type Props = Partial<Parameters<typeof ReferencesSidebar>[0]>;
@@ -79,7 +79,7 @@ async function sidebar(props: Props = {}) {
   // A new repository key for each mount, unless a case passes one: the expansion lasts per repository.
   const repository = props.repository ?? `repository-${++repositories}`;
   const shown = await show(
-    <ReferencesSidebar refs={REFS} failure={null} loaded={LOADED} onSelectCommit={(oid: string) => void selected.push(oid)} onRefresh={() => void refreshes.push(1)} repository={repository} {...props} />,
+    <ReferencesSidebar refs={REFS} failure={null} onSelectCommit={async (oid: string) => (LOADED.has(oid) ? (selected.push(oid), "found" as const) : "unknown" as const)} onRefresh={() => void refreshes.push(1)} repository={repository} {...props} />,
   );
   return { ...shown, selected, refreshes, repository };
 }

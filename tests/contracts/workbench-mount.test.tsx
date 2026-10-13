@@ -1069,13 +1069,16 @@ describe("single view", () => {
   test("the History-ready, Commit-panel-ready, and Details-ready marks follow their states once each", async () => {
     const mark = spyOn(performance, "mark");
     try {
-      await opened();
+      const double = await opened();
       const count = (name: string) => mark.mock.calls.filter(([n]) => n === name).length;
       expect(count("arbareto:history-painted")).toBe(1);
       expect(count("arbareto:commit-panel-ready")).toBe(0);
       await selectRow("working-directory");
       expect(count("arbareto:commit-panel-ready")).toBe(1);
       await selectRow(HEAD);
+      // The Details-ready mark waits for the details read.
+      expect(count("arbareto:details-ready")).toBe(0);
+      await serveHistory(double);
       expect(count("arbareto:details-ready")).toBe(1);
       await selectRow("index");
       expect(count("arbareto:commit-panel-ready")).toBe(2);

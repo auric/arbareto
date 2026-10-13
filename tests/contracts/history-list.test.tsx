@@ -240,6 +240,16 @@ describe("plan.md D6 load trigger", () => {
     expect(fake.of("loadHistory")).toHaveLength(2);
   });
 
+  for (const code of ["BUSY", "TRUST_CHANGED", "WSL_UNAVAILABLE", "PROCESS_OWNERSHIP_FAILED"] as const)
+    test(`a load that ends ${code} halts loads and shows the code`, async () => {
+      const { fake, host, view } = await mount({ total: 1_000_000, loadResponse: () => ({ requestId: "r", state: "rejected", code }) });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await settle();
+      expect(fake.of("loadHistory")).toHaveLength(1);
+      expect(view.getState()).toMatchObject({ halted: true, loadFailure: { code } });
+      expect(text(host)).toContain(`Loading more commits stopped: ${code}.`);
+    });
+
   test("End during a scroll load cancels it first and waits for its terminal response", async () => {
     const { list, fake } = await mount({ total: 1_000_000, hold: { load: true } });
     expect(fake.held()).toBe(1);

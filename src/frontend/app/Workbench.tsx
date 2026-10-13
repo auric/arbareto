@@ -3,7 +3,7 @@
 
 import { GitBranchIcon, GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode, type RefObject } from "react";
+import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode, type RefObject } from "react";
 import type { ChangeEntry, Comparison as ComparisonResult, Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
@@ -614,6 +614,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   }, [approvalEnds]);
 
   const kept = row.repository === state.repository ? row.id : null;
+  // The row epoch whose details read returned. The Details-ready mark waits for it.
+  const [detailsRead, setDetailsRead] = useState(-1);
   if (row.repository !== state.repository) setRow({ repository: state.repository, id: null, epoch: row.epoch });
   const panel = panelOf(kept);
   // A row selection docks its panel at once (plan.md "Change the docked panel"). The history list reports each new selection once.
@@ -738,8 +740,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // plan.md "Marker and frame source": one mark in the next frame after each ready state commits.
   const marked = useRef({ history: 0, commit: -1, details: -1, refs: null as object | null });
   const readReady = completeRead(state.workspace) && !state.refreshing;
-  const historyReady = historyState.view !== null && (historyState.complete || historyState.viewRows > 0) && readReady;
-  const detailsShown = panel === "details" && kept !== null;
+  // plan.md D7: the History-ready frame shows the visible rows with their text and cells.
+  const historyReady = historyView.windowReady() && readReady;
+  const detailsShown = panel === "details" && kept !== null && detailsRead === row.epoch;
   const marks: [boolean, () => boolean, () => void, string][] = [
     [historyReady, () => marked.current.history !== state.historyEpoch, () => void (marked.current.history = state.historyEpoch), "arbareto:history-painted"],
     [panel === "commit" && readReady, () => marked.current.commit !== row.epoch, () => void (marked.current.commit = row.epoch), "arbareto:commit-panel-ready"],
@@ -950,7 +953,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const blockingRow = workspace !== null && blockingText(workspace.operationState, conflicted) !== null;
   const submodules = workspace?.submoduleNotice.count ?? 0;
   // Feature 002 contract Δ8: a newer `readRefs.refsDigest` or `readWorkspace.head` than the view.
-  const refsNotice = refsChanged(historyState.view, state.refs?.refsDigest ?? null, workspace?.head ?? null);
+  // A read sent before the view opened can be older than the view, so it never shows the notice.
+  const openedAt = historyState.openedAt;
+  const refsNotice = refsChanged(historyState.view, state.refsAt > openedAt ? (state.refs?.refsDigest ?? null) : null, state.headRead !== null && state.headRead.at > openedAt ? state.headRead.head : null);
   const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0) + (refsNotice ? 1 : 0);
   // plan.md "Icons": the Commit tooltip holds both counts, and Commit has no key.
   const commitLabel = `Commit: ${plural(working, "working change", "working changes")}, ${staged} staged`;
@@ -1124,21 +1129,19 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       {commitPanel}
       {panel === "details" && kept !== null ? (
         <div data-section="commitDetails" className="h-full min-h-0">
-          <ViewCommitDetails view={historyView} oid={kept} />
+          <ViewCommitDetails view={historyView} oid={kept} onRead={() => setDetailsRead(row.epoch)} />
         </div>
       ) : null}
       {panel === null ? <p className="p-2 text-muted-text">{DOCK_HINT}</p> : null}
     </>
   );
 
-  // The sidebar selects a commit only when the history list holds its row.
-  const loaded = useMemo(() => historyView.cachedOids(), [historyView, historyState.version]);
   const refsSidebar = (
     <ReferencesSidebar
       refs={state.refs}
       failure={state.refsFailure}
-      loaded={loaded}
-      onSelectCommit={(oid) => void historyView.selectOid(oid)}
+      rowHeight={m.row}
+      onSelectCommit={(oid) => historyView.selectOid(oid)}
       onRefresh={refresh}
       collapsible={profile === "constrained"}
       repository={state.repository?.worktreeKey ?? ""}

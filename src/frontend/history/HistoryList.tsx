@@ -88,13 +88,16 @@ function limitText(reason: string): string {
 /** Contract Δ9 `UNSUPPORTED_FILTER_TEXT`: the reason names the found character. */
 function refusedText(search: SearchState): string {
   if (search.code === "UNSUPPORTED_FILTER_TEXT") {
+    // `filter-text.ts`: reason `length` with a found character is text that is not well-formed. Without one, it is the byte bound.
     const what =
       search.reason === "quote-end" ? 'a backslash followed by "E" (\\E)'
       : search.reason === "line-break" ? "a line break"
       : search.reason === "nul" ? "a NUL character"
-      : search.found != null ? `a character that is not valid text (U+${search.found.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")})`
+      : search.reason === "length" && search.found != null ? `a character that is not valid text (U+${search.found.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")})`
       : null;
-    return what === null ? "Cannot search this text. It is longer than 1,024 bytes in UTF-8. Shorten it and press Enter again." : `Cannot search this text. It holds ${what}. Remove it and press Enter again.`;
+    if (what !== null) return `Cannot search this text. It holds ${what}. Remove it and press Enter again.`;
+    if (search.reason === "length") return "Cannot search this text. It is longer than 1,024 bytes in UTF-8. Shorten it and press Enter again.";
+    return `Cannot search this text: ${search.code}${search.reason === undefined ? "" : ` ${search.reason}`}.`;
   }
   if (search.code === "SEARCH_UNSUPPORTED") return `Search is not available here. ${search.remedy?.text ?? ""}`.trim();
   if (search.code === "OUTPUT_LIMIT") return `Search is not available, because this history list stopped at ${fmt.format(HISTORY_VIEW_COMMITS)} commits.`;
@@ -180,8 +183,11 @@ function checkoutText(head: Head): string {
   return head.state === "branch" ? `HEAD, branch ${branchName(head.target)}` : head.state === "detached" ? "HEAD, detached" : "HEAD";
 }
 
-/** A filter-mode match without a node-to-bottom edge has no matching ancestor (plan.md D4). Roots and shallow boundaries say so themselves. */
-const noEarlier = (cell: NonNullable<ViewRow["cell"]>) => cell.marks.length === 0 && !cell.segments.some((s) => s.shape === "line" && s.from.at === "node");
+/**
+ * A filter-mode match without a node-to-bottom edge has no matching ancestor (plan.md D4): `layoutStep` draws one line per parent lane.
+ * Roots and shallow boundaries say so themselves. A limited row draws no edge (data-model §4), so its cell cannot tell (contract gap).
+ */
+const noEarlier = (cell: NonNullable<ViewRow["cell"]>) => !cell.limited && cell.marks.length === 0 && !cell.segments.some((s) => s.shape === "line" && s.from.at === "node");
 const skips = (cell: NonNullable<ViewRow["cell"]>) => cell.segments.some((s) => s.shape === "line" && s.skip === true);
 
 /** The full row text. Parents stay readable without color or pointer (spec FR-016). */
@@ -229,6 +235,16 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   const state = useSyncExternalStore(view.subscribe, view.getState);
   const ids = { heading: useId(), count: useId(), notes: useId(), list: useId() };
   const list = useRef<HTMLDivElement>(null);
+  // A notes control that leaves with focus moves focus to the list, as the notice band does (plan.md "Notice band").
+  const focusLost = useRef(false);
+  const [bindLeaving] = useState(() => (element: HTMLElement | null) => () => {
+    if (element !== null && document.activeElement === element) focusLost.current = true;
+  });
+  useLayoutEffect(() => {
+    if (!focusLost.current) return;
+    focusLost.current = false;
+    list.current?.focus();
+  });
   const rowHeight = metrics(density, textScale).row;
   const spacing = LANE_SPACING[density];
   const filter = view.filterMode();
@@ -310,7 +326,8 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   useEffect(() => {
     // No layout yet: the first window is not known.
     if (height === 0) return;
-    view.demand(Math.max(0, first - SPECIAL_ROWS), Math.min(rows - 1, last - SPECIAL_ROWS), moreShown, need);
+    // The store clamps the window to the list length, so a load end reads the new rows without another render.
+    view.demand(Math.max(0, first - SPECIAL_ROWS), last - SPECIAL_ROWS, moreShown, need);
   }, [view, height, first, last, need, moreShown, rows, state.view, state.load, state.search?.state, state.search?.searchId, state.search?.mode]);
 
   // A keyboard move to a row that is not loaded yet selects it when its page arrives.
@@ -533,7 +550,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
 
   const progress =
     state.load !== null ? { text: state.load.kind === "end" ? "Loading all commits…" : state.load.kind === "oid" ? "Loading commits up to the selected commit…" : "Loading more commits…", count: `${fmt.format(state.load.rows)} loaded`, cancel: view.cancelLoad }
-    : search?.state === "running" ? { text: "Searching commit messages…", count: `${fmt.format(search.settled)} commits searched, ${countText(search)!.replace(", more can follow", "")}`, cancel: view.cancelSearch }
+    : search?.state === "running" ? { text: "Searching commit messages…", count: `${countText(search)!.replace(", more can follow", "")}, ${fmt.format(search.settled)} with final graph lines`, cancel: view.cancelSearch }
     : null;
 
   const notes: ReactNode[] = [];
@@ -554,9 +571,16 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
         <span>
           {staleText(state.stale)} {RESTART}
         </span>
-        <Button variant="outline" size="sm" onClick={() => void view.refresh()}>
+        <Button ref={bindLeaving} variant="outline" size="sm" onClick={() => void view.refresh()}>
           Refresh
         </Button>
+      </p>,
+    );
+  if (state.loadFailure !== null)
+    notes.push(
+      <p key="load-failure" className="flex items-center gap-2">
+        <WarningIcon />
+        <span>{`Loading more commits stopped: ${state.loadFailure.code}${state.loadFailure.reason === undefined ? "" : ` ${state.loadFailure.reason}`}. Scroll to the end of the loaded rows to try again.`}</span>
       </p>,
     );
   if (state.limit !== null)
@@ -604,7 +628,22 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
     if (search.state === "finished" && search.matches === 0) notes.push(<p key="none">{NO_MATCH}</p>);
     if (search.state === "finished" && search.shallow) notes.push(<p key="shallow">The search covered only the commits that this shallow clone holds.</p>);
   }
-  if (state.matchEnd !== null) notes.push(<p key="end">{state.matchEnd === "first" ? "No earlier match. This is the first match." : "No later match. This is the last match."}</p>);
+  const matchEnd = state.matchEnd === null ? null : state.matchEnd === "first" ? "No earlier match. This is the first match." : "No later match. This is the last match.";
+  if (matchEnd !== null) notes.push(<p key="end">{matchEnd}</p>);
+  const waiting = state.waiting ? "Waiting for the search to reach the match…" : null;
+  if (waiting !== null) notes.push(<p key="waiting">{waiting}</p>);
+  // The live region holds short texts that change only with a state. Counts and buttons stay outside it.
+  const announce = [
+    state.stale === null ? null : staleText(state.stale),
+    state.loadFailure === null ? null : `Loading more commits stopped: ${state.loadFailure.code}.`,
+    progress?.text ?? null,
+    search !== null && (search.state === "refused" || search.state === "failed") ? refusedText(search) : null,
+    search?.state === "finished" && search.matches === 0 ? NO_MATCH : null,
+    waiting,
+    matchEnd,
+  ]
+    .filter((t) => t !== null)
+    .join(" ");
 
   const count = countText(search);
   return (
@@ -617,7 +656,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           <span data-slot="scope-chip" className="flex shrink-0 items-center gap-1 rounded-sm border border-control-border pl-1.5 whitespace-nowrap">
             <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
             {CHIP_TEXT}
-            <IconButton icon={Cancel01Icon} label="Show all branches" keys={{ aria: "Control+Shift+B", text: "Ctrl+Shift+B" }} onClick={() => onScope("all")} />
+            <IconButton ref={bindLeaving} icon={Cancel01Icon} label="Show all branches" keys={{ aria: "Control+Shift+B", text: "Ctrl+Shift+B" }} onClick={() => onScope("all")} />
           </span>
         ) : null}
         <span id={ids.count} className="min-w-0 truncate text-muted-text">
@@ -640,14 +679,17 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           onMatch={(direction) => void view.match(direction)}
         />
       </div>
-      <div id={ids.notes} role="status" className="flex shrink-0 flex-col gap-1 px-2 empty:hidden">
+      <p role="status" className="sr-only">
+        {announce}
+      </p>
+      <div id={ids.notes} className="flex shrink-0 flex-col gap-1 px-2 empty:hidden">
         {empty ? <p>{FILTER_UNAVAILABLE}</p> : null}
         {notes}
         {progress === null ? null : (
           <p className="flex items-center gap-2">
             <span>{progress.text}</span>
             <span className="num text-muted-text">{progress.count}</span>
-            <Button variant="outline" size="sm" onClick={progress.cancel}>
+            <Button ref={bindLeaving} variant="outline" size="sm" onClick={progress.cancel}>
               Cancel
             </Button>
           </p>
@@ -671,7 +713,6 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           {items}
         </div>
       </div>
-      {empty ? <p className="p-2 text-muted-text">{NO_COMMITS}</p> : null}
     </div>
   );
 }

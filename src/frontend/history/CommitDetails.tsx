@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { Copy01Icon } from "@hugeicons/core-free-icons";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
 import type { HistoryRow } from "../../contracts/envelope";
 import { useCopy } from "../app/RepositoryStates";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
-import type { HistoryView, ViewRow } from "../state/history-view";
+import type { Details, HistoryView } from "../state/history-view";
 
 // plan.md "History graph design" (commit details rules), "Keyboard and focus" (Roles), and "Selection, scroll, and stored context".
 
@@ -52,26 +52,45 @@ const SHALLOW_TEXT = "Not in this shallow clone.";
 const TEXT_LIMIT = "Arbareto does not show this commit, because its commit object is larger than 256 KiB.";
 const LABEL_WORD = { branch: "branch", remote: "remote-tracking branch", tag: "tag", stash: "stash" } as const;
 
+/** Contract Δ3 targets and outcomes other than `found`. Only target `none` says that the list lacks the commit. */
+function absentText(details: Details): string {
+  if (details.state === "none") return "This commit is not in the history list.";
+  if (details.state === "unknown") return "This commit is not in the loaded history rows.";
+  return `Arbareto cannot read this commit: ${(details as { code: string }).code}.`;
+}
+
 export type ViewCommitDetailsProps = {
   view: HistoryView;
   /** The selected commit. */
   oid: string;
   dateFormat?: Intl.DateTimeFormat;
+  /** Runs after the details read of `oid` returned and its result rendered. */
+  onRead?: () => void;
 };
 
 /** The docked "Selected commit" region of a feature 002 view. It reads the commit when it shows, and it holds no Git action. */
-export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE }: ViewCommitDetailsProps) {
+export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }: ViewCommitDetailsProps) {
   const headingId = useId();
   const copy = useCopy();
-  const [read, setRead] = useState<{ oid: string; row: ViewRow | null } | null>(null);
+  const [read, setRead] = useState<{ oid: string; details: Details } | null>(null);
+  // A canceled read shows Loading… and reads again. The store runs one text read at a time, so the list never cancels it.
+  const [attempt, setAttempt] = useState(0);
+  // A new view (Refresh, a scope switch) reads the commit again.
+  const viewId = useSyncExternalStore(view.subscribe, () => view.getState().view?.viewId ?? null);
   useEffect(() => {
     let current = true;
-    void view.readDetails(oid).then((result) => {
-      if (current) setRead({ oid, row: result?.target === "found" ? result.rows[0]! : null });
+    void view.readDetails(oid).then((details) => {
+      if (!current) return;
+      if (details.state === "canceled") setAttempt((n) => n + 1);
+      else setRead({ oid, details });
     });
     return () => void (current = false);
-  }, [view, oid]);
-  const row = read?.oid === oid ? read.row : undefined;
+  }, [view, oid, attempt, viewId]);
+  const details = read?.oid === oid ? read.details : undefined;
+  useEffect(() => {
+    if (details !== undefined && details.state !== "ended") onRead?.();
+  }, [details]);
+  const row = details?.state === "found" ? details.row : details === undefined || details.state === "canceled" || details.state === "ended" ? undefined : null;
   const head = view.getState().view?.head;
   const references = row === undefined || row === null ? [] : [...(row.checkout && head !== undefined ? [head.state === "detached" ? "HEAD, detached" : "HEAD"] : []), ...row.labels.map((l) => `${LABEL_WORD[l.kind]} ${l.name}`)];
   return (
@@ -87,7 +106,7 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE }: ViewCo
         {row === undefined ? (
           <p className="text-muted-text">Loading…</p>
         ) : row === null ? (
-          <p className="text-muted-text">This commit is not in the history list.</p>
+          <p className="text-muted-text">{absentText(details!)}</p>
         ) : row.textLimit ? (
           <>
             <p className="font-mono break-all">{row.oid}</p>

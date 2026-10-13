@@ -27,7 +27,7 @@ import { createCollector, isChannelPath, RunnerRefusal, type Collector, type Git
 import { captureHead, checkFailedRead, commitTextOf, DAMAGED_STORE_REMEDY, isStop, readShallow, readStep, sharedListing, small, type CommitText, type HistoryReaderOptions, type Shallow, type Stop } from "./history";
 import { HistoryLayout } from "./history-layout";
 import { HEADER_BYTES, readHeaders } from "./history-parser";
-import { MATCHING_REMEDY, matchStream, probeMatching, SearchMerge, WSL_MATCHING_REMEDY, type ProbeRun } from "./history-search";
+import { MATCHING_REMEDY, matchStream, probeMatching, SearchMerge, type ProbeRun } from "./history-search";
 import { HistoryTopology, type TopologyFailure } from "./history-topology";
 import type { DiagnosticCause } from "./log";
 import type { OperationRegistry } from "./operations";
@@ -531,7 +531,6 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
   // A failed probe step gives its own code, and no answer to keep. Only a mismatch gives SEARCH_UNSUPPORTED.
   async function matching(view: View, s: Search, t: ProcessTarget): Promise<ViewOutcome | null> {
     const unsupported = (text: string) => failed("SEARCH_UNSUPPORTED", { reason: "matching", remedy: { text, command: null } });
-    if (view.workspace.wsl !== undefined) return unsupported(WSL_MATCHING_REMEDY);
     const key = view.installation.gitInstallationId;
     const result = probes.get(key) ?? (await probeMatching(runner, t, probeRuns, () => (s.cause = "probe-folder-remove")));
     if (isStop(result)) return "failed" in result ? failed(result.failed) : result.stop === "deadline" ? { result: "deadline" } : { result: "canceled" };

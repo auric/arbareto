@@ -107,11 +107,13 @@ export interface BunRunnerOptions {
   // Fixture isolation for WSL processes only: the Linux path of the owned global configuration.
   // The double forwards it and `GIT_CONFIG_NOSYSTEM=1` through `WSLENV`. The product shell forwards nothing (T205).
   wslGlobalConfig?: string;
+  // Test only: the Linux `LOCPATH` of WSL processes, forwarded through `WSLENV` as `wslGlobalConfig` is. The product shell forwards nothing.
+  wslLocalePath?: string;
 }
 
 // ---- Contract §11 process requests. The shell side is `src-tauri/src/wsl.rs`. ----
 
-const WSL_TEXTS = { wrapper: wslProcess.wrapper.join("\n"), anchor: wslProcess.anchor.join("\n"), probe: wslProcess.probe.join("\n") };
+const WSL_TEXTS = { wrapper: wslProcess.wrapper.join("\n"), anchor: wslProcess.anchor.join("\n"), probe: wslProcess.probe.join("\n"), matchingProbe: wslProcess.matchingProbe.join("\n") };
 // Contract §5: a WSL distro start probe has at most 60 seconds.
 const WSL_START_CAP_MS = 60_000;
 const WSL_PREFIX = /^\\\\(?:wsl\$|wsl\.localhost)\\([^\\/]+)(?:[\\/](.*))?$/i;
@@ -292,6 +294,8 @@ export interface RecordedCall {
   repositoryId?: string;
   arguments: readonly string[];
   environmentPolicy: string;
+  // Feature 002 contract Δ6: the `run` field `script`.
+  script?: string;
   // The request `limits`, as the service sent them (contract §6 "Process fields").
   limits?: Record<string, unknown>;
   input?: Uint8Array;
@@ -517,16 +521,17 @@ export function createBunRunner(options: BunRunnerOptions) {
     return { program, cwd: bound.path, wsl };
   }
 
-  // Contract §11 "Process launch". Only the fixture isolation of `wslGlobalConfig` reaches Linux.
+  // Contract §11 "Process launch". Only the fixture isolation of `wslGlobalConfig` and `wslLocalePath` reaches Linux.
   function wslEnvironment(): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(options.environment)) {
-      if (!["WSL_UTF8", "WSLENV", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"].includes(name.toUpperCase())) env[name] = value;
+      if (!["WSL_UTF8", "WSLENV", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "LOCPATH"].includes(name.toUpperCase())) env[name] = value;
     }
-    env.WSL_UTF8 = "1";
-    env.WSLENV = "";
-    if (options.wslGlobalConfig) Object.assign(env, { WSLENV: "GIT_CONFIG_GLOBAL:GIT_CONFIG_NOSYSTEM", GIT_CONFIG_GLOBAL: options.wslGlobalConfig, GIT_CONFIG_NOSYSTEM: "1" });
-    return env;
+    const forwarded: Record<string, string> = {
+      ...(options.wslGlobalConfig ? { GIT_CONFIG_GLOBAL: options.wslGlobalConfig, GIT_CONFIG_NOSYSTEM: "1" } : {}),
+      ...(options.wslLocalePath ? { LOCPATH: options.wslLocalePath } : {}),
+    };
+    return { ...env, ...forwarded, WSL_UTF8: "1", WSLENV: Object.keys(forwarded).join(":") };
   }
 
   const wslHead = (distro: string) => ["--distribution", distro, "--cd", "/", "--exec", "/bin/sh", "-c"];
@@ -952,17 +957,21 @@ export function createBunRunner(options: BunRunnerOptions) {
     checkCall(call);
     const target = resolveTarget(call.operationId, call.context);
     if (!target.wsl) {
+      if (call.script) throw new RunnerRefusal("INVALID_REQUEST", "script needs a WSL Git");
       const env = environment(call);
       if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
       if (call.context.contextKind === "repositoryDiscovery") revalidate(call.context.bootstrapId);
       return execute(call, [target.program, ...call.arguments], target.cwd, env, recorded);
     }
     // Contract §11 "Process launch": `--no-lazy-fetch` stays first, and `-C` takes the Linux directory.
+    // Feature 002 contract Δ6: a script run gets `/bin/sh`, the script text, and the approved Git from the shell. `checkCall` checked its arguments.
     const inst = target.wsl;
     const dir = wslParts(target.cwd);
     const index = call.transaction ? wslParts(call.transaction.indexFile)?.linux : "";
     if (!dir || index === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL path");
-    const args = wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir.linux, ...call.arguments.slice(1)]);
+    const args = call.script
+      ? wslWrapped(inst, call.operationId, "search", "", "/bin/sh", ["-c", WSL_TEXTS.matchingProbe, "sh", inst.git, ...call.arguments])
+      : wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir.linux, ...call.arguments.slice(1)]);
     if (commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
     const anchor = call.environmentPolicy === "mutation" || call.environmentPolicy === "network" ? wslAnchor(call.operationId, inst) : null;
     // Contract §6 "Activity and stall notice": one anchor line each second while a tracked process runs. Any change of the CPU-time sum is activity.
@@ -990,6 +999,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         ...(typeof context.repositoryId === "string" ? { repositoryId: context.repositoryId } : {}),
         arguments: Array.isArray(call.arguments) ? [...call.arguments] : [],
         environmentPolicy: text(call.environmentPolicy),
+        ...(call.script === undefined ? {} : { script: text(call.script) }),
         ...(typeof call.limits === "object" && call.limits !== null ? { limits: { ...call.limits } } : {}),
         ...(call.input instanceof Uint8Array ? { input: call.input } : {}),
         stderr: [],

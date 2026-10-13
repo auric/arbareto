@@ -16,7 +16,7 @@ import {
   ReadRefsResult,
   SearchHistoryResult,
 } from "../../src/contracts/envelope";
-import { EnvironmentPolicy } from "../../src/contracts/channel";
+import { EnvironmentPolicy, ProcessRequest } from "../../src/contracts/channel";
 import * as errors from "../../src/contracts/errors";
 import * as limits from "../../src/contracts/limits";
 import { OPERATIONS, PHASES, SHELL_ONLY } from "../../src/contracts/operations";
@@ -128,7 +128,12 @@ describe("contract Δ3 results", () => {
     const command = "& 'C:\\Git\\cmd\\git.exe' --no-lazy-fetch -C 'C:\\repo' commit-graph write --reachable";
     expect(LoadHistoryResult.safeParse({ rows: 10, complete: false, remedy: { text: "Write a commit-graph.", command } }).success).toBe(true);
     expect(LoadHistoryResult.safeParse({ rows: limits.HISTORY_VIEW_COMMITS + 1, complete: false }).success).toBe(false);
-    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "order" }).success).toBe(false);
+    // Contract Δ3 "Refusal result" and Δ8: a refused load of a stale complete view keeps `complete: true` and carries the stale reason.
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "order" }).success).toBe(true);
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "object-missing", remedy: { text: "x", command: null } }).success).toBe(true);
+    // An `OUTPUT_LIMIT` bound stops the load, so its view is never complete.
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "HISTORY_VIEW_COMMITS" }).success).toBe(false);
+    expect(LoadHistoryResult.safeParse({ rows: 10, complete: true, reason: "HISTORY_PARENTS_PER_COMMIT" }).success).toBe(false);
     expect(LoadHistoryResult.safeParse({ rows: 10 }).success).toBe(false);
     expect(LoadHistoryResult.safeParse({ rows: 10, complete: false, reason: "HISTORY_STREAM_ROWS" }).success).toBe(false);
   });
@@ -269,7 +274,42 @@ describe("contract Δ7 and Δ11 process texts", () => {
     expect(Array.isArray(probe)).toBe(true);
     expect(probe).toContain('mkdir -- "$dir" || exit 1');
     expect(probe).toContain(`trap 'rm -rf -- "$dir"' EXIT`);
-    expect(probe).toContain('"$git" init --bare -q --template= --object-format=sha1 "$dir" || exit 1');
-    expect(probe).toContain('"$git" --git-dir="$dir" fast-import --quiet || exit 1');
+  });
+
+  test("the matchingProbe init and fast-import lines pass --no-lazy-fetch first", () => {
+    const probe = (wslProcess as Record<string, string[]>).matchingProbe;
+    expect(probe).toContain('"$git" --no-lazy-fetch init --bare -q --template= --object-format=sha1 "$dir" || exit 1');
+    expect(probe).toContain('"$git" --no-lazy-fetch --git-dir="$dir" fast-import --quiet || exit 1');
+    expect(probe.filter((line) => line.startsWith('"$git" ') && !line.startsWith('"$git" --no-lazy-fetch '))).toEqual([]);
+  });
+});
+
+describe("contract Δ6 run field script", () => {
+  const registered = { contextKind: "registeredOperation", gitInstallationId: id(), repositoryId: id() };
+  const frame = (context: Record<string, unknown>, extra: Record<string, unknown>) => ({
+    type: "run",
+    callId: id(),
+    operationId: id(),
+    arguments: ["/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa", OID, "1", "--no-lazy-fetch", "--no-lazy-fetch"],
+    input: "AA==",
+    environmentPolicy: "search",
+    limits: { deadlineMs: limits.REGISTERED_DEADLINE_CAP_MS },
+    ...context,
+    ...extra,
+  });
+
+  test("a registeredOperation run takes script matchingProbe", () => {
+    expect(ProcessRequest.safeParse(frame(registered, {})).success).toBe(true);
+    expect(ProcessRequest.safeParse(frame(registered, { script: "matchingProbe" })).success).toBe(true);
+  });
+
+  test("the schema refuses another script value and the field in the other two context kinds", () => {
+    for (const script of ["identity", "matchingprobe", "", null, 1]) expect(ProcessRequest.safeParse(frame(registered, { script })).success).toBe(false);
+    const probe = { contextKind: "gitProbe", bootstrapId: id() };
+    const discovery = { contextKind: "repositoryDiscovery", bootstrapId: id(), gitInstallationId: id() };
+    for (const context of [probe, discovery]) {
+      expect(ProcessRequest.safeParse(frame(context, { environmentPolicy: "probe" })).success).toBe(true);
+      expect(ProcessRequest.safeParse(frame(context, { environmentPolicy: "probe", script: "matchingProbe" })).success).toBe(false);
+    }
   });
 });

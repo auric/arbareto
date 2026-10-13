@@ -689,9 +689,10 @@ export const OpenHistoryResult = z
   .meta({ title: "OpenHistoryResult" });
 
 // `rows`: the rows that the view holds after the load. `reason` and `remedy` follow the response code.
+// `complete` states the view. A refused load of a stale complete view carries `complete: true` and the stale reason. An `OUTPUT_LIMIT` bound stops the load, so its view is never complete.
 export const LoadHistoryResult = z
   .strictObject({ rows: Count.max(HISTORY_VIEW_COMMITS), complete: z.boolean(), reason: ViewReason.optional(), remedy: ViewRemedy.optional() })
-  .refine((r) => !r.complete || r.reason === undefined)
+  .refine((r) => !r.complete || (r.reason !== "HISTORY_VIEW_COMMITS" && r.reason !== "HISTORY_PARENTS_PER_COMMIT"))
   .meta({ title: "LoadHistoryResult" });
 
 const Lane = z.int().min(0).max(GRAPH_LANES - 1);

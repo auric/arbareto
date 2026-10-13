@@ -435,6 +435,36 @@ describe("search lifecycle (FR-030, FR-035, FR-039, contract Δ3 and Δ7)", () =
 
   caseTest(
     TASK,
+    "a broken match order on a complete view makes it stale, and the refused load keeps complete: true with reason order",
+    SHELL,
+    () =>
+      withService("t032-order-complete", async (service) => {
+        const repo = chainRepo("t032-order-complete-repo");
+        const greps = grepOracle(repo, MARKER_WORD);
+        const { repositoryId, generation } = await service.register(repo);
+        const opening = await opened(service, repositoryId, generation);
+        const full = await load(service, repositoryId, opening.viewId, { end: true });
+        expect({ state: full.state, result: full.result }).toEqual({ state: "succeeded", result: { rows: CHAIN, complete: true } });
+        // The view is complete, so the search runs no load, and each reversed match breaks the merge.
+        service.runner.inject.stdout = (call) => (isSearch(call) ? Buffer.from(greps.toReversed().map((o) => `${o}\n`).join("")) : undefined);
+        let broken: ServiceResponse<Searched>;
+        try {
+          broken = await search(service, repositoryId, opening.viewId, MARKER_WORD);
+        } finally {
+          service.runner.inject.stdout = undefined;
+        }
+        expect({ state: broken.state, code: broken.code, result: broken.result }).toEqual({ state: "failed", code: "HISTORY_CHANGED", result: { reason: "order" } });
+        // Contract Δ3 "Refusal result": `complete` states the view, so a refused load of a stale complete view carries `complete: true`.
+        const calls = service.runner.calls.length;
+        const refusedLoad = await load(service, repositoryId, opening.viewId, { row: 0 });
+        expect({ state: refusedLoad.state, code: refusedLoad.code, result: refusedLoad.result }).toEqual({ state: "failed", code: "HISTORY_CHANGED", result: { rows: CHAIN, complete: true, reason: "order" } });
+        expect(service.runner.calls.length).toBe(calls);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
     "an unexpected runner error of the search process ends the load of the search, so the view takes a new load",
     SHELL,
     () =>

@@ -77,6 +77,14 @@ function commit(r: WslRepo, message: string): string {
 
 const lines = (count: number, changed: number[]) => Array.from({ length: count }, (_, i) => (changed.includes(i + 1) ? `line ${i + 1} changed\n` : `line ${i + 1}\n`)).join("");
 
+// T063: a repository at `<owned folder>/<name>` whose HEAD is `refs/heads/probe`. `stream` is a git-fast-import(1) stream that commits there.
+export function buildImported(host: WslHost, name: string, stream: Uint8Array): WslRepo {
+  const r = init(host, `${host.folder}/${name}`);
+  distroGit(r, ["fast-import", "--quiet"], { input: stream });
+  distroGit(r, ["symbolic-ref", "HEAD", "refs/heads/probe"]);
+  return r;
+}
+
 export interface F21 {
   repo: WslRepo;
   linked: WslRepo;
@@ -285,7 +293,7 @@ export interface PublicProgress {
 const RESPONSE_WAIT_MS = 120_000;
 
 // `markers`: the recovery markers of the handshake, as the shell loads them.
-export function startSession(runner: BunRunner, options: Pick<SessionOptions, "readRawIndex"> & { markers?: object[] } = {}) {
+export function startSession(runner: BunRunner, options: Pick<SessionOptions, "readRawIndex" | "historyProbeRuns"> & { markers?: object[] } = {}) {
   const { markers = [], ...sessionOptions } = options;
   const responses: PublicResponse[] = [];
   const progress: PublicProgress[] = [];

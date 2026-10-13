@@ -8,6 +8,7 @@ import { cpSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { z } from "zod";
 import { LoadHistoryResult, OpenHistoryResult, ReadHistoryRowsResult, SearchHistoryResult } from "../../src/contracts/envelope";
+import { MATCHING_PROBE_COMMITS } from "../../src/contracts/matching-probe";
 import { EMPTY_STATE, layoutStep, type Cell } from "../../src/git-service/history-layout";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, fixturePath, ownedGit, type OwnedGitOptions } from "./fixture-root";
@@ -148,9 +149,30 @@ export async function loadSteps(service: Service, repositoryId: string, viewId: 
 export const isLoad = (call: { arguments: readonly string[] }) => call.arguments.includes("rev-list") && call.arguments.includes("--parents") && call.arguments.includes("--stdin");
 export const isReplaceRead = (call: { arguments: readonly string[] }) => call.arguments.at(-1) === "refs/replace" && call.arguments.length === 5;
 export const isTextRead = (call: { arguments: readonly string[] }) => call.arguments.includes("--batch-command");
-// Contract Δ3 "Matching probe": every probe step names its own folder with `init` or `--git-dir=`.
-export const isProbe = (call: { arguments: readonly string[] }) => call.arguments[1] === "init" || (call.arguments[1] ?? "").startsWith("--git-dir=");
-export const isSearch = (call: { arguments: readonly string[] }) => !isProbe(call) && call.arguments.some((a) => a.startsWith("--grep="));
+// Contract Δ3 "Matching probe": every probe step names its own folder with `init` or `--git-dir=`. The WSL probe is one `matchingProbe` script run.
+export const isProbe = (call: { arguments: readonly string[]; script?: string }) => call.script === "matchingProbe" || call.arguments[1] === "init" || (call.arguments[1] ?? "").startsWith("--git-dir=");
+export const isSearch = (call: { arguments: readonly string[]; script?: string }) => !isProbe(call) && call.arguments.some((a) => a.startsWith("--grep="));
+
+export const probeOidsOf = (labels: readonly string[]) => labels.map((label) => MATCHING_PROBE_COMMITS.find((c) => c.label === label)!.oid).toSorted();
+export const probeLabel = (oid: string) => MATCHING_PROBE_COMMITS.find((c) => c.oid === oid)?.label ?? oid;
+
+// SC-007: each FR-023 and FR-024 case with the labels of the probe commits that the text must match (src/contracts/matching-probe.ts).
+const LEGACY = "windows-1251 Виправлення";
+export const SC007_CASES: [string, string[]][] = [
+  ["Виправлення", ["виправлення", "ВИПРАВЛЕННЯ", LEGACY]],
+  ["ВИПРАВЛЕННЯ", ["виправлення", "ВИПРАВЛЕННЯ", LEGACY]],
+  ["є", ["є", "Є"]],
+  ["Є", ["є", "Є"]],
+  ["і", ["і", "І"]],
+  ["І", ["і", "І"]],
+  ["ї", ["ї", "Ї"]],
+  ["Ї", ["ї", "Ї"]],
+  ["ґ", ["ґ", "Ґ"]],
+  ["Ґ", ["ґ", "Ґ"]],
+  ["ß", ["ß", "ẞ"]],
+  ["ẞ", ["ß", "ẞ"]],
+  ["SS", ["SS"]],
+];
 
 // A finished search, or a refusal (contract Δ3 `searchHistory`).
 export type Searched = { matches?: number; shallow?: boolean; reason?: string; remedy?: { text: string; command: string | null } };

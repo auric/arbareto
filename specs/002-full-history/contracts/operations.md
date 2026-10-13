@@ -108,7 +108,7 @@ This file lists only the changes to the feature 001 contract, `specs/001-desktop
 
 ### Refusal result
 
-A view operation that ends without its result value carries `{reason?, remedy?}`. `reason` names the reason of the response code (Δ9). An `OUTPUT_LIMIT` reason is the `limits.ts` export name. `remedy` is `{text, command}`, and `command` is null or a copyable command. `loadHistory` carries `reason` and `remedy` beside `rows` and `complete` in each result.
+A view operation that ends without its result value carries `{reason?, remedy?}`. `reason` names the reason of the response code (Δ9). An `OUTPUT_LIMIT` reason is the `limits.ts` export name. `remedy` is `{text, command}`, and `command` is null or a copyable command. `loadHistory` carries `reason` and `remedy` beside `rows` and `complete` in each result. `complete` states the view. A refused load of a stale complete view carries `complete: true` and the stale reason.
 
 ### `searchHistory {viewId, text}`
 

@@ -3,7 +3,7 @@
 
 import { useId, useState, type ComponentProps, type ReactNode, type Ref } from "react";
 import type { BridgeResponse } from "../bridge";
-import { MenubarContent, MenubarGroup, MenubarItem, MenubarLabel, MenubarMenu, MenubarSeparator, MenubarShortcut, MenubarTrigger } from "../components/ui/menubar";
+import { MenubarContent, MenubarGroup, MenubarItem, MenubarMenu, MenubarSeparator, MenubarShortcut, MenubarTrigger } from "../components/ui/menubar";
 import { codeText } from "./RepositoryStates";
 
 // plan.md "Compact token system" (Icons, repository menu) and contract §3 `revokeTrust`. The menu holds actions only.
@@ -85,9 +85,9 @@ export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOp
           <MenubarItem disabled={trustId === null || revoking} closeOnClick={false} onClick={() => void revoke()}>
             Revoke trust
           </MenubarItem>
-          <MenubarLabel role="status" className="whitespace-normal">
+          <div role="status" className="px-2 py-1.5 text-xs whitespace-normal text-muted-foreground">
             {revoked}
-          </MenubarLabel>
+          </div>
         </MenubarGroup>
         <MenubarSeparator />
         <MenubarGroup>
@@ -99,9 +99,9 @@ export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOp
             Update submodules
           </MenubarItem>
           {updateSubmodulesReason === null ? null : (
-            <MenubarLabel id={updateReasonId} className="whitespace-normal text-muted-text">
+            <div id={updateReasonId} aria-hidden className="px-2 py-1.5 text-xs whitespace-normal text-muted-text">
               {updateSubmodulesReason}
-            </MenubarLabel>
+            </div>
           )}
         </MenubarGroup>
       </MenubarContent>

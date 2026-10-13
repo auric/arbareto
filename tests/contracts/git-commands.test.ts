@@ -481,7 +481,7 @@ test("the submodule commands start with `--no-lazy-fetch`, list `.gitmodules` wi
   for (const args of arrays) expect(args).not.toContain("--recursive");
 });
 
-// T021, feature 002 contract Δ3: the view arrays. Every array starts with `--no-lazy-fetch --no-optional-locks` (spec FR-045, FR-051).
+// T021 and T031, feature 002 contract Δ3: the view and search arrays. Every array starts with `--no-lazy-fetch --no-optional-locks` (spec FR-045, FR-051).
 describe("history view arrays (feature 002 contract Δ3)", () => {
   const FORMAT = "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)";
 
@@ -509,11 +509,38 @@ describe("history view arrays (feature 002 contract Δ3)", () => {
     expect(commands.batchCommandArgs()).toEqual([...R, "cat-file", "--batch-command", "-Z"]);
   });
 
+  // T031, contract Δ3 `searchHistory` (spec FR-022, FR-024).
+  const SEARCH = (...greps: string[]) => [...R, "-c", "i18n.logOutputEncoding=UTF-8", "rev-list", "--date-order", "--fixed-strings", "--regexp-ignore-case", ...greps.map((g) => `--grep=${g}`), "--stdin"];
+
+  test("the search runs the exact contract Δ3 array with the start points on stdin", () => {
+    expect(commands.historySearchArgs("fix")).toEqual(SEARCH("fix"));
+    expect(commands.historySearchArgs.length).toBe(1);
+  });
+
+  test.each(["-x", "--all", "--grep=y", "-c core.pager=x", "--end-of-options", "\"q\" 'q'", "a.*[b]\\(c)?$", " lead and trail ", "Виправлення"])("the text %j stays inside the one --grep= argument", (text) => {
+    const args = commands.historySearchArgs(text);
+    expect(args).toEqual(SEARCH(text));
+    expect(args.filter((item) => item.includes(text))).toEqual([`--grep=${text}`]);
+  });
+
+  test.each(["", "a\0b"])("the search builder refuses the text %j, which no argv item can hold", (text) => {
+    expect(() => commands.historySearchArgs(text)).toThrow(TypeError);
+  });
+
+  // Contract Δ3 "Matching probe": the steps in a new folder outside every repository. A probe run takes one --grep per pattern (src/contracts/matching-probe.ts).
+  test("the matching probe imports the fixed stream into a new bare repository and runs the search array with --git-dir", () => {
+    const dir = join("probe-root", "arbareto-probe-x");
+    expect(commands.probeInitArgs(dir)).toEqual(["--no-lazy-fetch", "init", "--bare", "-q", "--template=", "--object-format=sha1", dir]);
+    expect(commands.probeImportArgs(dir)).toEqual(["--no-lazy-fetch", `--git-dir=${dir}`, "fast-import", "--quiet"]);
+    expect(commands.probeSearchArgs(dir, ["є", "Є"])).toEqual(["--no-lazy-fetch", `--git-dir=${dir}`, ...SEARCH("є", "Є").slice(1)]);
+  });
+
   test.each([
     ["historyRefsArgs", () => commands.historyRefsArgs()],
     ["replaceRefsArgs", () => commands.replaceRefsArgs()],
     ["topologyPathArgs", () => commands.topologyPathArgs()],
     ["historyLoadArgs", () => commands.historyLoadArgs()],
+    ["historySearchArgs", () => commands.historySearchArgs("fix")],
   ] as [string, () => string[]][])("%s starts with --no-lazy-fetch --no-optional-locks and returns a new array", (_name, build) => {
     const first = build();
     expect(first.slice(0, 2)).toEqual(["--no-lazy-fetch", "--no-optional-locks"]);

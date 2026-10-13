@@ -18,6 +18,7 @@ import { getEnvironment } from "./environment";
 import { createExclusion } from "./exclusion";
 import { createFilePublisher, fileApproval } from "./file-publish";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
+import type { ProbeRun } from "./history-search";
 import { createHistoryViews } from "./history-view";
 import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from "./hunk-publish";
 import { createSessionLog, type DiagnosticCause } from "./log";
@@ -68,6 +69,8 @@ export interface SessionOptions {
   submoduleCheckpoint?: SubmoduleUpdaterOptions["submoduleCheckpoint"];
   // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`. Tests set a lower value.
   historyViewCommits?: number;
+  // Feature 002 contract Δ3 "Matching probe": the probe commits that each run must list. Only tests set other sets.
+  historyProbeRuns?: readonly ProbeRun[];
 }
 
 // The outcome forms of the reads that `read-scheduler.ts` runs. `cause` goes only into the session log entry (contract §8).
@@ -76,7 +79,7 @@ type ReadResult =
   | { result: "canceled" }
   | { result: "deadline" };
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -145,7 +148,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     reconciling: (w) => exclusion.running(w.commonIdentity).some((operationId) => registry.get(operationId)?.state === "reconciling"),
   });
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
-  const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, reject: (requestId, code) => reject(requestId, code) });
+  const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }), reject: (requestId, code) => reject(requestId, code) });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
@@ -558,8 +561,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     openHistory,
     loadHistory: (request) => views.load(request),
     readHistoryRows: (request) => views.rows(request),
-    // T035 adds the search handler. Until then the service answers SERVICE_UNAVAILABLE.
-    searchHistory: undefined,
+    searchHistory: (request) => views.search(request),
     closeHistory: (request) => views.close(request),
     readRefs,
     readComparison,

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// Shared steps of the feature 002 view tests T022, T023, and T024 (plan.md P3). The oracles run the test Git and share no code with `src/git-service/history-view.ts`.
+// Shared steps of the feature 002 view and search tests T022, T023, T024, and T032 to T034 (plan.md P3, P5). The oracles run the test Git and share no code with `src/git-service/history-view.ts`.
 
 import { expect } from "bun:test";
 import { cpSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { z } from "zod";
-import { LoadHistoryResult, OpenHistoryResult, ReadHistoryRowsResult } from "../../src/contracts/envelope";
+import { LoadHistoryResult, OpenHistoryResult, ReadHistoryRowsResult, SearchHistoryResult } from "../../src/contracts/envelope";
 import { EMPTY_STATE, layoutStep, type Cell } from "../../src/git-service/history-layout";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, fixturePath, ownedGit, type OwnedGitOptions } from "./fixture-root";
@@ -42,6 +42,7 @@ export interface ViewRow {
   cell: Cell | null;
   labels: { kind: string; name: string; invalidUtf8: boolean }[];
   checkout: boolean;
+  match?: boolean | null;
   subject?: string;
   author?: { name: string; email: string };
   date?: number;
@@ -144,9 +145,45 @@ export async function loadSteps(service: Service, repositoryId: string, viewId: 
   }
 }
 
-export const isLoad = (call: { arguments: readonly string[] }) => call.arguments.includes("rev-list") && call.arguments.includes("--stdin");
+export const isLoad = (call: { arguments: readonly string[] }) => call.arguments.includes("rev-list") && call.arguments.includes("--parents") && call.arguments.includes("--stdin");
 export const isReplaceRead = (call: { arguments: readonly string[] }) => call.arguments.at(-1) === "refs/replace" && call.arguments.length === 5;
 export const isTextRead = (call: { arguments: readonly string[] }) => call.arguments.includes("--batch-command");
+// Contract Δ3 "Matching probe": every probe step names its own folder with `init` or `--git-dir=`.
+export const isProbe = (call: { arguments: readonly string[] }) => call.arguments[1] === "init" || (call.arguments[1] ?? "").startsWith("--git-dir=");
+export const isSearch = (call: { arguments: readonly string[] }) => !isProbe(call) && call.arguments.some((a) => a.startsWith("--grep="));
+
+// A finished search, or a refusal (contract Δ3 `searchHistory`).
+export type Searched = { matches?: number; shallow?: boolean; reason?: string; remedy?: { text: string; command: string | null } };
+
+export async function search(service: Service, repositoryId: string, viewId: string, text: string): Promise<ServiceResponse<Searched>> {
+  const response = await service.request<Searched>("searchHistory", { viewId, text }, { repositoryId });
+  if (response.result !== undefined) fits(SearchHistoryResult, response.result);
+  return response;
+}
+
+// `rows` in mode `filter`, or in mode `full` with `searchId` for the highlight rows.
+export const filterRows = (service: Service, repositoryId: string, viewId: string, searchId: string, at: At, count = 512, text: "none" | "rows" | "details" = "none") =>
+  rows(service, repositoryId, viewId, at, count, text, { mode: "filter", searchId });
+export const markedRows = (service: Service, repositoryId: string, viewId: string, searchId: string, at: At, count = 512, text: "none" | "rows" | "details" = "none") =>
+  rows(service, repositoryId, viewId, at, count, text, { searchId });
+
+// Every filter row of a finished search, in pages of 512 matches.
+export async function allFilterRows(service: Service, repositoryId: string, viewId: string, searchId: string, total: number): Promise<ViewRow[]> {
+  const out: ViewRow[] = [];
+  while (out.length < total) {
+    const response = await filterRows(service, repositoryId, viewId, searchId, { row: out.length });
+    expect({ state: response.state, target: response.result?.target }).toEqual({ state: "succeeded", target: "found" });
+    out.push(...response.result!.rows!);
+  }
+  return out;
+}
+
+// One `rev-list --grep` run with the contract Δ3 search options and the view start points: Git's own match order (spec SC-008).
+export function grepOracle(repo: string, text: string, starts: readonly string[] = startPoints(gitPath(), FIXTURE_ROOT, repo)): string[] {
+  const args = ["--no-optional-locks", "-c", "i18n.logOutputEncoding=UTF-8", "rev-list", "--date-order", "--fixed-strings", "--regexp-ignore-case", `--grep=${text}`, "--stdin"];
+  const out = gitText(repo, args, { input: Buffer.from(starts.map((s) => `${s}\n`).join("")), env: { LC_ALL: "C.UTF-8" } });
+  return out.split("\n").filter((l) => l !== "");
+}
 
 // tasks.md "Test harness rules": no commit-graph file may appear (SC-013, FR-044).
 export function commitGraphFiles(repo: string): string[] {

@@ -206,6 +206,8 @@ export interface ServiceSeams {
   submoduleCheckpoint?: (checkpoint: SubmoduleCheckpoint) => Promise<void> | void;
   // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`, lowered for a test (T022).
   historyViewCommits?: number;
+  // The expected matches of each matching probe run, changed for a probe mismatch (T033).
+  historyProbeRuns?: SessionOptions["historyProbeRuns"];
 }
 
 // Contract §12 "Update protocol" step 5 and "Trust": `folder-check` comes before the folder check of a `reuse` row, `clone-check` before the clone check of a row,
@@ -479,6 +481,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     ...(options.approvalClock === undefined ? {} : { approvalClock: options.approvalClock }),
     ...(options.submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint: options.submoduleCheckpoint }),
     ...(options.historyViewCommits === undefined ? {} : { historyViewCommits: options.historyViewCommits }),
+    ...(options.historyProbeRuns === undefined ? {} : { historyProbeRuns: options.historyProbeRuns }),
   };
   const sessionOptions: SessionOptions & ServiceSeams = {
     writer,

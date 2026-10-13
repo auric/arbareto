@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// Feature 002 plan.md P3, D2, and D3. Contract Δ3 `openHistory`, `loadHistory`, `readHistoryRows`, and `closeHistory`, Δ5 bounds, Δ8 freshness.
-// Data-model §1 history view, §2 captured ref set, §5 history row. One view per service session.
+// Feature 002 plan.md P3, P5, D2, D3, and D5. Contract Δ3 `openHistory`, `loadHistory`, `readHistoryRows`, `searchHistory`, and `closeHistory`, Δ5 bounds, Δ8 freshness.
+// Data-model §1 history view, §2 captured ref set, §5 history row, §6 message search. One view per service session.
 
 import type { RefEntry, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode, HistoryChangedReason, HistoryOutputLimitReason } from "../contracts/errors";
+import { filterText } from "../contracts/filter-text";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
+  FILTER_TEXT_BYTES,
   HISTORY_COMMIT_OBJECT_BYTES,
   HISTORY_LOAD_MARGIN,
   HISTORY_PAGE_BYTES,
@@ -18,13 +20,15 @@ import {
   REF_LISTING_RECORDS,
   SHALLOW_METADATA_BYTES,
 } from "../contracts/limits";
+import { MATCHING_PROBE_RUNS } from "../contracts/matching-probe";
 import { NATIVE } from "../contracts/native-path";
 import { buildRemedyCommand } from "../contracts/remedy-command";
-import { batchCommandArgs, historyLoadArgs, historyRefsArgs, isObjectId, replaceRefsArgs, topologyPathArgs, type ObjectFormat } from "./commands";
+import { batchCommandArgs, historyLoadArgs, historyRefsArgs, historySearchArgs, isObjectId, replaceRefsArgs, topologyPathArgs, type ObjectFormat } from "./commands";
 import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
 import { captureHead, checkFailedRead, commitTextOf, DAMAGED_STORE_REMEDY, isStop, readShallow, sharedListing, type CommitText, type HistoryReaderOptions, type Shallow, type Stop } from "./history";
 import { HistoryLayout } from "./history-layout";
 import { HEADER_BYTES, readHeaders } from "./history-parser";
+import { MATCHING_REMEDY, matchStream, probeMatching, SearchMerge, WSL_MATCHING_REMEDY, type ProbeRun } from "./history-search";
 import { HistoryTopology, type TopologyFailure } from "./history-topology";
 import type { OperationRegistry } from "./operations";
 import { contextOf, encodedBytes, readBounded, runRead } from "./read-steps";
@@ -56,7 +60,20 @@ export interface HistoryViewsOptions {
   registry: OperationRegistry;
   // Contract Δ5 `HISTORY_VIEW_COMMITS`. Only tests set a lower value.
   viewCommits: number;
+  // Contract Δ3 "Matching probe": the probe commits that each run must list. Only tests set other sets.
+  probeRuns?: readonly ProbeRun[];
   reject(requestId: string, code: ErrorCode): void;
+}
+
+// Data-model §6: the one search of a view. Its `operationId` is the `searchId` (contract Δ2).
+interface Search {
+  operationId: string;
+  merge: SearchMerge;
+  running: boolean;
+  // Settles when the operation ends.
+  done: Promise<void>;
+  // Merges the rows that the view serves into the match order.
+  update(): void;
 }
 
 interface View {
@@ -81,6 +98,7 @@ interface View {
   stale: Stale | null;
   load: string | null;
   text: string | null;
+  search: Search | null;
   operations: Set<string>;
   waiters: Set<() => void>;
   released: boolean;
@@ -101,6 +119,8 @@ const DEADLINE_TEXT = "Git did not finish this history read before its deadline.
 const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const failed = (code: ErrorCode, value: object = {}): ViewOutcome => ({ result: "failed", code, value });
+// Contract Δ3: Git gets the start points on stdin, one per line.
+const startInput = (starts: readonly string[]) => (starts.length === 0 ? {} : { input: new TextEncoder().encode(starts.map((oid) => `${oid}\n`).join("")) });
 
 // One read-policy Git step. A runner refusal gives its code, and an abort gives `canceled`.
 async function step(runner: GitRunner, t: ProcessTarget, args: string[], stdout: Collector): Promise<GitExit | Stop> {
@@ -244,8 +264,10 @@ function objectStream(oids: readonly string[], objectFormat: ObjectFormat) {
   };
 }
 
-export function createHistoryViews({ runner, trust, listingTuple, markUnavailable, registry, viewCommits, reject }: HistoryViewsOptions) {
+export function createHistoryViews({ runner, trust, listingTuple, markUnavailable, registry, viewCommits, probeRuns = MATCHING_PROBE_RUNS, reject }: HistoryViewsOptions) {
   let current: View | null = null;
+  // Contract Δ3: the probe runs before the first search of each `gitInstallationId` in a service session. A failed probe gives no answer to keep.
+  const probes = new Map<string, "pass" | "mismatch">();
 
   const notify = (view: View) => {
     for (const waiter of [...view.waiters]) waiter();
@@ -323,11 +345,26 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     if (view.released || view.rows === view.topology.rows) return;
     view.rows = view.topology.rows;
     view.layout.extend(view.rows);
+    if (view.search?.running) view.search.update();
     notify(view);
   }
 
-  // Contract Δ3 `loadHistory` and plan.md D2.
-  async function runLoad(view: View, need: Request<"loadHistory">["payload"]["need"], t: ProcessTarget): Promise<ViewOutcome> {
+  // Contract Δ3: a nonzero Git exit runs the 001 `checkFailedRead` steps. `value` adds the fields of the operation result.
+  async function failedRead(view: View, t: ProcessTarget, value: (extra?: object) => object): Promise<ViewOutcome> {
+    const check = await checkFailedRead(runner, t, { anchors: view.starts, shallow: view.shallow, named: view.topology.knownOids(), objects: [], failedStep: "rev-list" });
+    if (isStop(check)) {
+      if ("failed" in check) return failed(check.failed, value(refusalOf(stale(view, { code: check.failed }))));
+      return check.stop === "deadline" ? { result: "deadline", value: value({ remedy: deadlineRemedy(view) }) } : { result: "canceled", value: value() };
+    }
+    const found = await missing(view, t);
+    if (found === "canceled") return { result: "canceled", value: value() };
+    if (found === "deadline") return { result: "deadline", value: value({ remedy: deadlineRemedy(view) }) };
+    const s = stale(view, found);
+    return failed(s.code, value(refusalOf(s)));
+  }
+
+  // Contract Δ3 `loadHistory` and plan.md D2. `quiet`: the load of a search, whose progress the search sends.
+  async function runLoad(view: View, need: Request<"loadHistory">["payload"]["need"], t: ProcessTarget, quiet = false): Promise<ViewOutcome> {
     const value = (extra: object = {}) => ({ rows: view.rows, complete: view.complete, ...extra });
     if (view.stale !== null) return failed(view.stale.code, value(refusalOf(view.stale)));
     if (view.limit !== null) return { result: "limited", code: "OUTPUT_LIMIT", value: value({ reason: view.limit }) };
@@ -403,7 +440,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
         }
         if (verified) commit(view);
         const now = performance.now();
-        if (now - lastProgress >= PROGRESS_MS && registry.get(t.operationId)?.state === "running") {
+        if (!quiet && now - lastProgress >= PROGRESS_MS && registry.get(t.operationId)?.state === "running") {
           lastProgress = now;
           registry.progress(t.operationId, "history-load", { rows: topology.rows });
         }
@@ -422,7 +459,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
         operationId: t.operationId,
         context: contextOf(workspace),
         arguments: historyLoadArgs(),
-        ...(view.starts.length === 0 ? {} : { input: new TextEncoder().encode(view.starts.map((oid) => `${oid}\n`).join("")) }),
+        ...startInput(view.starts),
         environmentPolicy: "read",
         limits: { deadlineMs: HISTORY_PROCESS_DEADLINE_MS },
         stdout,
@@ -478,16 +515,174 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
       return { result: "succeeded", value: value() };
     }
     // Contract Δ3: a nonzero exit before the stop row runs the 001 `checkFailedRead` steps.
-    const check = await checkFailedRead(runner, t, { anchors: view.starts, shallow: view.shallow, named: topology.knownOids(), objects: [], failedStep: "rev-list" });
-    if (isStop(check)) {
-      if ("failed" in check) return failed(check.failed, value(refusalOf(stale(view, { code: check.failed }))));
-      return check.stop === "deadline" ? { result: "deadline", value: value({ remedy: deadlineRemedy(view) }) } : { result: "canceled", value: value() };
+    return failedRead(view, t, value);
+  }
+
+  // Contract Δ3 `searchHistory` and Δ8: the topology fingerprint check of `loadHistory`, before any search process.
+  async function fingerprintCheck(view: View, t: ProcessTarget): Promise<ViewOutcome | null> {
+    const files = await fileFingerprint(view.paths, view.workspace.objectFormat);
+    if (t.signal.aborted || view.released) return { result: "canceled" };
+    if (isStop(files)) return "failed" in files ? failed(files.failed, refusalOf(stale(view, { code: files.failed }))) : { result: "canceled" };
+    const changed = () => failed("HISTORY_CHANGED", refusalOf(stale(view, { code: "HISTORY_CHANGED", reason: "topology" })));
+    if (shallowDigest(files.shallow) !== view.fingerprint.shallow || files.grafts !== view.fingerprint.grafts) return changed();
+    const records = await readRecords(runner, t, replaceRefsArgs());
+    if (t.signal.aborted || view.released) return { result: "canceled" };
+    if ("limit" in records) return failed("OUTPUT_LIMIT", refusalOf(stale(view, { code: "OUTPUT_LIMIT" })));
+    if (isStop(records)) {
+      if ("failed" in records) return failed(records.failed, refusalOf(stale(view, { code: records.failed })));
+      return records.stop === "deadline" ? { result: "deadline" } : { result: "canceled" };
     }
-    const found = await missing(view, t);
-    if (found === "canceled") return { result: "canceled", value: value() };
-    if (found === "deadline") return { result: "deadline", value: value({ remedy: deadlineRemedy(view) }) };
-    const s = stale(view, found);
-    return failed(s.code, value(refusalOf(s)));
+    return records.replaceDigest === view.fingerprint.replace ? null : changed();
+  }
+
+  // Contract Δ3 "Matching probe" and spec FR-025: a search runs only after the probe of its Git installation passed.
+  async function matching(view: View, t: ProcessTarget): Promise<ViewOutcome | null> {
+    const unsupported = (text: string) => failed("SEARCH_UNSUPPORTED", { reason: "matching", remedy: { text, command: null } });
+    if (view.workspace.wsl !== undefined) return unsupported(WSL_MATCHING_REMEDY);
+    const key = view.installation.gitInstallationId;
+    const result = probes.get(key) ?? (await probeMatching(runner, t, probeRuns));
+    if (isStop(result)) return "failed" in result ? failed(result.failed) : result.stop === "deadline" ? { result: "deadline" } : { result: "canceled" };
+    if (result !== "failed") probes.set(key, result);
+    return result === "pass" ? null : unsupported(MATCHING_REMEDY);
+  }
+
+  // Contract Δ3 `searchHistory`. A search on an incomplete view loads it to the end inside the search operation (plan.md D4, D5).
+  async function runSearch(view: View, s: Search, text: string, previous: Search | null, t: ProcessTarget): Promise<ViewOutcome> {
+    // One load runs per view, so an older search ends first.
+    if (previous !== null) await previous.done;
+    if (t.signal.aborted || view.released) return { result: "canceled" };
+    if (view.stale !== null) return failed(view.stale.code, refusalOf(view.stale));
+    if (view.limit !== null) return { result: "limited", code: "OUTPUT_LIMIT", value: { reason: view.limit } };
+    const refused = (await fingerprintCheck(view, t)) ?? (await matching(view, t));
+    if (refused !== null) return refused;
+    if (t.signal.aborted || view.released) return { result: "canceled" };
+
+    const call = new AbortController();
+    const abortCall = () => call.abort();
+    t.signal.addEventListener("abort", abortCall, { once: true });
+    // The side whose failure ended the other side decides the outcome.
+    let stopper: "search" | "load" | null = null;
+    const stop = (side: "search" | "load") => {
+      stopper ??= side;
+      call.abort();
+    };
+    let last = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const send = () => {
+      timer = null;
+      last = performance.now();
+      if (registry.get(t.operationId)?.state === "running") registry.progress(t.operationId, "history-search", { matches: s.merge.count, settled: s.merge.settled });
+    };
+    // Contract Δ5: at most HISTORY_PROGRESS_EVENTS_PER_SECOND events. A held event follows at the end of the interval.
+    const progress = () => {
+      if (timer !== null) return;
+      const wait = last + PROGRESS_MS - performance.now();
+      if (wait <= 0) send();
+      else timer = setTimeout(send, wait);
+    };
+    s.update = () => {
+      s.merge.advance(view.rows);
+      if (s.merge.broken) stop("search");
+      progress();
+      notify(view);
+    };
+    const lines = matchStream(view.workspace.objectFormat, (oid) => s.merge.add(oid, view.rows));
+    const stdout: Collector = {
+      push(chunk: Uint8Array): void {
+        lines.push(chunk);
+        if (lines.limited) stop("search");
+        s.update();
+      },
+      get bytes() {
+        return lines.bytes;
+      },
+      records: 0,
+      get limited() {
+        return lines.limited || s.merge.broken;
+      },
+    };
+    const searching = (async (): Promise<GitExit | ErrorCode | null> => {
+      try {
+        return await runner.run({
+          operationId: t.operationId,
+          context: contextOf(view.workspace),
+          arguments: historySearchArgs(text),
+          ...startInput(view.starts),
+          environmentPolicy: "search",
+          limits: { deadlineMs: HISTORY_PROCESS_DEADLINE_MS },
+          stdout,
+          stderr: small(),
+          signal: call.signal,
+        });
+      } catch (error) {
+        if (error instanceof RunnerRefusal) return error.code;
+        if (call.signal.aborted) return null;
+        throw error;
+      }
+    })().then((exit) => {
+      if (exit === null || typeof exit === "string" || exit.exitCode !== 0 || exit.deadline !== undefined || exit.diagnosticLimit || lines.malformed) stop("search");
+      else {
+        s.merge.endStream(view.rows);
+        s.update();
+      }
+      return exit;
+    });
+    const loading = view.complete
+      ? Promise.resolve(null)
+      : (async () => {
+          view.load = t.operationId;
+          try {
+            const outcome = await runLoad(view, { end: true }, { ...t, signal: call.signal }, true);
+            if (outcome.result !== "succeeded") stop("load");
+            return outcome;
+          } finally {
+            if (view.load === t.operationId) view.load = null;
+          }
+        })();
+    let exit: GitExit | ErrorCode | null;
+    let loaded: ViewOutcome | null;
+    try {
+      [exit, loaded] = await Promise.all([searching, loading]);
+    } finally {
+      t.signal.removeEventListener("abort", abortCall);
+      if (timer !== null) clearTimeout(timer);
+    }
+
+    if (t.signal.aborted || view.released) return { result: "canceled" };
+    if (stopper === "load" && loaded !== null) {
+      // The search result holds only the refusal fields of the load result.
+      const v = ("value" in loaded ? loaded.value : undefined) as { reason?: ViewReason; remedy?: Remedy } | undefined;
+      return { ...loaded, value: { ...(v?.reason === undefined ? {} : { reason: v.reason }), ...(v?.remedy === undefined ? {} : { remedy: v.remedy }) } };
+    }
+    if (s.merge.broken) return failed("HISTORY_CHANGED", { reason: "order" });
+    if (lines.malformed) return failed("MALFORMED_GIT_OUTPUT", refusalOf(stale(view, { code: "MALFORMED_GIT_OUTPUT" })));
+    if (exit === null) return { result: "canceled" };
+    if (typeof exit === "string") return failed(exit);
+    if (exit.deadline !== undefined) return { result: "deadline", value: { remedy: deadlineRemedy(view) } };
+    if (exit.diagnosticLimit) return failed("OUTPUT_LIMIT", refusalOf(stale(view, { code: "OUTPUT_LIMIT" })));
+    if (exit.exitCode !== 0) return failedRead(view, t, (extra = {}) => extra);
+    // Contract Δ3 "Merge into the view": when the load completes, the queue must be empty.
+    if (s.merge.waiting > 0) return failed("HISTORY_CHANGED", { reason: "order" });
+    return { result: "succeeded", value: { matches: s.merge.count, shallow: view.shallow.kind === "file" } };
+  }
+
+  // Contract Δ3 `readHistoryRows` with `searchId`. Filter mode counts matches, and `from` of `at: {match}` is an inclusive view row.
+  function resolveSearch(view: View, m: SearchMerge, at: Request<"readHistoryRows">["payload"]["at"], count: number, filter: boolean): number | "none" | "unknown" {
+    if ("match" in at) {
+      const q = m.matchTarget(at.match, at.from);
+      return typeof q === "number" && !filter ? m.rowOf(q) : q;
+    }
+    if (!filter) return resolve(view, at, count);
+    if ("row" in at) return at.row < m.count ? at.row : m.final ? "none" : "unknown";
+    if ("oid" in at) {
+      const row = view.topology.rowOf(at.oid);
+      if (row >= 0 && row < m.known) {
+        const q = m.seqOf(row);
+        return q >= 0 ? q : "none";
+      }
+      return m.final ? "none" : "unknown";
+    }
+    return m.final ? (m.count === 0 ? "none" : Math.max(0, m.count - count)) : "unknown";
   }
 
   // Contract Δ3 `readHistoryRows` target resolution. A number is the first row.
@@ -539,30 +734,36 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     return answers as (CommitText | "large")[];
   }
 
-  async function serveRows(view: View, p: Request<"readHistoryRows">["payload"], t: ProcessTarget): Promise<ViewOutcome> {
-    const state = () => ({ rowCount: view.rows, lanes: view.layout.lanes, complete: view.complete });
+  // `s` is the search of `searchId`. In filter mode, `index` and the list count matches (contract Δ3).
+  async function serveRows(view: View, p: Request<"readHistoryRows">["payload"], t: ProcessTarget, s: Search | null): Promise<ViewOutcome> {
+    const filter = p.mode === "filter" ? s : null;
+    const state = () => ({ rowCount: view.rows, lanes: filter === null ? view.layout.lanes : filter.merge.layout.lanes, complete: view.complete });
     let start: number;
     for (;;) {
       if (t.signal.aborted || view.released) return { result: "canceled" };
-      const target = resolve(view, p.at, p.count);
+      // The search ended without success, so its matches are gone (contract Δ3).
+      if (s !== null && view.search !== s) return { result: "canceled" };
+      const target = s === null ? resolve(view, p.at, p.count) : resolveSearch(view, s.merge, p.at, p.count, filter !== null);
       if (typeof target === "number") {
         start = target;
         break;
       }
-      // Contract Δ3: while the target is unknown and a load of the view runs, the request waits.
-      if (target === "none" || view.load === null) return { result: "succeeded", value: withBytes({ target, ...state() }) };
+      // Contract Δ3: while the target is unknown and a load or search of the view runs, the request waits.
+      if (target === "none" || (view.load === null && view.search?.running !== true)) return { result: "succeeded", value: withBytes({ target, ...state() }) };
       await change(view, t.signal);
     }
-    const end = Math.min(start + p.count, view.rows);
+    const end = Math.min(start + p.count, filter === null ? view.rows : filter.merge.count);
+    const rowAt = (i: number) => (filter === null ? start + i : filter.merge.rowOf(start + i));
     const { topology, layout } = view;
-    const oids = Array.from({ length: end - start }, (_, i) => topology.oid(start + i));
-    const cells = layout.cellsOf({ start, end });
+    const oids = Array.from({ length: end - start }, (_, i) => topology.oid(rowAt(i)));
+    const cells = filter === null ? layout.cellsOf({ start, end }) : filter.merge.cells(start, end);
     const text = p.text === "none" ? null : await readText(view, t, oids);
     if (text !== null && !Array.isArray(text)) return text;
     const head = view.head.state === "unborn" ? null : view.head.oid;
     const rows = oids.map((oid, i) => {
-      const index = start + i;
-      const row: Record<string, unknown> = { index, oid, parents: topology.parents(index), cell: cells[i], labels: view.labels.get(oid) ?? [], checkout: oid === head };
+      const index = rowAt(i);
+      const row: Record<string, unknown> = { index: start + i, oid, parents: topology.parents(index), cell: cells[i], labels: view.labels.get(oid) ?? [], checkout: oid === head };
+      if (s !== null) row.match = filter !== null || s.merge.stateOf(index);
       const found = text?.[i];
       if (found === "large") row.textLimit = true;
       else if (found !== undefined) {
@@ -675,6 +876,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
           stale: null,
           load: null,
           text: null,
+          search: null,
           operations: new Set(),
           waiters: new Set(),
           released: false,
@@ -696,7 +898,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
       const view = find(request.repositoryId, viewId);
       if (view === null) return reject(request.requestId, "UNKNOWN_TARGET");
       if ("oid" in need && !isObjectId(need.oid, view.workspace.objectFormat)) return reject(request.requestId, "INVALID_REQUEST");
-      if (view.load !== null) return reject(request.requestId, "BUSY");
+      // Contract Δ3: a load while a load or a search of the view runs gives BUSY.
+      if (view.load !== null || view.search?.running === true) return reject(request.requestId, "BUSY");
       const { operationId, signal } = registry.start("loadHistory", request.requestId);
       registry.apply(operationId, { type: "valid-read" });
       view.load = operationId;
@@ -712,10 +915,11 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
       const p = request.payload;
       const view = find(request.repositoryId, p.viewId);
       if (view === null) return reject(request.requestId, "UNKNOWN_TARGET");
-      // Batch 3 adds `searchHistory`. Until then no search exists, so every `searchId` is unknown.
-      if (p.searchId !== undefined) return reject(request.requestId, "UNKNOWN_TARGET");
+      // Contract Δ3: an ended or unknown `searchId` gives UNKNOWN_TARGET.
+      const search = p.searchId === undefined ? null : view.search;
+      if (p.searchId !== undefined && search?.operationId !== p.searchId) return reject(request.requestId, "UNKNOWN_TARGET");
       // Contract Δ3: `at: {match}` needs the matches of one search, so it requires `searchId`.
-      if ("match" in p.at) return reject(request.requestId, "INVALID_REQUEST");
+      if ("match" in p.at && search === null) return reject(request.requestId, "INVALID_REQUEST");
       if ("oid" in p.at && !isObjectId(p.at.oid, view.workspace.objectFormat)) return reject(request.requestId, "INVALID_REQUEST");
       const { operationId, signal } = registry.start("readHistoryRows", request.requestId);
       registry.apply(operationId, { type: "valid-read" });
@@ -724,10 +928,43 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
         if (view.text !== null) registry.cancel(view.text);
         view.text = operationId;
       }
-      serveRows(view, p, { operationId, signal, workspace: view.workspace }).then(
+      serveRows(view, p, { operationId, signal, workspace: view.workspace }, search).then(
         (outcome) => finish(view, operationId, outcome),
         () => finish(view, operationId, failed("GIT_FAILED")),
       );
+    },
+
+    // Contract Δ3 `searchHistory`. It takes no read slot. A new search of the view cancels the old one (spec FR-030).
+    search(request: Request<"searchHistory">): void {
+      const view = find(request.repositoryId, request.payload.viewId);
+      if (view === null) return reject(request.requestId, "UNKNOWN_TARGET");
+      const previous = view.search?.running === true ? view.search : null;
+      // Contract Δ3: a search while a load of the view runs gives BUSY. The load of an older search ends with that search.
+      if (view.load !== null && view.load !== previous?.operationId) return reject(request.requestId, "BUSY");
+      const { operationId, signal } = registry.start("searchHistory", request.requestId);
+      // Spec SC-009: the text checks run before any Git process. The refusal carries the reason only (contract Δ9).
+      const checked = filterText(request.payload.text, FILTER_TEXT_BYTES);
+      if (checked.kind !== "search") return void registry.apply(operationId, { type: "invalid-approval", code: "UNSUPPORTED_FILTER_TEXT" }, checked.kind === "refused" ? { reason: checked.reason } : {});
+      registry.apply(operationId, { type: "valid-read" });
+      if (previous !== null) registry.cancel(previous.operationId);
+      let settle = () => {};
+      const shallow = view.shallow;
+      const s: Search = {
+        operationId,
+        merge: new SearchMerge(view.topology, (oid) => shallow.kind === "file" && shallow.commits.has(oid), viewCommits),
+        running: true,
+        done: new Promise((resolve) => (settle = resolve)),
+        update: () => {},
+      };
+      view.search = s;
+      view.operations.add(operationId);
+      const end = (outcome: ViewOutcome) => {
+        s.running = false;
+        if (outcome.result !== "succeeded" && view.search === s) view.search = null;
+        settle();
+        finish(view, operationId, outcome);
+      };
+      runSearch(view, s, checked.text, previous, { operationId, signal, workspace: view.workspace }).then(end, () => end(failed("GIT_FAILED")));
     },
 
     // Contract Δ3 `closeHistory`: it ends the operations of the view and frees its memory.

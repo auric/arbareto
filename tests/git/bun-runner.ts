@@ -116,7 +116,7 @@ const WSL_TEXTS = { wrapper: wslProcess.wrapper.join("\n"), anchor: wslProcess.a
 const WSL_START_CAP_MS = 60_000;
 const WSL_PREFIX = /^\\\\(?:wsl\$|wsl\.localhost)\\([^\\/]+)(?:[\\/](.*))?$/i;
 
-export type WslMode = "probe" | "read" | "mutation" | "network";
+export type WslMode = "probe" | "read" | "mutation" | "network" | "search";
 
 // The approved Linux Git of one distro (data-model §1). The shell takes it from its own parse of the probe output.
 export interface WslInstallation {

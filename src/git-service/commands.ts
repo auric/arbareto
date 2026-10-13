@@ -202,6 +202,34 @@ export function historyLoadArgs(): string[] {
   return [NO_LAZY_FETCH, "--no-optional-locks", "rev-list", "--parents", "--date-order", "--stdin"];
 }
 
+// Feature 002 contract Δ3 `searchHistory` and research.md R4: literal, case-folding matching of the UTF-8 message, with the start points on stdin.
+// An argv item cannot hold NUL, and an empty pattern matches every message.
+function searchArgs(patterns: readonly string[]): string[] {
+  const greps = patterns.map((text) => {
+    if (typeof text !== "string" || text.length === 0 || text.includes("\0")) throw new TypeError("filter text refused");
+    return `--grep=${text}`;
+  });
+  return read("-c", "i18n.logOutputEncoding=UTF-8", "rev-list", "--date-order", "--fixed-strings", "--regexp-ignore-case", ...greps, "--stdin");
+}
+
+export function historySearchArgs(text: string): string[] {
+  return searchArgs([text]);
+}
+
+// Feature 002 contract Δ3 "Matching probe": a new bare repository in `dir`, outside every repository. `--template=` copies no template file (research.md R4).
+export function probeInitArgs(dir: string): string[] {
+  return [NO_LAZY_FETCH, "init", "--bare", "-q", "--template=", "--object-format=sha1", pathItem(dir)];
+}
+
+export function probeImportArgs(dir: string): string[] {
+  return [NO_LAZY_FETCH, `--git-dir=${pathItem(dir)}`, "fast-import", "--quiet"];
+}
+
+// One probe run: the search array with one `--grep` per pattern. An explicit `--git-dir` gets no ownership refusal (research.md R4).
+export function probeSearchArgs(dir: string, patterns: readonly string[]): string[] {
+  return [NO_LAZY_FETCH, `--git-dir=${pathItem(dir)}`, ...searchArgs(patterns).slice(1)];
+}
+
 // A path is relative to the worktree root, where Git runs (research R3). An argv item cannot hold NUL, and an empty pathspec matches every path.
 function pathItem(path: string): string {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) throw new TypeError("path refused");

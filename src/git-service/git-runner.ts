@@ -56,8 +56,8 @@ export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStar
 // Contract §6 "Channel frames" `register`: the Git form, the repository form, or the WSL form (§11).
 export type RegisterRequest = RegisterRequestBase | RegisterWslCall;
 
-// Contract §7 environment policies. `mutation-trace2` exists only after a supporting T091 result.
-export type EnvironmentPolicy = "probe" | "read" | "mutation" | "network";
+// Contract §7 environment policies, and `search` of feature 002 contract Δ7. `mutation-trace2` exists only after a supporting T091 result.
+export type EnvironmentPolicy = "probe" | "read" | "mutation" | "network" | "search";
 
 // Contract §5: `git` is the 30-second deadline of every other Git process. `network` is a §12 update process.
 export type ProcessKind = "git" | "commit" | "network";
@@ -248,7 +248,7 @@ export function checkCall(call: GitCall): void {
   } else if (args[0] !== "--no-lazy-fetch") {
     refuse("first argument must be --no-lazy-fetch");
   }
-  if (bootstrap ? policy !== "probe" : !["read", "mutation", "network"].includes(policy)) refuse("environment policy");
+  if (bootstrap ? policy !== "probe" : !["read", "mutation", "network", "search"].includes(policy)) refuse("environment policy");
   if (input !== undefined && (!(input instanceof Uint8Array) || input.length > STREAMED_PROCESS_INPUT_BYTES)) refuse("input");
   if (transaction !== undefined && !(policy === "mutation" && fits(Transaction, transaction))) refuse("transaction");
   // Contract §6 "Channel frames" `limits`. The WSL distro start cap waits for §11.

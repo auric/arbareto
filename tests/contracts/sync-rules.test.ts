@@ -122,6 +122,19 @@ describe("D4 push destination", () => {
     expect(decide({}, [["remote.origin.mirror", "maybe"]])).toEqual({ kind: "refused", reason: "invalid-config" });
   });
 
+  // Research R16 m: remote.c `handle_config` reads each `remote.<name>.mirror` entry with `git_config_bool`, which dies on a bad value.
+  test("an invalid mirror value of any remote gives invalid-config, also without an upstream", () => {
+    const invalid: PushDecision = { kind: "refused", reason: "invalid-config" };
+    expect(decide({}, [["remote.fork.mirror", "maybe"]])).toEqual(invalid);
+    expect(decide(noUpstream, [["remote.fork.mirror", "maybe"]])).toEqual(invalid);
+    expect(decide({}, [["remote.gone.mirror", "2x"]])).toEqual(invalid);
+    expect(decide({}, [["remote.a.b.mirror", "maybe"]])).toEqual(invalid);
+    expect(decide({}, [["remote..mirror", "maybe"]])).toEqual(invalid);
+    expect(decide({}, [["remote.fork.mirror", "maybe"], ["remote.fork.mirror", "false"]])).toEqual(invalid);
+    // remote.c skips a remote name that starts with "/", and `remote.mirror` names no remote.
+    expect(decide({}, [["remote./x.mirror", "maybe"], ["remote.mirror", "maybe"], ["remote.fork.mirrors", "maybe"], ["branch.fork.mirror", "maybe"]])).toEqual(branchDest);
+  });
+
   // T005 (d) observed these destinations from `push --dry-run --porcelain` on the same fixture variants.
   test("recorded records give the destination of Git's own push", () => {
     const remotes = ["origin", "second"];

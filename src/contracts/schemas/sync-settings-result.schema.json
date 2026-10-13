@@ -1,0 +1,200 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "sshClient": {
+          "type": "string",
+          "enum": [
+            "git",
+            "plink"
+          ]
+        },
+        "defaultPullAction": {
+          "type": "string",
+          "enum": [
+            "pull",
+            "pull-merge",
+            "pull-rebase",
+            "fetch",
+            "fetch-all"
+          ]
+        },
+        "plinkPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "programs": {
+          "maxItems": 3,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "program": {
+                "type": "string",
+                "enum": [
+                  "plink",
+                  "pageant",
+                  "puttygen"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "present": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "program",
+              "path",
+              "present"
+            ],
+            "additionalProperties": false,
+            "title": "SyncProgram"
+          }
+        },
+        "remoteKeyFiles": {
+          "maxItems": 256,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "worktreeKey": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "remote": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "path": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "required": [
+              "worktreeKey",
+              "remote",
+              "path"
+            ],
+            "additionalProperties": false,
+            "title": "KeyFile"
+          }
+        },
+        "defaultCloneFolder": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastCloneParent": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "keyProposals": {
+          "maxItems": 256,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "worktreeKey": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "remote": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktreeKey",
+              "remote",
+              "value"
+            ],
+            "additionalProperties": false,
+            "title": "KeyProposal"
+          }
+        }
+      },
+      "required": [
+        "sshClient",
+        "defaultPullAction",
+        "plinkPath",
+        "programs",
+        "remoteKeyFiles",
+        "defaultCloneFolder",
+        "lastCloneParent"
+      ],
+      "additionalProperties": false,
+      "title": "SyncSettings"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "missing",
+            "unreadable",
+            "version",
+            "exit",
+            "not-ready"
+          ]
+        },
+        "program": {
+          "type": "string",
+          "enum": [
+            "plink",
+            "pageant",
+            "puttygen"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "reason",
+        "program",
+        "path"
+      ],
+      "additionalProperties": false,
+      "title": "PuttyRefused"
+    }
+  ],
+  "title": "SyncSettingsResult"
+}

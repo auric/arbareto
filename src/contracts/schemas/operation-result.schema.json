@@ -39,7 +39,18 @@
         "getOperation",
         "requestClose",
         "currentSession",
-        "dismissRecoveryMarker"
+        "dismissRecoveryMarker",
+        "readTracking",
+        "reviewSync",
+        "sync",
+        "clone",
+        "connectInTerminal",
+        "readSyncSettings",
+        "setSshClient",
+        "setDefaultPullAction",
+        "chooseSyncPath",
+        "clearSyncPath",
+        "launchPuttygen"
       ]
     },
     "state": {
@@ -72,7 +83,14 @@
         "update",
         "reconciliation",
         "history-load",
-        "history-search"
+        "history-search",
+        "sync-fetch",
+        "sync-merge",
+        "sync-rebase",
+        "sync-push",
+        "sync-continue",
+        "clone",
+        "pageant"
       ]
     },
     "code": {
@@ -127,7 +145,11 @@
         "RECOVERY_MARKER_FAILED",
         "HISTORY_CHANGED",
         "UNSUPPORTED_FILTER_TEXT",
-        "SEARCH_UNSUPPORTED"
+        "SEARCH_UNSUPPORTED",
+        "SYNC_UNAVAILABLE",
+        "PUSH_REJECTED",
+        "PUTTY_UNAVAILABLE",
+        "DESTINATION_NOT_EMPTY"
       ]
     },
     "cause": {

@@ -82,6 +82,7 @@
     "tests/contracts/submodules.test.ts",
     "tests/contracts/support.test.ts",
     "tests/contracts/sync-commands.test.ts",
+    "tests/contracts/sync-contract.test.ts",
     "tests/contracts/sync-parsers.test.ts",
     "tests/contracts/sync-rules.test.ts",
     "tests/contracts/text-scale.test.ts",

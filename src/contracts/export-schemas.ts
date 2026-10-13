@@ -19,6 +19,7 @@ import {
 import {
   ApproveTrustResult,
   ChooseGitResult,
+  CloneResult,
   EnvironmentResult,
   LoadHistoryResult,
   NativeFirstEnvelope,
@@ -30,16 +31,20 @@ import {
   ReadEntriesResult,
   ReadHistoryRowsResult,
   ReadRefsResult,
+  ReadTrackingResult,
   ReadTrustResult,
   ReadWorkspaceResult,
   RecentRepositoriesResult,
   RegistrationResult,
   RendererEnvelope,
   Response,
+  ReviewSyncResult,
   RevokeTrustResult,
   SearchHistoryResult,
   ServiceEnvelope,
   SessionResult,
+  SyncResult,
+  SyncSettingsResult,
 } from "./envelope";
 
 // Contract §1 "Schemas": `bun run export:schemas` writes these files, and `--check` refuses a stale one.
@@ -70,6 +75,12 @@ export const EXPORTED = {
   "revoke-trust-result": RevokeTrustResult,
   "operation-result": OperationResult,
   "session-result": SessionResult,
+  // Feature 003 contract Δ3.
+  "read-tracking-result": ReadTrackingResult,
+  "review-sync-result": ReviewSyncResult,
+  "sync-result": SyncResult,
+  "clone-result": CloneResult,
+  "sync-settings-result": SyncSettingsResult,
   handshake: Handshake,
   "handshake-reply": HandshakeReply,
   "trust-record": TrustRecord,

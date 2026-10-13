@@ -5,18 +5,18 @@
 // No rule reads message text. Configuration values follow Git's last-value rule.
 
 import { isUtf8 } from "node:buffer";
+import { FETCH_FLAGS } from "../contracts/envelope";
+import { SYNC_FETCH_LISTED_REFS } from "../contracts/limits";
 import { isObjectId, type ObjectFormat } from "./commands";
 import { type ConfigEntry, parseMaybeBool } from "./trust";
 
-// Contract Δ5 `SYNC_FETCH_LISTED_REFS`. shortcut: a local copy until P2 adds it to `limits.ts`.
-export const SYNC_FETCH_LISTED_REFS = 1000;
+export { FETCH_FLAGS, SYNC_FETCH_LISTED_REFS };
 
 const LF = 0x0a;
 const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 // ---- Fetch porcelain (git-fetch(1) OUTPUT) ----
 
-export const FETCH_FLAGS = [" ", "+", "-", "t", "*", "!", "="] as const;
 export type FetchFlag = (typeof FETCH_FLAGS)[number];
 
 export interface FetchUpdate {
@@ -304,7 +304,12 @@ function destinationSteps(r: PushRecord, remotes: readonly string[], config: rea
   return { kind: "refused", reason: "invalid-config" };
 }
 
+// remote.c `handle_config` reads each `remote.<name>.mirror` entry with `git_config_bool`, which stops every push on a bad value.
+// It skips a name that starts with "/" (research R16 m; Git 2.56.0.windows.2 also on another remote and in either order).
+const isMirrorKey = (key: string) => key.startsWith("remote.") && key.endsWith(".mirror") && key.length >= "remote..mirror".length && key[7] !== "/";
+
 export function decidePushDestination(record: PushRecord, remotes: readonly string[], config: readonly ConfigValue[]): PushDecision {
+  if (config.some((e) => isMirrorKey(e.key) && parseMaybeBool(e.value) < 0)) return { kind: "refused", reason: "invalid-config" };
   const steps = destinationSteps(record, remotes, config);
   if (record.upstream !== "") return steps;
   return { kind: "panel", prefill: steps.kind === "destination" ? steps.destination : null };

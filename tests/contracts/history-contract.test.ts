@@ -261,7 +261,8 @@ describe("contract Δ7 and Δ11 process texts", () => {
   });
 
   test("a run frame takes the environment policy search", () => {
-    expect(EnvironmentPolicy.options).toEqual(["probe", "read", "mutation", "network", "search"]);
+    // Feature 003 contract Δ6 adds `remote` and `integrate`.
+    expect(EnvironmentPolicy.options).toEqual(["probe", "read", "mutation", "network", "search", "remote", "integrate"]);
   });
 
   test("the WSL wrapper mode search exports LC_ALL=C.UTF-8 and ends its scope like read", () => {

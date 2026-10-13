@@ -5,7 +5,7 @@ import { Handshake } from "../contracts/channel";
 import { validateRequest, type Response, type ServiceRequest } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
 import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
-import { isIdentifier, type OperationName } from "../contracts/operations";
+import { isIdentifier } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
 import { isWindows } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
@@ -41,7 +41,7 @@ export type { Handshake } from "../contracts/channel";
 type Fields = Record<string, unknown>;
 
 // Contract §3 without the shell-only operations. The shell forwards `openRecentRepository` as `restoreWorkspace`.
-type ServiceOperation = Exclude<OperationName, "requestClose" | "currentSession" | "listRecentRepositories" | "openRecentRepository" | "removeRecentRepository">;
+type ServiceOperation = ServiceRequest["operation"];
 type Handler<K extends ServiceOperation> = (request: Extract<ServiceRequest, { operation: K }>) => void;
 
 export interface SessionOptions {
@@ -635,6 +635,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       }),
     getOperation: (request) => operationTarget(request, (view) => respond({ requestId: request.requestId, state: "succeeded", result: view })),
     dismissRecoveryMarker,
+    // Feature 003 P4, P5, and P7 add these handlers. Until then the service answers SERVICE_UNAVAILABLE.
+    readTracking: undefined,
+    reviewSync: undefined,
+    sync: undefined,
+    clone: undefined,
+    connectInTerminal: undefined,
   };
 
   function receiveHandshake(frame: Fields) {
@@ -685,7 +691,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     const echo = { operation: request.operation, ...("repositoryGeneration" in request && request.repositoryGeneration !== undefined ? { repositoryGeneration: request.repositoryGeneration } : {}), ...("selectionId" in request ? { selectionId: request.selectionId } : {}) };
     if (request.operation === "readWorkspace" || "repositoryGeneration" in echo || "selectionId" in echo) echoes.set(request.requestId, echo);
     if (request.sessionId !== sessionId) return reject(requestId, "UNKNOWN_TARGET");
-    if ("repositoryId" in request && !registrations.has(request.repositoryId)) return reject(requestId, "UNKNOWN_TARGET");
+    // Feature 003 `connectInTerminal` names no repository for a clone target.
+    if ("repositoryId" in request && request.repositoryId !== undefined && !registrations.has(request.repositoryId)) return reject(requestId, "UNKNOWN_TARGET");
     const handler = handlers[request.operation] as Handler<ServiceOperation> | undefined;
     if (!handler) return reject(requestId, "SERVICE_UNAVAILABLE");
     handler(request as never);

@@ -96,6 +96,18 @@ describe("golden vectors", () => {
     }
   });
 
+  // Feature 003 contract Δ10: vectors for the new operations, codes, policies, and private requests.
+  test("each feature 003 operation, code, policy, and private request has a valid vector", () => {
+    const texts = (schema: string) => vectors.filter(({ kind, vector }) => kind === "valid" && vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
+    const operations = [...texts("renderer-envelope"), ...texts("service-envelope")].map((t) => t.operation);
+    const added = ["readTracking", "reviewSync", "sync", "clone", "connectInTerminal", "readSyncSettings", "setSshClient", "setDefaultPullAction", "chooseSyncPath", "clearSyncPath", "launchPuttygen"];
+    expect(operations).toEqual(expect.arrayContaining(added));
+    expect(texts("response").map((t) => t.code)).toEqual(expect.arrayContaining(["SYNC_UNAVAILABLE", "PUSH_REJECTED", "PUTTY_UNAVAILABLE", "DESTINATION_NOT_EMPTY"]));
+    expect(texts("process-request").map((t) => t.environmentPolicy)).toEqual(expect.arrayContaining(["remote", "integrate"]));
+    expect(texts("process-request").map((t) => t.contextKind)).toContain("clone");
+    for (const schema of ["process-request", "process-reply"]) expect(texts(schema).map((t) => t.type)).toEqual(expect.arrayContaining(["destinationFacts", "pageant", "terminal"]));
+  });
+
   const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));
   test("each invalid vector of a fault schema carries its repair", () => {
     expect(faulted.filter(({ vector }) => vector.repair === undefined).map(({ name }) => name)).toEqual([]);

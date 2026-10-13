@@ -1,0 +1,6 @@
+{
+  "schema": "process-reply",
+  "expected": "valid",
+  "platform": "windows",
+  "text": "{\"type\":\"pageant\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"result\":\"failed\",\"reason\":\"not-ready\",\"program\":\"pageant\",\"path\":\"C:\\\\Program Files\\\\PuTTY\\\\pageant.exe\"}"
+}

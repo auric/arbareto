@@ -3,10 +3,8 @@
 
 // Contract Δ3 and plan.md D3 to D7: the argument arrays of fetch, push, pull, the conflict actions, and clone.
 
+import { SYNC_LEASE_COMMITS } from "../contracts/limits";
 import { isObjectId, isRefName, type ObjectFormat } from "./commands";
-
-// Contract Δ5 `SYNC_LEASE_COMMITS`. shortcut: a local copy until P2 adds it to `limits.ts`.
-const SYNC_LEASE_COMMITS = 100;
 
 // Contract §7 "Missing objects": every app Git command starts with this option.
 const L = "--no-lazy-fetch";

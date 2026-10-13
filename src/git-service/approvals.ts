@@ -10,6 +10,8 @@ import type { PhysicalIdentity } from "./identity";
 import type { Head, IndexFingerprint, OperationState, TrustApproval, WorkingVersion } from "./snapshot";
 
 export type Direction = "stage" | "unstage";
+// Feature 003 contract Δ3 `applyFile`: only a file action takes `resolve`.
+export type FileDirection = Direction | "resolve";
 
 // Contract §4: the values that a comparison binds, in the order of its list.
 export interface ComparisonBinding {
@@ -66,7 +68,7 @@ interface Issued {
   generation: number;
 }
 export type HunkApproval = Issued & { kind: "hunk"; comparisonId: string; hunkId: string; direction: Direction; binding: HunkBinding };
-export type FileApproval = Issued & { kind: "file"; comparisonId: string; entryId: string; direction: Direction; binding: FileBinding };
+export type FileApproval = Issued & { kind: "file"; comparisonId: string; entryId: string; direction: FileDirection; binding: FileBinding };
 export type CommitReview = Issued & { kind: "commit"; reviewToken: string; binding: CommitBinding };
 export type SubmoduleReview = Issued & { kind: "submodule"; reviewToken: string; binding: SubmoduleBinding };
 export type Approval = HunkApproval | FileApproval | CommitReview | SubmoduleReview;

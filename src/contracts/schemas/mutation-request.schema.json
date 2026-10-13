@@ -29,14 +29,16 @@
             "applyHunk",
             "applyFile",
             "commit",
-            "updateSubmodules"
+            "updateSubmodules",
+            "sync"
           ]
         },
         "direction": {
           "type": "string",
           "enum": [
             "stage",
-            "unstage"
+            "unstage",
+            "resolve"
           ]
         },
         "worktreeRoot": {

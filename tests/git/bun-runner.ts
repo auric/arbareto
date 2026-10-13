@@ -508,6 +508,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!wsl && wslParts(repository.worktreeRoot) !== null) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
       return { program, cwd: repository.worktreeRoot, wsl };
     }
+    // Feature 003 P3 and P7 bind the `clone` context. Until then this runner refuses it, as the shell does.
+    if (context.contextKind === "clone") throw unknownTarget();
     const bound = contexts.get(context.bootstrapId);
     if (!bound || bound.kind !== context.contextKind || (bound.owner ?? operationId) !== operationId) throw unknownTarget();
     bound.owner = operationId;

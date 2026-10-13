@@ -52,6 +52,11 @@ const WRITES: [string, string[], string[]][] = [
     [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", "--set-upstream", "--", "up/stream", "refs/heads/a/b:refs/heads/a/b"],
   ],
   [
+    "triangular push",
+    sync.pushArgs("fork", "topic", "refs/heads/topic", { setUpstream: false, lease: null }, "sha1"),
+    [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", "--", "fork", "refs/heads/topic:refs/heads/topic"],
+  ],
+  [
     "force push with lease",
     sync.pushArgs("origin", "main", "refs/heads/trunk", { setUpstream: false, lease: T }, "sha1"),
     [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", `--force-with-lease=refs/heads/trunk:${T}`, "--", "origin", "refs/heads/main:refs/heads/trunk"],
@@ -84,6 +89,12 @@ describe("sync argv vectors", () => {
   test("no array carries a prune, tag, autostash, or plain force option", () => {
     const refused = /^(?:--prune.*|-p|--tags|-t|--no-tags|--autostash|--force|-f|\+.*)$/;
     for (const [, args] of [...READS, ...WRITES]) for (const item of args) expect(refused.test(item)).toBe(false);
+  });
+
+  // Contract Δ3 `reviewSync` and plan.md D4: the review contacts no remote.
+  test("no review array contacts a remote", () => {
+    const network = ["fetch", "push", "pull", "clone", "ls-remote", "--dry-run", "remote-https", "upload-pack", "receive-pack"];
+    for (const [, args] of READS) for (const item of args) expect(network).not.toContain(item);
   });
 
   test("fetch, push, and clone carry --no-recurse-submodules", () => {

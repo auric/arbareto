@@ -84,8 +84,9 @@ const removed = (path: string): ChangedEntry => ({ path: hex(bytes(path)), mode:
 const refused = (reason: string): Normalized => ({ direction: null, code: "UNSUPPORTED_COMPARISON", reason });
 
 describe("closed reason list (contract §4 'File staging')", () => {
+  // Feature 003 contract Δ4 adds `missing`.
   test("FILE_ACTION_REASONS holds exactly the contract reasons", () => {
-    expect<string[]>([...FILE_ACTION_REASONS].sort()).toEqual(["LFS", "blob-proof", "filter", "index-flag", "path", "rename", "size", "submodule", "symlink", "type"].sort());
+    expect<string[]>([...FILE_ACTION_REASONS].sort()).toEqual(["LFS", "blob-proof", "filter", "index-flag", "path", "rename", "size", "submodule", "symlink", "type", "missing"].sort());
   });
 });
 
@@ -396,13 +397,28 @@ describe("Mark resolved: the decision resolve (contract Δ4, data-model §9, T01
     return concat(`u ${xy} ${sub} ${modes.join(" ")} ${mW} ${oids.join(" ")} `, path);
   };
   const resolveInput = (record: Uint8Array, path: string | Uint8Array = "c.txt", over: Partial<FileActionInput> = {}) => input("conflicted", record, path, over);
-  const RESOLVE = { direction: "resolve", changedPaths: [{ path: hex(bytes("c.txt")) }] };
+  const RESOLVE = { direction: "resolve", changedPaths: [{ path: hex(bytes("c.txt")), mode: "100644" }] };
+  // The `update-index --index-info` mode as octal text.
   const norm = (value: ReturnType<typeof decideResolve>) =>
-    value.direction === "resolve" ? { direction: "resolve", changedPaths: value.changedPaths.map((p) => ({ path: hex(p.path) })) } : value;
+    value.direction === "resolve" ? { direction: "resolve", changedPaths: value.changedPaths.map((p) => ({ path: hex(p.path), mode: p.mode.toString(8) })) } : value;
   const refuse = (reason: ResolveReason): ResolveDecision => ({ direction: null, code: "UNSUPPORTED_COMPARISON", reason });
 
   test("each accepted unmerged kind with a regular working file gives resolve", () => {
     for (const xy of ["UU", "AA", "AU", "UA", "DU", "UD"]) expect(norm(decideResolve(resolveInput(conflict(xy))))).toEqual(RESOLVE);
+  });
+
+  // Research R16 i: `mW` equals the `git add` mode, also where `update-index --add` writes 100644.
+  test("the decision carries the working mode mW of the u record, and 100755 stays 100755", () => {
+    for (const xy of ["UU", "AA", "AU", "UA", "DU", "UD"]) {
+      const decision = norm(decideResolve(resolveInput(conflict(xy, "c.txt", MODES[xy]!, "100755"))));
+      expect(decision).toEqual({ direction: "resolve", changedPaths: [{ path: hex(bytes("c.txt")), mode: "100755" }] });
+    }
+    expect(norm(decideResolve(resolveInput(conflict("UU", "c.txt", ["100755", "100644", "100755"], "100644"))))).toEqual(RESOLVE);
+  });
+
+  test("an mW without a regular file gives missing, and another mode gives type", () => {
+    expect(decideResolve(resolveInput(conflict("UU", "c.txt", MODES.UU!, "000000")))).toEqual(refuse("missing"));
+    expect(decideResolve(resolveInput(conflict("UU", "c.txt", MODES.UU!, "040000")))).toEqual(refuse("type"));
   });
 
   test("a file at the size limit gives resolve, one byte more gives size", () => {

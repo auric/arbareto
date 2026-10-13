@@ -6,7 +6,8 @@
 import { isUtf8 } from "node:buffer";
 import { WHOLE_FILE_STAGE_INPUT_BYTES } from "./limits";
 
-export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof"] as const;
+// Feature 003 contract Δ4: only `resolve` gives `missing`.
+export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing"] as const;
 export type FileActionReason = (typeof FILE_ACTION_REASONS)[number];
 
 export type FileActionCategory = "staged" | "unstaged" | "untracked" | "conflicted";
@@ -182,17 +183,24 @@ export function decideFileAction(input: FileActionInput): FileActionDecision {
   return { direction: "stage", changedPaths: [{ path: record.path }] };
 }
 
-// Contract Δ4 and data-model §9: Mark resolved. `missing` is the one reason that only `resolve` gives.
-// shortcut: `missing` stays out of `FILE_ACTION_REASONS` until P2 adds it to the `readComparison` schema.
-export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof"> | "missing";
+// Contract Δ4 and data-model §9: Mark resolved.
+export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof">;
+
+// `mode` is the `mW` of the `u` record: the `update-index --index-info` mode of the stage-0 entry (research R16 i).
+export interface ResolvePath {
+  path: Uint8Array;
+  mode: number;
+}
 
 export type ResolveDecision =
-  | { direction: "resolve"; changedPaths: StagePath[] }
+  | { direction: "resolve"; changedPaths: ResolvePath[] }
   | { direction: null; code: "UNSUPPORTED_COMPARISON"; reason: ResolveReason }
   | { direction: null; code: "MALFORMED_GIT_OUTPUT" };
 
 // git-status(1) "Unmerged entries": the seven XY values.
 const UNMERGED_XY = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
+// Git `canon_mode`: the index modes of a regular file.
+const REGULAR_MODES = new Set(["100644", "100755"]);
 
 // `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`. The decision reads no file text.
 export function decideResolve(input: Pick<FileActionInput, "record" | "attributes" | "working">): ResolveDecision {
@@ -212,10 +220,10 @@ export function decideResolve(input: Pick<FileActionInput, "record" | "attribute
   if (working.type === "unreadable") return refuse("path");
   if (working.type !== "absent" && Buffer.compare(working.diskPath, path) !== 0) return refuse("path");
   if (working.type === "symlink" || modes.includes(SYMLINK)) return refuse("symlink");
-  if (working.type === "absent") return refuse("missing");
-  if (working.type !== "file") return refuse("type");
+  if (working.type === "absent" || mW === ABSENT_MODE) return refuse("missing");
+  if (working.type !== "file" || !REGULAR_MODES.has(mW)) return refuse("type");
   const filter = filterReason(input.attributes);
   if (filter) return refuse(filter);
   if (working.size > WHOLE_FILE_STAGE_INPUT_BYTES) return refuse("size");
-  return { direction: "resolve", changedPaths: [{ path }] };
+  return { direction: "resolve", changedPaths: [{ path, mode: Number.parseInt(mW, 8) }] };
 }

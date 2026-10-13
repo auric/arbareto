@@ -68,6 +68,7 @@
                     "CANONICAL_DIFF_BYTES",
                     "CANONICAL_DIFF_LINES",
                     "CHANNEL_PATH_UNITS",
+                    "CLONE_URL_BYTES",
                     "CLOSE_CLEANUP_TARGET_MS",
                     "COMMIT_MESSAGE_BYTES",
                     "COMMIT_OUTPUT_TAIL_BYTES",
@@ -105,9 +106,11 @@
                     "IDENTITY_PATHS",
                     "INLINE_PROCESS_INPUT_BYTES",
                     "JSON_NESTING_LEVELS",
+                    "KEY_FILE_ENTRIES",
                     "MUTATIONS_PER_COMMON_REPOSITORY",
                     "MUTATION_RAW_INDEX_BYTES",
                     "NATIVE_CHUNK_BYTES",
+                    "PAGEANT_READY_MS",
                     "PENDING_READS_GLOBAL",
                     "PIPE_FRAME_BYTES",
                     "PROCESS_EXIT_CODE_MAX",
@@ -139,6 +142,12 @@
                     "SUBMODULE_REVIEW_SUBMODULES",
                     "SUBMODULE_UPDATE_CEILING_MS",
                     "SUBMODULE_UPDATE_INACTIVITY_MS",
+                    "SYNC_FETCH_LISTED_REFS",
+                    "SYNC_LEASE_COMMITS",
+                    "SYNC_REFS_BYTES",
+                    "SYNC_REFS_RECORDS",
+                    "SYNC_REMOTES",
+                    "TRACKING_COUNT_DISPLAY",
                     "TRUST_DIGEST_FILES",
                     "TRUST_DIGEST_FILE_BYTES",
                     "TRUST_DIGEST_TOTAL_BYTES",
@@ -225,7 +234,11 @@
                     "RECOVERY_MARKER_FAILED",
                     "HISTORY_CHANGED",
                     "UNSUPPORTED_FILTER_TEXT",
-                    "SEARCH_UNSUPPORTED"
+                    "SEARCH_UNSUPPORTED",
+                    "SYNC_UNAVAILABLE",
+                    "PUSH_REJECTED",
+                    "PUTTY_UNAVAILABLE",
+                    "DESTINATION_NOT_EMPTY"
                   ]
                 }
               },
@@ -330,6 +343,7 @@
           "enum": [
             "stage",
             "unstage",
+            "resolve",
             "state",
             "type",
             "symlink",
@@ -339,7 +353,8 @@
             "rename",
             "filter",
             "LFS",
-            "size"
+            "size",
+            "missing"
           ]
         },
         "remedy": {
@@ -423,6 +438,7 @@
           "enum": [
             "stage",
             "unstage",
+            "resolve",
             "state",
             "type",
             "symlink",
@@ -432,7 +448,8 @@
             "rename",
             "filter",
             "LFS",
-            "size"
+            "size",
+            "missing"
           ]
         },
         "remedy": {
@@ -532,6 +549,7 @@
                     "CANONICAL_DIFF_BYTES",
                     "CANONICAL_DIFF_LINES",
                     "CHANNEL_PATH_UNITS",
+                    "CLONE_URL_BYTES",
                     "CLOSE_CLEANUP_TARGET_MS",
                     "COMMIT_MESSAGE_BYTES",
                     "COMMIT_OUTPUT_TAIL_BYTES",
@@ -569,9 +587,11 @@
                     "IDENTITY_PATHS",
                     "INLINE_PROCESS_INPUT_BYTES",
                     "JSON_NESTING_LEVELS",
+                    "KEY_FILE_ENTRIES",
                     "MUTATIONS_PER_COMMON_REPOSITORY",
                     "MUTATION_RAW_INDEX_BYTES",
                     "NATIVE_CHUNK_BYTES",
+                    "PAGEANT_READY_MS",
                     "PENDING_READS_GLOBAL",
                     "PIPE_FRAME_BYTES",
                     "PROCESS_EXIT_CODE_MAX",
@@ -603,6 +623,12 @@
                     "SUBMODULE_REVIEW_SUBMODULES",
                     "SUBMODULE_UPDATE_CEILING_MS",
                     "SUBMODULE_UPDATE_INACTIVITY_MS",
+                    "SYNC_FETCH_LISTED_REFS",
+                    "SYNC_LEASE_COMMITS",
+                    "SYNC_REFS_BYTES",
+                    "SYNC_REFS_RECORDS",
+                    "SYNC_REMOTES",
+                    "TRACKING_COUNT_DISPLAY",
                     "TRUST_DIGEST_FILES",
                     "TRUST_DIGEST_FILE_BYTES",
                     "TRUST_DIGEST_TOTAL_BYTES",
@@ -689,7 +715,11 @@
                     "RECOVERY_MARKER_FAILED",
                     "HISTORY_CHANGED",
                     "UNSUPPORTED_FILTER_TEXT",
-                    "SEARCH_UNSUPPORTED"
+                    "SEARCH_UNSUPPORTED",
+                    "SYNC_UNAVAILABLE",
+                    "PUSH_REJECTED",
+                    "PUTTY_UNAVAILABLE",
+                    "DESTINATION_NOT_EMPTY"
                   ]
                 }
               },

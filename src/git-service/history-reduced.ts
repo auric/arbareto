@@ -5,6 +5,7 @@
 // A commit is a numeric identifier, as the topology table gives it. Every child streams before its parent (`--date-order`).
 
 import { HISTORY_VIEW_COMMITS } from "../contracts/limits";
+import { grow } from "./history-topology";
 
 const EMPTY = new Uint32Array(0);
 // Bit 31 of the edge target marks an edge that skips commits. Contract Δ5: a view holds at most HISTORY_VIEW_COMMITS rows, so every match sequence number is below it.
@@ -47,7 +48,7 @@ export class ReducedGraph {
     if (match) {
       const q = this.matchCount++;
       if (q >= HISTORY_VIEW_COMMITS) throw new RangeError(`match ${q} is above the HISTORY_VIEW_COMMITS bound`);
-      if (q === this.flags.length) this.flags = grow(this.flags, new Uint8Array(2 * q));
+      this.flags = grow(this.flags, q + 1);
       if (parents.length > 0) this.flags[q] = HAS_PARENTS;
       const direct = this.childOf.get(commit);
       for (const m of s) this.addEdge(m, direct?.includes(m) ? q : q | SKIP);
@@ -87,7 +88,7 @@ export class ReducedGraph {
   }
 
   private addEdge(from: number, to: number): void {
-    if (2 * this.edgeCount === this.edgeData.length) this.edgeData = grow(this.edgeData, new Uint32Array(2 * this.edgeData.length));
+    this.edgeData = grow(this.edgeData, 2 * this.edgeCount + 2);
     this.edgeData[2 * this.edgeCount] = from;
     this.edgeData[2 * this.edgeCount + 1] = to;
     this.edgeCount++;
@@ -114,9 +115,4 @@ function union(a: Uint32Array, b: Uint32Array): Uint32Array {
   if (n === a.length) return a;
   if (n === b.length) return b;
   return out.slice(0, n);
-}
-
-function grow<T extends Uint8Array | Uint32Array>(a: T, next: T): T {
-  next.set(a);
-  return next;
 }

@@ -4,8 +4,9 @@
 // T033: the matching probe and the matching rules through `searchHistory` (plan.md P5, D5; contract Δ3 "Matching probe", Δ7).
 // Spec FR-022, FR-023, FR-024, FR-025, SC-007.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
+import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { MATCHING_PROBE_COMMITS, MATCHING_PROBE_RUNS, MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP } from "../../src/contracts/matching-probe";
@@ -13,7 +14,7 @@ import { printOrigin } from "../origin";
 import { FIXED_IDENTITY, FIXTURE_HOME, fixtureDir, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { GIT } from "./git-binary";
 import { repositoryDigest } from "./history-fixtures";
-import { allFilterRows, git, gitPath, grepOracle, isProbe, isReplaceRead, isSearch, opened, oracle, search, type Searched } from "./history-view-harness";
+import { allFilterRows, git, gitPath, grepOracle, isProbe, isReplaceRead, isSearch, opened, oracle, search, waitFor, type Searched } from "./history-view-harness";
 import { caseTest, openService, type OpenOptions, type Service, type ServiceResponse } from "./service-harness";
 
 printOrigin("../../src/git-service/history-search.ts", import.meta.dir);
@@ -131,6 +132,101 @@ describe("matching probe (contract Δ3 \"Matching probe\")", () => {
         // The test-only session option: one expected match leaves each run, so the real probe output no longer equals it.
         { historyProbeRuns: MATCHING_PROBE_RUNS.map((run) => ({ grep: run.grep, matches: run.matches.slice(1) })) },
       ),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a failed probe folder or probe step gives GIT_FAILED, not SEARCH_UNSUPPORTED, removes the folder, and keeps no probe answer",
+    SHELL,
+    () =>
+      withService("t033-step-failed", async (service) => {
+        const repo = probeRepo("t033-step-failed");
+        const { repositoryId, generation } = await service.register(repo);
+        const view = await opened(service, repositoryId, generation);
+        const folder = spyOn(fsp, "mkdtemp").mockImplementation((async () => {
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        }) as never);
+        let noFolder: ServiceResponse<Searched>;
+        try {
+          noFolder = await search(service, repositoryId, view.viewId, "probe");
+        } finally {
+          folder.mockRestore();
+        }
+        expect({ state: noFolder.state, code: noFolder.code }).toEqual({ state: "failed", code: "GIT_FAILED" });
+        expect(service.runner.calls.filter(isProbe)).toEqual([]);
+        service.runner.inject.exit = (call) => (isProbe(call) && call.arguments[1] === "init" ? 128 : undefined);
+        let noInit: ServiceResponse<Searched>;
+        try {
+          noInit = await search(service, repositoryId, view.viewId, "probe");
+        } finally {
+          service.runner.inject.exit = undefined;
+        }
+        expect({ state: noInit.state, code: noInit.code }).toEqual({ state: "failed", code: "GIT_FAILED" });
+        const init = service.runner.calls.filter(isProbe);
+        expect(init.length).toBe(1);
+        expect(existsSync(init[0]!.arguments.at(-1)!)).toBe(false);
+        expect(service.runner.calls.filter(isSearch)).toEqual([]);
+        // No answer was kept, so the next search runs the probe again.
+        expect((await search(service, repositoryId, view.viewId, "probe")).state).toBe("succeeded");
+        expect(service.runner.calls.filter(isProbe).length).toBe(1 + 2 + MATCHING_PROBE_RUNS.length);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a search canceled during the probe removes the probe folder",
+    SHELL,
+    () =>
+      withService("t033-probe-cancel", async (service) => {
+        const repo = probeRepo("t033-probe-cancel");
+        const { repositoryId, generation } = await service.register(repo);
+        const view = await opened(service, repositoryId, generation);
+        const isImport = (call: { arguments: readonly string[] }) => isProbe(call) && call.arguments.includes("fast-import");
+        const release = service.runner.holdStart(isImport);
+        try {
+          const request = service.send("searchHistory", { viewId: view.viewId, text: "probe" }, { repositoryId });
+          const searchId = await service.operationId(request);
+          await waitFor("the held probe import", () => service.runner.calls.some(isImport));
+          await service.cancel(searchId);
+          release();
+          expect((await service.response(request)).state).toBe("canceled");
+        } finally {
+          release();
+        }
+        const dir = service.runner.calls.find(isProbe)!.arguments.at(-1)!;
+        expect({ parent: dirname(dir), exists: existsSync(dir) }).toEqual({ parent: tmpdir(), exists: false });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a failed probe folder removal gives the session log entry of the search the cause probe-folder-remove, and no path",
+    SHELL,
+    () =>
+      withService("t033-remove-failed", async (service) => {
+        const repo = probeRepo("t033-remove-failed");
+        const { repositoryId, generation } = await service.register(repo);
+        const view = await opened(service, repositoryId, generation);
+        const rm = fsp.rm;
+        const isProbeFolder = (path: unknown) => dirname(String(path)) === tmpdir() && basename(String(path)).startsWith("arbareto-probe-");
+        const refused = spyOn(fsp, "rm").mockImplementation(((path: string, options?: object) => (isProbeFolder(path) ? Promise.reject(Object.assign(new Error("busy"), { code: "EBUSY" })) : rm(path, options))) as never);
+        let searchId: string;
+        try {
+          const request = service.send("searchHistory", { viewId: view.viewId, text: "probe" }, { repositoryId });
+          searchId = await service.operationId(request);
+          expect((await service.response(request)).state).toBe("succeeded");
+        } finally {
+          refused.mockRestore();
+        }
+        const dir = service.runner.calls.find(isProbe)!.arguments.at(-1)!;
+        expect(existsSync(dir)).toBe(true);
+        await rm(dir, { recursive: true, force: true });
+        expect(service.log().filter((e) => (e as { operationId?: string }).operationId === searchId)).toEqual([expect.objectContaining({ kind: "searchHistory", cause: "probe-folder-remove" })]);
+        expect(JSON.stringify(service.log())).not.toContain(basename(dir));
+      }),
     TIMEOUT_MS,
   );
 });

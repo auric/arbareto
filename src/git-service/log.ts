@@ -16,8 +16,10 @@ export interface EffectSummary {
 
 // Contract §9: the causes of a failed hunk or file step.
 export const STEP_CAUSES = ["lock-create", "candidate-copy", "candidate-time", "publish-time", "verification", "write", "replace"] as const;
-// A step cause, or the code of a failed reconciliation observation (contract §8).
-export type DiagnosticCause = (typeof STEP_CAUSES)[number] | ErrorCode;
+// Feature 002 contract Δ3 "Matching probe": the removal of the probe folder failed. Contract gap: the 001 §7 cause list does not name it yet.
+const PROBE_CAUSES = ["probe-folder-remove"] as const;
+// A step cause, a probe cause, or the code of a failed reconciliation observation (contract §8).
+export type DiagnosticCause = (typeof STEP_CAUSES)[number] | (typeof PROBE_CAUSES)[number] | ErrorCode;
 
 export interface LogEntry {
   kind: OperationName;
@@ -43,7 +45,7 @@ const FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   operationId: isIdentifier,
   durationMs: isCount,
   code: isErrorCode,
-  cause: (value) => (STEP_CAUSES as readonly unknown[]).includes(value) || isErrorCode(value),
+  cause: (value) => ([...STEP_CAUSES, ...PROBE_CAUSES] as readonly unknown[]).includes(value) || isErrorCode(value),
   count: isCount,
   effects: isEffectSummary,
 };

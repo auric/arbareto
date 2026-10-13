@@ -8,7 +8,6 @@ import type { RefEntry, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode, HistoryChangedReason, HistoryOutputLimitReason } from "../contracts/errors";
 import { filterText } from "../contracts/filter-text";
 import {
-  DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
   FILTER_TEXT_BYTES,
   HISTORY_COMMIT_OBJECT_BYTES,
   HISTORY_LOAD_MARGIN,
@@ -25,13 +24,14 @@ import { NATIVE } from "../contracts/native-path";
 import { buildRemedyCommand } from "../contracts/remedy-command";
 import { batchCommandArgs, historyLoadArgs, historyRefsArgs, historySearchArgs, isObjectId, replaceRefsArgs, topologyPathArgs, type ObjectFormat } from "./commands";
 import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
-import { captureHead, checkFailedRead, commitTextOf, DAMAGED_STORE_REMEDY, isStop, readShallow, sharedListing, type CommitText, type HistoryReaderOptions, type Shallow, type Stop } from "./history";
+import { captureHead, checkFailedRead, commitTextOf, DAMAGED_STORE_REMEDY, isStop, readShallow, readStep, sharedListing, small, type CommitText, type HistoryReaderOptions, type Shallow, type Stop } from "./history";
 import { HistoryLayout } from "./history-layout";
 import { HEADER_BYTES, readHeaders } from "./history-parser";
 import { MATCHING_REMEDY, matchStream, probeMatching, SearchMerge, WSL_MATCHING_REMEDY, type ProbeRun } from "./history-search";
 import { HistoryTopology, type TopologyFailure } from "./history-topology";
+import type { DiagnosticCause } from "./log";
 import type { OperationRegistry } from "./operations";
-import { contextOf, encodedBytes, readBounded, runRead } from "./read-steps";
+import { contextOf, encodedBytes, readBounded } from "./read-steps";
 import { parseHistoryRefs } from "./refs-parser";
 import type { Workspace } from "./registration";
 import type { Head, ReadInstallation } from "./snapshot";
@@ -74,6 +74,8 @@ interface Search {
   done: Promise<void>;
   // Merges the rows that the view serves into the match order.
   update(): void;
+  // The session log cause of the operation (contract §7).
+  cause?: DiagnosticCause;
 }
 
 interface View {
@@ -116,33 +118,15 @@ const FOUND = /^([0-9a-f]+) commit (0|[1-9][0-9]*)$/;
 const MISSING = /^([0-9a-f]+) missing$/;
 const DEADLINE_TEXT = "Git did not finish this history read before its deadline. A commit-graph file makes the read faster. Run this command in a terminal to write one, then load the history again.";
 
-const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const failed = (code: ErrorCode, value: object = {}): ViewOutcome => ({ result: "failed", code, value });
 // Contract Δ3: Git gets the start points on stdin, one per line.
 const startInput = (starts: readonly string[]) => (starts.length === 0 ? {} : { input: new TextEncoder().encode(starts.map((oid) => `${oid}\n`).join("")) });
 
-// One read-policy Git step. A runner refusal gives its code, and an abort gives `canceled`.
-async function step(runner: GitRunner, t: ProcessTarget, args: string[], stdout: Collector): Promise<GitExit | Stop> {
-  if (t.signal.aborted) return { stop: "canceled" };
-  try {
-    const ran = await runRead(runner, t, args, stdout);
-    if (t.signal.aborted) return { stop: "canceled" };
-    if ("refused" in ran) return { failed: ran.refused };
-    if (ran.exit.deadline !== undefined) return { stop: "deadline" };
-    // Contract §9: unexpected diagnostic output above 4 MiB ends a read `failed` with OUTPUT_LIMIT.
-    if (ran.exit.diagnosticLimit) return { failed: "OUTPUT_LIMIT" };
-    return ran.exit;
-  } catch (error) {
-    if (t.signal.aborted) return { stop: "canceled" };
-    throw error;
-  }
-}
-
 // Contract Δ3 capture step 2: the records of `historyRefsArgs` or `replaceRefsArgs`. A limited collector stops the process.
 async function readRecords(runner: GitRunner, t: ProcessTarget, args: string[]): Promise<NonNullable<ReturnType<typeof parseHistoryRefs>> | Stop | { limit: "REF_LISTING_RECORDS" | "REF_LISTING_BYTES" }> {
   const out = createCollector({ maxBytes: REF_LISTING_BYTES, maxRecords: REF_LISTING_RECORDS, separator: LF });
-  const exit = await step(runner, t, args, out);
+  const exit = await readStep(runner, t, args, out);
   if (isStop(exit)) return exit;
   const bytes = out.take();
   // Contract §5: the first reached bound wins, also over a later Git failure. The kept bytes hold every record that the record bound let pass (`refs.ts`).
@@ -154,7 +138,7 @@ async function readRecords(runner: GitRunner, t: ProcessTarget, args: string[]):
 // Contract Δ3 capture step 3: two LF-ended paths, relative to the worktree root, where Git ran.
 async function topologyPaths(runner: GitRunner, t: ProcessTarget): Promise<{ shallow: string; grafts: string } | Stop> {
   const out = small();
-  const exit = await step(runner, t, topologyPathArgs(), out);
+  const exit = await readStep(runner, t, topologyPathArgs(), out);
   if (isStop(exit)) return exit;
   if (exit.exitCode !== 0) return { failed: "GIT_FAILED" };
   let text = "";
@@ -328,6 +312,9 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
 
   const refusalOf = (s: Stale) => ({ ...(s.reason === undefined ? {} : { reason: s.reason }), ...(s.remedy === undefined ? {} : { remedy: s.remedy }) });
 
+  // Contract §7 read gate with the listing of `openHistory`. A revoked or changed trust refuses each later view read, as it refuses a 001 read.
+  const gateOf = (view: View) => trust.gate(view.workspace, view.listing, view.installation, "reads");
+
   // The capture steps of contract Δ3 `openHistory`. They run beside the trust listing.
   async function capture(t: ProcessTarget) {
     const [head, records, paths] = await Promise.all([captureHead(runner, t), readRecords(runner, t, historyRefsArgs()), topologyPaths(runner, t)]);
@@ -340,10 +327,12 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     return { head, records, paths, files };
   }
 
-  // Commits the parsed rows of a load whose fingerprint check passed, and steps the layout.
+  // Commits the rows that this load compared or appended, after its fingerprint check passed, and steps the layout.
+  // The topology can hold more rows from an earlier load whose check did not finish (contract Δ3 `loadHistory`).
   function commit(view: View): void {
-    if (view.released || view.rows === view.topology.rows) return;
-    view.rows = view.topology.rows;
+    const rows = Math.max(view.rows, view.topology.compared);
+    if (view.released || view.rows === rows) return;
+    view.rows = rows;
     view.layout.extend(view.rows);
     if (view.search?.running) view.search.update();
     notify(view);
@@ -366,6 +355,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
   // Contract Δ3 `loadHistory` and plan.md D2. `quiet`: the load of a search, whose progress the search sends.
   async function runLoad(view: View, need: Request<"loadHistory">["payload"]["need"], t: ProcessTarget, quiet = false): Promise<ViewOutcome> {
     const value = (extra: object = {}) => ({ rows: view.rows, complete: view.complete, ...extra });
+    const gate = gateOf(view);
+    if (gate !== null) return failed(gate, value());
     if (view.stale !== null) return failed(view.stale.code, value(refusalOf(view.stale)));
     if (view.limit !== null) return { result: "limited", code: "OUTPUT_LIMIT", value: value({ reason: view.limit }) };
     if (view.complete) return { result: "succeeded", value: value() };
@@ -432,8 +423,9 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
               watch = null;
             }
           }
-          if (topology.rows >= Math.min(stop, viewCommits)) {
-            ended = stop <= viewCommits ? "stop" : topology.rest || at + size < chunk.length ? "over" : "bound";
+          // The held rows count only after their re-read. A stop row at the view bound is the bound.
+          if (topology.compared >= Math.min(stop, viewCommits)) {
+            ended = stop < viewCommits ? "stop" : topology.rest || at + size < chunk.length ? "over" : "bound";
             if (ended !== "bound") endAfterCheck();
             break;
           }
@@ -536,13 +528,14 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
   }
 
   // Contract Δ3 "Matching probe" and spec FR-025: a search runs only after the probe of its Git installation passed.
-  async function matching(view: View, t: ProcessTarget): Promise<ViewOutcome | null> {
+  // A failed probe step gives its own code, and no answer to keep. Only a mismatch gives SEARCH_UNSUPPORTED.
+  async function matching(view: View, s: Search, t: ProcessTarget): Promise<ViewOutcome | null> {
     const unsupported = (text: string) => failed("SEARCH_UNSUPPORTED", { reason: "matching", remedy: { text, command: null } });
     if (view.workspace.wsl !== undefined) return unsupported(WSL_MATCHING_REMEDY);
     const key = view.installation.gitInstallationId;
-    const result = probes.get(key) ?? (await probeMatching(runner, t, probeRuns));
+    const result = probes.get(key) ?? (await probeMatching(runner, t, probeRuns, () => (s.cause = "probe-folder-remove")));
     if (isStop(result)) return "failed" in result ? failed(result.failed) : result.stop === "deadline" ? { result: "deadline" } : { result: "canceled" };
-    if (result !== "failed") probes.set(key, result);
+    probes.set(key, result);
     return result === "pass" ? null : unsupported(MATCHING_REMEDY);
   }
 
@@ -551,9 +544,11 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     // One load runs per view, so an older search ends first.
     if (previous !== null) await previous.done;
     if (t.signal.aborted || view.released) return { result: "canceled" };
+    const gate = gateOf(view);
+    if (gate !== null) return failed(gate);
     if (view.stale !== null) return failed(view.stale.code, refusalOf(view.stale));
     if (view.limit !== null) return { result: "limited", code: "OUTPUT_LIMIT", value: { reason: view.limit } };
-    const refused = (await fingerprintCheck(view, t)) ?? (await matching(view, t));
+    const refused = (await fingerprintCheck(view, t)) ?? (await matching(view, s, t));
     if (refused !== null) return refused;
     if (t.signal.aborted || view.released) return { result: "canceled" };
 
@@ -646,6 +641,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     } finally {
       t.signal.removeEventListener("abort", abortCall);
       if (timer !== null) clearTimeout(timer);
+      // A side that throws leaves the other side running, and the load holds `view.load`.
+      call.abort();
     }
 
     if (t.signal.aborted || view.released) return { result: "canceled" };
@@ -654,7 +651,9 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
       const v = ("value" in loaded ? loaded.value : undefined) as { reason?: ViewReason; remedy?: Remedy } | undefined;
       return { ...loaded, value: { ...(v?.reason === undefined ? {} : { reason: v.reason }), ...(v?.remedy === undefined ? {} : { remedy: v.remedy }) } };
     }
-    if (s.merge.broken) return failed("HISTORY_CHANGED", { reason: "order" });
+    // A break of the match order makes the view stale, as a re-read difference does (contract Δ8 condition 3).
+    const orderBroken = () => failed("HISTORY_CHANGED", refusalOf(stale(view, { code: "HISTORY_CHANGED", reason: "order" })));
+    if (s.merge.broken) return orderBroken();
     if (lines.malformed) return failed("MALFORMED_GIT_OUTPUT", refusalOf(stale(view, { code: "MALFORMED_GIT_OUTPUT" })));
     if (exit === null) return { result: "canceled" };
     if (typeof exit === "string") return failed(exit);
@@ -662,7 +661,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     if (exit.diagnosticLimit) return failed("OUTPUT_LIMIT", refusalOf(stale(view, { code: "OUTPUT_LIMIT" })));
     if (exit.exitCode !== 0) return failedRead(view, t, (extra = {}) => extra);
     // Contract Δ3 "Merge into the view": when the load completes, the queue must be empty.
-    if (s.merge.waiting > 0) return failed("HISTORY_CHANGED", { reason: "order" });
+    if (s.merge.waiting > 0) return orderBroken();
     return { result: "succeeded", value: { matches: s.merge.count, shallow: view.shallow.kind === "file" } };
   }
 
@@ -738,6 +737,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
   async function serveRows(view: View, p: Request<"readHistoryRows">["payload"], t: ProcessTarget, s: Search | null): Promise<ViewOutcome> {
     const filter = p.mode === "filter" ? s : null;
     const state = () => ({ rowCount: view.rows, lanes: filter === null ? view.layout.lanes : filter.merge.layout.lanes, complete: view.complete });
+    const gate = gateOf(view);
+    if (gate !== null) return failed(gate);
     let start: number;
     for (;;) {
       if (t.signal.aborted || view.released) return { result: "canceled" };
@@ -795,20 +796,20 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     return { ...result, bytes };
   }
 
-  // Ends the operation of `request` with `outcome`, as the read rows of data-model §7 do.
-  function finish(view: View | null, operationId: string, outcome: ViewOutcome): void {
+  // Ends the operation of `request` with `outcome`, as the read rows of data-model §7 do. `cause` goes to the session log entry.
+  function finish(view: View | null, operationId: string, outcome: ViewOutcome, cause?: DiagnosticCause): void {
     view?.operations.delete(operationId);
     if (view?.load === operationId) view.load = null;
     if (view?.text === operationId) view.text = null;
     if (view !== null) notify(view);
     const value = "value" in outcome ? outcome.value : undefined;
-    if (registry.get(operationId)?.state === "cancel-requested") return void registry.apply(operationId, { type: "processes-stopped" }, value);
+    if (registry.get(operationId)?.state === "cancel-requested") return void registry.apply(operationId, { type: "processes-stopped" }, value, cause);
     if (outcome.result === "canceled") {
       registry.apply(operationId, { type: "cancel" });
-      return void registry.apply(operationId, { type: "processes-stopped" }, value);
+      return void registry.apply(operationId, { type: "processes-stopped" }, value, cause);
     }
-    if (outcome.result === "deadline") return void registry.apply(operationId, { type: "read-deadline" }, value);
-    registry.apply(operationId, { type: "read-complete", result: outcome.result, ...(outcome.code === undefined ? {} : { code: outcome.code }) }, value);
+    if (outcome.result === "deadline") return void registry.apply(operationId, { type: "read-deadline" }, value, cause);
+    registry.apply(operationId, { type: "read-complete", result: outcome.result, ...(outcome.code === undefined ? {} : { code: outcome.code }) }, value, cause);
   }
 
   return {
@@ -962,7 +963,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
         s.running = false;
         if (outcome.result !== "succeeded" && view.search === s) view.search = null;
         settle();
-        finish(view, operationId, outcome);
+        finish(view, operationId, outcome, s.cause);
       };
       runSearch(view, s, checked.text, previous, { operationId, signal, workspace: view.workspace }).then(end, () => end(failed("GIT_FAILED")));
     },

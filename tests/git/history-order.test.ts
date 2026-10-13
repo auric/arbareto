@@ -7,7 +7,7 @@
 
 import { expect, test } from "bun:test";
 import { PERF_CACHE_ROOT } from "../windows/perf-fixtures";
-import { FIXTURE_ROOT, fixtureDir, ownedGit, useFixtureRoot } from "./fixture-root";
+import { FIXED_IDENTITY, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { buildSmallFixtures, H1M, H200K, largeCase, largeFixture, MARKER_WORD, repositoryDigest, startPoints, withCommitGraph, type LargeSpec, type SmallFixture } from "./history-fixtures";
 import { FactLog, orderFacts, searchArgs } from "./history-order-facts";
@@ -63,6 +63,32 @@ describeGit("history order facts", (git) => {
 
   largeCase(TASK, "H200K: order facts with and without a commit-graph", H200K, () => large(H200K), LARGE_TIMEOUT_MS);
   largeCase(TASK, "H1M: order facts with and without a commit-graph", H1M, () => large(H1M), LARGE_TIMEOUT_MS);
+
+  // Data-model §3: a repeated parent is kept as Git prints it and drawn as one edge. This fact shows whether Git accepts and prints one.
+  test("a commit object with a repeated parent line: hash-object and rev-list --parents", () => {
+    const repo = fixtureDir("t003-repeated-parent/repo");
+    const run = (args: string[], input?: string) => {
+      const proc = Bun.spawnSync([git, ...args], { cwd: repo, env: fixtureEnv(), stdin: input === undefined ? "ignore" : Buffer.from(input), stdout: "pipe", stderr: "pipe" });
+      return { exitCode: proc.exitCode, out: proc.stdout.toString() };
+    };
+    expect(run(["init", "-q", "-b", "main"]).exitCode).toBe(0);
+    const tree = run(["hash-object", "-t", "tree", "-w", "--stdin"], "").out.trim();
+    const ident = (time: number) => `${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> ${time} +0000`;
+    const commit = (parents: string[], time: number) => run(["hash-object", "-t", "commit", "-w", "--stdin"], `tree ${tree}\n${parents.map((p) => `parent ${p}\n`).join("")}author ${ident(time)}\ncommitter ${ident(time)}\n\nc${time}\n`);
+    const root = commit([], 1_767_225_600);
+    expect(root.exitCode).toBe(0);
+    const base = root.out.trim();
+    const twice = commit([base, base], 1_767_225_700);
+    console.log(`OBSERVATION ${TASK}: hash-object -t commit -w exited ${twice.exitCode} for a commit object with the parent line ${base} twice (experiment)`);
+    if (twice.exitCode !== 0) return;
+    const tip = twice.out.trim();
+    const listed = run(["--no-optional-locks", "rev-list", "--parents", "--date-order", "--stdin"], `${tip}\n`);
+    expect(listed.exitCode).toBe(0);
+    const line = listed.out.split("\n").find((l) => l.startsWith(`${tip} `) || l === tip)!;
+    const parents = line.split(" ").slice(1);
+    console.log(`OBSERVATION ${TASK}: rev-list --parents printed ${parents.length} parent fields for that commit, ${parents.filter((p) => p === base).length} of them the repeated parent: "${line}" (experiment)`);
+    expect(listed.out.split("\n").filter((l) => l !== "").length).toBe(2);
+  });
 
   test("report the facts for research.md", () => {
     log.report();

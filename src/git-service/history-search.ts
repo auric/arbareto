@@ -5,15 +5,15 @@
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS } from "../contracts/limits";
 import { MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP } from "../contracts/matching-probe";
 import { NATIVE } from "../contracts/native-path";
 import { isObjectId, probeImportArgs, probeInitArgs, probeSearchArgs, type ObjectFormat } from "./commands";
-import { createCollector, RunnerRefusal, type Collector, type GitRunner } from "./git-runner";
-import type { Stop } from "./history";
+import { RunnerRefusal, type Collector, type GitRunner } from "./git-runner";
+import { small, type Stop } from "./history";
 import { HistoryLayout, type Cell } from "./history-layout";
 import { ReducedGraph } from "./history-reduced";
-import type { HistoryTopology } from "./history-topology";
+import { grow, type HistoryTopology } from "./history-topology";
 import { contextOf, latin1, type ReadTarget } from "./read-steps";
 
 const LF = 0x0a;
@@ -21,13 +21,6 @@ const LF = 0x0a;
 export const MATCHING_REMEDY = "Git did not match the probe messages as the search requires. Use a Git build with PCRE2 and a UTF-8 locale. Then search again.";
 // Contract gap: no shell frame runs the fixed `matchingProbe` script of `wsl-process.json`, so no probe can run in a distro.
 export const WSL_MATCHING_REMEDY = "Message search does not support repositories in WSL yet. The matching probe cannot run in the distro.";
-
-function grow(array: Int32Array<ArrayBuffer>, length: number, fill = 0): Int32Array<ArrayBuffer> {
-  if (length <= array.length) return array;
-  const next = new Int32Array(Math.max(length, 2 * array.length)).fill(fill);
-  next.set(array);
-  return next;
-}
 
 /** The stdout of a search: one `<oid>` line per match. A malformed line sets `malformed`, and `limited` then stops Git. */
 export function matchStream(objectFormat: ObjectFormat, onOid: (oid: string) => void) {
@@ -130,13 +123,13 @@ export class SearchMerge {
   add(oid: string, served: number): void {
     if (this.broken) return;
     const id = this.topology.intern(oid);
-    if (this.queued.has(id)) return this.break();
+    if (this.queued.has(id)) return void (this.broken = true);
     const row = this.topology.rowOfId(id);
     if (row >= 0 && row < served) {
-      if (this.waiting > 0 || (this.count > 0 && row <= this.matchRows[this.count - 1]!)) return this.break();
+      if (this.waiting > 0 || (this.count > 0 && row <= this.matchRows[this.count - 1]!)) return void (this.broken = true);
       return this.record(row);
     }
-    if (this.count + this.waiting >= this.bound) return this.break();
+    if (this.count + this.waiting >= this.bound) return void (this.broken = true);
     this.queue.push(id);
     this.queued.add(id);
   }
@@ -150,14 +143,16 @@ export class SearchMerge {
       const id = this.topology.idOf(this.scanned);
       if (!this.queued.has(id)) continue;
       // Contract Δ3: a streamed row that is in the queue must be at its head.
-      if (this.queue[this.head] !== id) return this.break();
+      if (this.queue[this.head] !== id) return void (this.broken = true);
       this.queued.delete(id);
       this.head++;
       this.record(this.scanned);
+      // The empty queue needs no scan up to `served`. The loop step must not run after it, or row `served` stays unscanned.
       if (this.waiting === 0) {
         this.queue = [];
         this.head = 0;
         this.scanned = served;
+        break;
       }
     }
     for (const known = this.known; this.processed < known; this.processed++) {
@@ -178,9 +173,7 @@ export class SearchMerge {
 
   /** The match state of `row`, or null while it is not known. */
   stateOf(row: number): boolean | null {
-    if (row >= this.known) return null;
-    const k = this.lower(row);
-    return k < this.count && this.matchRows[k] === row;
+    return row < this.known ? this.seqOf(row) >= 0 : null;
   }
 
   /** The number of the match at `row`, or -1. */
@@ -243,10 +236,6 @@ export class SearchMerge {
     this.matchRows[this.count++] = row;
   }
 
-  private break(): void {
-    this.broken = true;
-  }
-
   // The first match at row `row` or later.
   private lower(row: number): number {
     let low = 0;
@@ -265,14 +254,16 @@ export type ProbeRun = { readonly grep: readonly string[]; readonly matches: rea
 
 /**
  * Contract Δ3 "Matching probe" on the service host: a new folder in `os.tmpdir()`, the fixed stream, one run per pattern set, and the removal of the folder.
- * `mismatch`: every step exited 0, and a run listed other commits. `failed`: a step failed, so the probe gives no answer.
+ * `mismatch`: every step exited 0, and a run listed other commits. A failed step gives its `Stop`, so the probe gives no answer.
+ * `removeFailed` runs when the folder removal fails.
  */
-export async function probeMatching(runner: GitRunner, t: ReadTarget, runs: readonly ProbeRun[]): Promise<"pass" | "mismatch" | "failed" | Stop> {
+export async function probeMatching(runner: GitRunner, t: ReadTarget, runs: readonly ProbeRun[], removeFailed: () => void): Promise<"pass" | "mismatch" | Stop> {
   let dir: string;
   try {
     dir = await mkdtemp(NATIVE.path.join(tmpdir(), "arbareto-probe-"));
   } catch {
-    return "failed";
+    // Contract gap: no code names a failed probe folder. GIT_FAILED is the generic failure of a read.
+    return { failed: "GIT_FAILED" };
   }
   const run = async (args: string[], input: Uint8Array | undefined, stdout: Collector): Promise<number | null | Stop> => {
     if (t.signal.aborted) return { stop: "canceled" };
@@ -285,7 +276,7 @@ export async function probeMatching(runner: GitRunner, t: ReadTarget, runs: read
         environmentPolicy: "search",
         limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
         stdout,
-        stderr: createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }),
+        stderr: small(),
         signal: t.signal,
       });
       if (t.signal.aborted) return { stop: "canceled" };
@@ -299,25 +290,24 @@ export async function probeMatching(runner: GitRunner, t: ReadTarget, runs: read
     }
   };
   try {
-    const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
     for (const [args, input] of [
       [probeInitArgs(dir), undefined],
       [probeImportArgs(dir), MATCHING_PROBE_STREAM],
     ] as const) {
       const exit = await run(args, input, small());
-      if (exit !== 0) return typeof exit === "object" && exit !== null ? exit : "failed";
+      if (exit !== 0) return typeof exit === "object" && exit !== null ? exit : { failed: "GIT_FAILED" };
     }
     let same = true;
     for (const probe of runs) {
       const found = new Set<string>();
       const out = matchStream("sha1", (oid) => void found.add(oid));
       const exit = await run(probeSearchArgs(dir, probe.grep), new TextEncoder().encode(`${MATCHING_PROBE_TIP}\n`), out);
-      if (exit !== 0) return typeof exit === "object" && exit !== null ? exit : "failed";
-      if (out.malformed) return "failed";
+      if (exit !== 0) return typeof exit === "object" && exit !== null ? exit : { failed: "GIT_FAILED" };
+      if (out.malformed) return { failed: "MALFORMED_GIT_OUTPUT" };
       same &&= found.size === probe.matches.length && probe.matches.every((oid) => found.has(oid));
     }
     return same ? "pass" : "mismatch";
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    await rm(dir, { recursive: true, force: true }).catch(removeFailed);
   }
 }

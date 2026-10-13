@@ -70,6 +70,23 @@ const leaked = (service: Service, oids: readonly string[]) => {
   return oids.filter((oid) => text.includes(oid));
 };
 
+// A load `{end: true}` whose replace read never starts, canceled after its stream ended. The topology then holds every row, and the view serves no new row.
+async function uncheckedLoad(service: Service, repositoryId: string, viewId: string, served: number): Promise<void> {
+  const loads = service.runner.calls.filter(isLoad).length;
+  const release = service.runner.holdStart(isReplaceRead);
+  try {
+    const request = service.send("loadHistory", { viewId, need: { end: true } }, { repositoryId });
+    const operationId = await service.operationId(request);
+    await waitFor("the stream of the unchecked load", () => service.runner.calls.filter(isLoad)[loads]?.exit !== undefined);
+    await service.cancel(operationId);
+    release();
+    const canceled = await service.response(request);
+    expect({ state: canceled.state, result: canceled.result }).toEqual({ state: "canceled", result: { rows: served, complete: false } });
+  } finally {
+    release();
+  }
+}
+
 describe("re-read rule (plan.md D2, contract Δ3 `loadHistory`)", () => {
   largeCase(
     TASK,
@@ -168,6 +185,61 @@ describe("re-read rule (plan.md D2, contract Δ3 `loadHistory`)", () => {
       TIMEOUT_MS,
     );
   }
+
+  // Contract Δ3: the view serves the held rows of an unchecked load only after the next load compared them and its check passed.
+  caseTest(
+    TASK,
+    "rows of a load whose check did not finish stay unserved while the next load has compared none of them, also after its check passed",
+    SHELL,
+    () =>
+      withService("t024-unchecked", async (service) => {
+        const { repo } = chainRepo("t024-unchecked-repo");
+        const expected = oracle(repo);
+        const { repositoryId, generation } = await service.register(repo);
+        const view = await opened(service, repositoryId, generation);
+        expect((await load(service, repositoryId, view.viewId, { row: 0 })).result).toEqual({ rows: FIRST_STOP, complete: false });
+        await uncheckedLoad(service, repositoryId, view.viewId, FIRST_STOP);
+        const reads = service.runner.calls.filter(isReplaceRead).length;
+        const release = service.runner.pauseStdout(isLoad);
+        try {
+          const request = service.send("loadHistory", { viewId: view.viewId, need: { end: true } }, { repositoryId });
+          await waitFor("the replace read of the paused load", () => {
+            const done = service.runner.calls.filter(isReplaceRead);
+            return done.length > reads && done.at(-1)!.exit !== undefined;
+          });
+          expect((await rows(service, repositoryId, view.viewId, { row: 0 }, 1)).result!.rowCount).toBe(FIRST_STOP);
+          release();
+          expect((await service.response(request)).result).toEqual({ rows: CHAIN, complete: true });
+        } finally {
+          release();
+        }
+        const held = await allRows(service, repositoryId, view.viewId, CHAIN);
+        expect(held.map((r) => ({ oid: r.oid, parents: r.parents }))).toEqual(expected);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "a re-read difference inside rows that the view does not serve yet serves only the compared rows before it",
+    SHELL,
+    () =>
+      withService("t024-unchecked-order", async (service) => {
+        const { repo, rowOid } = chainRepo("t024-unchecked-order-repo");
+        // A row after the first stop row: the unchecked load holds it, and the view does not serve it.
+        const row = 2500;
+        git(repo, ["replace", "--graft", rowOid(row), rowOid(row + 1), rowOid(CHAIN - 1)]);
+        const { repositoryId, generation } = await service.register(repo);
+        const view = await opened(service, repositoryId, generation);
+        expect((await load(service, repositoryId, view.viewId, { row: 0 })).result).toEqual({ rows: FIRST_STOP, complete: false });
+        await uncheckedLoad(service, repositoryId, view.viewId, FIRST_STOP);
+        git(repo, ["config", "core.useReplaceRefs", "false"]);
+        const changed = await load(service, repositoryId, view.viewId, { end: true });
+        expect({ state: changed.state, code: changed.code, result: changed.result }).toEqual({ state: "failed", code: "HISTORY_CHANGED", result: { rows: row, complete: false, reason: "order" } });
+        expect((await rows(service, repositoryId, view.viewId, { row: 0 }, 1)).result!.rowCount).toBe(row);
+      }),
+    TIMEOUT_MS,
+  );
 
   caseTest(
     TASK,
@@ -359,6 +431,33 @@ describe("ref moves, generations, trust, and network (spec FR-002, FR-005, FR-05
         expect(service.runner.calls.filter(isLoad)).toEqual([]);
         expect(leaked(service, commits)).toEqual([]);
         expect(Object.values(built.facts.canaries).filter((log) => existsSync(join(built.root, log)))).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  // 001 contract §3 `revokeTrust` and §7: a read after a revoke refuses at its gate with TRUST_REQUIRED, and a 001 status read does the same.
+  caseTest(
+    TASK,
+    "after revokeTrust, loadHistory, readHistoryRows, and searchHistory of an open view refuse with TRUST_REQUIRED and start no Git process",
+    SHELL,
+    () =>
+      withService("t024-revoke", async (service) => {
+        const repo = join(buildF17(gitPath(), "t024-revoke", "trust").root, "repo");
+        const { repositoryId, generation } = await service.register(repo);
+        const trust = await service.readTrust(repositoryId);
+        const approved = await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+        expect(approved.state).toBe("succeeded");
+        const view = await opened(service, repositoryId, generation);
+        expect((await load(service, repositoryId, view.viewId, { row: 0 })).state).toBe("succeeded");
+        expect((await service.revokeTrust(repositoryId, approved.result!.trustId)).state).toBe("succeeded");
+        const calls = service.runner.calls.length;
+        const loaded = await load(service, repositoryId, view.viewId, { end: true });
+        const read = await rows(service, repositoryId, view.viewId, { row: 0 }, 1, "rows");
+        const searched = await service.request("searchHistory", { viewId: view.viewId, text: "c" }, { repositoryId });
+        expect([loaded, read, searched].map((r) => ({ state: r.state, code: r.code }))).toEqual(Array.from({ length: 3 }, () => ({ state: "failed", code: "TRUST_REQUIRED" })));
+        expect(service.runner.calls.length).toBe(calls);
+        const status = await service.readWorkspace(repositoryId);
+        expect({ state: status.state, code: status.code }).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
       }),
     TIMEOUT_MS,
   );

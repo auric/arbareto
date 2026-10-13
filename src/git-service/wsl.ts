@@ -42,6 +42,7 @@ const TEXT = {
   "not-wsl2": (name: string) => `Distro ${name} is not a WSL2 distro. Arbareto opens repositories only in WSL2 distros.`,
   "no-user-manager": () =>
     "Arbareto needs the systemd user manager in this distro to end the processes that Git starts. Set systemd=true under [boot] in /etc/wsl.conf, then restart the distro.",
+  "scope-arguments": (name: string) => `systemd-run in ${name} does not pass Git arguments unchanged. Update systemd in the distro to version 254 or later.`,
   "no-setsid": (name: string) => `Arbareto needs the setsid program in ${name}. Install the util-linux package in the distro, then open the folder again.`,
   "no-coreutils": (name: string) => `Arbareto needs the stat, env, and sha256sum programs in /usr/bin of ${name}. Install the coreutils package in the distro, then open the folder again.`,
   "start-failed": (name: string) => `WSL could not start distro ${name}. Start it in a terminal, then open the folder again.`,
@@ -74,7 +75,7 @@ export const WSL_PATH_REFUSAL: WslRefusal = { ok: false, code: "UNSUPPORTED_REPO
 export const MIXED_LOCATION_REFUSAL: WslRefusal = { ok: false, code: "UNSUPPORTED_REPOSITORY", result: PATH_RESULTS["mixed-location"] };
 export const NO_FS_UUID_REFUSAL: WslRefusal = { ok: false, code: "UNSUPPORTED_REPOSITORY", result: PATH_RESULTS["no-fs-uuid"] };
 
-const unavailable = (reason: keyof typeof TEXT & ("wsl-missing" | "distro-missing" | "not-wsl2" | "no-user-manager" | "no-setsid" | "no-coreutils" | "no-perl"), name: string): WslRefusal => ({
+const unavailable = (reason: keyof typeof TEXT & ("wsl-missing" | "distro-missing" | "not-wsl2" | "no-user-manager" | "scope-arguments" | "no-setsid" | "no-coreutils" | "no-perl"), name: string): WslRefusal => ({
   ok: false,
   code: "WSL_UNAVAILABLE",
   result: { reason, text: TEXT[reason](name) },
@@ -178,7 +179,7 @@ export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutabl
   if (!native(programs["systemd-run"]) || !native(programs.systemctl) || facts.scope !== "0") return unavailable("no-user-manager", distro);
   // T378: `noexpand` is the `$?` of `systemd-run --expand-environment=no --version`, a decimal from 0 to 255. Only `verbatim 0` proves unchanged scope arguments.
   const status = facts.noexpand ?? "";
-  if (!/^(?:0|[1-9][0-9]{0,2})$/.test(status) || Number(status) > 255 || facts.verbatim !== "0") return unavailable("no-user-manager", distro);
+  if (!/^(?:0|[1-9][0-9]{0,2})$/.test(status) || Number(status) > 255 || facts.verbatim !== "0") return unavailable("scope-arguments", distro);
   if (!native(programs.setsid)) return unavailable("no-setsid", distro);
   const checked = checkWslGit({ path: git.path, mz: git.mz, versionText: facts.version ?? "" });
   if (!checked.ok) {

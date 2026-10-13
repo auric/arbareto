@@ -176,9 +176,9 @@ describe("WSL route (T204, contract §11 Route)", () => {
 });
 
 describe("WSL_UNAVAILABLE (T204, contract §9)", () => {
-  test("the code exists and carries exactly the seven reasons", () => {
+  test("the code exists and carries exactly the nine reasons", () => {
     expect(ERROR_CODES).toContain("WSL_UNAVAILABLE");
-    expect([...WSL_UNAVAILABLE_REASONS]).toEqual(["wsl-missing", "distro-missing", "not-wsl2", "no-user-manager", "no-setsid", "no-coreutils", "no-perl", "start-failed"]);
+    expect([...WSL_UNAVAILABLE_REASONS]).toEqual(["wsl-missing", "distro-missing", "not-wsl2", "no-user-manager", "scope-arguments", "no-setsid", "no-coreutils", "no-perl", "start-failed"]);
   });
 
   test("the reasons live in the contract error types (T210)", () => {

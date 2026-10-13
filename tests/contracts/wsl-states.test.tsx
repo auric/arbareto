@@ -328,6 +328,7 @@ describe("WSL refusals", () => {
     { code: "WSL_UNAVAILABLE", reason: "no-setsid", text: "Arbareto needs the setsid program in Ubuntu. Install the util-linux package in the distro, then open the folder again." },
     { code: "WSL_UNAVAILABLE", reason: "no-coreutils", text: "Arbareto needs the stat, env, and sha256sum programs in /usr/bin of Ubuntu. Install the coreutils package in the distro, then open the folder again." },
     { code: "WSL_UNAVAILABLE", reason: "start-failed", text: "WSL could not start distro Ubuntu. Start it in a terminal, then open the folder again." },
+    { code: "WSL_UNAVAILABLE", reason: "scope-arguments", text: "systemd-run in Ubuntu does not pass Git arguments unchanged. Update systemd in the distro to version 254 or later." },
     { code: "GIT_UNSUPPORTED", reason: "windows-git", text: "The git command in Ubuntu is Git for Windows. Install Linux Git 2.55.0 or later in the distro." },
     { code: "GIT_UNSUPPORTED", reason: "no-fs-uuid", text: "Arbareto cannot read a file-system UUID for Git in Ubuntu. Install Git on the distro's own disk." },
     { code: "UNSUPPORTED_REPOSITORY", reason: "wsl-path", text: "This path holds a name that Windows cannot show. Open another folder." },

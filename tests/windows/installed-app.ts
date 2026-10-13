@@ -39,6 +39,7 @@ export type Discovery = { app: InstalledApp } | { skip: string };
 const PROBE_TIMEOUT_MS = 30_000;
 const PROBE_MAX_BYTES = 16 * 1024 * 1024;
 export const WAIT_MS = 10_000;
+const EXIT_POLL_MS = 10;
 
 function powershellJson(script: string): unknown {
   const root = process.env.SystemRoot;
@@ -198,8 +199,14 @@ export function spawnOwned(argv: string[], cwd: string, env: Record<string, stri
     stop() {
       if (!open) return;
       open = false;
+      const members = [proc.pid, ...descendants(proc.pid).map((r) => r.pid)].map((pid) => ({ pid, created: processCreationTime(pid) }));
       tree.end();
       tree.close();
+      // Microsoft Learn "Terminating a Process": the process object is signaled only after the system closes its handles. A file of the tree is free only then.
+      const running = () => members.filter((m) => m.created !== null && processCreationTime(m.pid) === m.created);
+      for (const end = performance.now() + WAIT_MS; running().length > 0 && performance.now() < end; ) Bun.sleepSync(EXIT_POLL_MS);
+      const left = running();
+      if (left.length > 0) throw new Error(`processes of the owned tree still run ${WAIT_MS} ms after the end: ${left.map((m) => m.pid).join(", ")}`);
     },
   };
 }

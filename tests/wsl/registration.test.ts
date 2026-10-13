@@ -8,7 +8,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createCollector, type GitRunner, type WslRunner } from "../../src/git-service/git-runner";
 import { requestWslIdentities, type PhysicalIdentity } from "../../src/git-service/identity";
 import { dismissWslMarker, type DismissalOutcome } from "../../src/git-service/registration";
-import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "../../src/git-service/wsl";
+import { approveWslGit, checkWslProbe, parseWslProbe, probeWslGit, routeRegistration, type WslGit } from "../../src/git-service/wsl";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
@@ -138,16 +138,48 @@ describe("WSL registration seams (T207)", () => {
 
   // T212 review S4: Linux Git reads `PATH` when it runs, so the bare-name rule takes the `PATH` of the latest probe.
   test("a reused session Git takes the PATH of the latest probe and asks for no confirmation", async () => {
-    const session = { gitInstallationId: crypto.randomUUID(), distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin", wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid" };
+    const session = { gitInstallationId: crypto.randomUUID(), distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin", wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid", noexpand: true };
     const { gitInstallationId: _id, ...probed } = { ...session, pathEnv: "/home/u/bin:/usr/bin" };
     const runner = { register: () => Promise.reject(new Error("no confirmation")) } as unknown as GitRunner;
     const approved = await approveWslGit(runner, { operationId: crypto.randomUUID(), bootstrapId: crypto.randomUUID() }, probed, session, undefined);
     expect(approved).toMatchObject({ ok: true, reused: true, changed: false, git: { gitInstallationId: session.gitInstallationId, pathEnv: "/home/u/bin:/usr/bin" } });
   });
 
+  // T378, contract §11 "Git per distro": `noexpand` is the `$?` of `systemd-run --expand-environment=no --version`.
+  // Only `verbatim 0` shows that a probe scope got its arguments unchanged. Any other value refuses like a failed scope test.
+  test("T378: the probe facts noexpand and verbatim set the wrapper flag, and a missing or malformed value gives WSL_UNAVAILABLE reason no-user-manager", () => {
+    const programs = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"].flatMap((name) => [`path ${name} /usr/bin/${name}`, `magic ${name} -`]);
+    const base = ["pathenv /usr/bin", "selfs ef53:fedc9aa3bd65bc57", "selino 4242", "selstat ok", "version git version 2.55.0", "gitfs ef53:fedc9aa3bd65bc57", "gitfile 7:1:1", "scope 0"];
+    const checked = (facts: string[]) => {
+      const parsed = parseWslProbe(new TextEncoder().encode(`${[...programs, ...base, ...facts].join("\n")}\n`));
+      if (parsed === null) return "unparsed";
+      const result = checkWslProbe("Ubuntu-26.04", parsed, "C:\\Windows\\System32\\wsl.exe");
+      return result.ok ? result.git.noexpand : result;
+    };
+    const refused = {
+      ok: false,
+      code: "WSL_UNAVAILABLE",
+      result: {
+        reason: "no-user-manager",
+        text: "Arbareto needs the systemd user manager in this distro to end the processes that Git starts. Set systemd=true under [boot] in /etc/wsl.conf, then restart the distro.",
+      },
+    } as const;
+    expect(checked(["noexpand 0", "verbatim 0"])).toBe(true);
+    for (const status of ["1", "2", "255"]) expect({ status, found: checked([`noexpand ${status}`, "verbatim 0"]) }).toEqual({ status, found: false });
+    for (const facts of [["verbatim 0"], ["noexpand ", "verbatim 0"], ["noexpand 00", "verbatim 0"], ["noexpand 01", "verbatim 0"], ["noexpand -1", "verbatim 0"], ["noexpand 256", "verbatim 0"], ["noexpand 0 ", "verbatim 0"], ["noexpand yes", "verbatim 0"]]) {
+      expect({ facts, found: checked(facts) }).toEqual({ facts, found: refused });
+    }
+    for (const facts of [["noexpand 0"], ["noexpand 0", "verbatim 1"], ["noexpand 0", "verbatim "], ["noexpand 0", "verbatim 00"], ["noexpand 1", "verbatim 2"], ["noexpand 0", "verbatim 0 "], ["noexpand 0", "verbatim yes"]]) {
+      expect({ facts, found: checked(facts) }).toEqual({ facts, found: refused });
+    }
+    // Each line kind appears at most once.
+    expect(checked(["noexpand 0", "noexpand 0", "verbatim 0"])).toBe("unparsed");
+    expect(checked(["noexpand 0", "verbatim 0", "verbatim 0"])).toBe("unparsed");
+  });
+
   // Contract §6 "Walks" (T314): a `register` deadline reply gives DEADLINE.
   test("a register deadline reply gives DEADLINE", async () => {
-    const probed = { distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin", wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid" };
+    const probed = { distro: "Ubuntu-24.04", guid: "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}", path: "/usr/bin/git", version: "2.55.0", identity: "fedc9aa3bd65bc57:7:1:1", pathEnv: "/usr/bin", wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid", noexpand: true };
     const runner = { register: async () => ({ stop: "deadline" }) } as unknown as GitRunner;
     const approved = await approveWslGit(runner, { operationId: crypto.randomUUID(), bootstrapId: crypto.randomUUID() }, probed, undefined, undefined);
     expect(approved).toEqual({ ok: false, code: "DEADLINE" });

@@ -22,21 +22,25 @@ const LAUNCH: WslLaunch = {
   systemdRun: "/usr/bin/systemd-run",
   systemctl: "/usr/bin/systemctl",
   setsid: "/usr/bin/setsid",
+  noexpand: true,
 };
 const OPERATION = "0b6f2f3e-5d43-4c47-9a39-2f1d4b0c1e77";
 const ROOT = "/home/u/repo with space";
 
 describe("wslCommandLineUnits (contract §6 \"Process fields\")", () => {
-  test("it measures the shell argument array with the widest unit number", () => {
+  // T378: the 7th wrapper argument `noexp` is `1` when the probe fact `noexpand` is 0, and empty otherwise.
+  test("it measures the shell argument array with the widest unit number and the noexp argument", () => {
     const args = ["--no-lazy-fetch", "diff-files", "-p", "--", "a b", 'q"uote\\'];
-    const shell = [
-      "--distribution", LAUNCH.distro, "--cd", "/", "--exec", "/bin/sh", "-c", wslProcess.wrapper.join("\n"), "sh",
-      `arbareto-${OPERATION}-4294967295.scope`, "read", "", LAUNCH.systemdRun, LAUNCH.systemctl, LAUNCH.setsid, LAUNCH.git,
-      "--no-lazy-fetch", "-C", ROOT, ...args.slice(1),
-    ];
-    const units = wslCommandLineUnits(LAUNCH, OPERATION, "read", "", ROOT, args);
-    expect(units).toBe(commandLineUnits(LAUNCH.wslExecutable, shell));
-    expect(units - commandLineUnits(LAUNCH.git, args)).toBeGreaterThan(wslProcess.wrapper.join("\n").length);
+    for (const [noexpand, noexp] of [[true, "1"], [false, ""]] as const) {
+      const shell = [
+        "--distribution", LAUNCH.distro, "--cd", "/", "--exec", "/bin/sh", "-c", wslProcess.wrapper.join("\n"), "sh",
+        `arbareto-${OPERATION}-4294967295.scope`, "read", "", LAUNCH.systemdRun, LAUNCH.systemctl, LAUNCH.setsid, noexp, LAUNCH.git,
+        "--no-lazy-fetch", "-C", ROOT, ...args.slice(1),
+      ];
+      const units = wslCommandLineUnits({ ...LAUNCH, noexpand }, OPERATION, "read", "", ROOT, args);
+      expect({ noexpand, units }).toEqual({ noexpand, units: commandLineUnits(LAUNCH.wslExecutable, shell) });
+      expect(units - commandLineUnits(LAUNCH.git, args)).toBeGreaterThan(wslProcess.wrapper.join("\n").length);
+    }
   });
 
   test("the diff-files batches split under the measure, so a list that fits the Windows measure takes two WSL batches", () => {

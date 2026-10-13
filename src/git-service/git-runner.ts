@@ -221,6 +221,8 @@ export interface WslLaunch {
   systemdRun: string;
   systemctl: string;
   setsid: string;
+  // The probe fact `noexpand 0`. The 7th wrapper argument `noexp` is `1` then, and empty otherwise.
+  noexpand: boolean;
 }
 
 // The shell keeps `<n>` as a `u32` (src-tauri/src/process_requests.rs `next_unit`), so this is its widest form.
@@ -231,7 +233,7 @@ const WRAPPER = wslProcess.wrapper.join("\n");
 // `args` start with `--no-lazy-fetch`. The shell puts `-C <directory>` right after it.
 export function wslCommandLineUnits(launch: WslLaunch, operationId: string, mode: string, index: string, directory: string, args: readonly string[]): number {
   const head = ["--distribution", launch.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", wslUnitName(operationId, WIDEST_UNIT), mode, index];
-  return commandLineUnits(launch.wslExecutable, [...head, launch.systemdRun, launch.systemctl, launch.setsid, launch.git, "--no-lazy-fetch", "-C", directory, ...args.slice(1)]);
+  return commandLineUnits(launch.wslExecutable, [...head, launch.systemdRun, launch.systemctl, launch.setsid, launch.noexpand ? "1" : "", launch.git, "--no-lazy-fetch", "-C", directory, ...args.slice(1)]);
 }
 
 // Contract §6 "Process fields" and §7 "Missing objects". A refused call starts no process.

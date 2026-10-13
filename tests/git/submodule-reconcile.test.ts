@@ -71,7 +71,7 @@ function wslWorkspace(name: string, runs: { arguments: string[]; environmentPoli
     commonDirectory: gitDir,
     refFormat: "files",
     objectFormat: "sha1",
-    wsl: { distro: "Arbareto-Test", guid: "{00000000-0000-4000-8000-000000000000}", path: "/usr/bin/git", wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid" },
+    wsl: { distro: "Arbareto-Test", guid: "{00000000-0000-4000-8000-000000000000}", path: "/usr/bin/git", wslExecutable: "C:\\Windows\\System32\\wsl.exe", systemdRun: "/usr/bin/systemd-run", systemctl: "/usr/bin/systemctl", setsid: "/usr/bin/setsid", noexpand: true },
   };
   const runner = {
     async run(call: { arguments: string[]; environmentPolicy: string; stdout: { push(b: Uint8Array): void } }) {

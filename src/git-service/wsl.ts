@@ -29,6 +29,8 @@ export interface WslGit {
   systemdRun: string;
   systemctl: string;
   setsid: string;
+  // The probe fact `noexpand 0`: `systemd-run` takes `--expand-environment=no`, so the wrapper gets `noexp` 1.
+  noexpand: boolean;
 }
 
 export type WslRefusal = { ok: false; code: ErrorCode; result?: RegistrationResult };
@@ -82,7 +84,7 @@ const unavailable = (reason: keyof typeof TEXT & ("wsl-missing" | "distro-missin
 
 const PROBED = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"] as const;
 type Probed = (typeof PROBED)[number];
-const FACTS = ["pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat"] as const;
+const FACTS = ["pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat", "noexpand", "verbatim"] as const;
 type Fact = (typeof FACTS)[number];
 
 export interface WslProbeFacts {
@@ -174,6 +176,9 @@ export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutabl
   if (git === undefined) return { ok: false, code: "GIT_UNAVAILABLE", result: { text: TEXT["git-missing"](distro) } };
   if (isWindowsProgram(git.path, git.mz)) return { ok: false, code: "GIT_UNSUPPORTED", result: { reason: "windows-git", text: TEXT["windows-git"](distro) } };
   if (!native(programs["systemd-run"]) || !native(programs.systemctl) || facts.scope !== "0") return unavailable("no-user-manager", distro);
+  // T378: `noexpand` is the `$?` of `systemd-run --expand-environment=no --version`, a decimal from 0 to 255. Only `verbatim 0` proves unchanged scope arguments.
+  const status = facts.noexpand ?? "";
+  if (!/^(?:0|[1-9][0-9]{0,2})$/.test(status) || Number(status) > 255 || facts.verbatim !== "0") return unavailable("no-user-manager", distro);
   if (!native(programs.setsid)) return unavailable("no-setsid", distro);
   const checked = checkWslGit({ path: git.path, mz: git.mz, versionText: facts.version ?? "" });
   if (!checked.ok) {
@@ -200,7 +205,7 @@ export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutabl
   if (fileSystem === undefined || /^0+$/.test(fileSystem) || !/^[0-9]+:[0-9]+:[0-9]+$/.test(file)) {
     return { ok: false, code: "GIT_UNSUPPORTED", result: { reason: "no-fs-uuid", text: TEXT["git-no-fs-uuid"](distro) } };
   }
-  return { ok: true, git: { distro, path: git.path, version: checked.version, identity: `${fileSystem}:${file}`, pathEnv: facts.pathenv ?? "", wslExecutable, systemdRun: programs["systemd-run"]!.path, systemctl: programs.systemctl!.path, setsid: programs.setsid!.path } };
+  return { ok: true, git: { distro, path: git.path, version: checked.version, identity: `${fileSystem}:${file}`, pathEnv: facts.pathenv ?? "", wslExecutable, systemdRun: programs["systemd-run"]!.path, systemctl: programs.systemctl!.path, setsid: programs.setsid!.path, noexpand: status === "0" } };
 }
 
 // ---- The route and the Git probe of one registration ----

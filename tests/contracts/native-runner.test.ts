@@ -474,6 +474,20 @@ describe("native runner input", () => {
     await expect(result).rejects.toMatchObject({ code: "GIT_CHANGED" });
     expect(channel.reply("process", exit(callId, { exitCode: null }))).toBe(true);
   });
+
+  // T377, contract §6 "Process replies" and §11 "Process launch": a WSL run whose scope did not start ends `refused` after its output.
+  test("a refused reply after output replies ends the run with its code and sends no cancel", async () => {
+    const channel = createChannelDouble();
+    const c = call();
+    const result = channel.runner.run(c);
+    const { callId } = channel.last("run");
+    expect(channel.reply("process", { type: "output", callId, stream: "stdout", data: chunk(4) })).toBe(true);
+    expect(channel.reply("process", { type: "output", callId, stream: "stderr", data: chunk(2) })).toBe(true);
+    expect(await settled(result)).toBe(false);
+    expect(channel.reply("process", { type: "refused", callId, code: "PROCESS_OWNERSHIP_FAILED" })).toBe(true);
+    await expect(result).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+    expect({ stdout: c.stdout.bytes, stderr: c.stderr.bytes, cancels: channel.bodies("cancel") }).toEqual({ stdout: 4, stderr: 2, cancels: [] });
+  });
 });
 
 describe("native runner identity, lingering count, and registration", () => {

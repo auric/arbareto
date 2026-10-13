@@ -11,7 +11,7 @@ The facts come from these sources:
 
 Marks:
 - **documented**: Git, PuTTY, or Win32 documentation, the 001 contract, or source with a file and function.
-- **experiment**: a run showed it. No such run exists yet for 003. P0.2 and P0.3 create them.
+- **experiment**: a run showed it. R16 holds the P0.2 runs of 003. P0.3 creates the SSH server and PuTTY runs.
 - **unverified**: a recollection or an inference. The plan names the step that checks it.
 
 Line numbers in Git source are not recorded here. P0.2 records the Git version of each fact.
@@ -241,3 +241,61 @@ Git versions: Windows Git for Windows 2.56.0.windows.2 on the reference PC, and 
 - **(k) `git fetch --all` remote set**: Git skips a remote when `remote.<name>.skipFetchAll` or `remote.<name>.skipDefaultUpdate` is true. The last value of the two names wins. Fixture: r1 none; r2 `skipFetchAll=true`; r3 `skipDefaultUpdate=true`; r4 `skipFetchAll=false`, then `skipDefaultUpdate=true`; r5 `skipDefaultUpdate=true`, then `skipFetchAll=false`. Observed fetched set: r1 and r5. **experiment** (Windows 2.56.0.windows.2, WSL 2.55.0). Design change: O-4, plan D3, and contract Δ3 use the last value of the two names. The `k` expectation in `tests/git/remote-facts.ts` now uses the same rule and matches (2026-10-13).
 - **(m) Non-boolean skip and mirror values**: with `remote.r2.skipFetchAll=maybe`, `git fetch --all` exits non-zero and fetches no remote. `remote.r2.skipDefaultUpdate=maybe` gives the same result. `git fetch -- r1` also exits non-zero and fetches nothing when r2 holds such a value. With `remote.r1.mirror=maybe`, `git push -- r1` exits non-zero and does not change the remote ref. With `remote.r2.mirror=maybe`, `git push -- r1` gives the same result. The same push without the value creates the ref. **experiment** (Windows 2.56.0.windows.2, WSL 2.55.0, 2026-10-13). Cause: remote.c `handle_config` reads these values with `git_config_bool`, which stops on a value that `git_parse_maybe_bool` rejects. Design change: Fetch, Fetch all, and the fetch step of Pull give `invalid-config` when any remote holds an invalid skip value. Push gives `invalid-config` when any remote holds an invalid `mirror` value. No Git process starts (plan D3, D4; contract Δ3). Extension (2026-10-13): remote.c `handle_config` reads `mirror`, `skipDefaultUpdate`, `skipFetchAll`, `prune`, and `pruneTags` with `git_config_bool`. A probe on 2.56.0.windows.2 showed that an invalid `skipFetchAll`, `skipDefaultUpdate`, or `prune` value on any remote also stops `git push` with exit 128. Design change: every review refuses with `invalid-config` on these five keys, before the `remote` read. The `pruneTags` case, the fetch case with `mirror`, and the `git remote` case stay **unverified** until T005 (m) runs. Extension (2026-10-13, valueless keys): a key line without `=` gives the listing no value. remote.c `handle_config` stops on such an entry of `branch.<name>.remote`, `pushRemote`, `merge`, `url.<base>.insteadOf`, `pushInsteadOf`, `remote.pushDefault`, and `remote.<name>.url`, `pushurl`, `push`, `fetch`, `receivepack`, `uploadpack`, `proxy`, `proxyAuthMethod`, `vcs`, `serverOption`, `negotiationRestrict`, and `negotiationInclude` (`git_config_string`, `config_error_nonbool`, `parse_transport_option`). `remote.<name>.tagOpt` and `followRemoteHEAD` pass the missing value to `strcmp`. A probe on 2.56.0.windows.2 showed exit 128 for `git remote`, `for-each-ref %(push)`, and `push --dry-run` with a bare `branch.main.pushremote`, `branch.zz.merge`, `remote.o.vcs`, `url.x.insteadOf`, or `remote.pushDefault`. A bare `remote.o.tagOpt` or `followRemoteHEAD` gave exit 139. Design change: every review refuses with `invalid-config` on such an entry, before the `remote` read. T005 and T006 (m) assert the bare `pushRemote` case. **documented** (remote.c, config.c, transport.c at v2.56.0.windows.2), **experiment** (Windows 2.56.0.windows.2; the `pushRemote` case also on WSL Ubuntu-26.04 Git 2.55.0, 2026-10-13).
 - **Version**: T005 expected 2.56.0.windows.1. The reference PC has 2.56.0.windows.2. The fact tasks now record the observed version and do not require one build.
+
+## R17 Batch 1 verification (T025)
+
+Runs of 2026-10-13 in `C:\Projects\arbareto-l5` on `f003-spec`, for T014 to T026 and T029. Host: Windows 11 Pro 10.0.26300 x64, Bun 1.4.3, Git 2.56.0.windows.2. WSL: Ubuntu-26.04 with Git 2.55.0. The first run is on f0616b9. The rerun is on f48c8dd, after the review fixes of 44bf1ed and the merge of main. The rerun `test:all` used `ARBARETO_WSL_DISTRO=Ubuntu-26.04` and `ARBARETO_TEST_WORKERS=6`. The batch 1 review is recorded ("Batch reviews").
+
+| Step | f0616b9 | f48c8dd |
+|---|---|---|
+| `bun install --frozen-lockfile` | 0 | 0, no changes |
+| `bun run build` | 0 | 0 |
+| `bun run typecheck` | 0 | 0 |
+| `bun run export:schemas --check` | 0 | 1: `clone-result.schema.json` is stale |
+| `cargo check --locked --manifest-path src-tauri/Cargo.toml` | 0 | 0 |
+| `cargo test --locked --manifest-path src-tauri/Cargo.toml` | 0: 454 passed, 0 failed, 4 ignored | 0: 455 passed, 0 failed, 4 ignored |
+| `bun run test:all` | 1: 163 files, 5,490 tests. Parallel step: 140 files, 5,093 pass, 37 skip, 1 fail, 2,443.2 s. Serial step: 23 files, 350 pass, 9 skip, 0 fail, 2,947.8 s. | 1: 163 files, 5,496 tests. Parallel step: 140 files, 5,099 pass, 37 skip, 1 fail, 2,076.9 s. Serial step: 23 files, 350 pass, 9 skip, 0 fail, 2,777.9 s. |
+
+- The f0616b9 failure: the portability test "shared source outside the platform files holds no native path rule" found a drive-letter class in `src/contracts/clone-name.ts`. 44bf1ed fixes it. `clone-name.ts` takes `hasDrivePrefix` from `native-path.ts`.
+- The f48c8dd failure: "the committed schema files equal a fresh export" in `tests/contracts/schemas.test.ts`. The T379 merge from main added the reason `scope-arguments`, and the committed `clone-result.schema.json` did not hold it. The same cause made `export:schemas --check` exit 1.
+- Close step: `bun run export:schemas` changed only `clone-result.schema.json`, with one added line `"scope-arguments"` (0ef01e2). Then `bun run export:schemas --check` exited 0, and `bun run typecheck` exited 0. `bun test tests/contracts` ran 69 files, 3,523 tests: 3,493 pass, 30 skip, 0 fail. It printed 217 `ORIGIN` lines, all under `C:\Projects\arbareto-l5`. The generated file was the only `test:all` failure of the rerun. So the regeneration and the contracts rerun close it. No full rerun ran.
+- `ORIGIN`: each `test:all` printed 1,306 lines, all under `C:\Projects\arbareto-l5`. Each control mutation run also printed its line under this checkout.
+- f48c8dd `test:all` skips (46), by the reason that the run printed: `ssh-server` 3; `other-account-owner` 2; `history-fixture-h1m` 2; `disposable-volume` 2; `restart-keeps-lingering` 1; `fifo` 1; `distro-git-below-2.55` 2; `two-test-distros` 1; `empty-locpath-hides-c-utf8` 1. 31 more skips print no reason.
+
+Control mutation: in the D4 rule of `src/git-service/sync-parsers.ts`, `push.default=nothing` maps to `refs/heads/<branch>`. Each run went red with the edit, and green after the undo.
+
+| Run | Red: `tests/contracts/sync-rules.test.ts` | Green |
+|---|---|---|
+| f0616b9 | 3 of 39 fail: "nothing and other values give invalid-config", "the last push.default value wins", and "an empty %(upstream) gives the panel, pre-filled with the destination". | 39 pass |
+| f48c8dd | 3 of 43 fail, the same three cases. | 43 pass |
+
+Ticks. Each task cites its proof.
+
+| Task | Proof |
+|---|---|
+| T001 | `tests/git/remote-fixtures.test.ts` is in `parallel` and passes in both `test:all` runs, with the 20,000-commit and digest cases. |
+| T002 | `tests/git/remote-fixtures.ts` builds every fixture, and T001 passes. |
+| T003 | `tests/git/remote-servers.test.ts` is in `parallel` and passes in both runs. It checks 127.0.0.1, the counters, and stop by PID. |
+| T004 | `tests/support/http-remote.ts` and `tests/support/git-daemon.ts` exist, and T003 passes. |
+| T005 | `tests/git/remote-facts.test.ts` is in `parallel` and prints 170 `OBSERVATION T005` lines on f48c8dd (166 on f0616b9) for (a) to (m) and (i2), each with the Git version. The 8 lines with `match=false` are R16 c, d, and i. |
+| T006 | `tests/wsl/sync-wsl.test.ts` is in `serial` with its reason and passes in both runs. It prints 170 `OBSERVATION T006` lines on f48c8dd (166 on f0616b9), with Git 2.55.0. The 4 lines with `match=false` are R16 c and d. |
+| T014 | `tests/contracts/sync-commands.test.ts` is in `tests/groups.json` `parallel` and passes in both `test:all` runs. |
+| T015 | `tests/contracts/sync-parsers.test.ts` is in `parallel` and passes in both runs. |
+| T016 | `tests/contracts/sync-rules.test.ts` passes on f48c8dd with `several-merge-refs` (44bf1ed), and the control mutation turns it red. |
+| T017 | `tests/contracts/clone-name.test.ts` is in `parallel` and passes in both runs. |
+| T018 | `tests/contracts/file-action.test.ts` passes in both runs. |
+| T019 | The contract, envelope, schema, vector, and operation state tests pass in the close step contracts rerun. |
+| T020 | T014 passes. The review found that every argv builder matches contract Δ3. |
+| T021 | T015 and T016 pass. `invalidRemoteValue` is exported for T040. The review found no message text read. |
+| T022 | T017 passes, and the portability test passes on f48c8dd. |
+| T023 | T018 passes. |
+| T024 | T019 passes, and `export:schemas --check` exits 0 after 0ef01e2. |
+| T026 | `cargo test` passes on f48c8dd: 455 passed, 0 failed. |
+| T029 | `cargo test` and `tests/contracts/bridge.test.ts` pass. `src-tauri/permissions/autogenerated` holds the new command files, and `capabilities/main.json` grants them. |
+| T025 | On f48c8dd, every command exits 0 except `export:schemas --check` and `test:all`. Both failed only on the stale schema file. The close step closes that failure without a full rerun. `ORIGIN` lines are under this checkout. The mutation went red, then green. "Batch reviews" holds the batch 1 review. |
+
+## Batch reviews
+
+Each batch verification task passes only after one independent review of its batch is recorded here.
+
+**Batch 1, 2026-10-13.** Independent batch 1 review, reviewer agent (Opus), 2026-10-13. Scope: commits b1a3804, 2735ffc, 22d264c, 594388e, 6f2000e, 631edb0, and 8775ae2 (T014 to T024, T026, T029) on f003-spec at f0616b9, for `sync-commands.ts`, `sync-parsers.ts`, `clone-name.ts`, `file-action.ts`, the `src/contracts/` deltas, the schemas and vectors, the shell files, `bridge.ts`, and their tests, without the merges of main. No test ran in the review. Verdict: fix first. Items and state, all fixed in 44bf1ed: D4 gave a destination for `simple` (same remote) and `upstream` with two `branch.<name>.merge` values, and Git refuses that push with exit 128; D4 now gives `several-merge-refs`; a lease commit above `HISTORY_COMMIT_OBJECT_BYTES` had no valid form, and the `Lease` subject is now nullable (read 6, data-model §2); a valueless key that remote.c `handle_config` reads as a string stopped `git remote`, `for-each-ref`, and `git push`, and every review now refuses each key of that list with `invalid-config` (R16 m, probe on 2.56.0.windows.2); the shell admitted a `remote` or `integrate` run for any started mutation, and now admits it only for an operation of kind `sync`. The portability scan hit of the T025 run is also fixed in 44bf1ed (R17). Pass: every argv builder matches contract Δ3; every parser reads exact Git output and no message text; the D6 decision follows builtin/pull.c; Constitution I holds; the `remote` and `integrate` policies match contract Δ7 on Windows and in WSL; the shell allowlist and grants are complete. Open: T030 and T031 add `clone` and the six settings operations to `NATIVE_FIRST`, so the Rust clone URL rule and the `chooseSyncPath` rule run for them; an empty branch name (`[branch ""] remote = o`) also stops Git, and no rule or test covers it (owner: T040); `clone-name.ts` imports `native-path.ts`, which uses `process`, so the renderer cannot import it, and T070 (`CloneDialog`) needs a renderer-safe drive-prefix rule first. Not verified: the `push.autoSetupRemote=true` pre-fill; a `branch.<name>.remote` that names a remote without a URL (`is_same_remote` with NULL); a push remote `.` gives `remote-missing`.

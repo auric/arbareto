@@ -293,7 +293,8 @@ pub mod reply {
 
     use super::{mutation_reply as m, process_reply as p, trust_reply as t, typed};
     use crate::bootstrap::PhysicalIdentity;
-    use crate::process_requests::encode_base64;
+    use crate::process_requests::{Destination, encode_base64};
+    use crate::putty::Unavailable;
     use crate::settings::{hex, sha256};
 
     const DEADLINE: &str = "deadline";
@@ -674,6 +675,79 @@ pub mod reply {
     }
 
     /// The reply holds the context path alone for a path without a WSL prefix.
+    /// Feature 003 contract Δ6 `destinationFacts`.
+    pub fn destination_facts(call_id: &str, facts: Destination) -> Value {
+        use p::DestinationFactsResultResult as R;
+        let result = match facts {
+            Destination::Absent => R::Absent,
+            Destination::Empty => R::Empty,
+            Destination::NotEmpty => R::NotEmpty,
+            Destination::File => R::File,
+            Destination::Other => R::Other,
+            Destination::Error(code) => {
+                return encode(p::ProcessReply::DestinationFactsGroup(
+                    p::DestinationFactsGroup::Error {
+                        call_id: field(call_id),
+                        code: field(code),
+                        result: "error".into(),
+                        type_: "destinationFacts".into(),
+                    },
+                ));
+            }
+        };
+        encode(p::ProcessReply::DestinationFactsGroup(
+            p::DestinationFactsGroup::Result {
+                call_id: field(call_id),
+                result,
+                type_: "destinationFacts".into(),
+            },
+        ))
+    }
+
+    /// Feature 003 contract Δ6 `pageant`: `git`, `none`, or `ready`.
+    pub fn pageant(call_id: &str, result: p::PageantResultResult) -> Value {
+        encode(p::ProcessReply::PageantReplyGroup(
+            p::PageantReplyGroup::Result {
+                call_id: field(call_id),
+                result,
+                type_: "pageant".into(),
+            },
+        ))
+    }
+
+    /// Feature 003 contract Δ6 `pageant` with contract Δ9 `PUTTY_UNAVAILABLE`.
+    pub fn pageant_failed(call_id: &str, failed: &Unavailable) -> Value {
+        encode(p::ProcessReply::PageantReplyGroup(
+            p::PageantReplyGroup::Failed {
+                call_id: field(call_id),
+                path: field(&failed.path.to_string_lossy()),
+                program: field(failed.program.name()),
+                reason: field(failed.reason.name()),
+                result: "failed".into(),
+                type_: "pageant".into(),
+            },
+        ))
+    }
+
+    /// Feature 003 contract Δ6 `terminal`: the console started.
+    pub fn terminal_started(call_id: &str) -> Value {
+        encode(p::ProcessReply::TerminalGroup(p::TerminalGroup::Started {
+            call_id: field(call_id),
+            type_: "terminal".into(),
+        }))
+    }
+
+    /// Feature 003 contract Δ6 `terminal` with contract Δ9 `PUTTY_UNAVAILABLE`. typify tags this group by `result`.
+    pub fn terminal_failed(call_id: &str, failed: &Unavailable) -> Value {
+        encode(p::ProcessReply::TerminalGroup(p::TerminalGroup::Failed {
+            call_id: field(call_id),
+            path: field(&failed.path.to_string_lossy()),
+            program: field(failed.program.name()),
+            reason: field(failed.reason.name()),
+            type_: "terminal".into(),
+        }))
+    }
+
     pub fn wsl_distros_path(call_id: &str, path: &str) -> Value {
         encode(p::ProcessReply::WslDistrosGroup(p::WslDistrosGroup::Path {
             call_id: field(call_id),

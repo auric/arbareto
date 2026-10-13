@@ -39,7 +39,7 @@ use windows::Win32::System::Threading::{
 use windows::core::{HSTRING, PWSTR, w};
 
 use crate::jobs::Supervisor;
-use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, is_identifier};
+use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, Destination, is_identifier};
 use crate::schema::process_reply::{
     FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
     FileFactsReplyFactsItem as Fact, IdentityRefusedReason, WslExit,
@@ -805,8 +805,8 @@ pub struct Bound {
     /// The version token of `git version <token>`.
     pub version: String,
     pub git_identity: GitIdentity,
-    /// The identity of the context path (gaps.md W1).
-    pub identity: WslIdentity,
+    /// The identity of the context path (gaps.md W1). A clone destination binds it after its clone (feature 003 contract Δ6).
+    pub identity: Option<WslIdentity>,
 }
 
 /// The programs that the probe of `src/contracts/wsl-process.json` resolves.
@@ -856,7 +856,8 @@ fn admitted_version(text: &str) -> Option<&str> {
 
 /// Parses the probe output and applies the §11 rules. Output that fails a rule binds nothing.
 /// Each line kind appears at most once, so a line end inside a value cannot replace a fact.
-pub fn bind_probe(distro: &str, guid: &str, output: &[u8]) -> Option<Bound> {
+/// Without `identity`, the facts bind without the context identity (feature 003 contract Δ6: a clone destination).
+pub fn bind_probe(distro: &str, guid: &str, output: &[u8], identity: bool) -> Option<Bound> {
     let text = std::str::from_utf8(output).ok()?;
     let mut facts: HashMap<String, &str> = HashMap::new();
     for line in text.strip_suffix('\n')?.split('\n') {
@@ -931,10 +932,14 @@ pub fn bind_probe(distro: &str, guid: &str, output: &[u8]) -> Option<Bound> {
     let version = admitted_version(facts.get("version")?)?.to_string();
     let git_identity = git_identity(facts.get("gitfs")?, facts.get("gitfile")?).ok()?;
     // gaps.md W1: the context identity binds with the Git facts, or nothing binds.
-    if facts.get("selstat") != Some(&"ok") {
-        return None;
-    }
-    let identity = classify(guid, facts.get("selino")?, facts.get("selfs")?).ok()?;
+    let identity = if identity {
+        if facts.get("selstat") != Some(&"ok") {
+            return None;
+        }
+        Some(classify(guid, facts.get("selino")?, facts.get("selfs")?).ok()?)
+    } else {
+        None
+    };
     Some(Bound {
         installation: Installation {
             distro: distro.to_string(),
@@ -1434,6 +1439,64 @@ pub fn wsl_files_reply(output: Option<Output>, request: &FilesRequest) -> Vec<Fi
             .map(|_| reply::wsl_error(0, "other-error"))
             .collect()
     })
+}
+
+// ---- Feature 003 `destinationFacts` (contract Δ6, Δ11) ----
+
+/// The stdout cap of a `destination` check after the start byte: one record of a kind or of an error code.
+pub const DESTINATION_OUTPUT_BYTES: usize = 64;
+
+/// The `wslFiles` text in mode `destination` through the wrapper in `probe` mode: `lstat`, then one `readdir` entry check.
+/// The mode reads no root, so the roots are `/`. Stdin holds the Linux path of the destination, ended by NUL.
+pub fn destination_command(
+    installation: &Installation,
+    unit: &str,
+    linux: &str,
+    base: &[(OsString, OsString)],
+) -> Command {
+    let mut input = linux.as_bytes().to_vec();
+    input.push(0);
+    let mut arguments = strings(&["-e", &texts().wsl_files, "--", "destination", "/", "/", "/"]);
+    arguments.push(installation.git.clone());
+    arguments.push(installation.sha256sum.clone());
+    wrapped(
+        installation,
+        Mode::Probe,
+        unit,
+        None,
+        PERL,
+        &arguments,
+        base,
+        Stdin::Bytes(input),
+    )
+}
+
+/// The one record of mode `destination`. A failed check, an exit status other than 0, no start byte,
+/// or another form gives `error` with `other-error`, as for each `wslFiles` mode. The shell never parses stderr.
+pub fn destination_reply(output: Option<Output>) -> Destination {
+    let parsed = output
+        .filter(|out| out.exit_code == Some(0))
+        .and_then(|out| {
+            let bytes =
+                started(&out.stdout).filter(|bytes| bytes.len() <= DESTINATION_OUTPUT_BYTES)?;
+            let mut records = Records { bytes, at: 0 };
+            let facts = match records.token()? {
+                "absent" => Destination::Absent,
+                "empty" => Destination::Empty,
+                "not-empty" => Destination::NotEmpty,
+                "file" => Destination::File,
+                "other" => Destination::Other,
+                "error" => {
+                    records
+                        .number::<usize>()
+                        .filter(|&component| component == 0)?;
+                    Destination::Error(code_token(&mut records)?)
+                }
+                _ => return None,
+            };
+            (records.at == bytes.len()).then_some(facts)
+        });
+    parsed.unwrap_or(Destination::Error("other-error"))
 }
 
 // ---- The mutation anchor ----
@@ -2078,6 +2141,63 @@ mod tests {
             exit_code: Some(exit_code),
             stdout: stdout.as_bytes().to_vec(),
         })
+    }
+
+    /// Feature 003 contract Δ6 and Δ11: the Perl text in mode `destination` gets the Linux path on stdin, and the shell reads one record.
+    #[test]
+    fn the_destination_mode_takes_the_path_on_stdin_and_a_broken_reply_gives_other_error() {
+        let command = destination_command(
+            &installation(),
+            &unit_name(OPERATION, 3).expect("unit"),
+            "/home/u/new repo",
+            &base(),
+        );
+        let start = command
+            .arguments
+            .iter()
+            .position(|argument| argument == "-e")
+            .expect("Perl text");
+        assert_eq!(
+            command.arguments[start + 2..],
+            [
+                "--",
+                "destination",
+                "/",
+                "/",
+                "/",
+                "/usr/local/bin/git",
+                "/usr/bin/sha256sum"
+            ]
+        );
+        assert!(command.arguments.contains(&PERL.to_string()));
+        assert!(matches!(&command.stdin, Stdin::Bytes(bytes) if bytes == b"/home/u/new repo\0"));
+        for (stdout, expected) in [
+            ("Sabsent\0", Destination::Absent),
+            ("Sempty\0", Destination::Empty),
+            ("Snot-empty\0", Destination::NotEmpty),
+            ("Sfile\0", Destination::File),
+            ("Sother\0", Destination::Other),
+            (
+                "Serror\x000\0access-denied\0",
+                Destination::Error("access-denied"),
+            ),
+            ("Serror\x000\0io-error\0", Destination::Error("io-error")),
+        ] {
+            assert_eq!(destination_reply(output(0, stdout)), expected, "{stdout:?}");
+        }
+        let other = Destination::Error("other-error");
+        for stdout in [
+            "absent\0",
+            "Sabsent",
+            "Sabsent\0empty\0",
+            "Sdirectory\0",
+            "Serror\x001\0access-denied\0",
+            "Serror\x000\0sharing-violation\0",
+        ] {
+            assert_eq!(destination_reply(output(0, stdout)), other, "{stdout:?}");
+        }
+        assert_eq!(destination_reply(output(3, "Sempty\0")), other, "exit 3");
+        assert_eq!(destination_reply(None), other, "no end");
     }
 
     /// Answers each `run` with the next scripted output and records the command.
@@ -4093,7 +4213,7 @@ mod tests {
     }
 
     fn bound(change: &[(&str, Option<&str>)]) -> Option<Bound> {
-        bind_probe("Ubuntu-24.04", GUID, probe_output(change).as_bytes())
+        bind_probe("Ubuntu-24.04", GUID, probe_output(change).as_bytes(), true)
     }
 
     #[test]
@@ -4224,11 +4344,11 @@ mod tests {
         }
         // A repeated line binds nothing, so an embedded line end cannot replace a fact.
         let doubled = format!("{}version git version 3.0.0\n", probe_output(&[]));
-        assert!(bind_probe("Ubuntu-24.04", GUID, doubled.as_bytes()).is_none());
+        assert!(bind_probe("Ubuntu-24.04", GUID, doubled.as_bytes(), true).is_none());
         // Strict UTF-8 (contract §11 "Distro checks").
         let mut bytes = probe_output(&[]).into_bytes();
         bytes.extend_from_slice(b"osid \xff\n");
-        assert!(bind_probe("Ubuntu-24.04", GUID, &bytes).is_none());
+        assert!(bind_probe("Ubuntu-24.04", GUID, &bytes, true).is_none());
     }
 
     #[test]
@@ -4425,6 +4545,55 @@ mod tests {
         );
     }
 
+    /// Feature 003 contract Δ11: mode `destination` runs `lstat` on the path, then reads one directory entry.
+    #[test]
+    fn the_real_destination_mode_reads_the_entry_then_one_child() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8003-{:012x}", std::process::id());
+        let host = reference.host();
+        let root = format!("/tmp/arbareto-destination-{}", std::process::id());
+        let shell = |n: u32, script: &str| {
+            let unit = unit_name(&operation, n).expect("unit");
+            let arguments = strings(&["-c", script, "sh", &root]);
+            let command = wrapped(
+                &inst,
+                Mode::Read,
+                &unit,
+                None,
+                "/bin/sh",
+                &arguments,
+                &environment,
+                Stdin::Closed,
+            );
+            host.run(&command).expect("shell").exit_code
+        };
+        let made = "rm -rf -- \"$1\" && mkdir -p -- \"$1/empty\" \"$1/full/sub\" && : > \"$1/file\" && ln -s empty \"$1/link\"";
+        assert_eq!(shell(1, made), Some(0));
+        for (n, (name, expected)) in [
+            ("absent", Destination::Absent),
+            ("empty", Destination::Empty),
+            ("full", Destination::NotEmpty),
+            ("file", Destination::File),
+            ("link", Destination::Other),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let unit = unit_name(&operation, 2 + n as u32).expect("unit");
+            let command =
+                destination_command(&inst, &unit, &format!("{root}/{name}"), &environment);
+            let ended = host.run_until(&command, DESTINATION_OUTPUT_BYTES + 2, PROBE_DEADLINE);
+            assert_eq!(destination_reply(ended.output), expected, "{name}");
+        }
+        assert_eq!(shell(9, "rm -rf -- \"$1\""), Some(0));
+    }
+
     /// T378: systemd 258 and later expand `${NAME}`, `$$`, and a whole `$NAME` argument of a `--scope` command, and drop an unset one.
     /// With `noexp`, the program gets each argument unchanged. Ubuntu-26.04 has systemd 259, and Ubuntu-24.04 has systemd 255.
     #[test]
@@ -4485,7 +4654,7 @@ mod tests {
         let admitted = probe_fact(&text, "version ")
             .and_then(admitted_version)
             .is_some();
-        let binds = bind_probe(&reference.distro, GUID, &out.stdout).is_some();
+        let binds = bind_probe(&reference.distro, GUID, &out.stdout, true).is_some();
         println!(
             "OBSERVATION T378: {} noexpand {:?}, verbatim {verbatim:?}, Git admitted {admitted}, binds {binds}",
             reference.distro,

@@ -52,6 +52,172 @@ pub struct Settings {
     pub wsl_gits: Vec<SavedWslGit>,
     /// Newest `openedAt` first, at most `RECENT_ENTRIES` (contract §3 "Recent repositories").
     pub recent: Vec<RecentEntry>,
+    /// Feature 003 data-model §10.
+    pub sync: SyncSettings,
+}
+
+// ---- Feature 003 shell settings (data-model §10) ----
+
+/// Contract Δ5: at most 256 key file entries.
+pub const KEY_FILE_ENTRIES: usize = 256;
+
+/// Data-model §10 `defaultPullAction`. The first value is the default.
+pub const PULL_ACTIONS: [&str; 5] = ["pull", "pull-merge", "pull-rebase", "fetch", "fetch-all"];
+
+/// Data-model §10 `sshClient`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SshClient {
+    #[default]
+    Git,
+    Plink,
+}
+
+/// One saved PuTTY key file of a worktree and a remote (O-8). The shell never reads the key content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyFile {
+    pub worktree_key: String,
+    pub remote: String,
+    pub path: PathBuf,
+}
+
+/// Data-model §10. It holds no passphrase, no credential, and no key content.
+/// FR-033: `ssh_client` is `Plink` only with a `plink_path`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SyncSettings {
+    pub ssh_client: SshClient,
+    /// One value of `PULL_ACTIONS`.
+    pub default_pull_action: &'static str,
+    pub plink_path: Option<PathBuf>,
+    /// At most `KEY_FILE_ENTRIES`, one for each worktree key and remote.
+    pub remote_key_files: Vec<KeyFile>,
+    pub default_clone_folder: Option<PathBuf>,
+    pub last_clone_parent: Option<PathBuf>,
+}
+
+impl Default for SyncSettings {
+    fn default() -> SyncSettings {
+        SyncSettings {
+            ssh_client: SshClient::Git,
+            default_pull_action: PULL_ACTIONS[0],
+            plink_path: None,
+            remote_key_files: Vec::new(),
+            default_clone_folder: None,
+            last_clone_parent: None,
+        }
+    }
+}
+
+/// Replaces the entry of the same worktree key and remote. A new entry above `KEY_FILE_ENTRIES` gives false.
+pub fn set_key_file(sync: &mut SyncSettings, file: KeyFile) -> bool {
+    let files = &mut sync.remote_key_files;
+    match files
+        .iter()
+        .position(|saved| saved.worktree_key == file.worktree_key && saved.remote == file.remote)
+    {
+        Some(at) => files[at] = file,
+        None if files.len() < KEY_FILE_ENTRIES => files.push(file),
+        None => return false,
+    }
+    true
+}
+
+/// The saved key file of a worktree key and a remote.
+pub fn key_file<'a>(sync: &'a SyncSettings, worktree_key: &str, remote: &str) -> Option<&'a Path> {
+    sync.remote_key_files
+        .iter()
+        .find(|saved| saved.worktree_key == worktree_key && saved.remote == remote)
+        .map(|saved| saved.path.as_path())
+}
+
+/// A remote name of the contract `RemoteName` rule: not empty and without NUL.
+fn is_remote(text: &str) -> bool {
+    !text.is_empty() && !text.contains('\0')
+}
+
+/// More than `KEY_FILE_ENTRIES` entries give none (contract Δ5). An invalid or repeated entry is dropped.
+fn key_files(value: &Value) -> Vec<KeyFile> {
+    let entries = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    if entries.len() > KEY_FILE_ENTRIES {
+        return Vec::new();
+    }
+    let mut files: Vec<KeyFile> = Vec::new();
+    for entry in entries {
+        let (Some(worktree_key), Some(remote), Some(path)) = (
+            entry["worktreeKey"].as_str().filter(|key| is_hex(key, 64)),
+            entry["remote"].as_str().filter(|remote| is_remote(remote)),
+            entry.get("path").and_then(channel_path),
+        ) else {
+            continue;
+        };
+        if !files
+            .iter()
+            .any(|saved| saved.worktree_key == worktree_key && saved.remote == remote)
+        {
+            files.push(KeyFile {
+                worktree_key: worktree_key.to_string(),
+                remote: remote.to_string(),
+                path,
+            });
+        }
+    }
+    files
+}
+
+/// The data-model §10 fields of the settings file. An invalid value gives its default.
+fn sync_settings(file: &Map<String, Value>) -> SyncSettings {
+    let plink_path = file.get("plinkPath").and_then(channel_path);
+    let ssh_client = match file.get("sshClient").and_then(Value::as_str) {
+        Some("plink") if plink_path.is_some() => SshClient::Plink,
+        _ => SshClient::Git,
+    };
+    let stored = file.get("defaultPullAction").and_then(Value::as_str);
+    SyncSettings {
+        ssh_client,
+        default_pull_action: PULL_ACTIONS
+            .into_iter()
+            .find(|action| Some(*action) == stored)
+            .unwrap_or(PULL_ACTIONS[0]),
+        plink_path,
+        remote_key_files: file
+            .get("remoteKeyFiles")
+            .map(key_files)
+            .unwrap_or_default(),
+        default_clone_folder: file.get("defaultCloneFolder").and_then(channel_path),
+        last_clone_parent: file.get("lastCloneParent").and_then(channel_path),
+    }
+}
+
+/// Writes each data-model §10 value that differs from its default.
+fn save_sync(file: &mut Map<String, Value>, sync: &SyncSettings) -> io::Result<()> {
+    if sync.ssh_client == SshClient::Plink {
+        file.insert("sshClient".to_string(), json!("plink"));
+    }
+    if sync.default_pull_action != PULL_ACTIONS[0] {
+        file.insert(
+            "defaultPullAction".to_string(),
+            json!(sync.default_pull_action),
+        );
+    }
+    for (key, path) in [
+        ("plinkPath", &sync.plink_path),
+        ("defaultCloneFolder", &sync.default_clone_folder),
+        ("lastCloneParent", &sync.last_clone_parent),
+    ] {
+        if let Some(path) = path {
+            file.insert(key.to_string(), json!(text(path)?));
+        }
+    }
+    if !sync.remote_key_files.is_empty() {
+        let files = sync
+            .remote_key_files
+            .iter()
+            .map(|file| {
+                Ok(json!({ "worktreeKey": file.worktree_key, "remote": file.remote, "path": text(&file.path)? }))
+            })
+            .collect::<io::Result<Vec<Value>>>()?;
+        file.insert("remoteKeyFiles".to_string(), Value::Array(files));
+    }
+    Ok(())
 }
 
 /// One approved WSL Git. A later probe with another identity gives `GIT_CHANGED`.
@@ -319,6 +485,7 @@ pub fn load(path: &Path) -> Settings {
             .get("recentRepositories")
             .map(recent_entries)
             .unwrap_or_default(),
+        sync: sync_settings(&file),
     }
 }
 
@@ -410,6 +577,7 @@ fn save_with(path: &Path, settings: &Settings, fault: Fault) -> io::Result<()> {
             .collect::<io::Result<Vec<Value>>>()?;
         file.insert("recentRepositories".to_string(), Value::Array(recent));
     }
+    save_sync(&mut file, &settings.sync)?;
     write_file(
         path,
         Value::Object(file).to_string().as_bytes(),
@@ -1729,6 +1897,7 @@ mod tests {
             }),
             wsl_gits: Vec::new(),
             recent: Vec::new(),
+            sync: Default::default(),
         }
     }
 
@@ -1981,6 +2150,161 @@ mod tests {
         file["futureSetting"] = json!({ "any": true });
         std::fs::write(&path, file.to_string()).expect("write");
         assert_eq!(load(&path), full_settings(&fixture));
+    }
+
+    // ---- Feature 003 shell settings (data-model §10) ----
+
+    fn full_sync(fixture: &Fixture) -> SyncSettings {
+        let key = |worktree_key: &str, remote: &str, name: &str| KeyFile {
+            worktree_key: worktree_key.to_string(),
+            remote: remote.to_string(),
+            path: fixture.path(name),
+        };
+        SyncSettings {
+            ssh_client: SshClient::Plink,
+            default_pull_action: "pull-rebase",
+            plink_path: Some(fixture.path("it's PuTTY\\plink.exe")),
+            remote_key_files: vec![
+                key(DIGEST, "origin", "keys\\origin.ppk"),
+                key(DIGEST, "team/upstream", "keys\\upstream.ppk"),
+                key(FINGERPRINT, "origin", "keys\\other.ppk"),
+            ],
+            default_clone_folder: Some(fixture.path("src")),
+            last_clone_parent: Some(fixture.path("src\\team")),
+        }
+    }
+
+    #[test]
+    fn the_sync_settings_round_trip_and_the_file_holds_no_passphrase_field() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        let settings = Settings {
+            sync: full_sync(&fixture),
+            ..full_settings(&fixture)
+        };
+        save(&path, &settings).expect("save");
+        assert_eq!(load(&path), settings);
+        let file: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        assert_eq!(
+            keys(&file),
+            sorted(&[
+                "git",
+                "lastRepository",
+                "window",
+                "sshClient",
+                "defaultPullAction",
+                "plinkPath",
+                "remoteKeyFiles",
+                "defaultCloneFolder",
+                "lastCloneParent",
+            ])
+        );
+        assert_eq!(
+            file["remoteKeyFiles"][1],
+            json!({ "worktreeKey": DIGEST, "remote": "team/upstream", "path": fixture.path("keys\\upstream.ppk") })
+        );
+        save(&path, &full_settings(&fixture)).expect("save");
+        let defaults = load(&path).sync;
+        assert_eq!(defaults, SyncSettings::default());
+        assert_eq!(
+            (defaults.ssh_client, defaults.default_pull_action),
+            (SshClient::Git, "pull")
+        );
+    }
+
+    #[test]
+    fn each_pull_action_round_trips_and_an_invalid_sync_value_gives_its_default() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        for action in PULL_ACTIONS {
+            let mut settings = Settings::default();
+            settings.sync.default_pull_action = action;
+            save(&path, &settings).expect("save");
+            assert_eq!(load(&path).sync.default_pull_action, action);
+        }
+        let plink = fixture.path("plink.exe");
+        for (file, expected) in [
+            (json!({ "sshClient": "plink" }), SyncSettings::default()),
+            (
+                json!({ "sshClient": "putty", "plinkPath": plink, "defaultPullAction": "rebase" }),
+                SyncSettings {
+                    plink_path: Some(plink.clone()),
+                    ..SyncSettings::default()
+                },
+            ),
+            (
+                json!({ "plinkPath": "plink.exe", "defaultCloneFolder": 7, "lastCloneParent": "\\\\?\\C:\\src" }),
+                SyncSettings::default(),
+            ),
+        ] {
+            std::fs::write(&path, file.to_string()).expect("write");
+            assert_eq!(load(&path).sync, expected, "{file}");
+        }
+    }
+
+    #[test]
+    fn more_than_256_key_files_load_as_none_and_an_invalid_or_repeated_entry_is_dropped() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        let entry = |n: usize, remote: &str| json!({ "worktreeKey": format!("{n:064x}"), "remote": remote, "path": fixture.path("id.ppk") });
+        let full: Vec<Value> = (0..KEY_FILE_ENTRIES).map(|n| entry(n, "origin")).collect();
+        std::fs::write(&path, json!({ "remoteKeyFiles": full }).to_string()).expect("write");
+        assert_eq!(load(&path).sync.remote_key_files.len(), KEY_FILE_ENTRIES);
+        let over: Vec<Value> = (0..=KEY_FILE_ENTRIES).map(|n| entry(n, "origin")).collect();
+        std::fs::write(&path, json!({ "remoteKeyFiles": over }).to_string()).expect("write");
+        assert!(load(&path).sync.remote_key_files.is_empty(), "257 entries");
+        let mixed = json!({ "remoteKeyFiles": [
+            entry(1, "origin"),
+            entry(1, ""),
+            { "worktreeKey": "ABC", "remote": "origin", "path": fixture.path("id.ppk") },
+            { "worktreeKey": format!("{:064x}", 2), "remote": "origin", "path": "id.ppk" },
+            { "worktreeKey": format!("{:064x}", 1), "remote": "origin", "path": fixture.path("later.ppk") },
+            entry(3, "team/upstream"),
+        ] });
+        std::fs::write(&path, mixed.to_string()).expect("write");
+        assert_eq!(
+            load(&path).sync.remote_key_files,
+            vec![
+                KeyFile {
+                    worktree_key: format!("{:064x}", 1),
+                    remote: "origin".to_string(),
+                    path: fixture.path("id.ppk"),
+                },
+                KeyFile {
+                    worktree_key: format!("{:064x}", 3),
+                    remote: "team/upstream".to_string(),
+                    path: fixture.path("id.ppk"),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_key_file_replaces_the_entry_of_its_pair_and_a_257th_pair_is_refused() {
+        let mut sync = SyncSettings::default();
+        let file = |n: usize, remote: &str, name: &str| KeyFile {
+            worktree_key: format!("{n:064x}"),
+            remote: remote.to_string(),
+            path: PathBuf::from(format!("C:\\keys\\{name}.ppk")),
+        };
+        for n in 0..KEY_FILE_ENTRIES {
+            assert!(set_key_file(&mut sync, file(n, "origin", "a")));
+        }
+        assert!(
+            set_key_file(&mut sync, file(7, "origin", "b")),
+            "a replacement"
+        );
+        assert_eq!(
+            key_file(&sync, &format!("{:064x}", 7), "origin"),
+            Some(Path::new("C:\\keys\\b.ppk"))
+        );
+        assert!(
+            !set_key_file(&mut sync, file(7, "upstream", "c")),
+            "a new pair above 256"
+        );
+        assert_eq!(sync.remote_key_files.len(), KEY_FILE_ENTRIES);
+        assert_eq!(key_file(&sync, &format!("{:064x}", 7), "upstream"), None);
     }
 
     #[test]

@@ -96,6 +96,8 @@ pub enum Mutation {
     Abort,
     Continue,
     Skip,
+    /// Feature 003 plan.md D12: a clone has no `started` frame. The shell names it from its own clone contexts.
+    Clone,
 }
 
 impl Mutation {
@@ -148,11 +150,13 @@ impl Mutation {
             Mutation::Abort => "Abort",
             Mutation::Continue => "Continue",
             Mutation::Skip => "Skip",
+            Mutation::Clone => "Clone",
         }
     }
 }
 
 /// The mutations from their `started` reply with a marker ID to `ended` (contract §6 "Recovery markers").
+/// A clone counts from the first request that owns its contexts to its `closeJob` (feature 003 contract Δ6).
 /// Lingering Jobs never enter it.
 #[derive(Default)]
 pub struct Running(Mutex<HashMap<String, Mutation>>);
@@ -508,6 +512,21 @@ mod tests {
         assert_eq!(
             prompt(&pulls.mutations()).text,
             "Pull is running. Arbareto cannot guarantee a rollback if you interrupt it. The repository can keep a part of the change."
+        );
+    }
+
+    /// Feature 003 plan.md D12: a running clone is "Clone", and a running clone with a sync names both.
+    #[test]
+    fn a_running_clone_is_named_clone() {
+        assert_eq!(
+            prompt(&running(&[(OPERATION, Mutation::Clone)]).mutations()).text,
+            "Clone is running. Arbareto cannot guarantee a rollback if you interrupt it. The repository can keep a part of the change."
+        );
+        let fetch =
+            Mutation::of(StartedKind::Sync, None, Some(StartedAction::Fetch)).expect("fetch");
+        assert_eq!(
+            prompt(&running(&[(OPERATION, Mutation::Clone), (OTHER, fetch)]).mutations()).text,
+            "Fetch and Clone are running. Arbareto cannot guarantee a rollback if you interrupt them. The repository can keep a part of the change."
         );
     }
 

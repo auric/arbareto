@@ -17,7 +17,10 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value, json};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_IO_DEVICE, ERROR_SHARING_VIOLATION, HANDLE,
+    WAIT_OBJECT_0, WIN32_ERROR,
+};
 use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::Threading::{
@@ -28,17 +31,20 @@ use crate::bootstrap::{
     ContextIdentity, ContextKind, Contexts, Identity, PhysicalIdentity, identity_reply,
     native_identity, read_identity,
 };
+use crate::close::{Mutation, Running};
 use crate::dialogs::Registered;
 use crate::file_facts;
 use crate::git_env::child_environment;
 use crate::jobs::{Event, Supervisor, Tracker};
+use crate::putty;
+use crate::putty::Program;
 use crate::schema::process_reply::{
-    ActivityState, ExitDeadline, OutputStream, RegisterResultResult,
+    ActivityState, ExitDeadline, OutputStream, PageantResultResult, RegisterResultResult,
 };
 use crate::schema::process_request::{self as frame, EnvironmentPolicy};
 use crate::schema::{self, reply, typed};
-use crate::settings::SavedWslGit;
-use crate::spawn::{Input, SpawnRequest, command_line, spawn};
+use crate::settings::{SavedWslGit, SshClient, SyncSettings};
+use crate::spawn::{Input, SpawnError, SpawnRequest, command_line, spawn};
 use crate::wsl;
 
 /// Contract §5 "Native stdout/stderr chunk": decoded bytes in one `output` or `input` frame.
@@ -78,6 +84,14 @@ const POLL: Duration = Duration::from_millis(10);
 const INVALID: Code = Code::InvalidRequest;
 const UNKNOWN: Code = Code::UnknownTarget;
 const OWNERSHIP: Code = Code::ProcessOwnershipFailed;
+/// Feature 003 contract Δ3 `clone` step 4: the fixed items before the URL and the destination.
+const CLONE_ARGUMENTS: [&str; 5] = [
+    "--no-lazy-fetch",
+    "clone",
+    "--progress",
+    "--no-recurse-submodules",
+    "--",
+];
 
 /// A `refused` code of a `process` frame (contract §6 "Process replies").
 pub(crate) type Code = schema::process_reply::RefusedCode;
@@ -113,6 +127,12 @@ pub type WslStore = Box<dyn Fn(SavedWslGit) + Send + Sync>;
 
 /// Makes the host of the WSL processes of one operation. Without it, they run in the operation Job. Tests inject them.
 pub type WslHosts = Box<dyn Fn(&str) -> Box<dyn wsl::Host + Send> + Send + Sync>;
+
+/// Reads the feature 003 shell settings (data-model §10). Without it, `sshClient` is `git`.
+pub type SyncSettingsRead = Box<dyn Fn() -> SyncSettings + Send + Sync>;
+
+/// Starts the connect terminal. Without it, the shell starts a new console. Tests inject it.
+pub type TerminalStart = Box<dyn Fn(&putty::Terminal) -> Result<(), SpawnError> + Send + Sync>;
 
 pub struct Config {
     /// The application-owned launch directory of a `gitProbe` run (contract §6 "Channel frames").
@@ -270,12 +290,22 @@ struct State {
     wsl_probing: HashSet<String>,
     /// The last unit number of each operation with a WSL process (contract §11 "Process launch").
     wsl_units: HashMap<String, u32>,
+    /// Feature 003 contract Δ6: the clone and discovery contexts that each clone operation holds, until its `closeJob`.
+    clones: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Bootstrap(ContextKind),
     Registered,
+    /// Feature 003 contract Δ6: the `clone` context.
+    Clone,
+}
+
+/// Feature 003 contract Δ6: the one array that a `clone` context admits, and its discovery context.
+struct CloneTarget {
+    arguments: Vec<String>,
+    bootstrap_id: String,
 }
 
 /// The native selection that a request runs against.
@@ -288,6 +318,7 @@ struct Target {
     git_directory: Option<PathBuf>,
     /// A WSL Git, and the Linux form of `current_dir` (contract §11 "Paths and file access").
     wsl: Option<(wsl::Installation, String)>,
+    clone: Option<CloneTarget>,
 }
 
 /// The frame facts of a `resolveGit` finish.
@@ -318,6 +349,8 @@ struct Run {
     tracker: Option<Arc<Tracker>>,
     /// A WSL run: its stdout starts with the start byte of the wrapper (contract §11 "Process launch").
     wsl: bool,
+    /// A clone run: the discovery context that binds the destination identity at exit status 0 (feature 003 contract Δ6).
+    clone: Option<String>,
 }
 
 #[derive(Default)]
@@ -356,6 +389,10 @@ pub struct ProcessRequests {
     wsl_confirmation: OnceLock<WslConfirmation>,
     wsl_store: OnceLock<WslStore>,
     wsl_hosts: OnceLock<WslHosts>,
+    sync_settings: OnceLock<SyncSettingsRead>,
+    /// The running mutations of the close prompt. A clone enters it from its first owned request (feature 003 plan.md D12).
+    running: OnceLock<Arc<Running>>,
+    terminal_start: OnceLock<TerminalStart>,
 }
 
 impl ProcessRequests {
@@ -382,7 +419,33 @@ impl ProcessRequests {
             wsl_confirmation: OnceLock::new(),
             wsl_store: OnceLock::new(),
             wsl_hosts: OnceLock::new(),
+            sync_settings: OnceLock::new(),
+            running: OnceLock::new(),
+            terminal_start: OnceLock::new(),
         })
+    }
+
+    pub fn set_sync_settings(&self, read: SyncSettingsRead) {
+        let _ = self.sync_settings.set(read);
+    }
+
+    pub fn set_running(&self, running: Arc<Running>) {
+        let _ = self.running.set(running);
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only tests inject the terminal start")
+    )]
+    pub fn set_terminal_start(&self, start: TerminalStart) {
+        let _ = self.terminal_start.set(start);
+    }
+
+    fn sync_settings(&self) -> SyncSettings {
+        self.sync_settings
+            .get()
+            .map(|read| read())
+            .unwrap_or_default()
     }
 
     pub fn set_git_confirmation(&self, confirmation: GitConfirmation) {
@@ -639,6 +702,54 @@ impl ProcessRequests {
         }
     }
 
+    /// An owner leaves with its context, because a destroyed or expired context refuses each request.
+    /// Feature 003 contract Δ6: the clone operation owns both contexts of its clone from its first request and holds them
+    /// until its `closeJob`. Meanwhile the close prompt names it "Clone" (plan.md D12).
+    fn own(
+        &self,
+        state: &mut State,
+        bootstrap_id: &str,
+        operation_id: &str,
+        now: Instant,
+    ) -> Result<(), Code> {
+        let contexts = &self.contexts;
+        state.owners.retain(|id, _| contexts.get(id, now).is_ok());
+        state
+            .wsl_bound
+            .retain(|id, _| contexts.get(id, now).is_ok());
+        let peer = contexts
+            .get(bootstrap_id, now)
+            .ok()
+            .and_then(|context| context.peer);
+        let ids: Vec<String> = std::iter::once(bootstrap_id.to_string())
+            .chain(peer.clone())
+            .collect();
+        let taken = |id: &String| {
+            state
+                .owners
+                .get(id)
+                .is_some_and(|owner| owner != operation_id)
+        };
+        if ids.iter().any(taken) {
+            return Err(UNKNOWN);
+        }
+        for id in &ids {
+            state.owners.insert(id.clone(), operation_id.to_string());
+        }
+        let owned = state.clones.entry(operation_id.to_string()).or_default();
+        if peer.is_some() && !owned.contains(&ids[0]) {
+            contexts.hold(bootstrap_id);
+            owned.extend(ids);
+            if let Some(running) = self.running.get() {
+                running.started(operation_id, Mutation::Clone);
+            }
+        }
+        if owned.is_empty() {
+            state.clones.remove(operation_id);
+        }
+        Ok(())
+    }
+
     /// Reads the exact `type` value once, then parses the generated type of that value (research.md "T323 typify gate").
     /// `typed` refuses every value outside the schema. Each handler keeps the checks that typify drops.
     fn dispatch(&self, request: &Value, call_id: Option<&str>) -> Result<(), Code> {
@@ -659,7 +770,224 @@ impl ProcessRequests {
             Some("closeJob") => self.close_job(&typed(request).ok_or(INVALID)?),
             Some("wslDistros") => self.wsl_distros(request, call()?),
             Some("wslProbe") => self.wsl_probe(request, call()?),
+            Some("destinationFacts") => {
+                self.destination_facts(&typed(request).ok_or(INVALID)?, call()?)
+            }
+            Some("pageant") => self.pageant(&typed(request).ok_or(INVALID)?, call()?),
+            Some("terminal") => self.terminal(&typed(request).ok_or(INVALID)?, call()?),
             _ => Err(INVALID),
+        }
+    }
+
+    /// Feature 003 contract Δ6 `destinationFacts`: the state of the bound destination. The request carries no path.
+    /// A Windows destination reads OS facts. A WSL destination runs the `wslFiles` mode `destination` with its §11 Linux path.
+    fn destination_facts(
+        &self,
+        request: &frame::DestinationFacts,
+        call_id: &str,
+    ) -> Result<(), Code> {
+        let (operation_id, clone_id) = (request.operation_id.as_str(), request.clone_id.as_str());
+        let now = Instant::now();
+        let mut state = self.state();
+        check_active(&state, operation_id)?;
+        let context = self.contexts.get(clone_id, now)?;
+        if context.kind != ContextKind::Clone {
+            return Err(UNKNOWN);
+        }
+        self.own(&mut state, clone_id, operation_id, now)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (generation, call) = (self.current(), call_id.to_string());
+        if !file_facts::is_wsl_path(&context.path) {
+            std::thread::spawn(move || {
+                let facts = destination(&context.path);
+                me.send(generation, reply::destination_facts(&call, facts));
+            });
+            return Ok(());
+        }
+        // The Perl text runs only with the WSL Git that the user approved for the facts of the clone probe.
+        let installation = context
+            .peer
+            .as_ref()
+            .and_then(|peer| state.wsl_bound.get(peer))
+            .map(|bound| bound.installation.clone())
+            .ok_or(INVALID)?;
+        let approved = state
+            .gits
+            .values()
+            .any(|git| matches!(git, Git::Wsl(known) if *known == installation));
+        if !approved {
+            return Err(INVALID);
+        }
+        let linux = wsl::linux_path(&context.path, &installation.distro).ok_or(INVALID)?;
+        let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
+        let base = &self.config.base_environment;
+        let command = wsl::destination_command(&installation, &unit, &linux, base);
+        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let (operation, deadline) = (operation_id.to_string(), self.walk_bound());
+        std::thread::spawn(move || {
+            let host = me.wsl_host(&operation);
+            let ended = host.run_until(&command, wsl::DESTINATION_OUTPUT_BYTES + 2, deadline);
+            let facts = wsl::destination_reply(ended.output);
+            me.send(generation, reply::destination_facts(&call, facts));
+        });
+        Ok(())
+    }
+
+    /// Feature 003 contract Δ6 `pageant`, for a Windows Git only. With `sshClient` `git`, no process starts.
+    /// Under `plink`: the plink check, then the key file, then Pageant outside every Job with the readiness wait.
+    /// The key file is the saved file of the worktree and the remote (O-8), or the picked file of the clone (FR-049).
+    fn pageant(&self, request: &frame::PageantGroup, call_id: &str) -> Result<(), Code> {
+        use frame::PageantGroup;
+        let now = Instant::now();
+        let mut state = self.state();
+        let (saved, picked) = match request {
+            PageantGroup::Remote {
+                operation_id,
+                repository_id,
+                remote,
+                ..
+            } => {
+                check_active(&state, operation_id)?;
+                let repository = state
+                    .repositories
+                    .get(repository_id.as_str())
+                    .ok_or(UNKNOWN)?;
+                match state
+                    .gits
+                    .get(&repository.git_installation_id)
+                    .ok_or(UNKNOWN)?
+                {
+                    Git::Windows { .. } if !file_facts::is_wsl_path(&repository.worktree_root) => {}
+                    _ => return Err(INVALID),
+                }
+                (
+                    Some((repository.worktree_root.clone(), remote.to_string())),
+                    None,
+                )
+            }
+            PageantGroup::Clone {
+                operation_id,
+                clone_id,
+                ..
+            } => {
+                check_active(&state, operation_id)?;
+                let context = self.contexts.get(clone_id, now)?;
+                if context.kind != ContextKind::Clone {
+                    return Err(UNKNOWN);
+                }
+                self.own(&mut state, clone_id, operation_id, now)?;
+                if file_facts::is_wsl_path(&context.path) {
+                    return Err(INVALID);
+                }
+                (None, context.key)
+            }
+        };
+        drop(state);
+        let settings = self.sync_settings();
+        let (generation, call) = (self.current(), call_id.to_string());
+        let (SshClient::Plink, Some(plink)) = (settings.ssh_client, settings.plink_path.clone())
+        else {
+            self.send(generation, reply::pageant(&call, PageantResultResult::Git));
+            return Ok(());
+        };
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        std::thread::spawn(move || {
+            let sent = match putty::present(Program::Plink, &plink) {
+                Err(failed) => reply::pageant_failed(&call, &failed),
+                Ok(()) => {
+                    // Contract §3 "Worktree key": the shell reads the identity of the registered worktree root.
+                    let key = match saved {
+                        Some((root, remote)) => match read_identity(&root) {
+                            Ok(identity) => crate::settings::key_file(
+                                &settings,
+                                &putty::worktree_key(&identity),
+                                &remote,
+                            )
+                            .map(Path::to_path_buf),
+                            Err(_) => {
+                                me.send(generation, reply::refused(&call, UNKNOWN));
+                                return;
+                            }
+                        },
+                        None => picked,
+                    };
+                    match key {
+                        None => reply::pageant(&call, PageantResultResult::None),
+                        Some(key) => {
+                            let base = &me.config.base_environment;
+                            match putty::start_pageant(&plink, &key, base, putty::PAGEANT_READY) {
+                                Ok(()) => reply::pageant(&call, PageantResultResult::Ready),
+                                Err(failed) => reply::pageant_failed(&call, &failed),
+                            }
+                        }
+                    }
+                }
+            };
+            me.send(generation, sent);
+        });
+        Ok(())
+    }
+
+    /// Feature 003 contract Δ6 `terminal`: the connect terminal of a Windows Git and an optional registered worktree.
+    /// The shell takes the Git path and the worktree root from its own registrations. The service sends no path.
+    fn terminal(&self, request: &frame::Terminal, call_id: &str) -> Result<(), Code> {
+        let state = self.state();
+        check_active(&state, &request.operation_id)?;
+        let git_id = request.git_installation_id.as_str();
+        let Some(Git::Windows { program, .. }) = state.gits.get(git_id) else {
+            return Err(UNKNOWN);
+        };
+        let directory = match &request.repository_id {
+            None => None,
+            Some(id) => {
+                let repository = state
+                    .repositories
+                    .get(id.as_str())
+                    .filter(|repository| repository.git_installation_id == git_id)
+                    .ok_or(UNKNOWN)?;
+                Some(repository.worktree_root.clone())
+            }
+        };
+        let program = program.clone();
+        drop(state);
+        // The terminal runs plink without `-batch`. Git's own SSH client has no connect terminal.
+        let settings = self.sync_settings();
+        let (SshClient::Plink, Some(plink)) = (settings.ssh_client, settings.plink_path) else {
+            return Err(INVALID);
+        };
+        let system = putty::system_folder().ok_or(OWNERSHIP)?;
+        let base = &self.config.base_environment;
+        let target = request.target.as_str();
+        let terminal = putty::terminal(
+            &system,
+            base,
+            &program,
+            directory.as_deref(),
+            target,
+            &plink,
+        );
+        command_line(&terminal.program, &terminal.arguments).map_err(|_| INVALID)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (generation, call) = (self.current(), call_id.to_string());
+        std::thread::spawn(move || {
+            let sent = match putty::present(Program::Plink, &plink) {
+                Err(failed) => reply::terminal_failed(&call, &failed),
+                Ok(()) => match me.start_terminal(&terminal) {
+                    Ok(()) => reply::terminal_started(&call),
+                    // Contract gap: no `terminal` reply names a failed console start.
+                    Err(_) => reply::refused(&call, OWNERSHIP),
+                },
+            };
+            me.send(generation, sent);
+        });
+        Ok(())
+    }
+
+    fn start_terminal(&self, terminal: &putty::Terminal) -> Result<(), SpawnError> {
+        match self.terminal_start.get() {
+            Some(start) => start(terminal),
+            None => putty::start_terminal(terminal, &self.config.launch_directory),
         }
     }
 
@@ -695,8 +1023,18 @@ impl ProcessRequests {
                     Some(repository_id.as_str()),
                 ],
             ),
-            // Feature 003 contract Δ6: T031 adds the `clone` context.
-            RunGroup::Clone { .. } => return Err(INVALID),
+            RunGroup::Clone {
+                clone_id,
+                git_installation_id,
+                ..
+            } => (
+                Kind::Clone,
+                [
+                    Some(clone_id.as_str()),
+                    Some(git_installation_id.as_str()),
+                    None,
+                ],
+            ),
         };
         // The context kinds hold the same `run` fields, each in its own generated type.
         macro_rules! run_fields {
@@ -772,6 +1110,7 @@ impl ProcessRequests {
                     | EnvironmentPolicy::Remote
                     | EnvironmentPolicy::Integrate
             ),
+            Kind::Clone => matches!(policy, EnvironmentPolicy::Remote),
         };
         if !policy_fits {
             return Err(INVALID);
@@ -802,10 +1141,18 @@ impl ProcessRequests {
         }
         check_active(&state, operation_id)?;
         // The marker and the mutex exist before the first side effect (contract §6 "Recovery markers").
-        if changes && !state.started.contains(operation_id) {
+        // Feature 003 contract Δ6: a clone writes only into its new destination, so it has no `started` frame.
+        if changes && kind != Kind::Clone && !state.started.contains(operation_id) {
             return Err(INVALID);
         }
         let target = self.target(&mut state, ids, kind, operation_id)?;
+        if target
+            .clone
+            .as_ref()
+            .is_some_and(|clone| clone.arguments != arguments)
+        {
+            return Err(INVALID);
+        }
         if script && target.wsl.is_none() {
             return Err(INVALID);
         }
@@ -842,12 +1189,16 @@ impl ProcessRequests {
                 let mut full = self.config.argument_prefix.clone();
                 full.extend(arguments);
                 // `git_env` fails only with `INVALID_REQUEST`. It keys its policies by the contract name.
-                let environment = child_environment(
+                let mut environment = child_environment(
                     &policy.to_string(),
                     &self.config.base_environment,
                     index_file.as_deref(),
                 )
                 .map_err(|_| INVALID)?;
+                // Feature 003 contract Δ6: only a `remote` run on a Windows context gets the PuTTY pair.
+                if matches!(policy, EnvironmentPolicy::Remote) {
+                    putty::add_pair(&mut environment, &self.sync_settings());
+                }
                 (None, full, environment)
             }
         };
@@ -874,6 +1225,10 @@ impl ProcessRequests {
         });
         let generation = self.current();
         let wsl = wsl_command.is_some();
+        let clone = target
+            .clone
+            .as_ref()
+            .map(|clone| clone.bootstrap_id.clone());
         let (call, operation) = (call_id.to_string(), operation_id.to_string());
         let closer = Arc::clone(&me);
         let close_operation = operation.clone();
@@ -973,6 +1328,7 @@ impl ProcessRequests {
                         exited,
                         tracker,
                         wsl,
+                        clone,
                     });
                     for stream in 0..2 {
                         let (me, run) = (Arc::clone(&me), Arc::clone(&run));
@@ -1020,11 +1376,15 @@ impl ProcessRequests {
             Kind::Bootstrap(context_kind) => {
                 let bootstrap_id = bootstrap_id.ok_or(INVALID)?;
                 let context = self.contexts.get(bootstrap_id, now)?;
-                if context.kind != context_kind {
+                // Feature 003 contract Δ6: before its clone exits with status 0, a clone destination has no identity.
+                if context.kind != context_kind
+                    || matches!(context.identity, ContextIdentity::Pending { .. })
+                {
                     return Err(UNKNOWN);
                 }
-                own(state, &self.contexts, bootstrap_id, operation_id, now)?;
+                self.own(state, bootstrap_id, operation_id, now)?;
                 let (program, git_identity, current_dir, wsl) = match context_kind {
+                    ContextKind::Clone => return Err(UNKNOWN),
                     ContextKind::GitProbe => (
                         context.path,
                         None,
@@ -1060,6 +1420,47 @@ impl ProcessRequests {
                     git_identity,
                     git_directory: None,
                     wsl,
+                    clone: None,
+                })
+            }
+            // Feature 003 contract Δ6: the fixed clone array ends with the destination in Git's form.
+            // The cwd is the application-owned launch folder, or `/` in WSL.
+            Kind::Clone => {
+                let clone_id = bootstrap_id.ok_or(INVALID)?;
+                let context = self.contexts.get(clone_id, now)?;
+                if context.kind != ContextKind::Clone {
+                    return Err(UNKNOWN);
+                }
+                self.own(state, clone_id, operation_id, now)?;
+                let (Some(url), Some(peer)) = (context.url, context.peer) else {
+                    return Err(INVALID);
+                };
+                let (program, git_identity, destination, wsl) = match git(state)? {
+                    Ok(_) if file_facts::is_wsl_path(&context.path) => return Err(INVALID),
+                    Ok((program, identity)) => {
+                        let text = context.path.to_str().ok_or(INVALID)?.to_string();
+                        (program, Some(identity), text, None)
+                    }
+                    Err(installation) => {
+                        let linux =
+                            wsl::linux_path(&context.path, &installation.distro).ok_or(INVALID)?;
+                        let root = Some((installation, "/".to_string()));
+                        (wsl::wsl_program(), None, linux, root)
+                    }
+                };
+                let mut arguments: Vec<String> = CLONE_ARGUMENTS.map(String::from).to_vec();
+                arguments.extend([url, destination]);
+                Ok(Target {
+                    program,
+                    current_dir: self.config.launch_directory.clone(),
+                    bootstrap_id: None,
+                    git_identity,
+                    git_directory: None,
+                    wsl,
+                    clone: Some(CloneTarget {
+                        arguments,
+                        bootstrap_id: peer,
+                    }),
                 })
             }
             Kind::Registered => {
@@ -1086,6 +1487,7 @@ impl ProcessRequests {
                     git_identity,
                     git_directory: Some(repository.git_directory.clone()),
                     wsl,
+                    clone: None,
                 })
             }
         }
@@ -1612,7 +2014,7 @@ impl ProcessRequests {
                 if !confirm && !context.startup {
                     return Err(INVALID);
                 }
-                own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+                self.own(&mut state, bootstrap_id, operation_id, now)?;
                 let ContextIdentity::Windows(identity) = context.identity else {
                     return Err(INVALID);
                 };
@@ -1678,7 +2080,7 @@ impl ProcessRequests {
                 if context.kind != ContextKind::RepositoryDiscovery {
                     return Err(UNKNOWN);
                 }
-                own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+                self.own(&mut state, bootstrap_id, operation_id, now)?;
                 let repository = Repository {
                     worktree_root,
                     git_directory,
@@ -1775,7 +2177,7 @@ impl ProcessRequests {
             if context.kind != ContextKind::RepositoryDiscovery {
                 return Err(UNKNOWN);
             }
-            own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+            self.own(&mut state, bootstrap_id, operation_id, now)?;
             context.path
         };
         let generation = self.current();
@@ -1874,12 +2276,20 @@ impl ProcessRequests {
         if context.kind != ContextKind::RepositoryDiscovery {
             return Err(UNKNOWN);
         }
-        own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+        self.own(&mut state, bootstrap_id, operation_id, now)?;
         // gaps.md W1: a context binds once, because a rebind would defeat the revalidation at `register`.
-        if context.identity != ContextIdentity::Wsl
-            || state.wsl_bound.contains_key(bootstrap_id)
-            || state.wsl_probing.contains(bootstrap_id)
-        {
+        // Feature 003 contract Δ6: a clone destination binds its Git facts before the clone and its identity after exit 0.
+        let identity = match (context.identity, state.wsl_bound.get(bootstrap_id)) {
+            (ContextIdentity::Wsl, None) => true,
+            (ContextIdentity::Pending { wsl: true }, None) => false,
+            (ContextIdentity::Wsl, Some(bound))
+                if context.peer.is_some() && bound.identity.is_none() =>
+            {
+                true
+            }
+            _ => return Err(INVALID),
+        };
+        if state.wsl_probing.contains(bootstrap_id) {
             return Err(INVALID);
         }
         let linux = wsl::linux_path(&context.path, distro).ok_or(INVALID)?;
@@ -1918,9 +2328,22 @@ impl ProcessRequests {
             let exit_code = output.as_ref().and_then(|out| out.exit_code);
             state.wsl_probing.remove(&bootstrap_id);
             if let (Some(0), Some(out)) = (exit_code, &output)
-                && let Some(bound) = wsl::bind_probe(&distro, &guid, &out.stdout)
+                && let Some(bound) = wsl::bind_probe(&distro, &guid, &out.stdout, identity)
             {
-                state.wsl_bound.entry(bootstrap_id).or_insert(bound);
+                match state.wsl_bound.entry(bootstrap_id) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(bound);
+                    }
+                    // The destination identity binds only beside the Git facts of the first probe.
+                    Entry::Occupied(mut entry) => {
+                        let held = entry.get_mut();
+                        let same = (&held.installation, &held.version, &held.git_identity)
+                            == (&bound.installation, &bound.version, &bound.git_identity);
+                        if held.identity.is_none() && same {
+                            held.identity = bound.identity;
+                        }
+                    }
+                }
             }
             drop(state);
             for chunk in output.iter().flat_map(|out| out.stdout.chunks(CHUNK_BYTES)) {
@@ -1961,7 +2384,7 @@ impl ProcessRequests {
         if context.kind != ContextKind::RepositoryDiscovery {
             return Err(UNKNOWN);
         }
-        own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+        self.own(&mut state, bootstrap_id, operation_id, now)?;
         let bound = state.wsl_bound.get(bootstrap_id).cloned().ok_or(INVALID)?;
         drop(state);
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
@@ -2061,7 +2484,8 @@ impl ProcessRequests {
                 );
                 let same = found
                     .first()
-                    .is_some_and(|found| found.as_ref() == Ok(&bound.identity));
+                    .zip(bound.identity.as_ref())
+                    .is_some_and(|(found, bound)| found.as_ref() == Ok(bound));
                 Box::new(move || {
                     me.bind_wsl(
                         generation,
@@ -2263,7 +2687,7 @@ impl ProcessRequests {
         if context.kind != ContextKind::GitProbe {
             return Err(UNKNOWN);
         }
-        own(&mut state, &self.contexts, bootstrap_id, operation_id, now)?;
+        self.own(&mut state, bootstrap_id, operation_id, now)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let generation = self.current();
         let (bootstrap, operation, call) = (
@@ -2320,13 +2744,7 @@ impl ProcessRequests {
         let id = self
             .contexts
             .create_moved(&first, moved.resolved, identity, moved.now);
-        if let Err(code) = own(
-            &mut state,
-            &self.contexts,
-            &id,
-            moved.operation_id,
-            moved.now,
-        ) {
+        if let Err(code) = self.own(&mut state, &id, moved.operation_id, moved.now) {
             return Some(reply::refused(call_id, code));
         }
         Some(reply::resolve_git(call_id, &id))
@@ -2404,6 +2822,16 @@ impl ProcessRequests {
             }
         }
         deactivate(&mut state, operation_id);
+        // Feature 003 contract Δ6: the end of a clone operation releases its contexts and its close prompt name.
+        if let Some(ids) = state.clones.remove(operation_id) {
+            for id in &ids {
+                self.contexts.destroy(id);
+                state.wsl_bound.remove(id);
+            }
+            if let Some(running) = self.running.get() {
+                running.ended(operation_id);
+            }
+        }
         Ok(())
     }
 
@@ -2552,6 +2980,12 @@ impl ProcessRequests {
         } else {
             reply::exit(&run.call_id, exit_code, active, expired)
         };
+        // Feature 003 contract Δ6: the destination identity binds only after exit status 0, before the exit reply.
+        if let (Some(bootstrap_id), Some(0), None) = (&run.clone, exit_code, expired)
+            && (!run.wsl || started)
+        {
+            self.contexts.bind_clone(bootstrap_id);
+        }
         self.send(run.generation, reply);
     }
 }
@@ -2660,26 +3094,56 @@ fn check_active(state: &State, operation_id: &str) -> Result<(), Code> {
     Ok(())
 }
 
-/// An owner leaves with its context, because a destroyed or expired context refuses each request.
-fn own(
-    state: &mut State,
-    contexts: &Contexts,
-    bootstrap_id: &str,
-    operation_id: &str,
-    now: Instant,
-) -> Result<(), Code> {
-    state.owners.retain(|id, _| contexts.get(id, now).is_ok());
-    state
-        .wsl_bound
-        .retain(|id, _| contexts.get(id, now).is_ok());
-    match state.owners.entry(bootstrap_id.to_string()) {
-        Entry::Occupied(owner) if owner.get() != operation_id => Err(UNKNOWN),
-        Entry::Occupied(_) => Ok(()),
-        Entry::Vacant(owner) => {
-            owner.insert(operation_id.to_string());
-            Ok(())
-        }
+/// Feature 003 contract Δ6 `destinationFacts`: the destination state from OS facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Destination {
+    Absent,
+    Empty,
+    NotEmpty,
+    File,
+    /// A link, a junction, or another file type.
+    Other,
+    /// A contract §6 "File facts" error code.
+    Error(&'static str),
+}
+
+/// Feature 003 contract Δ6: the destination entry itself, from OS facts. A name-surrogate reparse point,
+/// such as a link or a junction, is `other` (Rust std `FileType::is_symlink` reads the reparse tag).
+fn destination(path: &Path) -> Destination {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Destination::Absent,
+        Err(error) => return destination_error(&error),
+    };
+    let kind = metadata.file_type();
+    if kind.is_symlink() {
+        return Destination::Other;
     }
+    if kind.is_file() {
+        return Destination::File;
+    }
+    if !kind.is_dir() {
+        return Destination::Other;
+    }
+    match std::fs::read_dir(path).map(|mut entries| entries.next()) {
+        Ok(None) => Destination::Empty,
+        Ok(Some(Ok(_))) => Destination::NotEmpty,
+        Ok(Some(Err(error))) | Err(error) => destination_error(&error),
+    }
+}
+
+/// Contract §6 "File facts": the `error` code of a Win32 error.
+fn destination_error(error: &std::io::Error) -> Destination {
+    let is = |code: WIN32_ERROR| error.raw_os_error() == Some(code.0 as i32);
+    Destination::Error(if is(ERROR_ACCESS_DENIED) {
+        "access-denied"
+    } else if is(ERROR_SHARING_VIOLATION) {
+        "sharing-violation"
+    } else if is(ERROR_IO_DEVICE) {
+        "io-error"
+    } else {
+        "other-error"
+    })
 }
 
 /// The `limits` field of a `run` request, in milliseconds.
@@ -2701,12 +3165,12 @@ struct RunLimits {
     inactivity: Option<Duration>,
 }
 
-/// Each limit within its contract cap. `stallMs` exists only in `registeredOperation`.
+/// Each limit within its contract cap. `stallMs` exists only in `registeredOperation` and `clone` (feature 003 contract Δ2).
 /// The `network`, `remote`, and `integrate` policies carry the inactivity limit and the ceiling (feature 003 contract Δ6).
 /// No other policy carries them. typify drops the integer ranges and the `stallMs` const, so this check keeps them.
 fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<RunLimits, Code> {
     let stall = |ms: f64| {
-        (kind == Kind::Registered && ms == STALL_MS as f64)
+        (matches!(kind, Kind::Registered | Kind::Clone) && ms == STALL_MS as f64)
             .then_some(Duration::from_millis(STALL_MS))
             .ok_or(INVALID)
     };
@@ -2727,7 +3191,7 @@ fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<R
         }
         Limits::Deadline(ms, stall_ms) if !network => {
             let cap = match kind {
-                Kind::Registered => REGISTERED_DEADLINE_MS,
+                Kind::Registered | Kind::Clone => REGISTERED_DEADLINE_MS,
                 Kind::Bootstrap(_) => BOOTSTRAP_DEADLINE_MS,
             };
             if ms > cap {
@@ -3883,9 +4347,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// Feature 003 contract Δ6: the schema holds the `clone` context, and the shell refuses its `run` until T031 adds it.
+    /// Feature 003 contract Δ6: the schema holds the `clone` context, and a `run` without a bound clone context starts nothing.
     #[test]
-    fn a_clone_context_run_gets_invalid_request() {
+    fn a_run_of_an_unbound_clone_context_gets_unknown_target() {
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
         let destination = workspace.worktree.join("clone");
@@ -3898,7 +4362,7 @@ pub(crate) mod tests {
         };
         assert!(typed::<frame::ProcessRequest>(&body(&uuid())).is_some());
         let cases: Vec<(&str, Edit)> = vec![("a clone run", remove("transactionId"))];
-        expect_refusals(&harness, body, cases, "INVALID_REQUEST");
+        expect_refusals(&harness, body, cases, "UNKNOWN_TARGET");
         assert!(!destination.exists(), "no clone ran");
     }
 
@@ -6118,7 +6582,7 @@ pub(crate) mod tests {
         assert_eq!(wsl.host.commands().len(), 1);
         let state = wsl.harness.requests.state();
         let bound = state.wsl_bound.get(&bootstrap_id).expect("bound");
-        assert_eq!(bound.identity.inode, "4242");
+        assert_eq!(bound.identity.as_ref().expect("identity").inode, "4242");
     }
 
     /// Per-context and per-operation WSL state leaves with its context and with its operation.
@@ -9152,5 +9616,1008 @@ pub(crate) mod tests {
             WAIT,
         );
         assert_eq!((code, size.trim()), (0, BIG_BYTES.to_string().as_str()));
+    }
+    // ---- Feature 003: the PuTTY pair, `pageant`, and `terminal` (contract Δ6, T027) ----
+
+    use crate::putty::tests::{installed, plink_settings, sandbox};
+    use crate::settings::{KeyFile, SyncSettings};
+
+    /// The shell settings that a test changes while the requests read them.
+    fn sync_settings(harness: &Harness, settings: SyncSettings) -> Arc<Mutex<SyncSettings>> {
+        let shared = Arc::new(Mutex::new(settings));
+        let read = Arc::clone(&shared);
+        harness
+            .requests
+            .set_sync_settings(Box::new(move || read.lock().expect("settings").clone()));
+        shared
+    }
+
+    /// The child harness without an inherited SSH variable, so each value comes from the shell.
+    fn ssh_free_harness() -> Harness {
+        let environment = std::env::vars_os()
+            .filter(|(name, _)| {
+                !["GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT"]
+                    .iter()
+                    .any(|ssh| crate::env_sanitize::name_is(name, ssh))
+            })
+            .collect();
+        Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            environment,
+            Duration::from_millis(WALK_DEADLINE_MS),
+        )
+    }
+
+    /// The `ENV` line of a run of the `env` child mode.
+    fn ssh_variables(
+        harness: &Harness,
+        operation: &str,
+        workspace: &Workspace,
+        policy: &str,
+    ) -> Value {
+        let limits = match policy {
+            "read" | "mutation" | "search" => json!({ "deadlineMs": 30_000 }),
+            _ => network_limits(30_000, 60_000),
+        };
+        let call = uuid();
+        harness.send(run_body(
+            &call,
+            operation,
+            workspace,
+            &["env", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT"],
+            policy,
+            limits,
+        ));
+        let line = harness.output_line(&call, "stdout", "ENV");
+        assert_eq!(
+            harness.exit(&call, WAIT).expect("exit").1["exitCode"],
+            0,
+            "{policy}"
+        );
+        serde_json::from_str(&line).expect("ENV JSON")
+    }
+
+    #[test]
+    fn only_a_remote_run_on_a_windows_context_gets_the_putty_pair_and_only_under_plink() {
+        let harness = ssh_free_harness();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started(&operation, &workspace);
+        let plink = harness.fixture.path(r"it's PuTTY\plink.exe");
+        let settings = sync_settings(&harness, plink_settings(&plink));
+        let none = json!({ "GIT_SSH_COMMAND": null, "GIT_SSH_VARIANT": null });
+        let quoted = format!(
+            "'{}' -batch",
+            plink.to_str().expect("path").replace('\'', r"'\''")
+        );
+        assert_eq!(
+            ssh_variables(&harness, &operation, &workspace, "remote"),
+            json!({ "GIT_SSH_COMMAND": quoted, "GIT_SSH_VARIANT": "plink" })
+        );
+        for policy in ["read", "mutation", "network", "integrate", "search"] {
+            assert_eq!(
+                ssh_variables(&harness, &operation, &workspace, policy),
+                none,
+                "{policy}"
+            );
+        }
+        *settings.lock().expect("settings") = SyncSettings::default();
+        assert_eq!(
+            ssh_variables(&harness, &operation, &workspace, "remote"),
+            none,
+            "Git's own configuration"
+        );
+    }
+
+    #[test]
+    fn a_wsl_remote_run_gets_no_putty_variable() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let plink = wsl.harness.fixture.path("plink.exe");
+        sync_settings(&wsl.harness, plink_settings(&plink));
+        let operation = uuid();
+        let common = wsl::WslIdentity {
+            guid: WSL_GUID.to_string(),
+            file_system_id: "fedc9aa3bd65bc57".to_string(),
+            inode: "4243".to_string(),
+        };
+        wsl.harness
+            .requests
+            .tag(&operation, crate::bootstrap::PhysicalIdentity::Wsl(common));
+        let before = wsl.host.commands().len();
+        let call = uuid();
+        wsl.harness.send(json!({
+            "type": "run", "callId": call, "operationId": operation, "contextKind": "registeredOperation",
+            "gitInstallationId": git, "repositoryId": repository, "arguments": ["--no-lazy-fetch", "fetch", "--", "origin"],
+            "environmentPolicy": "remote", "limits": network_limits(30_000, 60_000),
+        }));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            refused(&call, "PROCESS_OWNERSHIP_FAILED")
+        );
+        let launched = wsl.host.commands();
+        assert_eq!(launched.len(), before + 2, "the anchor and the Git process");
+        for command in &launched[before..] {
+            assert!(
+                !command.environment.iter().any(|(name, _)| {
+                    ["GIT_SSH_COMMAND", "GIT_SSH_VARIANT"]
+                        .iter()
+                        .any(|ssh| crate::env_sanitize::name_is(name, ssh))
+                }),
+                "{:?}",
+                command.environment
+            );
+            assert!(!command.arguments.iter().any(|a| a.contains("plink")));
+        }
+    }
+
+    fn pageant_remote(call: &str, operation: &str, repository: &str, remote: &str) -> Value {
+        json!({ "type": "pageant", "callId": call, "operationId": operation, "repositoryId": repository, "remote": remote })
+    }
+
+    fn pageant_clone(call: &str, operation: &str, clone: &str) -> Value {
+        json!({ "type": "pageant", "callId": call, "operationId": operation, "cloneId": clone })
+    }
+
+    fn pageant_result(call: &str, result: &str) -> Value {
+        json!({ "type": "pageant", "callId": call, "result": result })
+    }
+
+    #[test]
+    fn with_git_a_pageant_request_replies_git_and_starts_no_process() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let (clone, _) = harness.contexts.create_clone(
+            &harness.fixture.path("clone"),
+            "ssh://example.test/a.git",
+            None,
+            Instant::now(),
+        );
+        let operation = uuid();
+        for body in [
+            pageant_remote(&uuid(), &operation, &workspace.repository, "origin"),
+            pageant_clone(&uuid(), &uuid(), &clone),
+        ] {
+            let call = body["callId"].as_str().expect("call").to_string();
+            harness.send(body);
+            assert_eq!(harness.reply(&call), pageant_result(&call, "git"));
+        }
+        assert_eq!(
+            harness.jobs.active_processes(&operation).unwrap_or(0),
+            0,
+            "no process"
+        );
+    }
+
+    #[test]
+    fn under_plink_a_missing_plink_gives_missing_and_without_a_saved_key_the_reply_is_none() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        // O-8: a repository-controlled key file is only a proposal.
+        std::fs::write(
+            workspace.worktree.join(".git").join("config"),
+            "[remote \"origin\"]\n\tputtykeyfile = C:/keys/repository.ppk\n",
+        )
+        .expect("repository configuration");
+        let missing = harness.fixture.path("gone").join("plink.exe");
+        let settings = sync_settings(&harness, plink_settings(&missing));
+        let (clone, _) = harness.contexts.create_clone(
+            &harness.fixture.path("clone"),
+            "ssh://example.test/a.git",
+            None,
+            Instant::now(),
+        );
+        let failed = |call: &str| json!({ "type": "pageant", "callId": call, "result": "failed", "reason": "missing", "program": "plink", "path": missing });
+        let call = uuid();
+        harness.send(pageant_remote(
+            &call,
+            &uuid(),
+            &workspace.repository,
+            "origin",
+        ));
+        assert_eq!(harness.reply(&call), failed(&call));
+        let clone_operation = uuid();
+        let call = uuid();
+        harness.send(pageant_clone(&call, &clone_operation, &clone));
+        assert_eq!(harness.reply(&call), failed(&call));
+        let Some(folder) = installed() else {
+            return;
+        };
+        let key = identity_key(&workspace.worktree);
+        *settings.lock().expect("settings") = SyncSettings {
+            remote_key_files: vec![KeyFile {
+                worktree_key: key,
+                remote: "upstream".to_string(),
+                path: harness.fixture.path("upstream.ppk"),
+            }],
+            ..plink_settings(&folder.join("plink.exe"))
+        };
+        for body in [
+            pageant_remote(&uuid(), &uuid(), &workspace.repository, "origin"),
+            pageant_clone(&uuid(), &clone_operation, &clone),
+        ] {
+            let call = body["callId"].as_str().expect("call").to_string();
+            harness.send(body);
+            assert_eq!(harness.reply(&call), pageant_result(&call, "none"));
+        }
+    }
+
+    /// Contract §3 "Worktree key" of the worktree root, from its `FileIdInfo` identity.
+    fn identity_key(worktree: &Path) -> String {
+        let identity = read_identity(worktree).expect("identity");
+        let mut bytes = identity.volume_serial.to_be_bytes().to_vec();
+        bytes.extend_from_slice(&identity.file_id);
+        crate::settings::hex(&crate::settings::sha256(&bytes))
+    }
+
+    #[test]
+    fn a_saved_key_goes_to_a_real_pageant_only_in_sandbox() {
+        if !sandbox() {
+            return;
+        }
+        let Some(folder) = installed() else {
+            return;
+        };
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        sync_settings(
+            &harness,
+            SyncSettings {
+                remote_key_files: vec![KeyFile {
+                    worktree_key: identity_key(&workspace.worktree),
+                    remote: "origin".to_string(),
+                    path: harness.fixture.path("missing.ppk"),
+                }],
+                ..plink_settings(&folder.join("plink.exe"))
+            },
+        );
+        let call = uuid();
+        harness.send(pageant_remote(
+            &call,
+            &uuid(),
+            &workspace.repository,
+            "origin",
+        ));
+        let reply = harness
+            .wait_reply(Duration::from_secs(40), |v| v["callId"] == call.as_str())
+            .expect("reply")
+            .1;
+        assert_eq!(reply["reason"], "exit", "{reply}");
+    }
+
+    #[test]
+    fn a_wsl_pageant_target_gets_invalid_request_and_an_unknown_one_unknown_target() {
+        let wsl = wsl_harness(true);
+        let (_, repository) = wsl_repository(&wsl);
+        sync_settings(
+            &wsl.harness,
+            plink_settings(&wsl.harness.fixture.path("plink.exe")),
+        );
+        let (wsl_clone, _) = wsl.harness.contexts.create_clone(
+            Path::new(r"\\wsl.localhost\Ubuntu-24.04\home\u\new"),
+            "ssh://example.test/a.git",
+            None,
+            Instant::now(),
+        );
+        let (_, discovery) = wsl.harness.contexts.create_clone(
+            &wsl.harness.fixture.path("clone"),
+            "ssh://example.test/a.git",
+            None,
+            Instant::now(),
+        );
+        let before = wsl.host.commands().len();
+        for (body, code) in [
+            (
+                pageant_remote(&uuid(), &uuid(), &repository, "origin"),
+                "INVALID_REQUEST",
+            ),
+            (
+                pageant_clone(&uuid(), &uuid(), &wsl_clone),
+                "INVALID_REQUEST",
+            ),
+            (
+                pageant_remote(&uuid(), &uuid(), &uuid(), "origin"),
+                "UNKNOWN_TARGET",
+            ),
+            (pageant_clone(&uuid(), &uuid(), &uuid()), "UNKNOWN_TARGET"),
+            (
+                pageant_clone(&uuid(), &uuid(), &discovery),
+                "UNKNOWN_TARGET",
+            ),
+        ] {
+            let call = body["callId"].as_str().expect("call").to_string();
+            wsl.harness.send(body);
+            assert_eq!(wsl.harness.reply(&call), refused(&call, code));
+        }
+        assert_eq!(wsl.host.commands().len(), before, "no WSL process");
+    }
+
+    type Terminals = Arc<Mutex<Vec<crate::putty::Terminal>>>;
+
+    /// Records each terminal start instead of a console.
+    fn record_terminals(harness: &Harness) -> Terminals {
+        let started: Terminals = Arc::default();
+        let record = Arc::clone(&started);
+        harness
+            .requests
+            .set_terminal_start(Box::new(move |terminal| {
+                record.lock().expect("terminals").push(terminal.clone());
+                Ok(())
+            }));
+        started
+    }
+
+    fn terminal_body(call: &str, git: &str, repository: Option<&str>, target: &str) -> Value {
+        let mut body = json!({ "type": "terminal", "callId": call, "operationId": uuid(), "gitInstallationId": git, "target": target });
+        if let Some(repository) = repository {
+            body["repositoryId"] = json!(repository);
+        }
+        body
+    }
+
+    fn variable(terminal: &crate::putty::Terminal, name: &str) -> Option<String> {
+        terminal
+            .environment
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn a_terminal_takes_the_git_and_the_worktree_from_the_registrations_and_an_unregistered_pair_is_refused()
+     {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let other = harness.child_workspace("other");
+        let started = record_terminals(&harness);
+        let missing = harness.fixture.path("plink.exe");
+        let settings = sync_settings(&harness, SyncSettings::default());
+        let call = uuid();
+        harness.send(terminal_body(
+            &call,
+            &workspace.git,
+            Some(&workspace.repository),
+            "origin",
+        ));
+        assert_eq!(
+            harness.reply(&call),
+            refused(&call, "INVALID_REQUEST"),
+            "Git's own configuration"
+        );
+        *settings.lock().expect("settings") = plink_settings(&missing);
+        for (body, code) in [
+            (
+                terminal_body(&uuid(), &uuid(), None, "https://example.test/a.git"),
+                "UNKNOWN_TARGET",
+            ),
+            (
+                terminal_body(&uuid(), &workspace.git, Some(&uuid()), "origin"),
+                "UNKNOWN_TARGET",
+            ),
+            (
+                terminal_body(&uuid(), &workspace.git, Some(&other.repository), "origin"),
+                "UNKNOWN_TARGET",
+            ),
+        ] {
+            let call = body["callId"].as_str().expect("call").to_string();
+            harness.send(body);
+            assert_eq!(harness.reply(&call), refused(&call, code));
+        }
+        let call = uuid();
+        harness.send(terminal_body(
+            &call,
+            &workspace.git,
+            None,
+            "https://example.test/a.git",
+        ));
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "terminal", "callId": call, "result": "failed", "reason": "missing", "program": "plink", "path": missing })
+        );
+        assert!(started.lock().expect("terminals").is_empty(), "no console");
+        let Some(folder) = installed() else {
+            return;
+        };
+        *settings.lock().expect("settings") = plink_settings(&folder.join("plink.exe"));
+        let call = uuid();
+        harness.send(terminal_body(
+            &call,
+            &workspace.git,
+            Some(&workspace.repository),
+            "origin",
+        ));
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "terminal", "callId": call, "result": "started" })
+        );
+        let call = uuid();
+        harness.send(terminal_body(
+            &call,
+            &other.git,
+            None,
+            "https://example.test/a.git",
+        ));
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "terminal", "callId": call, "result": "started" })
+        );
+        let started = started.lock().expect("terminals");
+        assert_eq!(started.len(), 2);
+        assert_eq!(
+            variable(&started[0], "ARBARETO_GIT"),
+            test_exe().to_str().map(String::from)
+        );
+        assert_eq!(
+            variable(&started[0], "ARBARETO_DIR"),
+            workspace.worktree.to_str().map(String::from)
+        );
+        assert_eq!(
+            variable(&started[0], "ARBARETO_TARGET").as_deref(),
+            Some("origin")
+        );
+        assert_eq!(
+            variable(&started[1], "ARBARETO_DIR").as_deref(),
+            Some(""),
+            "a clone target"
+        );
+        assert_eq!(
+            started[1].arguments,
+            [
+                "-NoProfile",
+                "-NoExit",
+                "-Command",
+                crate::putty::TERMINAL_SCRIPT
+            ]
+        );
+    }
+
+    #[test]
+    fn a_terminal_for_a_wsl_git_is_refused_and_starts_no_console() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let started = record_terminals(&wsl.harness);
+        sync_settings(&wsl.harness, plink_settings(&test_exe()));
+        for body in [
+            terminal_body(&uuid(), &git, Some(&repository), "origin"),
+            terminal_body(&uuid(), &git, None, "https://example.test/a.git"),
+        ] {
+            let call = body["callId"].as_str().expect("call").to_string();
+            wsl.harness.send(body);
+            assert_eq!(wsl.harness.reply(&call), refused(&call, "UNKNOWN_TARGET"));
+        }
+        assert!(started.lock().expect("terminals").is_empty());
+    }
+
+    // ---- Feature 003: the clone contexts and `destinationFacts` (contract Δ3, Δ6, T028) ----
+
+    const CLONE_URL: &str = "https://example.test/team/repo.git";
+
+    fn clone_arguments(url: &str, destination: &str) -> Value {
+        json!([
+            "--no-lazy-fetch",
+            "clone",
+            "--progress",
+            "--no-recurse-submodules",
+            "--",
+            url,
+            destination
+        ])
+    }
+
+    fn clone_run(call: &str, operation: &str, clone: &str, git: &str, arguments: Value) -> Value {
+        json!({
+            "type": "run", "callId": call, "operationId": operation, "contextKind": "clone", "cloneId": clone,
+            "gitInstallationId": git, "arguments": arguments, "environmentPolicy": "remote",
+            "limits": network_limits(30_000, 60_000),
+        })
+    }
+
+    fn destination_facts(harness: &Harness, operation: &str, clone: &str) -> Value {
+        let call = uuid();
+        harness.send(json!({ "type": "destinationFacts", "callId": call, "operationId": operation, "cloneId": clone }));
+        harness.reply(&call)
+    }
+
+    fn discovery_identity(
+        harness: &Harness,
+        operation: &str,
+        bootstrap: &str,
+        git: &str,
+        path: &Path,
+    ) -> Value {
+        let call = uuid();
+        harness.send(json!({
+            "type": "identity", "callId": call, "operationId": operation, "contextKind": "repositoryDiscovery",
+            "bootstrapId": bootstrap, "gitInstallationId": git, "paths": [path],
+        }));
+        harness.reply(&call)
+    }
+
+    #[test]
+    fn a_clone_run_admits_only_the_fixed_array_with_the_bound_destination_last() {
+        let harness = Harness::child();
+        let git = harness.register_git(&test_exe());
+        let destination = harness.fixture.path(r"clones\it's repo");
+        let text = destination.to_str().expect("path").to_string();
+        let (clone, bootstrap) =
+            harness
+                .contexts
+                .create_clone(&destination, CLONE_URL, None, Instant::now());
+        let operation = uuid();
+        let base = |call: &str| {
+            clone_run(
+                call,
+                &operation,
+                &clone,
+                &git,
+                clone_arguments(CLONE_URL, &text),
+            )
+        };
+        let other = harness
+            .fixture
+            .path("other")
+            .to_str()
+            .expect("path")
+            .to_string();
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "another URL",
+                set(
+                    "arguments",
+                    clone_arguments("https://example.test/b.git", &text),
+                ),
+            ),
+            (
+                "another destination",
+                set("arguments", clone_arguments(CLONE_URL, &other)),
+            ),
+            (
+                "an extra argument",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "clone",
+                        "--progress",
+                        "--no-recurse-submodules",
+                        "--depth=1",
+                        "--",
+                        CLONE_URL,
+                        text
+                    ]),
+                ),
+            ),
+            (
+                "no end of options",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "clone",
+                        "--progress",
+                        "--no-recurse-submodules",
+                        CLONE_URL,
+                        text
+                    ]),
+                ),
+            ),
+            (
+                "recursion",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "clone",
+                        "--progress",
+                        "--recurse-submodules",
+                        "--",
+                        CLONE_URL,
+                        text
+                    ]),
+                ),
+            ),
+            ("policy network", set("environmentPolicy", json!("network"))),
+            (
+                "policy read",
+                both(
+                    set("environmentPolicy", json!("read")),
+                    set("limits", json!({ "deadlineMs": 30_000 })),
+                ),
+            ),
+            (
+                "deadline limits",
+                set(
+                    "limits",
+                    json!({ "deadlineMs": 30_000, "stallMs": STALL_MS }),
+                ),
+            ),
+        ];
+        expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+        let cases: Vec<(&str, Edit)> = vec![
+            ("the discovery context", set("cloneId", json!(bootstrap))),
+            ("an unknown context", set("cloneId", json!(uuid()))),
+            (
+                "an unregistered Git",
+                set("gitInstallationId", json!(uuid())),
+            ),
+        ];
+        expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
+        assert!(!destination.exists(), "no clone ran");
+        let call = uuid();
+        harness.send(base(&call));
+        let report: Value =
+            serde_json::from_str(&harness.output_line(&call, "stdout", "CLONE")).expect("CLONE");
+        assert_eq!(harness.exit(&call, WAIT).expect("exit").1["exitCode"], 0);
+        assert_eq!(
+            report["args"],
+            json!([
+                "--progress",
+                "--no-recurse-submodules",
+                "--",
+                CLONE_URL,
+                text
+            ])
+        );
+        assert_eq!(
+            report["cwd"],
+            json!(harness.requests.config.launch_directory),
+            "the application-owned launch folder"
+        );
+        assert!(destination.join(".git").is_dir());
+    }
+
+    #[test]
+    fn a_clone_run_under_plink_gets_the_putty_pair() {
+        let harness = ssh_free_harness();
+        let git = harness.register_git(&test_exe());
+        let plink = harness.fixture.path("plink.exe");
+        sync_settings(&harness, plink_settings(&plink));
+        let destination = harness.fixture.path("clone");
+        let text = destination.to_str().expect("path").to_string();
+        let (clone, _) =
+            harness
+                .contexts
+                .create_clone(&destination, CLONE_URL, None, Instant::now());
+        let call = uuid();
+        harness.send(clone_run(
+            &call,
+            &uuid(),
+            &clone,
+            &git,
+            clone_arguments(CLONE_URL, &text),
+        ));
+        let report: Value =
+            serde_json::from_str(&harness.output_line(&call, "stdout", "CLONE")).expect("CLONE");
+        assert_eq!(
+            report["sshCommand"],
+            format!("'{}' -batch", plink.display())
+        );
+        assert_eq!(report["sshVariant"], "plink");
+    }
+
+    #[test]
+    fn the_discovery_context_of_a_clone_binds_the_destination_identity_only_after_exit_0() {
+        let harness = Harness::child();
+        let git = harness.register_git(&test_exe());
+        let destination = harness.fixture.path("new");
+        let text = destination.to_str().expect("path").to_string();
+        let (clone, bootstrap) =
+            harness
+                .contexts
+                .create_clone(&destination, CLONE_URL, None, Instant::now());
+        let operation = uuid();
+        let unknown = |reply: Value, name: &str| {
+            assert_eq!(reply["type"], "refused", "{name}: {reply}");
+            assert_eq!(reply["code"], "UNKNOWN_TARGET", "{name}");
+        };
+        unknown(
+            discovery_identity(&harness, &operation, &bootstrap, &git, &destination),
+            "before the clone",
+        );
+        let call = uuid();
+        harness.send(json!({
+            "type": "run", "callId": call, "operationId": operation, "contextKind": "repositoryDiscovery",
+            "bootstrapId": bootstrap, "gitInstallationId": git, "arguments": ["--no-lazy-fetch", "rev-parse", "--is-bare-repository"],
+            "environmentPolicy": "probe", "limits": { "deadlineMs": 30_000 },
+        }));
+        unknown(harness.reply(&call), "a discovery run");
+        let call = uuid();
+        let failed = "https://example.test/fail.git";
+        harness.contexts.destroy(&clone);
+        let (clone, bootstrap) =
+            harness
+                .contexts
+                .create_clone(&destination, failed, None, Instant::now());
+        harness.send(clone_run(
+            &call,
+            &operation,
+            &clone,
+            &git,
+            clone_arguments(failed, &text),
+        ));
+        assert_eq!(harness.exit(&call, WAIT).expect("exit").1["exitCode"], 128);
+        std::fs::create_dir_all(&destination).expect("a folder after a failed clone");
+        unknown(
+            discovery_identity(&harness, &operation, &bootstrap, &git, &destination),
+            "after exit 128",
+        );
+        std::fs::remove_dir(&destination).expect("remove");
+        let (clone, bootstrap) =
+            harness
+                .contexts
+                .create_clone(&destination, CLONE_URL, None, Instant::now());
+        let call = uuid();
+        harness.send(clone_run(
+            &call,
+            &operation,
+            &clone,
+            &git,
+            clone_arguments(CLONE_URL, &text),
+        ));
+        assert_eq!(harness.exit(&call, WAIT).expect("exit").1["exitCode"], 0);
+        let identity = discovery_identity(&harness, &operation, &bootstrap, &git, &destination);
+        assert_eq!(identity["type"], "identity", "{identity}");
+        assert_eq!(
+            harness
+                .contexts
+                .get(&bootstrap, Instant::now())
+                .expect("context")
+                .identity,
+            ContextIdentity::Windows(read_identity(&destination).expect("identity"))
+        );
+    }
+
+    #[test]
+    fn while_the_clone_operation_owns_them_the_clone_contexts_stay_valid_after_60_s() {
+        let harness = Harness::child();
+        let running = Arc::new(crate::close::Running::default());
+        harness.requests.set_running(Arc::clone(&running));
+        let destination = harness.fixture.path(r"absent\new");
+        let early = Instant::now()
+            .checked_sub(Duration::from_millis(59_000))
+            .expect("an uptime above 59 s");
+        let (clone, bootstrap) =
+            harness
+                .contexts
+                .create_clone(&destination, CLONE_URL, None, early);
+        let (idle_clone, idle_bootstrap) =
+            harness
+                .contexts
+                .create_clone(&destination, CLONE_URL, None, early);
+        let operation = uuid();
+        let call = uuid();
+        harness.send(json!({ "type": "wslDistros", "callId": call, "operationId": operation, "bootstrapId": bootstrap }));
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "wslDistros", "callId": call, "path": destination }),
+            "the destination path of the clone"
+        );
+        assert_eq!(running.mutations(), [crate::close::Mutation::Clone]);
+        std::thread::sleep(Duration::from_millis(1500));
+        let reply = destination_facts(&harness, &operation, &clone);
+        assert_eq!(reply["result"], "absent", "{reply}");
+        let call = uuid();
+        harness.send(json!({ "type": "wslDistros", "callId": call, "operationId": operation, "bootstrapId": bootstrap }));
+        assert_eq!(harness.reply(&call)["path"], json!(destination));
+        // Another operation owns neither context.
+        let reply = destination_facts(&harness, &uuid(), &clone);
+        assert_eq!(
+            reply,
+            refused(reply["callId"].as_str().expect("call"), "UNKNOWN_TARGET")
+        );
+        // The 60 s lifetime applies before the first request.
+        let reply = destination_facts(&harness, &uuid(), &idle_clone);
+        assert_eq!(reply["code"], "UNKNOWN_TARGET", "{reply}");
+        let call = uuid();
+        harness.send(json!({ "type": "wslDistros", "callId": call, "operationId": uuid(), "bootstrapId": idle_bootstrap }));
+        assert_eq!(harness.reply(&call), refused(&call, "UNKNOWN_TARGET"));
+        // The operation end releases both contexts and the clone name.
+        harness.send(json!({ "type": "closeJob", "operationId": operation }));
+        assert!(eventually(WAIT, || running.mutations().is_empty()));
+        assert!(harness.contexts.get(&clone, Instant::now()).is_err());
+        assert!(harness.contexts.get(&bootstrap, Instant::now()).is_err());
+    }
+
+    #[test]
+    fn destination_facts_reads_only_the_bound_path_from_os_facts() {
+        let harness = Harness::child();
+        let fixture = &harness.fixture;
+        let empty = fixture.path("empty");
+        std::fs::create_dir(&empty).expect("folder");
+        let full = fixture.path("full");
+        std::fs::create_dir_all(full.join("sub")).expect("folder");
+        let file = fixture.path("file");
+        std::fs::write(&file, "x").expect("file");
+        let mut cases = vec![
+            (fixture.path("absent"), "absent"),
+            (fixture.path(r"absent\below"), "absent"),
+            (empty.clone(), "empty"),
+            (full, "not-empty"),
+            (file.clone(), "file"),
+        ];
+        let junction = fixture.path("junction");
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&empty)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if made {
+            cases.push((junction, "other"));
+        } else {
+            println!(
+                "SKIP destinationFacts junction: missing capability ntfs-junction (unverified)"
+            );
+        }
+        let link = fixture.path("link");
+        if std::os::windows::fs::symlink_dir(&empty, &link).is_ok() {
+            cases.push((link, "other"));
+        } else {
+            println!("SKIP destinationFacts symlink: missing capability symlink (unverified)");
+        }
+        for (path, expected) in cases {
+            let (clone, _) = harness
+                .contexts
+                .create_clone(&path, CLONE_URL, None, Instant::now());
+            let reply = destination_facts(&harness, &uuid(), &clone);
+            let call = reply["callId"].as_str().expect("call").to_string();
+            assert_eq!(
+                reply,
+                json!({ "type": "destinationFacts", "callId": call, "result": expected }),
+                "{}",
+                path.display()
+            );
+        }
+        let (_, bootstrap) = harness
+            .contexts
+            .create_clone(&file, CLONE_URL, None, Instant::now());
+        for id in [bootstrap, uuid()] {
+            let reply = destination_facts(&harness, &uuid(), &id);
+            assert_eq!(reply["code"], "UNKNOWN_TARGET", "{reply}");
+        }
+        for (os, code) in [
+            (5, "access-denied"),
+            (32, "sharing-violation"),
+            (1117, "io-error"),
+            (87, "other-error"),
+        ] {
+            assert_eq!(
+                destination_error(&std::io::Error::from_raw_os_error(os)),
+                Destination::Error(code),
+                "{os}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wsl_clone_binds_its_git_without_an_identity_and_checks_the_destination_with_the_destination_mode()
+     {
+        let wsl = wsl_harness(true);
+        let destination = r"\\wsl.localhost\Ubuntu-24.04\home\u\new";
+        let (clone, bootstrap) = wsl.harness.contexts.create_clone(
+            Path::new(destination),
+            CLONE_URL,
+            None,
+            Instant::now(),
+        );
+        let operation = uuid();
+        wsl.host.push(
+            0,
+            wsl_probe_output(&[("selfs", ""), ("selino", ""), ("selstat", "absent")]).as_bytes(),
+        );
+        assert_eq!(wsl.probe(&operation, &bootstrap)["exitCode"], 0);
+        assert_eq!(
+            wsl.harness
+                .requests
+                .state()
+                .wsl_bound
+                .get(&bootstrap)
+                .map(|bound| bound.identity.clone()),
+            Some(None),
+            "the Git facts bind without the destination identity"
+        );
+        let git = uuid();
+        assert_eq!(
+            wsl.register_git(&operation, &bootstrap, &git)["result"],
+            "approved"
+        );
+        let before = wsl.host.commands().len();
+        wsl.host.push(0, b"Sabsent\0");
+        assert_eq!(
+            destination_facts(&wsl.harness, &operation, &clone)["result"],
+            "absent"
+        );
+        let check = wsl.host.commands()[before].clone();
+        assert!(
+            check
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["--", "destination"]),
+            "{:?}",
+            check.arguments
+        );
+        assert!(matches!(&check.stdin, wsl::Stdin::Bytes(bytes) if bytes == b"/home/u/new\0"));
+        let reply = discovery_identity(
+            &wsl.harness,
+            &operation,
+            &bootstrap,
+            &git,
+            Path::new(destination),
+        );
+        assert_eq!(reply["code"], "UNKNOWN_TARGET", "before the clone: {reply}");
+        // The clone runs through the wrapper in `remote` mode with `-C /` and the Linux destination last.
+        *wsl.host.child.lock().expect("child") = Some((
+            Arc::clone(&wsl.harness.jobs),
+            vec!["emit".to_string(), "S".to_string(), "0".to_string()],
+        ));
+        let before = wsl.host.commands().len();
+        let call = uuid();
+        wsl.harness.send(clone_run(
+            &call,
+            &operation,
+            &clone,
+            &git,
+            clone_arguments(CLONE_URL, "/home/u/new"),
+        ));
+        let exit = wsl
+            .harness
+            .wait_reply(WAIT, |v| {
+                v["callId"] == call.as_str() && (v["type"] == "exit" || v["type"] == "refused")
+            })
+            .expect("end")
+            .1;
+        assert_eq!(exit["exitCode"], 0, "{exit}");
+        let installation = wsl.harness.requests.state().wsl_bound[&bootstrap]
+            .installation
+            .clone();
+        let base = wsl.harness.requests.config.base_environment.clone();
+        let launched: Vec<Vec<String>> = wsl.host.commands()[before..]
+            .iter()
+            .map(|command| command.arguments.clone())
+            .collect();
+        let arguments: Vec<String> = clone_arguments(CLONE_URL, "/home/u/new")
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|a| a.as_str().expect("text").to_string())
+            .collect();
+        let unit = wsl::unit_name(&operation, 2).expect("unit");
+        let git_command = wsl::git_command(
+            &installation,
+            wsl::Mode::Remote,
+            &unit,
+            None,
+            "/",
+            &arguments,
+            &base,
+            wsl::Stdin::Closed,
+        )
+        .expect("command");
+        assert_eq!(
+            launched,
+            vec![
+                wsl::anchor_command(&installation, &operation, &base)
+                    .expect("anchor")
+                    .arguments,
+                git_command.arguments
+            ]
+        );
+        // After exit 0, one more probe binds the destination identity.
+        wsl.host.push(0, wsl_probe_output(&[]).as_bytes());
+        assert_eq!(wsl.probe(&operation, &bootstrap)["exitCode"], 0);
+        assert_eq!(
+            wsl.harness.requests.state().wsl_bound[&bootstrap]
+                .identity
+                .as_ref()
+                .map(|identity| identity.inode.clone()),
+            Some("4242".to_string())
+        );
+        assert_eq!(
+            wsl.probe(&operation, &bootstrap)["code"],
+            "INVALID_REQUEST",
+            "the identity binds once"
+        );
     }
 }

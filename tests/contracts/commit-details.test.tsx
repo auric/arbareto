@@ -15,7 +15,7 @@ registerDom();
 const { createRoot } = await import("react-dom/client");
 const { ViewCommitDetails } = await import("../../src/frontend/history/CommitDetails");
 const { HistoryList } = await import("../../src/frontend/history/HistoryList");
-const { createHistoryView } = await import("../../src/frontend/state/history-view");
+const { createHistoryView, PAGE_ROWS, SPECIAL_ROWS } = await import("../../src/frontend/state/history-view");
 type ViewRow = import("../../src/frontend/state/history-view").ViewRow;
 
 const unmounts: (() => Promise<void>)[] = [];
@@ -213,7 +213,8 @@ describe("details reads beside page reads", () => {
   }
 
   test("a held arrow key across pages never shows the not-in-list text, and the pane ends on the selected commit", async () => {
-    const restore = stubLayout(800);
+    // A short viewport renders fewer rows per press. The row count does not change the page reads.
+    const restore = stubLayout(160);
     try {
       const fake = createFake({ total: 2_000, loaded: 2_000 });
       const view = createHistoryView(fake.bridge, TARGET);
@@ -226,7 +227,10 @@ describe("details reads beside page reads", () => {
       const observer = new MutationObserver(() => void (text(pane).includes("not in the history list") && wrong++));
       observer.observe(pane, { subtree: true, childList: true, characterData: true });
       await act(async () => list.focus());
-      for (let i = 0; i < 400; i++) {
+      // The list starts on item 0. These presses end on commit 2·PAGE_ROWS, so the selection crosses two page boundaries.
+      const presses = SPECIAL_ROWS + 2 * PAGE_ROWS;
+      // A timed-out test unmounts the list. The loop then stops before the DOM teardown.
+      for (let i = 0; i < presses && list.isConnected; i++) {
         await act(async () => void list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
         if (i % 4 === 0) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
       }
@@ -237,7 +241,9 @@ describe("details reads beside page reads", () => {
       // The page reads and the details reads never cancel each other.
       expect(fake.canceledTexts()).toBe(0);
       expect(fake.of("readHistoryRows").some((p) => p.text === "details")).toBe(true);
+      expect(fake.of("readHistoryRows").flatMap((p) => (p.text === "rows" ? [(p.at as { row: number }).row] : []))).toEqual([0, PAGE_ROWS, 2 * PAGE_ROWS]);
       const selected = view.getState().selection!.id;
+      expect(selected).toBe(fakeOid(2 * PAGE_ROWS));
       expect(text(pane)).toContain(`Body of ${parseInt(selected, 16)}`);
     } finally {
       restore();

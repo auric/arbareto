@@ -222,6 +222,11 @@ export function tauriCliProblem(stdout: string): string[] {
   return stdout === TAURI_CLI_VERSION ? [] : [`cargo tauri --version printed ${JSON.stringify(stdout)}, the NSIS ${NSIS_VERSION} pin needs ${JSON.stringify(TAURI_CLI_VERSION)}`];
 }
 
+/** True when the Tauri CLI runs this build for a Windows target. tauri-cli 2.12.0 sets `TAURI_ENV_PLATFORM` for `beforeBuildCommand`. */
+export function needsCliPin(env: Record<string, string | undefined>): boolean {
+  return env.TAURI_ENV_PLATFORM === "windows";
+}
+
 /** A problem unless `makensis.exe /VERSION` printed exactly `v<NSIS_VERSION>`. */
 export function makensisProblem(stdout: string): string[] {
   return stdout === `v${NSIS_VERSION}` ? [] : [`NSIS ${NSIS_VERSION}: %LOCALAPPDATA%\\tauri\\NSIS\\makensis.exe /VERSION printed ${JSON.stringify(stdout)}`];
@@ -291,8 +296,8 @@ async function main(): Promise<number> {
     const files = await filesOf(await readLicenseFiles(c.dir, c.licenseFile), vendoredKey(vendoredKeys, "cargo", c.name, c.version));
     shipped.push({ name: c.name, version: c.version, license: c.license, files });
   }
-  // The NSIS bundle builds only on Windows, so only a Windows build needs the CLI pin.
-  if (process.platform === "win32") {
+  // The NSIS bundle builds only for a Tauri Windows target, so only that build needs the CLI pin.
+  if (needsCliPin(process.env)) {
     const cli = Bun.spawnSync(["cargo", "tauri", "--version"], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "inherit", timeout: 120_000 });
     problems.push(...(cli.exitCode === 0 ? tauriCliProblem(cli.stdout.toString()) : [`cargo tauri --version exit code ${cli.exitCode}`]));
   }

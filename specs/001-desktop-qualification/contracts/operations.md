@@ -1314,11 +1314,12 @@ Map these cases to codes:
   - `index-change-hook`: "This repository registers a post-index-change hook. Arbareto does not stage hunks and files while such a registration exists, also a disabled one. Stage this change in a terminal."
   - `executable-monitor`: "The core.fsmonitor setting starts a program for this repository. Arbareto does not stage hunks and files while that setting starts a program. Stage this change in a terminal."
   - `unqualified-monitor`: "This repository uses the built-in fsmonitor daemon of Git. Arbareto has not qualified that daemon for staging hunks and files. Stage this change in a terminal."
-- `WSL_UNAVAILABLE` carries one reason: `wsl-missing`, `distro-missing`, `not-wsl2`, `no-user-manager`, `no-setsid`, `no-coreutils`, `no-perl`, or `start-failed` (§11). Its remedy texts are:
+- `WSL_UNAVAILABLE` carries one reason: `wsl-missing`, `distro-missing`, `not-wsl2`, `no-user-manager`, `scope-arguments`, `no-setsid`, `no-coreutils`, `no-perl`, or `start-failed` (§11). Its remedy texts are:
   - `wsl-missing`: "WSL is not available on this computer. Install WSL2, then open the folder again."
   - `distro-missing`: "No registered WSL distro has the name <name>. Open the folder through a listed distro."
   - `not-wsl2`: "Distro <name> is not a WSL2 distro. Arbareto opens repositories only in WSL2 distros."
   - `no-user-manager`: the §11 "Process ownership" text.
+  - `scope-arguments`: "systemd-run in <distro> does not pass Git arguments unchanged. Update systemd in the distro to version 254 or later." It has no remedy command (§11 "Argument expansion").
   - `no-setsid`: "Arbareto needs the setsid program in <distro>. Install the util-linux package in the distro, then open the folder again."
   - `no-coreutils`: "Arbareto needs the stat, env, and sha256sum programs in /usr/bin of <distro>. Install the coreutils package in the distro, then open the folder again."
   - `no-perl`: "Arbareto needs Perl in <distro> to check hook and program files. Install the distro's perl package, then open the repository again."
@@ -1551,7 +1552,7 @@ The wrapper does five things:
 - With expansion, `${NAME}` anywhere in an argument takes the variable value. So does an argument that is a whole `$NAME`. `$$` becomes `$`. A whole `$NAME` argument whose variable is unset leaves the command line. So a Git path argument or a `-C` directory with such text names another file. The 2026-10-13 probe in Ubuntu-26.04 (systemd 259) changed `a${HOME}` to `a/home/<user>`, `b$$` to `b$`, and `$HOME` to `/home/<user>`. It removed an unset `$NAME` argument, and it kept `c$HOME`. Ubuntu-24.04 (systemd 255) kept every argument. With `--expand-environment=no`, both kept every argument (research R10, T378).
 - The bootstrap probe prints `noexpand` with the exit status of `systemd-run --expand-environment=no --version`. Status 0 means that `systemd-run` takes the option. The value must be a decimal from 0 to 255 without a leading zero. 0 gives `<noexp>` `1`, and 1 to 255 give an empty `<noexp>`.
 - The probe then starts one scope with the same flag rule. Its `/bin/sh` gets the three arguments `a${HOME}`, `b$$`, and `$HOME`, and compares each with an exact string test. It prints `verbatim 0` only when exactly these three arrive unchanged. Only `verbatim 0` passes.
-- A missing `noexpand` or `verbatim` line, or a value outside these rules, gives `WSL_UNAVAILABLE` with reason `no-user-manager`, the reason of a failed scope test ("Git per distro" above). The shell binds nothing for that probe.
+- A missing `noexpand` or `verbatim` line, or a value outside these rules, gives `WSL_UNAVAILABLE` with reason `scope-arguments` (§9). systemd runs in that distro, so the `no-user-manager` remedy does not apply. The shell binds nothing for that probe.
 
 `setsid` reason: with the hidden console, a Linux command could open `/dev/tty`. So a hook or an SSH prompt could wait for input that nobody can see, until its deadline. `setsid --wait` removed the controlling terminal and passed the exit status (research R14 probe S10). A `/dev/tty` open, an SSH passphrase prompt, and an unknown-host prompt then fail at once. The user chose this for every mode on 2026-10-01 (spec Clarifications). Consequence: the children of Git get no `SIGHUP` at the wrapper exit. A child that keeps running stays in the scope, and the anchor counts it, as on Windows ("Process ownership" below). Research R13 records this as a design change that needs a re-probe.
 

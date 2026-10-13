@@ -146,8 +146,8 @@ describe("WSL registration seams (T207)", () => {
   });
 
   // T378, contract §11 "Git per distro": `noexpand` is the `$?` of `systemd-run --expand-environment=no --version`.
-  // Only `verbatim 0` shows that a probe scope got its arguments unchanged. Any other value refuses like a failed scope test.
-  test("T378: the probe facts noexpand and verbatim set the wrapper flag, and a missing or malformed value gives WSL_UNAVAILABLE reason no-user-manager", () => {
+  // Only `verbatim 0` shows that a probe scope got its arguments unchanged. T379: any other value gives its own reason `scope-arguments`.
+  test("T378, T379: the probe facts noexpand and verbatim set the wrapper flag, and a missing or malformed value gives WSL_UNAVAILABLE reason scope-arguments", () => {
     const programs = ["git", "systemd-run", "systemctl", "setsid", "stat", "env", "perl", "sha256sum"].flatMap((name) => [`path ${name} /usr/bin/${name}`, `magic ${name} -`]);
     const base = ["pathenv /usr/bin", "selfs ef53:fedc9aa3bd65bc57", "selino 4242", "selstat ok", "version git version 2.55.0", "gitfs ef53:fedc9aa3bd65bc57", "gitfile 7:1:1", "scope 0"];
     const checked = (facts: string[]) => {
@@ -160,8 +160,8 @@ describe("WSL registration seams (T207)", () => {
       ok: false,
       code: "WSL_UNAVAILABLE",
       result: {
-        reason: "no-user-manager",
-        text: "Arbareto needs the systemd user manager in this distro to end the processes that Git starts. Set systemd=true under [boot] in /etc/wsl.conf, then restart the distro.",
+        reason: "scope-arguments",
+        text: "systemd-run in Ubuntu-26.04 does not pass Git arguments unchanged. Update systemd in the distro to version 254 or later.",
       },
     } as const;
     expect(checked(["noexpand 0", "verbatim 0"])).toBe(true);

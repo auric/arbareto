@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { decidePull, decidePushDestination, parsePushRecord, type PullDecision, type PushDecision, type PushDestination, type PushRecord } from "../../src/git-service/sync-parsers";
+import { decidePull, decidePushDestination, invalidRemoteValue, parsePushRecord, type PullDecision, type PushDecision, type PushDestination, type PushRecord } from "../../src/git-service/sync-parsers";
 import { RECORDED } from "./sync-recorded";
 
 printOrigin("../../src/git-service/sync-parsers.ts", import.meta.dir);
@@ -265,5 +265,41 @@ describe("D6 pull decision", () => {
   test("several branch.<name>.merge values give several-merge-refs", () => {
     expect(pull(0, 1, [["branch.main.merge", "refs/heads/a"], ["branch.main.merge", "refs/heads/b"]])).toEqual(refused("several-merge-refs"));
     expect(pull(0, 1, [["branch.main.merge", "refs/heads/a"]])).toEqual({ kind: "merge", ff: null, source: null });
+  });
+});
+
+// Contract Δ3 `reviewSync` and research R16 m: remote.c `handle_config` reads five `remote.<name>` keys with `git_config_bool`.
+// Git reads every entry, so an invalid value refuses also when a later entry is valid.
+describe("the remote value check of every review", () => {
+  const check = (config: Config) => invalidRemoteValue(cfg(config));
+  const KEYS = ["mirror", "skipfetchall", "skipdefaultupdate", "prune", "prunetags"];
+
+  test("an invalid value of any of the five keys on any remote refuses", () => {
+    for (const key of KEYS) {
+      expect(check([[`remote.fork.${key}`, "maybe"]])).toBe(true);
+      expect(check([[`remote.a.b.${key}`, "2x"]])).toBe(true);
+      expect(check([[`remote..${key}`, "maybe"]])).toBe(true);
+      expect(check([[`remote.fork.${key}`, "maybe"], [`remote.fork.${key}`, "false"]])).toBe(true);
+    }
+  });
+
+  test("a parseMaybeBool value passes", () => {
+    for (const key of KEYS) for (const value of ["true", "false", "yes", "off", "", "0", "2", "1k", null]) expect(check([[`remote.origin.${key}`, value]])).toBe(false);
+    expect(check([])).toBe(false);
+  });
+
+  test("a name that starts with '/', a key without a remote name, and other keys pass", () => {
+    for (const key of KEYS) {
+      expect(check([[`remote./x.${key}`, "maybe"]])).toBe(false);
+      expect(check([[`remote.${key}`, "maybe"]])).toBe(false);
+      expect(check([[`branch.fork.${key}`, "maybe"]])).toBe(false);
+      expect(check([[`remote.fork.${key}s`, "maybe"]])).toBe(false);
+    }
+    expect(check([["remote.fork.url", "maybe"], ["remote.fork.tagopt", "maybe"], ["fetch.prune", "maybe"]])).toBe(false);
+  });
+
+  test("the D4 rule refuses on each of the five keys", () => {
+    const record: PushRecord = { branch: "topic", upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "", pushRemote: "origin", pushRemoteRef: "" };
+    for (const key of KEYS) expect(decidePushDestination(record, ["origin", "fork"], cfg([[`remote.fork.${key}`, "maybe"]]))).toEqual({ kind: "refused", reason: "invalid-config" });
   });
 });

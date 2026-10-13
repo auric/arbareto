@@ -572,7 +572,8 @@ export const DestinationFactsReply = z.union([
 // Contract Δ9 `PUTTY_UNAVAILABLE`: the reason, the program, and its path.
 const puttyFailed = { result: z.literal("failed"), reason: z.enum(PUTTY_UNAVAILABLE_REASONS), program: z.enum(PUTTY_PROGRAMS), path: ChannelPath };
 export const PageantReply = z.union([
-  z.strictObject({ type: z.literal("pageant"), ...call, result: z.enum(["none", "ready"]) }).meta({ title: "PageantResult" }),
+  // `git`: `sshClient` is `git`, so the shell starts no process.
+  z.strictObject({ type: z.literal("pageant"), ...call, result: z.enum(["git", "none", "ready"]) }).meta({ title: "PageantResult" }),
   z.strictObject({ type: z.literal("pageant"), ...call, ...puttyFailed }).meta({ title: "PageantFailed" }),
 ]);
 export const TerminalReply = z.union([
@@ -600,18 +601,25 @@ export const ProcessReply = z.xor([
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
 
+// Feature 003 contract Δ3 `reviewSync`: the nine actions.
+export const SYNC_ACTIONS = ["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip"] as const;
+export const SyncAction = z.enum(SYNC_ACTIONS);
+
 const startedFields = {
   operationId: Identifier,
   repositoryId: Identifier,
   kind: MutationKind,
   direction: FileDirection.optional(),
+  action: SyncAction.optional(),
   worktreeRoot: ChannelPath,
   commonDirectory: ChannelPath,
 };
 // Contract §6 "Mutation frames": a hunk or file action carries its direction, and no other kind carries one.
-// Feature 003 contract Δ3: only a file action takes `resolve`.
-const directionRule = (frame: { kind: string; direction?: string }) =>
-  (frame.kind === "applyHunk" || frame.kind === "applyFile") === (frame.direction !== undefined) && (frame.kind !== "applyHunk" || Direction.safeParse(frame.direction).success);
+// Feature 003 contract Δ3: only a file action takes `resolve`. Contract Δ6: a `sync` frame carries its action, and no other kind carries one.
+const directionRule = (frame: { kind: string; direction?: string; action?: string }) =>
+  (frame.kind === "applyHunk" || frame.kind === "applyFile") === (frame.direction !== undefined) &&
+  (frame.kind !== "applyHunk" || Direction.safeParse(frame.direction).success) &&
+  (frame.kind === "sync") === (frame.action !== undefined);
 export const StartedCall = z.strictObject(startedFields).refine(directionRule);
 export type MutationStarted = z.infer<typeof StartedCall>;
 

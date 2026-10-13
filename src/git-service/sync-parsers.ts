@@ -203,6 +203,15 @@ export function parseAheadBehind(stdout: Uint8Array): { ahead: number; behind: n
   return m ? { ahead: Number(m[1]), behind: Number(m[2]) } : null;
 }
 
+// Contract Δ3 read 8: `show-ref --verify REBASE_HEAD` prints "<oid> REBASE_HEAD" and LF.
+export function parseRebaseHead(stdout: Uint8Array, objectFormat: ObjectFormat): string | null {
+  const text = utf8.decode(stdout);
+  const suffix = " REBASE_HEAD\n";
+  if (!text.endsWith(suffix)) return null;
+  const oid = text.slice(0, -suffix.length);
+  return isObjectId(oid, objectFormat) ? oid : null;
+}
+
 // git-rev-list(1) `--count`: one decimal line. Plan.md D5 counts the commits that a force push removes.
 export function parseRevListCount(stdout: Uint8Array): number | null {
   const m = /^(0|[1-9][0-9]*)\n$/.exec(utf8.decode(stdout));
@@ -304,12 +313,23 @@ function destinationSteps(r: PushRecord, remotes: readonly string[], config: rea
   return { kind: "refused", reason: "invalid-config" };
 }
 
-// remote.c `handle_config` reads each `remote.<name>.mirror` entry with `git_config_bool`, which stops every push on a bad value.
-// It skips a name that starts with "/" (research R16 m; Git 2.56.0.windows.2 also on another remote and in either order).
-const isMirrorKey = (key: string) => key.startsWith("remote.") && key.endsWith(".mirror") && key.length >= "remote..mirror".length && key[7] !== "/";
+// remote.c `handle_config` reads these `remote.<name>` keys of every entry with `git_config_bool`, which stops `git remote`, fetch, push, and each `%(upstream)` or `%(push)` read on a bad value.
+// It skips a key without a remote name and a name that starts with "/" (research R16 m, contract Δ3 `reviewSync`).
+const BOOLEAN_REMOTE_KEYS: ReadonlySet<string> = new Set(["mirror", "skipdefaultupdate", "skipfetchall", "prune", "prunetags"]);
+
+function isBooleanRemoteKey(key: string): boolean {
+  if (!key.startsWith("remote.")) return false;
+  const dot = key.lastIndexOf(".");
+  return dot > "remote".length && key["remote.".length] !== "/" && BOOLEAN_REMOTE_KEYS.has(key.slice(dot + 1));
+}
+
+// The check of every review, on the trust listing entries before the `remote` read. True gives `invalid-config`.
+export function invalidRemoteValue(config: readonly ConfigValue[]): boolean {
+  return config.some((e) => isBooleanRemoteKey(e.key) && parseMaybeBool(e.value) < 0);
+}
 
 export function decidePushDestination(record: PushRecord, remotes: readonly string[], config: readonly ConfigValue[]): PushDecision {
-  if (config.some((e) => isMirrorKey(e.key) && parseMaybeBool(e.value) < 0)) return { kind: "refused", reason: "invalid-config" };
+  if (invalidRemoteValue(config)) return { kind: "refused", reason: "invalid-config" };
   const steps = destinationSteps(record, remotes, config);
   if (record.upstream !== "") return steps;
   return { kind: "panel", prefill: steps.kind === "destination" ? steps.destination : null };

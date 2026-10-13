@@ -80,6 +80,7 @@ export const SYNC_UNAVAILABLE_REASONS = [
   "upstream-gone",
   "no-operation",
   "not-rebasing",
+  "no-skip-commit",
 ] as const;
 export type SyncUnavailableReason = (typeof SYNC_UNAVAILABLE_REASONS)[number];
 export const PUSH_REJECTED_REASONS = ["rejected", "stale-lease", "remote-rejected", "remote-failure"] as const;

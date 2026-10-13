@@ -115,6 +115,7 @@ describe("contract Δ9 codes", () => {
       "upstream-gone",
       "no-operation",
       "not-rebasing",
+      "no-skip-commit",
     ]);
     expect([...E.PUSH_REJECTED_REASONS]).toEqual(["rejected", "stale-lease", "remote-rejected", "remote-failure"]);
     expect([...E.PUTTY_UNAVAILABLE_REASONS]).toEqual(["missing", "unreadable", "version", "exit", "not-ready"]);
@@ -395,15 +396,38 @@ describe("contract Δ3 results", () => {
     const R = C.ReviewSyncResult;
     expect(ok(R, { action: "fetch", plan: plan(), syncReviewToken: id() })).toBe(true);
     expect(ok(R, { action: "pull", plan: plan({ upstream: { ref: "refs/remotes/origin/main", objectId: OID }, mode: null }), syncReviewToken: id() })).toBe(true);
-    expect(ok(R, { action: "integrate", plan: plan({ upstream: { ref: "refs/remotes/origin/main", objectId: OID }, mode: "rebase", modeSource: "payload" }), syncReviewToken: id() })).toBe(true);
+    expect(ok(R, { action: "integrate", plan: plan({ upstream: { ref: "refs/remotes/origin/main", objectId: OID }, mode: "rebase" }), syncReviewToken: id() })).toBe(true);
     expect(ok(R, { action: "push", plan: plan({ destination }), syncReviewToken: id() })).toBe(true);
     for (const source of ["remote-push-refspec", "push-default-upstream", "push-default-triangular", "panel"]) {
       expect(ok(R, { action: "push", plan: plan({ destination: { ...destination, source, trackingRef: null } }), syncReviewToken: id() })).toBe(true);
     }
     expect(ok(R, { action: "push", plan: plan({ destination: { ...destination, source: "matching" } }), syncReviewToken: id() })).toBe(false);
-    expect(ok(R, { action: "abort", plan: plan({ remotes: [], operation: "merging" }), syncReviewToken: id() })).toBe(true);
+    expect(ok(R, { action: "abort", plan: plan({ remotes: [], operationState: "merging" }), syncReviewToken: id() })).toBe(true);
     expect(ok(R, { action: "prune", plan: plan(), syncReviewToken: id() })).toBe(false);
     expect(ok(R, { action: "fetch", plan: plan() })).toBe(false);
+  });
+
+  // Data-model §2 names the field `operationState`. Data-model §6: the `sync` result names the mode source, not the plan.
+  test("the plan names operationState and holds no modeSource", () => {
+    const R = C.ReviewSyncResult;
+    expect(ok(R, { action: "continue", plan: plan({ remotes: [], operationState: "rebasing" }), syncReviewToken: id() })).toBe(true);
+    expect(ok(R, { action: "abort", plan: plan({ remotes: [], operation: "merging" }), syncReviewToken: id() })).toBe(false);
+    expect(ok(R, { action: "abort", plan: plan({ remotes: [], operationState: "cherry-picking" }), syncReviewToken: id() })).toBe(false);
+    expect(ok(R, { action: "integrate", plan: plan({ mode: "rebase", modeSource: "payload" }), syncReviewToken: id() })).toBe(false);
+  });
+
+  // Contract Δ3 read 8: the skip review names the REBASE_HEAD commit. A commit object above the bound gives a null subject.
+  test("a skip review names skippedCommit, and no other action does", () => {
+    const R = C.ReviewSyncResult;
+    const skip = (skippedCommit: unknown, action = "skip") => ok(R, { action, plan: plan({ remotes: [], operationState: "rebasing", skippedCommit }), syncReviewToken: id() });
+    expect(skip({ objectId: OID, subject: "Fix the parser" })).toBe(true);
+    expect(skip({ objectId: OID, subject: null })).toBe(true);
+    expect(skip({ objectId: OID, subject: "" })).toBe(true);
+    expect(skip({ objectId: OID })).toBe(false);
+    expect(skip({ objectId: "REBASE_HEAD", subject: null })).toBe(false);
+    expect(skip({ objectId: OID, subject: null, shortId: "0123456" })).toBe(false);
+    expect(skip(undefined)).toBe(false);
+    expect(skip({ objectId: OID, subject: null }, "continue")).toBe(false);
   });
 
   test("force-push names its lease commits, at most 100, with the exact count", () => {
@@ -482,6 +506,16 @@ describe("contract Δ3 results", () => {
     expect(ok(R, { action: "push", integration: { state: "done" } })).toBe(false);
   });
 
+  // Contract Δ3 `sync` "Results and states" and data-model §6.
+  test("only a pull or integrate result names the mode source", () => {
+    const R = C.SyncResult;
+    for (const action of ["pull", "integrate"]) {
+      for (const modeSource of ["payload", "branch", "pull", "pull-ff", null]) expect(ok(R, { action, integration: { state: "done" }, modeSource })).toBe(true);
+      expect(ok(R, { action, integration: { state: "done" }, modeSource: "default" })).toBe(false);
+    }
+    for (const action of ["fetch", "fetch-all", "push", "force-push", "abort", "continue", "skip"]) expect(ok(R, { action, modeSource: "payload" })).toBe(false);
+  });
+
   test("a sync result can carry the copyable remedy of its step", () => {
     const R = C.SyncResult;
     const command = "& 'C:\\Git\\cmd\\git.exe' --no-lazy-fetch -C 'C:\\repo' fetch -- 'origin'";
@@ -509,6 +543,7 @@ describe("contract Δ3 results", () => {
     programs: [
       { program: "plink", path: PLINK, present: true },
       { program: "pageant", path: PLINK, present: false },
+      { program: "puttygen", path: PLINK, present: true },
     ],
     remoteKeyFiles: [{ worktreeKey: DIGEST, remote: "origin", path: PLINK }],
     defaultCloneFolder: null,
@@ -519,7 +554,8 @@ describe("contract Δ3 results", () => {
     const R = C.SyncSettingsResult;
     expect(ok(R, settings)).toBe(true);
     expect(ok(R, { ...settings, sshClient: "git", plinkPath: null, programs: [], remoteKeyFiles: [], lastCloneParent: null })).toBe(true);
-    expect(ok(R, { ...settings, keyProposals: [{ worktreeKey: DIGEST, remote: "origin", value: "C:\\keys\\a.ppk" }] })).toBe(true);
+    // Contract Δ3 `readSyncSettings`: the result holds no repository value.
+    expect(ok(R, { ...settings, keyProposals: [{ worktreeKey: DIGEST, remote: "origin", value: "C:\\keys\\a.ppk" }] })).toBe(false);
     expect(ok(R, { ...settings, remoteKeyFiles: Array(limits.KEY_FILE_ENTRIES).fill(settings.remoteKeyFiles[0]) })).toBe(true);
     expect(ok(R, { ...settings, remoteKeyFiles: Array(limits.KEY_FILE_ENTRIES + 1).fill(settings.remoteKeyFiles[0]) })).toBe(false);
     expect(ok(R, { ...settings, defaultPullAction: "pull-squash" })).toBe(false);
@@ -527,6 +563,18 @@ describe("contract Δ3 results", () => {
     for (const reason of E.PUTTY_UNAVAILABLE_REASONS ?? []) expect(ok(R, { reason, program: "plink", path: PLINK })).toBe(true);
     expect(ok(R, { reason: "version", program: "ssh", path: PLINK })).toBe(false);
     expect(ok(R, { reason: "version", program: "plink" })).toBe(false);
+  });
+
+  // Data-model §10: one entry each for plink, pageant, and puttygen with a set plinkPath, else none.
+  test("programs holds the three PuTTY programs for a set plinkPath, else none", () => {
+    const R = C.SyncSettingsResult;
+    const [plink, pageant, puttygen] = settings.programs;
+    expect(ok(R, { ...settings, programs: [puttygen, plink, pageant] })).toBe(true);
+    expect(ok(R, { ...settings, programs: [] })).toBe(false);
+    expect(ok(R, { ...settings, programs: [plink, pageant] })).toBe(false);
+    expect(ok(R, { ...settings, programs: [plink, pageant, pageant] })).toBe(false);
+    expect(ok(R, { ...settings, plinkPath: null })).toBe(false);
+    expect(ok(R, { ...settings, plinkPath: null, programs: [] })).toBe(true);
   });
 });
 
@@ -603,7 +651,8 @@ describe("contract Δ6 private requests", () => {
     expect(frame({ type: "pageant", ...call, repositoryId: id(), remote: "origin", cloneId: id() })).toBe(false);
     expect(frame({ type: "pageant", ...call, repositoryId: id() })).toBe(false);
     expect(frame({ type: "pageant", ...call, cloneId: id(), path: PLINK })).toBe(false);
-    for (const result of ["none", "ready"]) expect(reply({ type: "pageant", callId: call.callId, result })).toBe(true);
+    for (const result of ["git", "none", "ready"]) expect(reply({ type: "pageant", callId: call.callId, result })).toBe(true);
+    expect(reply({ type: "pageant", callId: call.callId, result: "plink" })).toBe(false);
     for (const reason of E.PUTTY_UNAVAILABLE_REASONS ?? []) expect(reply({ type: "pageant", callId: call.callId, result: "failed", reason, program: "pageant", path: PLINK })).toBe(true);
     expect(reply({ type: "pageant", callId: call.callId, result: "failed", reason: "exit" })).toBe(false);
     expect(reply({ type: "pageant", callId: call.callId, result: "ready", program: "pageant", path: PLINK })).toBe(false);
@@ -621,10 +670,15 @@ describe("contract Δ6 private requests", () => {
     expect(reply({ type: "terminal", callId: call.callId, result: "failed" })).toBe(false);
   });
 
-  test("a started frame of kind sync carries no direction, and only applyFile carries resolve", () => {
+  test("a started frame of kind sync carries its action and no direction, and only applyFile carries resolve", () => {
     const started = { type: "started", callId: id(), operationId: id(), repositoryId: id(), worktreeRoot: REPO, commonDirectory: `${REPO}${isWindows ? "\\" : "/"}.git` };
-    expect(ok(channel.MutationRequest, { ...started, kind: "sync" })).toBe(true);
-    expect(ok(channel.MutationRequest, { ...started, kind: "sync", direction: "stage" })).toBe(false);
+    for (const action of C.SYNC_ACTIONS ?? []) expect(ok(channel.MutationRequest, { ...started, kind: "sync", action })).toBe(true);
+    expect([...(C.SYNC_ACTIONS ?? [])]).toEqual(["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip"]);
+    expect(ok(channel.MutationRequest, { ...started, kind: "sync" })).toBe(false);
+    expect(ok(channel.MutationRequest, { ...started, kind: "sync", action: "prune" })).toBe(false);
+    expect(ok(channel.MutationRequest, { ...started, kind: "sync", action: "push", direction: "stage" })).toBe(false);
+    for (const kind of ["commit", "updateSubmodules"]) expect(ok(channel.MutationRequest, { ...started, kind, action: "fetch" })).toBe(false);
+    expect(ok(channel.MutationRequest, { ...started, kind: "applyFile", direction: "resolve", action: "continue" })).toBe(false);
     expect(ok(channel.MutationRequest, { ...started, kind: "applyFile", direction: "resolve" })).toBe(true);
     expect(ok(channel.MutationRequest, { ...started, kind: "applyHunk", direction: "resolve" })).toBe(false);
     expect(ok(channel.MutationRequest, { ...started, kind: "clone" })).toBe(false);

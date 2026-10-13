@@ -41,6 +41,20 @@
             "resolve"
           ]
         },
+        "action": {
+          "type": "string",
+          "enum": [
+            "fetch",
+            "fetch-all",
+            "pull",
+            "integrate",
+            "push",
+            "force-push",
+            "abort",
+            "continue",
+            "skip"
+          ]
+        },
         "worktreeRoot": {
           "type": "string",
           "maxLength": 32767,

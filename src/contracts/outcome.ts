@@ -80,7 +80,8 @@ function noRow(snapshot: OperationSnapshot, event: { type: string }): never {
 export function transition(snapshot: OperationSnapshot, event: OperationEvent): TransitionResult {
   const mutation = (MUTATIONS as readonly string[]).includes(snapshot.operation);
   const submodules = snapshot.operation === "updateSubmodules";
-  const stallTracked = snapshot.operation === "commit" || submodules;
+  // Feature 003 contract Δ2: `sync` and `clone` events carry `stalled`.
+  const stallTracked = snapshot.operation === "commit" || submodules || snapshot.operation === "sync" || snapshot.operation === "clone";
   const ended = snapshot.endProcesses === true;
 
   const next = (state: OperationState, fields: Partial<TransitionResult> = {}, actions: string[] = []): TransitionResult => {

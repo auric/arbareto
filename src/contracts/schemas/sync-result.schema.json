@@ -374,6 +374,22 @@
       ],
       "title": "Integration"
     },
+    "modeSource": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "payload",
+            "branch",
+            "pull",
+            "pull-ff"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "remedy": {
       "type": "object",
       "properties": {

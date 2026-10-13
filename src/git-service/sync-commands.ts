@@ -113,6 +113,15 @@ export function continueArgs(state: IntegrationKind): string[] {
   return kind(state) === "merge" ? [L, "commit", "--quiet"] : [L, "rebase", "--continue"];
 }
 
+// Contract Δ3 read 8: status 2 of `--exists` means no REBASE_HEAD (git-show-ref(1)).
+export function rebaseHeadExistsArgs(): string[] {
+  return read("show-ref", "--exists", "REBASE_HEAD");
+}
+
+export function rebaseHeadArgs(): string[] {
+  return read("show-ref", "--verify", "REBASE_HEAD");
+}
+
 export function skipArgs(): string[] {
   return [L, "rebase", "--skip"];
 }

@@ -4,8 +4,10 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import * as sync from "../../src/git-service/sync-commands";
+import * as parsers from "../../src/git-service/sync-parsers";
 
 printOrigin("../../src/git-service/sync-commands.ts", import.meta.dir);
+printOrigin("../../src/git-service/sync-parsers.ts", import.meta.dir);
 
 // Contract Δ3 and plan.md D3 to D7: the argv vectors of `sync-commands.ts` (T014).
 
@@ -37,6 +39,8 @@ const READS: [string, string[], string[]][] = [
   ["lease subjects", sync.leaseCommitsArgs(T, HEAD, "sha1"), [...R, "rev-list", "--max-count=100", T, `^${HEAD}`]],
   ["sync refs listing", sync.syncRefsArgs(), [...R, "for-each-ref", "--format=%(refname)%00%(objectname)"]],
   ["ahead and behind count", sync.aheadBehindArgs("4".repeat(64), U, "sha256"), [...R, "rev-list", "--left-right", "--count", `${"4".repeat(64)}...${U}`]],
+  ["skip REBASE_HEAD exists", sync.rebaseHeadExistsArgs(), [...R, "show-ref", "--exists", "REBASE_HEAD"]],
+  ["skip REBASE_HEAD object ID", sync.rebaseHeadArgs(), [...R, "show-ref", "--verify", "REBASE_HEAD"]],
 ];
 
 const WRITES: [string, string[], string[]][] = [
@@ -147,5 +151,37 @@ describe("refused inputs", () => {
     throws(() => sync.abortArgs("am" as "merging"));
     throws(() => sync.continueArgs("" as "merging"));
     throws(() => sync.mergeArgs("refs/remotes/origin/main", "--ff-only" as "--ff"));
+  });
+});
+
+// Contract Δ3 read 8: `show-ref --verify` prints one line: the object ID, a space, `REBASE_HEAD`, and LF.
+describe("the REBASE_HEAD read of the skip review", () => {
+  const parse = (text: string, format: "sha1" | "sha256" = "sha1") => parsers.parseRebaseHead(new TextEncoder().encode(text), format);
+  const SHA1 = "a".repeat(40);
+  const SHA256 = "b".repeat(64);
+
+  test("one exact line gives the object ID", () => {
+    expect(parse(`${SHA1} REBASE_HEAD\n`)).toBe(SHA1);
+    expect(parse(`${SHA256} REBASE_HEAD\n`, "sha256")).toBe(SHA256);
+  });
+
+  test("any other output is malformed", () => {
+    const malformed = [
+      "",
+      `${SHA1} REBASE_HEAD`,
+      `${SHA1} REBASE_HEAD\r\n`,
+      `${SHA1}  REBASE_HEAD\n`,
+      `${SHA1}\tREBASE_HEAD\n`,
+      `${SHA1} refs/REBASE_HEAD\n`,
+      `${SHA1} rebase_head\n`,
+      `${SHA1} REBASE_HEAD\n${SHA1} REBASE_HEAD\n`,
+      `${SHA1.toUpperCase()} REBASE_HEAD\n`,
+      `${SHA256} REBASE_HEAD\n`,
+      `${"a".repeat(39)} REBASE_HEAD\n`,
+      `REBASE_HEAD\n`,
+      `\n${SHA1} REBASE_HEAD\n`,
+    ];
+    for (const text of malformed) expect(parse(text)).toBeNull();
+    expect(parse(`${SHA1} REBASE_HEAD\n`, "sha256")).toBeNull();
   });
 });

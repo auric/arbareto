@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { z } from "zod";
-import { DamagedMarker, LinuxPath, TRUST_BOUNDS, UtcTime } from "./channel";
+import { DamagedMarker, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_BOUNDS, UtcTime } from "./channel";
 import {
   DESTINATION_NOT_EMPTY_REASONS,
   ERROR_CODES,
@@ -966,8 +966,7 @@ export const ReadTrackingResult = z
   ])
   .meta({ title: "ReadTrackingResult" });
 
-export const SYNC_ACTIONS = ["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip"] as const;
-const SyncAction = z.enum(SYNC_ACTIONS);
+export { SYNC_ACTIONS };
 // A display remedy: a copyable command, or null when the URL holds user information (contract Δ3 "Remedies").
 const SyncRemedy = z.strictObject({ text: z.string().min(1), command: z.string().nullable() }).meta({ title: "SyncRemedy" });
 
@@ -1008,8 +1007,9 @@ export const SyncPlan = z
     destination: PushDestination.optional(),
     lease: Lease.optional(),
     mode: SyncMode.nullable().optional(),
-    modeSource: z.enum(["payload", "branch", "pull", "pull-ff"]).optional(),
-    operation: z.enum(["merging", "rebasing"]).optional(),
+    operationState: z.enum(["merging", "rebasing"]).optional(),
+    // Contract Δ3 read 8. `subject` is null for a commit object above `HISTORY_COMMIT_OBJECT_BYTES`.
+    skippedCommit: z.strictObject({ objectId: ObjectId, subject: z.string().nullable() }).meta({ title: "SkippedCommit" }).optional(),
     needsDestination: NeedsDestination.optional(),
   })
   .meta({ title: "SyncPlan" });
@@ -1019,7 +1019,12 @@ export const ReviewSyncResult = z
   .union([
     z
       .strictObject({ action: SyncAction, plan: SyncPlan, syncReviewToken: Identifier.optional() })
-      .refine((r) => (r.syncReviewToken === undefined) === (r.plan?.needsDestination !== undefined) && (r.plan?.needsDestination === undefined || r.action === "push"))
+      .refine(
+        (r) =>
+          (r.syncReviewToken === undefined) === (r.plan?.needsDestination !== undefined) &&
+          (r.plan?.needsDestination === undefined || r.action === "push") &&
+          (r.plan?.skippedCommit !== undefined) === (r.action === "skip"),
+      )
       .meta({ title: "SyncReviewed" }),
     z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional() }).meta({ title: "SyncRefused" }),
   ])
@@ -1079,6 +1084,8 @@ export const SyncResult = z
     push: PushResult.optional(),
     counts: z.strictObject({ ahead: Count, behind: Count }).meta({ title: "SyncCounts" }).optional(),
     integration: Integration.optional(),
+    // Data-model §6. Null: no payload and no configuration value decided.
+    modeSource: z.enum(["payload", "branch", "pull", "pull-ff"]).nullable().optional(),
     remedy: SyncRemedy.optional(),
   })
   .refine(
@@ -1086,7 +1093,7 @@ export const SyncResult = z
       (r.fetch === undefined || FETCHING.includes(r.action)) &&
       (r.push === undefined || PUSHING.includes(r.action)) &&
       (r.integration === undefined || INTEGRATING.includes(r.action)) &&
-      (r.counts === undefined || r.action === "pull" || r.action === "integrate"),
+      ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate"),
   )
   .meta({ title: "SyncResult" });
 
@@ -1104,8 +1111,8 @@ export const CloneResult = z
   ])
   .meta({ title: "CloneResult" });
 
-// Data-model §10 and contract Δ3 `readSyncSettings`. No passphrase, credential, or key content.
-// `programs`: the resolved paths in the plink folder and their presence. `keyProposals`: repository `remote.<name>.puttykeyfile` values that the app never uses (O-8).
+// Data-model §10 and contract Δ3 `readSyncSettings`. No passphrase, credential, key content, or repository value.
+// `programs`: one entry for each PuTTY program in the plink folder with a set `plinkPath`, else none.
 export const SyncSettings = z
   .strictObject({
     sshClient: z.enum(["git", "plink"]),
@@ -1115,8 +1122,8 @@ export const SyncSettings = z
     remoteKeyFiles: z.array(z.strictObject({ worktreeKey: Fingerprint, remote: RemoteName, path: ChannelPath }).meta({ title: "KeyFile" })).max(KEY_FILE_ENTRIES),
     defaultCloneFolder: ChannelPath.nullable(),
     lastCloneParent: ChannelPath.nullable(),
-    keyProposals: z.array(z.strictObject({ worktreeKey: Fingerprint, remote: RemoteName, value: z.string() }).meta({ title: "KeyProposal" })).max(KEY_FILE_ENTRIES).optional(),
   })
+  .refine((s) => Array.isArray(s.programs) && new Set(s.programs.map((p) => p?.program)).size === s.programs.length && s.programs.length === (s.plinkPath === null ? 0 : PUTTY_PROGRAMS.length))
   .meta({ title: "SyncSettings" });
 // The six settings operations give the settings, or a PuTTY refusal of `chooseSyncPath` and `launchPuttygen`.
 export const SyncSettingsResult = z.union([SyncSettings, PuttyRefused]).meta({ title: "SyncSettingsResult" });

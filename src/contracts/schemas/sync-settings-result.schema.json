@@ -118,34 +118,6 @@
               "type": "null"
             }
           ]
-        },
-        "keyProposals": {
-          "maxItems": 256,
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "worktreeKey": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
-              },
-              "remote": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "^[^\\u0000]*$"
-              },
-              "value": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "worktreeKey",
-              "remote",
-              "value"
-            ],
-            "additionalProperties": false,
-            "title": "KeyProposal"
-          }
         }
       },
       "required": [

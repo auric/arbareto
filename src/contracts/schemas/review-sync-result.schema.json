@@ -166,21 +166,33 @@
                 }
               ]
             },
-            "modeSource": {
-              "type": "string",
-              "enum": [
-                "payload",
-                "branch",
-                "pull",
-                "pull-ff"
-              ]
-            },
-            "operation": {
+            "operationState": {
               "type": "string",
               "enum": [
                 "merging",
                 "rebasing"
               ]
+            },
+            "skippedCommit": {
+              "type": "object",
+              "properties": {
+                "objectId": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "subject": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "objectId",
+                "subject"
+              ],
+              "additionalProperties": false,
+              "title": "SkippedCommit"
             },
             "needsDestination": {
               "type": "object",
@@ -278,6 +290,7 @@
             "upstream-gone",
             "no-operation",
             "not-rebasing",
+            "no-skip-commit",
             "SYNC_REMOTES"
           ]
         },

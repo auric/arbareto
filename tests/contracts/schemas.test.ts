@@ -241,9 +241,10 @@ describe("channel schemas", () => {
     // Feature 003 contract Δ3 `applyFile`: only a file action takes `resolve`.
     expect(MutationRequest.safeParse({ ...started, kind: "applyFile", direction: "resolve" }).success).toBe(true);
     expect(MutationRequest.safeParse({ ...started, kind: "applyHunk", direction: "resolve" }).success).toBe(false);
-    for (const kind of ["commit", "updateSubmodules", "sync"]) {
-      expect(MutationRequest.safeParse({ ...started, kind }).success).toBe(true);
-      expect(MutationRequest.safeParse({ ...started, kind, direction: "stage" }).success).toBe(false);
+    // Feature 003 contract Δ6: a `sync` frame carries its action.
+    for (const [kind, fields] of [["commit", {}], ["updateSubmodules", {}], ["sync", { action: "pull" }]] as const) {
+      expect(MutationRequest.safeParse({ ...started, kind, ...fields }).success).toBe(true);
+      expect(MutationRequest.safeParse({ ...started, kind, ...fields, direction: "stage" }).success).toBe(false);
     }
   });
 });

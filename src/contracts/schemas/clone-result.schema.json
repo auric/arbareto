@@ -88,6 +88,7 @@
                 "distro-missing",
                 "not-wsl2",
                 "no-user-manager",
+                "scope-arguments",
                 "no-setsid",
                 "no-coreutils",
                 "no-perl",

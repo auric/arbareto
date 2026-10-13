@@ -204,6 +204,10 @@ export interface ServiceSeams {
   approvalClock?: () => number;
   // The in-process checkpoint observer of `src/git-service/submodule-update.ts` (T230). The service awaits it before each named contract §12 step.
   submoduleCheckpoint?: (checkpoint: SubmoduleCheckpoint) => Promise<void> | void;
+  // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`, lowered for a test (T022).
+  historyViewCommits?: number;
+  // The expected matches of each matching probe run, changed for a probe mismatch (T033).
+  historyProbeRuns?: SessionOptions["historyProbeRuns"];
 }
 
 // Contract §12 "Update protocol" step 5 and "Trust": `folder-check` comes before the folder check of a `reuse` row, `clone-check` before the clone check of a row,
@@ -307,27 +311,15 @@ export interface EntriesResult {
   cursor: string | null;
 }
 
-export interface HistoryResult {
+// Feature 002 contract Δ3 `openHistory` result.
+export interface OpenedHistory {
+  viewId: string;
+  scope: "all" | "current";
   generation: number;
-  scope: "current-checkout";
   head: Head;
-  shallowFingerprint: string | null;
-  rows: {
-    oid: string;
-    parents: string[];
-    subject: string;
-    author: { name: string; email: string };
-    date: number;
-    encoding: string | null;
-    shallow: boolean;
-    invalidUtf8: boolean;
-    committer: { name: string; email: string };
-    committerDate: number;
-    body: string;
-    bodyCut: boolean;
-  }[];
-  boundaries: { page: string[]; shallow: string[] };
-  completeness: Completeness;
+  startCount: number;
+  refsDigest: string;
+  shallow: boolean;
 }
 
 export interface TrustResult {
@@ -376,7 +368,8 @@ export interface Service {
   register(path: string): Promise<RegistrationResult>;
   readWorkspace(id: string, payload?: { refresh: boolean; check: "full" | "changes" }, generation?: number): Promise<ServiceResponse<WorkspaceResult>>;
   readEntries(id: string, generation: number, snapshotId: string, cursor: string): Promise<ServiceResponse<EntriesResult>>;
-  readHistory(id: string, generation: number): Promise<ServiceResponse<HistoryResult>>;
+  // The feature 001 cases read the current checkout, so `scope` defaults to "current".
+  openHistory(id: string, generation: number, scope?: "all" | "current"): Promise<ServiceResponse<OpenedHistory>>;
   readTrust(id: string): Promise<ServiceResponse<TrustResult>>;
   approveTrust(id: string, fingerprint: string, generation: number): Promise<ServiceResponse<ApproveResult>>;
   revokeTrust(id: string, trustId: string): Promise<ServiceResponse<RevokeResult>>;
@@ -487,6 +480,8 @@ export async function openService(options: OpenOptions): Promise<Service> {
     ...(options.hunkCheckpoint === undefined ? {} : { hunkCheckpoint: options.hunkCheckpoint }),
     ...(options.approvalClock === undefined ? {} : { approvalClock: options.approvalClock }),
     ...(options.submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint: options.submoduleCheckpoint }),
+    ...(options.historyViewCommits === undefined ? {} : { historyViewCommits: options.historyViewCommits }),
+    ...(options.historyProbeRuns === undefined ? {} : { historyProbeRuns: options.historyProbeRuns }),
   };
   const sessionOptions: SessionOptions & ServiceSeams = {
     writer,
@@ -586,7 +581,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     readWorkspace: (id, payload = { refresh: false, check: "full" }, generation) =>
       service.request("readWorkspace", payload, { repositoryId: id, ...(generation === undefined ? {} : { repositoryGeneration: generation }) }),
     readEntries: (id, generation, snapshotId, cursor) => service.request("readEntries", { snapshotId, cursor }, { repositoryId: id, repositoryGeneration: generation }),
-    readHistory: (id, generation) => service.request("readHistory", {}, { repositoryId: id, repositoryGeneration: generation }),
+    openHistory: (id, generation, scope = "current") => service.request("openHistory", { scope }, { repositoryId: id, repositoryGeneration: generation }),
     readTrust: (id) => service.request("readTrust", {}, { repositoryId: id }),
     approveTrust: (id, fingerprint, generation) => service.request("approveTrust", { fingerprint, approve: true }, { repositoryId: id, repositoryGeneration: generation }),
     revokeTrust: (id, trustId) => service.request("revokeTrust", { trustId }, { repositoryId: id }),

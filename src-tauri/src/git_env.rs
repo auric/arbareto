@@ -145,7 +145,7 @@ mod tests {
         ("GCM_CREDENTIAL_STORE", "wincredman"),
     ];
 
-    const FIXED: [&str; 3] = ["probe", "read", "mutation"];
+    const FIXED: [&str; 4] = ["probe", "read", "mutation", "search"];
 
     fn policy_ids() -> Vec<String> {
         let json: serde_json::Value = serde_json::from_str(POLICIES).expect("git-environment.json");
@@ -337,6 +337,27 @@ mod tests {
                     "{id}"
                 );
             }
+        }
+    }
+
+    /// Feature 002 contract Δ7: `search` is the `read` policy plus `LC_ALL=C.UTF-8`.
+    #[test]
+    fn search_is_the_read_policy_with_a_fixed_c_utf8_locale() {
+        use crate::schema::process_request::EnvironmentPolicy;
+        let policy: EnvironmentPolicy = serde_json::from_value(serde_json::json!("search"))
+            .expect("the generated type holds search");
+        assert_eq!(policy.to_string(), "search");
+        for input in [
+            base(&[]),
+            base(&[("LC_ALL", "de_DE.UTF-8"), ("GIT_DIR", r"C:\x")]),
+            base(&[("lc_all", "fr_FR")]),
+        ] {
+            let search = build(&policy.to_string(), &input);
+            assert_eq!(values(&search, "LC_ALL"), vec!["C.UTF-8"]);
+            let mut read = build("read", &input);
+            read.retain(|(name, _)| !name.eq_ignore_ascii_case("LC_ALL"));
+            read.push(("LC_ALL".into(), "C.UTF-8".into()));
+            assert_eq!(search, read);
         }
     }
 

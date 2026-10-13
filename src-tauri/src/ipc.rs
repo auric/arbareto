@@ -20,7 +20,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 26] = [
+pub const OPERATIONS: [&str; 30] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -30,7 +30,11 @@ pub const OPERATIONS: [&str; 26] = [
     "removeRecentRepository",
     "readWorkspace",
     "readEntries",
-    "readHistory",
+    "openHistory",
+    "loadHistory",
+    "readHistoryRows",
+    "searchHistory",
+    "closeHistory",
     "readRefs",
     "readComparison",
     "readTrust",
@@ -556,12 +560,48 @@ pub async fn read_entries(
 }
 
 #[tauri::command]
-pub async fn read_history(
+pub async fn open_history(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
     request: Request<'_>,
 ) -> Result<Value, &'static str> {
-    call(webview, &ipc, "readHistory", request.body().clone()).await
+    call(webview, &ipc, "openHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn load_history(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "loadHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_history_rows(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readHistoryRows", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn search_history(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "searchHistory", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn close_history(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "closeHistory", request.body().clone()).await
 }
 
 #[tauri::command]
@@ -911,6 +951,92 @@ mod tests {
         assert_eq!(*frames.lock().expect("frames"), vec![frame_of(&body)]);
     }
 
+    /// Feature 002 contract Δ1: the shell reads only `operation` and `requestId` of the five history bodies.
+    /// Payloads outside the service schemas reach the service byte for byte.
+    #[test]
+    fn the_five_history_requests_are_forwarded_byte_for_byte_whatever_their_payload() {
+        const FIVE: [&str; 5] = [
+            "openHistory",
+            "loadHistory",
+            "readHistoryRows",
+            "searchHistory",
+            "closeHistory",
+        ];
+        for operation in FIVE {
+            assert!(OPERATIONS.contains(&operation), "{operation}");
+            assert!(!NATIVE_FIRST.contains(&operation), "{operation}");
+        }
+        let text = "\u{e9}".repeat(512) + "x";
+        assert_eq!(text.len(), 1025);
+        let cases = [
+            ("openHistory", json!({ "scope": "branch" })),
+            (
+                "loadHistory",
+                json!({ "viewId": OPERATION_ID, "need": { "row": 4_000_001 } }),
+            ),
+            (
+                "readHistoryRows",
+                json!({ "viewId": OPERATION_ID, "mode": "full", "at": { "row": 0 }, "count": 513, "text": "none" }),
+            ),
+            (
+                "searchHistory",
+                json!({ "viewId": OPERATION_ID, "text": text }),
+            ),
+            ("closeHistory", json!({ "viewId": "view", "extra": 1 })),
+        ];
+        for (operation, payload) in cases {
+            let (ipc, frames) = ipc();
+            let mut envelope = request(operation, payload);
+            envelope["repositoryId"] = json!(OPERATION_ID);
+            // Spaces that a parse and a new encoding would not keep.
+            let body = envelope.to_string().replacen(':', " : ", 1);
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), operation),
+                Outcome::Forwarded,
+                "{operation}"
+            );
+            assert_eq!(
+                *frames.lock().expect("frames"),
+                vec![frame_of(&body)],
+                "{operation}"
+            );
+        }
+    }
+
+    /// Feature 002 T025 (contract Δ6): this case covers only the routing by `requestId`.
+    /// T055 owns the end-to-end check of a `succeeded` response after a process `cancel`.
+    #[test]
+    fn a_succeeded_response_of_an_operation_reaches_the_renderer_by_its_request_id() {
+        let (ipc, _frames) = ipc();
+        ipc.set_session(Some(SESSION_ID.to_string()));
+        let mut envelope = request(
+            "loadHistory",
+            json!({ "viewId": OPERATION_ID, "need": { "end": true } }),
+        );
+        envelope["repositoryId"] = json!(OPERATION_ID);
+        let Submitted::Waiting(mut renderer, None) = ipc.submit(
+            MAIN_WINDOW,
+            LOCAL,
+            &raw(&envelope.to_string()),
+            "loadHistory",
+        ) else {
+            panic!("the shell forwards loadHistory");
+        };
+        assert!(
+            renderer.try_recv().is_err(),
+            "no response before the service sends one"
+        );
+        let frame = json!({
+            "kind": "public",
+            "response": { "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "succeeded", "result": { "rows": 2, "complete": false } },
+        });
+        let Some(ToRenderer::Response(response)) = renderer_message(&frame.to_string()) else {
+            panic!("a public response frame");
+        };
+        ipc.deliver(response.clone());
+        assert_eq!(renderer.try_recv().ok(), Some(response));
+    }
+
     /// Contract §3: each operation of `src/contracts/operations.ts` has its handler in `lib.rs` and its grant in the capability.
     #[test]
     fn each_contract_operation_has_its_handler_and_its_grant() {
@@ -943,6 +1069,26 @@ mod tests {
             let grant = format!("allow-{}", command.replace('_', "-"));
             assert!(grants.contains(&json!(grant)), "grant of {operation}");
         }
+    }
+
+    /// Feature 002 plan.md P7 and contract Δ3 "readHistory": no allowlist entry, command, handler, or grant remains.
+    #[test]
+    fn the_allowlist_has_no_read_history() {
+        let read = |path: &str| {
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).expect(path)
+        };
+        assert!(!OPERATIONS.contains(&"readHistory"));
+        assert!(!read("build.rs").contains("\"read_history\""));
+        assert!(!read("src/lib.rs").contains("ipc::read_history,"));
+        let capability: Value =
+            serde_json::from_str(&read("capabilities/main.json")).expect("capability");
+        let grants = capability["permissions"].as_array().expect("permissions");
+        assert!(!grants.contains(&json!("allow-read-history")));
+        assert!(
+            !Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("permissions/autogenerated/read_history.toml")
+                .exists()
+        );
     }
 
     #[test]
@@ -1301,6 +1447,8 @@ mod tests {
             "__proto__",
             "process",
             "handshake",
+            // Feature 002 plan.md P7: the 001 operation is retired.
+            "readHistory",
         ] {
             let body = request(operation, json!({})).to_string();
             assert_eq!(

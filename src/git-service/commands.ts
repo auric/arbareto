@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { HISTORY_STREAM_ROWS } from "../contracts/limits";
-
 // Contract §7 "Missing objects": every app Git command starts with this option. Only the `gitProbe` arrays of `git-installation.ts` omit it.
 const NO_LAZY_FETCH = "--no-lazy-fetch";
 // Contract §7 "Missing objects" and T067: the global options of every read.
@@ -63,10 +61,6 @@ export function recheckArgs(): string[] {
   return read("rev-parse", "--is-bare-repository", "--is-inside-git-dir");
 }
 
-export function shallowPathArgs(): string[] {
-  return read("rev-parse", "--git-path", "shallow");
-}
-
 // Contract §7 "Configuration file paths": git-var(1) in the `gitProbe` context, once per admitted installation.
 export function configSystemPathArgs(): string[] {
   return [NO_LAZY_FETCH, "var", "GIT_CONFIG_SYSTEM"];
@@ -100,12 +94,12 @@ export function headTargetArgs(): string[] {
   return read("symbolic-ref", "-q", "HEAD");
 }
 
-// Contract §7 "Held history steps": the `readHistory` HEAD capture with `headTargetArgs`. git-rev-parse(1) `--verify -q`: on success, Git prints the full object ID.
+// Contract §7 "Held history steps": the HEAD capture of `openHistory` with `headTargetArgs`. git-rev-parse(1) `--verify -q`: on success, Git prints the full object ID.
 export function headOidArgs(): string[] {
   return read("rev-parse", "--verify", "-q", "HEAD");
 }
 
-// The unborn check of the `readHistory` HEAD capture. git-show-ref(1) `--exists`: status 0 when the reference exists, 2 when it is missing, and 1 for another lookup error.
+// The unborn check of the HEAD capture. git-show-ref(1) `--exists`: status 0 when the reference exists, 2 when it is missing, and 1 for another lookup error.
 export function headRefExistsArgs(name: string): string[] {
   if (!isRefName(name)) throw new TypeError("ref name refused");
   return read("show-ref", "--exists", name);
@@ -164,13 +158,6 @@ export function refExistsArgs(name: string): string[] {
   return [NO_LAZY_FETCH, "show-ref", "--exists", name];
 }
 
-// Contract §3: the history read takes one captured full OID, never a revision expression.
-export function revListArgs(oid: string, objectFormat: ObjectFormat): string[] {
-  const pattern = Object.hasOwn(OID_PATTERNS, objectFormat) ? OID_PATTERNS[objectFormat] : undefined;
-  if (pattern === undefined || !pattern.test(oid)) throw new TypeError("object ID refused");
-  return read("rev-list", "--parents", `--max-count=${HISTORY_STREAM_ROWS}`, "--date-order", oid);
-}
-
 // Research R2: uppercase `-Z` frames input and output with NUL.
 export function batchCommandArgs(): string[] {
   return read("cat-file", "--batch-command", "-Z");
@@ -181,17 +168,67 @@ export function objectCheckArgs(): string[] {
   return read("cat-file", "--batch-check");
 }
 
+// Contract §3 "References result": the eight-field record format.
+const REFS_FORMAT = "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)";
+
 // Contract §3 "References result": the one fixed array. It names no pathspec, so it carries no `--literal-pathspecs`.
 export function refsArgs(): string[] {
-  return [
-    NO_LAZY_FETCH,
-    "--no-optional-locks",
-    "for-each-ref",
-    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(upstream)%00%(HEAD)",
-    "refs/heads",
-    "refs/remotes",
-    "refs/tags",
-  ];
+  return [NO_LAZY_FETCH, "--no-optional-locks", "for-each-ref", REFS_FORMAT, "refs/heads", "refs/remotes", "refs/tags", "refs/stash"];
+}
+
+// Feature 002 contract Δ3 `openHistory` capture: the `refsArgs` array with `refs/replace`. A `refs/replace/` record enters only the topology fingerprint.
+export function historyRefsArgs(): string[] {
+  return [...refsArgs(), "refs/replace"];
+}
+
+// Feature 002 contract Δ3 `loadHistory`: the replace records of the topology fingerprint, with the same record format.
+export function replaceRefsArgs(): string[] {
+  return [NO_LAZY_FETCH, "--no-optional-locks", "for-each-ref", REFS_FORMAT, "refs/replace"];
+}
+
+// Feature 002 contract Δ3 `openHistory` capture step 3: Git prints one path per line, relative to the worktree root.
+export function topologyPathArgs(): string[] {
+  return read("rev-parse", "--git-path", "shallow", "--git-path", "info/grafts");
+}
+
+// Feature 002 contract Δ3 `loadHistory`: every load step runs this array, with the start points on stdin. It names no pathspec.
+export function historyLoadArgs(): string[] {
+  return [NO_LAZY_FETCH, "--no-optional-locks", "rev-list", "--parents", "--date-order", "--stdin"];
+}
+
+// Feature 002 contract Δ3 `searchHistory` and research.md R4: literal, case-folding matching of the UTF-8 message, with the start points on stdin.
+// An argv item cannot hold NUL, and an empty pattern matches every message.
+function searchArgs(patterns: readonly string[]): string[] {
+  const greps = patterns.map((text) => {
+    if (typeof text !== "string" || text.length === 0 || text.includes("\0")) throw new TypeError("filter text refused");
+    return `--grep=${text}`;
+  });
+  return read("-c", "i18n.logOutputEncoding=UTF-8", "rev-list", "--date-order", "--fixed-strings", "--regexp-ignore-case", ...greps, "--stdin");
+}
+
+export function historySearchArgs(text: string): string[] {
+  return searchArgs([text]);
+}
+
+// Feature 002 contract Δ3 "Matching probe": a new bare repository in `dir`, outside every repository. `--template=` copies no template file (research.md R4).
+export function probeInitArgs(dir: string): string[] {
+  return [NO_LAZY_FETCH, "init", "--bare", "-q", "--template=", "--object-format=sha1", pathItem(dir)];
+}
+
+export function probeImportArgs(dir: string): string[] {
+  return [NO_LAZY_FETCH, `--git-dir=${pathItem(dir)}`, "fast-import", "--quiet"];
+}
+
+// One probe run: the search array with one `--grep` per pattern. An explicit `--git-dir` gets no ownership refusal (research.md R4).
+export function probeSearchArgs(dir: string, patterns: readonly string[]): string[] {
+  return [NO_LAZY_FETCH, `--git-dir=${pathItem(dir)}`, ...searchArgs(patterns).slice(1)];
+}
+
+// Contract Δ3 "Matching probe" in WSL: the `matchingProbe` script arguments `[dir, tip, n, ...run1, ...run2]`. Each run holds `n` items.
+export function probeScriptArgs(dir: string, tip: string, greps: readonly (readonly string[])[]): string[] {
+  const runs = greps.map(searchArgs);
+  if (runs.length !== 2 || runs[0]!.length !== runs[1]!.length) throw new TypeError("probe runs refused");
+  return [pathItem(dir), treeItem(tip, "sha1"), String(runs[0]!.length), ...runs.flat()];
 }
 
 // A path is relative to the worktree root, where Git runs (research R3). An argv item cannot hold NUL, and an empty pathspec matches every path.

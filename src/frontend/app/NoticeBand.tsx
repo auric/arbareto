@@ -106,14 +106,22 @@ export type NoticeBandProps = {
   submoduleRow?: ReactNode;
   /** The `recovery` statement of the latest `refresh: true` read. */
   recovery?: RecoveryStatement;
+  /**
+   * Feature 002 contract Δ8: the refs or HEAD changed after the history view opened. The value is the Refresh control, which opens a new view.
+   * The caller renders it, because this module must load without Base UI (tests/contracts/notice-band.test.tsx).
+   */
+  refsChanged?: ReactNode;
 };
 
+// Feature 002 spec FR-005, from the approved mockup canvas of plan.md D6.
+const REFS_CHANGED = "References changed. History still shows the references from when it opened.";
+
 /** The notice band: the blocking row, the submodule row, then the recovery row. It renders nothing without a row, so F6 skips it. */
-export function NoticeBand({ operationState, conflicted, submoduleRow, recovery }: NoticeBandProps) {
+export function NoticeBand({ operationState, conflicted, submoduleRow, recovery, refsChanged }: NoticeBandProps) {
   const headingId = useId();
   const first = blockingText(operationState, conflicted);
   const recoveryRow = recovery !== undefined && (recoverySentences(recovery).length > 0 || recovery.foreign !== undefined);
-  if (first === null && !submoduleRow && !recoveryRow) return null;
+  if (first === null && !submoduleRow && !recoveryRow && !refsChanged) return null;
   return (
     <section aria-labelledby={headingId} className="flex items-start gap-3 border-b border-divider bg-warning-fill px-2">
       <h2 id={headingId} tabIndex={-1} className="shrink-0 font-semibold" style={{ lineHeight: "var(--h-band-row)" }}>
@@ -130,6 +138,13 @@ export function NoticeBand({ operationState, conflicted, submoduleRow, recovery 
         )}
         {submoduleRow}
         {recovery !== undefined && recoveryRow ? <RecoveryRow recovery={recovery} /> : null}
+        {!refsChanged ? null : (
+          <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
+            <WarningIcon />
+            <span>{REFS_CHANGED}</span>
+            {refsChanged}
+          </p>
+        )}
       </div>
     </section>
   );

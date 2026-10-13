@@ -1375,7 +1375,7 @@ export interface ListingSlot {
   generation(): number | null;
 }
 
-// Only `readHistory` reuses a listing, and only the listing of a `readWorkspace` of its generation (research R5 "T281 record").
+// Only `openHistory` and `readRefs` reuse a listing, and only the listing of a `readWorkspace` of its generation (research R5 "T281 record").
 export function createSharedListings() {
   const slots = new Map<string, ListingSlot>();
   return {
@@ -1383,8 +1383,8 @@ export function createSharedListings() {
     record(repositoryId: string, slot: ListingSlot): void {
       slots.set(repositoryId, slot);
     },
-    // `tuple` is the change tuple that `readHistory` read again. A running listing is awaited until `signal` aborts. Null: run an own listing.
-    // Contract §7: `readHistory` waits for no status step. So a listing whose generation the service does not know yet is not shared.
+    // `tuple` is the change tuple that the reader read again. A running listing is awaited until `signal` aborts. Null: run an own listing.
+    // Contract §7: these reads wait for no status step. So a listing whose generation the service does not know yet is not shared.
     async reuse(repositoryId: string, generation: number, tuple: string, signal: AbortSignal): Promise<TrustListing | null> {
       const slot = slots.get(repositoryId);
       if (slot === undefined || slot.tuple !== tuple || slot.generation() !== generation || signal.aborted) return null;

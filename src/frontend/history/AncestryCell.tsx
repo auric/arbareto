@@ -2,7 +2,14 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { GRAPH_LANES } from "../../contracts/limits";
-import type { Cell, Point } from "./lanes";
+import type { ViewRow } from "../state/history-view";
+
+/** The `readHistoryRows` cell (contract Δ3, data-model §4). The service lays out every row. */
+export type ViewGraphCell = NonNullable<ViewRow["cell"]>;
+type Point = { lane: number; at: "top" | "node" | "bottom" };
+
+/** The texts of the cell marks (data-model §4). */
+export const BOUNDARY_TEXT: Record<ViewGraphCell["marks"][number], string> = { shallow: "Shallow history boundary", root: "Root commit" };
 
 // plan.md "History graph design": geometry in DIPs.
 export const LANE_SPACING = { compact: 12, comfortable: 14 } as const;
@@ -14,7 +21,7 @@ const STUB = 6;
 const BAR = 8;
 const BAR_GAP = 2;
 
-// Index order of `LANE_ROLES`. The `stroke` and `fill` attributes stay, because the index.css forced-colors rules select them.
+// The plan.md lane roles teal, sky, violet, and magenta, in color index order. The `stroke` and `fill` attributes stay, because the index.css forced-colors rules select them.
 const STROKE = ["stroke-(--lane-teal)", "stroke-(--lane-sky)", "stroke-(--lane-violet)", "stroke-(--lane-magenta)"];
 const FILL = ["fill-(--lane-teal)", "fill-(--lane-sky)", "fill-(--lane-violet)", "fill-(--lane-magenta)"];
 
@@ -24,8 +31,7 @@ export function columnWidth(lanes: number, spacing: number): number {
 }
 
 export type AncestryCellProps = {
-  cell: Cell;
-  /** `Layout.lanes` of the page. */
+  /** The most lanes of the view (contract Δ3 `lanes`). */
   lanes: number;
   /** `LANE_SPACING` of the density. */
   spacing: number;
@@ -60,43 +66,48 @@ export function WorkingLineCell({ lanes, spacing, rowHeight, part, line }: Worki
   );
 }
 
-/** One row's ancestry cell. It holds no label, and it follows the hover state of its row. */
-export function AncestryCell({ cell, lanes, spacing, rowHeight, selected, leadIn = false }: AncestryCellProps) {
+// Spec FR-034: a skip edge is dashed, so it differs from a direct edge without color.
+const SKIP_DASH = "4 3";
+
+/** One row's service cell. Lane colors repeat the four plan.md lane roles. */
+export function ViewCell({ cell, lanes, spacing, rowHeight, selected, leadIn = false }: AncestryCellProps & { cell: ViewGraphCell }) {
   const x = (lane: number) => SIDE_PADDING + (lane + 0.5) * spacing;
   const middle = rowHeight / 2;
   const y = (p: Point) => (p.at === "top" ? 0 : p.at === "node" ? middle : rowHeight);
+  const role = (color: number) => color % STROKE.length;
   const nx = x(cell.node);
   const width = columnWidth(lanes, spacing);
   return (
-    <svg
-      className="graph-cell pointer-events-none shrink-0"
-      width={width}
-      height={rowHeight}
-      viewBox={`0 0 ${width} ${rowHeight}`}
-      aria-hidden="true"
-      focusable="false"
-    >
+    <svg className="graph-cell pointer-events-none shrink-0" width={width} height={rowHeight} viewBox={`0 0 ${width} ${rowHeight}`} aria-hidden="true" focusable="false">
       {cell.segments.map((s, i) => {
         if (s.shape === "stub") {
           const top = middle + NODE_RADIUS;
           const end = top + STUB;
           const bars = [end - BAR_GAP - PATH_WIDTH, end].map((by) => `M${x(s.lane) - BAR / 2} ${by}H${x(s.lane) + BAR / 2}`).join("");
-          return <path key={i} className={`boundary-stub ${STROKE[s.color]}`} d={`M${x(s.lane)} ${top}V${end}${bars}`} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} />;
+          return <path key={i} className={`boundary-stub ${STROKE[role(s.color)]}`} d={`M${x(s.lane)} ${top}V${end}${bars}`} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} />;
         }
         const [x1, y1, x2, y2] = [x(s.from.lane), y(s.from), x(s.to.lane), y(s.to)];
         const ym = (y1 + y2) / 2;
         const d = x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}C${x1} ${ym} ${x2} ${ym} ${x2} ${y2}`;
-        return s.shape === "continuation" ? (
-          <path key={i} className={`boundary-continuation ${STROKE[s.color]}`} d={d} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} />
-        ) : (
-          <path key={i} className={STROKE[s.color]} d={d} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} strokeLinecap="round" strokeLinejoin="round" />
+        return (
+          <path
+            key={i}
+            className={`${s.skip ? "skip-edge " : ""}${STROKE[role(s.color)]}`}
+            d={d}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={PATH_WIDTH}
+            strokeDasharray={s.skip ? SKIP_DASH : undefined}
+            strokeLinecap={s.skip ? "butt" : "round"}
+            strokeLinejoin="round"
+          />
         );
       })}
       {leadIn ? <WorkingLine x={x(0)} from={0} to={middle - NODE_RADIUS} /> : null}
       {cell.merge ? (
-        <circle className={`node-merge ${STROKE[cell.color]} fill-(--canvas)`} cx={nx} cy={middle} r={NODE_RADIUS} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} />
+        <circle className={`node-merge ${STROKE[role(cell.color)]} fill-(--canvas)`} cx={nx} cy={middle} r={NODE_RADIUS} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} />
       ) : (
-        <circle className={FILL[cell.color]} cx={nx} cy={middle} r={NODE_RADIUS} fill="currentColor" stroke="none" />
+        <circle className={FILL[role(cell.color)]} cx={nx} cy={middle} r={NODE_RADIUS} fill="currentColor" stroke="none" />
       )}
       {selected ? <circle className="stroke-(--accent-role)" cx={nx} cy={middle} r={RING_RADIUS} fill="none" stroke="currentColor" strokeWidth={PATH_WIDTH} /> : null}
     </svg>

@@ -36,6 +36,8 @@ export const ERROR_CODES_BY_CATEGORY = {
     "COMMIT_ENCODING_UNSUPPORTED",
   ],
   recovery: ["COMPLETED_WITH_EFFECTS", "FAILED_WITH_EFFECTS", "STATE_UNKNOWN", "SERVICE_UNAVAILABLE", "RECOVERY_MARKER_FAILED"],
+  // Feature 002 contract Δ9. The contract gives these codes no 001 category.
+  history: ["HISTORY_CHANGED", "UNSUPPORTED_FILTER_TEXT", "SEARCH_UNSUPPORTED"],
 } as const;
 
 export type ErrorCategory = keyof typeof ERROR_CODES_BY_CATEGORY;
@@ -46,6 +48,16 @@ export const ERROR_CODES: readonly ErrorCode[] = Object.values(ERROR_CODES_BY_CA
 // Contract §9: the reasons of `WSL_UNAVAILABLE`.
 export const WSL_UNAVAILABLE_REASONS = ["wsl-missing", "distro-missing", "not-wsl2", "no-user-manager", "no-setsid", "no-coreutils", "no-perl", "start-failed"] as const;
 export type WslUnavailableReason = (typeof WSL_UNAVAILABLE_REASONS)[number];
+
+// Feature 002 contract Δ9: the reasons of the new codes.
+export const HISTORY_CHANGED_REASONS = ["order", "topology"] as const;
+export type HistoryChangedReason = (typeof HISTORY_CHANGED_REASONS)[number];
+export const UNSUPPORTED_FILTER_TEXT_REASONS = ["line-break", "nul", "quote-end", "length"] as const;
+export type UnsupportedFilterTextReason = (typeof UNSUPPORTED_FILTER_TEXT_REASONS)[number];
+export const SEARCH_UNSUPPORTED_REASONS = ["matching"] as const;
+// Contract Δ9: the new `OUTPUT_LIMIT` reasons. Each is the export name of its `limits.ts` bound.
+export const HISTORY_OUTPUT_LIMIT_REASONS = ["HISTORY_PARENTS_PER_COMMIT", "HISTORY_VIEW_COMMITS"] as const;
+export type HistoryOutputLimitReason = (typeof HISTORY_OUTPUT_LIMIT_REASONS)[number];
 
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === "string" && (ERROR_CODES as readonly string[]).includes(value);

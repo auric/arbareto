@@ -1038,7 +1038,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     // Data-model §2 `recoveryState` now, for a result that recovery changed.
     recoveryState: (w: Workspace): RecoveryState => recoveryOf(stateOfWorkspace(w.repositoryId), w),
 
-    // Contract §7 "Shared listing": `readHistory` reads this tuple again before it reuses a listing.
+    // Contract §7 "Shared listing": `openHistory` and `readRefs` read this tuple again before it reuses a listing.
     listingTuple: (w: Workspace, operationId: string, signal: AbortSignal): Promise<string | WalkStop | null> => listingTuple(runner, w, stateOfWorkspace(w.repositoryId), operationId, signal),
 
     // A watcher hint marks the workspace dirty (contract §8 "Token invalidation"). `lost`: later changes can give no hint.
@@ -1048,7 +1048,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       st.unwatched ||= lost;
     },
 
-    // Data-model §2 `unavailable`: a `readHistory` that ends REPOSITORY_UNAVAILABLE for a missing object (contract §7 "Missing objects").
+    // Data-model §2 `unavailable`: a history read that ends REPOSITORY_UNAVAILABLE for a missing object (contract §7 "Missing objects").
     markUnavailable(repositoryId: string): void {
       stateOfWorkspace(repositoryId).unavailable = true;
     },

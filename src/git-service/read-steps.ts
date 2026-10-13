@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// The read steps that `readWorkspace` and `readHistory` share: the bounded file read, the Git run, and the object check (contract §7 "Missing objects").
+// The read steps that `readWorkspace` and the history reads share: the bounded file read, the Git run, and the object check (contract §7 "Missing objects").
 
 import { constants } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";

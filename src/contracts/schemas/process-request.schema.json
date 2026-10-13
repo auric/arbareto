@@ -353,6 +353,10 @@
               "type": "string",
               "maxLength": 64,
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "script": {
+              "type": "string",
+              "const": "matchingProbe"
             }
           },
           "required": [
@@ -1468,7 +1472,8 @@
         "probe",
         "read",
         "mutation",
-        "network"
+        "network",
+        "search"
       ]
     },
     "Input": {

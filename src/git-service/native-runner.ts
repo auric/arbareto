@@ -246,11 +246,12 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
       checkCall(call);
       const input = call.input?.length ? call.input : undefined;
       const streamed = input && input.length > INLINE_PROCESS_INPUT_BYTES ? input : undefined;
-      const { context, operationId, environmentPolicy, transaction, limits } = call;
+      const { context, operationId, environmentPolicy, transaction, script, limits } = call;
       const body = {
         type: "run",
         operationId,
         ...context,
+        ...(script ? { script } : {}),
         arguments: [...call.arguments],
         ...(streamed ? { inputBytes: streamed.length } : input ? { input: input.toBase64() } : {}),
         environmentPolicy,

@@ -5,7 +5,7 @@
 
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { batchCommandArgs, configListArgs, hooksPathArgs, revListArgs, shallowPathArgs, statusArgs } from "../../src/git-service/commands";
+import { batchCommandArgs, configListArgs, hooksPathArgs, statusArgs } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { copyPerfFixture, PERF_CACHE_ROOT, PERF_L, PERF_M, PERF_SEED, semanticDigest, type PerfManifest, type PerfSpec } from "../windows/perf-fixtures";
 import { sha256 } from "./git-oracle";
@@ -113,9 +113,10 @@ async function history(dir: string, extraObjects: string[] = []): Promise<Held> 
   try {
     const sym = await start(dir, symbolicRefArgs()).out;
     const head = await start(dir, headArgs()).out;
-    const shallow = await start(dir, shallowPathArgs()).out;
+    // The retired 001 `shallowPathArgs` and `revListArgs` arrays.
+    const shallow = await start(dir, ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "rev-parse", "--git-path", "shallow"]).out;
     const oid = head.stdout.toString().trim();
-    const list = await start(dir, revListArgs(oid, "sha1")).out;
+    const list = await start(dir, ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "rev-list", "--parents", "--max-count=100", "--date-order", oid]).out;
     const rows = list.stdout.toString().split("\n").filter((l) => l !== "");
     const input = [...rows.map((r) => `contents ${r.split(" ")[0]}`), ...extraObjects.map((o) => `info ${o}`)];
     const sink = cat.proc.stdin as Bun.FileSink;

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-history"
+description = "Enables the close_history command without any pre-configured scope."
+commands.allow = ["close_history"]
+
+[[permission]]
+identifier = "deny-close-history"
+description = "Denies the close_history command without any pre-configured scope."
+commands.deny = ["close_history"]

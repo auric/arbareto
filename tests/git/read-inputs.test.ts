@@ -153,13 +153,13 @@ describe("generations (contract §2, §9)", () => {
 
   caseTest(
     TASK,
-    "readHistory without repositoryGeneration gives INVALID_REQUEST and starts no Git process",
+    "openHistory without repositoryGeneration gives INVALID_REQUEST and starts no Git process",
     ["shell-double"],
     () =>
       withService("t072-history-missing", async (service) => {
         const repo = join(buildF02(gitPath(), "t072-history-missing").root, "repo");
         const { repositoryId } = await service.register(repo);
-        expect(await codeAndSpawns(service, () => service.request("readHistory", {}, { repositoryId }))).toEqual({ state: "rejected", code: "INVALID_REQUEST", runs: 0 });
+        expect(await codeAndSpawns(service, () => service.request("openHistory", { scope: "current" }, { repositoryId }))).toEqual({ state: "rejected", code: "INVALID_REQUEST", runs: 0 });
       }),
     TIMEOUT_MS,
   );
@@ -182,7 +182,7 @@ describe("generations (contract §2, §9)", () => {
 
   caseTest(
     TASK,
-    "a readHistory whose generation differs from the current workspace generation gives REPOSITORY_CHANGED and starts no Git process",
+    "an openHistory whose generation differs from the current workspace generation gives REPOSITORY_CHANGED and starts no Git process",
     ["shell-double"],
     () =>
       withService("t072-history-stale", async (service) => {
@@ -190,9 +190,9 @@ describe("generations (contract §2, §9)", () => {
         const { repositoryId, generation } = await service.register(repo);
         const current = await advance(service, repo, repositoryId, generation);
         for (const stale of [generation, current + 1]) {
-          expect({ stale, ...(await codeAndSpawns(service, () => service.readHistory(repositoryId, stale))) }).toEqual({ stale, state: "rejected", code: "REPOSITORY_CHANGED", runs: 0 });
+          expect({ stale, ...(await codeAndSpawns(service, () => service.openHistory(repositoryId, stale))) }).toEqual({ stale, state: "rejected", code: "REPOSITORY_CHANGED", runs: 0 });
         }
-        expect((await service.readHistory(repositoryId, current)).state).toBe("succeeded");
+        expect((await service.openHistory(repositoryId, current)).state).toBe("succeeded");
       }),
     TIMEOUT_MS,
   );

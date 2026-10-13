@@ -39,7 +39,7 @@ type Ops = ReturnType<typeof registry>["ops"];
 
 // A read that reaches `succeeded`.
 function finishRead(ops: Ops): string {
-  const { operationId } = ops.start("readHistory", crypto.randomUUID());
+  const { operationId } = ops.start("readRefs", crypto.randomUUID());
   ops.apply(operationId, { type: "valid-read" });
   ops.apply(operationId, { type: "read-complete", result: "succeeded" });
   return operationId;
@@ -60,7 +60,7 @@ describe("operation registry", () => {
   test("start sends the accepted event before any transition", () => {
     const { ops, sent } = registry();
     const requestId = crypto.randomUUID();
-    const { operationId } = ops.start("readHistory", requestId);
+    const { operationId } = ops.start("readRefs", requestId);
     expect(sent).toEqual([{ kind: "progress", value: { requestId, operationId, state: "accepted", counters: {} } }]);
   });
 
@@ -76,7 +76,7 @@ describe("operation registry", () => {
     ops.apply(operationId, { type: "reconciliation-read-failed", code: "MALFORMED_GIT_OUTPUT" }, undefined, "MALFORMED_GIT_OUTPUT");
     expect(log.entries()).toEqual([expect.objectContaining({ kind: "applyHunk", operationId, code: "STATE_UNKNOWN", cause: "MALFORMED_GIT_OUTPUT" })]);
     expect(responses).toEqual([{ requestId: expect.any(String), operationId, state: "unknown", code: "STATE_UNKNOWN" }]);
-    const plain = ops.start("readHistory", crypto.randomUUID()).operationId;
+    const plain = ops.start("readRefs", crypto.randomUUID()).operationId;
     ops.apply(plain, { type: "valid-read" });
     ops.apply(plain, { type: "read-complete", result: "succeeded" });
     expect(Object.hasOwn(log.entries()[1]!, "cause")).toBe(false);
@@ -105,7 +105,7 @@ describe("operation registry", () => {
 
   test("progress after the terminal response throws and sends nothing", () => {
     const { ops, sent } = registry();
-    const { operationId } = ops.start("readHistory", crypto.randomUUID());
+    const { operationId } = ops.start("readRefs", crypto.randomUUID());
     ops.apply(operationId, { type: "valid-read" });
     ops.apply(operationId, { type: "read-complete", result: "succeeded" });
     const before = sent.length;
@@ -194,8 +194,8 @@ describe("operation registry", () => {
 
   test("getOperation returns the current state and the retained terminal state", () => {
     const { ops } = registry();
-    const { operationId } = ops.start("readHistory", crypto.randomUUID());
-    expect(ops.get(operationId)).toMatchObject({ operationId, operation: "readHistory", state: "accepted" });
+    const { operationId } = ops.start("readRefs", crypto.randomUUID());
+    expect(ops.get(operationId)).toMatchObject({ operationId, operation: "readRefs", state: "accepted" });
     ops.apply(operationId, { type: "valid-read" });
     expect(ops.get(operationId)?.state).toBe("running");
     ops.apply(operationId, { type: "read-complete", result: "limited", code: "OUTPUT_LIMIT" });
@@ -206,7 +206,7 @@ describe("operation registry", () => {
   test("a terminal record above 256 removes the oldest terminal record first", () => {
     const { ops } = registry();
     // `late` starts first but ends last, so the terminal order decides.
-    const late = ops.start("readHistory", crypto.randomUUID()).operationId;
+    const late = ops.start("readRefs", crypto.randomUUID()).operationId;
     ops.apply(late, { type: "valid-read" });
     const ids = Array.from({ length: FINISHED_OPERATION_RECORDS - 1 }, () => finishRead(ops));
     ops.apply(late, { type: "read-complete", result: "succeeded" });
@@ -235,7 +235,7 @@ describe("operation registry", () => {
     const { ops } = registry();
     const running = ops.start("readWorkspace", crypto.randomUUID()).operationId;
     ops.apply(running, { type: "valid-read" });
-    const accepted = ops.start("readHistory", crypto.randomUUID()).operationId;
+    const accepted = ops.start("readRefs", crypto.randomUUID()).operationId;
     const commit = finishCommit(ops);
     expect(ops.get(commit)?.state).toBe("succeeded");
     for (let i = 0; i < FINISHED_OPERATION_RECORDS * 2 + 1; i++) finishRead(ops);
@@ -295,7 +295,7 @@ describe("operation records through the session", () => {
     session.receive({ type: "frame", body: encoder.encode(JSON.stringify(HANDSHAKE)) });
     const sessionId = session.sessionId as string;
     const finish = () => {
-      const { operationId } = session.registry.start("readHistory", crypto.randomUUID());
+      const { operationId } = session.registry.start("readRefs", crypto.randomUUID());
       session.registry.apply(operationId, { type: "valid-read" });
       session.registry.apply(operationId, { type: "read-complete", result: "succeeded" });
       return operationId;
@@ -313,5 +313,22 @@ describe("operation records through the session", () => {
     expect(ask("getOperation", first)).toMatchObject({ state: "rejected", code: "UNKNOWN_TARGET" });
     expect(ask("cancel", first)).toMatchObject({ state: "rejected", code: "UNKNOWN_TARGET" });
     expect(ask("getOperation", second)).toMatchObject({ state: "succeeded", result: { operationId: second, state: "succeeded" } });
+  });
+
+  // Feature 002 plan.md P7 and contract Δ3 "readHistory": the 001 operation is retired.
+  test("readHistory gives UNKNOWN_OPERATION and starts no operation", () => {
+    const frames: Record<string, Record<string, unknown>>[] = [];
+    const runner = { receive: () => false, closeJob: () => {}, ended: () => {} };
+    const session = createSession({
+      writer: { write: (frame) => void frames.push(frame as never), flush: async () => {} },
+      runner: runner as unknown as SessionOptions["runner"],
+      fail: () => {},
+    });
+    session.receive({ type: "frame", body: encoder.encode(JSON.stringify(HANDSHAKE)) });
+    const requestId = crypto.randomUUID();
+    const request = { version: 1, sessionId: session.sessionId, requestId, operation: "readHistory", repositoryId: crypto.randomUUID(), repositoryGeneration: 1, payload: {} };
+    session.receive({ type: "frame", body: encoder.encode(JSON.stringify({ kind: "public", request })) });
+    expect(frames.findLast((f) => f.response?.requestId === requestId)?.response).toMatchObject({ state: "rejected", code: "UNKNOWN_OPERATION" });
+    expect(frames.some((f) => f.progress !== undefined)).toBe(false);
   });
 });

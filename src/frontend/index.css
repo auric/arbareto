@@ -251,10 +251,6 @@
   --marker-width: 2px;
   --icon-size: 16px;
   --boundary-width: 2px;
-  --boundary-dash: 3px;
-  --boundary-stub: 6px;
-  --boundary-bar: 8px;
-  --boundary-bar-gap: 2px;
 }
 
 @layer base {
@@ -319,6 +315,11 @@
   .list-row[aria-selected="true"] :is(button, input, select, textarea, [role="button"]) {
     border-color: transparent;
   }
+  /* Feature 002 plan.md D6: the history list keeps focus and marks its active option. */
+  .list-row[data-active] {
+    outline: var(--focus-width) solid var(--accent-role);
+    outline-offset: calc(-1 * var(--focus-width));
+  }
 
   .selected-hunk-bar {
     width: var(--hunk-bar-width);
@@ -354,10 +355,6 @@
     color: var(--accent-role);
   }
 
-  .boundary-continuation {
-    stroke-width: var(--boundary-width);
-    stroke-dasharray: var(--boundary-dash) var(--boundary-dash);
-  }
   .boundary-stub {
     stroke-width: var(--boundary-width);
   }
@@ -378,6 +375,9 @@
 
 @media (forced-colors: active) {
   :focus-visible {
+    outline-color: Highlight;
+  }
+  .list-row[data-active] {
     outline-color: Highlight;
   }
   .list-row[aria-selected="true"] {
@@ -418,7 +418,7 @@
   .list-row[aria-selected="true"] .graph-cell .node-merge {
     fill: Highlight;
   }
-  .graph-cell :is(.boundary-continuation, .boundary-stub) {
+  .graph-cell .boundary-stub {
     stroke: CanvasText;
   }
   :is(:disabled, [aria-disabled="true"], [data-disabled]) {

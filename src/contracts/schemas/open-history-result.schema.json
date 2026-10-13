@@ -1,0 +1,163 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "viewId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "all",
+            "current"
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "head": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "branch"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "BranchHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "detached"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "DetachedHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "unborn"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "state",
+                "target"
+              ],
+              "additionalProperties": false,
+              "title": "UnbornHead"
+            }
+          ],
+          "title": "Head"
+        },
+        "startCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10001
+        },
+        "refsDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "shallow": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "viewId",
+        "scope",
+        "generation",
+        "head",
+        "startCount",
+        "refsDigest",
+        "shallow"
+      ],
+      "additionalProperties": false,
+      "title": "HistoryViewOpened"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "order",
+            "topology",
+            "line-break",
+            "nul",
+            "quote-end",
+            "length",
+            "matching",
+            "HISTORY_PARENTS_PER_COMMIT",
+            "HISTORY_VIEW_COMMITS",
+            "REF_LISTING_RECORDS",
+            "REF_LISTING_BYTES",
+            "object-missing"
+          ]
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "text",
+            "command"
+          ],
+          "additionalProperties": false,
+          "title": "ViewRemedy"
+        }
+      },
+      "additionalProperties": false,
+      "title": "HistoryViewRefusal"
+    }
+  ],
+  "title": "OpenHistoryResult"
+}

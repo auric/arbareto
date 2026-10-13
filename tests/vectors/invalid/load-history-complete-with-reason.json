@@ -1,0 +1,5 @@
+{
+  "schema": "load-history-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"rows\":10,\"complete\":true,\"reason\":\"HISTORY_PARENTS_PER_COMMIT\"}"
+}

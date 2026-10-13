@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import { act, useEffect, type ReactNode } from "react";
-import type { ChangeEntry, Environment, HistoryPage, WorkspaceSnapshot } from "../../src/contracts/envelope";
+import type { ChangeEntry, Environment, WorkspaceSnapshot } from "../../src/contracts/envelope";
+import type { OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { stubLayout } from "./history-fake";
 
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 // Pierre and its worker need the Vite build (T160). The doubles count the pool provider mounts.
@@ -66,15 +68,6 @@ function snapshot(fields: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
     ...fields,
   };
 }
-const PAGE: HistoryPage = {
-  generation: 1,
-  scope: "current-checkout",
-  head: { state: "branch", target: "refs/heads/main", oid: HEAD },
-  shallowFingerprint: null,
-  rows: [{ oid: HEAD, parents: [], subject: "First", author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.invalid" }, committerDate: 1_700_000_000, body: "", bodyCut: false }],
-  boundaries: { page: [], shallow: [] },
-  completeness: { state: "complete" },
-};
 
 const unmounts: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -84,6 +77,8 @@ afterEach(async () => {
 // Lets the responses settle, React commit, and the next animation frame run.
 const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 50))));
 const text = () => (document.body.textContent ?? "").replace(/\s+/g, " ");
+// The change poll never fires, so a test that counts reads sees only the reads it starts.
+const NO_POLL = { setInterval: () => 0, clearInterval: () => {}, setTimeout: (run: () => void, ms: number) => setTimeout(run, ms), clearTimeout: (id: unknown) => clearTimeout(id as number) };
 
 async function mount(restore: unknown, environment: Environment | null = null) {
   const double = bridgeDouble();
@@ -98,6 +93,7 @@ async function mount(restore: unknown, environment: Environment | null = null) {
         ChangesPane={ChangesPaneMount}
         ComparisonView={ComparisonViewMount}
         HistoryView={HistoryViewMount}
+        clock={NO_POLL}
       />,
     ),
   );
@@ -112,6 +108,56 @@ async function resolve(call: Call, response: unknown) {
   await act(async () => call.resolve(response));
   await settle();
 }
+// Feature 002: the history list sizes its window from the list element. happy-dom has no layout, so the T038 stub gives it a viewport.
+let restoreLayout: () => void = () => {};
+beforeAll(() => void (restoreLayout = stubLayout(800)));
+afterAll(() => restoreLayout());
+
+const HISTORY_CALLS = new Set(["openHistory", "loadHistory", "readHistoryRows", "searchHistory", "closeHistory"]);
+const answered = new WeakSet<object>();
+// Answers each pending history call of the double from `oids`: a linear history with `oids[0]` at row 0 and HEAD there (contract Δ3).
+// Every commit matches a search.
+async function serveHistory(double: { calls: Call[] }, oids: readonly string[] = DEFAULT) {
+  const person = { name: "A", email: "a@example.invalid" };
+  const viewRow = (i: number, text: string) => ({
+    index: i,
+    oid: oids[i]!,
+    parents: i + 1 < oids.length ? [oids[i + 1]!] : [],
+    cell: { node: 0, color: 0, merge: false, limited: false, segments: [], marks: i + 1 < oids.length ? [] : ["root"] },
+    labels: [],
+    checkout: i === 0,
+    ...(text === "none" ? {} : { subject: i === 0 && oids === DEFAULT ? "First" : `Commit ${oids[i]!.slice(0, 4)}`, author: person, date: 1_700_000_000, encoding: null, invalidUtf8: false }),
+    ...(text === "details" ? { body: "", bodyCut: false, committer: person, committerDate: 1_700_000_000, children: i > 0 ? [oids[i - 1]!] : [] } : {}),
+  });
+  const counts = { rowCount: oids.length, lanes: 1, complete: true, bytes: 1024 };
+  for (let round = 0; round < 20; round++) {
+    const open = double.calls.filter((c) => !answered.has(c) && HISTORY_CALLS.has(c.operation));
+    if (open.length === 0) return;
+    for (const call of open) {
+      answered.add(call);
+      const payload = call.args[1] as { scope?: string; at?: Record<string, unknown>; count?: number; text?: string };
+      let result: unknown = {};
+      if (call.operation === "openHistory")
+        result = { viewId: crypto.randomUUID(), scope: payload.scope, generation: 1, head: { state: "branch", target: "refs/heads/main", oid: oids[0]! }, startCount: 1, refsDigest: "0".repeat(64), shallow: false };
+      else if (call.operation === "loadHistory") result = { rows: oids.length, complete: true };
+      else if (call.operation === "searchHistory") {
+        // Contract Δ2: the accepted event carries the `operationId` that is the `searchId`.
+        await act(async () => (call.args[2] as OnProgress)({ requestId: "r", operationId: "search-1", state: "accepted", counters: { matches: 0, settled: 0 } }));
+        result = { matches: oids.length, shallow: false };
+      }
+      else if (call.operation === "readHistoryRows") {
+        const at = payload.at!;
+        const first = "row" in at ? (at.row as number) : "oid" in at ? oids.indexOf(at.oid as string) : "match" in at ? (at.from as number) : oids.length - 1;
+        const rows = first < 0 || first >= oids.length ? [] : Array.from({ length: Math.min(payload.count!, oids.length - first) }, (_, k) => viewRow(first + k, payload.text!));
+        result = rows.length === 0 ? { target: "none", ...counts } : { target: "found", rows, cut: false, ...counts };
+      }
+      await act(async () => call.resolve(succeeded(result)));
+    }
+    await settle();
+  }
+  throw new Error("the history calls did not settle");
+}
+const DEFAULT = [HEAD];
 // Clicks a history option by its row ID: "working-directory", "index", or a commit OID.
 async function selectRow(id: string) {
   const option = document.querySelector<HTMLElement>(`section[aria-label="History"] [role="option"][data-row-id="${id}"]`);
@@ -130,9 +176,9 @@ describe("start", () => {
     expect(double.calls.map((c) => c.operation)).toEqual(["listRecentRepositories"]);
   });
 
-  test("a restoreWorkspace registration shows the one view without mode tabs and sends the full read, readHistory, and readTrust", async () => {
+  test("a restoreWorkspace registration shows the one view without mode tabs and sends the full read, openHistory, and readTrust", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    expect(double.calls.map((c) => c.operation).sort()).toEqual(["readHistory", "readTrust", "readWorkspace"]);
+    expect(double.calls.map((c) => c.operation).sort()).toEqual(["openHistory", "readTrust", "readWorkspace"]);
     expect(double.pending("readWorkspace").args[1]).toEqual({ refresh: false, check: "full" });
     expect(document.querySelector('[role="tab"], [role="tablist"]')).toBeNull();
     expect(document.querySelector('section[aria-label="History"]')).not.toBeNull();
@@ -166,7 +212,7 @@ describe("History", () => {
     const mark = spyOn(performance, "mark");
     try {
       const double = await mount(succeeded(REGISTRATION));
-      await resolve(double.pending("readHistory"), succeeded(PAGE));
+      await serveHistory(double);
       expect(mark.mock.calls.filter(([name]) => name === "arbareto:history-painted")).toHaveLength(0);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
       expect(mark.mock.calls.filter(([name]) => name === "arbareto:history-painted")).toHaveLength(1);
@@ -179,7 +225,7 @@ describe("History", () => {
     const mark = spyOn(performance, "mark");
     try {
       const double = await mount(succeeded(REGISTRATION));
-      await resolve(double.pending("readHistory"), succeeded(PAGE));
+      await serveHistory(double);
       await resolve(double.pending("readWorkspace"), { ...succeeded(snapshot({ completeness: { state: "limited", code: "WORKTREE_CHANGING" } })), state: "limited" });
       expect(mark.mock.calls.filter(([name]) => name === "arbareto:history-painted")).toHaveLength(0);
     } finally {
@@ -189,7 +235,7 @@ describe("History", () => {
 
   test("the history list holds no inspector; the dock below it holds one panel at a time", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
     const history = document.querySelector('section[aria-label="History"]')!;
     expect(history.querySelectorAll('[role="listbox"]')).toHaveLength(1);
@@ -205,7 +251,7 @@ describe("mounted controls", () => {
   // T148: the commit tray replaces the T330 commit place. An empty Staged list disables Commit with its reason.
   test("the commit panel holds the message field, Commit (Ctrl+Enter) with its disabled reason, the hook disclosure, and the summary line", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
     await selectRow("working-directory");
     const panel = document.querySelector('section[aria-label="Commit panel"]')!;
@@ -230,7 +276,7 @@ describe("submodule update mount", () => {
   const areaHeading = () => document.querySelector<HTMLElement>('section[data-slot="status-area"] h2');
   async function started() {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     const shown = snapshot(NOTICE);
     await resolve(double.pending("readWorkspace"), succeeded(shown));
     await act(async () => bandButton()!.click());
@@ -264,7 +310,7 @@ describe("submodule update mount", () => {
 
   test("B4-1: after a read while the review is open, an expired token after the accepted event reviews the current snapshot and generation, and the rejection starts no read", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
     await act(async () => bandButton()!.click());
     await settle();
@@ -292,7 +338,7 @@ describe("submodule update mount", () => {
 
   test("B4-2: the review dialog shows no busy reason for its own pending update", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
     await act(async () => bandButton()!.click());
     await settle();
@@ -326,7 +372,7 @@ describe("submodule update mount", () => {
 
   test("B4-1: a rejected REPOSITORY_CHANGED update still starts one full read", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
     await act(async () => bandButton()!.click());
     await settle();
@@ -379,7 +425,7 @@ describe("submodule update mount", () => {
 
   test("when the focused row leaves, focus moves to the band heading while a row stays, else to the next F6 stop", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
     const refresh = async (fields: Partial<WorkspaceSnapshot>) => {
       await act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "F5", code: "F5", bubbles: true, cancelable: true })));
@@ -451,7 +497,7 @@ describe("submodule update mount", () => {
   test("T369: while an update runs, only the status-bar Cancel sends cancel with its operationId", async () => {
     const OP = crypto.randomUUID();
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
     await act(async () => bandButton()!.click());
     await settle();
@@ -491,7 +537,7 @@ describe("submodule update mount", () => {
       await sized(width, height, async () => {
         const double = await mount(succeeded(REGISTRATION));
         expect(document.querySelector("[data-profile]")!.getAttribute("data-profile")).toBe(profile);
-        await resolve(double.pending("readHistory"), succeeded(PAGE));
+        await serveHistory(double);
         await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
         await selectRow("working-directory");
         const sectionOf = () => document.activeElement!.closest("[data-section]")?.getAttribute("data-section");
@@ -585,7 +631,7 @@ describe("recovery markers", () => {
 describe("help line", () => {
   test("the No selection help line states the staging sentence", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
     await selectRow("working-directory");
     const changes = document.querySelector('section[aria-label="Commit panel"]')!.textContent ?? "";
@@ -613,7 +659,7 @@ const shownComparison = (entryId: string, patch: string) => ({
   }),
   entryId,
 });
-const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {}, selected: null, onSelectRow: () => {} } as const;
+const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {}, selected: null, onSelectRow: () => {}, history: null as never, filterRef: { current: null } } as const;
 
 async function render(node: () => ReactNode) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -685,24 +731,24 @@ describe("comparison mount", () => {
 });
 
 describe("history selection", () => {
-  const row = (oid: string) => ({ oid, parents: [], subject: `Commit ${oid.slice(0, 4)}`, author: { name: "A", email: "a@example.invalid" }, date: 1_700_000_000, encoding: null, shallow: false, invalidUtf8: false, committer: { name: "A", email: "a@example.invalid" }, committerDate: 1_700_000_000, body: "", bodyCut: false });
   const [first, second] = ["1".repeat(40), "2".repeat(40)];
-  const pageOf = (...oids: string[]): HistoryPage => ({ ...PAGE, head: { state: "branch", target: "refs/heads/main", oid: oids[0]! }, rows: oids.map(row) });
 
-  test("the selected commit stays across a refresh while the new page holds it, and the dock returns to its hint when it does not", async () => {
+  test("the selected commit stays across a refresh while the new refs reach it, and else the checkout commit is selected (feature 002 spec FR-008)", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(pageOf(second, first)));
+    await serveHistory(double, [second, first]);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ head: { state: "branch", target: "refs/heads/main", oid: second } })));
     await selectRow(first);
+    await serveHistory(double, [second, first]);
     expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Commit 1111");
     await act(async () => document.querySelector<HTMLElement>('button[aria-label="Refresh"]')!.click());
     await settle();
-    await resolve(latest(double, "readHistory"), succeeded(pageOf(second, first)));
+    await serveHistory(double, [second, first]);
+    expect(double.calls.filter((c) => c.operation === "loadHistory").at(-1)!.args[1]).toEqual({ viewId: expect.any(String), need: { oid: first } });
     expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Commit 1111");
     await act(async () => document.querySelector<HTMLElement>('button[aria-label="Refresh"]')!.click());
     await settle();
-    await resolve(latest(double, "readHistory"), succeeded(pageOf(second)));
-    expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Select the Working directory row to commit, or a commit to see its details.");
+    await serveHistory(double, [second]);
+    expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Commit 2222");
   });
 });
 
@@ -764,7 +810,7 @@ describe("remembered pane sizes", () => {
     (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(1600);
     try {
       const double = await mount(succeeded(REGISTRATION));
-      await resolve(double.pending("readHistory"), succeeded(PAGE));
+      await serveHistory(double);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
       await selectRow("working-directory");
       const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize dock"]')!;
@@ -803,7 +849,7 @@ describe("file lane splitter", () => {
     Object.defineProperty(globalThis, "localStorage", { configurable: true, get: () => counting });
     try {
       const double = await mount(succeeded(REGISTRATION));
-      await resolve(double.pending("readHistory"), succeeded(PAGE));
+      await serveHistory(double);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
       await selectRow("working-directory");
       const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize file lane"]')!;
@@ -857,7 +903,7 @@ describe("selection follows focus", () => {
   test("a click and fast ArrowDown presses each read one comparison, and only the last response shows", async () => {
     const entries = ["a.txt", "b.txt", "c.txt"].map(changeEntry);
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries, entryCount: entries.length })));
     await selectRow("working-directory");
     const first = document.querySelector<HTMLElement>('section[aria-label="Commit panel"] [role="option"]')!;
@@ -896,7 +942,7 @@ describe("pane scrolling", () => {
       await sized(width, height, async () => {
         const entries = [changeEntry("a.txt"), changeEntry("b.txt"), staged("c.txt")];
         const double = await mount(succeeded(REGISTRATION));
-        await resolve(double.pending("readHistory"), succeeded(PAGE));
+        await serveHistory(double);
         await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries, entryCount: entries.length, submoduleNotice: { count: 1, paths: ["s"], filter: "applied" } })));
         expect(document.querySelector("[data-profile]")?.getAttribute("data-profile")).toBe(profile);
         const main = document.querySelector("main")!;
@@ -948,7 +994,7 @@ describe("pane scrolling", () => {
   test("at 720x480 compact with one band row, the file band and the tray take the reduced pane minimum", async () => {
     await sized(720, 480, async () => {
       const double = await mount(succeeded(REGISTRATION));
-      await resolve(double.pending("readHistory"), succeeded(PAGE));
+      await serveHistory(double);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries: [changeEntry("a.txt")], entryCount: 1, submoduleNotice: { count: 1, paths: ["s"], filter: "applied" } })));
       await selectRow("working-directory");
       const rows = document.querySelector<HTMLElement>('section[aria-label="Commit panel"]')!.style.gridTemplateRows.split(/\s+(?![^(]*\))/);
@@ -962,7 +1008,7 @@ describe("single view", () => {
   const WSL_SNAPSHOT = { location: { kind: "wsl", distro: "Ubuntu-26.04", git: { path: "/usr/bin/git", version: "2.55.0" } }, identity: { ...snapshot().identity, worktreeRoot: "\\\\wsl.localhost\\Ubuntu-26.04\\home\\me\\repo" } } as unknown as Partial<WorkspaceSnapshot>;
   const opened = async (fields: Partial<WorkspaceSnapshot> = {}, environment: Environment | null = null) => {
     const double = await mount(succeeded(REGISTRATION), environment);
-    await resolve(double.pending("readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(fields)));
     return double;
   };
@@ -1016,27 +1062,31 @@ describe("single view", () => {
     });
   });
 
-  test("a row selection changes the dock without a bridge request", async () => {
+  test("a row selection changes the dock; only a commit row reads its details text (feature 002 spec FR-017)", async () => {
     const double = await opened();
     const before = double.calls.length;
     await selectRow("working-directory");
     expect(document.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).toBeNull();
     await selectRow("index");
+    expect(double.calls.slice(before).map((c) => c.operation)).toEqual([]);
     await selectRow(HEAD);
     expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Selected commit");
-    expect(double.calls.slice(before).map((c) => c.operation)).toEqual([]);
+    expect(double.calls.slice(before).map((c) => [c.operation, (c.args[1] as { text?: string }).text])).toEqual([["readHistoryRows", "details"]]);
   });
 
   test("the History-ready, Commit-panel-ready, and Details-ready marks follow their states once each", async () => {
     const mark = spyOn(performance, "mark");
     try {
-      await opened();
+      const double = await opened();
       const count = (name: string) => mark.mock.calls.filter(([n]) => n === name).length;
       expect(count("arbareto:history-painted")).toBe(1);
       expect(count("arbareto:commit-panel-ready")).toBe(0);
       await selectRow("working-directory");
       expect(count("arbareto:commit-panel-ready")).toBe(1);
       await selectRow(HEAD);
+      // The Details-ready mark waits for the details read.
+      expect(count("arbareto:details-ready")).toBe(0);
+      await serveHistory(double);
       expect(count("arbareto:details-ready")).toBe(1);
       await selectRow("index");
       expect(count("arbareto:commit-panel-ready")).toBe(2);
@@ -1192,6 +1242,9 @@ describe("drafts across a switch", () => {
     expect(document.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Unsent draft");
   });
 
+  // The history list options stay outside the switcher popup.
+  const switcherOptions = () => [...document.querySelectorAll<HTMLElement>('[role="option"]')].filter((o) => o.closest('section[aria-label="History"]') === null);
+
   test("an unsent message draft stays in the draft store after a switch through the repository switcher, and returns with its worktree", async () => {
     const double = await mount(succeeded(REGISTRATION));
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -1202,7 +1255,7 @@ describe("drafts across a switch", () => {
     await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.click());
     await settle();
     await resolve(latest(double, "listRecentRepositories"), succeeded({ entries: [{ entryId: crypto.randomUUID(), path: "C:\other", location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }] }));
-    await act(async () => document.querySelectorAll<HTMLElement>('[role="option"]')[1]!.click());
+    await act(async () => switcherOptions()[1]!.click());
     await resolve(latest(double, "openRecentRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64), worktreeRoot: "C:\other" }));
     expect(double.calls.some((c) => c.operation === "removeDraft")).toBe(false);
     // The other worktree has no draft. Its field shows no text.
@@ -1212,7 +1265,7 @@ describe("drafts across a switch", () => {
     await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.click());
     await settle();
     await resolve(latest(double, "listRecentRepositories"), succeeded({ entries: [{ entryId: crypto.randomUUID(), path: "C:\\repo", location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }] }));
-    await act(async () => document.querySelectorAll<HTMLElement>('[role="option"]')[1]!.click());
+    await act(async () => switcherOptions()[1]!.click());
     await resolve(latest(double, "openRecentRepository"), succeeded(REGISTRATION));
     expect(field.value).toBe("Unsent draft");
   });
@@ -1291,7 +1344,7 @@ describe("mounted staging and commit", () => {
   const stagedEntry = () => ({ ...changeEntry("a.txt"), category: "staged" }) as ChangeEntry;
   async function openCommitPanel() {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(latest(double, "readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     const entry = stagedEntry();
     const shown = snapshot({ entries: [entry], entryCount: 1 });
     await resolve(latest(double, "readWorkspace"), succeeded(shown));
@@ -1415,7 +1468,7 @@ describe("mounted staging and commit", () => {
 
   test("a failed Stage file shows its output below the comparison heading, also after the next read issues a new comparison ID", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    await resolve(latest(double, "readHistory"), succeeded(PAGE));
+    await serveHistory(double);
     const entry = changeEntry("a.txt");
     const first = snapshot({ entries: [entry], entryCount: 1 });
     await resolve(latest(double, "readWorkspace"), succeeded(first));
@@ -1441,5 +1494,166 @@ describe("mounted staging and commit", () => {
     const next = shownComparison(again.entryId, DIFF);
     await resolve(latest(double, "readComparison"), { ...next, result: { ...(next.result as object), snapshotId: second.snapshotId } });
     expect(tail()).toBe(true);
+  });
+});
+
+// Feature 002 T045: the branch scope controls, the shortcuts, and the "References changed" notice in the workbench (plan.md D6, contract Δ8).
+describe("history scope and shortcuts", () => {
+  const ref = (name: string, commitId: string) => ({ kind: "branch" as const, name, invalidUtf8: false, objectId: commitId, objectType: "commit" as const, peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId });
+  const refsList = (refsDigest: string) => ({ generation: 1, refs: [ref("feature", "2".repeat(40)), ref("main", HEAD)], refsDigest, current: { name: "main", objectId: HEAD }, completeness: { state: "complete" as const } });
+  const opened = async () => {
+    const double = await mount(succeeded(REGISTRATION));
+    await serveHistory(double);
+    await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
+    await resolve(latest(double, "readRefs"), succeeded(refsList("0".repeat(64))));
+    return double;
+  };
+  const scopes = (double: { calls: Call[] }) => double.calls.filter((c) => c.operation === "openHistory").map((c) => (c.args[1] as { scope: string }).scope);
+  const chip = () => document.querySelector<HTMLElement>('section[aria-label="History"] [data-slot="scope-chip"]');
+  const press = async (init: KeyboardEventInit, target: EventTarget = document.activeElement ?? document.body) => {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    await act(async () => void target.dispatchEvent(event));
+    await settle();
+    return event;
+  };
+  const viewMenu = async () => {
+    const trigger = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === "View")!;
+    await act(async () => trigger.focus());
+    await act(async () => trigger.click());
+    await settle();
+    return [...document.querySelectorAll<HTMLElement>('[data-slot="menubar-content"] [role="menuitemcheckbox"]')].find((e) => (e.textContent ?? "").startsWith("Current branch only"))!;
+  };
+
+  test("the View menu checkbox Current branch only names Ctrl+Shift+B, switches the scope, and shows its state", async () => {
+    const double = await opened();
+    const item = await viewMenu();
+    expect(item.getAttribute("aria-keyshortcuts")).toBe("Control+Shift+B");
+    expect(item.getAttribute("aria-checked")).toBe("false");
+    expect(item.textContent).toContain("Ctrl+Shift+B");
+    await act(async () => item.click());
+    await settle();
+    await serveHistory(double);
+    expect(scopes(double)).toEqual(["all", "current"]);
+    expect(chip()?.textContent).toContain("Current branch only");
+    // A checkbox item keeps its menu open.
+    const shown = [...document.querySelectorAll<HTMLElement>('[data-slot="menubar-content"] [role="menuitemcheckbox"]')].find((e) => (e.textContent ?? "").startsWith("Current branch only"))!;
+    expect(shown.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("Ctrl+Shift+B toggles the scope, also from the filter text box", async () => {
+    const double = await opened();
+    await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, document.body);
+    await serveHistory(double);
+    expect(scopes(double)).toEqual(["all", "current"]);
+    expect(chip()).not.toBeNull();
+    const filter = document.querySelector<HTMLInputElement>('input[aria-label="Filter commit messages"]')!;
+    await act(async () => filter.focus());
+    const event = await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, filter);
+    expect(event.defaultPrevented).toBe(true);
+    await serveHistory(double);
+    expect(scopes(double)).toEqual(["all", "current", "all"]);
+    expect(chip()).toBeNull();
+  });
+
+  // happy-dom has no native button activation. The test proves that no handler takes Enter or Space from the native button, then runs its activation.
+  for (const key of ["Enter", " "])
+    test(`the chip remove control is a native button with an accessible name, and ${key === " " ? "Space" : "Enter"} reaches it unhandled`, async () => {
+      const double = await opened();
+      await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, document.body);
+      await serveHistory(double);
+      const remove = chip()!.querySelector<HTMLButtonElement>('button[aria-label="Show all branches"]')!;
+      expect(remove.tagName).toBe("BUTTON");
+      expect(remove.disabled).toBe(false);
+      expect(remove.getAttribute("type")).toBe("button");
+      await act(async () => remove.focus());
+      expect(document.activeElement).toBe(remove);
+      const event = await press({ key, code: key === " " ? "Space" : "Enter" }, remove);
+      expect(event.defaultPrevented).toBe(false);
+      expect(scopes(double)).toEqual(["all", "current"]);
+      await act(async () => remove.click());
+      await settle();
+      await serveHistory(double);
+      expect(scopes(double)).toEqual(["all", "current", "all"]);
+      expect(chip()).toBeNull();
+    });
+
+  for (const [name, init] of [
+    ["Shift+F10", { key: "F10", code: "F10", shiftKey: true }],
+    ["the Menu key", { key: "ContextMenu", code: "ContextMenu" }],
+  ] as const)
+    test(`${name} on the current branch opens its context menu, and Show only this branch's history selects the current-branch scope`, async () => {
+      // The wide profile shows the sidebar expanded.
+      await sized(1600, 900, async () => {
+        const double = await opened();
+        const main = [...document.querySelectorAll<HTMLElement>('[data-section="references"] [role="treeitem"]')].find((i) => (i.getAttribute("aria-label") ?? "").startsWith("main,"))!;
+        await act(async () => main.focus());
+        await press(init, main);
+        const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => (i.textContent ?? "").startsWith("Show only this branch's history"))!;
+        expect(item).toBeDefined();
+        await act(async () => item.focus());
+        await press({ key: "Enter", code: "Enter" }, item);
+        await serveHistory(double);
+        expect(scopes(double)).toEqual(["all", "current"]);
+        expect(chip()).not.toBeNull();
+      });
+    });
+
+  test("Ctrl+F focuses the filter, and F3 and Shift+F3 move between the matches of filter mode", async () => {
+    const double = await opened();
+    await press({ key: "f", code: "KeyF", ctrlKey: true }, document.body);
+    const filter = document.querySelector<HTMLInputElement>('input[aria-label="Filter commit messages"]')!;
+    expect(document.activeElement).toBe(filter);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, "First");
+      filter.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await press({ key: "Enter", code: "Enter" }, filter);
+    await serveHistory(double);
+    await press({ key: "F3", code: "F3" }, filter);
+    await serveHistory(double);
+    // Filter mode lists the matches, so the next match is filter row 0 (contract Δ3 `readHistoryRows`).
+    const reads = double.calls.filter((c) => c.operation === "readHistoryRows").map((c) => c.args[1]);
+    expect(reads).toContainEqual({ viewId: expect.any(String), mode: "filter", searchId: "search-1", at: { row: 0 }, count: 1, text: "none" });
+    expect(document.querySelector(`section[aria-label="History"] [data-row-id="${HEAD}"]`)!.getAttribute("aria-selected")).toBe("true");
+    await press({ key: "F3", code: "F3", shiftKey: true }, filter);
+    expect(text()).toContain("No earlier match. This is the first match.");
+  });
+
+  test("a newer refsDigest shows the References changed notice with Refresh, and Refresh opens a new view and reads the refs again", async () => {
+    const double = await opened();
+    const band = () => document.querySelector<HTMLElement>('[data-slot="notice-band"]')!;
+    expect(band().textContent).not.toContain("References changed.");
+    await act(async () => void (window.dispatchEvent(new Event("blur")), window.dispatchEvent(new Event("focus"))));
+    await settle();
+    await resolve(latest(double, "readWorkspace"), succeeded(snapshot()));
+    await resolve(latest(double, "readRefs"), succeeded(refsList("1".repeat(64))));
+    expect(band().textContent).toContain("References changed. History still shows the references from when it opened.");
+    const refresh = [...band().querySelectorAll("button")].find((b) => b.textContent === "Refresh")!;
+    const opens = scopes(double).length;
+    await act(async () => refresh.click());
+    await settle();
+    expect(latest(double, "readWorkspace").args[1]).toEqual({ refresh: true, check: "full" });
+    expect(scopes(double)).toHaveLength(opens + 1);
+    await serveHistory(double);
+    await resolve(latest(double, "readWorkspace"), succeeded(snapshot()));
+    await resolve(latest(double, "readRefs"), succeeded(refsList("0".repeat(64))));
+    expect(band().textContent).not.toContain("References changed.");
+  });
+
+  // WebView2 rounds `performance.now()`, so a refs read and the open response can get equal clock stamps.
+  test("a refs read sent after the open response shows the notice when both fall in the same clock tick", async () => {
+    const now = performance.now;
+    performance.now = () => 1000;
+    try {
+      const double = await opened();
+      const band = () => document.querySelector<HTMLElement>('[data-slot="notice-band"]')!;
+      await act(async () => void (window.dispatchEvent(new Event("blur")), window.dispatchEvent(new Event("focus"))));
+      await settle();
+      await resolve(latest(double, "readWorkspace"), succeeded(snapshot()));
+      await resolve(latest(double, "readRefs"), succeeded(refsList("1".repeat(64))));
+      expect(band().textContent).toContain("References changed. History still shows the references from when it opened.");
+    } finally {
+      performance.now = now;
+    }
   });
 });

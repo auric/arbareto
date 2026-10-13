@@ -145,6 +145,9 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
           });
           await using(await find(owned.pid, "Use this Git", MAX_WAIT_MS), invoke);
           // The start page option text, `OPEN_FOLDER` in src/frontend/app/RepositorySwitcher.tsx. `find` matches the whole Name.
+          // The combobox holds DOM focus. UIA reports its active descendant as the focused element.
+          await using(await find(owned.pid, "Filter recent repositories", MAX_WAIT_MS), focus);
+          await waitFocus(owned.pid, OPEN_FOLDER, MAX_WAIT_MS);
           await using(await find(owned.pid, OPEN_FOLDER, MAX_WAIT_MS), invoke);
           await using(await find(owned.pid, "Cancel", MAX_WAIT_MS), invoke);
           console.log(`FOCUS_QPC ${await waitFocus(owned.pid, OPEN_FOLDER, MAX_WAIT_MS)}`);

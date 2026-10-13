@@ -128,12 +128,12 @@ scripts/windows/            # new: putty-tests.wsb, its prepare script, and its 
 | P0.3 SSH and PuTTY facts | new `tests/support/ssh-server.ts` (O-5), new `tests/windows/putty-facts.test.ts`, inert fixtures `tests/fixtures/ssh/` (test key pair, `.ppk` without passphrase) | None. | A plink `-batch` fetch with an unknown host key fails within 5 s. `GIT_SSH_COMMAND` with a plink path that holds a space and U+0027 works. `pageant --encrypted <key>` adds to a running Pageant and exits, and starts a new agent that `WaitForInputIdle` reports idle. A key that Pageant holds lets a fetch pass. Pageant `--encrypted` with an unreadable key file exits non-zero. Every case that starts plink, Pageant, or PuTTYgen runs only in Windows Sandbox. The host keeps only the file version read of `pageant.exe`. | No SSH server is available (O-5). Capability skip, recorded as unverified. |
 | P1 Pure logic | new `src/git-service/sync-commands.ts` (every argv), new `src/git-service/sync-parsers.ts` (fetch and push porcelain, tracking records, counts, the D4 destination rule, the D6 mode rule), new `src/contracts/clone-name.ts`, `src/contracts/file-action.ts` (`resolve` decision, reason `missing`) | Algorithms only. | Unit and vector tests for each grammar, each refusal, and each matrix row of D4 and D6. Clone name cases. Resolve decision cases. | Grammar drift between Git versions. P0.2 pins it. |
 | P2 Contracts | `src/contracts/{operations,envelope,errors,limits,channel}.ts`, `git-environment.json`, `wsl-process.json`, `schemas/`, `tests/vectors/` | Adds `readTracking`, `reviewSync`, `sync`, `clone`, `connectInTerminal`, six shell-only settings operations, the `resolve` direction, four codes, phases, the policies `remote` and `integrate`, two WSL modes, and the private requests `pageant`, `terminal`, and `destinationFacts`. | Schema tests and golden vectors in Bun and Rust. | typify drops ranges. Keep explicit checks, as 001 §1 requires. |
-| P3 Shell | `src-tauri/src/{git_env,wsl,process_requests,ipc,settings,dialogs,close}.rs`, `src-tauri/build.rs`, new `src-tauri/src/putty.rs` | Policies `remote` and `integrate` take the inactivity limits (`process_requests.rs:2655`). Policy fit (`process_requests.rs:738-745`). The PuTTY pair is added to `remote` runs. The `clone` context. Destination facts. Pageant start and wait. Terminal launch. Settings and pickers. Marker kind `sync`. Close prompt for `sync` and `clone`. | Cargo tests: policy build, mode list, allowlist, limit checks, settings round trip, destination facts on a fixture folder, Pageant wait with a capability skip. | Local only. Rust work stays off cloud sessions. |
+| P3 Shell | `src-tauri/src/{git_env,wsl,process_requests,ipc,settings,dialogs,close}.rs`, `src-tauri/build.rs`, new `src-tauri/src/putty.rs`, `src/frontend/bridge.ts` and `tests/contracts/bridge.test.ts` (the new calls). | Policies `remote` and `integrate` take the inactivity limits (`process_requests.rs:2655`). Policy fit (`process_requests.rs:738-745`). The PuTTY pair is added to `remote` runs. The `clone` context. Destination facts. Pageant start and wait. Terminal launch. Settings and pickers. Marker kind `sync`. Close prompt for `sync` and `clone`. | Cargo tests: policy build, mode list, allowlist, limit checks, settings round trip, destination facts on a fixture folder, Pageant wait with a capability skip. | Local only. Rust work stays off cloud sessions. |
 | P4 Service core | new `tracking.ts`, `sync-review.ts`, `sync.ts`; `trust.ts` (class `sync`); `session.ts` (handlers); `git-runner.ts` (`EnvironmentPolicy`) | `readTracking`. `reviewSync` and `sync` for fetch, fetch-all, push, and force-push. Reconciliation. Retained connect targets. | SC-001 (fetch, push), SC-002, SC-003 values, SC-005, SC-006, SC-010 mapping. Cancel and deadline at each step. External ref moves. TRUST_REQUIRED before a pre-push hook. Remote rejection by `pre-receive`. A lease that loses no remote commit. | Parse of porcelain under rare configs. Mitigation: strict grammar, then the observed state decides. |
 | P5 Pull and conflict actions | new `sync-integrate.ts`; `session.ts` (one line) | Pull (fetch, count, decide, integrate), `integrate`, abort, continue, skip. | SC-001 (pull), SC-012, and FR-029 refusal. The mode matrix against Git's own pull. A rebase that stops again. Continue blocked while unmerged entries exist, also with marker-like text. | A Git behavior difference between `pull` and the split steps. P0.2 (e) records it. |
 | P6 Mark resolved | `file-action.ts` (P1), `comparison.ts`, `file-publish.ts`, `hunk-publish.ts` | `applyFile` direction `resolve` for an unmerged path: `hash-object -w` of the working file, then `update-index --index-info` with mode `mW` (D7). | SC-014: index equal to `git add`, also for exec bits on Windows; working bytes unchanged, stale refusals, marker-like text stages. | `hunk-publish.ts:628-635` assumes no stage above 0. Known-hard. |
 | P7 Clone and terminal | new `clone.ts`; `session.ts` (two lines) | `clone` with destination facts, the PuTTY key, and registration. `connectInTerminal`. | SC-011, FR-047 refusals that start no Git, FR-050 folder states after cancel, submodules not cloned, empty remote opens unborn. | Discovery after clone in WSL. |
-| P8 Frontend A | `bridge.ts` (all new methods), new `state/tracking.ts`, new `sync/*`, `app/Workbench.tsx`, `app/NoticeBand.tsx`, `refs/ReferencesSidebar.tsx`, `commit/CommitTray.tsx`, `history/HistoryView.tsx` (after 002 P6) | Toolbar Fetch, the Pull split button with its default action, Push, and the Fetch all menu. Counts in the toolbar, the sidebar, and history labels. Push panel, push-rejected notice, force confirmation, Commit and push. | Component tests: keyboard, focus, unavailable reasons, text alternatives, notice lifetime, Cancel focus. | The 002 history view must be merged first for the history labels. |
+| P8 Frontend A | new `state/tracking.ts`, new `sync/*`, `app/Workbench.tsx`, `app/NoticeBand.tsx`, `refs/ReferencesSidebar.tsx`, `commit/CommitTray.tsx`, `history/HistoryView.tsx` (after 002 P6) | Toolbar Fetch, the Pull split button with its default action, Push, and the Fetch all menu. Counts in the toolbar, the sidebar, and history labels. Push panel, push-rejected notice, force confirmation, Commit and push. | Component tests: keyboard, focus, unavailable reasons, text alternatives, notice lifetime, Cancel focus. | The 002 history view must be merged first for the history labels. |
 | P9 Frontend B | `sync/PullModeChoice.tsx`, `sync/ConflictActions.tsx`, `app/NoticeBand.tsx`, `changes/ChangesPane.tsx` | The pull mode choice, conflict actions with the Abort confirmation, and Mark resolved. | Component tests. | None new. |
 | P10 Frontend C | new `clone/CloneDialog.tsx`, `settings/SettingsDialog.tsx`, `app/RepositoryMenu.tsx`, `app/RepositoryStates.tsx`, `app/NoticeBand.tsx` (Connect in a terminal) | Clone panel with the suggestion, SSH and clone settings, and PuTTYgen. | Component tests: the suggestion follows URL edits until a destination edit. | None new. |
 | P11 WSL | `tests/wsl/sync-wsl.test.ts` | None (tests). | SC-009 in each distro: results, no remaining process after Cancel or close, the anchor activity signal on a real fetch. | WSL fetch activity is unverified (001 §12). |
@@ -174,7 +174,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - A merge or a rebase in progress does not refuse Fetch or Fetch all remotes (spec "Changes to feature 001 requirements", 001 FR-016).
 - From the push-rejected notice, the payload names the push remote (contract Δ3).
 - Argv: `--no-lazy-fetch fetch --porcelain --progress --no-recurse-submodules -- <remote>`. The app adds no prune or tag option (FR-011).
-- Fetch all: every remote of `git remote`, in its order, without the skipped remotes (O-4). A remote is skipped when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true by `parseMaybeBool` (research R16 k). One process per remote, so each remote has its own outcome. Fetch, Fetch all remotes, and the fetch step of Pull refuse with `SYNC_UNAVAILABLE` reason `invalid-config` when any remote holds a `skipFetchAll` or `skipDefaultUpdate` value that `parseMaybeBool` rejects. No Git process starts. Such a value stops every `git fetch`, also a fetch of another remote (research R16 m).
+- Fetch all: every remote of `git remote`, in its order, without the skipped remotes (O-4). A remote is skipped when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true by `parseMaybeBool` (research R16 k). One process per remote, so each remote has its own outcome. An invalid remote value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
 - Result: the porcelain lines up to `SYNC_FETCH_LISTED_REFS` (1,000), with counts by flag for every line.
 - Reconciliation compares a full `for-each-ref` listing from before and after the fetch. A change that the porcelain lines do not list gives `completed-with-effects`, with the observed list.
 
@@ -184,7 +184,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - Destination rule (builtin/push.c `setup_default_push_refspecs`, remote.c `branch_get_push_1`; research R2, R16 d). The rule follows Git's own push of the current branch (FR-014). "Panel" means no destination, so the FR-016 panel shows. When `%(upstream)` is not empty, the panel shows the current upstream and shows Set upstream not selected.
   0. `%(upstream)` empty: the panel shows. It is pre-filled with the steps 1 to 5 destination when one exists.
   1. R = `%(push:remotename)`. Empty: R = `origin`, as git-push(1) documents for a push without an explicit remote. No `origin` in `git remote`: panel.
-  2. R not in `git remote`: reason `remote-missing`. `remote.<R>.mirror` true: reason `mirror`. Git pushes to a mirror remote; the app refuses on purpose (R16 d). Push refuses with `SYNC_UNAVAILABLE` reason `invalid-config` when any remote holds a `mirror` value that `parseMaybeBool` rejects. No Git process starts. Such a value stops every `git push`, also a push to another remote (research R16 m).
+  2. R not in `git remote`: reason `remote-missing`. `remote.<R>.mirror` true: reason `mirror`. Git pushes to a mirror remote; the app refuses on purpose (R16 d). An invalid remote value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
   3. dst = `%(push:remoteref)` when it is filled, which is the `remote.<R>.push` case. Source `remote-push-refspec`.
   4. Else, by the last `push.default` value. F is the fetch remote: `branch.<branch>.remote`, else `origin` (remote.c `remote_for_branch`).
      - `current`: dst = `refs/heads/<branch>`.
@@ -242,7 +242,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - merging: `commit --quiet`. With `GIT_EDITOR=:`, Git takes `MERGE_MSG` and strips the comment lines (research R4).
   - rebasing: `rebase --continue`.
   - The review and `sync` require a fresh index with no unmerged entry. Otherwise the code is `CONFLICTED` with the count.
-- Skip: `rebase --skip`, only while rebasing. Skip opens a confirmation before the start. The confirmation names the commit that leaves the rebased branch and states that Git discards the index and working-file changes of that step. Cancel has the initial focus.
+- Skip: `rebase --skip`, only while rebasing. Skip opens a confirmation before the start. The confirmation names the commit of `REBASE_HEAD`, which gitrevisions(7) defines as the commit at which the rebase stopped. It states that Git discards the index and working-file changes of that step. Cancel has the initial focus. Without `REBASE_HEAD`, Skip gives reason `no-skip-commit`.
 - A rebase with `rebase-merge/interactive` present offers Abort only. Continue and Skip give reason `interactive-rebase`.
 - Mark resolved: `readComparison` of a conflicted entry gives the decision `{direction: "resolve"}`. `applyFile` then runs the 001 §4 steps:
   - Step 5 runs `hash-object -w -- <path>` on the working file. Git applies the conversion of the path attributes, as `git add` does. A `filter` path is refused (data-model §9), so no filter driver runs.
@@ -278,7 +278,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - `GIT_SSH_COMMAND` overrides `GIT_SSH` and `core.sshCommand` (connect.c `get_ssh_command`; git-config(1)).
   - Nothing is written into the configuration, the Windows environment, or the registry.
 - The setting "Git's own configuration" adds nothing.
-- Pageant: a key file set for the worktree and remote, or picked in the clone panel, goes to the shell `pageant` request before the Git run.
+- Pageant: the service sends `pageant` before the first `remote` run of each remote and before a clone, on a Windows Git. The reply `git` tells the service that `sshClient` is `git` (contract Δ6). A key file set for the worktree and remote, or picked in the clone panel, goes to Pageant then.
   - The shell starts `pageant.exe --encrypted <key>` outside every Job. PuTTY 0.75 or later is needed (O-6).
   - The reply is `ready` only when the process exits with status 0 (client mode, an agent already ran), or `WaitForInputIdle` returns 0 while the process still runs (new agent). Any other exit status gives `failed` reason `exit`. 30 s without either gives `failed` reason `not-ready`.
   - The PuTTY manual §9.3.1 states that this command loads into a running Pageant. So the app reads no window title and no process list.
@@ -297,10 +297,10 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - The parent is the last clone parent, else the default clone folder, else empty.
   - The name is the last segment after `/`, `\`, or `:`, without trailing separators and one `.git`.
   - The suggestion follows URL edits until the first destination edit.
-- `clone` is native-first. The shell checks the path text (absolute, `ChannelPath`, Windows or §11 WSL route). It binds a `clone` context and a `repositoryDiscovery` context for that path and forwards a `bootstrapId`.
+- `clone` is native-first. The shell checks the path text (absolute, `ChannelPath`, Windows or §11 WSL route). It binds a `clone` context and a `repositoryDiscovery` context for that path and forwards a `bootstrapId`. The service reads the path with `wslDistros`, as `chooseRepository` does (contract Δ3).
 - Right before the run, the service sends `destinationFacts`. Absent or an empty folder passes. A file, a non-empty folder, or another type gives `DESTINATION_NOT_EMPTY`, and no Git process starts.
 - Argv: `--no-lazy-fetch clone --progress --no-recurse-submodules -- <url> <destination>`. The cwd is the application-owned launch folder, or `/` in WSL.
-- Exit 0, then the 001 discovery of the destination. It must give the destination as the top level. Then the 001 registration result follows, and the trust gate comes before the first read (FR-051). The shell stores the recent entry and the last clone parent.
+- Exit 0, then the 001 `chooseRepository` registration flow with the same `bootstrapId`. It must give the destination as the top level. Then the 001 registration result follows, and the trust gate comes before the first read (FR-051). The shell stores the recent entry and the last clone parent.
 - Other ends: `destinationFacts` again, and the result states `exists` and `empty` (FR-050). No file is deleted or moved.
 
 ### D11 Trust
@@ -314,7 +314,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - a `protocol.allow` or `protocol.<name>.allow` entry;
   - the 001 `hooksPathControlled`, `folderUnlisted`, or `inputLimited` condition.
 - The transport programs already exist in `programKey` for submodules (`trust.ts:311-317`). The main listing now uses them too, so their program files enter the fingerprint. Only repositories with such a repository-controlled program see a new fingerprint once.
-- `readTrust` shows the transport values, redacted.
+- `readTrust` shows the transport values and `remote.<name>.puttykeyfile`, redacted.
 - `sync` refuses with `TRUST_REQUIRED` or `TRUST_CHANGED` before any process. Clone needs no trust. The new repository gets the 001 decision.
 
 ### D12 Frontend
@@ -331,6 +331,9 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - The 001 "finish it outside Arbareto" text goes for merging and rebasing.
 - FR-013: after a fetch outcome, the renderer refreshes the 002 view with `{oid}` of the selected commit, without the refs-changed notice.
 - Commit and push: the 001 commit, then a push review only after `succeeded`.
+- Mutation names (001 plan.md "Status and fallback texts"): Mark resolved is "Mark resolved". A `sync` takes the name of its action: "Fetch", "Fetch all remotes", "Pull" (also for `integrate`), "Push", "Force push with lease", "Abort", "Continue", or "Skip". A clone is "Clone". The shell close prompt reads the action from the `started` frame (contract Δ6).
+- Mark resolved shows "Marking resolved" while it runs and "File marked resolved" after `succeeded`. A running `sync` shows the FR-002 step text.
+- The stage bar button of a Conflicted entry with the decision `resolve` reads "Mark resolved (Space)", and Space runs it.
 - Settings dialog: the SSH client, plink, key files per repository and remote, PuTTYgen, and the default clone folder.
 - Skills for the implementer: `arbareto-ux`, `vercel-react-best-practices`, `web-design-guidelines`, and `shadcn` with the version that tasks.md pins.
 
@@ -400,8 +403,8 @@ Further reviewer defaults:
 | Batch | Steps | Content |
 |---|---|---|
 | 0 | P0.1, P0.2, P0.3 | Fixtures and Git and PuTTY facts. Results go into research.md. |
-| 1 | P1, P2 | Pure logic and contracts. |
-| 2 | P3, P4 | Shell and service core. |
+| 1 | P1, P2, P3 part | Pure logic and contracts. The P3 policies, WSL modes, allowlist, Rust checks, marker kind, close prompt names, and the bridge calls. |
+| 2 | P3 rest, P4 | PuTTY, clone context, and service core. |
 | 3 | P5, P6 | Pull, conflict actions, Mark resolved. |
 | 4 | P7, P8 | Clone and terminal; frontend A. |
 | 5 | P9, P10 | Frontend B and C. |
@@ -416,12 +419,12 @@ Further reviewer defaults:
 | WP2 | implementer-xhigh | `tests/support/ssh-server.ts`, `tests/windows/putty-facts.test.ts`, `tests/fixtures/ssh/*`, `scripts/windows/putty-tests.wsb` with its prepare script and README, `package.json` and `bun.lock` (only after O-5) | P0.3. Local Windows; Sandbox for registry cases. |
 | WP3 | implementer | `src/git-service/{sync-commands,sync-parsers}.ts`, `src/contracts/{clone-name,file-action}.ts`, their tests | P1 |
 | WP4 | implementer | `src/contracts/{operations,envelope,errors,limits,channel}.ts`, `git-environment.json`, `wsl-process.json`, `schemas/`, `tests/vectors/` | P2 |
-| WP5 | implementer-xhigh | `src-tauri/src/{git_env,wsl,process_requests,ipc,settings,dialogs,close}.rs`, new `src-tauri/src/putty.rs`, `src-tauri/build.rs` | P3. Local only. |
+| WP5 | implementer-xhigh | `src-tauri/src/{git_env,wsl,process_requests,ipc,settings,dialogs,close}.rs`, `src-tauri/src/{schema,lib}.rs`, new `src-tauri/src/putty.rs`, `src-tauri/build.rs`, `src-tauri/capabilities/main.json`, `src/frontend/bridge.ts`, `tests/contracts/bridge.test.ts` | P3. Local only. T026 and T029 run in batch 1. T027, T028, T030, and T031 run in batch 2. |
 | WP6 | implementer-xhigh | `src/git-service/{tracking,sync-review,sync,trust,git-runner,session}.ts`, sync tests | P4 |
 | WP7 | implementer-xhigh | `src/git-service/sync-integrate.ts`, one handler line in `session.ts`, tests | P5 |
 | WP8 | implementer-xhigh | `src/git-service/{comparison,file-publish,hunk-publish}.ts`, `tests/git/mark-resolved.test.ts` | P6 |
 | WP9 | implementer | `src/git-service/clone.ts`, two handler lines in `session.ts`, `tests/git/clone.test.ts` | P7 |
-| WP10 | frontend-implementer (loads arbareto-ux, vercel-react-best-practices, web-design-guidelines, shadcn) | `src/frontend/{bridge.ts, state/tracking.ts, sync/* (with PullSplitButton.tsx), app/Workbench.tsx, app/NoticeBand.tsx, refs/ReferencesSidebar.tsx, commit/CommitTray.tsx, history/HistoryView.tsx}`, `tests/contracts/sync-*.test.tsx` | P8 |
+| WP10 | frontend-implementer (loads arbareto-ux, vercel-react-best-practices, web-design-guidelines, shadcn) | `src/frontend/{state/tracking.ts, sync/* (with PullSplitButton.tsx), app/Workbench.tsx, app/NoticeBand.tsx, refs/ReferencesSidebar.tsx, commit/CommitTray.tsx, history/HistoryView.tsx}`, `tests/contracts/sync-*.test.tsx` | P8 |
 | WP11 | frontend-implementer | `src/frontend/{sync/PullModeChoice.tsx, sync/ConflictActions.tsx, app/NoticeBand.tsx, changes/ChangesPane.tsx}`, tests | P9 |
 | WP12 | frontend-implementer | `src/frontend/{clone/CloneDialog.tsx, settings/SettingsDialog.tsx, app/RepositoryMenu.tsx, app/RepositoryStates.tsx, app/NoticeBand.tsx}`, tests | P10 |
 | WP13 | implementer; the runs by scout, alone | `tests/wsl/sync-wsl.test.ts` | P11 |

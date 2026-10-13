@@ -11,7 +11,8 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 ## Δ2 Envelope (001 §2)
 
-- `readTracking`, `reviewSync`, `sync`, and `connectInTerminal` carry `repositoryId`. `readTracking` and `reviewSync` carry `repositoryGeneration`.
+- `readTracking`, `reviewSync`, and `sync` carry `repositoryId`. `readTracking` and `reviewSync` carry `repositoryGeneration`.
+- `connectInTerminal` carries `repositoryId` for the target of a failed `sync`, and no `repositoryId` for the target of a failed `clone` (data-model §11).
 - The repeat key of `sync` is its `syncReviewToken`, by the 001 §2 repeat rule. `MUTATIONS` gains `sync`.
 - `sync` and `clone` events carry `stalled`. Their phases: `sync-fetch`, `sync-merge`, `sync-rebase`, `sync-push`, `sync-continue`, `clone`, `pageant`. Counters: `percent`, `remoteIndex`, `remoteCount`. They carry no remote name, URL, path, or Git text.
 
@@ -48,10 +49,12 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   4. for branch actions, the plan.md D4 `for-each-ref` record of `refs/heads/<branch>`;
   5. for push, `remote get-url --push --all -- <remote>`;
   6. for force-push, `rev-list --count <T> ^<HEAD>`, `rev-list --max-count=100 <T> ^<HEAD>`, and `cat-file --batch-command` subjects;
-  7. for continue, the index unmerged count.
+  7. for continue, the index unmerged count;
+  8. for skip, `show-ref --exists REBASE_HEAD`, then `show-ref --verify REBASE_HEAD`, then the subject of that commit with the read 6 `cat-file --batch-command -Z` reader. Status 2 of the first read gives reason `no-skip-commit`. The second read must print one line: an object ID of the object format, a space, `REBASE_HEAD`, and LF. Other output gives `MALFORMED_GIT_OUTPUT`. A commit object above `HISTORY_COMMIT_OBJECT_BYTES` gives `subject` null.
 - Configuration values come from the trust listing entries by Git's last-value rule. `parseMaybeBool` (`trust.ts:65`) reads booleans.
+- Every action refuses with `SYNC_UNAVAILABLE` reason `invalid-config` when any `remote.<name>.mirror`, `remote.<name>.skipFetchAll`, `remote.<name>.skipDefaultUpdate`, `remote.<name>.prune`, or `remote.<name>.pruneTags` entry holds a value that `parseMaybeBool` rejects. A remote name that starts with `/` is skipped, as Git skips it. The check uses read 1 and runs before read 3. Git reads these keys with `git_config_bool` in remote.c `handle_config`, so `git remote`, `fetch`, `push`, and every `%(upstream)` or `%(push)` read stop on such a value (research R16 m).
 - Refusals, before any token: `SYNC_UNAVAILABLE` with a Δ9 reason, `OPERATION_IN_PROGRESS` (never for `fetch` and `fetch-all`, which stay allowed during a merge or a rebase in progress; `pull`, `integrate`, `push`, and `force-push` refuse with it), `CONFLICTED` with the count, `TRUST_REQUIRED`, `TRUST_CHANGED`, or `INVALID_REQUEST` for a renderer name that fails its check.
-- Result: `{action, plan, syncReviewToken}`. `plan` holds the data-model §2 fields for display: names, redacted URL, destination, mode source, lease commits.
+- Result: `{action, plan, syncReviewToken}`. `plan` holds the data-model §2 fields for display: `remotes`, `upstream`, `destination` with the redacted URL, `lease` with its `commits`, the payload `mode`, the `operation` kind, and `skippedCommit`.
 - For `push` without a destination, `plan.needsDestination` lists the remotes, and no token goes out.
 
 ### `sync`
@@ -60,15 +63,15 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - Protocol:
   1. Enter the mutation exclusion and wait for the recovery marker ID, kind `sync` (001 §6).
   2. Re-read every bound value (data-model §2). A difference gives `STALE_REVIEW`, and no process starts. Consume the token only after validation.
-  3. For a remote with a key file under `plink`, send `pageant` (Δ6) and wait for its reply. Phase `pageant`. Fetch-all sends `pageant` before each remote with a key file.
+  3. On a Windows Git, send `pageant` (Δ6) before the first `remote` run of each remote, and wait for its reply. Phase `pageant`. Fetch-all sends it before each remote. `failed` ends the action with `PUTTY_UNAVAILABLE`, and no later Git process starts. A WSL Git sends no `pageant`.
   4. For fetch, pull, and fetch-all, list all refs: `for-each-ref --format=%(refname)%00%(objectname)`. Bound: 100,000 records and 32 MiB. Above the bound, the effect state is unknown.
   5. Run the steps of the action (below).
   6. Honor Cancel at any time. Cancel closes the Job. No later step starts.
   7. Reconcile: the refs listing again, HEAD, the index, markers, the unmerged count, and for push the upstream values. WSL waits for the 001 §12 process-end fact first.
 - Steps. Every argument array starts with `--no-lazy-fetch`. Network limits from 001 §12. Policy in brackets.
   - fetch: `fetch --porcelain --progress --no-recurse-submodules -- <remote>` [`remote`].
-  - fetch-all: the same, once per remote, in `git remote` order, without the skipped remotes (O-4). A remote is skipped when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true. A failed remote does not stop the next. Fetch, Fetch all remotes, and the fetch step of Pull refuse with `SYNC_UNAVAILABLE` reason `invalid-config` when any remote holds a `skipFetchAll` or `skipDefaultUpdate` value that `parseMaybeBool` rejects. No Git process starts. Such a value stops every `git fetch`, also a fetch of another remote (research R16 m).
-  - push and force-push: `push --porcelain --progress --no-recurse-submodules --no-follow-tags [--set-upstream] [--force-with-lease=<dst>:<expect>] -- <remote> refs/heads/<branch>:<dst>` [`remote`]. `<remote>` and `<dst>` come from the plan.md D4 rule or the panel. A triangular destination is `refs/heads/<branch>` on the push remote, as Git's own push selects it. `matching` always needs the panel. A mirror remote and a remote with several push URLs are refused on purpose, although Git pushes to them (research R16 d). Push refuses with `SYNC_UNAVAILABLE` reason `invalid-config` when any remote holds a `mirror` value that `parseMaybeBool` rejects. No Git process starts. Such a value stops every `git push`, also a push to another remote (research R16 m).
+  - fetch-all: the same, once per remote, in `git remote` order, without the skipped remotes (O-4). A remote is skipped when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true. A failed remote does not stop the next.
+  - push and force-push: `push --porcelain --progress --no-recurse-submodules --no-follow-tags [--set-upstream] [--force-with-lease=<dst>:<expect>] -- <remote> refs/heads/<branch>:<dst>` [`remote`]. `<remote>` and `<dst>` come from the plan.md D4 rule or the panel. A triangular destination is `refs/heads/<branch>` on the push remote, as Git's own push selects it. `matching` always needs the panel. A mirror remote and a remote with several push URLs are refused on purpose, although Git pushes to them (research R16 d).
   - pull: the fetch step, then a `for-each-ref --format=%(refname)%00%(objectname)` listing after the fetch process ends; U is the upstream OID from that listing. Then `--no-optional-locks rev-list --left-right --count <HEAD>...<U>` with the 30 s deadline, the data-model §6 decision, then integrate.
   - integrate: the count and the decision without a fetch.
     - fast-forward: `merge --ff-only --no-autostash <upstream ref>` [`integrate`];
@@ -81,14 +84,14 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - Push lines: `To <text>`, `<flag>\t<from>:<to>\t<summary>[ (<reason>)]`, and `Done`. `from` and `to` are full ref names. Git prints `Done` also after a rejected push, so `Done` decides nothing (research R16 b).
   - Exactly one status line must have `from:to` equal to the refspec. Its flag and summary give data-model §5 `status`. `[rejected]`, `[remote rejected]`, and `[remote failure]` are the only `!` summaries that decide.
   - Another or a missing line, with a non-zero exit, gives status `none`.
-- Results and states: data-model §4 to §8. `PUSH_REJECTED` reasons: `rejected`, `stale-lease` (a lease was sent), `remote-rejected`, `remote-failure`.
+- Results and states: data-model §4 to §8. `PUSH_REJECTED` reasons: `rejected`, `stale-lease` (a lease was sent), `remote-rejected`, `remote-failure`. A `pull` or `integrate` result that reached a decision holds `modeSource` (data-model §6).
 - Remedies (001 §4 quoting):
   - fetch: `& '<git>' --no-lazy-fetch -C '<worktree>' fetch -- '<remote>'`;
   - push: `& '<git>' --no-lazy-fetch -C '<worktree>' push -- '<remote>' 'refs/heads/<branch>:<dst>'`, with `--force-with-lease='<dst>:<expect>'` for force-push.
   - pull: the fetch remedy for the fetch step, and the integrate argv for the integrate step.
   - Text: "This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again."
 - An expired `syncReviewToken` gives `APPROVAL_EXPIRED` (001).
-- A failed `sync` under `plink` keeps a connect target (data-model §11).
+- A failed `sync` keeps a connect target only when its `pageant` reply was not `git` (data-model §11).
 
 ### `applyFile` (001 §3, §4)
 
@@ -98,26 +101,28 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - Renderer payload: `{url, destination, keyFile: "none" | "picked"}`. `url`: 1 to 4,096 UTF-8 bytes, no control character. `destination`: a `ChannelPath`.
 - Native step:
-  - The shell checks the path text by the 001 Windows rules or the §11 WSL route. It binds a `clone` context and a `repositoryDiscovery` context for the path.
+  - The shell checks the path text by the 001 Windows rules or the §11 WSL route.
   - With `keyFile: "picked"`, the shell shows the `.ppk` picker. A canceled picker ends `canceled`.
-  - The shell forwards `{url, bootstrapId, cloneId}`.
+  - The shell binds one `clone` context and one `repositoryDiscovery` context for the path (Δ6).
+  - The shell forwards `{url, bootstrapId, cloneId}`. The service payload holds no path, as for `chooseRepository` (001 §3).
 - Service:
-  1. `destinationFacts` (Δ6). Not `absent` and not `empty` gives `DESTINATION_NOT_EMPTY` with the path, and no Git process starts.
-  2. Under `plink`, `pageant` with the picked key.
-  3. `--no-lazy-fetch clone --progress --no-recurse-submodules -- <url> <destination>` [`remote`], network limits, phase `clone`.
-  4. Exit 0: 001 discovery and registration through the bound context. The top level must equal the destination. The result is the `chooseRepository` result.
-  5. Otherwise: `destinationFacts` again. The result holds `{exists, empty}`, the redacted `outputTail`, and the remedy `& '<git>' clone -- '<url>' '<destination>'`, or text only when the URL holds user information.
+  1. `wslDistros {bootstrapId}` (001 §6). The reply `path` is the destination. A WSL path then takes the §11 distro start and the Git-per-distro approval, as `chooseRepository` does. The Git argument is the reply path, or for a WSL path its §11 Linux path.
+  2. `destinationFacts {cloneId}` (Δ6). Not `absent` and not `empty` gives `DESTINATION_NOT_EMPTY` with the reply path, and no Git process starts.
+  3. `pageant {cloneId}` on a Windows Git (Δ6).
+  4. `--no-lazy-fetch clone --progress --no-recurse-submodules -- <url> <Git argument>` [`remote`], network limits, phase `clone`.
+  5. Exit 0: the 001 `chooseRepository` registration flow with the same `bootstrapId`, from `wslDistros` on. The top level must equal the destination. The result is the `chooseRepository` result.
+  6. Otherwise: `destinationFacts` again. The result holds `{exists, empty}`, the redacted `outputTail`, and the remedy `& '<git>' clone -- '<url>' '<destination>'`, or text only when the URL holds user information.
 - Shell finish: store the recent entry and `lastCloneParent`.
 
 ### `connectInTerminal`
 
-- Payload: `{operationId}` of a failed `sync` or `clone` with a retained connect target. Otherwise `UNKNOWN_TARGET`.
+- Payload: `{operationId}` of a failed `sync` or `clone` with a retained connect target. A `sync` target needs the `repositoryId` of its workspace. A `clone` target needs no `repositoryId`. Any other combination gives `UNKNOWN_TARGET`.
 - Before `terminal`, the service checks `approvalRequired.sync` and the trust fingerprint. A difference gives `TRUST_REQUIRED` or `TRUST_CHANGED`, and no console starts. A clone target has no repository and needs no trust check.
 - The service sends `terminal` (Δ6). Result: `succeeded` when the console starts. Otherwise `failed` with `PUTTY_UNAVAILABLE`.
 
 ### Shell-only settings operations
 
-- `readSyncSettings {}`: data-model §10 with the resolved program paths and the presence of each program. Also the GE key value for a remote as a proposal only, when the service reported it. The app uses no key file before the user saves it (O-8).
+- `readSyncSettings {}`: data-model §10 with `programs`. The result holds no repository value. `readTrust` shows a repository `remote.<name>.puttykeyfile` value, and the settings show it only as a proposal (Δ7). The app uses no key file before the user saves it (O-8).
 - `setSshClient {kind: "git" | "plink"}`.
 - `setDefaultPullAction {action: "pull" | "pull-merge" | "pull-rebase" | "fetch" | "fetch-all"}`: stores data-model §10 `defaultPullAction` in the shell settings. It writes no Git configuration (FR-056).
 - `chooseSyncPath {target: "plink" | "remoteKey" | "cloneFolder", worktreeKey?, remote?}`: native picker. For `plink`, the shell reads the Pageant file version. Below 0.75, it gives `PUTTY_UNAVAILABLE` reason `version`.
@@ -160,14 +165,17 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - Policies `remote` and `integrate` take `NetworkLimits` (inactivity and ceiling). The `run_limits` rule extends from `network` to these two. The `registeredOperation` policy fit adds them.
 - `remote` runs on Windows contexts get `GIT_SSH_COMMAND` and `GIT_SSH_VARIANT=plink` from the shell settings when `sshClient` is `plink`. The command is the plink path in POSIX single quotes, U+0027 written as `'\''`, then ` -batch`. No other policy and no WSL run gets them.
-- New context `clone`: cwd is the application-owned launch folder, or `/` in WSL. The argument array must be the fixed clone array, with the bound destination as the last item.
-- New request `destinationFacts {cloneId}`. Reply: `absent`, `empty`, `not-empty`, `file`, `other`, or `error {code}`. A link or a junction gives `other`. WSL uses `wslFiles` mode `destination` (Δ11).
-- New request `pageant {repositoryId, remote}` or `{cloneId}`. Reply: `none` (no key), `ready`, or `failed {reason, program, path}`. The shell starts `pageant.exe --encrypted <key>` outside every Job. Reply `ready` only when the process exits with status 0, or `WaitForInputIdle` returns 0 while the process still runs. Any other exit status gives `failed {reason: "exit", program, path}`. 30 s without either gives `failed {reason: "not-ready"}`. If P0.3 shows no defined exit status, record the contract gap and refuse.
-- New request `terminal {target}`.
+- New context `clone`: cwd is the application-owned launch folder, or `/` in WSL. The argument array must be the fixed clone array. Its last item must equal the bound destination in Git's form: the checked Windows path, or the §11 Linux path of a WSL path.
+- The clone operation owns its `clone` and `repositoryDiscovery` contexts from its first request. An owned context of a clone stays valid until the operation ends. The 001 context lifetime of 60 s applies only before the first request.
+- The `repositoryDiscovery` context of a clone binds the destination identity only after the clone process exits with status 0. Before that, a `wslProbe` of that context binds no identity, and an `identity` request or a discovery `run` gives `UNKNOWN_TARGET`. The destination can be absent at the native step.
+- New request `destinationFacts {cloneId}`. It carries no path. The shell reads the bound destination: OS facts on Windows, and the `wslFiles` script mode `destination` with the §11 Linux path in WSL. No `wslFiles` frame of the service takes mode `destination`. Reply: `absent`, `empty`, `not-empty`, `file`, `other`, or `error {code}`. A link or a junction gives `other`.
+- New request `pageant {repositoryId, remote}` or `{cloneId}`, for a Windows Git only. A WSL target gives `refused` with `INVALID_REQUEST`. Reply: `git` (`sshClient` is `git`), `none` (`plink` and no key file), `ready`, or `failed {reason, program, path}`. Under `plink`, a missing `plink.exe` gives `failed {reason: "missing", program: "plink", path}`. The shell starts `pageant.exe --encrypted <key>` outside every Job. Reply `ready` only when the process exits with status 0, or `WaitForInputIdle` returns 0 while the process still runs. Any other exit status gives `failed {reason: "exit", program, path}`. 30 s without either gives `failed {reason: "not-ready"}`. If P0.3 shows no defined exit status, record the contract gap and refuse.
+- New request `terminal {gitInstallationId, repositoryId?, target}`. `repositoryId` is present for a `sync` target and absent for a `clone` target. The shell takes the Git path from `gitInstallationId` and the worktree root from `repositoryId`, from its own registrations. The service sends no path. An unregistered pair or a WSL Git gives `refused` with `UNKNOWN_TARGET`. `target` is the remote name, the push URL, or the clone URL (plan.md D9).
   - The shell starts Windows PowerShell 5.1 from the system folder with `CREATE_NEW_CONSOLE`, `-NoProfile -NoExit`, and a constant script.
-  - Values pass in `ARBARETO_GIT`, `ARBARETO_DIR`, and `ARBARETO_TARGET`, plus `GIT_SSH_COMMAND='<plink>'` without `-batch` and `GIT_SSH_VARIANT=plink`.
+  - Values pass in `ARBARETO_GIT`, `ARBARETO_DIR`, and `ARBARETO_TARGET`, plus `GIT_SSH_COMMAND='<plink>'` without `-batch` and `GIT_SSH_VARIANT=plink`. Without `repositoryId`, `ARBARETO_DIR` is empty.
   - Script: `if ($env:ARBARETO_DIR) { & $env:ARBARETO_GIT --no-lazy-fetch -C $env:ARBARETO_DIR ls-remote --heads -- $env:ARBARETO_TARGET } else { & $env:ARBARETO_GIT --no-lazy-fetch ls-remote --heads -- $env:ARBARETO_TARGET }`.
 - Marker kinds add `sync` (`settings.rs:759`). The close prompt covers running `sync` and `clone` (`close.rs`).
+- The `started` frame of kind `sync` carries `action`, one of the nine `reviewSync` actions. No other kind carries `action`. Direction `resolve` goes only with kind `applyFile`.
 
 ## Δ7 Startup, trust, and environment (001 §7)
 
@@ -175,7 +183,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - New policy `integrate`: the same, with `set {GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: ":"}`.
 - 001 §6 "Process fields" (L581) and §12 "Environment and console" (L1880) get one exception: the shell adds the PuTTY pair to `remote` runs under `plink` (Δ6).
 - Mutation trust adds `approvalRequired.sync` (plan.md D11). `sync` refuses with `TRUST_REQUIRED` or `TRUST_CHANGED` before any process.
-- The value display allowlist adds `core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, and `remote.<name>.receivepack`, redacted.
+- The value display allowlist adds `core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, `remote.<name>.receivepack`, and `remote.<name>.puttykeyfile`, redacted.
 - Logs: no URL, remote name, ref name, or output tail. Only kinds, IDs, codes, reasons, and counts.
 
 ## Δ8 Freshness, cancellation, and outcome (001 §8)
@@ -189,7 +197,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 | Code | Reasons | Meaning |
 |---|---|---|
-| `SYNC_UNAVAILABLE` | `detached`, `unborn`, `no-upstream`, `remote-missing`, `no-remotes`, `local-upstream`, `several-merge-refs`, `push-urls`, `mirror`, `push-remote-differs`, `invalid-config`, `no-lease`, `ff-only`, `interactive-rebase`, `upstream-gone`, `no-operation`, `not-rebasing` | The action cannot run. No process starts, or none after the fetch. |
+| `SYNC_UNAVAILABLE` | `detached`, `unborn`, `no-upstream`, `remote-missing`, `no-remotes`, `local-upstream`, `several-merge-refs`, `push-urls`, `mirror`, `push-remote-differs`, `invalid-config`, `no-lease`, `ff-only`, `interactive-rebase`, `upstream-gone`, `no-operation`, `not-rebasing`, `no-skip-commit` | The action cannot run. No process starts, or none after the fetch. |
 | `PUSH_REJECTED` | `rejected`, `stale-lease`, `remote-rejected`, `remote-failure` | The porcelain status of the pushed ref. |
 | `PUTTY_UNAVAILABLE` | `missing`, `unreadable`, `version`, `exit`, `not-ready` | With `program` and `path`. |
 | `DESTINATION_NOT_EMPTY` | `not-empty`, `file`, `other` | With the destination path. No Git process starts. |
@@ -201,6 +209,7 @@ Reused: `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW
 - Schema tests and golden vectors for every new operation, code, phase, policy, wrapper mode, and private request, in Bun and Rust.
 - The shell allowlist holds the new commands.
 - Vector tests for each argv builder of `sync-commands.ts`.
+- The Rust check of `src-tauri/src/schema.rs` reads each new vector of `native-first-envelope`, `mutation-request`, `progress`, `handshake`, and `process-request`.
 
 ## Δ11 WSL repositories (001 §11)
 

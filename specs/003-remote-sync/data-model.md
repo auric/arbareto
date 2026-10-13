@@ -33,9 +33,10 @@ Label rule (renderer):
 | `binding.remotes` | Ordered names from `git remote`, or the one remote of the action. |
 | `binding.upstream` | `{ref, objectId}` for `pull` and `integrate`. |
 | `binding.destination` | §3 result for `push` and `force-push`. |
-| `binding.lease` | `{trackingRef, expect, count, subjects[≤100]}` for `force-push`. |
+| `binding.lease` | `{trackingRef, expect, count, commits[≤100]}` for `force-push`. Each commit is `{objectId, subject}`. |
 | `binding.index` | Index fingerprint and unmerged count for `continue`. |
 | `binding.mode` | For `pull` and `integrate`: the payload mode or null. |
+| `binding.skippedCommit` | For `skip`: the `REBASE_HEAD` object ID. |
 
 `sync` re-reads each bound value. A difference gives `STALE_REVIEW`. A trust difference gives `TRUST_CHANGED` or `TRUST_REQUIRED`.
 
@@ -54,9 +55,9 @@ Label rule (renderer):
 
 | Field | Rule |
 |---|---|
-| `remotes[]` | One per remote: `name`, `state` (`succeeded`, `failed`, `canceled`, `deadline`, `not-started`), `outputTail`. |
-| `updates[]` | Porcelain lines, at most 1,000 per remote: `flag`, `oldObjectId`, `newObjectId`, `ref`. |
-| `counts` | Lines per flag, for all lines. |
+| `remotes[]` | One per remote: `name`, `state` (`succeeded`, `failed`, `canceled`, `deadline`, `not-started`), `updates`, `counts`, `outputTail`. |
+| `remotes[].updates[]` | The porcelain lines of that remote, at most 1,000: `flag`, `oldObjectId`, `newObjectId`, `ref`. |
+| `remotes[].counts` | Lines per flag, for all lines of that remote. |
 | `observed` | Ref changes from the before and after listings that the lines do not cover. |
 
 ## 5. Push result
@@ -89,7 +90,7 @@ Inputs: counts after the fetch, `pull.ff`, `branch.<name>.rebase`, `pull.rebase`
 | both > 0 | `true` or `false` | unset and no payload | `merge` with `--ff` or `--no-ff` |
 | both > 0 | `true`, `false`, or unset | `false` or payload `merge` | `merge` with `--ff`, `--no-ff`, or nothing |
 
-An invalid value gives refusal `invalid-config`. The source of the mode goes into the result: `payload`, `branch`, `pull`, or `pull-ff`.
+An invalid value gives refusal `invalid-config`. The `sync` result names the source of the mode as `modeSource`: `payload`, `branch`, `pull`, `pull-ff`, or null when no payload and no configuration value decided.
 
 ## 7. Integration state
 
@@ -136,8 +137,10 @@ A failed reconciliation read gives `unknown`, and the recovery marker stays (001
 | `defaultCloneFolder` | A picked folder or null. |
 | `lastCloneParent` | Stored after each successful clone. |
 
+`readSyncSettings` also returns `programs`. For a set `plinkPath`, it holds one entry each for `plink`, `pageant`, and `puttygen`, with the path in the plink folder (O-7) and `present` from an OS fact. For a null `plinkPath`, it is empty.
+
 No passphrase, no credential, and no key content.
 
 ## 11. Connect target (retained)
 
-`{operationId, kind: "remote" | "url", worktreeRoot | null, target}` for the last failed `sync` or `clone` of each workspace. A clone without a workspace keeps one target for the session. The target URL never leaves the service, except in the `terminal` request to the shell.
+`{operationId, kind: "remote" | "url", repositoryId | null, gitInstallationId, target}` for the last failed `sync` or `clone` of each workspace. The service keeps one only when the `pageant` reply of that operation was not `git`. A clone without a workspace keeps one target for the session. The target URL never leaves the service, except in the `terminal` request to the shell.

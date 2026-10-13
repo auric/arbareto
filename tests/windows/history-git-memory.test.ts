@@ -8,6 +8,7 @@
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { expect } from "bun:test";
 import { basename, relative } from "node:path";
+import { HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
 import { useFixtureRoot, fixtureEnv, FIXED_TIMESTAMPS, ownedPath } from "../git/fixture-root";
 import { describeGit } from "../git/git-binary";
 import { H1M, largeCase, largeFixture, MARKER_WORD, startPoints } from "../git/history-fixtures";
@@ -31,8 +32,8 @@ const COMMANDS = [
     rows: Math.ceil(H1M.commits / 50),
   },
 ] as const;
-// plan.md D2: S₀ = n + 1 + 2·M for n = 40 and M = `HISTORY_LOAD_MARGIN` (1,024).
-const FIRST_STEP = 40 + 1 + 2 * 1024;
+// plan.md D2: S₀ = n + 1 + 2·M for n = 40 and M = `HISTORY_LOAD_MARGIN`.
+const FIRST_STEP = 40 + 1 + 2 * HISTORY_LOAD_MARGIN;
 const MARKS = [1, FIRST_STEP, 500_000, 1_000_000] as const;
 const END_WAIT_MS = 10_000;
 

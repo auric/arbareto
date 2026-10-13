@@ -15,7 +15,7 @@ import { FactLog, orderFacts, searchArgs } from "./history-order-facts";
 // This file imports no `src/` module. `fixture-root.ts` and `history-fixtures.ts` print the ORIGIN lines of the contract files they read.
 
 const TASK = "T003";
-const EXPECTED_GIT = "git version 2.56.0.windows.1";
+const EXPECTED_GIT = "git version 2.56.0.windows.2";
 const SMALL_TIMEOUT_MS = 600_000;
 const LARGE_TIMEOUT_MS = 60 * 60_000;
 

@@ -120,6 +120,8 @@ const DEADLINE_TEXT = "Git did not finish this history read before its deadline.
 
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const failed = (code: ErrorCode, value: object = {}): ViewOutcome => ({ result: "failed", code, value });
+// Contract Δ8 condition 4. A probe step only gives a diagnostic `OUTPUT_LIMIT`.
+const STALE_PROBE_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>(["MALFORMED_GIT_OUTPUT", "GIT_FAILED", "OUTPUT_LIMIT"]);
 // Contract Δ3: Git gets the start points on stdin, one per line.
 const startInput = (starts: readonly string[]) => (starts.length === 0 ? {} : { input: new TextEncoder().encode(starts.map((oid) => `${oid}\n`).join("")) });
 
@@ -434,7 +436,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
         const now = performance.now();
         if (!quiet && now - lastProgress >= PROGRESS_MS && registry.get(t.operationId)?.state === "running") {
           lastProgress = now;
-          registry.progress(t.operationId, "history-load", { rows: topology.rows });
+          registry.progress(t.operationId, "history-load", { rows: view.rows });
         }
       },
       get bytes() {
@@ -533,7 +535,12 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     const unsupported = (text: string) => failed("SEARCH_UNSUPPORTED", { reason: "matching", remedy: { text, command: null } });
     const key = view.installation.gitInstallationId;
     const result = probes.get(key) ?? (await probeMatching(runner, t, probeRuns, () => (s.cause = "probe-folder-remove")));
-    if (isStop(result)) return "failed" in result ? failed(result.failed) : result.stop === "deadline" ? { result: "deadline" } : { result: "canceled" };
+    if (isStop(result)) {
+      if (!("failed" in result)) return result.stop === "deadline" ? { result: "deadline" } : { result: "canceled" };
+      // Contract Δ8 condition 4. A runner refusal leaves the view fresh, as in `runLoad`. The failure is not cached.
+      const code = result.failed;
+      return STALE_PROBE_CODES.has(code) ? failed(code, refusalOf(stale(view, { code }))) : failed(code);
+    }
     probes.set(key, result);
     return result === "pass" ? null : unsupported(MATCHING_REMEDY);
   }
@@ -640,8 +647,9 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     } finally {
       t.signal.removeEventListener("abort", abortCall);
       if (timer !== null) clearTimeout(timer);
-      // A side that throws leaves the other side running, and the load holds `view.load`.
+      // A side that throws leaves the other side running, and the load holds `view.load` until it returns.
       call.abort();
+      await Promise.allSettled([searching, loading]);
     }
 
     if (t.signal.aborted || view.released) return { result: "canceled" };

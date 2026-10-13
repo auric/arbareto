@@ -485,7 +485,8 @@ describe("search lifecycle (FR-030, FR-035, FR-039, contract Δ3 and Δ7)", () =
           held();
           const failed = await service.response<Searched>(request);
           expect({ state: failed.state, code: failed.code }).toEqual({ state: "failed", code: "GIT_FAILED" });
-          await waitFor("the end of the load of the search", () => service.runner.calls.find(isLoad)!.exit !== undefined, 5_000);
+          // The search ends only after the load of the search returned, so its process exit is already recorded.
+          expect(service.runner.calls.find(isLoad)!.exit).toBeDefined();
         } finally {
           service.runner.inject.stdout = undefined;
           held();

@@ -815,9 +815,9 @@ const PROBED: [&str; 8] = [
     "sha256sum",
 ];
 /// The other line kinds of that probe.
-const PROBE_FACTS: [&str; 10] = [
+const PROBE_FACTS: [&str; 11] = [
     "pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat",
-    "noexpand",
+    "noexpand", "verbatim",
 ];
 /// Contract §11 "Git per distro": the Git floor.
 const MINIMUM_GIT: [u64; 3] = [2, 55, 0];
@@ -906,10 +906,13 @@ pub fn bind_probe(distro: &str, guid: &str, output: &[u8]) -> Option<Bound> {
         || perl.is_none()
         || sha256sum.is_none()
         || facts.get("scope") != Some(&"0")
+        // T378: a scope with the wrapper flag rule got each probe argument unchanged.
+        || facts.get("verbatim") != Some(&"0")
     {
         return None;
     }
     // T378: `noexpand` is the exit status of `systemd-run --expand-environment=no --version`, a decimal from 0 to 255.
+    // It sets the wrapper flag rule. `verbatim` proves the result.
     let noexpand = match *facts.get("noexpand")? {
         "0" => true,
         status
@@ -3792,11 +3795,27 @@ mod tests {
             "--dereference --file-system --format=%t:%i",
             "--dereference --format=%i:%s:%Y",
             "--user --scope",
-            "\"$run\" --expand-environment=no --version >/dev/null 2>&1",
-            "printf 'noexpand %s\\n' \"$?\"",
         ] {
             assert!(probe.contains(needle), "{needle}");
         }
+        // T378: `noexpand` sets the wrapper flag rule. One scope with that rule then proves that the arguments arrive unchanged.
+        let lines: Vec<&str> = probe.lines().map(str::trim_start).collect();
+        for line in [
+            "\"$run\" --expand-environment=no --version >/dev/null 2>&1",
+            "noexpand=$?",
+            "printf 'noexpand %s\\n' \"$noexpand\"",
+            "[ \"$noexpand\" = 0 ] && noexp=1 || noexp=",
+            r##""$run" --user --scope --quiet --collect ${noexp:+--expand-environment=no} -- /bin/sh -c 'd=$(printf "\044"); [ "$#" = 3 ] && [ "$1" = "a$d{HOME}" ] && [ "$2" = "b$d$d" ] && [ "$3" = "$d"HOME ]; printf "verbatim %s\n" "$?"' sh 'a${HOME}' 'b$$' '$HOME' 2>/dev/null"##,
+        ] {
+            assert!(lines.contains(&line), "{line}");
+        }
+        // An expansion changes `${NAME}` and `$$` in every argument. The scoped text holds neither, so it compares against unchanged texts.
+        let scoped = lines
+            .iter()
+            .find(|line| line.contains("verbatim"))
+            .and_then(|line| line.split('\'').nth(1))
+            .expect("the scoped text");
+        assert!(!scoped.contains("${") && !scoped.contains("$$"), "{scoped}");
         assert!(!probe.contains("--no-lazy-fetch"), "contract §7 exception");
     }
 
@@ -4016,6 +4035,7 @@ mod tests {
             ("selstat", "ok"),
             ("scope", "0"),
             ("noexpand", "0"),
+            ("verbatim", "0"),
         ]
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -4146,6 +4166,14 @@ mod tests {
             &[("noexpand", Some("256"))],
             &[("noexpand", Some("0 "))],
             &[("noexpand", Some("yes"))],
+            // T378: the probe scope changed an argument, or the verdict is missing or malformed.
+            &[("verbatim", Some("1"))],
+            &[("verbatim", None)],
+            &[("verbatim", Some(""))],
+            &[("verbatim", Some("00"))],
+            &[("verbatim", Some("2"))],
+            &[("verbatim", Some("0 "))],
+            &[("verbatim", Some("yes"))],
             // A program is either absent or found, never both.
             &[("absent", Some("perl"))],
             &[("absent", Some("git"))],
@@ -4393,6 +4421,38 @@ mod tests {
             text,
             format!("S{}\n{}\n", dollars.len(), dollars.join("\n"))
         );
+    }
+
+    /// T378: the bootstrap probe prints `verbatim 0` only when its scope with the wrapper flag rule got each argument unchanged.
+    /// Only `verbatim 0` binds. Ubuntu-24.04 holds Git 2.43.0, so the Git floor refuses its probe.
+    #[test]
+    fn the_real_probe_proves_that_scope_arguments_arrive_unchanged() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let out = reference
+            .host()
+            .run(&probe_command(&reference.distro, "/", &environment))
+            .expect("probe ran");
+        assert_eq!(out.exit_code, Some(0), "probe exit");
+        let text = String::from_utf8(out.stdout.clone()).expect("UTF-8");
+        if probe_fact(&text, "scope ") != Some("0") {
+            skip("systemd-user-manager");
+            return;
+        }
+        let verbatim = probe_fact(&text, "verbatim ");
+        let admitted = probe_fact(&text, "version ")
+            .and_then(admitted_version)
+            .is_some();
+        let binds = bind_probe(&reference.distro, GUID, &out.stdout).is_some();
+        println!(
+            "OBSERVATION T378: {} noexpand {:?}, verbatim {verbatim:?}, Git admitted {admitted}, binds {binds}",
+            reference.distro,
+            probe_fact(&text, "noexpand ")
+        );
+        assert_eq!(verbatim, Some("0"));
+        assert_eq!(binds, admitted, "only the Git floor refuses this probe");
     }
 
     /// T116 B3-2, contract §11 "Process ownership": the real anchor text with a failing `systemctl`, and with a shell

@@ -103,7 +103,10 @@
     "  \"$run\" --user --scope --quiet --collect -- /bin/sh -c : >/dev/null 2>&1",
     "  printf 'scope %s\\n' \"$?\"",
     "  \"$run\" --expand-environment=no --version >/dev/null 2>&1",
-    "  printf 'noexpand %s\\n' \"$?\"",
+    "  noexpand=$?",
+    "  printf 'noexpand %s\\n' \"$noexpand\"",
+    "  [ \"$noexpand\" = 0 ] && noexp=1 || noexp=",
+    "  \"$run\" --user --scope --quiet --collect ${noexp:+--expand-environment=no} -- /bin/sh -c 'd=$(printf \"\\044\"); [ \"$#\" = 3 ] && [ \"$1\" = \"a$d{HOME}\" ] && [ \"$2\" = \"b$d$d\" ] && [ \"$3\" = \"$d\"HOME ]; printf \"verbatim %s\\n\" \"$?\"' sh 'a${HOME}' 'b$$' '$HOME' 2>/dev/null",
     "fi"
   ],
   "identity": [

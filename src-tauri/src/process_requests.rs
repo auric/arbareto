@@ -5704,6 +5704,7 @@ pub(crate) mod tests {
             ("selstat", "ok"),
             ("scope", "0"),
             ("noexpand", "0"),
+            ("verbatim", "0"),
         ]
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cargoShipped, cssPackages, inventory, licenseFileNames, makensisProblem, missingRuntimeFiles, npmClosure, NSIS_VERSION, nsisShipped, TAURI_CLI_VERSION, tauriCliProblem, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
+import { cargoShipped, cssPackages, inventory, licenseFileNames, makensisProblem, missingRuntimeFiles, needsCliPin, npmClosure, NSIS_VERSION, nsisShipped, TAURI_CLI_VERSION, tauriCliProblem, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
 import { TM_GRAMMARS_VERSION, TM_THEMES_VERSION } from "../../src/frontend/highlight/set";
 import { printOrigin } from "../origin";
 
@@ -187,6 +187,13 @@ describe("vendored licence texts (T338)", () => {
     test("only the pinned tauri-cli stdout passes, because the CLI pins the bundler NSIS", () => {
       expect(tauriCliProblem(TAURI_CLI_VERSION)).toEqual([]);
       expect(tauriCliProblem("tauri-cli 2.12.2\n")).toHaveLength(1);
+    });
+
+    test("only a Tauri Windows target build needs the CLI pin", () => {
+      expect(needsCliPin({ TAURI_ENV_PLATFORM: "windows" })).toBe(true);
+      expect(needsCliPin({})).toBe(false);
+      expect(needsCliPin({ TAURI_ENV_PLATFORM: "linux" })).toBe(false);
+      expect(needsCliPin({ TAURI_ENV_PLATFORM: "darwin" })).toBe(false);
     });
 
     test("a reused makensis that prints another version is a refusal", () => {

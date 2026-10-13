@@ -33,7 +33,7 @@ Compare them with the minimum versions in `plan.md` Technical Context; Bun must 
 
 Before building, verify:
 
-- Bun exactly `1.4.3`. At least the `plan.md` minimum versions: Rust/Cargo `1.98.0`, native cargo-tauri `2.12.0`, MSVC toolset `14.51.36231`, and Windows SDK `10.0.26100.0`.
+- Bun exactly `1.4.3`. For a Windows build, native cargo-tauri exactly `2.12.0`, because the notices check pins the NSIS version. At least the `plan.md` minimum versions: Rust/Cargo `1.98.0`, MSVC toolset `14.51.36231`, and Windows SDK `10.0.26100.0`.
 - Minimum-version dependency declarations, an exact Bun version, and committed Bun/Cargo lockfiles.
 - Selected SDK version, native imports, development-only Node requirements, and third-party notice obligations.
 - Frontend build compatibility under Bun, without an accidental Node shebang fallback.

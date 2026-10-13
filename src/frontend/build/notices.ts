@@ -214,10 +214,23 @@ async function readLicenseFiles(dir: string, named: string | undefined | null): 
 
 // Tauri bundler 2.10.0 nsis/mod.rs:38-41 pins nsis-3.11.zip. research.md R10 records the vendored COPYING.
 export const NSIS_VERSION = "3.11";
+// tauri-cli 2.12.0 Cargo.toml pins `tauri-bundler = "=2.10.0"`. Another CLI release can bring another NSIS.
+export const TAURI_CLI_VERSION = "tauri-cli 2.12.0\n";
+
+/** A problem unless `cargo tauri --version` printed exactly `TAURI_CLI_VERSION`. */
+export function tauriCliProblem(stdout: string): string[] {
+  return stdout === TAURI_CLI_VERSION ? [] : [`cargo tauri --version printed ${JSON.stringify(stdout)}, the NSIS ${NSIS_VERSION} pin needs ${JSON.stringify(TAURI_CLI_VERSION)}`];
+}
+
+/** A problem unless `makensis.exe /VERSION` printed exactly `v<NSIS_VERSION>`. */
+export function makensisProblem(stdout: string): string[] {
+  return stdout === `v${NSIS_VERSION}` ? [] : [`NSIS ${NSIS_VERSION}: %LOCALAPPDATA%\\tauri\\NSIS\\makensis.exe /VERSION printed ${JSON.stringify(stdout)}`];
+}
 
 /**
  * The NSIS entry from `third-party-licenses/tools/nsis@<NSIS_VERSION>`. `beforeBuildCommand` runs before the bundler downloads NSIS, so the build cannot read the bundler copy.
  * A bundler copy at `<localAppData>/tauri/NSIS/COPYING` that differs from the vendored text is a problem: a bundler upgrade brought another NSIS.
+ * A `makensis.exe` in that folder that does not print `v<NSIS_VERSION>` is also a problem.
  */
 export async function nsisShipped(vendored: string, keys: ReadonlySet<string>, localAppData: string | undefined): Promise<{ shipped: Shipped; problems: string[] }> {
   const key = vendoredKey(keys, "tools", "nsis", NSIS_VERSION);
@@ -228,6 +241,12 @@ export async function nsisShipped(vendored: string, keys: ReadonlySet<string>, l
   const copying = files.find((f) => f.name === "COPYING")?.text;
   if (copying !== undefined && bundlerCopy !== undefined && (await bundlerCopy.exists()) && (await bundlerCopy.text()) !== copying) {
     problems.push(`NSIS ${NSIS_VERSION}: %LOCALAPPDATA%\\tauri\\NSIS\\COPYING differs from third-party-licenses/tools/nsis@${NSIS_VERSION}/COPYING`);
+  }
+  // The bundler reuses an existing NSIS folder whatever its version.
+  const makensis = localAppData === undefined ? undefined : `${localAppData}/tauri/NSIS/makensis.exe`;
+  if (makensis !== undefined && (await Bun.file(makensis).exists())) {
+    const version = Bun.spawnSync([makensis, "/VERSION"], { stdin: "ignore", stdout: "pipe", stderr: "inherit", timeout: 120_000 });
+    problems.push(...(version.exitCode === 0 ? makensisProblem(version.stdout.toString()) : [`NSIS ${NSIS_VERSION}: makensis.exe /VERSION exit code ${version.exitCode}`]));
   }
   return { shipped: { name: "NSIS", license: "zlib/libpng, bzip2, CPL-1.0", files }, problems };
 }
@@ -271,6 +290,11 @@ async function main(): Promise<number> {
   for (const c of cargoSet.crates) {
     const files = await filesOf(await readLicenseFiles(c.dir, c.licenseFile), vendoredKey(vendoredKeys, "cargo", c.name, c.version));
     shipped.push({ name: c.name, version: c.version, license: c.license, files });
+  }
+  // The NSIS bundle builds only on Windows, so only a Windows build needs the CLI pin.
+  if (process.platform === "win32") {
+    const cli = Bun.spawnSync(["cargo", "tauri", "--version"], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "inherit", timeout: 120_000 });
+    problems.push(...(cli.exitCode === 0 ? tauriCliProblem(cli.stdout.toString()) : [`cargo tauri --version exit code ${cli.exitCode}`]));
   }
   const nsis = await nsisShipped(vendored, vendoredKeys, process.env.LOCALAPPDATA);
   shipped.push(nsis.shipped);

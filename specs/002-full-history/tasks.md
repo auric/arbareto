@@ -404,3 +404,11 @@ The spec requires all three stories for qualification. No partial increment coun
 - Verify that each test fails before its implementation task starts.
 - The orchestrator session commits after each task or logical group. Never commit fixture repositories, performance fixtures, or executables.
 - The application never writes a commit-graph, a message index, or other repository data (FR-044).
+
+---
+
+## Phase 7: Convergence
+
+- [ ] T064 [US2] Keep the reduced parents and the "No earlier matching commit" state of a limited filter row accessible. A limited cell draws no segment, and `parents` holds the Git parents, so the renderer cannot state either (`noEarlier` in `src/frontend/history/HistoryList.tsx`). First change contract Δ3 `readHistoryRows` and data-model §7 to carry this fact on a filter row, then change `src/git-service/history-view.ts` and `HistoryList.tsx`. Write the failing case first in `tests/git/history-search.test.ts` and `tests/contracts/history-filter.test.tsx`. Depends on T050. per FR-016, FR-033, plan: D4 (partial)
+- [ ] T065 [US2] Show the Ctrl+F key of the message filter as text. Today only `aria-keyshortcuts` carries it (`src/frontend/history/HistoryFilter.tsx`). The 001 FR-005 rule names only buttons and menu items. Ask the user how a text box shows its key, record the answer in spec.md FR-031, and then change the code and `tests/contracts/history-filter.test.tsx`. Depends on T050. per FR-031 (partial)
+- [ ] T066 [US1] Resolve the 200-row threshold of the references sidebar. `VIRTUAL_MIN` in `src/frontend/refs/ReferencesSidebar.tsx` creates an element for every row up to 200 rows, but FR-055 states no threshold. Record the threshold in spec.md Assumptions as a reviewer default, or remove it and keep `tests/contracts/references-sidebar.test.tsx` green. Depends on T050. per FR-055 (contradicts)

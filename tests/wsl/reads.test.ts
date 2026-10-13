@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import { createBunRunner, type BunRunner } from "../git/bun-runner";
 import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
-import { OPERATION_MARKERS } from "../../src/git-service/commands";
+import { OPERATION_MARKERS, recheckArgs } from "../../src/git-service/commands";
 import { buildF21, buildF25, buildF26, distroGit, globalConfig, seamRepository, startSession, writeLinux, type WslSession } from "./fixtures";
 import { inDistro, uncPath, useWslFolder, WSL_EXE, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
@@ -277,6 +277,87 @@ describe("WSL reads (T208)", () => {
   );
 });
 
+// T378: systemd 258 and later expand `${NAME}`, `$$`, and a whole `$NAME` argument of a `--scope` command (contract §11 "Process launch").
+// Ubuntu-26.04 has systemd 259, so without `--expand-environment=no` these names reach Git as other paths. Ubuntu-24.04 has systemd 255.
+const DOLLAR_FILES = ["a${HOME}", "b$$x"];
+const changedLines = (patch: string) => patch.split("\n").filter((l) => /^[+-]/.test(l) && !/^(?:\+\+\+|---) /.test(l));
+
+// A repository at `dir` whose files `DOLLAR_FILES` each changed after the commit. No shell and no scope parse a name here.
+function dollarRepo(host: WslHost, dir: string): { host: WslHost; dir: string } {
+  inDistro(host.distro, ["/usr/bin/mkdir", "-p", "--", dir]);
+  const r = { host, dir };
+  distroGit(r, ["init", "-q", "-b", "main"]);
+  for (const name of DOLLAR_FILES) writeLinux(host, `${dir}/${name}`, `${name} one\n`);
+  distroGit(r, ["--literal-pathspecs", "add", "--", ...DOLLAR_FILES]);
+  distroGit(r, ["-c", "user.name=T378", "-c", "user.email=t378@example.invalid", "commit", "-q", "--no-verify", "-m", "base"]);
+  for (const name of DOLLAR_FILES) writeLinux(host, `${dir}/${name}`, `${name} two\n`);
+  return r;
+}
+
+// Each changed file of `dollarRepo` reads as unstaged, and its comparison holds the changed lines of the distro Git's own diff.
+async function expectOwnComparisons(s: WslSession, r: { host: WslHost; dir: string }): Promise<void> {
+  const w = await register(s, uncPath(r.host, r.dir));
+  const status = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+  expect(status).toMatchObject({ state: "succeeded" });
+  const result = status.result as { entries: { entryId: string; path: string; category: string }[]; snapshotId: string; generation: number };
+  expect(result.entries.filter((e) => e.category === "unstaged").map((e) => e.path).sort()).toEqual([...DOLLAR_FILES].sort());
+  for (const name of DOLLAR_FILES) {
+    const entry = result.entries.find((e) => e.path === name && e.category === "unstaged")!;
+    const comparison = await compareEntry(s, w, result, entry.entryId);
+    expect(comparison).toMatchObject({ state: "succeeded" });
+    const patch = Buffer.from((comparison.result as { patch: string }).patch, "base64").toString("utf8");
+    const own = distroGit(r, ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--", name]);
+    expect({ name, lines: changedLines(patch) }).toEqual({ name, lines: changedLines(own) });
+    expect({ name, lines: changedLines(own) }).toEqual({ name, lines: [`-${name} one`, `+${name} two`] });
+  }
+}
+
+describe("WSL scope arguments and start (T377, T378)", () => {
+  wslTest(
+    "T378: the files a${HOME} and b$$x each give their own comparison",
+    NEEDS,
+    async (host) => {
+      const { s } = setup(host);
+      await expectOwnComparisons(s, dollarRepo(host, `${host.folder}/t378-files-${crypto.randomUUID().slice(0, 8)}/repo`));
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  wslTest(
+    "T378: a repository folder whose name holds ${HOME} registers, and its files give their own comparisons",
+    NEEDS,
+    async (host) => {
+      const { s } = setup(host);
+      await expectOwnComparisons(s, dollarRepo(host, `${host.folder}/t378-\${HOME}-${crypto.randomUUID().slice(0, 8)}/repo`));
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  // T377: a `systemd-run` that exits 1 starts no scope, so the wrapper writes no start byte and the run ends refused.
+  wslTest(
+    "T377: a status and re-read whose scope does not start end the read PROCESS_OWNERSHIP_FAILED, never REPOSITORY_UNAVAILABLE, and the next read succeeds",
+    NEEDS,
+    async (host) => {
+      const f21 = buildF21(host);
+      const { runner, s } = setup(host);
+      const w = await register(s, f21.paths[1]!);
+      const isRecheck = (args: readonly string[]) => args.join("\0") === recheckArgs().join("\0");
+      const from = runner.calls.length;
+      runner.inject.wslRun = (call) => (call.arguments.includes("status") || isRecheck(call.arguments) ? "/usr/bin/false" : undefined);
+      try {
+        const failed = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+        expect({ state: failed.state, code: failed.code }).toEqual({ state: "failed", code: "PROCESS_OWNERSHIP_FAILED" });
+        const refused = runner.calls.slice(from).filter((c) => c.arguments.includes("status") || isRecheck(c.arguments));
+        expect(refused.map((c) => c.refused)).toEqual(["PROCESS_OWNERSHIP_FAILED", "PROCESS_OWNERSHIP_FAILED"]);
+      } finally {
+        runner.inject.wslRun = undefined;
+      }
+      const next = await read(s, w, "readWorkspace", { refresh: false, check: "full" });
+      expect({ state: next.state, recoveryState: next.result?.recoveryState }).toEqual({ state: "succeeded", recoveryState: "ready" });
+    },
+    CASE_TIMEOUT_MS,
+  );
+});
 
 // T212 review: a seam read whose Git output is fixed, so it needs no Git 2.55.0. Only the trust listing `fileFacts` probe runs in the distro.
 describe("WSL read seams (T212)", () => {

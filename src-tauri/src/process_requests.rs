@@ -316,6 +316,8 @@ struct Run {
     exited: Arc<Mutex<bool>>,
     /// The activity of a request with `stallMs` (contract §6 "Activity and stall notice").
     tracker: Option<Arc<Tracker>>,
+    /// A WSL run: its stdout starts with the start byte of the wrapper (contract §11 "Process launch").
+    wsl: bool,
 }
 
 #[derive(Default)]
@@ -324,6 +326,8 @@ struct Drain {
     budget: [Option<u64>; 2],
     /// The stream forwarded its budget or reached end-of-file.
     done: [bool; 2],
+    /// A WSL run read its first stdout byte, and that byte was the start byte.
+    first: Option<bool>,
 }
 
 const STREAMS: [OutputStream; 2] = [OutputStream::Stdout, OutputStream::Stderr];
@@ -857,6 +861,7 @@ impl ProcessRequests {
             unacknowledged: Arc::clone(&unacknowledged),
         });
         let generation = self.current();
+        let wsl = wsl_command.is_some();
         let (call, operation) = (call_id.to_string(), operation_id.to_string());
         let closer = Arc::clone(&me);
         let close_operation = operation.clone();
@@ -955,6 +960,7 @@ impl ProcessRequests {
                         changed: Condvar::new(),
                         exited,
                         tracker,
+                        wsl,
                     });
                     for stream in 0..2 {
                         let (me, run) = (Arc::clone(&me), Arc::clone(&run));
@@ -2140,10 +2146,10 @@ impl ProcessRequests {
             read_at,
             move |stop| {
                 let host = me.wsl_host(&operation);
-                // One byte above the cap shows output past it.
+                // The start byte comes before the cap. One byte above the cap shows output past it.
                 let ended = host.run_walk(
                     &command,
-                    wsl::FACTS_OUTPUT_BYTES + 1,
+                    wsl::FACTS_OUTPUT_BYTES + 2,
                     deadline,
                     stop.event.0,
                 );
@@ -2208,10 +2214,10 @@ impl ProcessRequests {
             read_at,
             move |stop| {
                 let host = me.wsl_host(&operation);
-                // One byte above the cap shows output past it.
+                // The start byte comes before the cap. One byte above the cap shows output past it.
                 let ended = host.run_walk(
                     &command,
-                    wsl::WSL_FILES_OUTPUT_BYTES + 1,
+                    wsl::WSL_FILES_OUTPUT_BYTES + 2,
                     deadline,
                     stop.event.0,
                 );
@@ -2418,19 +2424,27 @@ impl ProcessRequests {
             if let Some(budget) = &mut drain.budget[stream] {
                 *budget -= read as u64;
             }
-            drop(drain);
-            // A stream holds one chunk at a time, and its pipe waits while the frame write runs.
-            queued += 1;
-            self.peak.fetch_max(queued, Ordering::SeqCst);
-            let data = encode_base64(&buffer[..read]);
-            self.send(
-                run.generation,
-                reply::output(&run.call_id, STREAMS[stream], &data),
-            );
-            if let Some(tracker) = &run.tracker {
-                tracker.output();
+            let mut data = &buffer[..read];
+            // Contract §11 "Process launch": the service never gets the start byte.
+            if run.wsl && stream == 0 && drain.first.is_none() {
+                let rest = wsl::started(data);
+                drain.first = Some(rest.is_some());
+                data = rest.unwrap_or(data);
             }
-            queued -= 1;
+            drop(drain);
+            if !data.is_empty() {
+                // A stream holds one chunk at a time, and its pipe waits while the frame write runs.
+                queued += 1;
+                self.peak.fetch_max(queued, Ordering::SeqCst);
+                self.send(
+                    run.generation,
+                    reply::output(&run.call_id, STREAMS[stream], &encode_base64(data)),
+                );
+                if let Some(tracker) = &run.tracker {
+                    tracker.output();
+                }
+                queued -= 1;
+            }
             drain = lock(&run.state);
         }
         drain.done[stream] = true;
@@ -2506,6 +2520,7 @@ impl ProcessRequests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
         }
+        let started = drain.first == Some(true);
         drop(drain);
 
         if let Some(tracker) = &run.tracker {
@@ -2517,10 +2532,13 @@ impl ProcessRequests {
         // Removing the call drops its input channel, so later `input` and `cancel` frames are dropped.
         self.state().calls.remove(&run.call_id);
         *lock(&run.exited) = true;
-        self.send(
-            run.generation,
-            reply::exit(&run.call_id, exit_code, active, expired),
-        );
+        // Contract §11 "Process launch": a WSL process that ended by itself without the start byte did not start in its scope.
+        let reply = if run.wsl && !started && exit_code.is_some() && expired.is_none() {
+            reply::refused(&run.call_id, OWNERSHIP)
+        } else {
+            reply::exit(&run.call_id, exit_code, active, expired)
+        };
+        self.send(run.generation, reply);
     }
 }
 
@@ -5685,6 +5703,8 @@ pub(crate) mod tests {
             ("selino", "4242"),
             ("selstat", "ok"),
             ("scope", "0"),
+            ("noexpand", "0"),
+            ("verbatim", "0"),
         ]
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -5697,6 +5717,9 @@ pub(crate) mod tests {
         lines.iter().map(|(k, v)| format!("{k} {v}\n")).collect()
     }
 
+    /// The supervisor of the operation Jobs and the test child mode with its arguments.
+    type ChildMode = (Arc<Supervisor>, Vec<String>);
+
     /// Answers each WSL process of every operation with the next scripted output, and records the commands.
     #[derive(Clone, Default)]
     struct ScriptHost {
@@ -5708,6 +5731,9 @@ pub(crate) mod tests {
         waiting: Arc<AtomicUsize>,
         /// While set, each walk process is a sleeping test child in the operation Job, and the product wait ends it.
         slow: Arc<Mutex<Option<Arc<Supervisor>>>>,
+        /// While set, each `start` runs this test child mode in the operation Job as the `wsl.exe` of a `run`.
+        /// The run reads the child stderr as stdout, because libtest writes its own lines to the child stdout.
+        child: Arc<Mutex<Option<ChildMode>>>,
         /// The operation of this host. `set_wsl_hosts` gives one host to each operation.
         operation: String,
     }
@@ -5760,7 +5786,7 @@ pub(crate) mod tests {
             }]
         }
 
-        /// Records the Git command and starts nothing, so the `run` ends refused.
+        /// Records the Git command. Without `child`, it starts nothing, so the `run` ends refused.
         fn start(
             &self,
             command: &wsl::Command,
@@ -5769,7 +5795,29 @@ pub(crate) mod tests {
                 .lock()
                 .expect("commands")
                 .push(command.clone());
-            Err(crate::spawn::SpawnError::OwnershipFailed)
+            let Some((jobs, mode)) = self.child.lock().expect("child").clone() else {
+                return Err(crate::spawn::SpawnError::OwnershipFailed);
+            };
+            let mode: Vec<&str> = mode.iter().map(String::as_str).collect();
+            let arguments = crate::jobs::tests::child_arguments(&mode);
+            let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+            let directory = std::env::temp_dir();
+            let request = SpawnRequest {
+                program: &test_exe(),
+                arguments: &arguments,
+                environment: &environment,
+                current_dir: &directory,
+                wsl: false,
+                input: Input::Closed,
+            };
+            let spawned = jobs
+                .with_job(&self.operation, |job| spawn(&request, job))
+                .unwrap_or(Err(crate::spawn::SpawnError::OwnershipFailed))?;
+            Ok(crate::spawn::Spawned {
+                stdout: spawned.stderr,
+                stderr: spawned.stdout,
+                ..spawned
+            })
         }
 
         fn anchor(&self, command: &wsl::Command) -> Result<(), crate::spawn::SpawnError> {
@@ -5974,7 +6022,7 @@ pub(crate) mod tests {
     fn the_bound_facts_leave_with_their_context_and_the_unit_counter_with_its_operation() {
         let wsl = wsl_harness(true);
         let (operation, bootstrap_id, git) = bound_wsl(&wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         let call = uuid();
         wsl.harness.send(json!({
             "type": "identity", "callId": call, "operationId": operation, "contextKind": "repositoryDiscovery",
@@ -6007,7 +6055,7 @@ pub(crate) mod tests {
     /// A registered WSL repository. Each later walk process is a sleeping test child in its operation Job.
     fn slow_wsl_repository(wsl: &WslHarness) -> (String, String) {
         let (operation, bootstrap_id, git) = bound_wsl(wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         let (call, repository) = (uuid(), uuid());
         let git_directory = format!(r"{WSL_PATH}\.git");
         wsl.harness.send(json!({ "type": "register", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory }));
@@ -6129,7 +6177,7 @@ pub(crate) mod tests {
     /// A registered WSL repository whose walks take the scripted outputs.
     fn wsl_repository(wsl: &WslHarness) -> (String, String) {
         let (operation, bootstrap_id, git) = bound_wsl(wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         let (call, repository) = (uuid(), uuid());
         let git_directory = format!(r"{WSL_PATH}\.git");
         wsl.harness.send(json!({ "type": "register", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory }));
@@ -6168,7 +6216,7 @@ pub(crate) mod tests {
         let wsl = wsl_harness(true);
         let (git, repository) = wsl_repository(&wsl);
         let mut records =
-            format!("file\x003\x000\x00sha256\x00{HEX_A}\x00link\x001\x001\x00").into_bytes();
+            format!("Sfile\x003\x000\x00sha256\x00{HEX_A}\x00link\x001\x001\x00").into_bytes();
         records.push(0xff);
         records.extend_from_slice(b"file\x001048577\x001\x00bound\x00");
         wsl.host.push(0, &records);
@@ -6242,7 +6290,7 @@ pub(crate) mod tests {
                 format!("67108864\x00arbareto-candidate-7\x00{HEX_A}\x00"),
             ),
         ] {
-            wsl.host.push(0, b"removed\x00");
+            wsl.host.push(0, b"Sremoved\x00");
             let call = uuid();
             wsl.harness
                 .send(wsl_files_body(&call, &git, &repository, fields));
@@ -6352,7 +6400,7 @@ pub(crate) mod tests {
             ),
         ];
         for (fields, records, result) in cases {
-            wsl.host.push(0, records.as_bytes());
+            wsl.host.push(0, format!("S{records}").as_bytes());
             let call = uuid();
             wsl.harness
                 .send(wsl_files_body(&call, &git, &repository, fields.clone()));
@@ -6362,6 +6410,15 @@ pub(crate) mod tests {
                 "{fields} {records:?}"
             );
         }
+        // T377: a valid record without the start byte.
+        wsl.host.push(0, b"locked\x00");
+        let call = uuid();
+        wsl.harness
+            .send(wsl_files_body(&call, &git, &repository, lock_fields()));
+        assert_eq!(
+            wsl.harness.reply(&call)["results"],
+            json!([{ "kind": "error", "component": 0, "code": "other-error" }])
+        );
     }
 
     #[test]
@@ -6372,7 +6429,7 @@ pub(crate) mod tests {
         let oid = "c".repeat(64);
         wsl.host.push(
             0,
-            format!("absent\0index\0digest\x00104\x00{HEX_A}\0absent\0").as_bytes(),
+            format!("Sabsent\0index\0digest\x00104\x00{HEX_A}\0absent\0").as_bytes(),
         );
         let call = uuid();
         let mut body = wsl_facts_body(&call, &uuid(), &git, &repository);
@@ -6556,7 +6613,7 @@ pub(crate) mod tests {
     fn a_wsl_register_reread_past_its_deadline_replies_deadline_and_destroys_the_context() {
         let wsl = wsl_harness_with(true, short_harness());
         let (operation, bootstrap_id, git) = bound_wsl(&wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         *wsl.host.slow.lock().expect("slow") = Some(Arc::clone(&wsl.harness.jobs));
         let call = uuid();
         wsl.harness
@@ -6588,7 +6645,7 @@ pub(crate) mod tests {
     fn a_wsl_register_reread_that_ends_after_a_service_exit_binds_nothing() {
         let wsl = wsl_harness(true);
         let (operation, bootstrap_id, git) = bound_wsl(&wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         wsl.host.hold(true);
         let call = uuid();
         wsl.harness
@@ -6667,7 +6724,7 @@ pub(crate) mod tests {
         );
 
         lingering_wsl_tag(&wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         let call = uuid();
         wsl_lingering_count(&wsl, &call);
         assert_eq!(
@@ -6682,7 +6739,7 @@ pub(crate) mod tests {
         let wsl = wsl_harness_with(true, short_harness());
         slow_wsl_repository(&wsl);
         lingering_wsl_tag(&wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         let call = uuid();
         wsl_lingering_count(&wsl, &call);
         assert_eq!(
@@ -6724,7 +6781,7 @@ pub(crate) mod tests {
     fn a_shell_identity_read_of_a_wsl_path_stops_at_a_service_exit() {
         let wsl = wsl_harness(true);
         slow_wsl_repository(&wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         wsl.host.hold(true);
         let before = wsl.host.commands().len();
         let (done, read) = mpsc::channel();
@@ -6817,7 +6874,7 @@ pub(crate) mod tests {
     {
         let wsl = wsl_harness(true);
         let (operation, bootstrap_id, git) = bound_wsl(&wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         assert_eq!(
             wsl.register_repository(&operation, &bootstrap_id, &git, WSL_PATH)["result"],
             "approved"
@@ -6826,7 +6883,7 @@ pub(crate) mod tests {
         assert!(check.arguments.contains(&"/home/u/repo".to_string()));
 
         let (operation, bootstrap_id, git) = bound_wsl(&wsl);
-        wsl.host.push(0, b"id 9999 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 9999 ef53:fedc9aa3bd65bc57\n");
         let reply = wsl.register_repository(&operation, &bootstrap_id, &git, WSL_PATH);
         assert_eq!(reply["code"], "UNKNOWN_TARGET");
         assert!(
@@ -6854,7 +6911,7 @@ pub(crate) mod tests {
         let (operation, bootstrap_id, git) = bound_wsl(&wsl);
         wsl.host.push(
             0,
-            b"id 4242 ef53:fedc9aa3bd65bc57\nabsent\nid 7 1021997:1\n",
+            b"Sid 4242 ef53:fedc9aa3bd65bc57\nabsent\nid 7 1021997:1\n",
         );
         let call = uuid();
         wsl.harness.send(json!({
@@ -6932,7 +6989,7 @@ pub(crate) mod tests {
         );
 
         // A mutation of a registered WSL repository starts its anchor before its first Git process.
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         let repository = uuid();
         let (register, git_directory) = (uuid(), format!(r"{WSL_PATH}\.git"));
         wsl.harness.send(json!({ "type": "register", "callId": register, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory }));
@@ -7102,18 +7159,90 @@ pub(crate) mod tests {
         );
     }
 
+    /// T377, contract §11 "Process launch": the shell strips the start byte of each WSL run, a `script` run too.
+    /// A WSL process that ends by itself without the start byte never started in its scope, so its run ends `refused`.
+    /// A Job close ends a run with `exit` and `exitCode` null, with or without the byte.
+    #[test]
+    fn a_wsl_run_forwards_stdout_after_the_start_byte_and_a_run_without_it_is_refused() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let start = |call: &str, operation: &str, child: &[&str], script: bool| {
+            let mode = child.iter().map(|s| s.to_string()).collect();
+            *wsl.host.child.lock().expect("child") = Some((Arc::clone(&wsl.harness.jobs), mode));
+            let mut body = json!({
+                "type": "run", "callId": call, "operationId": operation, "contextKind": "registeredOperation",
+                "gitInstallationId": git, "repositoryId": repository, "arguments": ["--no-lazy-fetch", "status"],
+                "environmentPolicy": "read", "limits": { "deadlineMs": 30_000 },
+            });
+            if script {
+                body["script"] = json!("matchingProbe");
+                body["environmentPolicy"] = json!("search");
+                body["arguments"] = json!([
+                    "/tmp/arbareto-probe-0f0f0f0f-0000-4000-8000-0000000000aa",
+                    "0123456789abcdef0123456789abcdef01234567",
+                    "1",
+                    "--no-lazy-fetch",
+                    "--no-lazy-fetch",
+                ]);
+            }
+            wsl.harness.send(body);
+        };
+        let end = |call: &str| {
+            wsl.harness
+                .wait_reply(WAIT, |v| {
+                    v["callId"] == call && (v["type"] == "exit" || v["type"] == "refused")
+                })
+                .expect("the last reply")
+                .1
+        };
+        for (script, emitted, forwarded) in [(false, "Sout", "out"), (true, "Send 0", "end 0")] {
+            let call = uuid();
+            start(&call, &uuid(), &["emit", emitted, "3"], script);
+            let exit = end(&call);
+            assert_eq!(exit["type"], "exit", "script {script}");
+            assert_eq!(exit["exitCode"], 3, "script {script}");
+            assert_eq!(
+                wsl.harness.output(&call, "stdout"),
+                forwarded.as_bytes(),
+                "script {script}"
+            );
+        }
+        for (stdout, code) in [("", "1"), ("x", "0"), ("", "0")] {
+            let call = uuid();
+            start(&call, &uuid(), &["emit", stdout, code], false);
+            assert_eq!(
+                end(&call),
+                refused(&call, "PROCESS_OWNERSHIP_FAILED"),
+                "{stdout:?} exit {code}"
+            );
+        }
+        // A cancel closes the Job. The sleeping child prints no start byte.
+        let (call, operation) = (uuid(), uuid());
+        start(&call, &operation, &["sleep", "60000"], false);
+        assert!(
+            eventually(WAIT, || wsl.harness.jobs.active_processes(&operation)
+                == Some(1)),
+            "the child runs"
+        );
+        wsl.harness
+            .send(json!({ "type": "cancel", "callId": call }));
+        let exit = end(&call);
+        assert_eq!(exit["type"], "exit");
+        assert_eq!(exit["exitCode"], Value::Null);
+    }
+
     #[test]
     fn a_wsl_file_facts_request_runs_the_perl_probe_and_maps_its_records() {
         let wsl = wsl_harness(true);
         let (operation, bootstrap_id, git) = bound_wsl(&wsl);
-        wsl.host.push(0, b"id 4242 ef53:fedc9aa3bd65bc57\n");
+        wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
         let repository_call = uuid();
         let repository = uuid();
         let git_directory = format!(r"{WSL_PATH}\.git");
         wsl.harness.send(json!({ "type": "register", "callId": repository_call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": WSL_PATH, "gitDirectory": git_directory, "commonDirectory": git_directory }));
         assert_eq!(wsl.harness.reply(&repository_call)["result"], "approved");
         wsl.host
-            .push(0, b"absent\0file\x006\x001\x001\x001\x00none\0");
+            .push(0, b"Sabsent\0file\x006\x001\x001\x001\x00none\0");
         let call = uuid();
         wsl.harness.send(json!({
             "type": "fileFacts", "callId": call, "operationId": uuid(), "contextKind": "registeredOperation",

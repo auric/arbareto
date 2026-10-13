@@ -1300,6 +1300,14 @@ pub(crate) mod tests {
                     .as_millis();
                 std::fs::write(&args[3], now.to_string()).expect("write exit file");
             }
+            // emit <text> <code>: writes the text to stderr without a line end and exits with the code.
+            // libtest writes its own lines to stdout, so only stderr holds exact bytes.
+            "emit" => {
+                let mut stderr = std::io::stderr();
+                stderr.write_all(args[0].as_bytes()).expect("stderr");
+                stderr.flush().expect("flush");
+                std::process::exit(args[1].parse().expect("code"));
+            }
             // version: the output of a Git version probe.
             "version" => {
                 print_line("git version 2.55.0.windows.3");

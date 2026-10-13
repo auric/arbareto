@@ -344,6 +344,8 @@ pub struct Installation {
     pub setsid: String,
     /// The approved `/usr/bin/sha256sum` target (contract §11 "Git per distro").
     pub sha256sum: String,
+    /// The probe fact `noexpand 0`: `systemd-run` accepts `--expand-environment=no` (systemd v254 and later).
+    pub noexpand: bool,
 }
 
 /// The wrapper `<mode>` (contract §11 "Process launch").
@@ -420,6 +422,14 @@ pub fn probe_command(distro: &str, linux_path: &str, base: &[(OsString, OsString
     shell_command(distro, &texts().probe, &[linux_path], base, Stdin::Closed)
 }
 
+/// The wrapper writes this byte to stdout inside the started scope, before the program starts (contract §11 "Process launch").
+pub const STARTED: u8 = b'S';
+
+/// The stdout of a wrapper process after its start byte. `None`: the scope did not start, so the program did not run.
+pub fn started(stdout: &[u8]) -> Option<&[u8]> {
+    stdout.strip_prefix(&[STARTED])
+}
+
 /// One program through the wrapper, in its own scope.
 #[allow(clippy::too_many_arguments)]
 pub fn wrapped(
@@ -439,6 +449,7 @@ pub fn wrapped(
         &installation.systemd_run,
         &installation.systemctl,
         &installation.setsid,
+        if installation.noexpand { "1" } else { "" },
         program,
     ];
     rest.extend(arguments.iter().map(String::as_str));
@@ -716,7 +727,7 @@ pub fn identities(
         };
         let text = output
             .filter(|out| out.exit_code == Some(0))
-            .and_then(|out| String::from_utf8(out.stdout).ok());
+            .and_then(|out| String::from_utf8(started(&out.stdout)?.to_vec()).ok());
         let found: Vec<&str> = text
             .as_deref()
             .and_then(|text| text.strip_suffix('\n'))
@@ -804,8 +815,9 @@ const PROBED: [&str; 8] = [
     "sha256sum",
 ];
 /// The other line kinds of that probe.
-const PROBE_FACTS: [&str; 9] = [
+const PROBE_FACTS: [&str; 11] = [
     "pathenv", "osid", "version", "gitfs", "gitfile", "scope", "selfs", "selino", "selstat",
+    "noexpand", "verbatim",
 ];
 /// Contract §11 "Git per distro": the Git floor.
 const MINIMUM_GIT: [u64; 3] = [2, 55, 0];
@@ -894,9 +906,22 @@ pub fn bind_probe(distro: &str, guid: &str, output: &[u8]) -> Option<Bound> {
         || perl.is_none()
         || sha256sum.is_none()
         || facts.get("scope") != Some(&"0")
+        // T378: a scope with the wrapper flag rule got each probe argument unchanged.
+        || facts.get("verbatim") != Some(&"0")
     {
         return None;
     }
+    // T378: `noexpand` is the exit status of `systemd-run --expand-environment=no --version`, a decimal from 0 to 255.
+    // It sets the wrapper flag rule. `verbatim` proves the result.
+    let noexpand = match *facts.get("noexpand")? {
+        "0" => true,
+        status
+            if is_decimal(status) && !status.starts_with('0') && status.parse::<u8>().is_ok() =>
+        {
+            false
+        }
+        _ => return None,
+    };
     let version = admitted_version(facts.get("version")?)?.to_string();
     let git_identity = git_identity(facts.get("gitfs")?, facts.get("gitfile")?).ok()?;
     // gaps.md W1: the context identity binds with the Git facts, or nothing binds.
@@ -913,6 +938,7 @@ pub fn bind_probe(distro: &str, guid: &str, output: &[u8]) -> Option<Bound> {
             systemctl: systemctl?,
             setsid: setsid?,
             sha256sum: sha256sum?,
+            noexpand,
         },
         version,
         git_identity,
@@ -927,7 +953,7 @@ const FACT_FILE_BYTES: usize = 1_048_576;
 const FACT_TOTAL_BYTES: usize = 8_388_608;
 /// A Linux link text has at most `PATH_MAX` − 1 bytes.
 const LINK_TARGET_BYTES: usize = 4_095;
-/// The stdout cap of one request: the data bytes, and 64 entries of a link text and their record tokens.
+/// The stdout cap of one request after the start byte: the data bytes, and 64 entries of a link text and their record tokens.
 pub const FACTS_OUTPUT_BYTES: usize = FACT_TOTAL_BYTES + 64 * (LINK_TARGET_BYTES + 64);
 /// The `error` codes of contract §6 "File facts".
 const FACT_ERRORS: [&str; 3] = ["access-denied", "io-error", "other-error"];
@@ -1090,8 +1116,8 @@ fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usiz
 }
 
 /// Maps the probe output to one fact per entry, and with `index` (`Some(shared)`) to the index result after them.
-/// A failed check, an exit status other than 0, or output past the cap gives each entry and the index `error` with component 0
-/// and code `other-error` (gaps.md W3). The shell never parses stderr.
+/// A failed check, an exit status other than 0, no start byte, or output past the cap gives each entry and the index `error`
+/// with component 0 and code `other-error` (gaps.md W3). The shell never parses stderr.
 pub fn file_facts_reply(
     output: Option<Output>,
     entries: &[FactEntry],
@@ -1099,12 +1125,10 @@ pub fn file_facts_reply(
     index: Option<bool>,
 ) -> (Vec<Fact>, Option<WslIndexResult>) {
     let parsed = output
-        .filter(|out| out.exit_code == Some(0) && out.stdout.len() <= FACTS_OUTPUT_BYTES)
+        .filter(|out| out.exit_code == Some(0))
         .and_then(|out| {
-            let mut records = Records {
-                bytes: &out.stdout,
-                at: 0,
-            };
+            let bytes = started(&out.stdout).filter(|bytes| bytes.len() <= FACTS_OUTPUT_BYTES)?;
+            let mut records = Records { bytes, at: 0 };
             let mut total = 0;
             let facts: Vec<Fact> = entries
                 .iter()
@@ -1117,7 +1141,7 @@ pub fn file_facts_reply(
                 }
                 None => None,
             };
-            (records.at == out.stdout.len()).then_some((facts, found))
+            (records.at == bytes.len()).then_some((facts, found))
         });
     parsed.unwrap_or_else(|| {
         let facts = entries
@@ -1157,7 +1181,7 @@ impl FileBound {
     }
 }
 
-/// The stdout cap of one `wslFiles` request: 64 link texts and their record tokens.
+/// The stdout cap of one `wslFiles` request after the start byte: 64 link texts and their record tokens.
 pub const WSL_FILES_OUTPUT_BYTES: usize = 64 * (LINK_TARGET_BYTES + 256);
 
 /// One checked `wslFiles` request. `entries` hold the walked entries, and `fields` the mode fields after them, in stdin order.
@@ -1379,8 +1403,9 @@ fn files_result(records: &mut Records, request: &FilesRequest, at: usize) -> Opt
     }
 }
 
-/// One result per `digest` entry, or one result for another mode. A failed check, an exit status other than 0, or output past the cap
-/// gives each result `error` with component 0 and code `other-error` (contract §6 "WSL file work"). The shell never parses stderr.
+/// One result per `digest` entry, or one result for another mode. A failed check, an exit status other than 0, no start byte,
+/// or output past the cap gives each result `error` with component 0 and code `other-error` (contract §6 "WSL file work").
+/// The shell never parses stderr.
 pub fn wsl_files_reply(output: Option<Output>, request: &FilesRequest) -> Vec<FileResult> {
     let count = if request.mode == "digest" {
         request.entries.len()
@@ -1388,16 +1413,15 @@ pub fn wsl_files_reply(output: Option<Output>, request: &FilesRequest) -> Vec<Fi
         1
     };
     let parsed = output
-        .filter(|out| out.exit_code == Some(0) && out.stdout.len() <= WSL_FILES_OUTPUT_BYTES)
+        .filter(|out| out.exit_code == Some(0))
         .and_then(|out| {
-            let mut records = Records {
-                bytes: &out.stdout,
-                at: 0,
-            };
+            let bytes =
+                started(&out.stdout).filter(|bytes| bytes.len() <= WSL_FILES_OUTPUT_BYTES)?;
+            let mut records = Records { bytes, at: 0 };
             let results: Option<Vec<FileResult>> = (0..count)
                 .map(|at| files_result(&mut records, request, at))
                 .collect();
-            results.filter(|_| records.at == out.stdout.len())
+            results.filter(|_| records.at == bytes.len())
         });
     parsed.unwrap_or_else(|| {
         (0..count)
@@ -2008,6 +2032,7 @@ mod tests {
             systemctl: "/usr/bin/systemctl".to_string(),
             setsid: "/usr/bin/setsid".to_string(),
             sha256sum: "/usr/bin/sha256sum".to_string(),
+            noexpand: true,
         }
     }
 
@@ -2381,6 +2406,7 @@ mod tests {
             "/usr/bin/systemd-run",
             "/usr/bin/systemctl",
             "/usr/bin/setsid",
+            "1",
             "/usr/local/bin/git",
             "--no-lazy-fetch",
             "-C",
@@ -2392,6 +2418,26 @@ mod tests {
         assert_eq!(texts().wrapper, wrapper);
         assert_eq!(texts().anchor, json_text("anchor"));
         assert_eq!(texts().probe, json_text("probe"));
+        // T378: a `systemd-run` without `--expand-environment=no` gets an empty `noexp`.
+        let older = Installation {
+            noexpand: false,
+            ..installation()
+        };
+        let command = git_command(
+            &older,
+            Mode::Read,
+            "arbareto-op-1.scope",
+            None,
+            "/r",
+            &strings(&["--no-lazy-fetch", "status"]),
+            &base(),
+            Stdin::Closed,
+        )
+        .expect("read");
+        assert_eq!(
+            command.arguments[14..17],
+            strings(&["/usr/bin/setsid", "", "/usr/local/bin/git"])
+        );
     }
 
     /// Feature 002 contract Δ11: the wrapper mode `search` sets `LC_ALL=C.UTF-8`.
@@ -2455,6 +2501,7 @@ mod tests {
             "/usr/bin/systemd-run",
             "/usr/bin/systemctl",
             "/usr/bin/setsid",
+            "1",
             "/bin/sh",
             "-c",
             &probe,
@@ -2596,6 +2643,7 @@ mod tests {
             assert_eq!(command.arguments[10], name);
             assert_eq!(command.arguments[11], "");
             assert_eq!(command.arguments[14], "/usr/bin/setsid");
+            assert_eq!(command.arguments[15], "1", "noexp");
         }
         let index = "/r/.git/arbareto-candidate-1";
         let mutation = git_command(
@@ -2642,13 +2690,25 @@ mod tests {
             .position(|l| *l == "export GIT_TERMINAL_PROMPT=0")
             .expect("GIT_TERMINAL_PROMPT=0");
         assert!(prompt < case, "outside the mode branches");
+        assert_eq!(
+            lines[..2],
+            [
+                "unit=$1 mode=$2 index=$3 run=$4 ctl=$5 setsid=$6 noexp=$7",
+                "shift 7"
+            ]
+        );
         let scope = lines
             .iter()
-            .position(|l| l.contains("--user --scope --quiet --collect --unit=\"$unit\""))
+            .position(|l| l.contains("--user --scope"))
             .expect("scope line");
         assert!(scope > esac, "outside the mode branches");
-        assert!(lines[scope].contains("-- \"$setsid\" --wait \"$@\""));
-        assert!(lines[scope].ends_with('&'), "the background start");
+        // T378: `--expand-environment=no` only with `noexp`. T377: the start byte goes to fd 4 inside the scope after `setsid`.
+        // `systemd-run` and `setsid` write their stdout to stderr, so no other byte comes before it.
+        assert_eq!(
+            lines[scope],
+            r#""$run" --user --scope --quiet --collect ${noexp:+--expand-environment=no} --unit="$unit" -- "$setsid" --wait /bin/sh -c 'printf S >&4 && exec "$@" >&4 4>&-' sh "$@" <&3 3<&- 4>&1 >&2 &"#
+        );
+        assert_eq!(STARTED, b'S');
         assert!(lines.contains(&"wait $!"));
         assert!(lines.contains(&"trap 'end; exit 129' HUP"));
         assert!(lines.contains(&"probe) export LC_ALL=C ;;"));
@@ -3325,7 +3385,7 @@ mod tests {
         let host = FakeHost::new(
             vec![output(
                 0,
-                "id 123456 ef53:fedc9aa3bd65bc57\nabsent\nfail\nid 7 1021997:abc\n",
+                "Sid 123456 ef53:fedc9aa3bd65bc57\nabsent\nfail\nid 7 1021997:abc\n",
             )],
             Vec::new(),
         );
@@ -3434,10 +3494,13 @@ mod tests {
         let paths = strings(&["/r", "/s"]);
         for outputs in [
             vec![None],
-            vec![output(1, "id 2 ef53:1\nid 3 ef53:1\n")],
-            vec![output(0, "id 2 ef53:1\n")],
-            vec![output(0, "id 2 ef53:1\nid 3 ef53:1\nid 4 ef53:1\n")],
-            vec![output(0, "id 2 ef53:1\nid 3 ef53:1")],
+            vec![output(1, "Sid 2 ef53:1\nid 3 ef53:1\n")],
+            vec![output(0, "Sid 2 ef53:1\n")],
+            vec![output(0, "Sid 2 ef53:1\nid 3 ef53:1\nid 4 ef53:1\n")],
+            vec![output(0, "Sid 2 ef53:1\nid 3 ef53:1")],
+            // T377: without the start byte, the scope did not start.
+            vec![output(0, "id 2 ef53:1\nid 3 ef53:1\n")],
+            vec![output(0, "")],
         ] {
             let host = FakeHost::new(outputs, Vec::new());
             assert_eq!(
@@ -3447,7 +3510,7 @@ mod tests {
         }
         // A malformed line fails only its own path.
         let host = FakeHost::new(
-            vec![output(0, "id 2 ef53:1\nid 3 ef53:1 extra\n")],
+            vec![output(0, "Sid 2 ef53:1\nid 3 ef53:1 extra\n")],
             Vec::new(),
         );
         let found = identities(&host, &inst, OPERATION, 1, &paths, &base(), None);
@@ -3513,10 +3576,11 @@ mod tests {
             .collect()
     }
 
+    /// The records after the start byte of the wrapper.
     fn facts_output(bytes: &[u8]) -> Option<Output> {
         Some(Output {
             exit_code: Some(0),
-            stdout: bytes.to_vec(),
+            stdout: [&[STARTED][..], bytes].concat(),
         })
     }
 
@@ -3654,6 +3718,14 @@ mod tests {
             (facts_output(b"link\x001\x000\0"), false),
             // Output past the cap.
             (facts_output(&vec![0; FACTS_OUTPUT_BYTES + 1]), false),
+            // T377: a valid record without the start byte.
+            (
+                Some(Output {
+                    exit_code: Some(0),
+                    stdout: b"absent\0".to_vec(),
+                }),
+                false,
+            ),
         ] {
             assert_eq!(file_facts_reply(output, &one, digest), failed);
         }
@@ -3726,6 +3798,24 @@ mod tests {
         ] {
             assert!(probe.contains(needle), "{needle}");
         }
+        // T378: `noexpand` sets the wrapper flag rule. One scope with that rule then proves that the arguments arrive unchanged.
+        let lines: Vec<&str> = probe.lines().map(str::trim_start).collect();
+        for line in [
+            "\"$run\" --expand-environment=no --version >/dev/null 2>&1",
+            "noexpand=$?",
+            "printf 'noexpand %s\\n' \"$noexpand\"",
+            "[ \"$noexpand\" = 0 ] && noexp=1 || noexp=",
+            r##""$run" --user --scope --quiet --collect ${noexp:+--expand-environment=no} -- /bin/sh -c 'd=$(printf "\044"); [ "$#" = 3 ] && [ "$1" = "a$d{HOME}" ] && [ "$2" = "b$d$d" ] && [ "$3" = "$d"HOME ]; printf "verbatim %s\n" "$?"' sh 'a${HOME}' 'b$$' '$HOME' 2>/dev/null"##,
+        ] {
+            assert!(lines.contains(&line), "{line}");
+        }
+        // An expansion changes `${NAME}` and `$$` in every argument. The scoped text holds neither, so it compares against unchanged texts.
+        let scoped = lines
+            .iter()
+            .find(|line| line.contains("verbatim"))
+            .and_then(|line| line.split('\'').nth(1))
+            .expect("the scoped text");
+        assert!(!scoped.contains("${") && !scoped.contains("$$"), "{scoped}");
         assert!(!probe.contains("--no-lazy-fetch"), "contract §7 exception");
     }
 
@@ -3864,6 +3954,7 @@ mod tests {
             sha256sum: probe_fact(&text, "path sha256sum ")
                 .expect("sha256sum")
                 .to_string(),
+            noexpand: probe_fact(&text, "noexpand ") == Some("0"),
         })
     }
 
@@ -3943,6 +4034,8 @@ mod tests {
             ("selino", "123456"),
             ("selstat", "ok"),
             ("scope", "0"),
+            ("noexpand", "0"),
+            ("verbatim", "0"),
         ]
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -3976,9 +4069,15 @@ mod tests {
                 systemctl: "/usr/bin/systemctl".to_string(),
                 setsid: "/usr/bin/setsid".to_string(),
                 sha256sum: "/usr/bin/sha256sum".to_string(),
+                noexpand: true,
             }
         );
         assert_eq!(bound.version, "2.55.0");
+        // T378: a `systemd-run` that rejects `--expand-environment=no` exits with a status other than 0.
+        for status in ["1", "2", "255"] {
+            let found = self::bound(&[("noexpand", Some(status))]).expect(status);
+            assert!(!found.installation.noexpand, "{status}");
+        }
         assert_eq!(
             bound.git_identity,
             GitIdentity {
@@ -4058,6 +4157,23 @@ mod tests {
                 ("magic env", None),
                 ("absent", Some("env")),
             ],
+            // T378: a missing or malformed `noexpand` fact. `$?` is a decimal from 0 to 255.
+            &[("noexpand", None)],
+            &[("noexpand", Some(""))],
+            &[("noexpand", Some("00"))],
+            &[("noexpand", Some("01"))],
+            &[("noexpand", Some("-1"))],
+            &[("noexpand", Some("256"))],
+            &[("noexpand", Some("0 "))],
+            &[("noexpand", Some("yes"))],
+            // T378: the probe scope changed an argument, or the verdict is missing or malformed.
+            &[("verbatim", Some("1"))],
+            &[("verbatim", None)],
+            &[("verbatim", Some(""))],
+            &[("verbatim", Some("00"))],
+            &[("verbatim", Some("2"))],
+            &[("verbatim", Some("0 "))],
+            &[("verbatim", Some("yes"))],
             // A program is either absent or found, never both.
             &[("absent", Some("perl"))],
             &[("absent", Some("git"))],
@@ -4161,7 +4277,7 @@ mod tests {
         );
         let out = host.run(&child).expect("mutation process");
         assert_eq!(out.exit_code, Some(0));
-        assert_eq!(out.stdout, b"started\n");
+        assert_eq!(out.stdout, b"Sstarted\n");
         let count = mutation.after_exit();
         println!(
             "OBSERVATION T205: anchor count after the process exit {count:?}, last {:?}",
@@ -4170,8 +4286,17 @@ mod tests {
         assert_eq!(count, Some(1), "the lingering sleep");
         drop(job);
         // Contract §11 "Process ownership": the Job close ends the scopes within 1 second (P1). The check allows 5 seconds.
-        let list = |reference: &Reference| {
-            let mut command = list_command(false, &environment);
+        assert_eq!(
+            units_left(&reference, &inst, &operation),
+            "",
+            "no scope of the operation remains"
+        );
+    }
+
+    /// The units `arbareto-<operation>-*` that remain after at most 5 seconds.
+    fn units_left(reference: &Reference, inst: &Installation, operation: &str) -> String {
+        let list = || {
+            let mut command = list_command(false, &std::env::vars_os().collect::<Vec<_>>());
             command.arguments = strings(&[
                 "--distribution",
                 reference.distro.as_str(),
@@ -4187,15 +4312,147 @@ mod tests {
                 format!("arbareto-{operation}-*").as_str(),
             ]);
             let out = reference.host().run(&command).expect("list-units");
-            String::from_utf8(out.stdout).expect("UTF-8")
+            String::from_utf8(out.stdout)
+                .expect("UTF-8")
+                .trim()
+                .to_string()
         };
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut left = list(&reference);
-        while !left.trim().is_empty() && Instant::now() < deadline {
+        let mut left = list();
+        while !left.is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(200));
-            left = list(&reference);
+            left = list();
         }
-        assert_eq!(left.trim(), "", "no scope of the operation remains");
+        left
+    }
+
+    /// T377, contract §11 "Process launch": the wrapper writes the start byte only inside a started scope.
+    /// A failed `systemd-run` and a unit name in use start no scope, so stdout holds no byte.
+    #[test]
+    fn the_real_wrapper_writes_the_start_byte_only_inside_a_started_scope() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8001-{:012x}", std::process::id());
+        let host = reference.host();
+        let run = |installation: &Installation, mode: Mode, n: u32, script: &str| {
+            let unit = unit_name(&operation, n).expect("unit");
+            let arguments = strings(&["-c", script]);
+            let command = wrapped(
+                installation,
+                mode,
+                &unit,
+                None,
+                "/bin/sh",
+                &arguments,
+                &environment,
+                Stdin::Closed,
+            );
+            host.run(&command).expect("wrapper process")
+        };
+        let control = run(&inst, Mode::Read, 1, "printf out; exit 3");
+        assert_eq!(control.exit_code, Some(3), "control exit");
+        assert_eq!(control.stdout, b"Sout", "control stdout");
+
+        let failed = Installation {
+            systemd_run: "/usr/bin/false".to_string(),
+            ..inst.clone()
+        };
+        let out = run(&failed, Mode::Read, 2, "printf out");
+        println!(
+            "OBSERVATION T377: systemd-run /usr/bin/false: exit {:?}",
+            out.exit_code
+        );
+        assert_eq!(out.stdout, b"", "a failed systemd-run gives no start byte");
+
+        // A mutation scope with a lingering child stays active. The `read` wrapper of the reused name ends that scope after its failed start.
+        let held = run(&inst, Mode::Mutation, 3, "sleep 30 & printf held");
+        assert_eq!(held.stdout, b"Sheld", "the held scope");
+        let reused = run(&inst, Mode::Read, 3, "printf out");
+        println!(
+            "OBSERVATION T377: a reused active unit: exit {:?}",
+            reused.exit_code
+        );
+        assert_eq!(reused.stdout, b"", "a unit name in use gives no start byte");
+        assert_eq!(
+            units_left(&reference, &inst, &operation),
+            "",
+            "no scope of the operation remains"
+        );
+    }
+
+    /// T378: systemd 258 and later expand `${NAME}`, `$$`, and a whole `$NAME` argument of a `--scope` command, and drop an unset one.
+    /// With `noexp`, the program gets each argument unchanged. Ubuntu-26.04 has systemd 259, and Ubuntu-24.04 has systemd 255.
+    #[test]
+    fn the_real_wrapper_passes_dollar_arguments_unchanged() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8002-{:012x}", std::process::id());
+        let dollars = ["a${HOME}", "b$$", "$HOME", "$ARBARETO_UNSET", "c$HOME"];
+        let mut arguments = strings(&["-c", "printf '%s\\n' \"$#\" \"$@\"", "sh"]);
+        arguments.extend(strings(&dollars));
+        let command = wrapped(
+            &inst,
+            Mode::Read,
+            &unit_name(&operation, 1).expect("unit"),
+            None,
+            "/bin/sh",
+            &arguments,
+            &environment,
+            Stdin::Closed,
+        );
+        let out = reference.host().run(&command).expect("wrapper process");
+        let text = String::from_utf8(out.stdout).expect("UTF-8");
+        println!(
+            "OBSERVATION T378: {} noexpand {}: {text:?}",
+            reference.distro, inst.noexpand
+        );
+        assert_eq!(out.exit_code, Some(0));
+        assert_eq!(
+            text,
+            format!("S{}\n{}\n", dollars.len(), dollars.join("\n"))
+        );
+    }
+
+    /// T378: the bootstrap probe prints `verbatim 0` only when its scope with the wrapper flag rule got each argument unchanged.
+    /// Only `verbatim 0` binds. Ubuntu-24.04 holds Git 2.43.0, so the Git floor refuses its probe.
+    #[test]
+    fn the_real_probe_proves_that_scope_arguments_arrive_unchanged() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let out = reference
+            .host()
+            .run(&probe_command(&reference.distro, "/", &environment))
+            .expect("probe ran");
+        assert_eq!(out.exit_code, Some(0), "probe exit");
+        let text = String::from_utf8(out.stdout.clone()).expect("UTF-8");
+        if probe_fact(&text, "scope ") != Some("0") {
+            skip("systemd-user-manager");
+            return;
+        }
+        let verbatim = probe_fact(&text, "verbatim ");
+        let admitted = probe_fact(&text, "version ")
+            .and_then(admitted_version)
+            .is_some();
+        let binds = bind_probe(&reference.distro, GUID, &out.stdout).is_some();
+        println!(
+            "OBSERVATION T378: {} noexpand {:?}, verbatim {verbatim:?}, Git admitted {admitted}, binds {binds}",
+            reference.distro,
+            probe_fact(&text, "noexpand ")
+        );
+        assert_eq!(verbatim, Some("0"));
+        assert_eq!(binds, admitted, "only the Git floor refuses this probe");
     }
 
     /// T116 B3-2, contract §11 "Process ownership": the real anchor text with a failing `systemctl`, and with a shell

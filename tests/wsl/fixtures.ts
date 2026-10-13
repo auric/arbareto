@@ -212,6 +212,9 @@ export interface ProbeChange {
   selfs?: string;
   selino?: string;
   selstat?: string;
+  // T378: the expansion flag facts. The defaults are the facts of the distro.
+  noexpand?: string;
+  verbatim?: string;
 }
 
 // The seam inode of a context folder, and of the Git directory below it.
@@ -235,6 +238,11 @@ export function seamProbe(host: WslHost, change: ProbeChange = {}): string {
   if (!change.absent?.includes("stat")) out.push(`selfs ${change.selfs ?? facts.gitfs ?? ""}`, `selino ${change.selino ?? SEAM_INODE}`);
   if (!change.absent?.includes("perl")) out.push(`selstat ${change.selstat ?? "ok"}`);
   out.push(`scope ${change.scope ?? facts.scope ?? "1"}`);
+  // The probe prints neither line without `systemd-run` and `systemctl`.
+  const noexpand = change.noexpand ?? facts.noexpand;
+  const verbatim = change.verbatim ?? facts.verbatim;
+  if (noexpand !== undefined) out.push(`noexpand ${noexpand}`);
+  if (verbatim !== undefined) out.push(`verbatim ${verbatim}`);
   const osid = change.osid ?? facts.osid;
   if (osid !== undefined) out.push(`osid ${osid}`);
   return `${out.join("\n")}\n`;

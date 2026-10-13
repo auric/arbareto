@@ -369,7 +369,8 @@ export const ProcessRequest = z.xor([
   z.union([
     z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
     z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
-    z.strictObject({ ...run, ...REGISTERED }).meta({ title: "RunRegistered" }),
+    // Feature 002 contract Δ6: only a registered run takes `script`.
+    z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).meta({ title: "RunRegistered" }),
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),

@@ -1954,6 +1954,8 @@ OBSERVATION T233: the F31 read hook reached stalled 3038 ms after its checkout s
 
 T149 needs one more run on the final main HEAD after T373 to T376. Run the package build, the install, and the F02 smoke on that build.
 
+**T149 locked-session focus failures, 2026-10-13.** In the T149 run on main `f6708df`, the session was locked, and `LockApp.exe` held the foreground. Three `tests/windows/uia.test.ts` cases failed. "focuses the probe field" timed out on `waitFocus` after 2000 ms; it fails without the app too. The installed-app case timed out on `waitFocus` for "Select Git" after 10000 ms. The fixture cleanup then failed with `EBUSY` on `app\profile\webview2\EBWebView\CrashpadMetrics-active.pma`. A read-only probe on 2026-10-13 found the session locked (`WTSSessionInfoEx` `SessionFlags` 0, `WTS_SESSIONSTATE_LOCK`) with `LockApp.exe` in the foreground, but the input desktop was still `Default`. So the focus cases skip with capability `input-desktop` unless the session flags are `WTS_SESSIONSTATE_UNLOCK` and the input desktop is `Default`. `OwnedProcess.stop` now waits until each process of the owned tree is signaled, so the fixture removal follows the release of its files.
+
 ### Scenario records
 
 This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.

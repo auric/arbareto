@@ -30,10 +30,20 @@ const open = () => ({
     SysAllocString: { args: [P], returns: P },
     SysFreeString: { args: [P], returns: FFIType.void },
   }).symbols,
-  kernel32: dlopen("kernel32.dll", { QueryPerformanceCounter: { args: [P], returns: i32 } }).symbols,
+  kernel32: dlopen("kernel32.dll", {
+    QueryPerformanceCounter: { args: [P], returns: i32 },
+    GetLastError: { args: [], returns: u32 },
+  }).symbols,
   user32: dlopen("user32.dll", {
     FindWindowExW: { args: [P, P, P, P], returns: P },
     GetWindowThreadProcessId: { args: [P, P], returns: u32 },
+    OpenInputDesktop: { args: [u32, i32, u32], returns: P },
+    GetUserObjectInformationW: { args: [P, i32, P, u32, P], returns: i32 },
+    CloseDesktop: { args: [P], returns: i32 },
+  }).symbols,
+  wtsapi32: dlopen("wtsapi32.dll", {
+    WTSQuerySessionInformationW: { args: [P, u32, i32, P, P], returns: i32 },
+    WTSFreeMemory: { args: [P], returns: FFIType.void },
   }).symbols,
   winmm: dlopen("winmm.dll", {
     timeBeginPeriod: { args: [u32], returns: u32 },
@@ -441,4 +451,56 @@ export async function waitFocus(processId: number, name: string, timeoutMs: numb
       element.release();
     }
   });
+}
+
+// Microsoft Learn `OpenInputDesktop`, `GetUserObjectInformationW`, and "Desktop Security and Access Rights".
+const DESKTOP_READOBJECTS = 0x0001;
+const UOI_NAME = 2;
+const NAME_BYTES = 512;
+
+// The name of the desktop that receives user input, or null and the `GetLastError` value of the failed call.
+export function inputDesktop(): { name: string | null; error: number | null } {
+  const { user32, kernel32 } = lib();
+  const desktop = user32.OpenInputDesktop(0, 0, DESKTOP_READOBJECTS);
+  if (!desktop) return { name: null, error: kernel32.GetLastError() };
+  try {
+    const name = Buffer.alloc(NAME_BYTES);
+    const needed = new Uint32Array(1);
+    if (!user32.GetUserObjectInformationW(desktop, UOI_NAME, ptr(name), NAME_BYTES, ptr(needed))) return { name: null, error: kernel32.GetLastError() };
+    return { name: name.toString("utf16le").split("\u0000")[0]!, error: null };
+  } finally {
+    user32.CloseDesktop(desktop);
+  }
+}
+
+// Microsoft Learn `WTSQuerySessionInformationW` and `WTSINFOEX_LEVEL1_W`. The union after `Level` holds a LARGE_INTEGER, so it starts at byte 8.
+const WTS_CURRENT_SESSION = 0xffff_ffff;
+const WTS_SESSION_INFO_EX = 25;
+const SESSION_FLAGS_OFFSET = 16;
+export const WTS_SESSIONSTATE_UNLOCK = 1;
+
+// The `SessionFlags` value of the current session, or null and the `GetLastError` value of the failed call.
+// Windows 7 reverses the lock flags. Tauri 2 needs Windows 10 or later.
+export function sessionFlags(): { flags: number | null; error: number | null } {
+  const { wtsapi32, kernel32 } = lib();
+  const buffer = new BigUint64Array(1);
+  const bytes = new Uint32Array(1);
+  if (!wtsapi32.WTSQuerySessionInformationW(null, WTS_CURRENT_SESSION, WTS_SESSION_INFO_EX, ptr(buffer), ptr(bytes))) return { flags: null, error: kernel32.GetLastError() };
+  const info = Number(buffer[0]) as Pointer;
+  try {
+    return { flags: read.u32(info, SESSION_FLAGS_OFFSET), error: null };
+  } finally {
+    wtsapi32.WTSFreeMemory(info);
+  }
+}
+
+// Keyboard focus needs an unlocked session whose input desktop is `Default`. A locked Windows 11 session can keep `Default` as the input desktop, with LockApp in the foreground.
+// Returns null when both facts hold, or the facts for the SKIP line.
+export function inputDesktopSkip(): string | null {
+  const desktop = inputDesktop();
+  const session = sessionFlags();
+  if (desktop.name === "Default" && session.flags === WTS_SESSIONSTATE_UNLOCK) return null;
+  const name = desktop.name === null ? `unreadable (error ${desktop.error})` : JSON.stringify(desktop.name);
+  const flags = session.flags === null ? `unreadable (error ${session.error})` : `0x${session.flags.toString(16)}`;
+  return `missing capability input-desktop: input desktop ${name}, session flags ${flags}`;
 }

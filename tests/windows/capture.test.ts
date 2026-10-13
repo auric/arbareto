@@ -12,7 +12,7 @@ import { CFunction, FFIType, ptr, read, type Pointer } from "bun:ffi";
 import { FIXTURE_ROOT, fixtureDir, fixtureGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { appEnv, findInstalledApp, startInstalledApp, waitExit } from "./installed-app";
-import { find, invoke, MAX_WAIT_MS, waitFocus, type Element } from "./uia";
+import { find, inputDesktopSkip, invoke, MAX_WAIT_MS, waitFocus, type Element } from "./uia";
 import { qpc, qpcFrequency } from "./inject";
 import {
   analyzeRun,
@@ -274,7 +274,7 @@ describe.skipIf(process.platform !== "win32")("T242 capture.ts live", () => {
     useFixtureRoot();
     const found = findInstalledApp();
     const app = "app" in found ? found.app : null;
-    const reason = app === null ? (found as { skip: string }).skip : GIT === null ? "Git executable absent" : process.env.ARBARETO_LIVE_INPUT !== "1" ? "live input needs the measurement account: set ARBARETO_LIVE_INPUT=1" : "skip" in opened ? `missing capability ${opened.skip}` : null;
+    const reason = app === null ? (found as { skip: string }).skip : GIT === null ? "Git executable absent" : process.env.ARBARETO_LIVE_INPUT !== "1" ? "live input needs the measurement account: set ARBARETO_LIVE_INPUT=1" : "skip" in opened ? `missing capability ${opened.skip}` : inputDesktopSkip();
     if (reason !== null) console.log(`SKIP installed app: ${reason}`);
 
     test.skipIf(reason !== null)(

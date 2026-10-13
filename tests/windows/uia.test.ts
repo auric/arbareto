@@ -7,7 +7,7 @@ import { srcImportHits } from "./src-imports";
 import { withProbe } from "./probe-window";
 import { fixtureDir, useFixtureRoot } from "../git/fixture-root";
 import { appEnv, findInstalledApp, startInstalledApp, waitExit } from "./installed-app";
-import { close, find, findLiveRegions, focus, invoke, isSelected, MAX_WAIT_MS, readText, select, setValue, UiaError, waitFocus, type Element } from "./uia";
+import { close, find, findLiveRegions, focus, inputDesktopSkip, invoke, isSelected, MAX_WAIT_MS, readText, select, setValue, UiaError, waitFocus, type Element } from "./uia";
 
 const UIA = printOrigin("./uia.ts", import.meta.dir);
 const TEST_TIMEOUT_MS = 60_000;
@@ -58,6 +58,8 @@ $w.Show()
 
 describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () => {
   afterAll(() => close());
+  const noFocus = inputDesktopSkip();
+  if (noFocus !== null) console.log(`SKIP focus cases: ${noFocus}`);
 
   test("no file under src/ imports bun:ffi or the driver", () => {
     expect(srcImportHits([UIA])).toEqual([]);
@@ -116,7 +118,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
     TEST_TIMEOUT_MS,
   );
 
-  test(
+  test.skipIf(noFocus !== null)(
     "focuses the probe field",
     () =>
       withProbe(FIXTURE, async ({ pid }) => {
@@ -130,9 +132,10 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
     useFixtureRoot();
     const found = findInstalledApp();
     const live = "app" in found ? found.app : null;
-    if (live === null) console.log(`SKIP installed app: ${(found as { skip: string }).skip}`);
+    const reason = live === null ? (found as { skip: string }).skip : noFocus;
+    if (reason !== null) console.log(`SKIP installed app: ${reason}`);
 
-    test.skipIf(live === null)(
+    test.skipIf(reason !== null)(
       "selects Git, opens and cancels the folder picker, and reads the status regions",
       async () => {
         const owned = startInstalledApp(live!, appEnv(fixtureDir("app"), false));

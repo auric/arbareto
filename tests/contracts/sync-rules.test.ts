@@ -83,6 +83,18 @@ describe("D4 push destination", () => {
     expect(decide({ upstreamRemote: ".", upstream: "refs/heads/main" }, [["push.default", "tracking"]])).toEqual({ kind: "refused", reason: "push-remote-differs" });
   });
 
+  // builtin/push.c `get_upstream_ref`: "has multiple upstream branches, refusing to push" with exit 128 (Git 2.56.0.windows.2).
+  test("several branch.<name>.merge values give several-merge-refs under simple and upstream", () => {
+    const merges: Config = [["branch.topic.merge", "refs/heads/topic"], ["branch.topic.merge", "refs/heads/other"]];
+    const several: PushDecision = { kind: "refused", reason: "several-merge-refs" };
+    expect(decide({}, merges)).toEqual(several);
+    for (const value of ["simple", "upstream", "tracking"]) expect(decide({}, [...merges, ["push.default", value]])).toEqual(several);
+    expect(decide({}, [["branch.topic.merge", "refs/heads/topic"], ["branch.other.merge", "refs/heads/other"]])).toEqual(branchDest);
+    // `current` and a triangular `simple` push read no upstream.
+    expect(decide({}, [...merges, ["push.default", "current"]])).toEqual(branchDest);
+    expect(decide({ pushRemote: "fork", push: "" }, merges)).toMatchObject({ destination: { source: "push-default-triangular" } });
+  });
+
   test("nothing and other values give invalid-config", () => {
     for (const value of ["nothing", "Simple", "", "bogus"]) expect(decide({}, [["push.default", value]])).toEqual({ kind: "refused", reason: "invalid-config" });
     expect(decide({}, [["push.default", null]])).toEqual({ kind: "refused", reason: "invalid-config" });
@@ -296,6 +308,31 @@ describe("the remote value check of every review", () => {
       expect(check([[`remote.fork.${key}s`, "maybe"]])).toBe(false);
     }
     expect(check([["remote.fork.url", "maybe"], ["remote.fork.tagopt", "maybe"], ["fetch.prune", "maybe"]])).toBe(false);
+  });
+
+  // remote.c `handle_config` stops on these keys without `=`: exit 128, or 139 for `tagopt` and `followremotehead`.
+  const STRING_KEYS = [
+    "branch.main.remote", "branch.main.pushremote", "branch.main.merge", "branch.a.b.merge", "url.https://x/.insteadof", "url.https://x/.pushinsteadof", "remote.pushdefault",
+    ...["url", "pushurl", "push", "fetch", "receivepack", "uploadpack", "tagopt", "proxy", "proxyauthmethod", "vcs", "serveroption", "negotiationrestrict", "negotiationinclude", "followremotehead"].map((k) => `remote.fork.${k}`),
+  ];
+
+  test("a string key without a value refuses", () => {
+    for (const key of STRING_KEYS) {
+      expect(check([[key, null]])).toBe(true);
+      expect(check([[key, null], [key, "x"]])).toBe(true);
+      expect(check([[key, ""]])).toBe(false);
+      expect(check([[key, "x"]])).toBe(false);
+    }
+  });
+
+  test("a valueless key that Git reads without a value check, or skips, passes", () => {
+    const skipped = ["remote./x.url", "remote.url", "branch.remote", "url.insteadof", "branch.main.rebase", "remote.fork.mirror", "pushremote", "remote.fork.pushremote", "branch.main.pushdefault", "core.sshcommand"];
+    for (const key of skipped) expect(check([[key, null]])).toBe(false);
+  });
+
+  test("the D4 rule refuses on a valueless string key of another branch", () => {
+    const record: PushRecord = { branch: "topic", upstream: "refs/remotes/origin/topic", upstreamRemote: "origin", upstreamRemoteRef: "refs/heads/topic", push: "refs/remotes/origin/topic", pushRemote: "origin", pushRemoteRef: "" };
+    expect(decidePushDestination(record, ["origin"], cfg([["branch.main.pushremote", null]]))).toEqual({ kind: "refused", reason: "invalid-config" });
   });
 
   test("the D4 rule refuses on each of the five keys", () => {

@@ -987,7 +987,7 @@ const Lease = z
     trackingRef: Text.min(1),
     expect: ObjectId,
     count: Count,
-    commits: z.array(z.strictObject({ objectId: ObjectId, subject: z.string() }).meta({ title: "LeaseCommit" })).max(SYNC_LEASE_COMMITS),
+    commits: z.array(z.strictObject({ objectId: ObjectId, subject: z.string().nullable() }).meta({ title: "LeaseCommit" })).max(SYNC_LEASE_COMMITS),
   })
   .refine((l) => Array.isArray(l.commits) && l.commits.length === Math.min(l.count, SYNC_LEASE_COMMITS))
   .meta({ title: "Lease" });

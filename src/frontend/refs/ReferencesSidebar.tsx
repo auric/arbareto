@@ -314,18 +314,15 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         aria-label={name}
         aria-describedby={notShown === undefined ? undefined : ids[notShown]}
         aria-haspopup={current && onShowBranchHistory !== undefined ? "menu" : undefined}
+        aria-current={current ? "true" : undefined}
         className="list-row flex min-w-0 items-center gap-2 pr-2"
       >
         {entry.symref === null ? (
           <>
-            <span aria-hidden="true" className="min-w-0 shrink truncate">
+            {/* Git Extensions shows the current branch in bold. The weight survives forced colors. */}
+            <span aria-hidden="true" className={current ? "min-w-0 shrink truncate font-semibold" : "min-w-0 shrink truncate"}>
               {node.label}
             </span>
-            {current ? (
-              <span aria-hidden="true" className="shrink-0 font-semibold">
-                Current
-              </span>
-            ) : null}
             {upstream === null ? null : (
               <span aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
                 {upstream}

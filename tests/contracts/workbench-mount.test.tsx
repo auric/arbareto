@@ -178,7 +178,8 @@ describe("start", () => {
 
   test("a restoreWorkspace registration shows the one view without mode tabs and sends the full read, openHistory, and readTrust", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    expect(double.calls.map((c) => c.operation).sort()).toEqual(["openHistory", "readTrust", "readWorkspace"]);
+    // Feature 003 data-model §10: the Pull main part reads `readSyncSettings`.
+    expect(double.calls.map((c) => c.operation).sort()).toEqual(["openHistory", "readSyncSettings", "readTrust", "readWorkspace"]);
     expect(double.pending("readWorkspace").args[1]).toEqual({ refresh: false, check: "full" });
     expect(document.querySelector('[role="tab"], [role="tablist"]')).toBeNull();
     expect(document.querySelector('section[aria-label="History"]')).not.toBeNull();
@@ -1136,11 +1137,12 @@ describe("single view", () => {
     expect(document.querySelector('footer [data-slot="git-version"]')!.textContent).toBe("Git 2.55.0 (WSL: Ubuntu-26.04)");
   });
 
-  test("no Fetch, Pull, Push, Stash, Clone, or settings control renders anywhere (FR-056)", async () => {
+  // Feature 003 FR-038 and FR-039 add Fetch, Pull, Push, and Commit and push. Stash, Clone, and settings stay absent.
+  test("no Stash, Clone, or settings control renders anywhere (FR-056)", async () => {
     await opened();
     await selectRow("working-directory");
     const names = [...document.querySelectorAll('button, [role="menuitem"], [role="tab"], a')].map((e) => `${e.getAttribute("aria-label") ?? ""} ${e.textContent ?? ""}`);
-    for (const name of names) expect(name).not.toMatch(/\b(fetch|pull|push|stash|clone|settings)\b/i);
+    for (const name of names) expect(name).not.toMatch(/\b(stash|clone|settings)\b/i);
   });
 });
 

@@ -10,6 +10,7 @@ import { WarningIcon } from "../app/NoticeBand";
 import { Button } from "../components/ui/button";
 import { IconButton } from "../components/icon-button";
 import { metrics, type Density, type Profile } from "../layout/profiles";
+import type { TrackLabel } from "../state/tracking";
 import { SPECIAL_ROWS, type Head, type HistoryView, type Scope, type SearchState, type ViewRow } from "../state/history-view";
 import { BOUNDARY_TEXT, columnWidth, LANE_SPACING, ViewCell, WorkingLineCell } from "./AncestryCell";
 import { INVALID_UTF8_TEXT, LOCAL_DATE } from "./CommitDetails";
@@ -126,19 +127,25 @@ export function fitChips(widths: readonly number[], room: number, plus: number):
   return count;
 }
 
-function LabelChip({ label }: { label: ViewRow["labels"][number] }) {
+type Tracking = ReadonlyMap<string, TrackLabel>;
+/** Feature 003 FR-019: a local branch label joins its count label by branch name. */
+const countOf = (label: ViewRow["labels"][number], tracking: Tracking | undefined) => (label.kind === "branch" ? (tracking?.get(label.name) ?? null) : null);
+
+function LabelChip({ label, tracking }: { label: ViewRow["labels"][number]; tracking?: Tracking }) {
+  const count = countOf(label, tracking);
   return (
     <span data-kind={label.kind} className="chip flex shrink-0 items-center gap-1">
       <HugeiconsIcon icon={LABEL_KINDS.find((k) => k.kind === label.kind)!.icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
       <span data-chip-name className="max-w-[160px] truncate">
         {label.name}
       </span>
+      {count === null ? null : <span className="num shrink-0">{count.text}</span>}
     </span>
   );
 }
 
 /** The labels of one row. A hidden copy measures each label, so the shown labels take at most half of the subject cell. */
-function RowLabels({ labels }: { labels: ViewRow["labels"] }) {
+function RowLabels({ labels, tracking }: { labels: ViewRow["labels"]; tracking?: Tracking }) {
   const measure = useRef<HTMLSpanElement>(null);
   const [count, setCount] = useState(labels.length);
   useLayoutEffect(() => {
@@ -157,12 +164,12 @@ function RowLabels({ labels }: { labels: ViewRow["labels"] }) {
     const observer = new ResizeObserver(fit);
     observer.observe(cell);
     return () => observer.disconnect();
-  }, [labels]);
+  }, [labels, tracking]);
   const hidden = labels.length - count;
   return (
     <>
       {labels.slice(0, count).map((l) => (
-        <LabelChip key={`${l.kind}:${l.name}`} label={l} />
+        <LabelChip key={`${l.kind}:${l.name}`} label={l} tracking={tracking} />
       ))}
       {hidden > 0 ? <span className="chip shrink-0">+{hidden}</span> : null}
       <span ref={measure} aria-hidden="true" className="invisible absolute flex gap-1">
@@ -170,6 +177,7 @@ function RowLabels({ labels }: { labels: ViewRow["labels"] }) {
           <span key={`${l.kind}:${l.name}`} className="flex items-center gap-1">
             <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} className="size-(--icon-size)" />
             <span className="max-w-[160px] truncate">{l.name}</span>
+            {countOf(l, tracking) === null ? null : <span>{countOf(l, tracking)!.text}</span>}
           </span>
         ))}
         <span>+{labels.length}</span>
@@ -191,11 +199,11 @@ const noEarlier = (cell: NonNullable<ViewRow["cell"]>) => !cell.limited && cell.
 const skips = (cell: NonNullable<ViewRow["cell"]>) => cell.segments.some((s) => s.shape === "line" && s.skip === true);
 
 /** The full row text. Parents stay readable without color or pointer (spec FR-016). */
-export function viewRowName(row: ViewRow, head: Head, filter: boolean, dateFormat: Intl.DateTimeFormat = LOCAL_DATE): string {
+export function viewRowName(row: ViewRow, head: Head, filter: boolean, dateFormat: Intl.DateTimeFormat = LOCAL_DATE, tracking?: Tracking): string {
   const parts: string[] = [];
   if (row.checkout) parts.push(checkoutText(head));
   for (const { kind, label } of LABEL_KINDS) {
-    const names = row.labels.filter((l) => l.kind === kind).map((l) => l.name);
+    const names = row.labels.filter((l) => l.kind === kind).map((l) => [l.name, countOf(l, tracking)?.label].filter(Boolean).join(" "));
     if (names.length > 0) parts.push(`${label}: ${names.join(", ")}`);
   }
   if (row.match === true) parts.push("Match");
@@ -228,10 +236,12 @@ export type HistoryListProps = {
   /** The chip removal selects all branches (spec FR-049). */
   onScope(scope: Scope): void;
   filterRef?: Ref<HTMLInputElement>;
+  /** Feature 003 FR-019: the count label of each local branch by name. */
+  tracking?: Tracking;
 };
 
 /** The feature 002 history list: a fixed-height window over the service view (plan.md D6). One listbox, one Tab stop, focus on the list. */
-export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef }: HistoryListProps) {
+export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking }: HistoryListProps) {
   const state = useSyncExternalStore(view.subscribe, view.getState);
   const ids = { heading: useId(), count: useId(), notes: useId(), list: useId() };
   const list = useRef<HTMLDivElement>(null);
@@ -444,7 +454,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
     const cell = row.cell;
     return option(
       item,
-      viewRowName(row, head!, filter, dateFormat),
+      viewRowName(row, head!, filter, dateFormat, tracking),
       "",
       <>
         {cell === null ? (
@@ -456,7 +466,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           {row.checkout || row.labels.length > 0 ? (
             <span data-slot="row-labels" title={row.labels.map((l) => l.name).join(", ")} className="relative flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
               {row.checkout ? <span className="badge shrink-0">{head?.state === "detached" ? "HEAD, detached" : "HEAD"}</span> : null}
-              <RowLabels labels={row.labels} />
+              <RowLabels labels={row.labels} tracking={tracking} />
             </span>
           ) : null}
           {row.match === true ? <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" data-slot="match-mark" className="size-(--icon-size) shrink-0 text-accent-role" /> : null}

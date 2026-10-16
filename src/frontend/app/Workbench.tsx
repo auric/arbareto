@@ -3,7 +3,7 @@
 
 import { GitBranchIcon, GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode, type RefObject } from "react";
+import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode, type RefObject } from "react";
 import type { ChangeEntry, Comparison as ComparisonResult, Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
@@ -69,6 +69,14 @@ import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
+import { COUNTS_TOOLTIP, isTrackingList, NO_BRANCH, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
+import { ForcePushConfirm } from "../sync/ForcePushConfirm";
+import { pullAction, type DefaultPullAction } from "../sync/PullSplitButton";
+import { PushNoticeRow } from "../sync/PushNoticeRow";
+import { PushPanel } from "../sync/PushPanel";
+import { syncReasons, SyncToolbar } from "../sync/SyncToolbar";
+import { useSync } from "../sync/useSync";
+import { shortRef } from "../refs/ReferencesSidebar";
 
 // plan.md "Chosen layout: one view", "Chosen layout, sizes, and DPI", "Dock region", "Keyboard and focus", and "Required visible states".
 
@@ -93,6 +101,11 @@ export type WorkbenchBridge = RequestBridge &
     | "getOperation"
     | "reviewSubmodules"
     | "updateSubmodules"
+    | "readTracking"
+    | "reviewSync"
+    | "sync"
+    | "readSyncSettings"
+    | "setDefaultPullAction"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -145,6 +158,8 @@ export type WorkbenchPaneProps = {
   onSelectRow(id: string): void;
   /** Absent in a mount without staging controls. */
   staging?: Staging;
+  /** Feature 003 FR-019: the count label of each local branch by name. */
+  tracking?: ReadonlyMap<string, TrackLabel>;
 };
 export type WorkbenchProps = {
   bridge: WorkbenchBridge;
@@ -177,6 +192,14 @@ export const NO_DECISION_PENDING = "Its comparison is still loading.";
 // plan.md "Required visible states", No selection.
 export const DOCK_HINT = "Select the Working directory row to commit, or a commit to see its details.";
 const NO_REPOSITORY = "No repository open";
+// Feature 003 data-model §10: the Pull main part waits for `readSyncSettings`.
+const SETTINGS_LOADING = "The default pull action is still loading.";
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+type SyncSettingsState = { action: DefaultPullAction | null; reason: string | null };
+function settingsOf(response: BridgeResponse): SyncSettingsState {
+  const action = isObject(response.result) ? response.result.defaultPullAction : undefined;
+  return response.state === "succeeded" && typeof action === "string" ? { action: action as DefaultPullAction, reason: null } : { action: null, reason: `The default pull action did not load: ${response.code ?? response.state}` };
+}
 
 // plan.md "Dark palettes".
 const DARK_PALETTES: { value: DarkPalette; label: string }[] = [
@@ -391,7 +414,7 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
 }
 
 /** The feature 002 history list with the Working directory and Index rows (plan.md D6). */
-export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef }: WorkbenchPaneProps) {
+export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef, tracking }: WorkbenchPaneProps) {
   const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
   return (
     <HistoryList
@@ -403,6 +426,7 @@ export function HistoryViewMount({ state, history, density, profile, textScale, 
       onSelect={onSelectRow}
       onScope={(scope) => void history.setScope(scope)}
       filterRef={filterRef}
+      tracking={tracking}
     />
   );
 }
@@ -551,7 +575,21 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [row, setRow] = useState<{ repository: RequestState["repository"]; id: string | null; epoch: number }>({ repository: state.repository, id: null, epoch: 0 });
   // The submodule review of the T236 dialog, with the target and snapshot of its `reviewSubmodules` request.
   const [submoduleReview, setSubmoduleReview] = useState<{ value: SubmoduleReviewValue; target: { repositoryId: string; repositoryGeneration: number }; snapshotId: string; open: boolean } | null>(null);
-  const modalOpen = trust?.open === true || submoduleReview?.open === true;
+  // Feature 003 FR-004, FR-013, FR-040, and contract Δ8: the reads after each `sync` outcome. A new view keeps the selected commit and shows no refs-changed notice.
+  const sync = useSync({
+    bridge,
+    target: requests.target,
+    repositoryId: state.repository?.repositoryId ?? null,
+    headTarget: state.workspace === null ? undefined : state.workspace.head.state === "detached" ? null : state.workspace.head.target,
+    onOperation: (op) => setOperation(op),
+    onEnded: (response) => {
+      void historyView.refresh();
+      onEnded("sync", response);
+      readTracking();
+    },
+  });
+  const pushNoticeShown = sync.notice !== null;
+  const modalOpen = trust?.open === true || submoduleReview?.open === true || sync.confirm !== null;
   const switcher = useRef<HTMLDivElement>(null);
   const menubar = useRef<HTMLDivElement>(null);
   const beforeMenu = useRef<HTMLElement | null>(null);
@@ -560,6 +598,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [drafts] = useState(() => givenDrafts ?? createDrafts(createDraftStore()));
   // The latest mutation of this repository for the status region (T138). Another repository clears it.
   const [operation, setOperation] = useState<StatusOperation | null>(null);
+  // Feature 003 data-model §1: the newest `readTracking` entries of the open repository.
+  const [tracking, setTracking] = useState<{ repositoryId: string; entries: TrackingEntry[] | null } | null>(null);
+  const trackingSeq = useRef(0);
+  const [syncSettings, setSyncSettings] = useState<SyncSettingsState>({ action: null, reason: SETTINGS_LOADING });
   const [anchor, setAnchor] = useState<Staging["anchor"]>(null);
   const [fileReason, setFileReason] = useState<string | null>(null);
   const [paneReason, setPaneReason] = useState<string | null>(null);
@@ -705,6 +747,40 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     approvalRead.current = null;
   }, [repositoryId]);
 
+  // Feature 003 plan.md D8: one `readTracking`. Only the newest response counts.
+  function readTracking() {
+    const target = requests.target();
+    if (target === null) return;
+    const seq = ++trackingSeq.current;
+    void bridge.readTracking(target).then((response) => {
+      if (seq !== trackingSeq.current) return;
+      setTracking({ repositoryId: target.repositoryId, entries: response.state === "succeeded" && isTrackingList(response.result) ? response.result.entries : null });
+    });
+  }
+  // Plan.md D8 triggers: each new `readRefs.refsDigest` and each focus return. Each sync outcome runs one too.
+  const refsDigest = state.refs?.refsDigest ?? null;
+  useEffect(() => {
+    if (refsDigest !== null) readTracking();
+  }, [repositoryId, refsDigest]);
+  useEffect(() => {
+    if (repositoryId === null) return;
+    const onFocus = () => readTracking();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [repositoryId]);
+  // Data-model §10: the shell keeps the default pull action.
+  useEffect(() => {
+    if (repositoryId === null) return;
+    let current = true;
+    void bridge.readSyncSettings().then((response) => void (current && setSyncSettings(settingsOf(response))));
+    return () => void (current = false);
+  }, [bridge, repositoryId]);
+  async function setDefaultPullAction(action: DefaultPullAction) {
+    const response = await bridge.setDefaultPullAction({ action });
+    if (response.state === "succeeded") setSyncSettings(settingsOf(response));
+    else setNotice(codeText("Set default action did not complete: ", response.code ?? response.state));
+  }
+
   // plan.md "Stored drafts": after each registration result, the page reads the stored draft of that worktree.
   const worktreeKey = state.repository?.worktreeKey ?? null;
   useEffect(() => {
@@ -849,6 +925,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       else if (action.type === "focusSection") moveSection(action.direction);
       else if (action.type === "focusFilter") filterRef.current?.focus();
       else if (action.type === "match") void historyView.match(action.direction);
+      else if (action.type === "sync") runSync.current(action.control);
       else if (action.type === "toggleScope" && live.current.repository !== null) void historyView.setScope(historyView.getState().scope === "current" ? "all" : "current");
     };
     window.addEventListener("keydown", onKey);
@@ -959,7 +1036,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // A read sent before the view opened can be older than the view, so it never shows the notice.
   const openedSeq = historyState.openedSeq;
   const refsNotice = refsChanged(historyState.view, state.refsSeq > openedSeq ? (state.refs?.refsDigest ?? null) : null, state.headRead !== null && state.headRead.seq > openedSeq ? state.headRead.head : null);
-  const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0) + (refsNotice ? 1 : 0);
+  const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0) + (refsNotice ? 1 : 0) + (pushNoticeShown ? 1 : 0);
   // plan.md "Icons": the Commit tooltip holds both counts, and Commit has no key.
   const commitLabel = `Commit: ${plural(working, "working change", "working changes")}, ${staged} staged`;
 
@@ -999,7 +1076,37 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The own request of the review dialog does not block Start update. A state block still does.
   const reviewBlocked = running && operation.requestId === reviewRequest.current ? stateBlocked : blocked;
   const stagingBlocked: Blocked = blocked ?? (loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null);
-  const onEnded = (kind: "applyHunk" | "applyFile" | "commit" | "updateSubmodules", response: BridgeResponse) => requests.mutationEnded(kind, response);
+  const onEnded = (kind: "applyHunk" | "applyFile" | "commit" | "updateSubmodules" | "sync", response: BridgeResponse) => requests.mutationEnded(kind, response);
+  const entries = tracking !== null && tracking.repositoryId === repositoryId ? tracking.entries : null;
+  const labels = useMemo(() => trackingLabels(entries, state.refs), [entries, state.refs]);
+  // Plan.md D8: the toolbar uses the `*` entry of the checked-out branch.
+  const currentHead = workspace?.head ?? null;
+  const currentEntry = currentHead !== null && currentHead.state === "branch" ? (entries?.find((e) => e.current && `refs/heads/${e.name}` === currentHead.target && e.objectId === currentHead.oid) ?? null) : null;
+  const currentLabel = currentEntry === null ? null : (labels.get(currentEntry.name) ?? null);
+  const reasons = syncReasons(currentHead, workspace?.operationState ?? null, currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set", running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null);
+  const runSync = useRef<(control: "fetch" | "pull" | "push") => void>(() => {});
+  runSync.current = (control) => {
+    if (state.repository === null) return;
+    if (control === "fetch" && reasons.fetchReason === null) sync.run({ action: "fetch" });
+    if (control === "push" && reasons.pushReason === null) sync.run({ action: "push" });
+    const main = syncSettings.action;
+    if (control === "pull" && main !== null && (main === "fetch" || main === "fetch-all" ? reasons.fetchReason : reasons.pullReason) === null) sync.run(pullAction(main).payload);
+  };
+  const trackingCount =
+    currentHead === null ? null : currentHead.state === "detached" ? (
+      <span data-slot="tracking-count" className="shrink-0 text-muted-text">
+        {NO_BRANCH}
+      </span>
+    ) : (
+      <span data-slot="tracking-count" className="num shrink-0" title={currentLabel === null ? undefined : `${currentLabel.label}${currentEntry?.upstream ? `, ${shortRef(currentEntry.upstream)}` : ""}. ${COUNTS_TOOLTIP}`}>
+        {currentLabel === null ? null : (
+          <>
+            <span aria-hidden="true">{currentLabel.text}</span>
+            <span className="sr-only">{currentLabel.label}</span>
+          </>
+        )}
+      </span>
+    );
   const staging: Staging = {
     bridge,
     target: state.repository !== null && state.capability !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: state.capability.repositoryGeneration } : null,
@@ -1046,6 +1153,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     staging,
     history: historyView,
     filterRef,
+    tracking: labels,
   };
   const laneBounds = paneBounds("fileLane", { width: client.width - sideWidth - m.splitter, available: workArea, density: preferences.density, textScale });
   const lane = Math.min(Math.max(panes.fileLane, laneBounds.min), laneBounds.max);
@@ -1074,8 +1182,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const statusText = starting !== null ? wslStartingText(starting.distro) : state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : (notice ?? (state.repository === null && !restoring ? NO_REPOSITORY : null));
   const gitVersion = wslGit?.version ?? environment?.detectedVersion ?? null;
 
+  const pushBranch = currentHead !== null && currentHead.state !== "detached" ? branchName(currentHead.target) : null;
+  const pushPanel = sync.panel !== null && pushBranch !== null ? <PushPanel branch={pushBranch} plan={sync.panel} onPush={sync.push} onCancel={sync.closePanel} /> : null;
   const commitPanel = (
-    <div ref={commitPanelRef} hidden={panel !== "commit"} className="flex h-full min-h-0 flex-col">
+    <div ref={commitPanelRef} hidden={panel !== "commit" || pushPanel !== null} className="flex h-full min-h-0 flex-col">
       <h2 className="flex shrink-0 items-center px-2 font-semibold" style={{ minHeight: "var(--h-pane-heading)" }}>
         Commit
       </h2>
@@ -1121,6 +1231,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             onOperation={setOperation}
             onEnded={(response) => onEnded("commit", response)}
             fieldRef={messageField}
+            onPush={() => sync.run({ action: "push" })}
+            pushReason={reasons.pushReason}
           />
         </div>
       </section>
@@ -1129,13 +1241,14 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
   const dock = (
     <>
+      {pushPanel}
       {commitPanel}
-      {panel === "details" && kept !== null ? (
+      {panel === "details" && kept !== null && pushPanel === null ? (
         <div data-section="commitDetails" className="h-full min-h-0">
           <ViewCommitDetails view={historyView} oid={kept} onRead={() => setDetailsRead(row.epoch)} />
         </div>
       ) : null}
-      {panel === null ? <p className="p-2 text-muted-text">{DOCK_HINT}</p> : null}
+      {panel === null && pushPanel === null ? <p className="p-2 text-muted-text">{DOCK_HINT}</p> : null}
     </>
   );
 
@@ -1149,6 +1262,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       collapsible={profile === "constrained"}
       repository={state.repository?.worktreeKey ?? ""}
       onShowBranchHistory={() => void historyView.setScope("current")}
+      tracking={labels}
     />
   );
 
@@ -1236,6 +1350,19 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               <span data-branch-part="last" aria-hidden="true" className="min-w-0 truncate">
                 {splitPath(head, GIT_SEPARATORS)[1]}
               </span>
+            </span>
+          )}
+          {state.repository === null ? null : (
+            // The 004 design standard: the Fetch, Pull, and Push group follows the branch. Feature 004 adds its branch and worktree buttons before it.
+            <span className="flex min-w-0 items-center" style={{ order: 3 }}>
+              <SyncToolbar
+                reasons={reasons}
+                defaultAction={syncSettings.action}
+                settingsReason={syncSettings.reason}
+                count={trackingCount}
+                onRun={sync.run}
+                onSetDefault={(action) => void setDefaultPullAction(action)}
+              />
             </span>
           )}
           <div ref={menubar} className="flex items-center" style={{ order: 4, flexBasis: rows === 1 ? undefined : "auto" }} onFocus={onMenubarFocus}>
@@ -1365,6 +1492,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 operationState={workspace.operationState}
                 conflicted={conflicted}
                 recovery={recovery !== null && recovery.repositoryId === state.repository?.repositoryId ? recovery.statement : undefined}
+                pushRow={
+                  sync.notice !== null ? (
+                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} bindControl={bindBandControl} />
+                  ) : undefined
+                }
                 submoduleRow={submodules > 0 ? <SubmoduleNotice count={submodules} onUpdate={() => void reviewSubmodules("notice")} buttonRef={bindNoticeButton} blockedReason={blockedReason} /> : undefined}
                 refsChanged={
                   refsNotice ? (
@@ -1436,6 +1568,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             }}
             onFailed={(response) => setNotice(codeText("Trust approval did not complete: ", responseCode(response)))}
           />
+        )}
+        {sync.confirm === null || pushBranch === null ? null : (
+          <ForcePushConfirm plan={sync.confirm.plan} branch={pushBranch} onConfirm={sync.confirmForce} onCancel={sync.cancelForce} />
         )}
         {submoduleReview === null ? null : (
           <SubmoduleReview

@@ -256,15 +256,35 @@
 @layer base {
   * {
     @apply border-border outline-ring;
+    /* A pane scroll never chains to an outer pane or to the root. */
+    overscroll-behavior: contain;
+  }
+  /* The window is a static frame: the root never scrolls, pans, or bounces. Each pane scrolls by itself. */
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
   }
   html {
     @apply font-sans;
     font-size: 16px;
   }
+  /* App chrome is not selectable. Content that the user can copy sets `select-text`. */
   body {
     @apply bg-background text-foreground;
     font-size: calc(var(--font-ui) * var(--text-scale));
     line-height: var(--leading-ui);
+    user-select: none;
+  }
+  input,
+  textarea,
+  [contenteditable] {
+    user-select: text;
+  }
+  img,
+  a {
+    -webkit-user-drag: none;
   }
   h1,
   h2,

@@ -149,6 +149,9 @@ describe("Selected commit", () => {
     expect(message.textContent).toBe(BODY);
     expect(message.querySelector("*")).toBeNull();
     expect(text(host)).not.toContain("Arbareto shows the first 16 KiB of this message.");
+    // T380: the body sets `user-select: none`, so the details values must sit in a `select-text` region. The heading stays chrome.
+    for (const value of [message, field(host, "ID"), field(host, "Author")]) expect(value.closest(".select-text")).not.toBeNull();
+    expect(host.querySelector("h2")!.closest(".select-text")).toBeNull();
   });
 
   test("the static line stays, and the details hold no Git action", async () => {

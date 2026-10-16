@@ -80,7 +80,7 @@ export function FileFailure({ response }: { response: BridgeResponse }) {
   return (
     <div className="flex flex-col items-start gap-1 border-b border-divider px-2 py-1">
       {tail === null ? null : (
-        <pre tabIndex={0} aria-label="Git output" className="max-h-24 w-full overflow-auto font-mono whitespace-pre-wrap">
+        <pre tabIndex={0} aria-label="Git output" className="max-h-24 w-full overflow-auto font-mono whitespace-pre-wrap select-text">
           {tail}
         </pre>
       )}

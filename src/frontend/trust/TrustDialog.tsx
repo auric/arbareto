@@ -108,7 +108,7 @@ export function TrustDialog({ open, report, repositoryId, bridge, client, finalF
               Reached bound: {BOUND_TEXT[report.bound]}. {SESSION_ONLY}
             </p>
           )}
-          <ul className="font-mono">
+          <ul className="font-mono select-text">
             {report.entries.map((e, i) => (
               <li key={`e${i}`} className="break-all whitespace-pre-wrap">
                 {entryLine(e)}

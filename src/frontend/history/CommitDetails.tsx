@@ -102,7 +102,7 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }
           Selected commit
         </h2>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2 select-text">
         {row === undefined ? (
           <p className="text-muted-text">Loading…</p>
         ) : row === null ? (

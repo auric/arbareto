@@ -33,7 +33,7 @@ Label rule (renderer):
 | `binding.remotes` | Ordered names from `git remote`, or the one remote of the action. |
 | `binding.upstream` | `{ref, objectId}` for `pull` and `integrate`. |
 | `binding.destination` | §3 result for `push` and `force-push`. |
-| `binding.lease` | `{trackingRef, expect, count, commits[≤100]}` for `force-push`. Each commit is `{objectId, subject}`. |
+| `binding.lease` | `{trackingRef, expect, count, commits[≤100]}` for `force-push`. Each commit is `{objectId, subject}`. A commit object above `HISTORY_COMMIT_OBJECT_BYTES` gives `subject` null. |
 | `binding.index` | Index fingerprint and unmerged count for `continue`. |
 | `binding.mode` | For `pull` and `integrate`: the payload mode or null. |
 | `binding.skippedCommit` | For `skip`: the `REBASE_HEAD` object ID. |

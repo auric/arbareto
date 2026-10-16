@@ -174,7 +174,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - A merge or a rebase in progress does not refuse Fetch or Fetch all remotes (spec "Changes to feature 001 requirements", 001 FR-016).
 - From the push-rejected notice, the payload names the push remote (contract Δ3).
 - Argv: `--no-lazy-fetch fetch --porcelain --progress --no-recurse-submodules -- <remote>`. The app adds no prune or tag option (FR-011).
-- Fetch all: every remote of `git remote`, in its order, without the skipped remotes (O-4). A remote is skipped when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true by `parseMaybeBool` (research R16 k). One process per remote, so each remote has its own outcome. An invalid remote value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
+- Fetch all: every remote of `git remote`, in its order, without the skipped remotes (O-4). A remote is skipped when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true by `parseMaybeBool` (research R16 k). One process per remote, so each remote has its own outcome. An invalid remote value or a string key without a value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
 - Result: the porcelain lines up to `SYNC_FETCH_LISTED_REFS` (1,000), with counts by flag for every line.
 - Reconciliation compares a full `for-each-ref` listing from before and after the fetch. A change that the porcelain lines do not list gives `completed-with-effects`, with the observed list.
 
@@ -184,13 +184,14 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - Destination rule (builtin/push.c `setup_default_push_refspecs`, remote.c `branch_get_push_1`; research R2, R16 d). The rule follows Git's own push of the current branch (FR-014). "Panel" means no destination, so the FR-016 panel shows. When `%(upstream)` is not empty, the panel shows the current upstream and shows Set upstream not selected.
   0. `%(upstream)` empty: the panel shows. It is pre-filled with the steps 1 to 5 destination when one exists.
   1. R = `%(push:remotename)`. Empty: R = `origin`, as git-push(1) documents for a push without an explicit remote. No `origin` in `git remote`: panel.
-  2. R not in `git remote`: reason `remote-missing`. `remote.<R>.mirror` true: reason `mirror`. Git pushes to a mirror remote; the app refuses on purpose (R16 d). An invalid remote value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
+  2. R not in `git remote`: reason `remote-missing`. `remote.<R>.mirror` true: reason `mirror`. Git pushes to a mirror remote; the app refuses on purpose (R16 d). An invalid remote value or a string key without a value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
   3. dst = `%(push:remoteref)` when it is filled, which is the `remote.<R>.push` case. Source `remote-push-refspec`.
   4. Else, by the last `push.default` value. F is the fetch remote: `branch.<branch>.remote`, else `origin` (remote.c `remote_for_branch`).
      - `current`: dst = `refs/heads/<branch>`.
      - `simple` or unset, R differs from F (triangular): dst = `refs/heads/<branch>`, because Git's push treats it like `current`. Source `push-default-triangular`.
      - `simple` or unset, R equals F: `%(push)` empty means that Git cannot resolve one destination, so panel. Else dst = `refs/heads/<branch>`.
      - `upstream` or `tracking`: needs `%(upstream:remotename)` = R, else reason `push-remote-differs`. `%(upstream)` empty: panel. Else dst = `%(upstream:remoteref)`.
+     - More than one `branch.<branch>.merge` entry gives reason `several-merge-refs` for `simple` or unset with R equal to F, and for `upstream` or `tracking` after the R check. Git's push stops there with exit 128 (builtin/push.c `get_upstream_ref`).
      - `matching`: panel. Git pushes the branch only when the remote advertises a branch of the same name at push time. The review contacts no remote (R2).
      - `nothing` or any other value: reason `invalid-config`.
   5. The tracking ref of dst is `%(push)` when it is filled. A triangular destination has an empty `%(push)`, so it has no tracking ref. Force push with lease then gives reason `no-lease` (D5).

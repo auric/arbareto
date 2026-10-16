@@ -1145,7 +1145,7 @@ fn started(
     let reply = markers.started_with(started, epoch, &|_| identity.clone());
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
     let marked = if let StartedReply::Marker { identity, .. } = &reply {
-        requests.tag(started.operation_id, identity.clone());
+        requests.tag(started.operation_id, started.kind, identity.clone());
         true
     } else {
         false

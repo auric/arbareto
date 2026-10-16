@@ -488,8 +488,13 @@ const M_COMMANDS = {
   "fetch-r1": ["--no-lazy-fetch", "fetch", "--no-recurse-submodules", "--", "r1"],
   "push-r1": ["--no-lazy-fetch", "push", "--porcelain", "--no-recurse-submodules", "--no-follow-tags", "--", "r1", "refs/heads/src:refs/heads/DST"],
   remote: ["remote"],
+  "push-record": ["--no-lazy-fetch", "for-each-ref", "--format=%(push)", "refs/heads"],
 } as const;
 type MCommand = keyof typeof M_COMMANDS;
+// The boolean cases keep the four commands that research R16 m recorded.
+const M_BOOLEAN_COMMANDS: MCommand[] = ["fetch-all", "fetch-r1", "push-r1", "remote"];
+// A key line without `=`. `git config` writes no such line, so the case appends it to the file.
+const M_VALUELESS = '[branch "src"]\n\tpushremote\n';
 
 // A fixture copy with `refs/heads/src` from r1 and no remote-tracking ref, so a passing fetch or push changes a ref.
 function factMBase(h: GitHost): { repo: string; bare: string } {
@@ -502,9 +507,12 @@ function factMBase(h: GitHost): { repo: string; bare: string } {
 }
 
 let mPushes = 0;
-function factMCase(h: GitHost, base: { repo: string; bare: string }, config: [string, string] | null, command: MCommand) {
+function factMCase(h: GitHost, base: { repo: string; bare: string }, config: [string, string] | string | null, command: MCommand) {
   const repo = copyOf(h, base.repo);
-  if (config !== null) gitRun(h, repo, ["config", "--replace-all", ...config]);
+  if (typeof config === "string") {
+    const [path] = gitPaths(h, repo, ["config"]);
+    h.write(path!, Buffer.concat([h.read(path!)!, Buffer.from(config)]));
+  } else if (config !== null) gitRun(h, repo, ["config", "--replace-all", ...config]);
   const args = M_COMMANDS[command].map((a) => a.replace("DST", `m-${++mPushes}`));
   const local = refMap(h, repo);
   const remote = refMap(h, base.bare);
@@ -522,13 +530,16 @@ function factM(h: GitHost): Observation[] {
     // Push updates the remote-tracking ref of the pushed ref (git-push(1)).
     "push-r1": { exit: 0, localChanged: true, remoteChanged: true },
     remote: { exit: 0, localChanged: false, remoteChanged: false },
+    "push-record": { exit: 0, localChanged: false, remoteChanged: false },
   };
   const asserted = (fact: string, expected: unknown, observed: unknown): Observation => ({ ...obs(fact, expected, observed), asserted: true });
   const out = commands.map((c) => asserted(`m.control.${c}`, control[c], factMCase(h, base, null, c)));
   for (const key of M_KEYS) {
-    for (const c of commands) out.push(asserted(`m.r2-${key}-maybe.${c}`, stopped, factMCase(h, base, [`remote.r2.${key}`, "maybe"], c)));
+    for (const c of M_BOOLEAN_COMMANDS) out.push(asserted(`m.r2-${key}-maybe.${c}`, stopped, factMCase(h, base, [`remote.r2.${key}`, "maybe"], c)));
   }
   out.push(asserted("m.r1-mirror-maybe.push-r1", stopped, factMCase(h, base, ["remote.r1.mirror", "maybe"], "push-r1")));
+  // remote.c `handle_config` reads `branch.<name>.pushremote` with `git_config_string`, which refuses a missing value.
+  for (const c of ["remote", "push-record", "push-r1"] as const) out.push(asserted(`m.src-pushremote-valueless.${c}`, stopped, factMCase(h, base, M_VALUELESS, c)));
   return out;
 }
 
@@ -578,6 +589,6 @@ export const FACTS: Fact[] = [
   { id: "j", title: "%(upstream) is empty for an unconfigured remote", run: factJ },
   { id: "k", title: "fetch --all remote set with skipFetchAll and skipDefaultUpdate", run: factK },
   { id: "l", title: "rebase --skip leaves the index and files equal to HEAD", run: factL },
-  { id: "m", title: "non-boolean mirror, skipFetchAll, skipDefaultUpdate, prune, and pruneTags values", run: factM },
+  { id: "m", title: "non-boolean mirror, skipFetchAll, skipDefaultUpdate, prune, and pruneTags values, and a valueless pushRemote", run: factM },
 ];
 

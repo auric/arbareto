@@ -282,8 +282,8 @@ struct State {
     calls: HashMap<String, Call>,
     /// `run` calls and walks share one `callId` namespace.
     walks: HashMap<String, Walk>,
-    /// The mutations whose `started` reply carried a marker ID, until `ended`.
-    started: HashSet<String>,
+    /// The mutations whose `started` reply carried a marker ID, until `ended`, with the `started` kind.
+    started: HashMap<String, String>,
     /// The facts that `wslProbe` bound to each WSL `repositoryDiscovery` context, once (gaps.md W1).
     wsl_bound: HashMap<String, wsl::Bound>,
     /// The contexts with a `wslProbe` in flight. The reservation makes the bind happen once.
@@ -628,8 +628,10 @@ impl ProcessRequests {
 
     /// Records a `started` reply with a marker ID, and tags the Job of that mutation with the common-directory identity.
     /// `started` comes before the first process, so the Job opens here (contract §6 "Recovery markers").
-    pub fn tag(&self, operation_id: &str, common_identity: PhysicalIdentity) {
-        self.state().started.insert(operation_id.to_string());
+    pub fn tag(&self, operation_id: &str, kind: &str, common_identity: PhysicalIdentity) {
+        self.state()
+            .started
+            .insert(operation_id.to_string(), kind.to_string());
         if self.jobs.open(operation_id).is_ok() {
             self.jobs.tag(operation_id, common_identity);
         }
@@ -639,7 +641,7 @@ impl ProcessRequests {
     pub fn ended(&self, operation_id: &str, end_processes: bool) -> Result<(), Code> {
         let mut state = self.state();
         // Contract §6: `ended` comes only after a `started` reply with a marker ID. Read Jobs never linger.
-        if !state.started.remove(operation_id) {
+        if state.started.remove(operation_id).is_none() {
             return Err(INVALID);
         }
         if end_processes {
@@ -1142,10 +1144,31 @@ impl ProcessRequests {
         check_active(&state, operation_id)?;
         // The marker and the mutex exist before the first side effect (contract §6 "Recovery markers").
         // Feature 003 contract Δ6: a clone writes only into its new destination, so it has no `started` frame.
-        if changes && kind != Kind::Clone && !state.started.contains(operation_id) {
+        let clone = kind == Kind::Clone;
+        let started = state.started.get(operation_id).map(String::as_str);
+        if changes && !clone && started.is_none() {
+            return Err(INVALID);
+        }
+        // Feature 003 contract Δ6: `remote` and `integrate` serve only an operation that started as kind `sync`.
+        if matches!(
+            policy,
+            EnvironmentPolicy::Remote | EnvironmentPolicy::Integrate
+        ) && !clone
+            && started != Some("sync")
+        {
             return Err(INVALID);
         }
         let target = self.target(&mut state, ids, kind, operation_id)?;
+        // `target` takes the ownership of a clone context. The run belongs to the owner, as the close prompt name does.
+        let owned = |id: &str| {
+            state
+                .clones
+                .get(operation_id)
+                .is_some_and(|owned| owned.iter().any(|owned| owned == id))
+        };
+        if clone && !ids[0].is_some_and(owned) {
+            return Err(INVALID);
+        }
         if target
             .clone
             .as_ref()
@@ -3886,9 +3909,14 @@ pub(crate) mod tests {
 
         /// The shell side of a `started` reply with a marker ID for the workspace common directory.
         fn started(&self, operation: &str, workspace: &Workspace) {
+            self.started_as(operation, "commit", workspace);
+        }
+
+        fn started_as(&self, operation: &str, kind: &str, workspace: &Workspace) {
             let common = workspace.worktree.join(".git");
             self.requests.tag(
                 operation,
+                kind,
                 crate::bootstrap::PhysicalIdentity::Windows(
                     read_identity(&common).expect("common-directory identity"),
                 ),
@@ -4286,7 +4314,7 @@ pub(crate) mod tests {
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
         let operation = uuid();
-        harness.started(&operation, &workspace);
+        harness.started_as(&operation, "sync", &workspace);
         for policy in ["remote", "integrate"] {
             let call = uuid();
             harness.send(run_body(
@@ -4345,6 +4373,97 @@ pub(crate) mod tests {
             let cases: Vec<(&str, Edit)> = vec![("a bootstrap run", remove("transactionId"))];
             expect_refusals(&harness, probe, cases, "INVALID_REQUEST");
         }
+    }
+
+    /// Feature 003 contract Δ6: `remote` and `integrate` fit only an operation whose `started` kind is `sync`.
+    #[test]
+    fn remote_and_integrate_runs_need_a_sync_operation() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let (sync, commit, submodules) = (uuid(), uuid(), uuid());
+        harness.started_as(&sync, "sync", &workspace);
+        harness.started_as(&commit, "commit", &workspace);
+        harness.started_as(&submodules, "updateSubmodules", &workspace);
+        for policy in ["remote", "integrate"] {
+            let base = |call: &str| {
+                run_body(
+                    call,
+                    &sync,
+                    &workspace,
+                    &["sleep", "10"],
+                    policy,
+                    network_limits(30_000, 60_000),
+                )
+            };
+            let call = uuid();
+            harness.send(base(&call));
+            assert_eq!(
+                harness.exit(&call, WAIT).expect("exit").1["exitCode"],
+                0,
+                "{policy}"
+            );
+            let cases: Vec<(&str, Edit)> = vec![
+                ("a commit operation", set("operationId", json!(commit))),
+                (
+                    "an updateSubmodules operation",
+                    set("operationId", json!(submodules)),
+                ),
+            ];
+            expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+        }
+    }
+
+    /// Feature 003 contract Δ6: a clone has no `started` frame, so the run of a clone context that its operation owns needs no
+    /// `sync` kind. Another operation gets no run of that context, and a `remote` run of a `commit` operation stays refused.
+    #[test]
+    fn an_owned_clone_context_runs_under_remote_and_a_commit_operation_gets_no_remote_run() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let destination = harness.fixture.path("clone");
+        let text = destination.to_str().expect("path").to_string();
+        let (clone, _) =
+            harness
+                .contexts
+                .create_clone(&destination, CLONE_URL, None, Instant::now());
+        let (owner, commit) = (uuid(), uuid());
+        harness.started_as(&commit, "commit", &workspace);
+        let call = uuid();
+        harness.send(clone_run(
+            &call,
+            &owner,
+            &clone,
+            &workspace.git,
+            clone_arguments(CLONE_URL, &text),
+        ));
+        assert_eq!(
+            harness.exit(&call, WAIT).expect("exit").1["exitCode"],
+            0,
+            "the owner runs its clone context under `remote`"
+        );
+        assert!(destination.join(".git").is_dir());
+        let call = uuid();
+        harness.send(clone_run(
+            &call,
+            &commit,
+            &clone,
+            &workspace.git,
+            clone_arguments(CLONE_URL, &text),
+        ));
+        assert_eq!(
+            harness.reply(&call),
+            refused(&call, "UNKNOWN_TARGET"),
+            "another operation owns the clone context"
+        );
+        let call = uuid();
+        harness.send(run_body(
+            &call,
+            &commit,
+            &workspace,
+            &["sleep", "10"],
+            "remote",
+            network_limits(30_000, 60_000),
+        ));
+        assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
     }
 
     /// Feature 003 contract Δ6: the schema holds the `clone` context, and a `run` without a bound clone context starts nothing.
@@ -5850,6 +5969,7 @@ pub(crate) mod tests {
         );
         harness.requests.tag(
             &operation,
+            "commit",
             crate::bootstrap::PhysicalIdentity::Windows(read_identity(&common).expect("identity")),
         );
         harness.exit(&call, WAIT).expect("exit");
@@ -7251,6 +7371,7 @@ pub(crate) mod tests {
         );
         wsl.harness.requests.tag(
             &operation,
+            "commit",
             PhysicalIdentity::Wsl(wsl::WslIdentity {
                 guid: WSL_GUID.to_string(),
                 file_system_id: "fedc9aa3bd65bc57".to_string(),
@@ -7568,9 +7689,11 @@ pub(crate) mod tests {
             file_system_id: "fedc9aa3bd65bc57".to_string(),
             inode: "4243".to_string(),
         };
-        wsl.harness
-            .requests
-            .tag(&mutation, crate::bootstrap::PhysicalIdentity::Wsl(common));
+        wsl.harness.requests.tag(
+            &mutation,
+            "commit",
+            crate::bootstrap::PhysicalIdentity::Wsl(common),
+        );
         let before = wsl.host.commands().len();
         let arguments = ["--no-lazy-fetch", "commit", "--quiet"];
         let call = uuid();
@@ -7603,9 +7726,11 @@ pub(crate) mod tests {
             file_system_id: "fedc9aa3bd65bc57".to_string(),
             inode: "4243".to_string(),
         };
-        wsl.harness
-            .requests
-            .tag(&network, crate::bootstrap::PhysicalIdentity::Wsl(common));
+        wsl.harness.requests.tag(
+            &network,
+            "updateSubmodules",
+            crate::bootstrap::PhysicalIdentity::Wsl(common),
+        );
         let before = wsl.host.commands().len();
         let arguments = [
             "--no-lazy-fetch",
@@ -7647,9 +7772,11 @@ pub(crate) mod tests {
                 file_system_id: "fedc9aa3bd65bc57".to_string(),
                 inode: "4243".to_string(),
             };
-            wsl.harness
-                .requests
-                .tag(&sync, crate::bootstrap::PhysicalIdentity::Wsl(common));
+            wsl.harness.requests.tag(
+                &sync,
+                "sync",
+                crate::bootstrap::PhysicalIdentity::Wsl(common),
+            );
             let before = wsl.host.commands().len();
             let call = uuid();
             wsl.harness.send(json!({
@@ -7842,9 +7969,11 @@ pub(crate) mod tests {
                     file_system_id: "fedc9aa3bd65bc57".to_string(),
                     inode: "4243".to_string(),
                 };
-                wsl.harness
-                    .requests
-                    .tag(&operation, crate::bootstrap::PhysicalIdentity::Wsl(common));
+                wsl.harness.requests.tag(
+                    &operation,
+                    "sync",
+                    crate::bootstrap::PhysicalIdentity::Wsl(common),
+                );
                 start_with(&call, &operation, &["emit", stdout, "3"], false, policy);
                 let last = end(&call);
                 match forwarded {
@@ -9683,7 +9812,7 @@ pub(crate) mod tests {
         let harness = ssh_free_harness();
         let workspace = harness.child_workspace("repo");
         let operation = uuid();
-        harness.started(&operation, &workspace);
+        harness.started_as(&operation, "sync", &workspace);
         let plink = harness.fixture.path(r"it's PuTTY\plink.exe");
         let settings = sync_settings(&harness, plink_settings(&plink));
         let none = json!({ "GIT_SSH_COMMAND": null, "GIT_SSH_VARIANT": null });
@@ -9722,9 +9851,11 @@ pub(crate) mod tests {
             file_system_id: "fedc9aa3bd65bc57".to_string(),
             inode: "4243".to_string(),
         };
-        wsl.harness
-            .requests
-            .tag(&operation, crate::bootstrap::PhysicalIdentity::Wsl(common));
+        wsl.harness.requests.tag(
+            &operation,
+            "sync",
+            crate::bootstrap::PhysicalIdentity::Wsl(common),
+        );
         let before = wsl.host.commands().len();
         let call = uuid();
         wsl.harness.send(json!({

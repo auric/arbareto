@@ -462,7 +462,7 @@ describe("contract Δ3 results", () => {
 
   const zero = Object.fromEntries(FLAGS.map((flag) => [flag, 0]));
   const remote = (over: Record<string, unknown> = {}) => ({ name: "origin", state: "succeeded", updates: [{ flag: "+", oldObjectId: OID, newObjectId: OID2, ref: "refs/remotes/origin/main" }], counts: { ...zero, "+": 1 }, outputTail: "", ...over });
-  const pushed = { status: "pushed", oldObjectId: OID, newObjectId: OID2, reasonText: null, lease: false, upstreamWritten: false, outputTail: "" };
+  const pushed = { status: "pushed", oldObjectId: OID, newObjectId: OID2, reasonText: null, lease: false, upstreamWritten: false, upstreamNotSet: false, outputTail: "" };
 
   test("the fetch result of data-model §4", () => {
     const R = C.SyncResult;
@@ -486,6 +486,10 @@ describe("contract Δ3 results", () => {
     expect(ok(R, { action: "force-push", push: { ...pushed, status: "rejected", reasonText: "stale info", lease: true, newObjectId: null } })).toBe(true);
     expect(ok(R, { action: "push", push: { ...pushed, status: "accepted" } })).toBe(false);
     expect(ok(R, { action: "fetch", push: pushed })).toBe(false);
+    // Contract Δ3 Set upstream: a failed write after a successful push.
+    expect(ok(R, { action: "push", push: { ...pushed, status: "created", upstreamNotSet: true }, remedy: { text: "t", command: "& 'git' config" } })).toBe(true);
+    const { upstreamNotSet: _omitted, ...withoutFact } = pushed;
+    expect(ok(R, { action: "push", push: withoutFact })).toBe(false);
   });
 
   test("the integration states of data-model §7", () => {

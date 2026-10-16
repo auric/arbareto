@@ -228,6 +228,9 @@
         "upstreamWritten": {
           "type": "boolean"
         },
+        "upstreamNotSet": {
+          "type": "boolean"
+        },
         "outputTail": {
           "type": "string",
           "pattern": "^[^\\u0000]*$"
@@ -240,6 +243,7 @@
         "reasonText",
         "lease",
         "upstreamWritten",
+        "upstreamNotSet",
         "outputTail"
       ],
       "additionalProperties": false,

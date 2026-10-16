@@ -23,7 +23,7 @@ import type { ReadInstallation } from "./snapshot";
 import { trackStall } from "./stall";
 import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
-import { fetchArgs, pushArgs } from "./sync-commands";
+import { fetchArgs, pushArgs, upstreamArgs } from "./sync-commands";
 import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, type FetchFlag, type FetchUpdate, type PushStatus } from "./sync-parsers";
 import { lastValue, listRefs, observeSync, refKey, refText, type Observation, type SyncBinding } from "./sync-review";
 import type { ConfigEntry, Trust } from "./trust";
@@ -33,6 +33,9 @@ import { processEnd } from "./wsl-files";
 export const STEP_REMEDY_TEXT = "This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again.";
 // Contract Δ8.
 export const CANCELED_PUSH_TEXT = "The remote can hold this push. Fetch to see the remote state.";
+// Contract Δ3 Set upstream.
+export const UPSTREAM_REMEDY_TEXT = "The push succeeded, but Arbareto could not set the upstream. This command sets it.";
+const UPSTREAM_REMEDY = "& {git} --no-lazy-fetch -C {root} config --local -- {remoteKey} {remote}; & {git} --no-lazy-fetch -C {root} config --local -- {mergeKey} {merge}";
 
 const LF = 0x0a;
 const HEADS = "refs/heads/";
@@ -224,8 +227,29 @@ export function createSyncer(o: SyncerOptions) {
       return { exit, canceled: signal.aborted && (exit === null || exit.exitCode === null), refused, outputTail: stderr.outputTail() };
     };
 
+    // Contract Δ3 Set upstream: the `upstreamArgs` writes in order. Only exit 0 of each write means set. A Cancel starts no later write.
+    // `ends` holds a null exit for a start that the runner refused.
+    const writeUpstream = async (branch: string, remote: string, dst: string): Promise<{ set: boolean; ends: { exit: GitExit | null }[] }> => {
+      const ends: { exit: GitExit | null }[] = [];
+      for (const args of upstreamArgs(branch, remote, dst)) {
+        if (signal.aborted) return { set: false, ends };
+        let exit: GitExit | null = null;
+        try {
+          const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+          const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+          exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: "remote", limits: PROCESS_LIMITS.network, stdout, stderr, signal });
+          lastDescendants = exit.activeDescendants ?? 0;
+        } catch (error) {
+          if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;
+        }
+        ends.push({ exit });
+        if (exit?.exitCode !== 0) return { set: false, ends };
+      }
+      return { set: true, ends };
+    };
+
     // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No listing decides before the process-end fact.
-    const processEnded = async (ends: readonly StepEnd[]) => w.wsl === undefined || ends.every((e) => e.exit !== null && e.exit.exitCode !== null) || (await processEnd(q)) === "fact";
+    const processEnded = async (ends: readonly { exit: GitExit | null }[]) => w.wsl === undefined || ends.every((e) => e.exit !== null && e.exit.exitCode !== null) || (await processEnd(q)) === "fact";
 
     // ---- fetch and fetch-all (data-model §4 and §8) ----
     const runFetch = async (entries: readonly ConfigEntry[]) => {
@@ -339,12 +363,16 @@ export function createSyncer(o: SyncerOptions) {
           ? remedyOf("& {git} --no-lazy-fetch -C {root} push -- {remote} {refspec}", { remote: d.remote, refspec }, userInfo)
           : remedyOf("& {git} --no-lazy-fetch -C {root} push --force-with-lease={lease} -- {remote} {refspec}", { lease: `${d.ref}:${lease}`, remote: d.remote, refspec }, userInfo);
       const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-      const end = await networkStep(pushArgs(d.remote, branch, d.ref, { setUpstream: d.setUpstream, lease }, w.objectFormat), "sync-push", {}, remedy, out);
+      const end = await networkStep(pushArgs(d.remote, branch, d.ref, lease, w.objectFormat), "sync-push", {}, remedy, out);
       const deadline = end.exit?.deadline !== undefined;
-      enterReconciling(registry, operationId, deadline, lastDescendants);
       const exited = end.exit !== null && end.exit.exitCode !== null && !out.limited && !end.exit.diagnosticLimit && !deadline;
-      const line = exited ? parsePushPorcelain(pushLines(out.take(), d.setUpstream), refspec, end.exit!.exitCode!) : null;
+      const line = exited ? parsePushPorcelain(out.take(), refspec, end.exit!.exitCode!) : null;
       const status: PushStatus = line?.status ?? "none";
+      const succeeded = exited && SUCCESS.includes(status);
+      // Contract Δ3 Set upstream: only after a successful push. A failed write leaves the push succeeded.
+      const upstream = succeeded && d.setUpstream ? await writeUpstream(branch, d.remote, d.ref) : { set: true, ends: [] };
+      const upstreamNotSet = !upstream.set;
+      enterReconciling(registry, operationId, deadline, lastDescendants);
       const tracking = d.trackingRef ?? trackingOf(entries, d.remote, d.ref);
       const pushResult = (after: Refs | null, upstreamWritten: boolean) => ({
         status,
@@ -353,9 +381,10 @@ export function createSyncer(o: SyncerOptions) {
         reasonText: line?.reasonText ?? null,
         lease: lease !== null,
         upstreamWritten,
+        upstreamNotSet,
         outputTail: end.outputTail,
       });
-      if (!(await processEnded([end]))) return unknown({ code: "GIT_FAILED" }, { action: b.payload.action, push: pushResult(null, false) });
+      if (!(await processEnded([end, ...upstream.ends]))) return unknown({ code: "GIT_FAILED" }, { action: b.payload.action, push: pushResult(null, false) });
       const [after, observedHead, state, listed] = await Promise.all([
         listRefs(q),
         settled(q.signal, captureHead(q.runner, q)),
@@ -375,7 +404,6 @@ export function createSyncer(o: SyncerOptions) {
       const upstreamKeys = [`branch.${branch}.remote`, `branch.${branch}.merge`];
       const upstreamOf = (list: readonly ConfigEntry[]) => upstreamKeys.map((k) => list.filter((e) => e.key === k).map((e) => e.value));
       const upstreamWritten = !Bun.deepEquals(upstreamOf(entries), upstreamOf(listed.listing.entries), true);
-      const succeeded = exited && SUCCESS.includes(status);
       // FR-018: Git's push sets the tracking ref of the destination to the pushed commit.
       const expected = new Map(before.value);
       if (succeeded && tracking !== null) expected.set(refKey(tracking), head.oid);
@@ -384,7 +412,9 @@ export function createSyncer(o: SyncerOptions) {
       const result = { action: b.payload.action, push: pushResult(after.value, upstreamWritten) };
       if (succeeded) {
         const unexpected = changes(expected, after.value).length > 0 || stateChanged || (upstreamWritten && !d.setUpstream);
-        return finish(unexpected ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, result);
+        const values = { remoteKey: `branch.${branch}.remote`, remote: d.remote, mergeKey: `branch.${branch}.merge`, merge: d.ref };
+        const done = upstreamNotSet ? { ...result, remedy: { ...remedyOf(UPSTREAM_REMEDY, values, false), text: UPSTREAM_REMEDY_TEXT } } : result;
+        return finish(unexpected ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, done);
       }
       if (end.canceled) {
         if (changed) return finish({ type: "failed-with-effects" }, result);
@@ -465,17 +495,6 @@ function staleOf(b: SyncBinding, again: Observation): { code: ErrorCode; reason?
   const { trust: _bound, ...bound } = b;
   const { trust: _now, ...now } = again.binding;
   return Bun.deepEquals(bound, now, true) ? null : { code: "STALE_REVIEW" };
-}
-
-// Git prints `branch '<name>' set up to track '<upstream>'.` on stdout for `--set-upstream` (branch.c `install_branch_config_multiple_remotes`).
-// That line is not a porcelain line of git-push(1) OUTPUT. Only lines with a TAB, `To `, and `Done` reach the parser.
-// shortcut: the filter belongs in `parsePushPorcelain` (sync-parsers.ts), owned by the batch 1 fix; move it there after that merge.
-function pushLines(stdout: Uint8Array, setUpstream: boolean): Uint8Array {
-  if (!setUpstream) return stdout;
-  const text = Buffer.from(stdout).toString("latin1");
-  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : null;
-  if (lines === null) return stdout;
-  return Buffer.from(lines.filter((l) => l.includes("\t") || l === "Done" || l.startsWith("To ")).map((l) => `${l}\n`).join(""), "latin1");
 }
 
 export type Syncer = ReturnType<typeof createSyncer>;

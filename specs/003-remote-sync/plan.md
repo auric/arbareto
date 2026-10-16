@@ -186,17 +186,17 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   1. R = `%(push:remotename)`. Empty: R = `origin`, as git-push(1) documents for a push without an explicit remote. No `origin` in `git remote`: panel.
   2. R not in `git remote`: reason `remote-missing`. `remote.<R>.mirror` true: reason `mirror`. Git pushes to a mirror remote; the app refuses on purpose (R16 d). An invalid remote value or a string key without a value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
   3. dst = `%(push:remoteref)` when it is filled, which is the `remote.<R>.push` case. Source `remote-push-refspec`.
-  4. Else, by the last `push.default` value. F is the fetch remote: `branch.<branch>.remote`, else `origin` (remote.c `remote_for_branch`).
+  4. Else, by the last `push.default` value. Git checks every entry, so one invalid entry stops each Git read before this rule (contract "Contract gaps"). F is the fetch remote: `branch.<branch>.remote`, else `origin` (remote.c `remote_for_branch`).
      - `current`: dst = `refs/heads/<branch>`.
      - `simple` or unset, R differs from F (triangular): dst = `refs/heads/<branch>`, because Git's push treats it like `current`. Source `push-default-triangular`.
      - `simple` or unset, R equals F: `%(push)` empty means that Git cannot resolve one destination, so panel. Else dst = `refs/heads/<branch>`.
      - `upstream` or `tracking`: needs `%(upstream:remotename)` = R, else reason `push-remote-differs`. `%(upstream)` empty: panel. Else dst = `%(upstream:remoteref)`.
      - More than one `branch.<branch>.merge` entry gives reason `several-merge-refs` for `simple` or unset with R equal to F, and for `upstream` or `tracking` after the R check. Git's push stops there with exit 128 (builtin/push.c `get_upstream_ref`).
      - `matching`: panel. Git pushes the branch only when the remote advertises a branch of the same name at push time. The review contacts no remote (R2).
-     - `nothing` or any other value: reason `invalid-config`.
+     - `nothing`: reason `invalid-config`. Another value, or a key without a value, fails the trust listing first.
   5. The tracking ref of dst is `%(push)` when it is filled. A triangular destination has an empty `%(push)`, so it has no tracking ref. Force push with lease then gives reason `no-lease` (D5).
 - `remote get-url --push --all -- <R>` must print exactly one URL. Otherwise the reason is `push-urls` (O-11). Git pushes to every push URL; the app refuses on purpose (R16 d).
-- Argv: `--no-lazy-fetch push --porcelain --progress --no-recurse-submodules --no-follow-tags [--set-upstream] [--force-with-lease=<dst>:<expect>] -- <R> refs/heads/<branch>:<dst>`.
+- Argv: `--no-lazy-fetch push --porcelain --progress --no-recurse-submodules --no-follow-tags [--force-with-lease=<dst>:<expect>] -- <R> refs/heads/<branch>:<dst>`.
 - Result: the one porcelain line whose `from:to` equals the refspec.
   - Flags ` `, `+`, `*`, and `=` mean success.
   - `!` with `[rejected]` starts the FR-023 notice.
@@ -204,6 +204,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - `[remote failure]` means an unknown remote result.
   - The reason text in parentheses shows as plain text and decides nothing (FR-015).
 - Set upstream: the panel lists the remotes and the branch name. Set upstream is selected by default only for a branch without an upstream (FR-016). The service checks the name with the `check-ref-format` rules (`isRefName`, `commands.ts`).
+- After a push with a success status, a selected Set upstream writes `branch.<branch>.remote` and `branch.<branch>.merge` with two `config --local` processes (contract Δ3 "Set upstream"). Exit codes alone decide. A failed write gives `upstreamNotSet` and a remedy, and the push stays succeeded.
 
 ### D5 Push rejected and force push with lease
 

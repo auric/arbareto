@@ -69,7 +69,8 @@ Label rule (renderer):
 | `reasonText` | The parenthesized reason as plain text. Display only. |
 | `lease` | True when the push sent a lease. A `rejected` status with a lease means the remote changed. |
 | `upstreamWritten` | True when `branch.<name>.remote` or `.merge` changed. |
-| `outputTail` | Bounded, redacted stderr, also on success. |
+| `upstreamNotSet` | True when a selected Set upstream ran after a successful push and a write did not exit 0, or a Cancel came first (contract Δ3). The push outcome stays. The result holds the Set upstream remedy. |
+| `outputTail` | Bounded, redacted stderr of the push, also on success. |
 
 ## 6. Pull decision
 
@@ -108,7 +109,7 @@ An invalid value gives refusal `invalid-config`. The `sync` result names the sou
 | Action | `succeeded` | `completed-with-effects` | `failed` | `failed-with-effects` | `canceled` |
 |---|---|---|---|---|---|
 | fetch, fetch-all | Every process exit 0, and the listing diff equals the lines. | Exit 0, and the diff has more changes. | A process failed, and no ref changed. | A process failed or a limit fired, and a ref changed. | Cancel, and no ref changed. |
-| push | Status `pushed`, `forced`, `created`, or `up-to-date`. | Success, and another local change is observed. | `PUSH_REJECTED` with its reason, or no line and no change. | A limit or Cancel, and a local ref or config changed. | Cancel, and no local change. The remote can hold the push. |
+| push | Status `pushed`, `forced`, `created`, or `up-to-date`, also with `upstreamNotSet`. | Success, and another local change is observed. | `PUSH_REJECTED` with its reason, or no line and no change. | A limit or Cancel, and a local ref or config changed. | Cancel, and no local change. The remote can hold the push. |
 | pull, integrate | Integration `up-to-date` or `done`, or `mode-required`. | `done`, and an observed value differs from the expected one. | No effect. | The fetch changed refs, and the integration is `stopped`, `refused`, or not started. | Cancel, and no change. |
 | abort, continue, skip | State `normal` after abort; Git exit 0 and state `normal` after continue or skip. | Another observed change. | Git refused, and nothing changed. | `stopped` again, or a partial change. | Cancel, and no change. |
 | clone | Exit 0 and registration. | Not used. | A refusal before the start, or a failure with the destination absent or empty. | The destination exists and is not empty after a failure, a limit, or Cancel. | Cancel, and the destination is absent or empty. |

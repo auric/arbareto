@@ -1059,6 +1059,8 @@ export const PushResult = z
     reasonText: z.string().nullable(),
     lease: z.boolean(),
     upstreamWritten: z.boolean(),
+    // Contract Δ3 Set upstream: a write after a successful push did not exit 0.
+    upstreamNotSet: z.boolean(),
     outputTail: OutputTail,
   })
   .meta({ title: "PushResult" });

@@ -83,11 +83,20 @@ export function fetchArgs(remote: string): string[] {
 }
 
 // Plan.md D4 and D5. `lease` is the expected OID of `dst`. Without a lease, the push never forces.
-export function pushArgs(remote: string, branch: string, dst: string, options: { setUpstream: boolean; lease: string | null }, objectFormat: ObjectFormat): string[] {
+export function pushArgs(remote: string, branch: string, dst: string, lease: string | null, objectFormat: ObjectFormat): string[] {
   const args = [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags"];
-  if (options.setUpstream) args.push("--set-upstream");
-  if (options.lease !== null) args.push(`--force-with-lease=${ref(dst)}:${oid(options.lease, objectFormat)}`);
+  if (lease !== null) args.push(`--force-with-lease=${ref(dst)}:${oid(lease, objectFormat)}`);
   return [...args, "--", item(remote), `${branchRef(branch)}:${ref(dst)}`];
+}
+
+// Contract Δ3 Set upstream: the two values that transport.c `set_upstreams` writes for `push --set-upstream`, in its order.
+// `--local` writes the repository file, as `install_branch_config` does, whatever `GIT_CONFIG` names.
+export function upstreamArgs(branch: string, remote: string, dst: string): string[][] {
+  branchRef(branch);
+  return [
+    [L, "config", "--local", "--", `branch.${branch}.remote`, item(remote)],
+    [L, "config", "--local", "--", `branch.${branch}.merge`, ref(dst)],
+  ];
 }
 
 export function fastForwardArgs(upstreamRef: string): string[] {

@@ -47,22 +47,19 @@ const WRITES: [string, string[], string[]][] = [
   ["fetch", sync.fetchArgs("origin"), [L, "fetch", "--porcelain", "--progress", "--no-recurse-submodules", "--", "origin"]],
   [
     "push",
-    sync.pushArgs("origin", "main", "refs/heads/main", { setUpstream: false, lease: null }, "sha1"),
+    sync.pushArgs("origin", "main", "refs/heads/main", null, "sha1"),
     [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", "--", "origin", "refs/heads/main:refs/heads/main"],
   ],
-  [
-    "push with --set-upstream",
-    sync.pushArgs("up/stream", "a/b", "refs/heads/a/b", { setUpstream: true, lease: null }, "sha1"),
-    [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", "--set-upstream", "--", "up/stream", "refs/heads/a/b:refs/heads/a/b"],
-  ],
+  ["set upstream remote", sync.upstreamArgs("a/b", "up/stream", "refs/heads/other")[0]!, [L, "config", "--local", "--", "branch.a/b.remote", "up/stream"]],
+  ["set upstream merge", sync.upstreamArgs("a/b", "up/stream", "refs/heads/other")[1]!, [L, "config", "--local", "--", "branch.a/b.merge", "refs/heads/other"]],
   [
     "triangular push",
-    sync.pushArgs("fork", "topic", "refs/heads/topic", { setUpstream: false, lease: null }, "sha1"),
+    sync.pushArgs("fork", "topic", "refs/heads/topic", null, "sha1"),
     [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", "--", "fork", "refs/heads/topic:refs/heads/topic"],
   ],
   [
     "force push with lease",
-    sync.pushArgs("origin", "main", "refs/heads/trunk", { setUpstream: false, lease: T }, "sha1"),
+    sync.pushArgs("origin", "main", "refs/heads/trunk", T, "sha1"),
     [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", `--force-with-lease=refs/heads/trunk:${T}`, "--", "origin", "refs/heads/main:refs/heads/trunk"],
   ],
   ["fast-forward", sync.fastForwardArgs("refs/remotes/origin/main"), [L, "merge", "--ff-only", "--no-autostash", "refs/remotes/origin/main"]],
@@ -110,7 +107,8 @@ describe("names that start with '-' stay after --", () => {
   test("remote names", () => {
     expect(sync.fetchArgs("-x").slice(-2)).toEqual(["--", "-x"]);
     expect(sync.pushUrlArgs("--upload-pack=y").slice(-2)).toEqual(["--", "--upload-pack=y"]);
-    expect(sync.pushArgs("-x", "main", "refs/heads/main", { setUpstream: false, lease: null }, "sha1").slice(-3)).toEqual(["--", "-x", "refs/heads/main:refs/heads/main"]);
+    expect(sync.pushArgs("-x", "main", "refs/heads/main", null, "sha1").slice(-3)).toEqual(["--", "-x", "refs/heads/main:refs/heads/main"]);
+    expect(sync.upstreamArgs("main", "-x", "refs/heads/main")[0]!.slice(-3)).toEqual(["--", "branch.main.remote", "-x"]);
   });
 
   test("clone URL and destination", () => {
@@ -133,8 +131,11 @@ describe("refused inputs", () => {
   test("a branch or ref that fails isRefName", () => {
     throws(() => sync.pushRecordArgs("bad..name"));
     throws(() => sync.pushRecordArgs("x*"));
-    throws(() => sync.pushArgs("origin", "a b", "refs/heads/main", { setUpstream: false, lease: null }, "sha1"));
-    throws(() => sync.pushArgs("origin", "main", "main", { setUpstream: false, lease: null }, "sha1"));
+    throws(() => sync.pushArgs("origin", "a b", "refs/heads/main", null, "sha1"));
+    throws(() => sync.pushArgs("origin", "main", "main", null, "sha1"));
+    throws(() => sync.upstreamArgs("bad..name", "origin", "refs/heads/main"));
+    throws(() => sync.upstreamArgs("main", "origin", "main"));
+    throws(() => sync.upstreamArgs("main", "", "refs/heads/main"));
     throws(() => sync.fastForwardArgs("origin/main"));
     throws(() => sync.mergeArgs("refs/remotes/origin/main~1", "--ff"));
     throws(() => sync.rebaseArgs("-x", false));
@@ -144,7 +145,7 @@ describe("refused inputs", () => {
     throws(() => sync.leaseCountArgs(T, HEAD, "sha256"));
     throws(() => sync.leaseCommitsArgs("HEAD", HEAD, "sha1"));
     throws(() => sync.aheadBehindArgs(HEAD, U, "sha1"));
-    throws(() => sync.pushArgs("origin", "main", "refs/heads/main", { setUpstream: false, lease: "x" }, "sha1"));
+    throws(() => sync.pushArgs("origin", "main", "refs/heads/main", "x", "sha1"));
   });
 
   test("an unknown operation kind or ff option", () => {

@@ -18,7 +18,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 ## Δ3 Public operations (001 §3)
 
-Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs`. Policies are in brackets. `<name>`, `<old>`, and `<new>` passed the branch name rule (plan D4). `<ref>` is a full ref name from the review. `<oid>` matches the object format. `<path>` is the literal path bytes.
+Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs`, except `check-ignore --no-index` (plan D3). Policies are in brackets. `<name>`, `<old>`, and `<new>` passed the branch name rule (plan D4). `<ref>` is a full ref name from the review. `<oid>` matches the object format. `<path>` is the literal path bytes.
 
 ### `readBranches`
 
@@ -61,12 +61,12 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
 - One read slot. Every review reads the 001 HEAD capture, the operation markers, and the trust listing (own or shared, 001 §7), with the 30 s deadline.
 - Common refusals before any token: `OPERATION_IN_PROGRESS` (except `choose-side`, `mergetool`, `ignore`, `config-save`, `worktree-prune`, and `worktree-remove` of another worktree), `CONFLICTED` with the count (for `switch`, `merge`, `rebase`), `TRUST_REQUIRED` or `TRUST_CHANGED` for an action whose class needs approval (Δ7), `INVALID_REQUEST` for a name that fails the rule, `WORKBENCH_UNAVAILABLE` with a Δ9 reason.
 - Reads per action:
-  - `switch`: `status --porcelain=v2 -z --untracked-files=no --ignore-submodules=dirty`; `readWorktrees`; `rev-parse --verify -q <ref>^{commit}` for a ref target; for a detached HEAD C, `for-each-ref --contains=<C> --count=1 --format=%(refname)`; `show-ref --exists refs/stash`, then `rev-parse --verify -q refs/stash`; for Discard, the plan D3 in-the-way check: `diff-tree -r -z --no-renames --name-status <HEAD> <target oid>`, `fileFacts` (001 §6), `ls-files -z --stage` for the candidates, and `check-ignore -z --stdin --no-index` with the candidates on stdin. For `track`, `show-ref --exists refs/heads/<name>` exit 2 must hold; exit 0 gives reason `name-exists`.
+  - `switch`: `status --porcelain=v2 -z --untracked-files=no --ignore-submodules=dirty`; `readWorktrees`; `rev-parse --verify -q <ref>^{commit}` for a ref target; for a detached HEAD C, `for-each-ref --contains=<C> --count=1 --format=%(refname)`; `show-ref --exists refs/stash`, then `rev-parse --verify -q refs/stash`; for Discard, the plan D3 in-the-way check: `diff-tree -r -z --no-renames --name-status <HEAD> <target oid>`, `fileFacts` (001 §6), `ls-files -z --stage` for the candidates (a file or link counts only without a stage-0 entry at its path), and `--no-lazy-fetch --no-optional-locks check-ignore -z --stdin --no-index` with the candidates on stdin, without `--literal-pathspecs` (Git exits 128 with it). For `track`, `show-ref --exists refs/heads/<name>` exit 2 must hold; exit 0 gives reason `name-exists`.
   - `create-branch`: `check-ref-format --branch <name>`; `show-ref --exists refs/heads/<name>`.
   - `rename-branch`: the same for `<new>`.
   - `delete-branch`: `readWorktrees`; `rev-list --count <oid> --not --exclude=<name> --branches --tags --remotes`; `reflog exists HEAD`, then `log -g -z --format=%H -n 10000 HEAD --`.
-  - `merge`: `rev-list --left-right --count HEAD...<oid>`; `merge-base --is-ancestor HEAD <oid>` (exit 0 or 1; another exit gives `GIT_FAILED`); the effective `merge.ff`; the message preview `fmt-merge-msg` with one stdin line (plan D5).
-  - `rebase`: the plan D6 counts; the 003 D4 destination for the force note; `for-each-ref --merged=HEAD --no-merged=<oid> --format=%(refname) refs/heads` when `rebase.updateRefs` is true; the effective `rebase.autoStash`, `rebase.autoSquash`, and `rebase.rebaseMerges`.
+  - `merge`: `rev-list --left-right --count HEAD...<oid>`; `merge-base --is-ancestor HEAD <oid>` (exit 0 or 1; another exit gives `GIT_FAILED`); the effective `merge.ff`; the message preview `fmt-merge-msg` with one stdin line that holds the short display name (plan D5). A non-zero `fmt-merge-msg` exit gives `GIT_FAILED`.
+  - `rebase`: the plan D6 counts; the 003 D4 destination for the force note; when `rebase.updateRefs` is true, `for-each-ref --merged=HEAD --no-merged=<oid> --format=%(refname) refs/heads` and `readWorktrees`, then the moved list without each ref that the `branch` attribute of another worktree record names; the effective `rebase.autoStash` and `rebase.rebaseMerges`. `rebase.autoSquash` is not read, because Autosquash starts unchecked (plan D6).
   - `choose-side`, `mergetool`: `ls-files -z --stage -- <path>`; the working file facts and SHA-256 (001 §4 "Binding"); for `mergetool`, the effective `merge.tool` and its tool keys.
   - `ignore`: `rev-parse --path-format=absolute --git-path info/exclude` for `exclude`; `fileFacts` with `digest: true` of the target (1 MiB bound).
   - `worktree-add`: `readWorktrees`; `destinationFacts` (003 Δ6) of the bound path: `absent` or `empty` passes, other replies give `DESTINATION_NOT_EMPTY`; for `new`, the `create-branch` checks.
@@ -91,7 +91,7 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
   - `create-branch`: `checkout --no-recurse-submodules -b <name> <oid> --`, or `branch --end-of-options <name> <oid>`.
   - `rename-branch`: `branch -m --end-of-options <old> <new>`.
   - `delete-branch`: `update-ref --no-deref -d refs/heads/<name> <oid>`; then, when the listing held a local `branch.<name>` entry, `config --local --remove-section branch.<name>`. A non-zero `update-ref` exit runs no second step.
-  - `merge`: `merge --no-autostash --no-edit [--no-ff] [--squash] [--no-commit] [--no-log -m <message>] --end-of-options <ref>`.
+  - `merge`: `merge --no-autostash --no-edit [--no-ff] [--squash] [--no-commit] --no-log -m <message> --end-of-options <ref>`. `<ref>` is the full ref. `<message>` is the bound preview or the edited text.
   - `rebase`: `rebase (--autostash|--no-autostash) (--autosquash|--no-autosquash) --end-of-options <ref>`.
   - `choose-side`: `checkout --no-recurse-submodules --ours -- <path>` or `--theirs`.
   - `mergetool` [`mergetool`]: `mergetool --tool=<tool> --no-prompt -- <path>`, with empty stdin.
@@ -246,7 +246,8 @@ Reused: `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW
 - Git gives no machine-readable reason for a refused checkout, merge, rebase, stash apply, or worktree command. The outcome comes from fresh reads, and the tail shows Git's text.
 - Git has no command that drops a stash by commit ID. The drop step reads the reflog position first, so a stash that another process pushes between that read and the drop can shift the position. `stash drop` then removes another entry. Git's own `stash pop` reads the position the same way.
 - `update-ref -d` does not check worktrees. A worktree that checks out the branch between the review and the delete keeps a HEAD that names a deleted branch. Git's own `branch -D` has the same window between its check and its delete.
-- The untracked-in-the-way check is a superset on case-insensitive volumes (research R4).
+- The untracked-in-the-way check can name a path that Git allows on case-insensitive volumes (research R4).
+- `check-ignore --no-index` runs without `--literal-pathspecs`. A stdin path that starts with `:` can then be read as pathspec magic. NTFS cannot hold `:`, so only the WSL test T081 checks it (research R21 F1).
 - The documentation of `git mergetool` defines no exit status (spec FR-096).
 - `git stash push` names no created stash in machine form. The service reads `refs/stash` and its reflog instead.
 - A merge tool that hands the file to an earlier instance outside the operation Job keeps its window after Cancel.

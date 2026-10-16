@@ -31,10 +31,10 @@
 
 - Decision: the D3 check names the files before Git starts (spec FR-011). Git's own checkout stays the guard.
 - Paths: `diff-tree -r -z --no-renames --name-status <HEAD> <target>` lists the paths that the checkout writes or removes. For A, M, and T records, the path and each leading folder are candidates. For D records, the path is a candidate.
-- Facts: `fileFacts` without link following (001 §6). A file, link, or folder at a candidate that the index does not hold at stage 0 with the same bytes counts. A folder where the target writes a file counts.
-- Ignored files: `check-ignore -z --stdin --no-index` removes ignored candidates. Git treats ignored files as replaceable, and the spec Assumptions accept that.
+- Facts: `fileFacts` without link following (001 §6). A file or link at a candidate counts only when the index has no stage-0 entry at that path. A folder where the target writes a file counts. Discard stashes the tracked changes first, so the check compares no bytes. F7 observed that this rule equals Git's verdict in all 6 cases (R21).
+- Ignored files: `check-ignore -z --stdin --no-index` removes ignored candidates. Git treats ignored files as replaceable, and the spec Assumptions accept that. The read has no `--literal-pathspecs` (R21 F1).
 - Bound: 20,000 candidate paths (`DISCARD_CHECK_PATHS`). Above it, Discard is unavailable with the limit.
-- Case folding on Windows can make the check refuse a case that Git allows. This is a superset, so it never lets a loss through.
+- Case folding on Windows can make the check refuse a case that Git allows. A case that the check misses loses nothing, because Git's own plain checkout refuses it (R3).
 
 ## R5 Branch create, rename, delete
 
@@ -55,26 +55,26 @@
 
 ## R7 Merge
 
-- Decision: `merge --no-autostash --no-edit [--no-ff] [--squash] [--no-commit] [--no-log -m <message>] --end-of-options <ref>`.
+- Decision: `merge --no-autostash --no-edit [--no-ff] [--squash] [--no-commit] --no-log -m <message> --end-of-options <ref>`, with the full ref and the preview or the edited text (R21 F12).
 - Counts: `rev-list --left-right --count HEAD...<oid>` (doc). Fast-forward: `merge-base --is-ancestor HEAD <oid>`, exit 0 true and 1 false (doc).
 - Message preview: `merge_name` writes `<oid>\t\tbranch '<name>' of .` for a local branch (source, recalled; DeepWiki did not return that function). `fmt-merge-msg` formats a merge message from such lines (doc). F12 checks equality with Git's own message, `merge.log`, and the " into <branch>" suffix.
-- `-m` with `merge.log` true appends a shortlog to the given message, and `--no-log` stops it (source, t7600). So the app sends `-m` only for an edited message, together with `--no-log`.
+- `-m` with `merge.log` true appends a shortlog to the given message, and `--no-log` stops it (source, t7600). So the app always sends `-m` together with `--no-log`. The preview already holds the shortlog when `merge.log` is true (F12).
 - `--squash` with `--no-ff` is refused, and `--no-commit` still fast-forwards (doc, source).
 - `--no-autostash`: 003 N-4 keeps the app from adding an autostash to merge.
-- Alternatives considered: always `-m` with the preview (a preview mismatch would change Git's message).
+- Alternatives considered: `-m` only for an edited message (with the full ref, Git writes `Merge branch 'refs/heads/topic'`, F12); the short name in the argv (a tag of the same name can win).
 
 ## R8 Rebase counts and options
 
 - Decision: moved count `rev-list --count --right-only --cherry-pick --no-merges <oid>...HEAD`; rewritten count `rev-list --count <oid>..HEAD`; held count by `--not --remotes`; force note by `--not <T>` of the 003 push tracking ref.
 - Rationale: `sequencer_make_script` walks `upstream...orig_head` with `right_only`, `cherry_mark` unless `--reapply-cherry-picks`, and `max_parents=1` unless `--rebase-merges`, and drops PATCHSAME commits (source). With an explicit upstream, the default is `--no-fork-point` (doc, git-rebase(1)). Empty commits can make the counts differ (source note), so F13 compares the count with the commits that Git's own rebase creates.
-- Options: the argv always passes the explicit Autostash and Autosquash forms, so Git does what the check boxes show. F15 records whether `rebase.autoSquash` affects a non-interactive rebase on Git 2.55 and 2.56 (unverified; Git 2.44 enabled `--autosquash` without `-i`).
-- Moved branches: `rebase.updateRefs` moves local branches whose tips lie in the rewritten range (doc, git-rebase(1) `--update-refs`). `for-each-ref --merged=HEAD --no-merged=<oid> refs/heads` lists those tips. F16 compares the list with Git's own result.
+- Options: the argv always passes the explicit Autostash and Autosquash forms, so Git does what the check boxes show. On Git 2.56, `rebase.autoSquash=true` alone does not squash in a non-interactive rebase (experiment, F15). So Autosquash starts unchecked and takes no default from `rebase.autoSquash`.
+- Moved branches: `rebase.updateRefs` moves local branches whose tips lie in the rewritten range (doc, git-rebase(1) `--update-refs`). `for-each-ref --merged=HEAD --no-merged=<oid> refs/heads` lists those tips. Git does not move a branch that another worktree checks out (experiment, F16). So the list drops the `branch` attributes of the other worktree records of `worktree list --porcelain -z`.
 - Dirty tree: Git refuses a rebase with tracked changes unless `--autostash` (doc). F14 confirms it on both Git versions.
 
 ## R9 Conflict resolve and merge tool
 
-- Choose a side: `checkout --ours -- <path>` and `checkout --theirs -- <path>` check out stage 2 or 3 of an unmerged path, and the path stays unmerged (doc, git-checkout(1)). During a rebase, the sides swap (doc). The file checkout runs `post-checkout` with flag 0 (doc, githooks(5)). It can run smudge filters and write the index, so the `workbench` class applies (F19 records `post-index-change`).
-- Merge tool: `mergetool --tool=<tool> --no-prompt -- <path>` (doc, git-mergetool(1)). The script writes the stage files with `checkout-index`, runs the tool, and runs `git add` when the tool reports success. Without a trusted exit code, it asks on its terminal; empty standard input ends that question as "no" (unverified; F21). The documentation defines no exit status, so a fresh index read decides (spec FR-096).
+- Choose a side: `checkout --ours -- <path>` and `checkout --theirs -- <path>` check out stage 2 or 3 of an unmerged path, and the path stays unmerged (doc, git-checkout(1)). During a rebase, the sides swap (doc). The file checkout runs `post-checkout` with flag 0 (doc, githooks(5)). It can run smudge filters and write the index, so the `workbench` class applies. F19 confirmed that it writes the index and runs `post-index-change`, and that the path stays unmerged, during a merge and a rebase.
+- Merge tool: `mergetool --tool=<tool> --no-prompt -- <path>` (doc, git-mergetool(1)). The script writes the stage files with `checkout-index`, runs the tool, and runs `git add` when the tool reports success. Without a trusted exit code, it asks on its terminal; empty standard input ends that question as "no" (experiment, F21 confirmed). The documentation defines no exit status, so a fresh index read decides (spec FR-096).
 - `mergetool.keepBackup` and `mergetool.<tool>.trustExitCode` stay unchanged (spec FR-093).
 - Merge drivers: gitattributes(5) "Defining a custom merge driver" runs `merge.<driver>.driver` for a path with `merge=<driver>`. Merge, rebase, and stash apply run it. 001 trust discovery lists no merge driver (001 contract §7 "Trust discovery includes …"). D12 adds it.
 
@@ -130,7 +130,7 @@
   - stash push and apply: filters, merge drivers, `core.fsmonitor`, `post-index-change`, `reference-transaction`;
   - merge: `pre-merge-commit`, `prepare-commit-msg`, `commit-msg`, `post-merge`, `reference-transaction`, merge drivers, filters, signing, `pre-auto-gc`;
   - rebase: `pre-rebase`, `post-checkout`, `post-rewrite`, `post-commit`, `prepare-commit-msg`, `reference-transaction`, merge drivers, filters, signing, `pre-auto-gc`;
-  - worktree add: `post-checkout`, `reference-transaction`, filters; worktree remove runs a status check in that worktree (unverified; F18);
+  - worktree add: `post-checkout`, `reference-transaction`, filters; worktree remove runs the clean filter and `core.fsmonitor` of that worktree (experiment, F18 confirmed);
   - branch create, rename, delete, and `update-ref`: `reference-transaction`.
 - One class covers the union (ponytail ceiling, plan N-2).
 
@@ -171,13 +171,13 @@
 ## R21 Open facts (P0 list)
 
 Each fact runs on Windows Git 2.56 and WSL Ubuntu-26.04 Git 2.55, compared with Git's own command on a copy. Results go into the Results section below.
-- F1: every argv of contract Δ3 is accepted, including `--end-of-options` and `--` positions.
+- F1: every argv of contract Δ3 is accepted, including `--end-of-options` and `--` positions. On WSL, T081 checks whether `check-ignore --no-index` reads a stdin path that starts with `:` literally.
 - F2: `checkout -b` with a refused switch creates no branch.
 - F3: Keep changes with a conflicting change leaves HEAD, the index, and every working byte unchanged.
 - F4: the stash protocol observations (S, P, the reflog pair, S^1) for one and two earlier stashes, and for "nothing to stash".
 - F5: `stash apply --index` that Git refuses changes no file.
 - F6: Discard through a stash equals `checkout --force` for tracked files, and keeps untracked files.
-- F7: the untracked-in-the-way check finds each Git refusal case of the fixtures.
+- F7: the untracked-in-the-way check names a path exactly in the cases that Git refuses.
 - F8: `checkout -b <new> --track=direct refs/remotes/<r>/<b>` writes the same `branch.<new>` keys as `git checkout --track <r>/<b>`.
 - F9: `update-ref -d` plus `--remove-section` equals `branch -D` in refs, reflogs, and configuration bytes; a moved branch makes `update-ref -d` exit non-zero and change nothing.
 - F10: the unmerged count equals the commits that `branch -D` makes unreachable from every branch, tag, and remote-tracking ref.
@@ -185,8 +185,8 @@ Each fact runs on Windows Git 2.56 and WSL Ubuntu-26.04 Git 2.55, compared with 
 - F12: the `fmt-merge-msg` preview equals Git's own merge message, with and without `merge.log`, on `main` and on another branch.
 - F13: the moved count equals the commits that Git's own rebase creates, with patch-same, empty, and merge commits.
 - F14: rebase with tracked changes and `--no-autostash` exits non-zero and changes nothing.
-- F15: whether `rebase.autoSquash=true` squashes in a non-interactive rebase.
-- F16: the moved-branch list equals the refs that `--update-refs` moves.
+- F15: whether `rebase.autoSquash=true` squashes in a non-interactive rebase, and the explicit `--autosquash` and `--no-autosquash` forms.
+- F16: the moved-branch list, without the branches of other worktrees, equals the refs that `--update-refs` moves.
 - F17: `worktree add -- <path> <branch>` checks out the branch, not a detached HEAD, also when a tag of the same name exists.
 - F18: `worktree remove` without `--force` runs the filters and the monitor of that worktree (canary).
 - F19: `checkout --ours -- <path>` writes the index and runs `post-index-change` (canary).
@@ -206,6 +206,15 @@ Each fact runs on Windows Git 2.56 and WSL Ubuntu-26.04 Git 2.55, compared with 
 - N5: `SHOpenFolderAndSelectItems` selects the path.
 - N6: the fixture tool window comes to the front.
 
-## Results
+### Results
 
-No P0 step has run yet.
+T003 ran F1 to F24 on Windows Git 2.56.0.windows.2 (commit 0171711). The WSL run waits for T081. The facts below differ from the first design or confirm a canary. Every other fact matched its expectation.
+- F1, observed: `check-ignore -z --stdin --no-index` with `--literal-pathspecs` exits 128. Without the flag, it exits 0. Design change: that one read drops `--literal-pathspecs` (plan D3, contract Δ3). Open gap: without the flag, a stdin path that starts with `:` can be read as pathspec magic. NTFS cannot hold `:`, so the Windows run cannot check it. T081 checks it on WSL.
+- F7, observed: the first rule (no stage-0 entry with the same bytes) named `a.txt` in the tracked-conflict case, which Git allows after the Discard stash. The narrower rule counts a file or link only when the index has no stage-0 entry at that path. It equals Git's verdict in all 6 cases. Design change: R4, plan D3, and contract Δ3 use the narrower rule.
+- F11, observed: `check-ref-format --branch @` exits 0 and prints `@`, so the name rule accepts `@`. No contract change. Design change: plan D4 states that every revision argument is a full ref name, because `@` means HEAD.
+- F12, observed: the `fmt-merge-msg` preview with the short display name equals Git's own `git merge <short name>` message in all 5 cases (main, another branch, `merge.log` on each, a remote-tracking source). The full-ref argv without `-m` writes `Merge branch 'refs/heads/topic'` instead. The full-ref argv with `--no-log -m <preview>` equals Git's own message. Design change: the merge argv keeps `--end-of-options <full ref>` and always passes `--no-log -m <preview or edited text>` (plan D5, contract Δ3, data-model §5).
+- F15, observed: `rebase.autoSquash=true` alone keeps the `fixup!` commit in a non-interactive rebase on Git 2.56. `--autosquash` squashes it, and `--no-autosquash` keeps it. Design change: Autosquash starts unchecked and takes no default from `rebase.autoSquash` (spec FR-025, plan D6).
+- F16, observed: `for-each-ref --merged=HEAD --no-merged=<oid>` also lists `refs/heads/wt-part`, which another worktree checks out, and Git's `--update-refs` does not move it. The list without the `branch` attributes of the other worktree records equals the moved refs. Design change: plan D6 and contract Δ3 remove those branches.
+- F18, confirmed: `worktree remove` without `--force` runs the clean filter and `core.fsmonitor` of that worktree. The `workbench` class covers both, and plan D10 applies the trust of that worktree.
+- F19, confirmed: `checkout --ours -- <path>` writes the index, runs `post-index-change` and `post-checkout` with flag 0, and leaves stages 1 to 3. This holds during a merge and a rebase. During a rebase, "ours" is the upstream side, so the resolve view names each side by its branch (spec FR-090, plan D7).
+- F21, confirmed: with a tool that leaves the file unchanged, an untrusted exit code, and empty standard input, `mergetool --no-prompt` exits 1, stages nothing, and leaves the working file unchanged.

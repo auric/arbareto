@@ -354,7 +354,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-022**: The merge panel MUST offer one result: Merge commit, which follows Git's own merge configuration, or Squash. It MUST offer the options No fast-forward and Don't commit. It MUST show an editable merge commit message, prefilled with Git's own default message. Each option MUST map to the Git merge option of the same meaning. The panel MUST disable combinations that Git refuses, with the reason.
 - **FR-023**: A merge MUST respect hooks and signing, as feature 001 FR-019 requires for commit. A merge that stops with conflicts MUST show the feature 003 conflict notice (003 FR-030).
 - **FR-024**: Rebase current branch onto MUST open a docked panel. It MUST state how many commits the rebase moves. It MUST state how many of them a remote-tracking branch holds. It MUST state that the next push needs Force push with lease only when the tracking ref of the 003 push destination of the current branch holds at least one rewritten commit.
-- **FR-025**: The rebase panel MUST offer Autostash and Autosquash. Each check box MUST start from the effective Git configuration value and name its source. Interactive rebase MUST show as unavailable, with the reason "Not in this version".
+- **FR-025**: The rebase panel MUST offer Autostash and Autosquash. Autostash MUST start from the effective `rebase.autoStash` value and name its source. Autosquash MUST start unchecked, because `rebase.autoSquash` affects only an interactive rebase. Interactive rebase MUST show as unavailable, with the reason "Not in this version".
 - **FR-026**: The Rebase button of the panel MUST count as the confirmation of the history rewrite that constitution principle I asks for. The panel MUST name the moved commits and the rewrite effect before the start.
 - **FR-027**: Rebase MUST be non-interactive. A rebase that stops with conflicts MUST show the feature 003 conflict notice. Continue, Skip, and Abort MUST follow 003 FR-042 to FR-045.
 - **FR-028**: Merge and Rebase MUST be unavailable for a detached HEAD, a branch without commits, and an operation in progress, with the reason.
@@ -462,7 +462,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **Switch stash**: The commit ID of the stash that a switch created. It stays until a reapply without conflicts ends.
 - **Branch delete check**: The branch commit at confirmation and the count of commits that only this branch holds.
 - **Merge request**: The source branch, the result kind, the options, and the message.
-- **Rebase request**: The target branch, the moved commits, the count of moved commits that a remote-tracking branch holds, and the Autostash and Autosquash values with their sources.
+- **Rebase request**: The target branch, the moved commits, the count of moved commits that a remote-tracking branch holds, the Autostash value with its source, and the Autosquash value.
 - **File selection**: A set of entries of one list from one status read. It binds a multi-file action.
 - **Line selection**: The selected added and removed lines of one hunk, bound to the shown diff.
 - **Ignore line**: The escaped, anchored path and its target file, `.gitignore` or `info/exclude`.

@@ -20,6 +20,7 @@
     "tests/git/read-lifecycle.test.ts": "asserts DEADLINE_MS and RECONCILIATION_TARGET_MS bounds",
     "tests/git/status-parser-time.test.ts": "asserts a parse below 2000 ms",
     "tests/git/submodule-lifecycle.test.ts": "asserts an outcome within RECONCILIATION_TARGET_MS and a loopback failure within 10,000 ms",
+    "tests/git/workbench-facts.test.ts": "builds or reads the 100,000-file untracked fixture",
     "tests/wsl/history-wsl.test.ts": "builds or reads H200K",
     "tests/wsl/lifecycle.test.ts": "asserts a close below 10,000 ms",
     "tests/wsl/submodules.test.ts": "asserts the stall event within 20,000 ms of a step start"

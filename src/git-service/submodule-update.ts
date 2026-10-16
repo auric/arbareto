@@ -147,7 +147,7 @@ function remoteNames(entries: readonly ConfigEntry[]): string[] {
 }
 
 // Contract §12 "Progress" and "Output tail": one collector feeds the tail and the counter. A segment ends at CR or LF, also across chunks.
-function stepStderr(onPercent: (percent: number) => void): Collector & { outputTail(): string } {
+export function stepStderr(onPercent: (percent: number) => void): Collector & { outputTail(): string } {
   const tail = createTailCollector("progress");
   const text = new TextDecoder("utf-8", { ignoreBOM: true });
   let open = "";

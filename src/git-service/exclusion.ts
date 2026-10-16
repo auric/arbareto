@@ -19,6 +19,8 @@ export interface MutationEntry {
   kind: MutationStarted["kind"];
   // Only `applyHunk` and `applyFile` carry it (contract §6 "Mutation frames").
   direction?: MutationStarted["direction"];
+  // Only `sync` carries it (feature 003 contract Δ6).
+  action?: MutationStarted["action"];
   workspace: Pick<Workspace, "repositoryId" | "worktreeRoot" | "commonDirectory" | "commonIdentity">;
 }
 
@@ -63,6 +65,7 @@ export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "c
         repositoryId: w.repositoryId,
         kind: entry.kind,
         ...(entry.direction === undefined ? {} : { direction: entry.direction }),
+        ...(entry.action === undefined ? {} : { action: entry.action }),
         worktreeRoot: w.worktreeRoot,
         commonDirectory: w.commonDirectory,
       });

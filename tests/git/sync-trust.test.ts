@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+// T036: the trust class `sync` (plan.md D11, N-1, contract Δ7, FR-009, SC-010).
+// A canary program writes a file when it runs. No refused case may write it.
+
+import { expect } from "bun:test";
+import { existsSync, rmSync } from "node:fs";
+import { useFixtureRoot } from "./fixture-root";
+import { describeGit } from "./git-binary";
+import { buildFetchFlags, gitRun, refMap, type GitHost } from "./remote-fixtures";
+import { caseTest, type Service, type TrustResult } from "./service-harness";
+import { hostFor, native, register, remoteCalls, reviewed, reviewSync, run, sync, TIMEOUT_MS, withSync } from "./sync-harness";
+
+useFixtureRoot();
+
+const TASK = "T036";
+const SHELL = ["shell-double"] as const;
+const outcome = (r: { state: string; code?: string }) => ({ state: r.state, code: r.code });
+const SYNC_EVENTS = ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction", "pre-auto-gc", "pre-push", "pre-merge-commit", "post-merge", "post-checkout", "pre-rebase", "post-rewrite"];
+
+interface Fixture {
+  h: GitHost;
+  origin: string;
+  repo: string;
+  canary: string;
+  log: string;
+}
+
+function fixture(tag: string): Fixture {
+  const h = hostFor(tag);
+  const f = buildFetchFlags(h);
+  const repo = `${h.root}/repo`;
+  h.copy(f.clone, repo);
+  gitRun(h, repo, ["tag", "-d", "t1"]);
+  const log = `${h.root}/canary.log`;
+  const canary = `${h.root}/canary.sh`;
+  h.write(canary, `#!/bin/sh\necho ran >> '${log}'\nexit 1\n`);
+  return { h, origin: f.origin, repo, canary, log };
+}
+
+async function approve(service: Service, repositoryId: string, generation: number): Promise<void> {
+  const trust = await service.readTrust(repositoryId);
+  expect(trust.state).toBe("succeeded");
+  expect((await service.approveTrust(repositoryId, trust.result!.fingerprint, generation)).state).toBe("succeeded");
+}
+
+describeGit("trust class sync (T036)", () => {
+  caseTest(TASK, "each repository-controlled SYNC_EVENTS hook, filter, command fsmonitor, signing program, transport program, and protocol entry sets approvalRequired.sync, so the review refuses and no canary runs", SHELL, async () => {
+    const f = fixture("t036-gate");
+    const configPath = `${f.repo}/.git/config`;
+    const base = f.h.read(configPath)!;
+    const programs: [string, string][] = [
+      ["core.sshCommand", f.canary],
+      ["core.gitProxy", f.canary],
+      ["core.askPass", f.canary],
+      ["credential.helper", `!'${f.canary}'`],
+      ["credential.http://127.0.0.1.helper", f.canary],
+      ["remote.origin.uploadpack", f.canary],
+      ["remote.origin.receivepack", f.canary],
+      ["protocol.allow", "always"],
+      ["protocol.file.allow", "always"],
+      ["filter.canary.clean", f.canary],
+      ["filter.canary.smudge", f.canary],
+      ["filter.canary.process", f.canary],
+      ["core.fsmonitor", f.canary],
+      ["gpg.program", f.canary],
+      ["gpg.ssh.defaultKeyCommand", f.canary],
+    ];
+    await withSync("t036-gate", async (service) => {
+      const r = await register(service, f.repo);
+      expect(outcome(await reviewSync(service, r, { action: "fetch" }))).toEqual({ state: "succeeded", code: undefined });
+      for (const [key, value] of programs) {
+        f.h.write(configPath, base);
+        gitRun(f.h, f.repo, ["config", key, value]);
+        const from = service.runner.calls.length;
+        for (const action of ["fetch", "fetch-all", "push"]) {
+          const response = await reviewSync(service, r, { action });
+          expect({ key, action, ...outcome(response) }).toEqual({ key, action, state: "failed", code: "TRUST_REQUIRED" });
+        }
+        expect({ key, calls: remoteCalls(service, from) }).toEqual({ key, calls: [] });
+      }
+      f.h.write(configPath, base);
+      for (const event of SYNC_EVENTS) {
+        const hook = `${f.repo}/.git/hooks/${event}`;
+        f.h.write(hook, `#!/bin/sh\nexec '${f.canary}'\n`);
+        const response = await reviewSync(service, r, { action: "fetch" });
+        expect({ event, ...outcome(response) }).toEqual({ event, state: "failed", code: "TRUST_REQUIRED" });
+        rmSync(native(hook));
+      }
+    });
+    expect(existsSync(native(f.log))).toBe(false);
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "sync refuses with TRUST_REQUIRED for a program added after the review, and with TRUST_CHANGED for an approved hook that changed, before any process", SHELL, async () => {
+    const f = fixture("t036-sync");
+    await withSync("t036-sync", async (service) => {
+      const r = await register(service, f.repo);
+      let review = await reviewed(service, r, { action: "fetch" });
+      gitRun(f.h, f.repo, ["config", "remote.origin.uploadpack", f.canary]);
+      let from = service.runner.calls.length;
+      expect(outcome(await sync(service, r, review.syncReviewToken))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
+      expect(remoteCalls(service, from)).toEqual([]);
+      gitRun(f.h, f.repo, ["config", "--unset", "remote.origin.uploadpack"]);
+
+      const hook = `${f.repo}/.git/hooks/pre-push`;
+      f.h.write(hook, "#!/bin/sh\nexit 0\n");
+      await approve(service, r.repositoryId, r.generation);
+      gitRun(f.h, f.repo, ["checkout", "-q", "-b", "feature"]);
+      review = await reviewed(service, r, { action: "push", destination: { remote: "origin", branch: "feature", setUpstream: false } });
+      f.h.write(hook, `#!/bin/sh\nexec '${f.canary}'\n`);
+      from = service.runner.calls.length;
+      expect(outcome(await sync(service, r, review.syncReviewToken))).toEqual({ state: "failed", code: "TRUST_CHANGED" });
+      expect(remoteCalls(service, from)).toEqual([]);
+    });
+    expect(existsSync(native(f.log))).toBe(false);
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "US3 scenario 3: after approval the pre-push hook runs; a hook refusal shows its output and changes no remote ref", SHELL, async () => {
+    const f = fixture("t036-hook");
+    const ran = `${f.h.root}/pre-push.ran`;
+    const hook = `${f.repo}/.git/hooks/pre-push`;
+    f.h.write(hook, "#!/bin/sh\necho hook says no >&2\nexit 1\n");
+    gitRun(f.h, f.repo, ["checkout", "-q", "-b", "feature"]);
+    const origin = refMap(f.h, f.origin);
+    await withSync("t036-hook", async (service) => {
+      const r = await register(service, f.repo);
+      const destination = { remote: "origin", branch: "feature", setUpstream: false };
+      expect(outcome(await reviewSync(service, r, { action: "push", destination }))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
+      await approve(service, r.repositoryId, r.generation);
+      const refused = await run(service, r, { action: "push", destination });
+      expect(outcome(refused)).toEqual({ state: "failed", code: "GIT_FAILED" });
+      expect(refused.result!.push!.status).toBe("none");
+      expect(refused.result!.push!.outputTail).toContain("hook says no");
+      expect(refMap(f.h, f.origin)).toEqual(origin);
+
+      f.h.write(hook, `#!/bin/sh\n: > '${ran}'\nexit 0\n`);
+      await approve(service, r.repositoryId, r.generation);
+      expect(outcome(await run(service, r, { action: "push", destination }))).toEqual({ state: "succeeded", code: undefined });
+      expect(existsSync(native(ran))).toBe(true);
+      expect(refMap(f.h, f.origin, ["refs/heads/feature"])).toEqual({ "refs/heads/feature": refMap(f.h, f.repo, ["refs/heads/feature"])["refs/heads/feature"] });
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "Δ7: readTrust shows the transport values and remote.<name>.puttykeyfile, redacted, and the fingerprint stays stable", SHELL, async () => {
+    const f = fixture("t036-display");
+    const values: [string, string][] = [
+      ["core.sshCommand", "ssh -o ProxyCommand=http://user:secret@proxy.invalid/x"],
+      ["core.gitProxy", "proxy-command for example.invalid"],
+      ["core.askPass", "askpass-program"],
+      ["credential.helper", "store"],
+      ["credential.https://user:secret@host.invalid.helper", "cache"],
+      ["remote.origin.uploadpack", "git-upload-pack"],
+      ["remote.origin.receivepack", "git-receive-pack"],
+      ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
+    ];
+    for (const [k, v] of values) gitRun(f.h, f.repo, ["config", k, v]);
+    await withSync("t036-display", async (service) => {
+      const r = await register(service, f.repo);
+      const first = await service.readTrust(r.repositoryId);
+      expect(first.state).toBe("succeeded");
+      const shown = (first.result as TrustResult).entries.filter((e) => e.scope === "local" && e.value !== undefined).map((e) => [e.key, e.value]).sort();
+      expect(shown).toEqual(
+        [
+          ["core.sshcommand", "ssh -o ProxyCommand=http://<redacted>@proxy.invalid/x"],
+          ["core.gitproxy", "proxy-command for example.invalid"],
+          ["core.askpass", "askpass-program"],
+          ["credential.helper", "store"],
+          ["credential.https://<redacted>@host.invalid.helper", "cache"],
+          ["remote.origin.uploadpack", "git-upload-pack"],
+          ["remote.origin.receivepack", "git-receive-pack"],
+          ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
+        ].sort(),
+      );
+      expect(JSON.stringify(first.result).includes("secret")).toBe(false);
+      const second = await service.readTrust(r.repositoryId);
+      expect(second.result!.fingerprint).toBe(first.result!.fingerprint);
+    });
+  }, TIMEOUT_MS);
+});

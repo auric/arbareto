@@ -9,7 +9,7 @@ import { isIdentifier } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
 import { isWindows } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
-import { RunnerRefusal, type GitRunner, type WslRunner } from "./git-runner";
+import { RunnerRefusal, type GitRunner, type SyncRunner, type WslRunner } from "./git-runner";
 import { createApprovals } from "./approvals";
 import { createCommitter } from "./commit";
 import { createCommitReviewer } from "./commit-review";
@@ -31,6 +31,9 @@ import type { ReadInstallation } from "./snapshot";
 import { createSubmoduleReviewer } from "./submodule-review";
 import { createSubmoduleUpdater, type SubmoduleUpdaterOptions } from "./submodule-update";
 import { createWorkspaceReader, type ReadOutcome, type WorkspaceReaderOptions } from "./status";
+import { createSyncer } from "./sync";
+import { createSyncReviewer } from "./sync-review";
+import { createTrackingReader } from "./tracking";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
@@ -40,13 +43,16 @@ export type { Handshake } from "../contracts/channel";
 
 type Fields = Record<string, unknown>;
 
+// The `reviewSync` actions of batch 2 (feature 003 tasks.md T040 to T042).
+const REVIEWED_ACTIONS: readonly string[] = ["fetch", "fetch-all", "push", "force-push"];
+
 // Contract §3 without the shell-only operations. The shell forwards `openRecentRepository` as `restoreWorkspace`.
 type ServiceOperation = ServiceRequest["operation"];
 type Handler<K extends ServiceOperation> = (request: Extract<ServiceRequest, { operation: K }>) => void;
 
 export interface SessionOptions {
   writer: FrameWriter;
-  runner: GitRunner & WslRunner & { receive(frame: Frame): boolean };
+  runner: GitRunner & WslRunner & SyncRunner & { receive(frame: Frame): boolean };
   // Called after a failed handshake reply. The service then exits.
   fail(): void;
   // Contract §5 "Other Git process deadline" bounds the startup revalidation. Tests set a shorter value.
@@ -148,6 +154,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     reconciling: (w) => exclusion.running(w.commonIdentity).some((operationId) => registry.get(operationId)?.state === "reconciling"),
   });
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
+  const tracking = createTrackingReader({ runner, trust, listingTuple: reader.listingTuple });
   const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }), reject: (requestId, code) => reject(requestId, code) });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
@@ -165,6 +172,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const files = createFilePublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   const committer = createCommitter({ runner, trust, reader, reviews, approvals, registry, exclusion, respond });
   const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
+  const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
+  const syncs = createSyncer({ runner, trust, reader, approvals, registry, exclusion, respond });
   const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
@@ -185,6 +194,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       comparisons.release(workspace.repositoryId);
       reviews.release(workspace.repositoryId);
       submoduleReviews.release(workspace.repositoryId);
+      syncs.release(workspace.repositoryId);
       approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
       trust.release(workspace);
       recovery.release(workspace);
@@ -340,7 +350,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -420,6 +430,41 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
         (await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } },
       { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } } satisfies RefsOutcome,
       "readRefs",
+    );
+  };
+
+  // Feature 003 contract Δ3 `readTracking`: one read slot, and the generation decides at acceptance as for `readRefs`.
+  const readTracking: Handler<"readTracking"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readTracking", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    scheduleRead(
+      request,
+      (t) => tracking.readTracking({ ...t, installation, workspace, generation: request.repositoryGeneration }),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } }),
+      { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } },
+    );
+  };
+
+  // Feature 003 contract Δ3 `reviewSync`: one read slot. Batch 3 adds the actions `pull`, `integrate`, `abort`, `continue`, and `skip`.
+  const reviewSync: Handler<"reviewSync"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (!REVIEWED_ACTIONS.includes(request.payload.action)) return reject(request.requestId, "SERVICE_UNAVAILABLE");
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("reviewSync", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    scheduleRead(
+      request,
+      (t) => syncReviews.reviewSync({ ...t, installation, workspace, generation: request.repositoryGeneration }, request.payload),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+      { result: "failed", code: "GIT_FAILED" },
     );
   };
 
@@ -635,10 +680,15 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       }),
     getOperation: (request) => operationTarget(request, (view) => respond({ requestId: request.requestId, state: "succeeded", result: view })),
     dismissRecoveryMarker,
-    // Feature 003 P4, P5, and P7 add these handlers. Until then the service answers SERVICE_UNAVAILABLE.
-    readTracking: undefined,
-    reviewSync: undefined,
-    sync: undefined,
+    readTracking,
+    reviewSync,
+    sync: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      syncs.sync(request, workspace, installation);
+    },
+    // Feature 003 P7 adds these handlers. Until then the service answers SERVICE_UNAVAILABLE.
     clone: undefined,
     connectInTerminal: undefined,
   };

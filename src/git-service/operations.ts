@@ -26,6 +26,7 @@ interface Entry {
 }
 
 const isTerminal = (state: string) => (TERMINAL_STATES as readonly string[]).includes(state);
+const STALL_FLAGGED: readonly string[] = ["updateSubmodules", "sync", "clone"];
 
 export function createOperationRegistry(
   // Returns the response that it sent, when that differs from its argument (contract §2 frame bound).
@@ -98,8 +99,8 @@ export function createOperationRegistry(
     progress(operationId: string, phase: Phase, counters: Record<string, number> = {}, distro?: string, path?: string): void {
       const e = entry(operationId);
       const state = e.view.state as ProgressEvent["state"];
-      // Data-model §9 "Progress": every `updateSubmodules` event carries the stall flag.
-      const stalled = e.view.operation === "updateSubmodules" ? (e.view.stalled ?? false) : e.view.stalled;
+      // Data-model §9 "Progress" and feature 003 contract Δ2: every `updateSubmodules`, `sync`, and `clone` event carries the stall flag.
+      const stalled = STALL_FLAGGED.includes(e.view.operation) ? (e.view.stalled ?? false) : e.view.stalled;
       const event = { requestId: e.requestId, operationId, state, phase, counters: { ...counters }, ...(stalled === undefined ? {} : { stalled }), ...(distro === undefined ? {} : { distro }), ...(path === undefined ? {} : { path }) };
       // Contract §2: no progress event follows the terminal response.
       if (isTerminal(e.view.state) || !ProgressEvent.safeParse(event).success) throw new TypeError("progress event refused");

@@ -12,6 +12,7 @@ import {
   InputWrittenReply,
   LingeringCountReply,
   OutputReply,
+  PageantReply as PageantReplySchema,
   Refused,
   RegisterReply as RegisterReplySchema,
   ResolveGitReply,
@@ -28,6 +29,7 @@ import {
   checkContext,
   checkFileFacts,
   checkIdentityPaths,
+  checkPageant,
   checkRegister,
   checkRelease,
   checkResolveGit,
@@ -45,6 +47,8 @@ import {
   type GitCall,
   type GitExit,
   type GitRunner,
+  type PageantReply,
+  type SyncRunner,
   type WslDistrosResult,
   type WslFileResult,
   type WslIndexResult,
@@ -98,7 +102,7 @@ interface Pending {
   handle(kind: FrameKind, reply: Body): boolean;
 }
 
-export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner & { receive(frame: Frame): boolean } {
+export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner & SyncRunner & { receive(frame: Frame): boolean } {
   const pending = new Map<string, Pending>();
   const diagnostics = createDiagnosticCounter();
 
@@ -416,6 +420,17 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         if (!reply.data.stored) return { result: "approved", stored: false };
         // Contract §7 "Trust approval store": with `persist: false`, the shell writes no record.
         return request.persist ? { result: "approved", stored: true, record: reply.data.record } : undefined;
+      });
+    },
+
+    // Feature 003 contract Δ6: the shell waits up to 30 s for Pageant, so the call has no cancel.
+    async pageant(request) {
+      checkPageant(request);
+      return ask<PageantReply>("process", { type: "pageant", ...request }, (r) => {
+        const reply = PageantReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
       });
     },
 

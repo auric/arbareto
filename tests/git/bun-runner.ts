@@ -19,6 +19,7 @@ import {
   checkContext,
   checkFileFacts,
   checkIdentityPaths,
+  checkPageant,
   checkRegister,
   checkRelease,
   checkResolveGit,
@@ -39,9 +40,11 @@ import {
   type IdentityReply,
   type MarkerFailure,
   type MutationStarted,
+  type PageantReply,
   type ProcessContext,
   type RefusedCode,
   type RegisterReply,
+  type SyncRunner,
   type TrustRecord,
   type TrustRequest,
   type WalkStop,
@@ -119,7 +122,7 @@ const WSL_TEXTS = { wrapper: wslProcess.wrapper.join("\n"), anchor: wslProcess.a
 const WSL_START_CAP_MS = 60_000;
 const WSL_PREFIX = /^\\\\(?:wsl\$|wsl\.localhost)\\([^\\/]+)(?:[\\/](.*))?$/i;
 
-export type WslMode = "probe" | "read" | "mutation" | "network" | "search";
+export type WslMode = "probe" | "read" | "mutation" | "network" | "search" | "remote" | "integrate";
 
 // The approved Linux Git of one distro (data-model §1). The shell takes it from its own parse of the probe output.
 export interface WslInstallation {
@@ -441,6 +444,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Shorter activity limits than the request (contract §6 "Activity and stall notice", §12 "Deadlines and Cancel").
     // Only a forwarded output byte, or a changed anchor CPU-time sum of a WSL call, is activity.
     limits: {} as { inactivityMs?: number; ceilingMs?: number; stallMs?: number },
+    // The shell setting `sshClient` (feature 003 data-model §10). The double holds no key file, so `plink` replies `none` or `failed`.
+    sshClient: "git" as "git" | { plink: string },
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -1026,7 +1031,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     return anchor ? { ...exit, activeDescendants: (await anchor.ask())?.[0] ?? null } : exit;
   }
 
-  const runner: GitRunner = {
+  const runner: GitRunner & SyncRunner = {
     async run(call: GitCall): Promise<GitExit> {
       const context: Record<string, unknown> = typeof call.context === "object" && call.context !== null ? call.context : {};
       const recorded: RecordedCall = {
@@ -1207,6 +1212,20 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!isIdentifier(markerId)) throw new RunnerRefusal("INVALID_REQUEST", "resolved");
       frames.push({ type: "resolved", markerId });
       markers.delete(markerId);
+    },
+
+    // Feature 003 contract Δ6 `pageant`, as T027 states the shell side: `git` starts no process, a missing `plink.exe` gives `failed` with `missing`,
+    // and no key file gives `none`. A WSL target is refused. The double starts no Pageant.
+    async pageant(request): Promise<PageantReply> {
+      checkPageant(request);
+      frames.push({ type: "pageant", ...request });
+      const repository = repositories.get(request.repositoryId);
+      if (inactive.has(request.operationId) || repository === undefined) throw unknownTarget();
+      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL pageant");
+      const client = inject.sshClient;
+      if (client === "git") return { result: "git" };
+      if (!statSync(client.plink, { throwIfNoEntry: false })?.isFile()) return { result: "failed", reason: "missing", program: "plink", path: client.plink };
+      return { result: "none" };
     },
 
     async trust(request) {

@@ -21,11 +21,23 @@ The user accepted every recommended default: "I'm good with your recommendations
 - Q: Does a switch need a confirmation when nothing would change? → A: A double-click in the references sidebar always confirms. A pick in the branch list on a clean working tree switches at once (FR-009).
 - Q: Does the local-changes choice offer "Don't ask again"? → A: No. The choice shows whenever tracked changes exist. Settings sets the preselected choice, and Discard changes can never be the default (FR-010).
 - Q: Where does "No upstream" show? → A: Only in the branch list and in the accessible names, not as visible text in the references sidebar (FR-008).
-- Q: Which keyboard shortcuts do the branch actions and the remote operations use? → A: The Git Extensions defaults: Fetch Ctrl+Shift+Down, Pull Ctrl+Shift+P, Push Ctrl+Shift+Up, and the branch menu keys of the mockup (FR-014). The plan checks each key against the feature 001 shortcut map for conflicts.
+- Q: Which keyboard shortcuts do the branch actions and the remote operations use? → A: The Git Extensions defaults: Fetch Ctrl+Shift+Down, Pull Ctrl+Shift+P, Push Ctrl+Shift+Up, and the branch menu keys of the mockup (FR-014). The plan checks each key against the feature 001 shortcut map for conflicts. (Corrected below: Pull Ctrl+Down and Push Ctrl+Up.)
 - Q: Is the commit workspace a full view or a large docked panel? → A: A full view that the user switches to from History (FR-033).
 - Q: Does a submodule that fetches from a new host wait for the user? → A: Yes. The update waits for one "Update anyway" click (FR-079).
 - Q: Does Git settings open inside the main window or in its own window? → A: As a full view inside the main window, with Close (FR-068).
 - Q: Does this feature resolve conflicted files, although feature 003 deferred the resolve panel and merge tools to branch operations? → A: Yes, as P2. A simple resolve view offers Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved (User Story 9, FR-089 to FR-097). The merge tool comes from `merge.tool` and `mergetool.<tool>.cmd`, and it runs through `git mergetool --tool=<tool>`. A merge tool from local or worktree scope is repository-controlled and needs trust.
+
+Plan-driven corrections (plan O-1 to O-4, O-9, O-12, O-15, O-16, and an orchestrator decision from the approved Commit board):
+
+- The branch action is "Switch", not "Checkout": menu item "Switch (Ctrl+.)", confirmation "Switch to <branch>?", and button "Switch" (design standard D-S1, FR-014). "Check out the commit only" stays for a detached HEAD.
+- The Git Extensions source defaults are Pull Ctrl+Down and Push Ctrl+Up, not Ctrl+Shift+P and Ctrl+Shift+Up. The feature 003 toolbar keys equal the source and stay: Fetch Ctrl+Shift+Down, Pull Ctrl+Down, and Push Ctrl+Up (FR-014).
+- Choose ours, Choose theirs, and Open in merge tool also run during a merge or a rebase (001 FR-016 change).
+- Git deletes the reflog of the branch together with the branch. The delete confirmation states recovery only through HEAD's reflog, from Git's reflog read (FR-018).
+- The force-push note shows only when the tracking ref of the push destination holds rewritten commits (FR-024).
+- Feature 001 has no mode shortcuts, so the view switch has no key (FR-033).
+- Line staging also refuses a hunk of a deleted file (`deleted-file`) and a part of a hunk with an incomplete last line (`eof-newline`) (FR-044).
+- SC-009 accepts the `branch.<name>` section writes of Git's own branch create, rename, and delete.
+- The commit workspace offers "Amend last commit" as P2 (User Story 11, FR-098 to FR-100). Amend leaves the Scope Boundaries exclusions.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -55,7 +67,7 @@ A developer selects the branch button in the toolbar, types part of a branch nam
 
 ### User Story 2 - Act on a branch from its context menu (Priority: P1)
 
-A developer right-clicks a branch in the references sidebar or in the history and runs Checkout, Merge into current branch, Rebase current branch onto, Create branch here, Rename, Delete, or Copy branch name.
+A developer right-clicks a branch in the references sidebar or in the history and runs Switch, Merge into current branch, Rebase current branch onto, Create branch here, Rename, Delete, or Copy branch name.
 
 **Why this priority**: The sidebar has no branch actions today. Git Extensions users expect this menu for daily work.
 
@@ -63,7 +75,7 @@ A developer right-clicks a branch in the references sidebar or in the history an
 
 **Acceptance Scenarios**:
 
-1. **Given** a local branch. **When** I open its context menu. **Then** it shows Checkout, Merge into current branch (<current>)…, Rebase current branch (<current>) onto <branch>…, Create branch here…, Rename…, Delete…, Push, and Copy branch name, each with its shortcut.
+1. **Given** a local branch. **When** I open its context menu. **Then** it shows Switch, Merge into current branch (<current>)…, Rebase current branch (<current>) onto <branch>…, Create branch here…, Rename…, Delete…, Push, and Copy branch name, each with its shortcut.
 2. **Given** the current branch. **When** I open its context menu. **Then** the items that cannot run stay focusable and state their reason.
 3. **Given** a branch with 2 commits that no other branch, tag, or remote-tracking branch holds. **When** I select Delete. **Then** the confirmation states "<branch> has 2 commits that no other branch has. Deleting the branch loses them." Cancel has the first focus.
 4. **Given** a branch that the current branch contains. **When** I select Delete. **Then** the confirmation states that the delete loses no commits.
@@ -85,7 +97,7 @@ A developer merges a branch into the current branch, or rebases the current bran
 1. **Given** the Merge panel for feature/login. **When** it opens. **Then** it states how many commits each side lacks and whether fast-forward is possible.
 2. **Given** the Merge panel. **When** I select Squash, No fast-forward, or Don't commit. **Then** the merge result equals Git's own merge with the same option.
 3. **Given** the Rebase panel. **When** it opens. **Then** it states how many commits the rebase moves, and how many of them a remote-tracking branch already holds.
-4. **Given** a rebase that rewrites a commit that a remote-tracking branch holds. **When** the panel opens. **Then** it states that the next push needs Force push with lease.
+4. **Given** a rebase that rewrites a commit that the tracking ref of the push destination holds. **When** the panel opens. **Then** it states that the next push needs Force push with lease. A rewritten commit that only another remote-tracking branch holds shows in the held count and gives no note.
 5. **Given** a merge or a rebase that stops with conflicts. **When** it stops. **Then** the notice band shows the feature 003 conflict notice with Abort, Continue, and Skip where they apply.
 
 ---
@@ -219,6 +231,23 @@ A developer writes a commit message. Misspelled English words get a wavy underli
 
 ---
 
+### User Story 11 - Amend the last commit (Priority: P2)
+
+A developer checks "Amend last commit" in the commit workspace. The message of the last commit loads into the editor. Commit replaces the last commit with the staged changes and the edited message.
+
+**Why this priority**: Git Extensions offers Amend next to Commit, and the approved Commit board shows it. Branch and commit work come first.
+
+**Independent Test**: In disposable fixtures, amend with and without staged changes, on a branch whose upstream holds HEAD and on one whose upstream does not. Compare the tree, the parents, the message, and the references with Git's own `git commit --amend` on a copy.
+
+**Acceptance Scenarios**:
+
+1. **Given** a draft message and a HEAD commit "Add login form". **When** I check Amend last commit. **Then** the editor shows "Add login form". When I clear the box, the draft comes back.
+2. **Given** Amend last commit and one staged file. **When** I select Commit. **Then** HEAD is a new commit with the parents of the earlier HEAD, the staged file, and the edited message.
+3. **Given** a HEAD commit that origin/main already holds. **When** I select Commit with Amend last commit. **Then** a modal confirmation states that the amend rewrites a commit that origin/main has and that the next push needs Force push with lease. Cancel has the first focus.
+4. **Given** a HEAD commit that the upstream does not hold, or no upstream. **When** I select Commit with Amend last commit. **Then** the amend runs without a confirmation.
+
+---
+
 ### Edge Cases
 
 - HEAD is detached at a commit that no reference holds. A switch makes that commit unreachable except through the reflog. The confirmation names the commit and states this.
@@ -254,11 +283,11 @@ A developer writes a commit message. Misspelled English words get a wavy underli
 
 ### Scope Boundaries
 
-Include a branch button with a searchable branch list, double-click checkout with a confirmation, a local-changes choice, and remote-branch checkout with a new tracking branch. Include a branch context menu with Checkout, Merge into current branch, Rebase current branch onto, Create branch here, Rename, Delete, and Copy branch name. Push in that menu comes from feature 003. Include docked Merge and Rebase panels with their options. Include a resolve view for a conflicted file with Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved. Include a commit workspace with an Untracked section, a tree layout, folder staging, multi-select, Stage all untracked, ignore actions, visible stage buttons, visible hunk buttons, line staging, and a message editor with a 72-column guide.
+Include a branch button with a searchable branch list, double-click switch with a confirmation, a local-changes choice, and remote-branch checkout with a new tracking branch. Include a branch context menu with Switch, Merge into current branch, Rebase current branch onto, Create branch here, Rename, Delete, and Copy branch name. Push in that menu comes from feature 003. Include docked Merge and Rebase panels with their options. Include a resolve view for a conflicted file with Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved. Include a commit workspace with an Untracked section, a tree layout, folder staging, multi-select, Stage all untracked, ignore actions, visible stage buttons, visible hunk buttons, line staging, and a message editor with a 72-column guide. Include Amend last commit as P2.
 
 Include a worktree button with a list, Open, Add, Remove, and Prune. Include a Git settings view by scope. Include the trust redesign: one native prompt, only when an action would run a repository program, and a status chip. Include the one-click submodule update with inline progress and a per-submodule Update and Retry. Include English spell check of the commit message as P3.
 
-Exclude a merge editor inside the application, the resolve of several files in one action, and rerere management. Exclude interactive rebase, reset, cherry-pick, revert, tags, and stash management other than the stash of the switch choice. Exclude amend, Commit and push (feature 003), discard of single files, hunks, or lines, and push of other branches. Exclude remote branch delete and remote management. Exclude the dubious-ownership dialog and its `safe.directory` command (feature 001 Clarifications, 2026-10-10). Exclude dictionaries other than English, and every spell check that uses the network or AI.
+Exclude a merge editor inside the application, the resolve of several files in one action, and rerere management. Exclude interactive rebase, reset, cherry-pick, revert, tags, and stash management other than the stash of the switch choice. Exclude Commit and push (feature 003), discard of single files, hunks, or lines, and push of other branches. Exclude remote branch delete and remote management. Exclude the dubious-ownership dialog and its `safe.directory` command (feature 001 Clarifications, 2026-10-10). Exclude dictionaries other than English, and every spell check that uses the network or AI.
 
 Already built in other tasks, and not specified here: the current branch in bold in the sidebar, and the inline copy buttons in the commit details (feature 002 tasks T067 and T068). The static app frame is the feature 001 fix T380. This feature adds no requirement for it.
 
@@ -275,10 +304,10 @@ This feature changes these requirements for builds that include it. The earlier 
 
 - **001 Scope Boundaries**: Branch management, line-level staging, staging several files in one action, worktree creation and management, and reference actions move into this feature.
 - **001 FR-003**: The Git settings view (FR-058 to FR-068) MAY write Git configuration, only at an explicit Save of the user, only into the selected scope. Add to .gitignore and Add to info/exclude MAY write those files at an explicit user action (FR-046).
-- **001 FR-016**: A merge or a rebase that this feature starts follows the 003 change of 001 FR-016. Only Abort, Continue, Skip, Mark resolved, Fetch, and Fetch all remotes run while it is in progress.
+- **001 FR-016**: A merge or a rebase that this feature starts follows the 003 change of 001 FR-016. Only Abort, Continue, Skip, Mark resolved, Choose ours, Choose theirs, Open in merge tool, Fetch, and Fetch all remotes run while it is in progress.
 - **001 FR-025, FR-050 and contract §7 "Startup, trust, and environment"**: Trust follows FR-069 to FR-075 of this feature. One native prompt replaces the in-app Trust dialog and the second fingerprint box. The approval binding follows FR-071. The contract §7 "Program file digests" go away.
-- **001 FR-027**: Discard changes in a switch (FR-010, FR-011), Choose ours and Choose theirs (FR-091), branch delete (FR-017 to FR-019), Rebase current branch onto (FR-024 to FR-027), and worktree remove with changes (FR-055) are allowed behind their confirmations. Reset, force push other than 003, and other history rewrites stay excluded.
-- **001 FR-034**: The commit panel becomes the commit workspace of FR-029 to FR-033.
+- **001 FR-027**: Discard changes in a switch (FR-010, FR-011), Choose ours and Choose theirs (FR-091), branch delete (FR-017 to FR-019), Rebase current branch onto (FR-024 to FR-027), worktree remove with changes (FR-055), and the amend of a commit that the upstream holds (FR-100) are allowed behind their confirmations. Reset, force push other than 003, and other history rewrites stay excluded.
+- **001 FR-034**: The commit panel becomes the commit workspace of FR-029 to FR-033. The commit MAY run `--amend` (FR-098 to FR-100).
 - **001 FR-038**: Stage file and Unstage file keep their checks. Folder staging, multi-select, Stage all untracked, and line staging extend them (FR-034 to FR-044).
 - **001 FR-047 to FR-050, and contract §12 "Submodules"**: The review dialog and its explicit start go away. A per-submodule Update and Retry are allowed. FR-076 to FR-082 of this feature state the new rules. The FR-049 refusals and the FR-050 run confirmation stay.
 - **001 FR-056**: The branch button, the worktree button, and Git settings become visible. Stash stays hidden as a control.
@@ -311,11 +340,11 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Branch context menu and branch actions
 
-- **FR-014**: A local branch in the references sidebar and in the history labels MUST have a context menu. The items are, in this order: Checkout (Ctrl+.), Merge into current branch (<current>)… (Ctrl+M), Rebase current branch (<current>) onto <branch>… (Ctrl+Shift+E), Create branch here… (Ctrl+B), Rename… (F2), Delete… (Del), Push (from 003), and Copy branch name. A remote-tracking branch MUST offer Checkout, Merge into current branch, Rebase current branch onto, Create branch here, and Copy branch name. An item that cannot run MUST stay focusable and state its reason. The window MUST also offer the Git Extensions keys Fetch (Ctrl+Shift+Down), Pull with the 003 FR-056 default action (Ctrl+Shift+P), and Push (Ctrl+Shift+Up). These keys and the menu keys are the Git Extensions defaults. The plan MUST check each key against the feature 001 shortcut map and resolve each conflict before implementation.
+- **FR-014**: A local branch in the references sidebar and in the history labels MUST have a context menu. The items are, in this order: Switch (Ctrl+.), Merge into current branch (<current>)… (Ctrl+M), Rebase current branch (<current>) onto <branch>… (Ctrl+Shift+E), Create branch here… (Ctrl+B), Rename… (F2), Delete… (Del), Push (from 003), and Copy branch name. A remote-tracking branch MUST offer Switch, Merge into current branch, Rebase current branch onto, Create branch here, and Copy branch name. An item that cannot run MUST stay focusable and state its reason. The menu keys are the Git Extensions defaults. They act only on the focused branch row, and Create branch here also on the selected history row (plan D15). The window MUST also keep the feature 003 keys Fetch (Ctrl+Shift+Down), Pull with the 003 FR-056 default action (Ctrl+Down), and Push (Ctrl+Up). These equal the Git Extensions defaults. They act in the window but not in an editable field. No key of this feature collides with a key of features 001 to 003 (plan D15).
 - **FR-015**: Create branch here MUST take a name and create a branch at the selected commit. Git's own branch-name check MUST decide whether the name is valid. The panel MUST offer "Switch to the new branch", checked by default. A name that an existing branch holds MUST be refused.
 - **FR-016**: Rename MUST rename the local branch, as Git's own branch rename does, and Git's own name check MUST apply. The upstream setting moves with it, as Git moves it.
 - **FR-017**: Delete MUST be unavailable for the current branch and for a branch that another worktree holds, with the reason. The worktree list MUST come from Git's machine-readable worktree output.
-- **FR-018**: Before Delete, the application MUST count the commits that the branch holds and that no other branch, tag, or remote-tracking branch holds. Git's commit count MUST give that number. When it is above zero, the modal confirmation MUST state the number and that the delete loses those commits. When it is zero, the confirmation MUST state that no commit is lost. Cancel MUST have the first focus. The confirmation MUST state that the reflog can restore the branch tip for a limited time.
+- **FR-018**: Before Delete, the application MUST count the commits that the branch holds and that no other branch, tag, or remote-tracking branch holds. Git's commit count MUST give that number. When it is above zero, the modal confirmation MUST state the number and that the delete loses those commits. When it is zero, the confirmation MUST state that no commit is lost. Cancel MUST have the first focus. Git deletes the reflog of the branch together with the branch. So the confirmation MUST state recovery only through HEAD's reflog, from Git's reflog read. When HEAD's reflog holds the branch tip, it MUST state that HEAD's reflog keeps that commit for a limited time. Otherwise it MUST state that no reflog keeps that commit after the delete.
 - **FR-019**: Delete MUST bind to the branch commit that the confirmation showed. When the branch moved, Git MUST refuse the delete, and no reference changes.
 - **FR-020**: Copy branch name MUST put the short branch name on the clipboard.
 
@@ -324,7 +353,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-021**: Merge into current branch MUST open a docked panel. It MUST state how many commits each side lacks and whether fast-forward is possible. Git's commit counts and Git's ancestry check MUST give these facts.
 - **FR-022**: The merge panel MUST offer one result: Merge commit, which follows Git's own merge configuration, or Squash. It MUST offer the options No fast-forward and Don't commit. It MUST show an editable merge commit message, prefilled with Git's own default message. Each option MUST map to the Git merge option of the same meaning. The panel MUST disable combinations that Git refuses, with the reason.
 - **FR-023**: A merge MUST respect hooks and signing, as feature 001 FR-019 requires for commit. A merge that stops with conflicts MUST show the feature 003 conflict notice (003 FR-030).
-- **FR-024**: Rebase current branch onto MUST open a docked panel. It MUST state how many commits the rebase moves. It MUST state how many of them a remote-tracking branch holds. When that number is above zero, it MUST state that the next push needs Force push with lease.
+- **FR-024**: Rebase current branch onto MUST open a docked panel. It MUST state how many commits the rebase moves. It MUST state how many of them a remote-tracking branch holds. It MUST state that the next push needs Force push with lease only when the tracking ref of the 003 push destination of the current branch holds at least one rewritten commit.
 - **FR-025**: The rebase panel MUST offer Autostash and Autosquash. Each check box MUST start from the effective Git configuration value and name its source. Interactive rebase MUST show as unavailable, with the reason "Not in this version".
 - **FR-026**: The Rebase button of the panel MUST count as the confirmation of the history rewrite that constitution principle I asks for. The panel MUST name the moved commits and the rewrite effect before the start.
 - **FR-027**: Rebase MUST be non-interactive. A rebase that stops with conflicts MUST show the feature 003 conflict notice. Continue, Skip, and Abort MUST follow 003 FR-042 to FR-045.
@@ -348,7 +377,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-030**: The Changes list MUST show the tracked changes first, then the Untracked section with its count. The Untracked section MUST start collapsed. Every count MUST come from the status read.
 - **FR-031**: Each list MUST offer a tree layout and a flat layout. In the tree layout, each folder MUST show the count of the files that the status read lists under it.
 - **FR-032**: Each file row MUST show a stage or unstage button on pointer hover and on keyboard focus. The button MUST have an accessible name, such as "Stage file login.ts". Space MUST keep the feature 001 FR-038 behavior.
-- **FR-033**: The commit workspace MUST be a full view that replaces the history view, without the references sidebar. The toolbar MUST offer History and Commit switches. The feature 001 mode shortcuts MUST keep their keys.
+- **FR-033**: The commit workspace MUST be a full view that replaces the history view, without the references sidebar. The toolbar MUST offer History and Commit switches. Feature 001 defines no mode shortcut, so the view switch has no key. Every feature 001 key keeps its action.
 - **FR-034**: Each list MUST support multi-select with Ctrl and Shift and the pointer, and with Shift+arrow keys. The list header MUST then offer "Stage selected (<n>)" or "Unstage selected (<n>)".
 - **FR-035**: The Changes header MUST offer Stage all changes. The Untracked section MUST offer Stage all untracked. The Staged header MUST offer Unstage all.
 - **FR-036**: A folder in the tree layout MUST offer Stage folder or Unstage folder. The action covers exactly the entries of that list under that folder in the shown status read.
@@ -359,11 +388,14 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-041**: Line staging MUST stage exactly the selected added and removed lines of one hunk. Unselected removed lines stay, and unselected added lines stay out of the index. Line unstaging MUST do the reverse from the staged diff.
 - **FR-042**: Line staging MUST keep the feature 001 FR-013 and FR-014 safety rules. It MUST NOT write working-file content. It MUST verify the resulting index entry before publication, and refuse a stale selection.
 - **FR-043**: The user MUST select lines by pointer drag over the line numbers and by Shift+arrow keys. The diff MUST then show "Stage <n> lines" or "Unstage <n> lines". S MUST stage and U MUST unstage the selected lines only while the diff has focus.
-- **FR-044**: Line staging MUST be unavailable, with the reason, for a selection with only context lines, and for every comparison that feature 001 FR-011 marks as unsupported.
+- **FR-044**: Line staging MUST be unavailable, with the reason, for a selection with only context lines, for a selection in two hunks, for a hunk of a deleted file (`deleted-file`), for a part of a hunk with an incomplete last line (`eof-newline`), and for every comparison that feature 001 FR-011 marks as unsupported.
 - **FR-045**: A file or a folder in the Untracked section MUST offer Add to .gitignore and Add to info/exclude. Before the write, the application MUST show the exact line that it adds.
 - **FR-046**: The line MUST be the path from the worktree root with a leading "/". A folder MUST end with "/". Each character with a pattern meaning MUST get a backslash escape, as the gitignore documentation defines. The application MUST append the line to the root `.gitignore` or to the path that Git reports for `info/exclude`. It MUST add a line break first when the file does not end with one. It MUST refuse a symbolic link, a non-regular file, and a line that already exists. It MUST then read the status again.
 - **FR-047**: The message editor MUST show a guide at column 72 and a counter for the summary line, such as "47/72". It MUST mark a non-empty line 2. Columns MUST count Unicode code points. The guide and the marks MUST NOT block a commit and MUST NOT change the text.
 - **FR-048**: The status bar of the workspace MUST state the staged count, the change count, and the untracked count, such as "3 staged files. 1,258 changes, 1,248 of them untracked."
+- **FR-098**: The commit workspace MUST offer the check box "Amend last commit" next to the message editor. It MUST be unavailable, with the reason, for an unborn branch and while a merge or a rebase is in progress. Checking it MUST load the message of HEAD's commit into the editor and keep the earlier draft. Clearing it MUST restore that draft. While it is checked, the workspace MUST state "Commit replaces commit <short ID>." For a commit that no upstream holds, this statement and Commit count as the history-rewrite confirmation of constitution principle I, as FR-026 states for Rebase.
+- **FR-099**: Commit with Amend last commit MUST run Git's own `commit --amend` through the feature 001 commit pipeline, with the message on standard input (`--file=-`). The feature 001 hooks, signing, and review rules MUST apply. The amend MUST bind to the HEAD commit whose message the box loaded. When HEAD moved, the amend MUST refuse and ask for a refresh. An amend without staged changes MUST be allowed, so the user can change only the message.
+- **FR-100**: Before an amend on a branch with an upstream, the application MUST check whether the upstream holds HEAD's commit, with Git's `merge-base --is-ancestor HEAD <upstream>`. Exit 0 means it holds, and exit 1 means it does not. Any other exit MUST refuse the amend. When the upstream holds the commit, Commit MUST first open a modal destructive confirmation: "Amend rewrites commit <short ID>, which <upstream> already has. The next push needs Force push with lease." Cancel MUST have the first focus. This confirmation is the history-rewrite confirmation of constitution principle I for a commit that the upstream holds.
 
 #### Worktrees
 
@@ -437,6 +469,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **Worktree entry**: The folder, the branch or detached commit, the main, current, locked, and prunable states, from Git's worktree output.
 - **Configuration value**: A key, a scope, a value, and its source file. A key can have several values in one scope.
 - **Trust approval**: The repository folder, the worktree folder, the selected Git installation, the trust policy version, and the time of approval. It holds no per-file program digest.
+- **Amend request**: The HEAD commit and its message at the check, the upstream, and the result of the upstream check.
 - **Resolve request**: One unmerged path, its index stages with their modes, the action, the side names from the operation state, and the working file identity and bytes at selection.
 - **Submodule row**: The path, the nesting level, the state, the observed commit, and for a failure the exit code and the output tail.
 
@@ -452,13 +485,14 @@ This feature changes these requirements for builds that include it. The earlier 
 - **SC-006**: In every staging fixture, the index equals the expected index exactly, and every working-file byte stays unchanged. Fixtures cover folders, multi-select, Stage all untracked, hunks, and lines of added, removed, and mixed hunks.
 - **SC-007**: With 100,000 untracked files, the workspace opens, scrolls, and stages a single file within the feature 001 SC-005 targets: 95% of inputs show a response within 100 ms, and every input within 500 ms.
 - **SC-008**: In every worktree fixture, the worktree list and the references equal Git's own commands. No worktree with changes is removed without the explicit check box.
-- **SC-009**: In every settings fixture, a save changes only the selected keys in the selected scope file. All other bytes of every configuration file stay identical. Across all other fixtures of this feature, every Git configuration file stays byte-identical.
+- **SC-009**: In every settings fixture, a save changes only the selected keys in the selected scope file. All other bytes of every configuration file stay identical. Across all other fixtures of this feature, every Git configuration file stays byte-identical, except the `branch.<name>` sections that Git's own branch create, rename, and delete write. Those sections equal the result of Git's own branch commands on a copy.
 - **SC-010**: In a fixture without repository programs, a full session shows no trust prompt. In a fixture with hooks, the first commit shows exactly one prompt. No repository program runs before approval in any fixture.
 - **SC-011**: In every submodule fixture without a safety fact, the update starts with one click and opens no dialog. Each result equals the feature 001 result. Each FR-049 refusal case still refuses and changes nothing.
 - **SC-012**: In the spelling fixture, every listed misspelling gets a mark and no listed correct word gets one. No network connection starts.
 - **SC-013**: A review of the requirement-to-test map finds no outcome that Git message text, timing, or a name pattern decides.
 - **SC-014**: Keyboard-only users complete each P1 story. Each control has an accessible name, visible focus, and a contrast of at least 4.5:1.
 - **SC-015**: In every conflict fixture, Choose ours, Choose theirs, and Open in merge tool give the same working files and index as Git's own `git checkout --ours`, `git checkout --theirs`, and `git mergetool` with the same fixture tool on a copy. No repository-controlled merge tool runs before approval. No action reads conflict markers.
+- **SC-016**: In every amend fixture, the tree, the parents, the message, and the references equal Git's own `git commit --amend` on a copy. The rewrite confirmation shows exactly when `merge-base --is-ancestor HEAD <upstream>` exits 0.
 
 ## Assumptions
 

@@ -121,5 +121,5 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 ## 14. View state (renderer, not stored)
 
-- Per worktree for the window session: `view` (`history`, `commit`, `settings`), `settingsScope`, `settingsPage`, `commitLayout` (`tree` or `flat` per list), `untrackedExpanded` (false at open), the multi-selection per list, and the line selection of the shown diff.
+- Per worktree for the window session: `view` (`history`, `commit`, `settings`), `settingsScope`, `settingsPage`, `commitLayout` (`tree` or `flat` per list), `untrackedExpanded` (false at open), the multi-selection per list, the line selection of the shown diff, and `amend` (false at open) with the draft that the HEAD message replaced (spec FR-098).
 - A new snapshot keeps the selection of entries whose IDs still exist, and drops the others.

@@ -103,6 +103,14 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
 - Results: data-model §3 for `switch`. Other actions return the 001 outcome state with the observed effects. These are the refs before and after, HEAD, the stash entry, the worktree list, and the written keys. A failed step adds its `outputTail` (001 §9 rules).
 - Git exit codes that decide: `merge-base --is-ancestor` (0, 1), `show-ref --exists` (0, 2), `config set` and `unset` (1 to 6, git-config(1)), `check-ref-format` (0 or non-zero). Every other exit only marks a step as failed; fresh reads decide the outcome.
 
+### `reviewCommit` and `commit` (001 §3, §4 "Commit validation and handoff")
+
+- `reviewCommit` payload adds `amend?: true`. The review then adds these reads: `cat-file commit <HEAD oid>` for the message, the bytes after the first empty line; `for-each-ref --format=%(upstream) <HEAD ref>`; with an upstream U, `merge-base --is-ancestor HEAD <U>` (exit 0 or 1; another exit gives `GIT_FAILED`).
+- The result adds `amend: {headOid, message, upstream, rewritesUpstream}`. An empty staged scope still carries a `reviewToken` for an amend. The token binds `headOid` and `rewritesUpstream`.
+- Refusals: an unborn HEAD gives `WORKBENCH_UNAVAILABLE` reason `unborn`. A merge or a rebase gives `OPERATION_IN_PROGRESS`. An `encoding` header that Git does not treat as UTF-8 gives `COMMIT_ENCODING_UNSUPPORTED`.
+- `commit` payload adds `amend?: true` and `confirmRewrite?: true`. A token with `rewritesUpstream` true and no `confirmRewrite: true` gives `INVALID_REQUEST`. `amend` must equal the review.
+- Step: `commit --quiet --amend --file=-`. This changes the 001 §4 rule that forbids `--amend`, for this payload only. Every other 001 handoff rule stays.
+
 ### `applyFiles`
 
 - Payload: `{snapshotId, entryIds, direction, kind, folder?}` (data-model §6). Approval key: `{kind: "files", snapshotId, entryIds digest, direction}`.

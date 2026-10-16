@@ -1,0 +1,399 @@
+---
+
+description: "Task list for the Workbench UX feature"
+---
+
+# Tasks: Workbench UX
+
+**Input**: Design documents from `specs/004-workbench-ux/`
+
+**Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/operations.md, quickstart.md, and checklists/requirements.md.
+
+**Tests**: The spec (SC-001 to SC-016) and plan.md "Steps" require tests. Each step writes its tests first (plan.md "Steps (riskiest proof first)"). A failing-test task comes before each implementation task. No test passes by default.
+
+**Organization**: Phases follow the eight batches of plan.md "Phases": (0) fixtures and facts P0.1 to P0.4, (1) pure logic, contracts, and shell P1 to P3, (2) P1 service P4, (3) P1 frontend P5, (4) P2 service and trust shell P6 and P7, (5) P2 frontend P8, (6) spell check P10, (7) qualification P9. Story phases carry `[USn]` labels. Batches 0, 1, and 7 carry no label.
+
+## Format: `[ID] [P?] [Story] Description`
+
+- **[P]**: The task touches different files from the other `[P]` tasks in its group and depends on no incomplete task of that group. A sub-heading starts a new group. "Depends on" names the exact order.
+- **[Story]**: The user story from spec.md (US1 to US11). A wiring task that serves several stories carries the first story and names the others.
+- **WP**: Each task names its plan.md work package. The orchestrator dispatches one WP per agent, with the agent that plan.md "Work packages" names.
+- **Local tags**: `Local: Rust` needs the local Rust toolchain. `Local: Windows` needs the Windows reference host. `Local: package` needs the packaged Windows build. `Local: WSL` needs the `Ubuntu-26.04` distro with Git 2.55. Cloud sessions do not run these tasks (CLAUDE.md "Tool boundaries"). A skip never counts as a pass.
+- **Blocked by 003**: Batch 2 starts only after 003 WP6 to WP8 (003 batches 2 and 3) are merged into main. Batch 3 starts only after 003 WP10 and WP11 are merged. Batch 5 WP22 needs 003 WP12 for the moved settings pages (plan.md O-7). The list of 003 parts is in "Dependencies & Execution Order".
+- **Blocked by 001 (user environment)**: 001 T165, T180, T240, T242, and T244 are open. T090 needs them for SC-007. Batch 7 cannot finish before them.
+- **Earlier specs**: The 001, 002, and 003 texts stay unchanged in their own specs (spec.md "Changes to earlier requirements"). Tasks implement the changes and cite the changed requirement. No task edits `specs/001-desktop-qualification/` or `specs/002-full-history/`.
+
+## Path Conventions
+
+- Paths follow plan.md "Project Structure": `src/contracts/`, `src/git-service/`, `src/frontend/`, `src-tauri/src/`, `tests/contracts/`, `tests/git/`, `tests/vectors/`, `tests/windows/`, and `tests/wsl/`.
+- Feature evidence goes only into `specs/004-workbench-ux/research.md` "Results".
+- The mockup boards live in the orchestrator scratchpad folder `ux-004/` (`gen/gen.mjs` and `canvas/project/*.dc.html`). They are not repository files.
+
+## Test harness rules
+
+- The 001 "Test harness rules" stay in force (`specs/001-desktop-qualification/tasks.md`). They cover `printOrigin`, the control mutation, Git discovery through `tests/git/git-binary.ts`, capability skips, `tests/groups.json`, `OBSERVATION` lines, owned fixture roots, and the source headers.
+- Every test uses an owned `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM=1`, except a case that tests the system scope with an owned system file. No test touches the user's own configuration (quickstart.md "Prerequisites").
+- Oracles are Git's own commands on a copy. Commit OIDs differ by time, so trees, parents, refs, the index, working bytes, the stash reflog, and configuration bytes decide (plan.md D19).
+- Every fixture test records the configuration files byte for byte before and after. The expected changes are only the saved keys and Git's own `branch.<name>` writes (spec SC-009).
+- Prompt counts use the shell test double, which counts `confirm` frames. Canary hooks and filters write a marker file. No marker may exist before approval (plan.md D19).
+- A fact test (P0.2 to P0.4) has no implementation. A failed fact is a finding, not a red task. The test prints `OBSERVATION <task ID>: <fact>`. The batch verification copies it into research.md "Results" and changes the contract before P2 when a fact fails.
+- Each new test file adds its line to `tests/groups.json`. A timing test or a 100,000-file test goes into `serial` with its reason.
+- App runs set `ARBARETO_PROFILE_ROOT` to a scratch folder.
+- A task is ticked only after a green full run (`bun run test:all`) on Windows that verifies it, with `ORIGIN` lines in the checkout under test. A `tests/windows` task is ticked only after a green `bun run test:windows` on the reference host.
+- Batch verification tasks use only the README "Development" commands.
+- No heuristics: every outcome comes from a documented Git exit code, machine-readable Git output, a fresh read, an OS fact, or a contract value (spec FR-002, SC-013). A test that asserts a refusal asserts its code and reason, never Git's message text.
+
+## Batch-to-story mapping
+
+| Batch | Phase | Plan steps | Tasks | Stories | Work packages |
+| --- | --- | --- | --- | --- | --- |
+| 0. Fixtures and facts | 1 | P0.1 to P0.4 | T001–T006 | Setup | A: WP1. B: WP2. C: WP3. |
+| 1. Pure logic, contracts, shell | 2 | P1, P2, P3 | T007–T020 | Foundational | A: WP4. B: WP5, then WP6. |
+| 2. P1 service | 3 | P4 | T021–T035 | US1 to US4 | A: WP7. B: WP8. C: WP9. Then WP10. |
+| 3. P1 frontend | 4 | P5 | T036–T048 | US1 to US4 | Board update, then WP11. Then A: WP12. B: WP13. C: WP14. |
+| 4. P2 service and trust shell | 5 | P6, P7 | T049–T063 | US5 to US9, US11 | A: WP15. B: WP16. C: WP18. D: WP19. WP17 beside them. Then WP20. |
+| 5. P2 frontend | 6 | P8 | T064–T076 | US5 to US9, US11 | A: WP21. B: WP22. C: WP23. D: WP24. E: WP25. F: WP29. |
+| 6. Spell check | 7 | P10 | T077–T080 | US10 | WP26. |
+| 7. Qualification | 8 | P9 | T081–T086 | Cross-cutting | WP27 (alone). WP28. |
+
+---
+
+## Phase 1: Fixtures and facts (Batch 0, P0.1 to P0.4)
+
+**Purpose**: Build the fixtures and record the Git and native facts that the design rests on. Results go into research.md "Results".
+
+### Fixture builder (P0.1, WP1)
+
+- [ ] T001 Write the failing builder self-check cases at the top of `tests/git/workbench-facts.test.ts` for `tests/git/workbench-fixtures.ts` (P0.1, WP1). For each fixture, assert the refs with `for-each-ref`, the counts with `rev-list --count`, the worktree list with `worktree list --porcelain -z`, and the SHA-256 of each configuration file. Assert that two builds of one fixture give equal trees, refs, and configuration digests. Add the file to `tests/groups.json` `parallel`. Spec: SC-001 to SC-009, SC-015, SC-016. No dependency.
+- [ ] T002 Create `tests/git/workbench-fixtures.ts` (P0.1, WP1). Reuse `fiCommit` and the owned global configuration of `tests/git/fixtures.ts`, and the 003 `tests/git/remote-fixtures.ts`. Build every fixture of plan.md P0.1. Branch fixtures: merged, unmerged with 2 commits that only it holds, current, held by another worktree, detached at an unreachable commit, names with `/`, and a `branch.<name>` section in `.git/config`. Switch fixtures: clean, dirty with 4 tracked changes, a conflicting change, an untracked file and an ignored file in the way, and a remote branch with one, zero, and two mapping refspecs. Merge and rebase fixtures: fast-forward, diverged, `merge.ff=only`, a merge driver canary, `rebase.updateRefs`, `fixup!` commits, patch-same commits, empty commits, and a push tracking ref that holds rewritten commits. Conflict fixtures: UU, AA, AU, UA, DU, UD, DD, and a symlink stage, for a merge and for a rebase. Staging fixtures: 100,000 untracked files through the 001 fixture cache, a folder tree, hunks of added, removed, and mixed lines, a deleted file, and an incomplete last line. Worktree fixtures: locked with and without a reason, prunable, dirty, main, and a path with spaces. Config fixtures: each FR-060 key in each scope, a multi-valued key, an include, and an XDG global file. Amend fixtures: HEAD on its upstream, HEAD not on its upstream, and no upstream. The fixture merge tool: a small program in the owned global configuration as `mergetool.fixture.cmd` that writes a fixed result into `$MERGED` and exits 0 (quickstart.md "Prerequisites"). Make T001 pass. Spec: SC-001 to SC-009, SC-015, SC-016. Depends on T001.
+
+### Fact tests (P0.2 to P0.4)
+
+- [ ] T003 Write the fact cases F1 to F24 of research.md R21 in `tests/git/workbench-facts.test.ts` (P0.2, WP1). Compare each fact with Git's own result on a copy. Print the Git version for each fact. Expect Git 2.56.0.windows.2 on Windows, and record another version as an observation. Each fact prints its `OBSERVATION T003:` line. F9 compares refs, reflogs, and configuration bytes of `update-ref -d` plus `config --local --remove-section` with Git's own `branch -D`. F12 compares the `fmt-merge-msg` preview with Git's own merge message (plan.md O-6). F18 and F19 use canaries. F21 runs `mergetool --no-prompt` with an untrusted exit code and empty standard input. Spec: FR-002, FR-004. Plan: D3 to D11. Depends on T002.
+- [ ] T004 [P] Write the fact test `tests/git/staging-facts.test.ts` with F25 to F28 of research.md R21 (P0.3, WP2). F25: the sub-hunk apply with `apply --cached` equals the expected blob for every selection of the line fixtures, for stage and unstage. F26: the input and output form of `cat-file --batch --filters -Z`, also for a path that starts with white space (research.md R10). F27: `update-index --add --remove -z --stdin` with 10,000 paths gives the same index as `git add` of those paths. F28: a status read with a lowered record bound that cuts inside the untracked records keeps every tracked, unmerged, and staged record. Add the file to `tests/groups.json` `serial` with the reason "builds 10,000 paths". Spec: SC-006, SC-007. Plan: D8. Depends on T002.
+- [ ] T005 [P] Write the fact test `tests/windows/native-facts.test.ts` with N1 to N6 of research.md R21 (P0.4, WP3). `Local: package`. N1: UI Automation reads the task dialog main instruction, content, and collapsed details, and Enter and Escape return Not now. N2: a page `contextmenu` handler with `preventDefault` shows the app menu, and Shift+F10 reaches it. N3: the fixture merge tool runs inside the operation Job. N4: Cancel ends Git, its shell, and the tool. N5: `SHOpenFolderAndSelectItems` selects the path. N6: the tool window comes to the front. A capability skip prints `OBSERVATION T005: unverified <Nn>`. Spec: FR-070, FR-085, FR-095. Plan: D14, O-8. Depends on T002.
+
+### Batch 0 verification
+
+- [ ] T006 Run the batch 0 verification: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Windows`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every `OBSERVATION` line of T003 to T005 into research.md "Results" with its mark. A failed fact changes contracts/operations.md and plan.md before batch 1 starts, and the change runs `/speckit-analyze`. Control mutation: in `tests/git/workbench-fixtures.ts`, give the unmerged branch fixture 1 commit instead of 2. The T001 self-check must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 0 is recorded in research.md. Spec: all IDs of T001 to T005. Depends on T001 to T005.
+
+**Checkpoint**: research.md "Results" holds F1 to F28 and N1 to N6. The contract matches every fact.
+
+---
+
+## Phase 2: Pure logic, contracts, and shell (Batch 1, P1 to P3)
+
+**Purpose**: The algorithms, the contract, and the shell allowlist that every story uses.
+
+**CRITICAL**: No story work starts before this phase is complete.
+
+### Tests for pure logic (WP4; write first, they must fail)
+
+- [ ] T007 [P] Write failing vector tests in `tests/contracts/workbench-commands.test.ts` for `src/git-service/workbench-commands.ts` (P1, WP4). Assert the exact argv of every contract Δ3 read and step, and the amend step `commit --quiet --amend --file=-`. Every argv starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs`. Checkout steps add `--no-recurse-submodules`. Names pass after `--end-of-options` or `--` in the positions of contract Δ3. Merge adds `--no-log -m <message>` only for an edited message. Rebase always passes the explicit `--autostash` or `--no-autostash`, and `--autosquash` or `--no-autosquash`. Spec: FR-004, FR-022, FR-025, FR-099. Contract: Δ3, Δ10. Depends on T006.
+- [ ] T008 [P] Write failing parser tests in `tests/contracts/workbench-parsers.test.ts` for `src/git-service/workbench-parsers.ts` (P1, WP4). The `readBranches` record checks of contract Δ3: five fields with four NUL bytes and LF, and a record with a non-empty `symref` is skipped. The worktree record of data-model §8: the first line starts with `worktree `, `HEAD` holds an OID of the object format, at most one of `branch` and `detached`, locked and prunable with and without a reason, unquoted reasons, and an empty line that ends the record; a failed check gives `MALFORMED_GIT_OUTPUT`. The configuration value view of data-model §9: `effective` is the last entry, several entries in one scope give `readOnly`, a boolean by `parseMaybeBool`, and the enumerations of plan.md D11. The refspec map of research.md R2: one mapping refspec gives the name, zero or several give null. The URL host of plan.md D13: `scheme://` authority, the scp form, "this computer" for a local path and `file://`, and ASCII case-insensitive compare. Spec: FR-008, FR-013, FR-049, FR-059, FR-061, FR-063, FR-079. Depends on T006.
+- [ ] T009 [P] Write failing tests in `tests/contracts/line-patch.test.ts` for `src/git-service/line-patch.ts` (P1, WP4). Apply the contract Δ4 sub-hunk rules for stage and unstage to every line fixture. Compare each result with an independent apply of the expected content. Assert the header counts, and the start of a side with count 0. Refusals: `context-only`, `several-hunks`, `deleted-file`, and `eof-newline` for a part of a hunk with an incomplete-line marker. An ordinal that names a context line, a marker, or a line outside the hunk gives `INVALID_REQUEST` (data-model §6: "ascending unique ordinals of `+` or `-` lines in the body of that retained hunk, 1 to the hunk line count"). Spec: FR-041, FR-042, FR-044. Depends on T006.
+- [ ] T010 [P] Write failing tests in `tests/contracts/ignore-line.test.ts` and `tests/contracts/branch-name.test.ts` for `src/contracts/ignore-line.ts` and `src/contracts/branch-name.ts` (P1, WP4). Ignore line (plan.md D9): a leading `/`, `\` before each `*`, `?`, `[`, and `\`, `\` before each trailing space, a folder ends with `/`, `#` and `!` need no escape, a control character or invalid UTF-8 gives reason `path`, and a line above 4,096 UTF-8 bytes refuses. Branch name (plan.md D4): 1 to 255 UTF-8 bytes, well-formed, no NUL. Spec: FR-004, FR-015, FR-046. Depends on T006.
+- [ ] T011 [P] Write failing tests in `tests/contracts/switch-check.test.ts` for `src/git-service/switch-check.ts` (P1, WP4). Feed recorded `diff-tree -r -z --no-renames --name-status` output, `fileFacts` replies, `ls-files -z --stage` entries, and `check-ignore` results. Assert the plan.md D3 candidates: a working entry without a stage-0 entry of the same bytes, and a folder where the target writes a file. Ignored candidates drop out. At most 100 paths with a `more` count. Above `DISCARD_CHECK_PATHS` (20,000) the check refuses. Spec: FR-011. Depends on T006.
+
+### Implementation of pure logic (WP4)
+
+- [ ] T012 [P] Create `src/git-service/workbench-commands.ts` and `src/git-service/workbench-parsers.ts` (P1, WP4). Make T007 and T008 pass. Spec: FR-004, FR-008, FR-013, FR-049, FR-059. Depends on T007 and T008.
+- [ ] T013 [P] Create `src/git-service/line-patch.ts` (P1, WP4). It takes the retained hunk and the ordinals, and returns the sub-hunk or a refusal. It takes no patch text from the renderer (contract Δ4). Make T009 pass. Spec: FR-041 to FR-044. Depends on T009.
+- [ ] T014 [P] Create `src/contracts/ignore-line.ts` and `src/contracts/branch-name.ts` (P1, WP4). The service and the renderer import the same modules. Make T010 pass. Spec: FR-004, FR-015, FR-046. Depends on T010.
+- [ ] T015 [P] Create `src/git-service/switch-check.ts` (P1, WP4). Pure logic only; the reads run in `switch.ts` (T024). Make T011 pass. Spec: FR-011. Depends on T011.
+
+### Contracts (WP5)
+
+- [ ] T016 Write failing contract tests in `tests/contracts/workbench-contract.test.ts`, `tests/contracts/envelope.test.ts`, and `tests/contracts/vectors.test.ts`, with golden vectors in `tests/vectors/` (P2, WP5). Cover the new operations of contract Δ1 and their payloads of Δ3, every `reviewWorkbench` action, `runWorkbench {workbenchToken, start: true}`, `applyFiles` (data-model §6: "`entryIds` (1 to 10,000, unique, all from one list of that snapshot)"), `applyHunk` `lines`, `reviewCommit` `amend` and `commit` `amend` and `confirmRewrite`, `reviewSubmodules` `scope`, and `updateSubmodules` `confirmHosts`. `config-save` takes 1 to 32 changes. Cover the Δ2 phases and counters, the `MUTATIONS` additions, the Δ5 limits with their exact values, the Δ9 codes and reasons, the policy `mergetool` in `src/contracts/git-environment.json`, the WSL mode `mergetool` in `src/contracts/wsl-process.json`, the contexts `globalConfig` and `worktreeAdd`, the private requests `fileAppend` and `reveal`, the `trust` frame `confirm` version 2 without `fingerprint`, `persist`, and `bound`, and the marker kinds `workbench` and `applyFiles`. Unknown fields give `INVALID_REQUEST`. Spec: FR-001, FR-004, FR-040, FR-071. Contract: Δ1 to Δ7, Δ9 to Δ12. Depends on T006.
+- [ ] T017 Implement the contract changes in `src/contracts/{operations,envelope,errors,limits,channel,file-action}.ts`, `src/contracts/git-environment.json`, and `src/contracts/wsl-process.json` (P2, WP5). Add every contract Δ5 bound as a named constant: `MULTI_FILE_ACTION_FILES` (10,000), `MULTI_FILE_ACTION_BYTES` (512 MiB), `DISCARD_CHECK_PATHS` (20,000), `WORKTREE_RECORDS` (1,000), and `REFLOG_SCAN_ENTRIES` (10,000). Remove the 001 §5 row "Trust program file digests" from the limits (contract Δ7). Run `bun run export:schemas` to update `src/contracts/schemas/`. Make T016 pass. Spec: FR-001, FR-040, FR-071. Depends on T016.
+
+### Shell (WP6, after WP5)
+
+- [ ] T018 Write failing cargo unit tests in `src-tauri/src/{ipc,git_env,wsl,process_requests,settings,close,file_facts,schema}.rs` and the new `src-tauri/src/{file_append,reveal}.rs` (P3, WP6). `Local: Rust`. The allowlist holds the contract Δ1 commands. `revealPath` and `setSwitchChoice` never reach the service. The policy `mergetool` has no inactivity limit, the 4-hour ceiling, and a closed stdin pipe. The `integrate` kind fit accepts `workbench` and `applyFiles` (contract Δ6, Δ14). `globalConfig` accepts only its three arrays. `worktreeAdd` accepts only its bound path. `fileAppend` refuses a reparse point, a non-regular file, and a size or SHA-256 other than `expected`, and appends once with `FlushFileBuffers`. `switchChoice` reads any value other than `keep` or `stash` as `keep` (data-model §13). The close prompt names each contract Δ6 action. The T017 golden vectors decode in Rust. Spec: FR-001, FR-010, FR-046, FR-095. Contract: Δ1, Δ6, Δ10, Δ11. Depends on T017.
+- [ ] T019 Implement the shell changes in `src-tauri/src/{ipc,git_env,wsl,process_requests,settings,close,file_facts,schema,lib}.rs`, the new `src-tauri/src/{file_append,reveal}.rs`, `src-tauri/build.rs`, and `src-tauri/capabilities/main.json` (P3, WP6). `Local: Rust`. Register the commands, and commit the generated permission files. Add the WSL `wslFiles` mode `append` (contract Δ11). Add the calls to `src/frontend/bridge.ts` and their entries to `SAMPLE_CALLS` in `tests/contracts/bridge.test.ts`. The task dialog redesign comes in T057. Make T018 and the new `tests/contracts/bridge.test.ts` cases pass. Spec: FR-001, FR-010, FR-046. Depends on T017 and T018.
+
+### Batch 1 verification
+
+- [ ] T020 Run the batch 1 verification: `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked --manifest-path src-tauri/Cargo.toml`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `bun run test:all`. `Local: Rust`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Control mutation: in `src/contracts/ignore-line.ts`, drop the escape of `[`. `tests/contracts/ignore-line.test.ts` must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 1 is recorded in research.md. Spec: all IDs of T007 to T019. Depends on T007 to T019.
+
+**Checkpoint**: The pure logic, the contract, the shell allowlist, and the bridge calls exist. The service answers the new operations with `SERVICE_UNAVAILABLE`.
+
+---
+
+## Phase 3: User Stories 1 to 4, service part (Batch 2, P4) (Priority: P1)
+
+**Goal**: The service switches branches, runs the branch actions, merges, rebases, stages file sets and lines, and writes ignore lines.
+
+**Independent Test**: Run each action in disposable fixtures and compare HEAD, refs, the index, working bytes, the stash reflog, and configuration bytes with Git's own commands on a copy (quickstart.md Q5 to Q17, Q19).
+
+**Blocked by 003**: 003 WP6 to WP8 must be merged: `reviewSync` and `sync` with `abort`, `continue`, and `skip`; `applyFile` direction `resolve`; the policy `integrate` and its kind fit; the trust class `sync` and `SYNC_EVENTS`; `readTracking`; and the push destination rule (003 D4).
+
+### Tests for User Stories 1 to 4, service part (write first; they must fail)
+
+- [ ] T021 [P] [US1] Write failing tests in `tests/git/switch.test.ts` through `openService` of `tests/git/service-harness.ts` (P4, WP7). Quickstart Q5 to Q8. SC-001: HEAD, the index, every working byte, and the stash list equal Git's own commands on a copy, for clean and dirty trees with each choice. FR-009: a review without tracked change and without an unreachable commit returns a token that `runWorkbench` can use at once. FR-010: `choice: "discard"` is never a default value. FR-011 and SC-002: Discard with an untracked file in the way refuses with `UNTRACKED_IN_WAY` before any Git process, and every untracked byte stays. FR-012: Stash and reapply with a reapply conflict keeps the stash, names its commit ID, and the unmerged entries show; a failed checkout reapplies nothing; a fresh index read decides. Plan.md D3 stash protocol: "nothing to stash" runs as Keep changes and creates no stash; any other observation stops before the checkout and names `refs/stash`; the drop step removes exactly the entry whose OID is S. FR-013: a remote branch with one, zero, and two mapping refspecs; `name-exists`; `other-worktree` with the worktree path; the unreachable detached commit statement. A stale review gives `STALE_REVIEW`, and no process starts. Cancel at each step re-reads and states the observed HEAD and stash. The configuration bytes stay equal, except the `branch.<name>` keys of a tracking branch, which equal Git's own `checkout --track` (F8). Add the file to `tests/groups.json` `parallel`. Spec: FR-001 to FR-004, FR-009 to FR-013, SC-001, SC-002, SC-009. Depends on T020.
+- [ ] T022 [P] [US2] Write failing tests in `tests/git/branch-ops.test.ts` (P4, WP7). Quickstart Q9. Create branch here with and without "Switch to the new branch" sets no upstream. A name that `check-ref-format --branch` refuses gives `invalid-name`, and an expanded `@{-1}` refuses. An existing name gives `name-exists`. Rename moves the `branch.<old>` section and the reflog, as Git's own `branch -m` does. Delete: unavailable for the current branch and a held branch (`current-branch`, `other-worktree`); the `onlyHere` count equals the commits that `branch -D` makes unreachable (F10); `reflogKeeps` is true only when the tip is in `log -g HEAD` (data-model §4); a branch that moved after the review is never deleted, and no ref changes (SC-004); refs, reflogs, and configuration bytes equal Git's own `branch -D` (F9). A remote-tracking branch offers no Rename and no Delete. Add the file to `tests/groups.json` `parallel`. Spec: FR-014 to FR-020, SC-004, SC-009. Depends on T020.
+- [ ] T023 [P] [US3] Write failing tests in `tests/git/merge-rebase.test.ts` (P4, WP8). Quickstart Q10 to Q12. Merge: the counts equal `rev-list --left-right --count`; `merge-base --is-ancestor` exit 0 and 1 decide fast-forward, and another exit gives `GIT_FAILED`; each option and each allowed combination equals Git's own merge; Squash with No fast-forward is unavailable; Don't commit with a possible fast-forward locks No fast-forward; `merge.ff=only` without fast-forward gives `ff-only`; the preview equals Git's message (F12); a hook that rejects leaves the merge as Git leaves it. Rebase: the moved count equals the commits that Git's own rebase creates, with patch-same, empty, and merge commits (F13); the held count; the force note shows only when the tracking ref of the 003 push destination holds a rewritten commit (FR-024); the moved-branch list under `rebase.updateRefs` (F16); a tracked change without Autostash gives `dirty-tree`; an autostash that Git cannot reapply names the new stash commit. Merge and rebase are unavailable for a detached HEAD, an unborn branch, and an operation in progress (FR-028). A stop with conflicts leaves the markers, and the 003 Abort, Continue, Skip, and Mark resolved finish it as Git's own commands do. The merge driver canary runs only after approval. Add the file to `tests/groups.json` `parallel`. Spec: FR-021 to FR-028, SC-005. Depends on T020.
+- [ ] T024 [P] [US4] Write failing tests in `tests/git/multi-stage.test.ts` (P4, WP9). Quickstart Q15 and Q19. Stage selected, Stage folder, Stage all untracked, Stage all changes, and Unstage all give the expected index exactly, and every working byte stays (SC-006). One refused file refuses the whole action and names the file and its reason (FR-038). A changed entry set before publication gives `STALE_SELECTION` (FR-039). 10,001 files or above 512 MiB gives reason `limit` and stages nothing (FR-040). A path that starts with white space takes the single-file proof A. A status read cut inside the untracked records gives `cut: "untracked"`, complete tracked and staged lists, and an unblocked Commit; any other cut gives `cut: "other"` (contract Δ4). Add the file to `tests/groups.json` `serial` with the reason "builds 100,000 untracked files". Spec: FR-030, FR-034 to FR-040, SC-006. Depends on T020.
+- [ ] T025 [P] [US4] Write failing tests in `tests/git/line-stage.test.ts` (P4, WP9). Quickstart Q16. Stage and unstage selected lines of added, removed, and mixed hunks through `applyHunk` with `lines`. The index entry equals the expected blob, and the working file stays byte-identical (SC-006, FR-042). Each refusal gives `UNSUPPORTED_COMPARISON` with `context-only`, `several-hunks`, `deleted-file`, or `eof-newline`, and every 001 FR-011 reason stays. A diff that changed after the selection refuses as a stale selection (spec Edge Cases). Add the file to `tests/groups.json` `parallel`. Spec: FR-041 to FR-044, SC-006. Depends on T020.
+- [ ] T026 [P] [US4] Write failing tests in `tests/git/ignore.test.ts` (P4, WP9). Quickstart Q17. Add to .gitignore and to info/exclude for a file, a folder, a path with glob characters and trailing spaces, and a file without a final LF. The exact line and the LF rule hold, and `git check-ignore` matches the path. An existing line gives `ignore-exists`. A symbolic link, a folder, a file above 1 MiB, invalid UTF-8, and a NUL refuse with their reasons and change no byte. The `info/exclude` path in a linked worktree follows F23. The status read follows the write. Use the shell test double for `fileAppend`. Add the file to `tests/groups.json` `parallel`. Spec: FR-045, FR-046. Depends on T020.
+
+### Implementation for User Stories 1 to 4, service part
+
+- [ ] T027 [US1] Create `src/git-service/workbench-review.ts` and `src/git-service/switch.ts` (P4, WP7). `workbench-review.ts` holds the one-use `workbenchToken` with a 60 s lifetime, the bound values of data-model §2, and the consume-after-validation rule. `switch.ts` holds the review reads of contract Δ3 `switch`, the plan.md D3 stash protocol, the checkout steps, the reapply, the drop step, and the result of data-model §3 with its remedy. Use `switch-check.ts` (T015) for the Discard check. Make T021 pass. Spec: FR-001 to FR-004, FR-009 to FR-013. Depends on T012, T015, T017, and T021.
+- [ ] T028 [US2] Create `src/git-service/branch-ops.ts` (P4, WP7). Create, rename, and delete by plan.md D4, with the reflog statement of spec FR-018 and the delete bound to the shown OID. Make T022 pass. Spec: FR-014 to FR-020. Depends on T014, T022, and T027.
+- [ ] T029 [US3] Create `src/git-service/merge-rebase.ts` (P4, WP8). Merge by plan.md D5 and rebase by plan.md D6, with the force note of spec FR-024. Register the actions in the dispatcher of `workbench-review.ts` through its export, without other edits to that file. Make T023 pass. Spec: FR-021 to FR-028. Depends on T012, T017, T023, and T027.
+- [ ] T030 [US4] Create `src/git-service/multi-publish.ts`, and extend `src/git-service/file-publish.ts` and `src/git-service/status.ts` (P4, WP9). One owned candidate, one `update-index --add --remove -z --stdin`, the batch proof A, the per-file proof B, and one publication (contract Δ4). Unstage with one `update-index -z --index-info`. `status.ts` reports `cut: "untracked" | "other" | null`. Make T024 pass. Spec: FR-030, FR-034 to FR-040. Depends on T017 and T024.
+- [ ] T031 [US4] Extend `src/git-service/hunk-candidate.ts` and `src/git-service/hunk-publish.ts` with the sub-hunk of `line-patch.ts` (P4, WP9). The 001 steps 4 to 9 of "Hunk eligibility and publication" run unchanged. Make T025 pass. Spec: FR-041 to FR-044. Depends on T013, T025, and T030.
+- [ ] T032 [US4] Create `src/git-service/ignore.ts` (P4, WP9). The line from `ignore-line.ts`, the target path, the expected state, and the `fileAppend` request; then the status read. Make T026 pass. Spec: FR-045, FR-046. Depends on T014, T026, and T030.
+
+### Wiring for User Stories 1 to 4 (WP10, after WP7 to WP9)
+
+- [ ] T033 [US1] Write failing cases in `tests/git/trust.test.ts` for the trust class `workbench` (P4, WP10). Stories: US1 to US4. The class flag is true for each repository-controlled program of plan.md D12 `workbench`, including a merge driver `merge.<driver>.driver`, and false for a repository without them. A `runWorkbench` with the flag true and no approval gives `TRUST_REQUIRED`, and no process starts. `ignore` and `config-save` need no class. `applyFiles` and line staging keep the 001 rule. The merge driver keys show in the value display list (contract Δ7). Spec: FR-005, FR-069, SC-010. Depends on T027 to T032.
+- [ ] T034 [US1] Wire the handlers in `src/git-service/session.ts`, `src/git-service/trust.ts`, and `src/git-service/git-runner.ts` (P4, WP10). Stories: US1 to US4. Add `readBranches`, `reviewWorkbench`, `runWorkbench`, `applyFiles`, and `applyHunk` `lines`. Every `runWorkbench` and `applyFiles` enters the 001 exclusion and records the marker kind `workbench` with its action or kind `applyFiles`. A second mutation gives `BUSY` (spec FR-001). Add the class `workbench` and the merge driver discovery to `trust.ts`. The steps run under the 003 policy `integrate` (plan.md D2). Make T033 pass, and make the T021 to T026 cases pass through `session.ts`. Spec: FR-001, FR-005, FR-006, FR-069. Depends on T033.
+
+### Batch 2 verification
+
+- [ ] T035 [US1] Run the batch 2 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: Rust`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Control mutation: in `src/git-service/branch-ops.ts`, drop the expected `<oid>` from `update-ref --no-deref -d`. The moved-branch case of `tests/git/branch-ops.test.ts` must fail. Undo the edit and rerun green. Second control mutation: in `src/git-service/switch.ts`, reapply by `stash@{0}` instead of the OID S. The two-earlier-stashes case of `tests/git/switch.test.ts` must fail. Undo and rerun green. The task passes only after one independent review of batch 2 is recorded in research.md. Spec: all IDs of T021 to T034, SC-001, SC-002, SC-004 to SC-006, SC-013. Depends on T021 to T034.
+
+**Checkpoint**: The service answers every P1 operation. The renderer does not use them yet.
+
+---
+
+## Phase 4: User Stories 1 to 4, frontend part (Batch 3, P5) (Priority: P1)
+
+**Goal**: The views, the branch button and list, the switch confirmation, the branch context menu, the merge and rebase panels, and the commit workspace.
+
+**Independent Test**: Component tests with the bridge test double, then keyboard-only runs of US1 to US4 (quickstart.md Q24).
+
+**Blocked by 003**: 003 WP10 and WP11 must be merged: the Pull split button, `defaultPullAction`, the conflict notice in `app/NoticeBand.tsx`, and the 003 toolbar keys.
+
+### Mockup boards
+
+- [ ] T036 Update the 004 mockup boards in the orchestrator scratchpad `ux-004/gen/gen.mjs`, then regenerate `ux-004/canvas/project/*.dc.html` with `ux-004/gen/render.ps1` (design standard). Main: the Pull tooltip key becomes Ctrl+Down. BranchContext: the Push key becomes Ctrl+Up; check that the first item reads "Switch (Ctrl+.)". Commit: check that "Amend last commit" sits next to the message editor (spec FR-098). Run `ux-004/gen/check.mjs`. Report the changed boards to the orchestrator for review. Spec: FR-014, FR-098. Plan: D16, O-1, O-12. No dependency.
+
+### Base (WP11, alone first)
+
+- [ ] T037 [US1] Write failing tests in `tests/contracts/workbench-views.test.tsx` (P5, WP11). Stories: US1 to US4. `Workbench` holds `view: "history" | "commit" | "settings"` per worktree (data-model §14). Every view keeps the title bar, the top bar, and the status bar. The top bar order follows plan.md D15. The History and Commit segmented control switches the view and has no key (spec FR-033). The switcher popover gives the filter field the first focus, filters by a literal case-insensitive substring, and Enter picks the first match. The action menu keeps an unavailable item focusable with its inline reason, and the page calls `preventDefault` on `contextmenu` outside editable fields. The confirm popover gives Cancel the first focus. The docked panel restores the earlier dock content and focus on Escape, and Ctrl+Enter runs its primary action. After a `runWorkbench` or `applyFiles` outcome, the store runs `readWorkspace`, `readRefs`, and `readBranches`, refreshes the 002 view with `{oid}`, and shows no refs-changed notice (002 FR-005 change, contract Δ8). Spec: FR-033, FR-085, FR-086. Depends on T035.
+- [ ] T038 [US1] Write failing tests in `tests/contracts/shortcuts-004.test.ts` (P5, WP11). Stories: US1 to US4. Each key of the plan.md D15 map acts only in its scope. S and U act only while the diff has focus, and Space only in a file list (spec FR-087). Fetch Ctrl+Shift+Down, Pull Ctrl+Down, and Push Ctrl+Up act in the window but not in an editable field (spec FR-014). No key collides with a 001, 002, or 003 key. Spec: FR-014, FR-043, FR-087, SC-014. Depends on T035.
+- [ ] T039 [US1] Create `src/frontend/components/{switcher-popover,action-menu,confirm-popover,docked-panel,segmented}.tsx`, `src/frontend/views/{HistoryView,CommitView,SettingsView}.tsx`, and `src/frontend/state/workbench.ts`, and change `src/frontend/app/Workbench.tsx`, `src/frontend/keyboard/shortcuts.ts`, and `src/frontend/index.css` (P5, WP11). Stories: US1 to US4. Add the plan.md D16 tokens, the danger rules, and the mount points for WP12 to WP14 and WP21 to WP25 and WP29. The store follows the 001 latest-wins and generation rules. Load `arbareto-ux`, `vercel-react-best-practices`, `web-design-guidelines`, and `shadcn`. Make T037 and T038 pass. Spec: FR-033, FR-085 to FR-088. Depends on T037 and T038.
+
+### Tests for User Stories 1 to 4, frontend part (write first; they must fail)
+
+- [ ] T040 [P] [US1] Write failing tests in `tests/contracts/workbench-branches.test.tsx` (P5, WP12). Stories: US1, US2. The branch button shows the name with the 003 counts, "Detached at <short ID>", or "Merging" or "Rebasing" with the switch unavailable (FR-007). The list shows local then remote branches, filters, and ends with "New branch… (Ctrl+B)"; Enter picks the first match; a switch takes at most three inputs (SC-003). "No upstream" shows in the list and in the accessible names, and never as visible sidebar text (FR-008, 003 FR-020 change). A double-click in the sidebar always opens "Switch to <branch>?" next to the row with Cancel focused (FR-009). Tracked changes show the count and Keep changes, Stash and reapply, and Discard changes; the preselected choice comes from `switchChoice`; Discard changes the button to "Discard and switch" and shows the FR-011 text. The remote branch panel offers "Create local branch" and "Check out the commit only" (FR-013). A held branch offers "Open <worktree>". The branch context menu holds the FR-014 items in order with their keys, starting with "Switch (Ctrl+.)"; on a remote branch only the FR-014 subset; Push on another branch is unavailable with "Push sends the current branch only."; "Show only this branch's history" stays on the current branch (002 FR-049 change). The delete confirmation states the count or "loses no commit" and the HEAD reflog sentence, with Cancel first (FR-018). Copy branch name writes the short name (FR-020). Spec: FR-007 to FR-020, SC-003, SC-014. Depends on T039.
+- [ ] T041 [P] [US3] Write failing tests in `tests/contracts/workbench-integrate.test.tsx` (P5, WP13). The Merge panel states the counts and fast-forward, offers Merge commit or Squash, No fast-forward, and Don't commit, disables the refused combinations with their reasons, and prefills the message or shows "Git writes its default message." (FR-021, FR-022, plan.md O-6). The Rebase panel states the moved and held counts, the force note only from `forceNote`, the moved branches, Autostash and Autosquash with their sources, and Interactive as unavailable with "Not in this version" (FR-024, FR-025). Rebase names the moved commits before the start (FR-026). A stop with conflicts shows the 003 conflict notice (FR-023, FR-027). "Abort rebase…" uses the Removed text (plan.md D16). Spec: FR-021 to FR-028. Depends on T039.
+- [ ] T042 [P] [US4] Write failing tests in `tests/contracts/workbench-commit.test.tsx` (P5, WP14). Move every 001 commit panel test from the docked commit panel to the commit view first, and keep its assertions (plan.md P5 risk). The view shows Changes, Staged, the diff, and the message editor at once with splitters (FR-029). Tracked changes come first, and the Untracked section starts collapsed with its count; a collapsed section of 100,000 files creates no rows (FR-030, FR-086). Tree and flat layouts with folder counts (FR-031). Row buttons on hover and focus with the accessible name "Stage file <name>"; Space keeps the 001 behavior and moves focus to the next row (FR-032). Multi-select with Ctrl, Shift, pointer, and Shift+arrow, and "Stage selected (<n>)" (FR-034). The header actions of FR-035 and the folder actions of FR-036. Hunk buttons and Previous hunk and Next hunk (FR-037). Line selection by drag and Shift+arrow gives "Stage <n> lines" and the 3 px Accent bar on the left; S and U act only in the diff; unavailable reasons for FR-044 (FR-043). The Untracked menu offers Stage folder, Add to .gitignore, Add to info/exclude, Copy path, and Show in Explorer; the ignore item shows the exact line and the target first (FR-045). The message editor shows the column 72 guide, the code point counter such as "80/72", and the line 2 mark, and never blocks Commit (FR-047). The status bar text of FR-048. A `cut: "untracked"` read shows "At least <n> untracked files. Git lists more than Arbareto reads." and keeps Commit available. Enter or a double-click on the Working directory row opens the Commit view, and arrow keys never switch the view (plan.md O-11). Add the file to `tests/groups.json` `serial` with the reason "renders 100,000 rows". Spec: FR-029 to FR-048, SC-006, SC-014. Depends on T039.
+
+### Implementation for User Stories 1 to 4, frontend part
+
+- [ ] T043 [US1] Create `src/frontend/branches/*` for the branch button, the branch list, the switch confirmation, and the remote branch panel, and change `src/frontend/refs/ReferencesSidebar.tsx` for the double-click and the accessible "No upstream" (P5, WP12). Make the US1 cases of T040 pass. Spec: FR-007 to FR-013. Depends on T040.
+- [ ] T044 [US2] Add the branch context menu and the create, rename, and delete dialogs to `src/frontend/branches/*`, on sidebar rows and history labels (P5, WP12). Make the US2 cases of T040 pass. Spec: FR-014 to FR-020. Depends on T043.
+- [ ] T045 [P] [US3] Create `src/frontend/integrate/*` with the Merge and Rebase docked panels (P5, WP13). Make T041 pass. Spec: FR-021 to FR-028. Depends on T041.
+- [ ] T046 [P] [US4] Change `src/frontend/changes/*` and `src/frontend/commit/*` for the commit view layout, the virtual tree, multi-select, the row and header buttons, and the folder actions (P5, WP14). The Untracked rows build only at the first expand. Make the FR-029 to FR-040 cases of T042 pass. Spec: FR-029 to FR-040, FR-048. Depends on T042.
+- [ ] T047 [US4] Add the line selection with Pierre `enableLineSelection` and `controlledSelection`, the hunk mapping to ordinals in `src/frontend/changes/hunk-mapping.ts`, the ignore items with their confirm popover, Show in Explorer through `revealPath`, and the message guide, in `src/frontend/changes/*` and `src/frontend/commit/*` (P5, WP14). Make the rest of T042 pass. Spec: FR-041 to FR-047. Depends on T046.
+
+### Batch 3 verification
+
+- [ ] T048 [US1] Run the batch 3 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run test:contracts`, and `bun run test:all`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Start the app with `bun run dev` and `ARBARETO_PROFILE_ROOT` set to a scratch folder, and record screenshots of the branch list, the branch menu, the merge panel, and the commit view against the T036 boards. Control mutation: in `src/frontend/keyboard/shortcuts.ts`, let S act outside the diff. `tests/contracts/shortcuts-004.test.ts` must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 3 is recorded in research.md, with `web-design-guidelines` for the UI diff. Spec: all IDs of T037 to T047, SC-003, SC-014. Depends on T036 to T047.
+
+**Checkpoint**: US1 to US4 work end to end. This is the MVP.
+
+---
+
+## Phase 5: User Stories 5 to 9 and 11, service part, and the trust shell (Batch 4, P6 and P7) (Priority: P2)
+
+**Goal**: Worktrees, Git settings, the trust redesign, the one-click submodule update, conflict resolve, and amend in the service and the shell.
+
+**Independent Test**: quickstart.md Q13, Q14, Q20 to Q23, and Q28 in disposable fixtures.
+
+### Tests (write first; they must fail)
+
+- [ ] T049 [P] [US5] Write failing tests in `tests/git/worktrees.test.ts` (P6, WP15). Quickstart Q20. `readWorktrees` marks the main and the current worktree. Add with a new branch and with an existing branch; the existing-branch list leaves out held branches; the path check passes only `absent` or `empty`; no configuration byte changes, also not `worktree.useRelativePaths` (FR-053). Remove is unavailable for the main, the current, and a locked worktree. A dirty worktree states both counts and needs `force: true`; a changed status digest refuses. "Also delete the branch" runs the D4 delete only after the fresh list confirms the removal. Prune runs only with a prunable record, else `nothing-to-prune`, and skips locked records. `openWorktree` accepts only a path identity from a fresh list, else `UNKNOWN_TARGET`. The worktree list and refs equal Git's own commands (SC-008). Add the file to `tests/groups.json` `parallel`. Spec: FR-049 to FR-057, SC-008. Depends on T048.
+- [ ] T050 [P] [US6] Write failing tests in `tests/git/git-settings.test.ts` (P6, WP16). Quickstart Q21. `readGitSettings` with and without a repository (`globalConfig`). Each value shows its scope and origin; the header file follows plan.md D11, also for an XDG global file. Save each FR-060 key in Local and Global: only that key changes in only that file, and every other byte of every configuration file stays (SC-009). Cancel writes nothing. A multi-valued key gives `multi-value`. A value from an include names the included file, and Save writes only into the scope file. Git's exit codes 1, 3, 4, and 5 name the key; a failure after some writes reports each written key from a fresh listing. A changed entry set gives `STALE_REVIEW`. `config set --local -- <key> -value` writes `-value` (F22). No configured program runs (FR-067). Add the file to `tests/groups.json` `parallel`. Spec: FR-058 to FR-068, SC-009. Depends on T048.
+- [ ] T051 [P] [US7] Write failing tests in `tests/git/trust-v2.test.ts` (P6, WP17). Quickstart Q22. A full session without repository programs sends zero `confirm` frames, and the chip state reports no programs. The first commit with a pre-commit hook sends exactly one frame, with `policyVersion: 2` and the details. Not now starts no Git process, and no canary runs. A hook rewrite after approval asks nothing (FR-071). A changed worktree folder or Git path gives `changed`. A version 1 record gives `changed` and asks once (plan.md O-5). Stop trusting closes the lingering Jobs and reports the count, and is unavailable while a mutation runs. The 001 FR-025 and §7 changes: no fingerprint, no program digest, no phase 2 `fileFacts`. Add the file to `tests/groups.json` `parallel`. Spec: FR-069 to FR-075, SC-010. Depends on T048.
+- [ ] T052 [P] [US8] Write failing tests in `tests/git/submodule-scope.test.ts` (P6, WP18). Quickstart Q23. A review without refusal and without host lines returns a token for an update at once (contract Δ12, 001 FR-048 change). Each 001 FR-049 refusal still refuses and changes nothing (SC-011). A host line names both hosts, and `updateSubmodules` without `confirmHosts` gives `STALE_REVIEW` reason `hosts`. A scoped review covers only that row and its nested rows, and a nested row without an initialized parent gives `parent-not-initialized`. The `confirmRun` text equals contract Δ12. The `unchecked` entries come only from the §12 cases. The results equal 001. Cancel states each row from a fresh read. Add the file to `tests/groups.json` `parallel`. Spec: FR-076 to FR-082, SC-011. Depends on T048.
+- [ ] T053 [P] [US9] Write failing tests in `tests/git/resolve.test.ts` (P6, WP19). Quickstart Q13 and Q14. For UU, AA, AU, UA, DU, UD, DD, and a symlink stage, during a merge and a rebase: the kind text of data-model §11, the side names of plan.md D7, and the unavailable reasons `side-missing`, `side-not-regular`, and `stages-missing`. Choose ours and Choose theirs equal `git checkout --ours` and `--theirs` on a copy, and the path stays unmerged. A change of the stages or the working file before the start refuses. Open in merge tool with the fixture tool equals `git mergetool` on a copy, and a fresh index read decides; the exit code never decides (FR-096). Without `merge.tool`, `no-merge-tool`. A repository-scope tool in an untrusted repository sends the trust request before any Git process, and the canary does not run (FR-097). A `.orig` file stays. The actions run during a merge or a rebase (001 FR-016 change). No code reads conflict markers (SC-015). Add the file to `tests/groups.json` `parallel`. Spec: FR-089 to FR-097, SC-015. Depends on T048.
+- [ ] T054 [P] [US11] Write failing tests in `tests/git/commit-amend.test.ts` (P6, WP20). Quickstart Q28. `reviewCommit {amend: true}` returns the HEAD message from `cat-file commit`, the upstream, and `rewritesUpstream` from `merge-base --is-ancestor` exit 0 or 1; another exit gives `GIT_FAILED`. An empty staged scope still gets a token. A token with `rewritesUpstream` true and no `confirmRewrite: true` gives `INVALID_REQUEST`. A moved HEAD refuses. An unborn HEAD gives `unborn`, and a merge or a rebase gives `OPERATION_IN_PROGRESS`. Tree, parents, message, and refs equal Git's own `commit --amend` on a copy, with and without staged changes (SC-016). Hooks run as in 001. Add the file to `tests/groups.json` `parallel`. Spec: FR-098 to FR-100, SC-016. Depends on T048.
+
+### Implementation
+
+- [ ] T055 [P] [US5] Create `src/git-service/worktrees.ts` by plan.md D10 (P6, WP15). Make T049 pass at the module level. Spec: FR-049 to FR-057. Depends on T049.
+- [ ] T056 [P] [US6] Create `src/git-service/git-settings.ts` by plan.md D11 (P6, WP16). Make T050 pass at the module level. Spec: FR-058 to FR-068. Depends on T050.
+- [ ] T057 [US7] Implement the trust version 2 binding in `src/git-service/trust.ts`, the task dialog in `src-tauri/src/dialogs.rs`, the record version 2 in `src-tauri/src/settings.rs`, the confirm frame in `src-tauri/src/service.rs` and `src/contracts/channel.ts`, with cargo tests for the dialog model, the button IDs (Trust 100, Not now `IDCANCEL`, `nDefaultButton` `IDCANCEL`), `TDF_ALLOW_DIALOG_CANCELLATION`, no `TDF_ENABLE_HYPERLINKS`, the 20-names bound, and the record round trip (P6 and P7, WP17). `Local: Rust`. This implements the 001 FR-025, FR-050, and contract §7 changes (contract Δ7). Make T051 pass. Spec: FR-069 to FR-075. Depends on T051.
+- [ ] T058 [P] [US8] Change `src/git-service/submodule-review.ts` and `src/git-service/submodule-update.ts` for the scope, the host lines, `confirmHosts`, and the new `confirmRun` text (P6, WP18). This implements the 001 FR-047 to FR-050 and §12 changes (contract Δ12). Make T052 pass. Spec: FR-076 to FR-082. Depends on T052.
+- [ ] T059 [P] [US9] Create `src/git-service/resolve.ts` by plan.md D7 (P6, WP19). The merge tool runs under the policy `mergetool` with empty stdin. Make T053 pass at the module level. Spec: FR-089 to FR-097. Depends on T053.
+
+### Wiring for User Stories 5 to 9 and 11 (WP20, after WP15 to WP19)
+
+- [ ] T060 [US9] Wire `readWorktrees`, `readGitSettings`, `openWorktree`, and the `reviewWorkbench` actions `choose-side`, `mergetool`, `worktree-add`, `worktree-remove`, `worktree-prune`, and `config-save` in `src/git-service/session.ts` (P6, WP20). Stories: US5, US6, US8, US9. Add the trust class `mergetool` to `src/git-service/trust.ts` (plan.md D12). Allow Choose ours, Choose theirs, and Open in merge tool while a merge or a rebase is in progress (001 FR-016 change). `worktree-remove` checks the trust state of that worktree. Make T049, T050, T052, and T053 pass through `session.ts`. Spec: FR-016 change, FR-049 to FR-068, FR-076 to FR-097. Depends on T055 to T059.
+- [ ] T061 [US11] Extend `src/git-service/commit-review.ts` and `src/git-service/commit.ts` for `amend` and `confirmRewrite` by plan.md D8 "Amend last commit" (P6, WP20). Keep every other 001 handoff rule. Make T054 pass. Spec: FR-098 to FR-100. Depends on T054 and T060.
+
+### Batch 4 verification
+
+- [ ] T062 [US9] Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked --manifest-path src-tauri/Cargo.toml`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: Rust`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Control mutation: in `src/git-service/trust.ts`, drop `mergetool.<tool>.cmd` from the class `mergetool`. The Q14 case of `tests/git/resolve.test.ts` must fail. Undo the edit and rerun green. Second control mutation: in `src/git-service/commit-review.ts`, set `rewritesUpstream` to false for every exit. The confirmation case of `tests/git/commit-amend.test.ts` must fail. Undo and rerun green. Spec: all IDs of T049 to T061, SC-008 to SC-011, SC-015, SC-016. Depends on T049 to T061.
+- [ ] T063 Record one independent review of batch 4 in research.md, with `ponytail-review` and the heuristics review of the trust and resolve code. Spec: SC-013. Depends on T062.
+
+**Checkpoint**: The service and the shell serve every P2 operation. The new trust dialog is native.
+
+---
+
+## Phase 6: User Stories 5 to 9 and 11, frontend part (Batch 5, P8) (Priority: P2)
+
+**Goal**: The worktree button and panels, the Settings view, the trust chip, the Submodules group, the resolve view, and Amend last commit.
+
+**Independent Test**: Component tests per FR with the bridge test double.
+
+### Tests (write first; they must fail)
+
+- [ ] T064 [P] [US5] Write failing tests in `tests/contracts/workbench-worktrees.test.tsx` (P8, WP21). The worktree button shows the name and the count; the list shows folder, branch or detached commit, locked and prunable states, the current and main marks, a filter, Add worktree…, and Prune missing worktrees (FR-049). The sidebar Worktrees group, and a double-click opens a worktree that is not current (FR-050, FR-051). The Add panel: new or existing branch, the folder suggestion, and "Switch to it after creating" (FR-052). The Remove confirmation: the counts, the "Delete my uncommitted changes too" box that gates Remove, and "Also delete the branch" with the FR-018 text (FR-054 to FR-056). "No worktree is missing" (FR-057). Spec: FR-049 to FR-057. Depends on T063.
+- [ ] T065 [P] [US6] Write failing tests in `tests/contracts/workbench-settings.test.tsx` (P8, WP22). The scopes Effective, This repository, Global, and System, with Effective and System read-only, and This repository unavailable without a repository (FR-058). The source of each value and the header file (FR-059). The FR-060 pages. Not set, On, and Off with the effective value (FR-061). Presets that show the exact value, and Custom only for the editor until plan.md O-10 closes (FR-062). Read-only multi-valued keys (FR-063). "Changed" with the earlier value, Save, and Cancel (FR-064, FR-065). The Pull and push page shows the 003 default action as an Arbareto setting (FR-066). Values as plain text (FR-067). The preselected switch choice, Close back to the earlier view without a write (FR-068). The 003 pages "SSH" and "Clone" (plan.md O-7). Spec: FR-058 to FR-068. Depends on T063.
+- [ ] T066 [P] [US7] Write failing tests in `tests/contracts/workbench-trust.test.tsx` (P8, WP23). The chip "Trusted" or "Not trusted" shows only when the repository has its own programs, with its menu and tooltip (FR-073). Each blocked action states its inline reason, such as "Commit needs trust. Select Not trusted in the status bar to trust this repository." (FR-072). A read that needs trust shows "Arbareto reads no changes until you trust this repository." with Trust… and never prompts by itself. Stop trusting states "Arbareto no longer trusts this repository." and the count (FR-074). The in-app `TrustDialog` no longer exists. Spec: FR-069 to FR-075. Depends on T063.
+- [ ] T067 [P] [US8] Write failing tests in `tests/contracts/workbench-submodules.test.tsx` (P8, WP24). One click starts the update with no dialog (FR-076). Rows nest, and each shows Waiting, Fetching or Updating with the percentage, Done, or Failed; the header shows "Updating <i> of <n>" and Cancel (FR-077). A refusal line with "Show remedy" (FR-078). A host line with "Update anyway" (FR-079). The row menu Update and the Retry of a failed row (FR-081). The observed result, the exit code, Show output, the status bar totals, and one registration line (FR-082). Spec: FR-076 to FR-082. Depends on T063.
+- [ ] T068 [P] [US9] Write failing tests in `tests/contracts/workbench-resolve.test.tsx` (P8, WP25). A selected Conflicted entry shows the resolve view with the path, the kind, and both side names, such as "Choose theirs (feature/login)" (FR-089, FR-090). The Choose confirmation text with Cancel first (FR-091). Unavailable items with their reasons, and "Set a merge tool in Git settings" with a link to the page Editor and tools (FR-092 to FR-094). "Open in <tool>" with Cancel while the tool runs (FR-095). The result statement "Git staged <path>." or the path stays with Mark resolved (FR-096). Spec: FR-089 to FR-096. Depends on T063.
+- [ ] T069 [P] [US11] Write failing tests in `tests/contracts/workbench-amend.test.tsx` (P8, WP29). The box "Amend last commit" sits next to the message editor and is unavailable with its reason for an unborn branch and during a merge or a rebase. Checking it loads the HEAD message and shows "Commit replaces commit <short ID>.", and clearing it restores the draft (FR-098). Commit with `rewritesUpstream` true opens the modal confirmation "Amend rewrites commit <short ID>, which <upstream> already has. The next push needs Force push with lease." with Cancel first, and sends `confirmRewrite: true` only after it. Without it, Commit sends no confirmation (FR-100). Spec: FR-098 to FR-100, SC-014. Depends on T063.
+
+### Implementation
+
+- [ ] T070 [P] [US5] Create `src/frontend/worktrees/*` and fill the WP11 mount points for the worktree button and the sidebar Worktrees group (P8, WP21). Make T064 pass. Spec: FR-049 to FR-057. Depends on T064.
+- [ ] T071 [P] [US6] Create `src/frontend/settings/git/*` and `src/frontend/settings/SettingsView.tsx`, and move the 003 `src/frontend/settings/SettingsDialog.tsx` pages into the view (P8, WP22). Needs 003 WP12 merged; otherwise add the 003 pages in a later task (plan.md O-7). Make T065 pass. Spec: FR-058 to FR-068. Depends on T065.
+- [ ] T072 [P] [US7] Create `src/frontend/trust/TrustChip.tsx`, remove `src/frontend/trust/TrustDialog.tsx`, and change `src/frontend/app/RepositoryMenu.tsx` (P8, WP23). This implements the 001 FR-025 UI change. Make T066 pass. Spec: FR-069 to FR-075. Depends on T066.
+- [ ] T073 [P] [US8] Change `src/frontend/submodules/*` for the inline rows, and remove the review dialog (001 FR-047 and FR-048 changes) (P8, WP24). Make T067 pass. Spec: FR-076 to FR-082. Depends on T067.
+- [ ] T074 [P] [US9] Create `src/frontend/resolve/*` (P8, WP25). Make T068 pass. Spec: FR-089 to FR-096. Depends on T068.
+- [ ] T075 [P] [US11] Add Amend last commit to `src/frontend/commit/*` (P8, WP29). Make T069 pass. Spec: FR-098 to FR-100. Depends on T069.
+
+### Batch 5 verification
+
+- [ ] T076 [US5] Run the batch 5 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run test:contracts`, and `bun run test:all`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Start the app with `bun run dev` and `ARBARETO_PROFILE_ROOT` set to a scratch folder, and compare the worktree list, the Settings view, the trust chip, the Submodules group, the resolve view, and the amend box with the boards. Control mutation: in `src/frontend/commit/*`, send `confirmRewrite: true` without the confirmation. `tests/contracts/workbench-amend.test.tsx` must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 5 is recorded in research.md, with `web-design-guidelines` for the UI diff. Spec: all IDs of T064 to T075. Depends on T064 to T075.
+
+**Checkpoint**: US5 to US9 and US11 work end to end.
+
+---
+
+## Phase 7: User Story 10 - Spell check (Batch 6, P10) (Priority: P3)
+
+**Goal**: Offline English spell check of the commit message.
+
+**Independent Test**: quickstart.md Q25 with the 003 no-network harness.
+
+- [ ] T077 [US10] Check `nspell` and `dictionary-en` before adding them (P10, WP26, plan.md O-14). Record in research.md R20 the license texts, the bundle size, and how the `.aff` and `.dic` files load in the browser build. Ask the orchestrator to approve before T079. Spec: FR-083, FR-084. Depends on T076.
+- [ ] T078 [US10] Write failing tests in `tests/contracts/workbench-spelling.test.tsx` (P10, WP26). The fixture message marks every listed misspelling, such as "recieve", and no listed correct word. The wave shape and the accessible description give a non-color cue. The menu offers up to 5 suggestions and Ignore, and a selection replaces the word. The chip "Spelling: English". Commit is never blocked, and no text changes without a selection. The 003 no-network harness records no request. Spec: FR-083, FR-084, SC-012. Depends on T077.
+- [ ] T079 [US10] Create `src/frontend/commit/spelling.ts`, add `nspell` and `dictionary-en` to `package.json` with caret ranges, regenerate `bun.lock`, and add both to the notices inventory (P10, WP26, plan.md D17). Make T078 pass. Spec: FR-083, FR-084. Depends on T078.
+- [ ] T080 [US10] Run the batch 6 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, and `bun run test:all`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout, and `bun.lock` matches `package.json`. Control mutation: in `src/frontend/commit/spelling.ts`, skip the first word of each line. `tests/contracts/workbench-spelling.test.tsx` must fail. Undo the edit and rerun green. Spec: SC-012. Depends on T079.
+
+**Checkpoint**: US10 works offline.
+
+---
+
+## Phase 8: Qualification (Batch 7, P9, cross-cutting)
+
+**Purpose**: Packaged Windows evidence, WSL rows, performance, and the heuristics review.
+
+- [ ] T081 Write `tests/wsl/workbench-wsl.test.ts` with the WSL rows of quickstart.md Q26 (P9, WP27). `Local: WSL`. Run alone, never beside another full run. The Windows builder makes each fixture, and a `tar` stream on stdin copies it into the owned distro folder. Run F1 to F24, the stash protocol, the line patch, the worktree list with Linux paths, `fileAppend` mode `append`, and the merge tool mode `mergetool` that ends at once without a terminal (plan.md D18). No process remains after Cancel or close. Add the file to `tests/groups.json` `serial`. Spec: FR-006, SC-001 to SC-011, SC-015. Depends on T076.
+- [ ] T082 [P] Write `tests/windows/workbench-packaged.test.ts` (P9, WP28). `Local: package`. SC-003: a switch from the toolbar in three inputs. SC-010: prompt counts in the package. SC-014: keyboard-only runs of US1 to US4 and US11, accessible names, visible focus, and a contrast of at least 4.5:1, also for the danger button. N1 to N6 in the package. The manual checks of quickstart.md "Manual checks in the packaged build". Spec: SC-003, SC-010, SC-014, FR-070, FR-085. Depends on T076.
+- [ ] T083 [P] Write `tests/windows/workbench-perf.test.ts` (P9, WP28). `Local: package`. SC-007 with 100,000 untracked files: open the commit view, scroll, expand Untracked, and stage one file. 95% of inputs within 100 ms, and every input within 500 ms, cold and warm. Record CPU and process-tree memory. Record the time of a 10,000-file action (plan.md D8). Blocked by 001 T165, T180, T240, T242, and T244. Add the file to `tests/groups.json` `serial`. Spec: SC-007, FR-088. Depends on T076.
+- [ ] T084 Review the requirement-to-test map of the "Coverage" section (quickstart.md Q27). Record in research.md that no outcome depends on Git message text, timing, or a name pattern, or list each finding. Spec: SC-013. Depends on T081 to T083.
+- [ ] T085 Run the batch 7 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md "Results". Control mutation: in `tests/windows/workbench-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. Spec: SC-003, SC-007, SC-010, SC-014. Depends on T081 to T084.
+- [ ] T086 Run `/speckit-converge` and record the result. Spec: all. Depends on T085.
+
+---
+
+## Dependencies & Execution Order
+
+### Phase dependencies
+
+- Batch 0 (T001–T006): no dependency. T036 (boards) can run at any time before T039.
+- Batch 1 (T007–T020): after T006. WP6 (T018, T019) after WP5 (T017).
+- Batch 2 (T021–T035): after T020 and after 003 WP6 to WP8 are merged.
+- Batch 3 (T036–T048): after T035 and after 003 WP10 and WP11 are merged.
+- Batch 4 (T049–T063): after T048.
+- Batch 5 (T064–T076): after T063. T071 needs 003 WP12 (plan.md O-7).
+- Batch 6 (T077–T080): after T076.
+- Batch 7 (T081–T086): after T076. T083 needs the open 001 measurement tasks.
+
+### Feature 003 parts that 004 uses (plan.md "Dependencies on feature 003")
+
+- 003 Δ3 `reviewSync` and `sync` with `abort`, `continue`, and `skip`; 003 Δ4 `applyFile` direction `resolve` (Mark resolved); 003 D7. US3 and US9 need them.
+- 003 policy `integrate` and its kind fit (003 Δ6, Δ7). Every 004 mutation needs them.
+- 003 trust class `sync` and `SYNC_EVENTS` (003 D11). T034 and T057 extend that code.
+- 003 `readTracking` (003 Δ3) for FR-007 and FR-008.
+- 003 push destination rule (003 D4) for the FR-024 force note.
+- 003 Pull split button and `defaultPullAction` (003 FR-055, FR-056) for FR-066.
+- 003 `destinationFacts` (003 Δ6) for the worktree add path check.
+- 003 conflict notice (003 FR-030) in `app/NoticeBand.tsx`.
+- 003 `settings/SettingsDialog.tsx` for the Settings view (plan.md O-7).
+
+### Changes to earlier requirements and their tasks
+
+| Change (spec.md "Changes to earlier requirements") | Tasks |
+| --- | --- |
+| 001 FR-016: resolve actions during a merge or rebase | T053, T060 |
+| 001 FR-025, FR-050, contract §7 trust | T051, T057, T066, T072 |
+| 001 FR-034: commit workspace and amend | T042, T046, T054, T061, T069, T075 |
+| 001 FR-047 to FR-050, §12 submodules | T052, T058, T067, T073 |
+| 002 FR-005: refresh without the refs-changed notice | T037, T039 |
+| 002 FR-049: branch context menu | T040, T044 |
+| 003 FR-020: "No upstream" only in the accessible name | T040, T043 |
+
+### Parallel opportunities
+
+- Batch 0: WP1 (T001–T003), WP2 (T004), and WP3 (T005) after T002.
+- Batch 1: WP4 (T007–T015) beside WP5 (T016, T017); WP6 after WP5.
+- Batch 2: WP7 (T021, T022, T027, T028), WP8 (T023, T029), and WP9 (T024–T026, T030–T032). Then WP10 (T033, T034) alone.
+- Batch 3: T036, then WP11 (T037–T039) alone. Then WP12 (T040, T043, T044), WP13 (T041, T045), and WP14 (T042, T046, T047).
+- Batch 4: WP15 (T049, T055), WP16 (T050, T056), WP18 (T052, T058), WP19 (T053, T059), and WP17 (T051, T057, local Rust). Then WP20 (T054, T060, T061) alone.
+- Batch 5: WP21 (T064, T070), WP22 (T065, T071), WP23 (T066, T072), WP24 (T067, T073), WP25 (T068, T074), and WP29 (T069, T075).
+- Batch 7: WP27 (T081) alone. WP28 (T082, T083).
+- Shared files: `session.ts` and `trust.ts` only in WP10 and WP20, and `trust.ts` in WP17 before WP20. `Workbench.tsx` only in WP11. `tests/groups.json` in every WP; the orchestrator resolves merge conflicts. Rust only in WP6 and WP17, one at a time. T029 adds its actions through the `workbench-review.ts` export, so WP7 and WP8 stay file-disjoint.
+
+## Parallel Example: Batch 2
+
+```text
+Track A (WP7): T021, T022 -> T027 -> T028
+Track B (WP8): T023 -> T029 (after T027 exports the dispatcher)
+Track C (WP9): T024, T025, T026 -> T030 -> T031, T032
+Then WP10:     T033 -> T034 -> T035
+```
+
+## Coverage
+
+| Requirement | Tasks |
+| --- | --- |
+| FR-001 to FR-006 | T016, T017, T021, T027, T033, T034 |
+| FR-007 to FR-013 (US1) | T011, T015, T021, T027, T040, T043 |
+| FR-014 to FR-020 (US2) | T010, T022, T028, T038, T040, T044 |
+| FR-021 to FR-028 (US3) | T007, T023, T029, T041, T045 |
+| FR-029 to FR-048 (US4) | T009, T010, T024 to T026, T030 to T032, T042, T046, T047 |
+| FR-049 to FR-057 (US5) | T049, T055, T060, T064, T070 |
+| FR-058 to FR-068 (US6) | T050, T056, T060, T065, T071 |
+| FR-069 to FR-075 (US7) | T033, T051, T057, T066, T072 |
+| FR-076 to FR-082 (US8) | T052, T058, T067, T073 |
+| FR-083 to FR-084 (US10) | T077 to T080 |
+| FR-085 to FR-088 | T037 to T039, T082, T083 |
+| FR-089 to FR-097 (US9) | T053, T059, T060, T068, T074 |
+| FR-098 to FR-100 (US11) | T054, T061, T069, T075 |
+| SC-001, SC-002 | T021, T035 |
+| SC-003 | T040, T082 |
+| SC-004 | T022, T035 |
+| SC-005 | T023 |
+| SC-006 | T004, T024, T025 |
+| SC-007 | T004, T083 |
+| SC-008 | T049 |
+| SC-009 | T021, T022, T050 |
+| SC-010 | T051, T082 |
+| SC-011 | T052 |
+| SC-012 | T078 |
+| SC-013 | T035, T063, T084 |
+| SC-014 | T038, T040, T042, T082 |
+| SC-015 | T053 |
+| SC-016 | T054, T062 |
+
+## Implementation Strategy
+
+- MVP: batches 0 to 3 deliver US1 to US4, the P1 stories. Stop after T048 and validate with the user.
+- Then batch 4 and 5 deliver the P2 stories US5 to US9 and US11. Batch 6 delivers US10. Batch 7 qualifies the package.
+- Each batch ends with its verification task, a control mutation, and one independent review.
+
+## Notes
+
+- Run `/speckit-analyze` after every edit of this file.
+- Run `/speckit-converge` at the end of each batch.
+- Commit after each task or logical group. The orchestrator commits.

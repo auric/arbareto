@@ -61,6 +61,7 @@ Use only the README "Development" commands:
 | Q25 | Spell check of the fixture message, offline. | `tests/contracts/workbench-spelling.test.tsx`, the 003 no-network harness | Every listed misspelling is marked, no listed correct word is marked, and no network request starts. | SC-012 |
 | Q26 | The WSL rows of Q5 to Q23 in Ubuntu-26.04. | `tests/wsl/workbench-wsl.test.ts` | Same results through the distro's Git. No remaining process after Cancel or close. | FR-006 |
 | Q27 | Review of the requirement-to-test map. | review checklist | No outcome depends on Git message text, timing, or a name pattern. | SC-013 |
+| Q28 | Amend with and without staged changes; HEAD on its upstream, not on it, and no upstream; HEAD moved after the review. | `tests/git/commit-amend.test.ts`, `tests/contracts/workbench-amend.test.tsx` | Tree, parents, message, and refs equal `git commit --amend` on a copy. The confirmation shows exactly when `merge-base --is-ancestor` exits 0. A moved HEAD refuses. | SC-016, FR-098 to FR-100 |
 
 ## Manual checks in the packaged build
 

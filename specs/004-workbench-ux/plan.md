@@ -46,7 +46,7 @@ Checked against `.specify/memory/constitution.md` version 3.0.0, before research
 
 | Principle | How the design meets it | Status |
 |---|---|---|
-| I. Preserve user data | Git stays authoritative, and fresh reads decide every outcome. Discard never passes `--force`, so Git itself refuses untracked files in the way (D3). A stash that holds user changes stays until a reapply without conflicts, and the result names its commit ID. Delete binds to the shown commit (D4). Worktree remove passes `--force` only after the explicit check box (D10). Rebase is a history rewrite, and the panel names the moved commits before the Rebase button (D6). The delete confirmation states the reflog limit from a fact (D4). Configuration changes only at Save (D11). No hook bypass. | Pass, note N-1 |
+| I. Preserve user data | Git stays authoritative, and fresh reads decide every outcome. Discard never passes `--force`, so Git itself refuses untracked files in the way (D3). A stash that holds user changes stays until a reapply without conflicts, and the result names its commit ID. Delete binds to the shown commit (D4). Worktree remove passes `--force` only after the explicit check box (D10). An amend of a commit that the upstream holds asks a destructive confirmation first (D8). Rebase is a history rewrite, and the panel names the moved commits before the Rebase button (D6). The delete confirmation states the reflog limit from a fact (D4). Configuration changes only at Save (D11). No hook bypass. | Pass, note N-1 |
 | II. TypeScript/Bun | All Git logic is in TypeScript. Rust adds platform work only: the task dialog fields, the file append, Explorer reveal, contexts, and policy data (D14). | Pass |
 | III. Validated boundaries | Typed operations with zod and the strict decoder. Branch names pass Git's own check and the D4 rule. Every name and path passes after `--` or `--end-of-options`. Every output has a bound. Each operation has its own Job. The renderer sends line ordinals, never patch text (contract Δ4). | Pass |
 | IV. Real Git verification | Every action is compared with Git's own command on a copy: refs, HEAD, the index, working bytes, the stash reflog, configuration bytes, and operation state. Tests cover failure, Cancel, external changes, stale tokens, and each safeguard. | Pass |
@@ -57,10 +57,10 @@ Checked against `.specify/memory/constitution.md` version 3.0.0, before research
 | IX. One planning process | All artifacts stay in `specs/004-workbench-ux`. The contract lists only deltas to 001, 002, and 003. | Pass |
 
 Notes from the second check:
-- **N-1 (I, "Destructive actions and history rewrites MUST require explicit confirmation")**: Discard, Choose ours, Choose theirs, branch delete, worktree remove with changes, and rebase each have their own confirmation. The Rebase button counts as the rewrite confirmation (spec FR-026). Discard drops the stash commit; Git keeps it unreachable until garbage collection. The text "You cannot undo this" stays, because Arbareto offers no recovery for it.
+- **N-1 (I, "Destructive actions and history rewrites MUST require explicit confirmation")**: Discard, Choose ours, Choose theirs, branch delete, worktree remove with changes, rebase, and amend each have their own confirmation. The Rebase button counts as the rewrite confirmation (spec FR-026). For a commit that no upstream holds, the checked Amend box with its statement "Commit replaces commit <short ID>." and Commit count as the rewrite confirmation (spec FR-098). Discard drops the stash commit; Git keeps it unreachable until garbage collection. The text "You cannot undo this" stays, because Arbareto offers no recovery for it.
 - **N-2 (V, "explicit trust approval before execution")**: An approval now binds to the folders, the Git selection, and the policy version (spec FR-071). After approval, a changed or new hook in the approved folders runs without a new prompt. Example: a tracked `.githooks` folder that a pull changes. The spec Clarifications accept this. Principle V stays met, because the user approves before the first run. One class `workbench` covers all local branch and worktree actions; this is a ponytail ceiling, as 003 N-1. Upgrade path: one class per action, when a user reports extra prompts.
 - **N-3 (VII, "cold/warm timings")**: P9 records cold and warm runs for SC-007 by the 001 rules.
-- **N-4 (Delivery Gates)**: Safety tests (SC-001, SC-002, SC-004 to SC-006, SC-008, SC-009, SC-015), trust boundaries (D12), accessibility checks (SC-014, FR-085), performance budgets (SC-007), and platform qualification (P9) are defined here.
+- **N-4 (Delivery Gates)**: Safety tests (SC-001, SC-002, SC-004 to SC-006, SC-008, SC-009, SC-015, SC-016), trust boundaries (D12), accessibility checks (SC-014, FR-085), performance budgets (SC-007), and platform qualification (P9) are defined here.
 
 No violation, so Complexity Tracking stays empty.
 
@@ -131,9 +131,9 @@ tests/
 | P3 Shell | `src-tauri/src/{ipc,git_env,wsl,process_requests,settings,close,file_facts,dialogs}.rs`, new `src-tauri/src/{file_append,reveal}.rs`, `src-tauri/build.rs`, `src-tauri/capabilities/main.json`, `src/frontend/bridge.ts`, `tests/contracts/bridge.test.ts` | Allowlist, the policy `mergetool` with its limits, the kind fit of `integrate`, the `globalConfig` and `worktreeAdd` contexts, `fileAppend`, `revealPath`, `openWorktree`, close prompt names, marker kinds, the switch choice setting. The task dialog redesign comes in P7. | Cargo tests for each request, each refusal, and the policy limits. | Local only. Rust work stays off cloud sessions. |
 | P4 Service P1 | new `switch.ts`, `branch-ops.ts`, `merge-rebase.ts`, `multi-publish.ts`, `ignore.ts`, `workbench-review.ts`; `hunk-candidate.ts` (sub-hunk), `file-publish.ts`, `status.ts` (cut kind), `trust.ts` (class `workbench`, merge drivers), `session.ts` | US1 to US4: switch, branch actions, merge, rebase, multi-file and line staging, ignore lines. | SC-001, SC-002, SC-004, SC-005, SC-006, SC-013. Stale tokens, Cancel at each step, external ref moves, hook rejection, the untracked-in-the-way refusal, the stash reapply conflict. | Stash reflog races (research R3). The runtime checks refuse on a mismatch. |
 | P5 Frontend P1 | new `components/*`, `views/*`, `branches/*`, `integrate/*`; `app/Workbench.tsx`, `keyboard/shortcuts.ts`, `refs/ReferencesSidebar.tsx`, `changes/*`, `commit/*`, `index.css` | The view switch, the branch button and list, the switch confirmation, the branch context menu, the merge and rebase panels, the commit workspace. | Component tests: keyboard, focus, unavailable reasons, the virtual tree with 100,000 rows, multi-select, line selection, the 72-column guide. | The commit view replaces the 001 docked commit panel. Every 001 commit panel test moves with it. |
-| P6 Service P2 | new `worktrees.ts`, `git-settings.ts`, `resolve.ts`; `submodule-review.ts`, `submodule-update.ts`, `trust.ts` (version 2), `session.ts` | US5, US6, US7 service part, US8, US9. | SC-008, SC-009, SC-010, SC-011, SC-015. | Trust record migration (O-5). |
+| P6 Service P2 | new `worktrees.ts`, `git-settings.ts`, `resolve.ts`; `submodule-review.ts`, `submodule-update.ts`, `trust.ts` (version 2), `session.ts`, `commit-review.ts` and `commit.ts` (amend) | US5, US6, US7 service part, US8, US9, US11. | SC-008, SC-009, SC-010, SC-011, SC-015, SC-016. | Trust record migration (O-5). |
 | P7 Trust shell | `src-tauri/src/{dialogs,settings,service}.rs`, `src/contracts/channel.ts` | The task dialog with main instruction, content, collapsed details, and Not now as default. The record version 2. The run confirmation text. | Cargo tests for the dialog model, the button IDs, the record round trip. N1 packaged check. | Local only. |
-| P8 Frontend P2 | new `worktrees/*`, `settings/git/*`, `resolve/*`, `trust/TrustChip.tsx`; `submodules/*`, `app/Workbench.tsx` (mount points only) | Worktree button and panels, Settings view, trust chip and inline reasons, Submodules group, resolve view. | Component tests per FR. | The 003 settings dialog moves into the Settings view (O-7). |
+| P8 Frontend P2 | new `worktrees/*`, `settings/git/*`, `resolve/*`, `trust/TrustChip.tsx`; `submodules/*`, `commit/*` (amend), `app/Workbench.tsx` (mount points only) | Worktree button and panels, Settings view, trust chip and inline reasons, Submodules group, resolve view, Amend last commit. | Component tests per FR. | The 003 settings dialog moves into the Settings view (O-7). |
 | P9 Qualification | `tests/windows/{workbench-packaged,workbench-perf}.test.ts`, `tests/wsl/workbench-wsl.test.ts` | None (tests). | SC-003, SC-007 (cold and warm, CPU, process-tree memory), SC-010 prompt counts, SC-014 keyboard and contrast, N1 to N6 in the package, WSL rows. | The open 001 measurement tools (001 T165, T180, T240, T242, T244). |
 | P10 Spell check | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, notices | US10. | SC-012 with the fixture message; no network request during the session (the 003 no-network harness). | Dictionary bundle size and license (D17). |
 
@@ -238,6 +238,7 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
 - Stage folder: the entries of that list whose path starts with the folder path and `/`, in the shown read. Stage all changes: every entry of the Changes list, tracked and untracked. Stage all untracked: every Untracked entry. Unstage all: every Staged entry.
 - Line staging (spec FR-041 to FR-044, research R11): `applyHunk` with `lines`, the ordinals of the selected `+` and `-` lines of one retained hunk. To stage, an unselected `-` line becomes context and an unselected `+` line goes. To unstage, the reverse applies to the staged hunk. The header counts follow the kept lines. The 001 steps then run unchanged: `apply --cached` on the candidate, the independent `applyToContent`, `hash-object --no-filters --stdin`, the exact entry check, and publication.
 - Line refusals: a selection of context lines only, lines of two hunks, a hunk of a deleted file (reason `deleted-file`), and a partial selection in a hunk with an incomplete-line marker (reason `eof-newline`, O-9). Every 001 FR-011 refusal stays.
+- Amend last commit (spec FR-098 to FR-100, contract Δ3 "`reviewCommit` and `commit`"): `reviewCommit {amend: true}` adds three reads to the 001 commit review. `cat-file commit <HEAD>` gives the message: the bytes after the first empty line. An `encoding` header that Git does not treat as UTF-8 refuses with the 001 `COMMIT_ENCODING_UNSUPPORTED`. `for-each-ref --format=%(upstream) <HEAD ref>` gives the upstream U. With U, `merge-base --is-ancestor HEAD <U>` decides `rewritesUpstream`: exit 0 true, exit 1 false, another exit `GIT_FAILED` (git-merge-base(1)). The review token binds the HEAD OID and `rewritesUpstream`. An empty staged scope still gets a token, because a message-only amend is valid. `commit {amend: true}` runs `commit --quiet --amend --file=-` through the 001 handoff. A review with `rewritesUpstream` true needs `confirmRewrite: true`, which the renderer sends only after the destructive confirmation. An unborn HEAD gives `WORKBENCH_UNAVAILABLE` reason `unborn`. A merge or a rebase gives `OPERATION_IN_PROGRESS`. The renderer keeps the earlier draft while the box is checked (data-model §14).
 
 ### D9 Ignore lines
 
@@ -416,22 +417,22 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
 
 ## Open items and reviewer defaults
 
-- **O-1 Keys of Pull and Push.** The spec FR-014 and its Clarifications name Ctrl+Shift+P and Ctrl+Shift+Up as Git Extensions defaults. The Git Extensions source gives Ctrl+Down and Ctrl+Up (research R19). The plan keeps the 003 D12 keys, which equal the source. The spec text needs an amendment.
-- **O-2 Force note condition.** FR-024 says "a remote-tracking branch". The plan states the force note only when the push destination's tracking ref holds a rewritten commit. The panel still states the held count over all remote-tracking branches. The spec text needs an amendment.
-- **O-3 SC-009 byte identity.** Git's own branch create with tracking, rename, and delete write `branch.<name>` sections. SC-009 says every configuration file stays byte-identical in other fixtures. The plan accepts Git's own branch-section writes as expected changes. The spec text needs an amendment.
-- **O-4 Reflog statement.** FR-018 says the reflog can restore the tip for a limited time. Git deletes the branch reflog, and only the HEAD reflog can keep the tip. The plan states it from that fact. The spec text needs an amendment.
+- **O-1 Keys of Pull and Push.** The first spec FR-014 and its Clarifications named Ctrl+Shift+P and Ctrl+Shift+Up as Git Extensions defaults. The Git Extensions source gives Ctrl+Down and Ctrl+Up (research R19). The plan keeps the 003 D12 keys, which equal the source. Resolved: the spec states these keys (Clarifications, plan-driven corrections).
+- **O-2 Force note condition.** FR-024 says "a remote-tracking branch". The plan states the force note only when the push destination's tracking ref holds a rewritten commit. The panel still states the held count over all remote-tracking branches. Resolved: spec FR-024 states it.
+- **O-3 SC-009 byte identity.** Git's own branch create with tracking, rename, and delete write `branch.<name>` sections. SC-009 says every configuration file stays byte-identical in other fixtures. The plan accepts Git's own branch-section writes as expected changes. Resolved: spec SC-009 states it.
+- **O-4 Reflog statement.** FR-018 says the reflog can restore the tip for a limited time. Git deletes the branch reflog, and only the HEAD reflog can keep the tip. The plan states it from that fact. Resolved: spec FR-018 states it.
 - **O-5 Trust record migration.** Version 1 records give `changed`, so each trusted repository asks once after the update (spec FR-071 "trust policy version").
 - **O-6 Merge message preview.** It depends on P0.2 F12.
 - **O-7 Settings host.** The 003 `settings/SettingsDialog.tsx` content moves into the Settings view as the pages "SSH" and "Clone". 003 WP12 must merge first, or 004 WP22 adds the pages later.
 - **O-8 Merge tool window.** Foreground and single-instance tools need N6. A tool window outside the Job stays open after Cancel.
-- **O-9 New line refusals.** `deleted-file` and `eof-newline` are plan refusals that FR-044 does not list.
+- **O-9 New line refusals.** `deleted-file` and `eof-newline` are plan refusals. Resolved: spec FR-044 lists them.
 - **O-10 Editor presets.** The exact `core.editor` values come from the Git for Windows installer. Until a check confirms them, the editor page offers Custom only.
 - **O-11 Working directory row.** Selection docks a summary; Enter switches to the Commit view.
-- **O-12 Switch verb.** D-S1 amends the FR-014 wording.
+- **O-12 Switch verb.** D-S1 amends the FR-014 wording. Resolved: spec FR-014 says Switch.
 - **O-13 Light values** of the new tokens wait for the design pass.
 - **O-14 Spell check package check** before P10.
-- **O-15 FR-016 list.** The spec allows only Abort, Continue, Skip, Mark resolved, Fetch, and Fetch all remotes during a merge or rebase. The resolve actions Choose ours, Choose theirs, and Open in merge tool must also run then. The plan allows them. The spec text needs an amendment.
-- **O-16 FR-033 mode shortcuts.** Feature 001 defines no view or mode shortcut (`src/frontend/keyboard/shortcuts.ts`). The plan adds no key for the view switch.
+- **O-15 FR-016 list.** The spec allows only Abort, Continue, Skip, Mark resolved, Fetch, and Fetch all remotes during a merge or rebase. The resolve actions Choose ours, Choose theirs, and Open in merge tool must also run then. The plan allows them. Resolved: the spec 001 FR-016 change lists them.
+- **O-16 FR-033 mode shortcuts.** Feature 001 defines no view or mode shortcut (`src/frontend/keyboard/shortcuts.ts`). The plan adds no key for the view switch. Resolved: spec FR-033 states it.
 
 ## Phases
 
@@ -444,11 +445,11 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
 | 2 | P4 | A: WP7. B: WP8. C: WP9. Then WP10 alone. | P1 service: US1 to US4. |
 | 3 | P5 | WP11 alone first. Then A: WP12. B: WP13. C: WP14. | P1 frontend. |
 | 4 | P6, P7 | A: WP15. B: WP16. C: WP18. D: WP19. WP17 (local, Rust) beside them. Then WP20 alone. | P2 service and the trust shell. |
-| 5 | P8 | A: WP21. B: WP22. C: WP23. D: WP24. E: WP25. | P2 frontend. |
+| 5 | P8 | A: WP21. B: WP22. C: WP23. D: WP24. E: WP25. F: WP29. | P2 frontend. |
 | 6 | P10 | WP26. | P3 spell check. |
 | 7 | P9 | WP27 (WSL, alone). WP28 (packaged). | Qualification. |
 
-User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 (batches 4 and 5). P3 is US10 (batch 6).
+User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 and US11 (batches 4 and 5). P3 is US10 (batch 6).
 
 ### Work packages, in run order
 
@@ -465,7 +466,7 @@ User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 (
 | WP8 | implementer-xhigh | new `src/git-service/merge-rebase.ts`, `tests/git/merge-rebase.test.ts` | P4: US3 |
 | WP9 | implementer-xhigh | `src/git-service/{hunk-candidate,hunk-publish,file-publish,status}.ts`, new `src/git-service/{multi-publish,ignore}.ts`, `tests/git/{multi-stage,line-stage,ignore}.test.ts` | P4: US4 |
 | WP10 | implementer | `src/git-service/{session,trust,git-runner}.ts`, `tests/git/trust.test.ts` (class `workbench`) | P4 wiring: handlers, the class `workbench`, merge drivers. After WP7 to WP9. |
-| WP11 | frontend-implementer (loads arbareto-ux, vercel-react-best-practices, web-design-guidelines, shadcn) | new `src/frontend/components/{switcher-popover,action-menu,confirm-popover,docked-panel,segmented}.tsx`, new `src/frontend/views/*`, new `src/frontend/state/workbench.ts`, `src/frontend/app/Workbench.tsx`, `src/frontend/keyboard/shortcuts.ts`, `src/frontend/index.css`, `tests/contracts/{workbench-views,shortcuts-004}.test.tsx` | P5 base: views, shared parts, tokens, keys, and the mount points for WP12 to WP14 and WP21 to WP25. |
+| WP11 | frontend-implementer (loads arbareto-ux, vercel-react-best-practices, web-design-guidelines, shadcn) | new `src/frontend/components/{switcher-popover,action-menu,confirm-popover,docked-panel,segmented}.tsx`, new `src/frontend/views/*`, new `src/frontend/state/workbench.ts`, `src/frontend/app/Workbench.tsx`, `src/frontend/keyboard/shortcuts.ts`, `src/frontend/index.css`, `tests/contracts/workbench-views.test.tsx`, `tests/contracts/shortcuts-004.test.ts` | P5 base: views, shared parts, tokens, keys, and the mount points for WP12 to WP14 and WP21 to WP25. |
 | WP12 | frontend-implementer | new `src/frontend/branches/*`, `src/frontend/refs/ReferencesSidebar.tsx`, `tests/contracts/workbench-branches.test.tsx` | P5: branch button, list, switch confirmation, branch menu, create, rename, delete. |
 | WP13 | frontend-implementer | new `src/frontend/integrate/*`, `tests/contracts/workbench-integrate.test.tsx` | P5: merge and rebase panels. |
 | WP14 | frontend-implementer | `src/frontend/changes/*`, `src/frontend/commit/*`, `tests/contracts/workbench-commit.test.tsx` | P5: commit view, virtual tree, multi-select, line selection, ignore items, message guide. |
@@ -474,12 +475,13 @@ User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 (
 | WP17 | implementer-xhigh | `src-tauri/src/{dialogs,settings,service}.rs`, `src/contracts/channel.ts`, `src/git-service/trust.ts` (version 2 binding), `tests/git/trust-v2.test.ts` | P6 and P7: US7. Local only. |
 | WP18 | implementer-xhigh | `src/git-service/{submodule-review,submodule-update}.ts`, `tests/git/submodule-scope.test.ts` | P6: US8 |
 | WP19 | implementer-xhigh | new `src/git-service/resolve.ts`, `tests/git/resolve.test.ts` | P6: US9 |
-| WP20 | implementer | `src/git-service/session.ts`, `src/git-service/trust.ts` (class `mergetool`) | P6 wiring. After WP15 to WP19. |
+| WP20 | implementer | `src/git-service/session.ts`, `src/git-service/trust.ts` (class `mergetool`), `src/git-service/{commit-review,commit}.ts` (amend), `tests/git/commit-amend.test.ts` | P6 wiring and the US11 service part. After WP15 to WP19. |
 | WP21 | frontend-implementer | new `src/frontend/worktrees/*`, tests | P8: US5 |
 | WP22 | frontend-implementer | new `src/frontend/settings/git/*`, `src/frontend/settings/SettingsView.tsx`, tests | P8: US6 |
 | WP23 | frontend-implementer | new `src/frontend/trust/TrustChip.tsx`, remove `src/frontend/trust/TrustDialog.tsx`, `src/frontend/app/RepositoryMenu.tsx`, tests | P8: US7 |
 | WP24 | frontend-implementer | `src/frontend/submodules/*`, tests | P8: US8 |
 | WP25 | frontend-implementer | new `src/frontend/resolve/*`, tests | P8: US9 |
+| WP29 | frontend-implementer | `src/frontend/commit/*` (Amend last commit), `tests/contracts/workbench-amend.test.tsx` | P8: US11. After WP14 and WP20. |
 | WP26 | frontend-implementer | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, the notices inventory, tests | P10: US10 |
 | WP27 | implementer; runs by scout, alone | `tests/wsl/workbench-wsl.test.ts` | P9 WSL |
 | WP28 | implementer; runs by scout | `tests/windows/{workbench-packaged,workbench-perf}.test.ts` | P9 packaged |

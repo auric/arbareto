@@ -8,6 +8,7 @@ import type { ChangeEntry } from "../contracts/envelope";
 import { APPROVAL_LIFETIME_MS } from "../contracts/limits";
 import type { PhysicalIdentity } from "./identity";
 import type { Head, IndexFingerprint, OperationState, TrustApproval, WorkingVersion } from "./snapshot";
+import type { SyncBinding } from "./sync-review";
 
 export type Direction = "stage" | "unstage";
 // Feature 003 contract Δ3 `applyFile`: only a file action takes `resolve`.
@@ -71,14 +72,17 @@ export type HunkApproval = Issued & { kind: "hunk"; comparisonId: string; hunkId
 export type FileApproval = Issued & { kind: "file"; comparisonId: string; entryId: string; direction: FileDirection; binding: FileBinding };
 export type CommitReview = Issued & { kind: "commit"; reviewToken: string; binding: CommitBinding };
 export type SubmoduleReview = Issued & { kind: "submodule"; reviewToken: string; binding: SubmoduleBinding };
-export type Approval = HunkApproval | FileApproval | CommitReview | SubmoduleReview;
+// Feature 003 data-model §2 "Sync review". A sync binds no snapshot.
+export type SyncReview = Omit<Issued, "snapshotId"> & { kind: "sync"; reviewToken: string; binding: SyncBinding };
+export type Approval = HunkApproval | FileApproval | CommitReview | SubmoduleReview | SyncReview;
 
 // Contract §2: the repeat key of each approval.
 export type ApprovalKey =
   | Pick<HunkApproval, "kind" | "comparisonId" | "hunkId" | "direction">
   | Pick<FileApproval, "kind" | "comparisonId" | "direction">
   | Pick<CommitReview, "kind" | "reviewToken">
-  | Pick<SubmoduleReview, "kind" | "reviewToken">;
+  | Pick<SubmoduleReview, "kind" | "reviewToken">
+  | Pick<SyncReview, "kind" | "reviewToken">;
 
 // A state change advances the generation, so the caller refuses it with REPOSITORY_CHANGED before acceptance (contract §9).
 export type Acceptance =

@@ -590,13 +590,14 @@ describe("programs (contract §12 \"Trust\")", () => {
   const gitDirOf = (b: Built, label: string) => join(b.root, (b.facts.notes.programs as Record<string, string>)[label]!);
   const hookDigests = (b: Built, label: string) => (b.facts.notes.hookEvents as string[]).map((e) => fileSha256(join(gitDirOf(b, label), "hooks", e)));
   // The `programCanaries` keys as `config list` names them, and whether the §7 value display allowlist shows the value.
+  // Feature 003 contract Δ7 adds the transport programs to the allowlist.
   const CANARY_KEYS: [key: string, canary: string, shown: boolean][] = [
     ["core.fsmonitor", "fsmonitor", true],
     ["filter.f29.clean", "clean", true],
     ["filter.f29.smudge", "smudge", true],
-    ["core.sshcommand", "ssh", false],
-    ["credential.helper", "credential", false],
-    ["remote.origin.uploadpack", "uploadpack", false],
+    ["core.sshcommand", "ssh", true],
+    ["credential.helper", "credential", true],
+    ["remote.origin.uploadpack", "uploadpack", true],
   ];
   // Contract §7 "Program file digests": the canary scripts lie outside every root, so each entry is `unchecked` with its location.
   const expectOutsideCanaries = (b: Built, r: SubmoduleReview, label: string) => {

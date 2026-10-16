@@ -44,6 +44,7 @@ import {
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
+import type { PUTTY_PROGRAMS, PUTTY_UNAVAILABLE_REASONS } from "../contracts/errors";
 import { MATCHING_PROBE_WSL_FOLDER } from "../contracts/matching-probe";
 import { NATIVE } from "../contracts/native-path";
 import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operations";
@@ -57,8 +58,12 @@ export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStar
 // Contract §6 "Channel frames" `register`: the Git form, the repository form, or the WSL form (§11).
 export type RegisterRequest = RegisterRequestBase | RegisterWslCall;
 
-// Contract §7 environment policies, and `search` of feature 002 contract Δ7. `mutation-trace2` exists only after a supporting T091 result.
-export type EnvironmentPolicy = "probe" | "read" | "mutation" | "network" | "search";
+// Contract §7 environment policies, `search` of feature 002 contract Δ7, and `remote` and `integrate` of feature 003 contract Δ7.
+// `mutation-trace2` exists only after a supporting T091 result.
+export type EnvironmentPolicy = "probe" | "read" | "mutation" | "network" | "search" | "remote" | "integrate";
+
+// Feature 003 contract Δ6: these policies take the network limits, and each process counts its own diagnostic bytes.
+const NETWORK_POLICIES: ReadonlySet<string> = new Set(["network", "remote", "integrate"]);
 
 // Contract §5: `git` is the 30-second deadline of every other Git process. `network` is a §12 update process.
 export type ProcessKind = "git" | "commit" | "network";
@@ -171,6 +176,20 @@ export interface WslRunner {
   indexedFileFacts(request: IndexedFileFactsRequest, signal: AbortSignal): Promise<{ facts: FileFact[]; index: WslIndexResult } | WalkStop>;
 }
 
+// Feature 003 contract Δ6 `pageant {repositoryId, remote}`: the frame fields without `type` and `callId`.
+export interface PageantRequest {
+  operationId: string;
+  repositoryId: string;
+  remote: string;
+}
+// The reply without `type` and `callId`. `git`: `sshClient` is `git`, and the shell started no process.
+export type PageantReply = { result: "git" | "none" | "ready" } | { result: "failed"; reason: (typeof PUTTY_UNAVAILABLE_REASONS)[number]; program: (typeof PUTTY_PROGRAMS)[number]; path: string };
+
+// Feature 003 contract Δ6: the private requests of `sync`. Only a Windows service sends them.
+export interface SyncRunner {
+  pageant(request: PageantRequest): Promise<PageantReply>;
+}
+
 export { REFUSED_CODES } from "../contracts/channel";
 export type RefusedCode = "INVALID_REQUEST" | "UNKNOWN_TARGET" | "GIT_CHANGED" | "PROCESS_OWNERSHIP_FAILED";
 
@@ -255,11 +274,11 @@ export function checkCall(call: GitCall): void {
   } else if (args[0] !== "--no-lazy-fetch") {
     refuse("first argument must be --no-lazy-fetch");
   }
-  if (bootstrap ? policy !== "probe" : !["read", "mutation", "network", "search"].includes(policy)) refuse("environment policy");
+  if (bootstrap ? policy !== "probe" : !["read", "mutation", "network", "search", "remote", "integrate"].includes(policy)) refuse("environment policy");
   if (input !== undefined && (!(input instanceof Uint8Array) || input.length > STREAMED_PROCESS_INPUT_BYTES)) refuse("input");
   if (transaction !== undefined && !(policy === "mutation" && fits(Transaction, transaction))) refuse("transaction");
   // Contract §6 "Channel frames" `limits`. The WSL distro start cap waits for §11.
-  if (!fits(policy === "network" ? NetworkLimits : bootstrap ? BootstrapLimits : RegisteredLimits, call.limits)) refuse("limits");
+  if (!fits(NETWORK_POLICIES.has(policy) ? NetworkLimits : bootstrap ? BootstrapLimits : RegisteredLimits, call.limits)) refuse("limits");
 }
 
 // Feature 002 contract Δ6: the checks of src-tauri/src/wsl.rs `matching_probe_command` and the `run` route of the shell.
@@ -363,6 +382,12 @@ export function checkTrust(request: TrustRequest): void {
   if (!fits(TrustCall, request)) refuse("trust");
 }
 
+// The `type` literal selects the `PageantRemote` frame schema. A request that holds `type` or `callId` breaks the field set.
+export function checkPageant(request: PageantRequest): void {
+  const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
+  if (!valid || !fits(ProcessRequest, { type: "pageant", callId: crypto.randomUUID(), ...request })) refuse("pageant");
+}
+
 // Retains at most `maxBytes` bytes and `maxRecords` records that end at `separator`. A byte that it cannot retain sets `limited`.
 export function createCollector(options: { maxBytes: number; maxRecords?: number; separator?: number }) {
   const chunks: Uint8Array[] = [];
@@ -410,16 +435,16 @@ export function createCollector(options: { maxBytes: number; maxRecords?: number
   };
 }
 
-// Contract §6 "Byte caps": one count of forwarded stderr bytes per operation. A `network` call counts only its own bytes.
+// Contract §6 "Byte caps": one count of forwarded stderr bytes per operation. A call of a network policy counts only its own bytes (feature 003 contract Δ5).
 export function createDiagnosticCounter() {
   const totals = new Map<string, number>();
   type Counted = Pick<GitCall, "operationId" | "environmentPolicy" | "stderr">;
   const reached = (call: Counted) =>
-    (call.environmentPolicy === "network" ? call.stderr.bytes : (totals.get(call.operationId) ?? 0)) >= UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION;
+    (NETWORK_POLICIES.has(call.environmentPolicy) ? call.stderr.bytes : (totals.get(call.operationId) ?? 0)) >= UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION;
   return {
     // Counts one forwarded stderr chunk after the collector took it. Returns true when the service must send `cancel`.
     add(call: Counted, bytes: number): boolean {
-      if (call.environmentPolicy !== "network") totals.set(call.operationId, (totals.get(call.operationId) ?? 0) + bytes);
+      if (!NETWORK_POLICIES.has(call.environmentPolicy)) totals.set(call.operationId, (totals.get(call.operationId) ?? 0) + bytes);
       return reached(call);
     },
     reached,

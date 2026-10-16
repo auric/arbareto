@@ -28,6 +28,8 @@ mod process_requests;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod profile;
 #[cfg(windows)]
+mod putty;
+#[cfg(windows)]
 mod schema;
 #[cfg(windows)]
 mod service;

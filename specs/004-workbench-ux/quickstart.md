@@ -35,7 +35,7 @@ Use only the README "Development" commands:
 | # | Scenario | Test home | Expected outcome | Spec |
 |---|---|---|---|---|
 | Q1 | Build the 004 fixtures. | `tests/git/workbench-fixtures.ts` | Self-check: refs, counts, the worktree list, configuration digests. | SC-001 to SC-009 |
-| Q2 | Record the Git facts F1 to F24. | `tests/git/workbench-facts.test.ts` | Each fact passes, or research.md R21 records the failure and the contract changes before P2. | FR-002, FR-004 |
+| Q2 | Record the Git facts F1 to F24 and F29 to F31. | `tests/git/workbench-facts.test.ts` | Each fact passes, or research.md R21 records the failure and the contract changes before P2. | FR-002, FR-004 |
 | Q3 | Record the staging facts F25 to F28. | `tests/git/staging-facts.test.ts` | Each sub-hunk equals the expected blob. The batch proof A form is recorded. 10,000 paths equal `git add`. A cut read keeps every tracked record. | SC-006, SC-007 |
 | Q4 | Record the native facts N1 to N6 (packaged). | `tests/windows/native-facts.test.ts` | The dialog parts and its default; the app menu on right-click and Shift+F10; the tool inside the Job; Cancel ends it; Explorer selects the path; the tool window foreground. A skip stays unverified. | FR-070, FR-095 |
 | Q5 | Switch between local branches, clean and dirty, with each choice. | `tests/git/switch.test.ts` | HEAD, the index, every working byte, and the stash list equal Git's own commands on a copy. | SC-001, SC-002, FR-009 to FR-012 |

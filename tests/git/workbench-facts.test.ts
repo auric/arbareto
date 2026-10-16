@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T001: the self-check of the plan.md P0.1 builders in `workbench-fixtures.ts`. The expected values come from tasks.md T002, never from a Git read.
-// T003: the Git facts F1 to F24 of research.md R21. A fact prints `OBSERVATION T003:` lines. A `match=false` line is a finding for research.md "Results", not a failure.
+// T003: the Git facts F1 to F24 and F29 to F31 of research.md R21. A fact prints `OBSERVATION T003:` lines. A `match=false` line is a finding for research.md "Results", not a failure.
 
 import { expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, utimesSync } from "node:fs";
@@ -386,7 +386,7 @@ describeGit("workbench fixture self-check (T001)", (git) => {
   }, UNTRACKED_MS);
 });
 
-// ---- T003: the Git facts F1 to F24 ----
+// ---- T003: the Git facts F1 to F24 and F29 to F31 ----
 
 const TASK = "T003";
 // tasks.md T003 names Git 2.56.0.windows.2 on Windows. Other hosts record the version only.
@@ -1048,6 +1048,84 @@ function f24(git: string): Observation[] {
   return [obs("F24.mergetools-folder", "record", names, names !== null && names.length > 0), exitObs("F24.tool-help-exit", 0, help)];
 }
 
+// F29: a branch named `@`. In a revision argument, `@` means HEAD (gitrevisions(7)). The contract argv of switch and worktree add passes the short name.
+function f29(git: string): Observation[] {
+  const f = copy(git, "branches");
+  const r = repoOf(f);
+  wb(r, ["update-ref", "refs/heads/@", f.oids.second!]);
+  const before = state(r);
+  const exit = run(r, [...STEP, "checkout", "--no-guess", "--no-recurse-submodules", "@", "--"]).exitCode;
+  const checkout = { exit, head: headOf(r), changed: changed(before, state(r)) };
+  const path = join(f.root, "wt-f29");
+  const addExit = run(r, [...STEP, "worktree", "add", "--", path, "@"]).exitCode;
+  const w = at(r, path);
+  const add = { exit: addExit, head: headOf(w), atBranch: stdout(wb(w, ["rev-parse", "HEAD"])).trim() === f.oids.second };
+  // Rename reads the old name as a branch name, not as a revision.
+  const g = copy(git, "branches");
+  const rr = repoOf(g);
+  wb(rr, ["update-ref", "refs/heads/@", g.oids.second!]);
+  const renameExit = run(rr, [...STEP, "branch", "-m", "--end-of-options", "@", "from-at"]).exitCode;
+  const refs = refMap(rr);
+  const rename = { exit: renameExit, at: refs["refs/heads/@"] ?? null, renamed: refs["refs/heads/from-at"] === g.oids.second, main: refs["refs/heads/main"] === g.oids.main };
+  return [
+    obs("F29.checkout-at", { exit: 0, head: "refs/heads/main", changed: [] }, checkout),
+    obs("F29.worktree-add-at", { exit: 0, head: "refs/heads/@", atBranch: true }, add),
+    obs("F29.rename-from-at", { exit: 0, at: null, renamed: true, main: true }, rename),
+  ];
+}
+
+// F30: `--no-log -m` together with `--squash`. Git writes `SQUASH_MSG` and commits nothing (git-merge(1) `--squash`).
+function f30(git: string): Observation[] {
+  const given = "F30 explicit message";
+  const squash = (withMessage: boolean) => {
+    const f = copy(git, "merge-diverged");
+    const r = repoOf(f);
+    const head = stdout(wb(r, ["rev-parse", "HEAD"])).trim();
+    const exit = run(r, [...STEP, "merge", "--no-autostash", "--no-edit", "--squash", ...(withMessage ? ["--no-log", "-m", given] : []), "--end-of-options", "refs/heads/topic"]).exitCode;
+    const file = stdout(wb(r, ["rev-parse", "--path-format=absolute", "--git-path", "SQUASH_MSG"])).trim();
+    const squashMsg = existsSync(file) ? readFileSync(file, "utf8") : null;
+    return { r, exit, squashMsg, headMoved: stdout(wb(r, ["rev-parse", "HEAD"])).trim() !== head };
+  };
+  const m = squash(true);
+  const plain = squash(false);
+  // The 001 commit argv (`commit --quiet --file=-`) after the squash.
+  wb(m.r, [...STEP, "commit", "--quiet", "--file=-"], { input: "F30 commit box text\n" });
+  return [
+    exitObs("F30.squash-m-exit", 0, m.exit),
+    obs("F30.squash-msg-holds-m", "record", m.squashMsg?.includes(given) ?? null, m.squashMsg !== null),
+    obs("F30.squash-msg-equals-without-m", plain.squashMsg, m.squashMsg),
+    obs("F30.head-moved", false, m.headMoved),
+    obs("F30.later-commit-message", "F30 commit box text\n", message(m.r, "HEAD")),
+  ];
+}
+
+// F31: `hash-object --stdin-paths` against the index after `git add`. Git reads LF-ended lines and C-unquotes a line that starts with `"` (builtin/hash-object.c `hash_stdin_paths`).
+function f31(git: string): Observation[] {
+  const f = copy(git, "branches");
+  const r = repoOf(f);
+  const files: Record<string, string> = { ".gitattributes": "*.crlf eol=crlf\n", "x.crlf": "a\r\nb\r\n", "plain.txt": "plain\n", "with space.txt": "sp\n", " lead.txt": "lead\n" };
+  for (const [rel, content] of Object.entries(files)) put(f.repo, rel, content);
+  wb(r, [...STEP, "--literal-pathspecs", "add", "--", ...Object.keys(files)]);
+  const paths = ["x.crlf", "plain.txt", "with space.txt", " lead.txt"];
+  const ids: Record<string, string> = {};
+  for (const rec of nulRecords(stdout(wb(r, [...READ, "ls-files", "-z", "--stage", "--", ...paths])))) ids[rec.slice(rec.indexOf("\t") + 1)] = rec.split(" ")[1]!;
+  const indexIds = paths.map((p) => ids[p] ?? null);
+  const before = rawIndexDigest(git, f.repo);
+  const hash = (input: string) => {
+    const res = run(r, [...READ, "hash-object", "--stdin-paths"], { input });
+    return { exit: res.exitCode, ids: stdout(res).split("\n").filter((l) => l !== "") };
+  };
+  // Every byte as a C octal escape, so no byte of the name ends or changes the line.
+  const quote = (p: string) => `"${[...Buffer.from(p, "utf8")].map((b) => `\\${b.toString(8).padStart(3, "0")}`).join("")}"`;
+  return [
+    obs("F31.raw-lines", { exit: 0, ids: indexIds }, hash(paths.map((p) => `${p}\n`).join(""))),
+    obs("F31.quoted-lines", { exit: 0, ids: indexIds }, hash(paths.map((p) => `${quote(p)}\n`).join(""))),
+    obs("F31.cr-before-lf-stripped", { exit: 0, ids: [indexIds[1]] }, hash("plain.txt\r\n")),
+    exitObs("F31.bad-quote", "nonzero", hash('"plain.txt\n').exit),
+    obs("F31.index-unchanged", before, rawIndexDigest(git, f.repo)),
+  ];
+}
+
 const FACTS: [string, string, (git: string) => Observation[]][] = [
   ["F1", "every contract argv is accepted", f1],
   ["F2", "a refused checkout -b creates no branch", f2],
@@ -1073,9 +1151,12 @@ const FACTS: [string, string, (git: string) => Observation[]][] = [
   ["F22", "config set -- with a value that starts with a dash", f22],
   ["F23", "the info/exclude path in a linked worktree", f23],
   ["F24", "the merge tool names", f24],
+  ["F29", "switch and worktree add with a branch named @", f29],
+  ["F30", "merge --squash with --no-log -m", f30],
+  ["F31", "hash-object --stdin-paths equals the index after git add", f31],
 ];
 
-describeGit("Git facts F1 to F24 (T003)", (git) => {
+describeGit("Git facts F1 to F24, F29 to F31 (T003)", (git) => {
   let version = "";
   const versionOf = () => {
     if (version !== "") return version;

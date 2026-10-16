@@ -102,7 +102,7 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }
         <IconButton icon={Copy01Icon} label="Copy commit ID" onClick={() => copy(oid)} />
         {row?.subject === undefined ? null : <IconButton icon={Copy01Icon} label="Copy message" onClick={() => copy(messageText({ subject: row.subject!, body: row.body ?? "" }))} />}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2 select-text">
         {row === undefined ? (
           <p className="text-muted-text">Loading…</p>
         ) : row === null ? (

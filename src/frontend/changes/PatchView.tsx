@@ -51,7 +51,7 @@ export default function PatchView({ patch, selected, anchor = null }: PatchViewP
     element.scrollIntoView({ block: "nearest" });
   };
   return (
-    <Virtualizer className="min-h-0 flex-1 overflow-auto">
+    <Virtualizer className="min-h-0 flex-1 overflow-auto select-text">
       <FileDiff
         fileDiff={fileDiff}
         selectedLines={range}

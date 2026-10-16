@@ -42,11 +42,15 @@
             },
             "commit": {
               "type": "boolean"
+            },
+            "sync": {
+              "type": "boolean"
             }
           },
           "required": [
             "reads",
-            "commit"
+            "commit",
+            "sync"
           ],
           "additionalProperties": false
         },

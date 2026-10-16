@@ -170,7 +170,7 @@ const shallowDigest = (shallow: Shallow) => (shallow.kind === "file" ? shallow.f
 
 // A streamed `cat-file --batch-command -Z` answer with one `contents <oid>` command per OID (gitdoc git-cat-file "-Z").
 // Content above HISTORY_COMMIT_OBJECT_BYTES is counted but not kept. A malformed answer stops the process through `limited`.
-function objectStream(oids: readonly string[], objectFormat: ObjectFormat) {
+export function objectStream(oids: readonly string[], objectFormat: ObjectFormat) {
   const answers: (CommitText | "large" | "missing")[] = [];
   let broken = false;
   let header: number[] = [];

@@ -46,7 +46,7 @@ async function approve(service: Service, repositoryId: string, generation: numbe
 }
 
 describeGit("trust class sync (T036)", () => {
-  caseTest(TASK, "each repository-controlled SYNC_EVENTS hook, filter, command fsmonitor, signing program, transport program, and protocol entry sets approvalRequired.sync, so the review refuses and no canary runs", SHELL, async () => {
+  caseTest(TASK, "each repository-controlled SYNC_EVENTS hook, filter, command fsmonitor, signing program, transport program, merge driver, and protocol entry sets approvalRequired.sync in readTrust, so the review refuses and no canary runs", SHELL, async () => {
     const f = fixture("t036-gate");
     const configPath = `${f.repo}/.git/config`;
     const base = f.h.read(configPath)!;
@@ -66,13 +66,18 @@ describeGit("trust class sync (T036)", () => {
       ["core.fsmonitor", f.canary],
       ["gpg.program", f.canary],
       ["gpg.ssh.defaultKeyCommand", f.canary],
+      // ll-merge.c `ll_ext_merge`: a pull merge runs it (plan.md D11).
+      ["merge.x.driver", f.canary],
     ];
+    const syncRequired = async (service: Service, repositoryId: string) => (await service.readTrust(repositoryId)).result!.approvalRequired.sync;
     await withSync("t036-gate", async (service) => {
       const r = await register(service, f.repo);
       expect(outcome(await reviewSync(service, r, { action: "fetch" }))).toEqual({ state: "succeeded", code: undefined });
+      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: false });
       for (const [key, value] of programs) {
         f.h.write(configPath, base);
         gitRun(f.h, f.repo, ["config", key, value]);
+        expect({ key, sync: await syncRequired(service, r.repositoryId) }).toEqual({ key, sync: true });
         const from = service.runner.calls.length;
         for (const action of ["fetch", "fetch-all", "push"]) {
           const response = await reviewSync(service, r, { action });
@@ -142,15 +147,16 @@ describeGit("trust class sync (T036)", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, "Δ7: readTrust shows the transport values and remote.<name>.puttykeyfile, redacted, and the fingerprint stays stable", SHELL, async () => {
+  caseTest(TASK, "Δ7: readTrust shows only the program of each transport value, a credential shell snippet as <shell command>, and remote.<name>.puttykeyfile, redacted; no secret reaches a response, progress event, or session log, and the fingerprint stays stable", SHELL, async () => {
     const f = fixture("t036-display");
     const values: [string, string][] = [
       ["core.sshCommand", "ssh -o ProxyCommand=http://user:secret@proxy.invalid/x"],
-      ["core.gitProxy", "proxy-command for example.invalid"],
+      ["core.gitProxy", "proxy-command for secret.invalid"],
       ["core.askPass", "askpass-program"],
-      ["credential.helper", "store"],
-      ["credential.https://user:secret@host.invalid.helper", "cache"],
-      ["remote.origin.uploadpack", "git-upload-pack"],
+      ["credential.helper", "!f() { echo username=u; echo password=secret; }; f"],
+      ["credential.https://user:secret@host.invalid.helper", "cache --timeout=secret"],
+      ["credential.https://store.invalid.helper", "store --file=secret.txt"],
+      ["remote.origin.uploadpack", "git-upload-pack --secret"],
       ["remote.origin.receivepack", "git-receive-pack"],
       ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
     ];
@@ -162,17 +168,19 @@ describeGit("trust class sync (T036)", () => {
       const shown = (first.result as TrustResult).entries.filter((e) => e.scope === "local" && e.value !== undefined).map((e) => [e.key, e.value]).sort();
       expect(shown).toEqual(
         [
-          ["core.sshcommand", "ssh -o ProxyCommand=http://<redacted>@proxy.invalid/x"],
-          ["core.gitproxy", "proxy-command for example.invalid"],
+          ["core.sshcommand", "ssh"],
+          ["core.gitproxy", "proxy-command"],
           ["core.askpass", "askpass-program"],
-          ["credential.helper", "store"],
+          ["credential.helper", "<shell command>"],
           ["credential.https://<redacted>@host.invalid.helper", "cache"],
+          ["credential.https://store.invalid.helper", "store"],
           ["remote.origin.uploadpack", "git-upload-pack"],
           ["remote.origin.receivepack", "git-receive-pack"],
           ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
         ].sort(),
       );
       expect(JSON.stringify(first.result).includes("secret")).toBe(false);
+      expect(JSON.stringify([service.responses, service.progress, service.log()]).includes("secret")).toBe(false);
       const second = await service.readTrust(r.repositoryId);
       expect(second.result!.fingerprint).toBe(first.result!.fingerprint);
     });

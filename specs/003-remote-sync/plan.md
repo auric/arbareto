@@ -312,10 +312,11 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - a command-valued `core.fsmonitor`;
   - a signing program;
   - a transport program: `core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, or `remote.<name>.receivepack`;
+  - a merge driver: `merge.<driver>.driver`. A pull merge runs it with the shell (ll-merge.c `ll_ext_merge`);
   - a `protocol.allow` or `protocol.<name>.allow` entry;
   - the 001 `hooksPathControlled`, `folderUnlisted`, or `inputLimited` condition.
-- The transport programs already exist in `programKey` for submodules (`trust.ts:311-317`). The main listing now uses them too, so their program files enter the fingerprint. Only repositories with such a repository-controlled program see a new fingerprint once.
-- `readTrust` shows the transport values and `remote.<name>.puttykeyfile`, redacted.
+- The transport programs already exist in `programKey` for submodules (`trust.ts:311-317`). The main listing now uses them too, so their program files enter the fingerprint. The merge driver enters `programKey` with the shell form. Only repositories with such a repository-controlled program see a new fingerprint once.
+- `readTrust` shows the program of each transport value and `remote.<name>.puttykeyfile`, redacted (contract Δ7 "Transport value redaction"). It also reports `approvalRequired.sync`.
 - `sync` refuses with `TRUST_REQUIRED` or `TRUST_CHANGED` before any process. Clone needs no trust. The new repository gets the 001 decision.
 
 ### D12 Frontend

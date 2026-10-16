@@ -781,7 +781,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
         const hook = outsideProgram(built, "pre-commit");
         chmodSync(put(repo, ".git/hooks/pre-commit", `#!/bin/sh\nexec ${hook.command}\n`), 0o755);
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true });
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
         expect(ran([hook.log])).toEqual([]);
@@ -804,7 +804,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
         expect(configListing(repo).filter((e) => e.key === "user.signingkey")).toEqual([]);
         const { repositoryId } = await service.register(repo);
         const trust = await trustOf(service, repositoryId);
-        expect(trust.approvalRequired).toEqual({ reads: false, commit: true });
+        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true });
         expect(trust.entries.filter((e) => e.key === "gpg.ssh.defaultkeycommand").map((e) => e.value)).toEqual([program.command]);
         expect(ran([program.log])).toEqual([]);
       }),
@@ -825,7 +825,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
       const { environment } = ownGlobal(built, [["core.hooksPath", ".githooks"]]);
       await withService({ name: "t071-global-hooks-path", environment }, async (service) => {
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true });
         const { workspace } = await readBoth(service, repositoryId, generation);
         expect(outcome(workspace)).toEqual(SUCCEEDED);
         expect(ran([canary.log])).toEqual([]);
@@ -848,7 +848,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
       ]);
       await withService({ name: "t071-global-hook-command", environment }, async (service) => {
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true });
         const { workspace } = await readBoth(service, repositoryId, generation);
         expect(outcome(workspace)).toEqual(SUCCEEDED);
         expect(ran([program.log])).toEqual([]);
@@ -965,11 +965,11 @@ describe("trust state (data-model §3)", () => {
         config(repo, "diff.external", outsideProgram(built, "diff-external-a").command);
         const { repositoryId, generation } = await service.register(repo);
         const first = await trustOf(service, repositoryId);
-        expect(first.approvalRequired).toEqual({ reads: false, commit: false });
+        expect(first.approvalRequired).toEqual({ reads: false, commit: false, sync: false });
         await approve(service, repositoryId, first);
         config(repo, "diff.external", outsideProgram(built, "diff-external-b").command);
         const changed = await trustOf(service, repositoryId);
-        expect({ state: changed.state, approvalRequired: changed.approvalRequired }).toEqual({ state: "changed", approvalRequired: { reads: false, commit: false } });
+        expect({ state: changed.state, approvalRequired: changed.approvalRequired }).toEqual({ state: "changed", approvalRequired: { reads: false, commit: false, sync: false } });
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
         expect(service.trustStore.records.length).toBe(1);
@@ -1916,7 +1916,7 @@ describe("stale record (contract §7 \"Mutation trust\")", () => {
         await approve(service, repositoryId);
         removeIntegrations(repo);
         const trust = await trustOf(service, repositoryId);
-        expect({ state: trust.state, approvalRequired: trust.approvalRequired }).toEqual({ state: "changed", approvalRequired: { reads: false, commit: false } });
+        expect({ state: trust.state, approvalRequired: trust.approvalRequired }).toEqual({ state: "changed", approvalRequired: { reads: false, commit: false, sync: false } });
         expect(service.trustStore.records.length).toBe(1);
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
@@ -1969,7 +1969,7 @@ describe("hook classification (contract §7 \"Hook registrations\")", () => {
         expect(hooks.map((h) => ({ name: h.name, scope: h.scope, commandScope: h.commandScope, repositoryControlled: h.repositoryControlled }))).toEqual([
           { name: "t080", scope: "global", commandScope: "local", repositoryControlled: true },
         ]);
-        expect(trust.approvalRequired).toEqual({ reads: false, commit: true });
+        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true });
       });
       expect(ran([canary.log])).toEqual([]);
     },
@@ -2178,7 +2178,7 @@ describe("inside and outside (contract §7 \"Inside and outside\")", () => {
       expect(service.runner.calls.slice(from).map((c) => c.arguments.join(" ")).sort()).toEqual([configListArgs().join(" "), hooksPathArgs().join(" ")].sort());
       const hooks = (trust.hooks as ClassifiedHook[]).filter((h) => h.event === "pre-commit");
       expect(hooks.map((h) => ({ folder: h.path !== undefined, repositoryControlled: h.repositoryControlled }))).toEqual([{ folder: true, repositoryControlled: true }]);
-      expect(trust.approvalRequired).toEqual({ reads: false, commit: true });
+      expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true });
       // A hooks-folder hook blocks no read (contract §7 "Mutation trust").
       expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
     });

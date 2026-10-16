@@ -6,13 +6,13 @@
 
 import type { ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode, SyncUnavailableReason } from "../contracts/errors";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, SYNC_LEASE_COMMITS, SYNC_REFS_BYTES, SYNC_REFS_RECORDS, SYNC_REMOTES } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SYNC_LEASE_COMMITS, SYNC_REFS_BYTES, SYNC_REFS_RECORDS, SYNC_REMOTES } from "../contracts/limits";
 import { redactUrlUserInfo } from "../contracts/submodules";
 import type { Approvals } from "./approvals";
 import { batchCommandArgs, isObjectId, isRefName, type ObjectFormat } from "./commands";
 import { createCollector } from "./git-runner";
-import { captureHead, commitTextOf, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
-import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
+import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
+import { objectStream } from "./history-view";
 import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import type { Head, OperationState } from "./snapshot";
 import { leaseCommitsArgs, leaseCountArgs, pushRecordArgs, pushUrlArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
@@ -36,7 +36,7 @@ export interface Lease {
   trackingRef: string;
   expect: string;
   count: number;
-  commits: { objectId: string; subject: string }[];
+  commits: { objectId: string; subject: string | null }[];
 }
 
 // Data-model §2: the values that `sync` reads again and compares.
@@ -168,17 +168,17 @@ async function leaseOf(ctx: ObserveContext, trackingRef: string, head: string): 
   // Both reads take object IDs, so the list is the start of the counted set.
   if (count === null || oids === null || !oids.every((oid) => isObjectId(oid, objectFormat)) || oids.length !== Math.min(count, SYNC_LEASE_COMMITS)) return { code: "MALFORMED_GIT_OUTPUT" };
   if (oids.length === 0) return { value: { trackingRef, expect, count, commits: [] } };
-  const read = await readOut(ctx, batchCommandArgs(), oids.length * (HISTORY_COMMIT_OBJECT_BYTES + HEADER_BYTES + 2), new TextEncoder().encode(oids.map((oid) => `contents ${oid}\0`).join("")));
-  if ("limited" in read) return { refused: "OUTPUT_LIMIT" };
-  if (!("value" in read)) return read;
-  const parsed = parseCommitObjects(read.value, oids, objectFormat);
-  // Contract gap: the Lease schema has no null subject, so a commit object above HISTORY_COMMIT_OBJECT_BYTES refuses the review.
-  if (parsed.completeness.state !== "complete") return parsed.completeness.state === "limited" && parsed.completeness.code === "OUTPUT_LIMIT" ? { refused: "OUTPUT_LIMIT" } : { code: parsed.completeness.code };
+  const stream = objectStream(oids, objectFormat);
+  const step = await stepOf(ctx, batchCommandArgs(), stream, new TextEncoder().encode(oids.map((oid) => `contents ${oid}\0`).join("")));
+  if (!("exit" in step)) return step;
+  const answers = stream.result();
+  if (answers === "MALFORMED_GIT_OUTPUT") return { code: step.exit.exitCode !== 0 && !stream.limited ? "GIT_FAILED" : "MALFORMED_GIT_OUTPUT" };
+  if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   const commits: Lease["commits"] = [];
-  for (const object of parsed.objects) {
-    const text = commitTextOf(object);
-    if (text === null) return { code: "MALFORMED_GIT_OUTPUT" };
-    commits.push({ objectId: object.oid, subject: text.subject });
+  for (const [i, answer] of answers.entries()) {
+    if (answer === "missing") return { code: "OBJECT_MISSING" };
+    // Contract Δ3 read 6: a commit object above HISTORY_COMMIT_OBJECT_BYTES gives `subject` null.
+    commits.push({ objectId: oids[i]!, subject: answer === "large" ? null : answer.subject });
   }
   return { value: { trackingRef, expect, count, commits } };
 }

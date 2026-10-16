@@ -3,7 +3,7 @@
 
 // T037: no credential reaches a result, progress event, log entry, remedy, output tail, or shell frame (FR-006, FR-008, SC-005, contract Δ7).
 // The T004 HTTP remote takes a password in the URL and, for another remote, a credential helper script from an owned global file.
-// The T002 helper is a shell snippet that names the password, and contract Δ7 shows `credential.helper` values in `readTrust`, so this test uses a script file.
+// The T002 helper is a shell snippet that names the password. A snippet names no program file and needs trust approval, so this test uses a script file.
 
 import { expect } from "bun:test";
 import { mkdirSync } from "node:fs";

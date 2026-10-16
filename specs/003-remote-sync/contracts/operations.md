@@ -184,8 +184,14 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - New policy `remote`: the `network` remove list and prefixes, `set {GIT_TERMINAL_PROMPT: "0"}`, no index variable, the same preserve list. `GIT_PROTOCOL_FROM_USER` stays as the service environment holds it.
 - New policy `integrate`: the same, with `set {GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: ":"}`.
 - 001 §6 "Process fields" (L581) and §12 "Environment and console" (L1880) get one exception: the shell adds the PuTTY pair to `remote` runs under `plink` (Δ6).
-- Mutation trust adds `approvalRequired.sync` (plan.md D11). `sync` refuses with `TRUST_REQUIRED` or `TRUST_CHANGED` before any process.
+- Mutation trust adds `approvalRequired.sync` (plan.md D11). The class also counts a repository-controlled `merge.<driver>.driver`, because a pull merge runs it. The `readTrust` result carries `approvalRequired.sync` next to `reads` and `commit`. `sync` refuses with `TRUST_REQUIRED` or `TRUST_CHANGED` before any process.
 - The value display allowlist adds `core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, `remote.<name>.receivepack`, and `remote.<name>.puttykeyfile`, redacted.
+- Transport value redaction. Arguments and snippets can hold a secret, so `readTrust` shows only the program. The trust decision does not change.
+  - `core.sshCommand`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, and `remote.<name>.receivepack` show the first shell word after quote removal (`shellProgram`, `trust.ts`). Git runs these values with the shell.
+  - A `credential` value that starts with `!` shows `<shell command>`. A value whose first word the service cannot name also shows `<shell command>`. An empty value shows empty.
+  - `core.gitProxy` shows the command before ` for ` (connect.c `git_proxy_command_options`). Git runs that command without the shell and without configured arguments.
+  - `core.askPass` and `remote.<name>.puttykeyfile` show the whole value. Git runs `core.askPass` without the shell (prompt.c `do_askpass`).
+  - Then the 001 §7 URL user information rule applies to the shown text.
 - Logs: no URL, remote name, ref name, or output tail. Only kinds, IDs, codes, reasons, and counts.
 
 ## Δ8 Freshness, cancellation, and outcome (001 §8)

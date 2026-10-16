@@ -321,6 +321,8 @@ function programKey(p: KeyParts): ProgramKey | null {
   if (section === "core" && subsection === null && variable === "gitproxy") return { form: "proxy", reads: false, commit: false, sync: true };
   if (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack")) return { form: "shell", reads: false, commit: false, sync: true };
   if (section === "credential" && variable === "helper") return { form: "credential", reads: false, commit: false, sync: true };
+  // Feature 003 plan.md D11: ll-merge.c `ll_ext_merge` runs a merge driver with `use_shell`, so a pull merge can run it.
+  if (section === "merge" && subsection !== null && variable === "driver") return { form: "shell", reads: false, commit: false, sync: true };
   if (section === "filter" && subsection !== null) {
     if (variable === "clean" || variable === "process") return { form: "shell", reads: true, commit: true, sync: true };
     if (variable === "smudge") return { form: "shell", reads: false, commit: false, sync: true };
@@ -1369,12 +1371,30 @@ async function buildListing(
   };
 }
 
+const SHELL_COMMAND = "<shell command>";
+
+// Feature 003 contract Δ7: a transport value can hold a secret in its arguments or its snippet, so the display keeps only the program.
+// Git runs these values with `use_shell`. A `!` helper, or a program word that the service cannot name, shows SHELL_COMMAND.
+// `core.gitProxy` keeps the command before " for " (connect.c `git_proxy_command_options`). Git runs it without arguments.
+function displayValue(p: KeyParts, value: string): string {
+  const { section, subsection, variable } = p;
+  if (section === "core" && subsection === null && variable === "gitproxy") {
+    const at = value.indexOf(" for ");
+    return at < 0 ? value : value.slice(0, at);
+  }
+  const helper = section === "credential" && variable === "helper";
+  const shell = helper || (section === "core" && subsection === null && variable === "sshcommand") || (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack"));
+  if (!shell || value === "") return value;
+  if (helper && value.startsWith("!")) return SHELL_COMMAND;
+  return shellProgram(value) ?? SHELL_COMMAND;
+}
+
 // Contract §3 `readTrust` display: values only for the allowlist, and every text redacted (contract §7).
 function displayEntries(listing: TrustListing) {
   return listing.entries.map((entry) => {
     const parts = keyParts(entry.key);
     const shown = parts !== null && valueShown(parts) && entry.value !== null;
-    return { key: redactUrlUserInfo(entry.key), scope: entry.scope, origin: redactUrlUserInfo(entry.origin), ...(shown ? { value: redactUrlUserInfo(entry.value!) } : {}) };
+    return { key: redactUrlUserInfo(entry.key), scope: entry.scope, origin: redactUrlUserInfo(entry.origin), ...(shown ? { value: redactUrlUserInfo(displayValue(parts, entry.value!)) } : {}) };
   });
 }
 
@@ -1439,7 +1459,7 @@ export interface TrustView {
   state: TrustState;
   trustId?: string;
   persistence: "stored" | "session";
-  approvalRequired: { reads: boolean; commit: boolean };
+  approvalRequired: TrustListing["approvalRequired"];
   fingerprint: string;
   bound?: TrustBound;
 }
@@ -1462,7 +1482,7 @@ export interface ReadTrustValue {
   state: TrustState;
   persistence: "stored" | "session";
   trustId?: string;
-  approvalRequired: { reads: boolean; commit: boolean };
+  approvalRequired: TrustListing["approvalRequired"];
   bound?: TrustBound;
   inputLimited?: true;
   entries: ReturnType<typeof displayEntries>;
@@ -1544,8 +1564,8 @@ export function createTrust({ runner, environment, configFiles = () => undefined
       state,
       ...(trustId === undefined ? {} : { trustId }),
       persistence: session || listing.bound !== undefined ? "session" : "stored",
-      // The `readTrust` result names `reads` and `commit` only (contract §3). `sync` decides through `gate`.
-      approvalRequired: { reads: listing.approvalRequired.reads, commit: listing.approvalRequired.commit },
+      // Contract §3 `readTrust` and feature 003 contract Δ7.
+      approvalRequired: { ...listing.approvalRequired },
       fingerprint: listing.fingerprint,
       ...(listing.bound === undefined ? {} : { bound: listing.bound }),
     };

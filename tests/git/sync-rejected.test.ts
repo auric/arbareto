@@ -5,7 +5,7 @@
 // The lease oracle is `rev-list` of the fixture. A lost remote commit shows in the remote refs and objects.
 
 import { expect } from "bun:test";
-import { SYNC_LEASE_COMMITS } from "../../src/contracts/limits";
+import { HISTORY_COMMIT_OBJECT_BYTES, SYNC_LEASE_COMMITS } from "../../src/contracts/limits";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { buildPush, fc, gitOut, gitRun, importStream, refMap, revParse, type GitHost, type PushFixture } from "./remote-fixtures";
@@ -79,6 +79,22 @@ describeGit("rejected push and force push with lease (T035)", () => {
       expect(remoteCalls(service, from).map((c) => c.arguments)).toEqual([
         ["--no-lazy-fetch", "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", `--force-with-lease=refs/heads/topic:${tracking}`, "--", "origin", "refs/heads/topic:refs/heads/topic"],
       ]);
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "contract Δ3 read 6: a lease commit object above HISTORY_COMMIT_OBJECT_BYTES gives subject null, and sync takes the review", SHELL, async () => {
+    const a = diverged(false);
+    const tip = revParse(a.h, a.remotes.origin!, "refs/heads/topic");
+    importStream(a.h, a.remotes.origin!, [Buffer.from(`reset refs/heads/topic\nfrom ${tip}\n\n`), fc({ mark: 1, ref: "refs/heads/topic", message: `large\n\n${"x".repeat(HISTORY_COMMIT_OBJECT_BYTES)}\n`, files: { "large.txt": "large\n" } })]);
+    gitRun(a.h, a.repo, ["fetch", "-q", "origin"]);
+    const tracking = revParse(a.h, a.repo, "refs/remotes/origin/topic");
+    expect(Number(gitOut(a.h, a.repo, ["cat-file", "-s", tracking]).trim())).toBeGreaterThan(HISTORY_COMMIT_OBJECT_BYTES);
+    await withSync("t035-large-subject", async (service) => {
+      const r = await register(service, a.repo);
+      const review = await reviewed(service, r, { action: "force-push" });
+      const commits = review.plan.lease!.commits;
+      expect({ count: review.plan.lease!.count, first: commits[0], second: commits[1] }).toEqual({ count: REMOTE_COMMITS + 1, first: { objectId: tracking, subject: null }, second: { objectId: tip, subject: `remote ${REMOTE_COMMITS}` } });
+      expect(outcome(await sync(service, r, review.syncReviewToken))).toEqual(SUCCEEDED);
     });
   }, TIMEOUT_MS);
 

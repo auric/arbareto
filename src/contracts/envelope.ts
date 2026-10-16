@@ -495,7 +495,7 @@ export const ReadTrustResult = z
         state: z.enum(["untrusted", "approved", "changed", "revoked"]),
         persistence: TrustPersistence,
         trustId: Identifier.optional(),
-        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean() }),
+        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean(), sync: z.boolean() }),
         bound: z.enum(TRUST_BOUNDS).optional(),
         inputLimited: z.literal(true).optional(),
         entries: z.array(TrustEntry).max(limits.TRUST_REPORT_ENTRIES),

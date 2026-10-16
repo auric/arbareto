@@ -51,7 +51,7 @@ export interface SyncPlan {
   remotes: string[];
   upstream?: { ref: string; objectId: string };
   destination?: { remote: string; ref: string; trackingRef: string | null; url: string; setUpstream: boolean; source: string };
-  lease?: { trackingRef: string; expect: string; count: number; commits: { objectId: string; subject: string }[] };
+  lease?: { trackingRef: string; expect: string; count: number; commits: { objectId: string; subject: string | null }[] };
   operationState?: "merging" | "rebasing";
   needsDestination?: { remotes: string[]; prefill: { remote: string; ref: string } | null; setUpstream: boolean };
 }
@@ -130,7 +130,7 @@ export function copyWithRemotes(h: GitHost, repo: string, remotes: Record<string
 }
 
 // An owned global configuration with the fixture identity and a credential helper script outside every repository.
-// The script holds the password, so no configuration value names it: contract Δ7 shows `credential.helper` values, and a shell snippet names no program file.
+// The script holds the password, so no configuration value names it. A shell snippet names no program file, so it would count as repository-controlled.
 export function helperGlobal(h: GitHost, user: string, password: string): string {
   const script = `${h.root}/credential-helper.sh`;
   h.write(script, `#!/bin/sh\ntest "$1" = get && printf 'username=%s\\npassword=%s\\n' '${user}' '${password}'\nexit 0\n`);

@@ -13,7 +13,7 @@
 
 ## Requirement Completeness
 
-- [ ] No [NEEDS CLARIFICATION] markers remain
+- [x] No [NEEDS CLARIFICATION] markers remain
 - [x] Requirements are testable and unambiguous
 - [x] Success criteria are measurable
 - [x] Success criteria are technology-agnostic (no implementation details)
@@ -31,8 +31,8 @@
 
 ## Notes
 
-- Nine [NEEDS CLARIFICATION] markers remain on purpose. The user asked for at most 10 open product decisions, each with a recommended default. The skill limit of 3 does not apply. Resolve them with `/speckit-clarify`.
-- The markers are in FR-008, FR-009, FR-010, FR-014, FR-033, FR-068, FR-069, FR-071, and FR-079.
+- `/speckit-clarify` on 2026-10-16 resolved the nine markers in FR-008, FR-009, FR-010, FR-014, FR-033, FR-068, FR-069, FR-071, and FR-079. The user accepted every recommended default. No marker remains.
+- The same session added User Story 9 and FR-089 to FR-097 for the conflict resolve view and the merge tool.
 - Git commands and options show where they define the required behavior, as in features 001 to 003. Git is the product domain, not an implementation choice. Product technology (Tauri, Bun, WebView2) does not show.
 - Some sentences hold enumerations of more than 20 words, such as the key list of FR-060 and the menu of FR-014. Features 001 to 003 use the same form.
 - Items marked incomplete require spec updates before `/speckit-clarify` or `/speckit-plan`

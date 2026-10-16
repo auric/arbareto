@@ -10,9 +10,26 @@
 
 **Input**: User description: "Workbench UX after Git Extensions, but better. A branch button with search, double-click checkout with a confirmation, and a choice for local changes. A branch context menu with merge and rebase panels. A large commit workspace with untracked handling, visible stage buttons, hunk and line staging, multi-select, and a 72-column guide. Worktrees, a Git settings view by scope, a calmer trust prompt, and a one-click submodule update. Spell check of the commit message later."
 
+## Clarifications
+
+### Session 2026-10-16
+
+The user accepted every recommended default: "I'm good with your recommendations, I may ask for change later."
+
+- Q: Do trust prompts stay, or go away as in Git Extensions? → A: They stay, as option (d). The application asks only when an action would run a repository program, in one native dialog with the details collapsed, and a status chip shows the state (FR-069 to FR-073). Constitution principle V stays unchanged.
+- Q: What does a trust approval bind to, and does it survive edits of hook scripts? → A: It binds to the repository folder, the worktree folder, the selected Git installation, and the trust policy version (FR-071). Edits and additions of hook scripts and program files do not ask again. The per-file program digests of feature 001 go away.
+- Q: Does a switch need a confirmation when nothing would change? → A: A double-click in the references sidebar always confirms. A pick in the branch list on a clean working tree switches at once (FR-009).
+- Q: Does the local-changes choice offer "Don't ask again"? → A: No. The choice shows whenever tracked changes exist. Settings sets the preselected choice, and Discard changes can never be the default (FR-010).
+- Q: Where does "No upstream" show? → A: Only in the branch list and in the accessible names, not as visible text in the references sidebar (FR-008).
+- Q: Which keyboard shortcuts do the branch actions and the remote operations use? → A: The Git Extensions defaults: Fetch Ctrl+Shift+Down, Pull Ctrl+Shift+P, Push Ctrl+Shift+Up, and the branch menu keys of the mockup (FR-014). The plan checks each key against the feature 001 shortcut map for conflicts.
+- Q: Is the commit workspace a full view or a large docked panel? → A: A full view that the user switches to from History (FR-033).
+- Q: Does a submodule that fetches from a new host wait for the user? → A: Yes. The update waits for one "Update anyway" click (FR-079).
+- Q: Does Git settings open inside the main window or in its own window? → A: As a full view inside the main window, with Close (FR-068).
+- Q: Does this feature resolve conflicted files, although feature 003 deferred the resolve panel and merge tools to branch operations? → A: Yes, as P2. A simple resolve view offers Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved (User Story 9, FR-089 to FR-097). The merge tool comes from `merge.tool` and `mergetool.<tool>.cmd`, and it runs through `git mergetool --tool=<tool>`. A merge tool from local or worktree scope is repository-controlled and needs trust.
+
 ## User Scenarios & Testing *(mandatory)*
 
-Feature 001 shows a read-only references sidebar and a docked commit panel. Feature 002 shows the full history of all branches. Feature 003 adds Fetch, Pull, Push, Clone, and the conflict actions Abort, Continue, Skip, and Mark resolved. This feature adds the daily branch and commit work around them: switch branches, run branch actions, merge, rebase, commit with fine staging, and manage worktrees. It also edits Git settings, makes trust prompts calmer, and makes the submodule update a single click. Git Extensions is the reference for the functions. The design follows the mockup boards of 2026-10-16.
+Feature 001 shows a read-only references sidebar and a docked commit panel. Feature 002 shows the full history of all branches. Feature 003 adds Fetch, Pull, Push, Clone, and the conflict actions Abort, Continue, Skip, and Mark resolved. This feature adds the daily branch and commit work around them: switch branches, run branch actions, merge, rebase, commit with fine staging, resolve conflicted files, and manage worktrees. It also edits Git settings, makes trust prompts calmer, and makes the submodule update a single click. Git Extensions is the reference for the functions. The design follows the mockup boards of 2026-10-16.
 
 ### User Story 1 - Switch to another branch (Priority: P1)
 
@@ -161,13 +178,32 @@ A developer selects Update submodules. The update starts at once. Each submodule
 
 1. **Given** five submodules and no safety fact. **When** I select Update submodules. **Then** the update starts without a dialog, and each submodule row shows Waiting, Fetching with a percentage, Done, or Failed.
 2. **Given** a failed submodule. **When** the update ends. **Then** its row shows the reason, the Git exit code, Retry, and Show output. The other submodules show Done.
-3. **Given** a submodule that fetches from a host that the repository settings do not name. **When** I select Update submodules. **Then** one line in the Submodules group states both hosts before Git starts.
+3. **Given** a submodule that fetches from a host that the repository settings do not name. **When** I select Update submodules. **Then** one line in the Submodules group states both hosts before Git starts, and the update waits until I select Update anyway.
 4. **Given** a submodule with hooks. **When** the update would run them. **Then** the native Run confirmation of FR-050 opens first.
 5. **Given** one submodule row. **When** I select Update in its context menu. **Then** only that submodule and its nested submodules update.
 
 ---
 
-### User Story 9 - See spelling mistakes in the commit message (Priority: P3)
+### User Story 9 - Resolve a conflicted file (Priority: P2)
+
+A merge or a rebase stops with conflicts. The developer selects a conflicted file and takes one side, or opens the file in the configured merge tool. Then the developer marks the file resolved with the feature 003 action.
+
+**Why this priority**: Feature 003 offers only Mark resolved, so the user edits each conflicted file in another program. Git Extensions offers both sides and the merge tool next to the file. Merge and rebase come first.
+
+**Independent Test**: In conflict fixtures for merge and rebase, run Choose ours, Choose theirs, and Open in merge tool with a fixture merge tool. Compare the working files and the index with Git's own `git checkout --ours`, `git checkout --theirs`, and `git mergetool` on a copy. Check that no repository-controlled merge tool runs before approval.
+
+**Acceptance Scenarios**:
+
+1. **Given** a merge of feature/login that stops with a conflict in app.ts. **When** I select app.ts in the Conflicted list. **Then** the resolve view names both sides, "main" and "feature/login", and the conflict kind "Both modified".
+2. **Given** the resolve view. **When** I select Choose theirs and confirm. **Then** app.ts holds the feature/login version, and the file stays in the Conflicted list until I select Mark resolved.
+3. **Given** `merge.tool` set to a tool in the global settings. **When** I select Open in merge tool. **Then** the tool opens for app.ts only. When the tool reports success, the file leaves the Conflicted list, because Git staged it.
+4. **Given** no `merge.tool` value. **When** I open the resolve view. **Then** Open in merge tool is unavailable with the reason "Set a merge tool in Git settings".
+5. **Given** a merge tool from the repository settings and an untrusted repository. **When** I select Open in merge tool. **Then** the FR-070 trust dialog opens before Git starts.
+6. **Given** a conflict where one side deleted the file. **When** I open the resolve view. **Then** Open in merge tool and the choice of the deleted side are unavailable with the reason.
+
+---
+
+### User Story 10 - See spelling mistakes in the commit message (Priority: P3)
 
 A developer writes a commit message. Misspelled English words get a wavy underline. The context menu offers suggestions.
 
@@ -200,6 +236,9 @@ A developer writes a commit message. Misspelled English words get a wavy underli
 - The working tree has 100,000 untracked files. The Untracked section stays collapsed until the user opens it, and the window keeps its response targets.
 - A line selection holds only context lines. "Stage lines" is unavailable with the reason.
 - The diff changed after the line selection. Line staging refuses, as feature 001 hunk staging does, and asks for a refresh and a new selection.
+- During a rebase, Git's "ours" is the branch that receives the commits, and "theirs" is the commit that the rebase applies. The resolve view names each side by its branch or commit, so the swap shows correctly.
+- `merge.tool` names a tool that Git does not know, or the user closes the tool without a save. Git's mergetool stages nothing. The fresh index read shows the path as still conflicted.
+- Git's mergetool leaves a backup file, such as `app.ts.orig`, when `mergetool.keepBackup` is on. The file shows in the Untracked section. The application does not delete it.
 - `.gitignore` is a symbolic link, a folder, or not valid text. Add to .gitignore refuses and names the reason. It never follows the link.
 - The ignore line already exists in the file. The application adds no second copy and states it.
 - A worktree folder lies on a removable drive that is absent. Git reports it as prunable. Remove is unavailable, and Prune covers it.
@@ -215,11 +254,11 @@ A developer writes a commit message. Misspelled English words get a wavy underli
 
 ### Scope Boundaries
 
-Include a branch button with a searchable branch list, double-click checkout with a confirmation, a local-changes choice, and remote-branch checkout with a new tracking branch. Include a branch context menu with Checkout, Merge into current branch, Rebase current branch onto, Create branch here, Rename, Delete, and Copy branch name. Push in that menu comes from feature 003. Include docked Merge and Rebase panels with their options. Include a commit workspace with an Untracked section, a tree layout, folder staging, multi-select, Stage all untracked, ignore actions, visible stage buttons, visible hunk buttons, line staging, and a message editor with a 72-column guide.
+Include a branch button with a searchable branch list, double-click checkout with a confirmation, a local-changes choice, and remote-branch checkout with a new tracking branch. Include a branch context menu with Checkout, Merge into current branch, Rebase current branch onto, Create branch here, Rename, Delete, and Copy branch name. Push in that menu comes from feature 003. Include docked Merge and Rebase panels with their options. Include a resolve view for a conflicted file with Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved. Include a commit workspace with an Untracked section, a tree layout, folder staging, multi-select, Stage all untracked, ignore actions, visible stage buttons, visible hunk buttons, line staging, and a message editor with a 72-column guide.
 
 Include a worktree button with a list, Open, Add, Remove, and Prune. Include a Git settings view by scope. Include the trust redesign: one native prompt, only when an action would run a repository program, and a status chip. Include the one-click submodule update with inline progress and a per-submodule Update and Retry. Include English spell check of the commit message as P3.
 
-Exclude conflict handling beyond feature 003: the resolve panel, merge tools, Choose local, and Choose remote. Exclude interactive rebase, reset, cherry-pick, revert, tags, and stash management other than the stash of the switch choice. Exclude amend, Commit and push (feature 003), discard of single files, hunks, or lines, and push of other branches. Exclude remote branch delete and remote management. Exclude the dubious-ownership dialog and its `safe.directory` command (feature 001 Clarifications, 2026-10-10). Exclude dictionaries other than English, and every spell check that uses the network or AI.
+Exclude a merge editor inside the application, the resolve of several files in one action, and rerere management. Exclude interactive rebase, reset, cherry-pick, revert, tags, and stash management other than the stash of the switch choice. Exclude amend, Commit and push (feature 003), discard of single files, hunks, or lines, and push of other branches. Exclude remote branch delete and remote management. Exclude the dubious-ownership dialog and its `safe.directory` command (feature 001 Clarifications, 2026-10-10). Exclude dictionaries other than English, and every spell check that uses the network or AI.
 
 Already built in other tasks, and not specified here: the current branch in bold in the sidebar, and the inline copy buttons in the commit details (feature 002 tasks T067 and T068). The static app frame is the feature 001 fix T380. This feature adds no requirement for it.
 
@@ -237,8 +276,8 @@ This feature changes these requirements for builds that include it. The earlier 
 - **001 Scope Boundaries**: Branch management, line-level staging, staging several files in one action, worktree creation and management, and reference actions move into this feature.
 - **001 FR-003**: The Git settings view (FR-058 to FR-068) MAY write Git configuration, only at an explicit Save of the user, only into the selected scope. Add to .gitignore and Add to info/exclude MAY write those files at an explicit user action (FR-046).
 - **001 FR-016**: A merge or a rebase that this feature starts follows the 003 change of 001 FR-016. Only Abort, Continue, Skip, Mark resolved, Fetch, and Fetch all remotes run while it is in progress.
-- **001 FR-025, FR-050 and contract §7 "Startup, trust, and environment"**: Trust follows FR-069 to FR-075 of this feature. One native prompt replaces the in-app Trust dialog and the second fingerprint box. The approval binding follows FR-071.
-- **001 FR-027**: Discard changes in a switch (FR-010, FR-011), branch delete (FR-017 to FR-019), Rebase current branch onto (FR-024 to FR-027), and worktree remove with changes (FR-055) are allowed behind their confirmations. Reset, force push other than 003, and other history rewrites stay excluded.
+- **001 FR-025, FR-050 and contract §7 "Startup, trust, and environment"**: Trust follows FR-069 to FR-075 of this feature. One native prompt replaces the in-app Trust dialog and the second fingerprint box. The approval binding follows FR-071. The contract §7 "Program file digests" go away.
+- **001 FR-027**: Discard changes in a switch (FR-010, FR-011), Choose ours and Choose theirs (FR-091), branch delete (FR-017 to FR-019), Rebase current branch onto (FR-024 to FR-027), and worktree remove with changes (FR-055) are allowed behind their confirmations. Reset, force push other than 003, and other history rewrites stay excluded.
 - **001 FR-034**: The commit panel becomes the commit workspace of FR-029 to FR-033.
 - **001 FR-038**: Stage file and Unstage file keep their checks. Folder staging, multi-select, Stage all untracked, and line staging extend them (FR-034 to FR-044).
 - **001 FR-047 to FR-050, and contract §12 "Submodules"**: The review dialog and its explicit start go away. A per-submodule Update and Retry are allowed. FR-076 to FR-082 of this feature state the new rules. The FR-049 refusals and the FR-050 run confirmation stay.
@@ -246,7 +285,8 @@ This feature changes these requirements for builds that include it. The earlier 
 - **001 FR-057**: The references sidebar gets a branch context menu, the Worktrees group, and the Submodules group.
 - **002 FR-005**: After an operation of this feature that the user started, the history and the sidebar refresh without the refs-changed notice. They keep the selected commit when the new references reach it, as 003 FR-013 states for fetch.
 - **002 FR-049**: The branch context menu holds the items of FR-014. The item "Show only this branch's history" stays on the current branch.
-- **003 Scope Boundaries**: The branch operations and the Git configuration editor that 003 excludes come into this feature. The resolve panel and merge tools stay excluded here too.
+- **003 Scope Boundaries and FR-045**: The branch operations, the Git configuration editor, the resolve panel, and merge tools that 003 excludes come into this feature (FR-089 to FR-097).
+- **003 FR-020**: The references sidebar shows "No upstream" only in the accessible name of the row, not as visible text (FR-008). The branch list keeps the visible text.
 
 ### Functional Requirements
 
@@ -262,16 +302,16 @@ This feature changes these requirements for builds that include it. The earlier 
 #### Branch switching
 
 - **FR-007**: The toolbar MUST show a branch button with the current branch name and the 003 ahead and behind counts. For a detached HEAD, it MUST show "Detached at <short ID>". During a merge or a rebase, it MUST show "Merging" or "Rebasing", and the switch MUST be unavailable with the reason.
-- **FR-008**: The branch button MUST open a list with a search field that has the first focus. The list MUST show the local branches, then the remote-tracking branches, from one machine-readable reference read. Typing MUST filter the names by a literal, case-insensitive match. Enter MUST pick the first match. The list MUST also offer New branch… and stay usable by keyboard alone. A local branch without an upstream MUST show "No upstream" in the list and in its accessible name. [NEEDS CLARIFICATION: Show "No upstream" visibly in the references sidebar too, or only in the branch list? Recommended default: only in the branch list and in the accessible name of the sidebar row, as the mockup shows; this narrows 003 FR-020 for the sidebar.]
-- **FR-009**: A double-click on a branch in the references sidebar MUST open the switch confirmation next to the row. A pick in the branch list MUST start the same switch. [NEEDS CLARIFICATION: Confirm a switch when nothing would change, such as a clean working tree? Recommended default: a double-click always shows "Switch to <branch>?"; a pick in the branch list switches at once when no local change exists.]
-- **FR-010**: When a fresh status read shows tracked changes, the confirmation MUST state their count and offer three choices. "Keep changes" switches as Git's own checkout does, and Git refuses when a change conflicts. "Stash and reapply" stashes the tracked changes, switches, and then reapplies that stash. "Discard changes" removes the changes to tracked files and switches. The Settings view MUST set which choice is preselected. Discard changes MUST NOT be a default. [NEEDS CLARIFICATION: Offer "Don't ask again" for the choice? Recommended default: no; the choice shows whenever changes exist, and the preselected default comes from Settings.]
+- **FR-008**: The branch button MUST open a list with a search field that has the first focus. The list MUST show the local branches, then the remote-tracking branches, from one machine-readable reference read. Typing MUST filter the names by a literal, case-insensitive match. Enter MUST pick the first match. The list MUST also offer New branch… and stay usable by keyboard alone. A local branch without an upstream MUST show "No upstream" in the list and in the accessible name of its list row and its sidebar row. The references sidebar MUST NOT show "No upstream" as visible text.
+- **FR-009**: A double-click on a branch in the references sidebar MUST open the switch confirmation next to the row. A double-click MUST always open "Switch to <branch>?", also on a clean working tree. A pick in the branch list MUST switch at once when a fresh status read shows no tracked change and FR-013 states no unreachable commit. Otherwise the pick MUST open the same confirmation.
+- **FR-010**: When a fresh status read shows tracked changes, the confirmation MUST state their count and offer three choices. "Keep changes" switches as Git's own checkout does, and Git refuses when a change conflicts. "Stash and reapply" stashes the tracked changes, switches, and then reapplies that stash. "Discard changes" removes the changes to tracked files and switches. The Settings view MUST set which choice is preselected. Discard changes MUST NOT be a default. The confirmation MUST NOT offer "Don't ask again". The choice MUST show whenever tracked changes exist.
 - **FR-011**: Discard changes MUST change the action button label to "Discard and switch". The confirmation MUST state "Delete changes to tracked files. Untracked files stay. You cannot undo this." Before Git starts, the application MUST compare the untracked paths with the target tree. When the target would overwrite an untracked file, the switch MUST refuse and name the files.
 - **FR-012**: Stash and reapply MUST reapply exactly the stash commit that it created, by its commit ID, never by its list position. After a reapply with conflicts, the stash MUST stay, and the result MUST name its commit ID. After a failed checkout, the application MUST NOT reapply. A fresh index read, not Git's message, MUST decide whether conflicts exist.
 - **FR-013**: A pick of a remote-tracking branch MUST open a panel. It MUST offer "Create local branch" with a name field that tracks the remote branch, and "Check out the commit only" with the detached-HEAD effect stated. The default name MUST come from the fetch refspecs of the remote that maps the remote-tracking reference. When no refspec or several refspecs map it, the field MUST start empty. A branch that another worktree holds MUST offer "Open <worktree>" instead of a switch. A switch away from a detached commit that no other reference holds MUST name that commit and state that only the reflog keeps it.
 
 #### Branch context menu and branch actions
 
-- **FR-014**: A local branch in the references sidebar and in the history labels MUST have a context menu. The items are, in this order: Checkout (Ctrl+.), Merge into current branch (<current>)… (Ctrl+M), Rebase current branch (<current>) onto <branch>… (Ctrl+Shift+E), Create branch here… (Ctrl+B), Rename… (F2), Delete… (Del), Push (from 003), and Copy branch name. A remote-tracking branch MUST offer Checkout, Merge into current branch, Rebase current branch onto, Create branch here, and Copy branch name. An item that cannot run MUST stay focusable and state its reason. [NEEDS CLARIFICATION: Copy the Git Extensions default shortcuts exactly? Recommended default: keep the keys above from the mockup; the plan compares each key with Git Extensions and records each difference.]
+- **FR-014**: A local branch in the references sidebar and in the history labels MUST have a context menu. The items are, in this order: Checkout (Ctrl+.), Merge into current branch (<current>)… (Ctrl+M), Rebase current branch (<current>) onto <branch>… (Ctrl+Shift+E), Create branch here… (Ctrl+B), Rename… (F2), Delete… (Del), Push (from 003), and Copy branch name. A remote-tracking branch MUST offer Checkout, Merge into current branch, Rebase current branch onto, Create branch here, and Copy branch name. An item that cannot run MUST stay focusable and state its reason. The window MUST also offer the Git Extensions keys Fetch (Ctrl+Shift+Down), Pull with the 003 FR-056 default action (Ctrl+Shift+P), and Push (Ctrl+Shift+Up). These keys and the menu keys are the Git Extensions defaults. The plan MUST check each key against the feature 001 shortcut map and resolve each conflict before implementation.
 - **FR-015**: Create branch here MUST take a name and create a branch at the selected commit. Git's own branch-name check MUST decide whether the name is valid. The panel MUST offer "Switch to the new branch", checked by default. A name that an existing branch holds MUST be refused.
 - **FR-016**: Rename MUST rename the local branch, as Git's own branch rename does, and Git's own name check MUST apply. The upstream setting moves with it, as Git moves it.
 - **FR-017**: Delete MUST be unavailable for the current branch and for a branch that another worktree holds, with the reason. The worktree list MUST come from Git's machine-readable worktree output.
@@ -290,13 +330,25 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-027**: Rebase MUST be non-interactive. A rebase that stops with conflicts MUST show the feature 003 conflict notice. Continue, Skip, and Abort MUST follow 003 FR-042 to FR-045.
 - **FR-028**: Merge and Rebase MUST be unavailable for a detached HEAD, a branch without commits, and an operation in progress, with the reason.
 
+#### Conflict resolve
+
+- **FR-089**: A selected entry of the 003 Conflicted list MUST show the resolve view in the diff area. The view MUST name the path, both sides, and the conflict kind. The kind MUST come from the unmerged status code of Git's porcelain v2 status read, such as "Both modified" for `UU` and "Deleted by them" for `UD`. The view MUST offer Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved. It MUST NOT read conflict markers or other file text to offer, refuse, or check an action.
+- **FR-090**: Each side MUST show its branch or commit from the operation state. During a merge, ours is the current branch and theirs is the merged commit. During a rebase, ours is the branch that receives the commits and theirs is the commit that the rebase applies, as the Git checkout documentation states. The item labels MUST hold these names, such as "Choose theirs (feature/login)".
+- **FR-091**: Choose ours and Choose theirs MUST replace the working file with the version of that side, as Git's own `git checkout --ours -- <path>` and `git checkout --theirs -- <path>` do. The path MUST stay unmerged until Mark resolved. A modal confirmation MUST state "Replace <path> with the <name> version. Your edits to this file are lost.", and Cancel MUST have the first focus.
+- **FR-092**: Choose ours or Choose theirs MUST be unavailable, with the reason, when the index has no stage for that side, or when that stage is not a regular file. The action MUST bind to the index stages and the working file identity and bytes at selection, as 003 FR-053 binds Mark resolved. A change before the start MUST refuse the action and ask for a refresh.
+- **FR-093**: Open in merge tool MUST run Git's own `git mergetool --tool=<tool> --no-prompt -- <path>` for that one path. `<tool>` MUST be the effective `merge.tool` value from the FR-059 read. Without a `merge.tool` value, the item MUST be unavailable with the reason "Set a merge tool in Git settings", and it MUST offer the page Editor and tools. The application MUST NOT change or override Git configuration for the run, such as `mergetool.keepBackup` or `mergetool.<tool>.trustExitCode`.
+- **FR-094**: Open in merge tool MUST be available only when the index has stage 2 and stage 3 for the path and both are regular files. Git's mergetool asks on its terminal for delete, symbolic-link, and submodule conflicts, and when it cannot trust the tool's exit code. Git's standard input MUST be empty, so such a question ends the run and never waits.
+- **FR-095**: Open in merge tool MUST count as a mutation for FR-001, because Git's mergetool stages the path after the tool reports success. While the tool runs, the row MUST state "Open in <tool>" and offer Cancel. Cancel MUST end the Git process tree under feature 001 FR-045.
+- **FR-096**: After the tool exits or after Cancel, a fresh index read MUST decide the result. The exit status of Git's mergetool MUST NOT decide it, because the Git documentation defines none. A path without unmerged stages MUST leave the Conflicted list, with the statement that Git staged it. A path that stays unmerged MUST stay in the list, with Mark resolved available. Files that Git's mergetool leaves, such as `<path>.orig`, MUST show from the fresh status read. The application MUST NOT delete them.
+- **FR-097**: The merge tool MUST follow the trust rules of FR-069 to FR-075. The feature 001 contract §7 "Repository-controlled resolution" MUST classify the `mergetool.<tool>.cmd` and `mergetool.<tool>.path` entries and a bare tool program. So an entry from local or worktree scope is repository-controlled, and so is an entry from a file or a program inside the repository roots. A repository-controlled merge tool MUST get approval before Git starts. A merge tool from global or system scope with its program outside the roots MUST run without the trust prompt, as the feature 001 Clarifications state for Git LFS. The hooks and filters that Git's checkout and Git's mergetool can run MUST also follow FR-069.
+
 #### Commit workspace
 
 - **FR-029**: The commit workspace MUST show the Changes list, the Staged list, the diff of the selected file, and the message editor at once. Each region MUST have its own scrollbar and a pointer and keyboard splitter.
 - **FR-030**: The Changes list MUST show the tracked changes first, then the Untracked section with its count. The Untracked section MUST start collapsed. Every count MUST come from the status read.
 - **FR-031**: Each list MUST offer a tree layout and a flat layout. In the tree layout, each folder MUST show the count of the files that the status read lists under it.
 - **FR-032**: Each file row MUST show a stage or unstage button on pointer hover and on keyboard focus. The button MUST have an accessible name, such as "Stage file login.ts". Space MUST keep the feature 001 FR-038 behavior.
-- **FR-033**: The commit workspace MUST use at least the full area of the history view, without the references sidebar. [NEEDS CLARIFICATION: Is the commit workspace a full view that the user switches from History, or a large docked panel below the history? Recommended default: a full view with History and Commit switches in the toolbar, as the mockup shows.]
+- **FR-033**: The commit workspace MUST be a full view that replaces the history view, without the references sidebar. The toolbar MUST offer History and Commit switches. The feature 001 mode shortcuts MUST keep their keys.
 - **FR-034**: Each list MUST support multi-select with Ctrl and Shift and the pointer, and with Shift+arrow keys. The list header MUST then offer "Stage selected (<n>)" or "Unstage selected (<n>)".
 - **FR-035**: The Changes header MUST offer Stage all changes. The Untracked section MUST offer Stage all untracked. The Staged header MUST offer Unstage all.
 - **FR-036**: A folder in the tree layout MUST offer Stage folder or Unstage folder. The action covers exactly the entries of that list under that folder in the shown status read.
@@ -337,13 +389,13 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-065**: After Save, the view MUST read the values again and show them. A failed write MUST name the key and show the bounded end of Git's output.
 - **FR-066**: The page Pull and push MUST show the Pull button default action of 003 FR-056 with its five choices. It MUST state that it is an Arbareto setting for all repositories and not stored in Git configuration.
 - **FR-067**: The view MUST show values as untrusted plain text. It MUST NOT run a configured program to test it.
-- **FR-068**: The Settings view MUST also hold the preselected switch choice of FR-010. [NEEDS CLARIFICATION: Does Git settings open inside the main window or in its own window? Recommended default: a full view inside the main window with Close, as the mockup shows.]
+- **FR-068**: The Settings view MUST also hold the preselected switch choice of FR-010. Git settings MUST open as a full view inside the main window, with Close. Close MUST return to the earlier view and MUST NOT write a pending change.
 
 #### Trust
 
-- **FR-069**: The application MUST ask for trust only when an action would run a repository program. These actions are a commit with commit hooks, a read with a repository filter or monitor, the 003 network operations with their hooks, and the hooks of FR-005. Opening and inspecting a repository without such programs MUST NOT ask. [NEEDS CLARIFICATION: Keep trust prompts as option (d), or remove them as Git Extensions does? Removal needs a MAJOR amendment of constitution principle V. Recommended default: option (d), as this section states.]
+- **FR-069**: The application MUST ask for trust only when an action would run a repository program. These actions are a commit with commit hooks, a read with a repository filter or monitor, the 003 network operations with their hooks, and the hooks of FR-005. Opening and inspecting a repository without such programs MUST NOT ask. The trust prompt MUST stay. Constitution principle V stays unchanged.
 - **FR-070**: The prompt MUST be one native dialog. Its main text MUST be "Do you trust this repository?". Its content MUST name the action, such as "Git runs them when you commit.". It MUST offer Trust and Not now, and Not now MUST be the default button. Enter and Esc MUST choose Not now. A collapsed "Show details" MUST list the folder, the hooks by name with their folder, and the filters and monitors by name with their scope. The prompt MUST NOT show a fingerprint or raw configuration lines in its main text.
-- **FR-071**: The approval MUST bind to the repository identity, the worktree folder, and the selected Git installation. A change of any of them MUST ask again. [NEEDS CLARIFICATION: Does an approval survive edits and additions of hook scripts in the approved folder? Recommended default: yes; the approval binds to the folder, not to per-file digests, so hook rewrites by tools such as Git LFS do not ask again.]
+- **FR-071**: The approval MUST bind to the repository folder, the worktree folder, the selected Git installation, and the trust policy version. A change of any of them MUST ask again. Edits and additions of hook scripts and program files in the approved folders MUST NOT ask again. The approval MUST NOT hold per-file program digests. So hook rewrites by tools such as Git LFS do not ask again.
 - **FR-072**: After Not now, Git MUST run no repository program. Each blocked action MUST state its reason inline, such as "Commit needs trust. Select Not trusted in the status bar to trust this repository.". Reads that need trust MUST state "Arbareto reads no changes until you trust this repository." and offer Trust….
 - **FR-073**: The status bar MUST show a trust chip, Trusted or Not trusted, only when the repository has its own programs. Its menu MUST offer "Trust this repository…" and "Stop trusting this repository". Its tooltip MUST state whether Git runs this repository's programs.
 - **FR-074**: Stop trusting MUST end the processes of repository programs that still run, under feature 001 FR-045. The result MUST state "Arbareto no longer trusts this repository." and the number of stopped programs when it is above zero.
@@ -354,7 +406,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-076**: Update submodules MUST start at once from one click, with no review dialog and no selection. It MUST keep the feature 001 FR-047 update steps for every submodule.
 - **FR-077**: The Submodules group of the references sidebar MUST show each submodule as a row, nested ones indented under their parent. During the update, each row MUST show Waiting, Fetching or Updating with Git's percentage where Git reports one, Done, or Failed. The group header MUST show "Updating <i> of <n>" and Cancel.
 - **FR-078**: The FR-049 refusal checks of feature 001 MUST run before Git starts. A refusal MUST show as one line in the Submodules group with its reason and "Show remedy". The update MUST NOT start.
-- **FR-079**: A submodule that fetches from a host other than the host in the repository settings MUST show one line that names both hosts, before Git starts. [NEEDS CLARIFICATION: Must the user select "Update anyway" for a new fetch host, or does the update run and only show the line? Recommended default: the update waits for "Update anyway", as the mockup shows.]
+- **FR-079**: A submodule that fetches from a host other than the host in the repository settings MUST show one line that names both hosts, before Git starts. The update MUST wait until the user selects "Update anyway" on that line. One selection MUST cover all hosts that the line names, for this run only. Cancel MUST start nothing.
 - **FR-080**: Programs from submodule settings and hooks MUST keep the feature 001 FR-050 run confirmation, as one native dialog. It MUST name the submodules and the number of programs. Cancel MUST be the default button.
 - **FR-081**: A submodule row MUST offer Update in its context menu, and a failed row MUST offer Retry. Both MUST update that submodule and its nested submodules only, with the same checks and the same confirmation.
 - **FR-082**: After the run, each row MUST show its observed result, such as "Checked out 4e1a9c0". A failed row MUST show the reason, the Git exit code, and Show output with the bounded output tail. The status bar MUST state the totals, such as "Update submodules finished. 4 updated, 1 failed.". Registration changes MUST show as one information line, with no extra click.
@@ -384,7 +436,8 @@ This feature changes these requirements for builds that include it. The earlier 
 - **Ignore line**: The escaped, anchored path and its target file, `.gitignore` or `info/exclude`.
 - **Worktree entry**: The folder, the branch or detached commit, the main, current, locked, and prunable states, from Git's worktree output.
 - **Configuration value**: A key, a scope, a value, and its source file. A key can have several values in one scope.
-- **Trust approval**: The repository identity, the worktree folder, the selected Git installation, and the time of approval.
+- **Trust approval**: The repository folder, the worktree folder, the selected Git installation, the trust policy version, and the time of approval. It holds no per-file program digest.
+- **Resolve request**: One unmerged path, its index stages with their modes, the action, the side names from the operation state, and the working file identity and bytes at selection.
 - **Submodule row**: The path, the nesting level, the state, the observed commit, and for a failure the exit code and the output tail.
 
 ## Success Criteria *(mandatory)*
@@ -405,6 +458,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **SC-012**: In the spelling fixture, every listed misspelling gets a mark and no listed correct word gets one. No network connection starts.
 - **SC-013**: A review of the requirement-to-test map finds no outcome that Git message text, timing, or a name pattern decides.
 - **SC-014**: Keyboard-only users complete each P1 story. Each control has an accessible name, visible focus, and a contrast of at least 4.5:1.
+- **SC-015**: In every conflict fixture, Choose ours, Choose theirs, and Open in merge tool give the same working files and index as Git's own `git checkout --ours`, `git checkout --theirs`, and `git mergetool` with the same fixture tool on a copy. No repository-controlled merge tool runs before approval. No action reads conflict markers.
 
 ## Assumptions
 
@@ -423,7 +477,8 @@ This feature changes these requirements for builds that include it. The earlier 
 - `credential.helper` is a text field without a program scan. This is a reviewer default.
 - `push.autoSetupRemote` changes Git's behavior. The 003 push panel (003 FR-016) still decides what Arbareto shows. The plan checks that 003 reads the effective value. This is a reviewer default.
 - English is the first spell check language. More dictionaries come later. The dictionary source and its license are a plan decision.
-- Interactive rebase, the resolve panel, and merge tools come in a later feature.
+- Interactive rebase comes in a later feature.
+- The resolve view acts on one file at a time. The merge tool runs only on a user selection, never on its own after a conflict. This is a reviewer default.
 - The mockup boards of 2026-10-16 are the design reference: Main, BranchSwitcher, BranchContext, MergeRebase, Commit, Worktrees, Settings, Trust, and Submodules.
 
 ## Research inputs

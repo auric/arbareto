@@ -450,7 +450,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Visible controls and keyboard
 
-- **FR-085**: Every new control MUST have an icon or a text label, a tooltip that names the action and its shortcut, an accessible name, and visible focus. Unavailable controls MUST state their reason. Destructive actions MUST use explicit labels and MUST stay apart from routine primary actions.
+- **FR-085**: Every new control MUST have an icon or a text label, a tooltip that names the action and its shortcut, an accessible name, and visible focus. The accessible name of a menu item MUST be its label only. The menu item MUST give its shortcut in `aria-keyshortcuts`, and its visible shortcut text MUST be hidden from assistive technology. Unavailable controls MUST state their reason. Destructive actions MUST use explicit labels and MUST stay apart from routine primary actions.
 - **FR-086**: The branch list, the worktree list, the file lists, and the Submodules group MUST create elements only for the rows near the visible area, as 002 FR-055 requires for the sidebar.
 - **FR-087**: Single-letter shortcuts MUST act only while their region has focus. A new single-letter shortcut MUST NOT act globally.
 - **FR-088**: The window MUST keep the feature 001 SC-005 response targets during every operation of this feature.

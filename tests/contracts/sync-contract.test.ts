@@ -492,6 +492,19 @@ describe("contract Δ3 results", () => {
     expect(ok(R, { action: "push", push: withoutFact })).toBe(false);
   });
 
+  // Contract Δ9: the PUSH_REJECTED reason, and the PUTTY_UNAVAILABLE facts after a fetched remote.
+  test("the result reason of PUSH_REJECTED and PUTTY_UNAVAILABLE", () => {
+    const R = C.SyncResult;
+    const rejected = { ...pushed, status: "rejected", newObjectId: null };
+    for (const reason of E.PUSH_REJECTED_REASONS) expect(ok(R, { action: "force-push", push: rejected, reason })).toBe(true);
+    expect(ok(R, { action: "fetch", fetch: { remotes: [], observed: [] }, reason: "rejected" })).toBe(false);
+    expect(ok(R, { action: "push", push: rejected, reason: "denied" })).toBe(false);
+    const putty = { reason: "missing", program: "plink", path: PLINK };
+    expect(ok(R, { action: "fetch-all", fetch: { remotes: [remote()], observed: [] }, ...putty })).toBe(true);
+    expect(ok(R, { action: "fetch-all", fetch: { remotes: [remote()], observed: [] }, reason: "missing" })).toBe(false);
+    expect(ok(R, { action: "push", push: rejected, reason: "rejected", program: "plink", path: putty.path })).toBe(false);
+  });
+
   test("the integration states of data-model §7", () => {
     const R = C.SyncResult;
     const integrations = [

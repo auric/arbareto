@@ -7,7 +7,7 @@
 import { expect } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { RECONCILIATION_TARGET_MS, STALL_NOTICE_MS, SUBMODULE_UPDATE_CEILING_MS, SUBMODULE_UPDATE_INACTIVITY_MS, SYNC_FETCH_LISTED_REFS } from "../../src/contracts/limits";
+import { APPROVAL_LIFETIME_MS, RECONCILIATION_TARGET_MS, STALL_NOTICE_MS, SUBMODULE_UPDATE_CEILING_MS, SUBMODULE_UPDATE_INACTIVITY_MS, SYNC_FETCH_LISTED_REFS } from "../../src/contracts/limits";
 import { startHttpRemote, type HttpRemote } from "../support/http-remote";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
@@ -386,6 +386,73 @@ describeGit("sync fetch and fetch-all (T033)", () => {
         server.resume();
       }, { environment });
     });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "Δ3 sync step 3: fetch-all sends pageant before each remote; a failed pageant after a fetched remote keeps that fetch and names reason, program, and path (Δ9)", WINDOWS, async () => {
+    const h = hostFor("t033-pageant-each");
+    const repo = buildFetchAll(h);
+    const failing = `${h.root}/pageant-failing`;
+    h.copy(repo, failing);
+    const plink = join(native(h.root), "putty", "plink.exe");
+    await withSync("t033-pageant-each", async (service) => {
+      const pageants = () => service.runner.frames.filter((f) => f.type === "pageant").map((f) => f.remote);
+      const fetchOf = (remote: string) => (c: { arguments: readonly string[] }) => isFetch(c) && c.arguments.at(-1) === remote;
+      // Holds the fetch start of `remote` and gives the pageant remotes that came before it.
+      const heldAt = async (remote: string) => {
+        await until(() => service.runner.calls.some(fetchOf(remote)), `fetch of ${remote}`);
+        return pageants();
+      };
+      const r = await register(service, repo);
+      const review = await reviewed(service, r, { action: "fetch-all" });
+      const [releaseR1, releaseR5] = [service.runner.holdStart(fetchOf("r1")), service.runner.holdStart(fetchOf("r5"))];
+      const requestId = sendSync(service, r, review.syncReviewToken);
+      expect(await heldAt("r1")).toEqual(["r1"]);
+      releaseR1();
+      expect(await heldAt("r5")).toEqual(["r1", "r5"]);
+      releaseR5();
+      expect((await service.response<SyncResult>(requestId)).result!.fetch!.remotes.map((x) => x.state)).toEqual(["succeeded", "succeeded"]);
+
+      // The plink setting changes while the fetch of r1 waits, so only the pageant of r5 fails.
+      const f = await register(service, failing);
+      const second = await reviewed(service, f, { action: "fetch-all" });
+      const from = service.runner.calls.length;
+      const release = service.runner.holdStart(fetchOf("r1"));
+      const failedId = sendSync(service, f, second.syncReviewToken);
+      await until(() => service.runner.calls.slice(from).some(fetchOf("r1")), "fetch of r1");
+      service.runner.inject.sshClient = { plink };
+      release();
+      const response = await service.response<SyncResult>(failedId);
+      service.runner.inject.sshClient = "git";
+      expect(outcome(response)).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
+      expect(pageants().slice(2)).toEqual(["r1", "r5"]);
+      expect(response.result!.fetch!.remotes.map((x) => [x.name, x.state])).toEqual([["r1", "succeeded"], ["r5", "not-started"]]);
+      expect({ reason: response.result!.reason, program: response.result!.program, path: response.result!.path }).toEqual({ reason: "missing", program: "plink", path: plink });
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "contract §2: a repeated consumed sync token answers with its operation and starts no process; an expired token gives APPROVAL_EXPIRED and starts no process", SHELL, async () => {
+    const h = hostFor("t033-token");
+    const { clone } = behindClone(h, "token");
+    let elapsed = 0;
+    await withSync(
+      "t033-token",
+      async (service) => {
+        const r = await register(service, clone);
+        const review = await reviewed(service, r, { action: "fetch" });
+        const first = await sync(service, r, review.syncReviewToken);
+        expect(outcome(first)).toEqual({ state: "succeeded", code: undefined });
+        const from = service.runner.calls.length;
+        const repeat = await sync(service, r, review.syncReviewToken);
+        expect({ state: repeat.state, operationId: repeat.operationId, calls: service.runner.calls.length - from }).toEqual({ state: "succeeded", operationId: first.operationId, calls: 0 });
+
+        const expiring = await reviewed(service, r, { action: "fetch" });
+        elapsed = APPROVAL_LIFETIME_MS + 1;
+        const at = service.runner.calls.length;
+        const expired = await sync(service, r, expiring.syncReviewToken);
+        expect({ ...outcome(expired), calls: service.runner.calls.length - at }).toEqual({ state: "rejected", code: "APPROVAL_EXPIRED", calls: 0 });
+      },
+      { approvalClock: () => performance.now() + elapsed },
+    );
   }, TIMEOUT_MS);
 
   caseTest(TASK, "FR-037: under plink with a missing plink.exe, the pageant reply is failed, the sync gives PUTTY_UNAVAILABLE, and no Git process starts", WINDOWS, async () => {

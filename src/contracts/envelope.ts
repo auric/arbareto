@@ -8,6 +8,7 @@ import {
   ERROR_CODES,
   HISTORY_CHANGED_REASONS,
   HISTORY_OUTPUT_LIMIT_REASONS,
+  PUSH_REJECTED_REASONS,
   PUTTY_PROGRAMS,
   PUTTY_UNAVAILABLE_REASONS,
   SEARCH_UNSUPPORTED_REASONS,
@@ -1089,13 +1090,20 @@ export const SyncResult = z
     // Data-model §6. Null: no payload and no configuration value decided.
     modeSource: z.enum(["payload", "branch", "pull", "pull-ff"]).nullable().optional(),
     remedy: SyncRemedy.optional(),
+    // Contract Δ9: the `PUSH_REJECTED` reason, or the `PUTTY_UNAVAILABLE` reason with the program and its path after a fetched remote.
+    reason: z.enum([...PUSH_REJECTED_REASONS, ...PUTTY_UNAVAILABLE_REASONS]).optional(),
+    program: z.enum(PUTTY_PROGRAMS).optional(),
+    path: ChannelPath.optional(),
   })
   .refine(
     (r) =>
       (r.fetch === undefined || FETCHING.includes(r.action)) &&
       (r.push === undefined || PUSHING.includes(r.action)) &&
       (r.integration === undefined || INTEGRATING.includes(r.action)) &&
-      ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate"),
+      ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate") &&
+      (!(PUSH_REJECTED_REASONS as readonly string[]).includes(r.reason ?? "") || PUSHING.includes(r.action)) &&
+      ((r.program !== undefined && r.path !== undefined) === (PUTTY_UNAVAILABLE_REASONS as readonly string[]).includes(r.reason ?? "")) &&
+      ((r.program === undefined) === (r.path === undefined)),
   )
   .meta({ title: "SyncResult" });
 

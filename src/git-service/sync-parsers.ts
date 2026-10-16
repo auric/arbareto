@@ -26,9 +26,11 @@ export interface FetchUpdate {
   ref: string;
 }
 
+// `updates`: the first SYNC_FETCH_LISTED_REFS lines for display. `all`: every line, for the reconciliation.
 export interface FetchList {
   updates: FetchUpdate[];
   counts: Record<FetchFlag, number>;
+  all: FetchUpdate[];
 }
 
 // The contract `\S` is ASCII. git-check-ref-format(1) refuses ASCII spaces and controls in a ref name.
@@ -36,7 +38,7 @@ const FETCH_LINE = /^([ +\-t*!=]) ([0-9a-f]+) ([0-9a-f]+) ([^ \t\n\v\f\r]+)$/;
 
 // Takes stdout in frames of any size. One broken line makes the whole list malformed.
 export function createFetchParser(objectFormat: ObjectFormat) {
-  const updates: FetchUpdate[] = [];
+  const all: FetchUpdate[] = [];
   const counts = Object.fromEntries(FETCH_FLAGS.map((flag) => [flag, 0])) as Record<FetchFlag, number>;
   let pending = new Uint8Array(0);
   let broken = false;
@@ -49,7 +51,7 @@ export function createFetchParser(objectFormat: ObjectFormat) {
     }
     const flag = m[1] as FetchFlag;
     counts[flag]++;
-    if (updates.length < SYNC_FETCH_LISTED_REFS) updates.push({ flag, oldObjectId: m[2]!, newObjectId: m[3]!, ref: m[4]! });
+    all.push({ flag, oldObjectId: m[2]!, newObjectId: m[3]!, ref: m[4]! });
   };
 
   return {
@@ -64,7 +66,7 @@ export function createFetchParser(objectFormat: ObjectFormat) {
       pending = Uint8Array.from(data.subarray(at));
     },
     end(): FetchList | null {
-      return broken || pending.length > 0 ? null : { updates, counts };
+      return broken || pending.length > 0 ? null : { updates: all.slice(0, SYNC_FETCH_LISTED_REFS), counts, all };
     },
   };
 }
@@ -229,6 +231,27 @@ function lastEntry(config: readonly ConfigValue[], key: string): ConfigValue | u
   return found;
 }
 
+// branch.c `should_setup_rebase` for a remote upstream: `remote` and `always` add `branch.<name>.rebase true` (git-config(1) `branch.autoSetupRebase`).
+const AUTO_REBASE: ReadonlyMap<string, boolean> = new Map([
+  ["never", false],
+  ["local", false],
+  ["remote", true],
+  ["always", true],
+]);
+
+// Contract Δ3 Set upstream. config.c `git_default_branch_config` checks each entry with `strcmp`, and the last one wins. Unset means `never`.
+// Null: an entry that Git refuses.
+export function upstreamRebase(config: readonly ConfigValue[]): boolean | null {
+  let rebase = false;
+  for (const { key, value } of config) {
+    if (key !== "branch.autosetuprebase") continue;
+    const next = value === null ? undefined : AUTO_REBASE.get(value);
+    if (next === undefined) return null;
+    rebase = next;
+  }
+  return rebase;
+}
+
 // ---- D4 push destination (remote.c `branch_get_push_1`) ----
 
 // The plan.md D4 `for-each-ref` record of `refs/heads/<branch>`. Empty fields are "".
@@ -334,6 +357,8 @@ function stopsGit({ key, value }: ConfigValue): boolean {
   const last = key.lastIndexOf(".");
   const section = key.slice(0, first);
   if (first === last) return key === "remote.pushdefault" && value === null;
+  // remote.c `handle_config` refuses an empty branch subsection for every variable. Probe: `git remote` and `%(upstream)` exit 128.
+  if (section === "branch" && last === first + 1) return true;
   if (section === "remote" && key[first + 1] === "/") return false;
   const variable = key.slice(last + 1);
   if (section === "remote" && BOOLEAN_REMOTE_KEYS.has(variable)) return parseMaybeBool(value) < 0;

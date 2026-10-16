@@ -204,7 +204,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - `[remote failure]` means an unknown remote result.
   - The reason text in parentheses shows as plain text and decides nothing (FR-015).
 - Set upstream: the panel lists the remotes and the branch name. Set upstream is selected by default only for a branch without an upstream (FR-016). The service checks the name with the `check-ref-format` rules (`isRefName`, `commands.ts`).
-- After a push with a success status, a selected Set upstream writes `branch.<branch>.remote` and `branch.<branch>.merge` with two `config --local` processes (contract Δ3 "Set upstream"). Exit codes alone decide. A failed write gives `upstreamNotSet` and a remedy, and the push stays succeeded.
+- After a push with a success status, a selected Set upstream writes `branch.<branch>.remote` and `branch.<branch>.merge` with two `config --local` processes (contract Δ3 "Set upstream"). With `branch.autoSetupRebase` `remote` or `always`, a third process writes `branch.<branch>.rebase true`, as Git's `push --set-upstream` does. Exit codes alone decide. A failed write gives `upstreamNotSet` and a remedy, and the push stays succeeded.
 
 ### D5 Push rejected and force push with lease
 
@@ -314,6 +314,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - a signing program;
   - a transport program: `core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, or `remote.<name>.receivepack`;
   - a merge driver: `merge.<driver>.driver`. A pull merge runs it with the shell (ll-merge.c `ll_ext_merge`);
+  - `core.alternateRefsCommand`. A fetch in a repository with an alternate runs it with the shell (fetch-pack.c `for_each_alternate_ref`). A probe saw no 001 read or commit run it;
   - a `protocol.allow` or `protocol.<name>.allow` entry;
   - the 001 `hooksPathControlled`, `folderUnlisted`, or `inputLimited` condition.
 - The transport programs already exist in `programKey` for submodules (`trust.ts:311-317`). The main listing now uses them too, so their program files enter the fingerprint. The merge driver enters `programKey` with the shell form. Only repositories with such a repository-controlled program see a new fingerprint once.

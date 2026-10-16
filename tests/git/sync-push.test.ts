@@ -185,6 +185,27 @@ describeGit("sync push (T034)", () => {
     });
   }, TIMEOUT_MS);
 
+  caseTest(TASK, "Δ3 Set upstream with branch.autoSetupRebase=always: the three writes give configuration bytes equal to Git's own push --set-upstream on a copy", SHELL, async () => {
+    const a = own("noup", [["branch.autoSetupRebase", "always"]]);
+    // The copy keeps the remote URLs of `a`, so only Git's own upstream writes can differ.
+    const oracle = `${a.h.root}/oracle-${++copies}`;
+    a.h.copy(a.repo, oracle);
+    await withSync("t034-upstream-rebase", async (service) => {
+      const r = await register(service, a.repo);
+      const from = service.runner.calls.length;
+      const response = await run(service, r, { action: "push", destination: { remote: "origin", branch: "noup", setUpstream: true } });
+      expect(outcome(response)).toEqual(SUCCEEDED);
+      expect(response.result!.push).toMatchObject({ status: "created", upstreamWritten: true, upstreamNotSet: false });
+      expect(remoteCalls(service, from).slice(1).map((c) => c.arguments)).toEqual([
+        ...UPSTREAM("noup", "origin", "refs/heads/noup"),
+        ["--no-lazy-fetch", "config", "--local", "--", "branch.noup.rebase", "true"],
+      ]);
+    });
+    gitRun(a.h, oracle, ["push", "-q", "--set-upstream", "origin", "noup"]);
+    expect(localConfig(a.h, a.repo).filter((l) => l.startsWith("branch.noup."))).toEqual(["branch.noup.remote=origin", "branch.noup.merge=refs/heads/noup", "branch.noup.rebase=true"]);
+    expect(a.h.read(`${a.repo}/.git/config`)).toEqual(a.h.read(`${oracle}/.git/config`));
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "Δ3 Set upstream: a locked configuration after a successful first push gives succeeded with upstreamNotSet and the copyable remedy; the remote branch exists and the configuration stays equal", SHELL, async () => {
     const a = own("noup");
     const config = localConfig(a.h, a.repo);
@@ -251,6 +272,17 @@ describeGit("sync push (T034)", () => {
         ["push-urls", () => own("topic", [["remote.origin.pushurl", f.origin], ["remote.origin.pushurl", f.second]]), { code: "SYNC_UNAVAILABLE", reason: "push-urls" }],
         ["push-remote-differs", () => own("topic", [["push.default", "upstream"], ["branch.topic.pushRemote", "second"]]), { code: "SYNC_UNAVAILABLE", reason: "push-remote-differs" }],
         ["invalid-config", () => own("topic", [["push.default", "nothing"]]), { code: "SYNC_UNAVAILABLE", reason: "invalid-config" }],
+        // remote.c `handle_config` refuses an empty branch subsection, so `git remote` exits 128 (probe on 2.56.0.windows.2).
+        [
+          "empty branch subsection",
+          () => {
+            const c = own("topic");
+            const path = `${c.repo}/.git/config`;
+            c.h.write(path, `${c.h.read(path)!.toString("utf8")}[branch ""]\n\tremote = o\n`);
+            return c;
+          },
+          { code: "SYNC_UNAVAILABLE", reason: "invalid-config" },
+        ],
         ...["mirror", "skipFetchAll", "skipDefaultUpdate", "prune", "pruneTags"].map((key): [string, () => ReturnType<typeof own>, { code: string; reason?: string }] => [`remote.second.${key}`, () => own("topic", [[`remote.second.${key}`, "maybe"]]), { code: "SYNC_UNAVAILABLE", reason: "invalid-config" }]),
         [
           "merging",
@@ -289,6 +321,7 @@ describeGit("sync push (T034)", () => {
       const r = await register(service, a.repo);
       const refused = await run(service, r, { action: "push", destination: { remote: "refusing", branch: "topic", setUpstream: false } });
       expect(outcome(refused)).toEqual({ state: "failed", code: "PUSH_REJECTED" });
+      expect(refused.result!.reason).toBe("remote-rejected");
       expect(refused.result!.push).toMatchObject({ status: "remote-rejected", lease: false });
       expect(refused.result!.push!.outputTail).toContain("remote message");
       expect(refused.result!.push!.outputTail.includes("\u001b")).toBe(false);
@@ -301,6 +334,27 @@ describeGit("sync push (T034)", () => {
       expect(rejected.result!.push).toMatchObject({ status: "rejected", lease: false });
       expect(refMap(b.h, b.remotes.origin!)).toEqual(remoteTopic);
     });
+  }, TIMEOUT_MS);
+
+  // Data-model §2. The fingerprint covers every configuration entry, so a remote or a push URL that changes through the configuration gives TRUST_CHANGED first.
+  caseTest(TASK, "data-model §2: a changed HEAD after the review gives STALE_REVIEW; a remote list or push URL changed through the configuration gives TRUST_CHANGED; no remote process starts", SHELL, async () => {
+    const cases: [string, string, (c: ReturnType<typeof own>) => void, string][] = [
+      ["HEAD", "push", (c) => gitRun(c.h, c.repo, ["commit", "-q", "--allow-empty", "-m", "after the review"]), "STALE_REVIEW"],
+      ["remote list", "fetch-all", (c) => gitRun(c.h, c.repo, ["remote", "add", "third", c.remotes.origin!]), "TRUST_CHANGED"],
+      ["push URL", "push", (c) => gitRun(c.h, c.repo, ["remote", "set-url", "--push", "origin", c.remotes.second!]), "TRUST_CHANGED"],
+    ];
+    for (const [i, [name, action, change, code]] of cases.entries()) {
+      const a = own("topic");
+      await withSync(`t034-stale-${i}`, async (service) => {
+        const r = await register(service, a.repo);
+        const review = await reviewed(service, r, { action });
+        change(a);
+        const from = service.runner.calls.length;
+        const response = await sync(service, r, review.syncReviewToken);
+        expect({ name, ...outcome(response) }).toEqual({ name, state: "failed", code });
+        expect({ name, calls: remoteCalls(service, from) }).toEqual({ name, calls: [] });
+      });
+    }
   }, TIMEOUT_MS);
 
   caseTest(TASK, "Δ8: a canceled push says that the remote can hold the push", SHELL, async () => {
@@ -353,7 +407,7 @@ describeGit("sync push (T034)", () => {
       const read = await service.readWorkspace(r.repositoryId);
       const rejected = await run(service, { ...r, generation: read.result!.generation }, { action: "push" });
       expect(outcome(rejected)).toEqual({ state: "failed", code: "PUSH_REJECTED" });
-      expect(rejected.result!.push!.status).toBe("rejected");
+      expect({ status: rejected.result!.push!.status, reason: rejected.result!.reason }).toEqual({ status: "rejected", reason: "rejected" });
       expect(revParse(a.h, a.repo, "HEAD")).toBe(committed);
     });
   }, TIMEOUT_MS);

@@ -75,6 +75,8 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   - push and force-push: `push --porcelain --progress --no-recurse-submodules --no-follow-tags [--force-with-lease=<dst>:<expect>] -- <remote> refs/heads/<branch>:<dst>` [`remote`]. `<remote>` and `<dst>` come from the plan.md D4 rule or the panel. A triangular destination is `refs/heads/<branch>` on the push remote, as Git's own push selects it. `matching` always needs the panel. A mirror remote and a remote with several push URLs are refused on purpose, although Git pushes to them (research R16 d).
   - Set upstream: the push argv never has `--set-upstream`. Git then prints a localized line between the status lines and `Done` (branch.c `install_branch_config_multiple_remotes`).
     - After a push with a success status, a selected Set upstream runs `config --local -- branch.<branch>.remote <remote>`, then `config --local -- branch.<branch>.merge <dst>` [`remote`]. These are the values that transport.c `set_upstreams` writes for `push --set-upstream`.
+    - A third write, `config --local -- branch.<branch>.rebase true`, follows when `branch.autoSetupRebase` is `remote` or `always` (branch.c `should_setup_rebase` for a remote upstream). `never`, `local`, and unset add none. The trust listing entries give the value by the last-entry rule.
+    - Git checks every `branch.autoSetupRebase` entry with `strcmp`. Another value, or a key without a value, makes each Git read exit 128, so the trust listing fails first. If the listing still holds such an entry, no write starts, and `upstreamNotSet` is true.
     - `branch --set-upstream-to` is not used. It needs the remote-tracking ref, and a push updates that ref only when a fetch refspec maps `<dst>`.
     - Only exit 0 of each write means set (git-config(1)). Another exit, a runner refusal, or a Cancel before a write gives `upstreamNotSet` true and starts no later write.
     - `upstreamNotSet` does not change the push outcome. A succeeded push stays `succeeded`, and the result holds the Set upstream remedy.
@@ -90,11 +92,11 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - Push lines: `To <text>`, `<flag>\t<from>:<to>\t<summary>[ (<reason>)]`, and `Done`. `from` and `to` are full ref names. Git prints `Done` also after a rejected push, so `Done` decides nothing (research R16 b).
   - Exactly one status line must have `from:to` equal to the refspec. Its flag and summary give data-model §5 `status`. `[rejected]`, `[remote rejected]`, and `[remote failure]` are the only `!` summaries that decide.
   - Another or a missing line, with a non-zero exit, gives status `none`.
-- Results and states: data-model §4 to §8. `PUSH_REJECTED` reasons: `rejected`, `stale-lease` (a lease was sent), `remote-rejected`, `remote-failure`. A `pull` or `integrate` result that reached a decision holds `modeSource` (data-model §6).
+- Results and states: data-model §4 to §8. `PUSH_REJECTED` reasons: `rejected`, `stale-lease` (a lease was sent), `remote-rejected`, `remote-failure`. The `sync` result holds the reason in `reason`. A fetch-all `PUTTY_UNAVAILABLE` after a fetched remote holds `reason`, `program`, and `path` next to `fetch`. A `pull` or `integrate` result that reached a decision holds `modeSource` (data-model §6).
 - Remedies (001 §4 quoting):
   - fetch: `& '<git>' --no-lazy-fetch -C '<worktree>' fetch -- '<remote>'`;
   - push: `& '<git>' --no-lazy-fetch -C '<worktree>' push -- '<remote>' 'refs/heads/<branch>:<dst>'`, with `--force-with-lease='<dst>:<expect>'` for force-push.
-  - Set upstream: `& '<git>' --no-lazy-fetch -C '<worktree>' config --local -- 'branch.<branch>.remote' '<remote>'; & '<git>' --no-lazy-fetch -C '<worktree>' config --local -- 'branch.<branch>.merge' '<dst>'`. Text: "The push succeeded, but Arbareto could not set the upstream. This command sets it."
+  - Set upstream: `& '<git>' --no-lazy-fetch -C '<worktree>' config --local -- 'branch.<branch>.remote' '<remote>'; & '<git>' --no-lazy-fetch -C '<worktree>' config --local -- 'branch.<branch>.merge' '<dst>'`, with `; & '<git>' --no-lazy-fetch -C '<worktree>' config --local -- 'branch.<branch>.rebase' 'true'` when the third write applies. Text: "The push succeeded, but Arbareto could not set the upstream. This command sets it." A refused `branch.autoSetupRebase` entry gives the text without a command.
   - pull: the fetch remedy for the fetch step, and the integrate argv for the integrate step.
   - Text: "This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again."
 - An expired `syncReviewToken` gives `APPROVAL_EXPIRED` (001).
@@ -190,7 +192,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - New policy `remote`: the `network` remove list and prefixes, `set {GIT_TERMINAL_PROMPT: "0"}`, no index variable, the same preserve list. `GIT_PROTOCOL_FROM_USER` stays as the service environment holds it.
 - New policy `integrate`: the same, with `set {GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: ":"}`.
 - 001 §6 "Process fields" (L581) and §12 "Environment and console" (L1880) get one exception: the shell adds the PuTTY pair to `remote` runs under `plink` (Δ6).
-- Mutation trust adds `approvalRequired.sync` (plan.md D11). The class also counts a repository-controlled `merge.<driver>.driver`, because a pull merge runs it. The `readTrust` result carries `approvalRequired.sync` next to `reads` and `commit`. `sync` refuses with `TRUST_REQUIRED` or `TRUST_CHANGED` before any process.
+- Mutation trust adds `approvalRequired.sync` (plan.md D11). The class also counts a repository-controlled `merge.<driver>.driver`, because a pull merge runs it, and `core.alternateRefsCommand`, because a fetch runs it with the shell when the repository has an alternate (fetch-pack.c `for_each_alternate_ref`). The `readTrust` result carries `approvalRequired.sync` next to `reads` and `commit`. `sync` refuses with `TRUST_REQUIRED` or `TRUST_CHANGED` before any process.
 - The value display allowlist adds `core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, `remote.<name>.receivepack`, and `remote.<name>.puttykeyfile`, redacted.
 - Transport value redaction. Arguments and snippets can hold a secret, so `readTrust` shows only the program. The trust decision does not change.
   - `core.sshCommand`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, and `remote.<name>.receivepack` show the first shell word after quote removal (`shellProgram`, `trust.ts`). Git runs these values with the shell.
@@ -248,5 +250,5 @@ Reused: `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW
 - A remote result after a canceled push is not observable without a fetch.
 - A local-path remote runs the remote repository's own receive hooks on this machine, as Git does by hand.
 - 001 `network` runs need only a `started` reply. The shell does not check that the operation started as kind `updateSubmodules`.
+- A Cancel during the `pageant` wait has no effect until the shell replies, at most 30 s. No frame stops that wait.
 - Git checks every `push.default` entry, not only the last one (config.c `git_default_push_config`). An invalid entry makes each Git read exit 128, also the trust listing. So a review ends with the code of that failed read, not `invalid-config`.
-- `push --set-upstream` also writes `branch.<branch>.rebase` when `branch.autoSetupRebase` asks for it (branch.c `should_setup_rebase`). Set upstream writes only `remote` and `merge`.

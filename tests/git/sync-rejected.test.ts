@@ -51,7 +51,7 @@ describeGit("rejected push and force push with lease (T035)", () => {
     await withSync("t035-rejected", async (service) => {
       const r = await register(service, a.repo);
       const rejected = await run(service, r, { action: "push" });
-      expect(outcome(rejected)).toEqual({ state: "failed", code: "PUSH_REJECTED" });
+      expect({ ...outcome(rejected), reason: rejected.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "rejected" });
       expect(rejected.result!.push).toMatchObject({ status: "rejected", lease: false });
       const fetched = await run(service, r, { action: "fetch", remote: "origin" });
       expect(outcome(fetched)).toEqual(SUCCEEDED);
@@ -131,7 +131,7 @@ describeGit("rejected push and force push with lease (T035)", () => {
       const refsBefore = refMap(a.h, a.remotes.origin!);
       const objectsBefore = reachable(a.h, a.remotes.origin!);
       const response = await sync(service, r, review.syncReviewToken);
-      expect(outcome(response)).toEqual({ state: "failed", code: "PUSH_REJECTED" });
+      expect({ ...outcome(response), reason: response.result!.reason }).toEqual({ state: "failed", code: "PUSH_REJECTED", reason: "stale-lease" });
       expect(response.result!.push).toMatchObject({ status: "rejected", lease: true });
       expect(refMap(a.h, a.remotes.origin!)).toEqual(refsBefore);
       expect(reachable(a.h, a.remotes.origin!)).toEqual(objectsBefore);

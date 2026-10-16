@@ -321,6 +321,8 @@ function programKey(p: KeyParts): ProgramKey | null {
   if (section === "core" && subsection === null && variable === "gitproxy") return { form: "proxy", reads: false, commit: false, sync: true };
   if (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack")) return { form: "shell", reads: false, commit: false, sync: true };
   if (section === "credential" && variable === "helper") return { form: "credential", reads: false, commit: false, sync: true };
+  // Feature 003 plan.md D11: fetch-pack.c `for_each_alternate_ref` runs it with `use_shell` (`fill_alternate_refs_command`). A probe saw no 001 read or commit run it.
+  if (section === "core" && subsection === null && variable === "alternaterefscommand") return { form: "shell", reads: false, commit: false, sync: true };
   // Feature 003 plan.md D11: ll-merge.c `ll_ext_merge` runs a merge driver with `use_shell`, so a pull merge can run it.
   if (section === "merge" && subsection !== null && variable === "driver") return { form: "shell", reads: false, commit: false, sync: true };
   if (section === "filter" && subsection !== null) {
@@ -336,9 +338,12 @@ function programKey(p: KeyParts): ProgramKey | null {
 }
 
 // connect.c `git_proxy_command_options`: the command is the text before the first " for ", and "none" names no proxy.
-function proxyCommand(value: string): string {
+function proxyText(value: string): string {
   const at = value.indexOf(" for ");
-  const command = at < 0 ? value : value.slice(0, at);
+  return at < 0 ? value : value.slice(0, at);
+}
+function proxyCommand(value: string): string {
+  const command = proxyText(value);
   return command === "none" ? "" : command;
 }
 
@@ -1378,10 +1383,7 @@ const SHELL_COMMAND = "<shell command>";
 // `core.gitProxy` keeps the command before " for " (connect.c `git_proxy_command_options`). Git runs it without arguments.
 function displayValue(p: KeyParts, value: string): string {
   const { section, subsection, variable } = p;
-  if (section === "core" && subsection === null && variable === "gitproxy") {
-    const at = value.indexOf(" for ");
-    return at < 0 ? value : value.slice(0, at);
-  }
+  if (section === "core" && subsection === null && variable === "gitproxy") return proxyText(value);
   const helper = section === "credential" && variable === "helper";
   const shell = helper || (section === "core" && subsection === null && variable === "sshcommand") || (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack"));
   if (!shell || value === "") return value;

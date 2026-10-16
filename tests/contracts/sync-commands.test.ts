@@ -50,8 +50,9 @@ const WRITES: [string, string[], string[]][] = [
     sync.pushArgs("origin", "main", "refs/heads/main", null, "sha1"),
     [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", "--", "origin", "refs/heads/main:refs/heads/main"],
   ],
-  ["set upstream remote", sync.upstreamArgs("a/b", "up/stream", "refs/heads/other")[0]!, [L, "config", "--local", "--", "branch.a/b.remote", "up/stream"]],
-  ["set upstream merge", sync.upstreamArgs("a/b", "up/stream", "refs/heads/other")[1]!, [L, "config", "--local", "--", "branch.a/b.merge", "refs/heads/other"]],
+  ["set upstream remote", sync.upstreamArgs("a/b", "up/stream", "refs/heads/other", false)[0]!, [L, "config", "--local", "--", "branch.a/b.remote", "up/stream"]],
+  ["set upstream merge", sync.upstreamArgs("a/b", "up/stream", "refs/heads/other", false)[1]!, [L, "config", "--local", "--", "branch.a/b.merge", "refs/heads/other"]],
+  ["set upstream rebase", sync.upstreamArgs("a/b", "up/stream", "refs/heads/other", true)[2]!, [L, "config", "--local", "--", "branch.a/b.rebase", "true"]],
   [
     "triangular push",
     sync.pushArgs("fork", "topic", "refs/heads/topic", null, "sha1"),
@@ -103,12 +104,18 @@ describe("sync argv vectors", () => {
   });
 });
 
+// transport.c `set_upstreams` and branch.c `install_branch_config`: remote, merge, then rebase only when `branch.autoSetupRebase` asks for it.
+test("Set upstream writes two values, or three with rebase, in Git's order", () => {
+  const keys = (rebase: boolean) => sync.upstreamArgs("main", "origin", "refs/heads/main", rebase).map((args) => args.at(-2));
+  expect({ plain: keys(false), rebase: keys(true) }).toEqual({ plain: ["branch.main.remote", "branch.main.merge"], rebase: ["branch.main.remote", "branch.main.merge", "branch.main.rebase"] });
+});
+
 describe("names that start with '-' stay after --", () => {
   test("remote names", () => {
     expect(sync.fetchArgs("-x").slice(-2)).toEqual(["--", "-x"]);
     expect(sync.pushUrlArgs("--upload-pack=y").slice(-2)).toEqual(["--", "--upload-pack=y"]);
     expect(sync.pushArgs("-x", "main", "refs/heads/main", null, "sha1").slice(-3)).toEqual(["--", "-x", "refs/heads/main:refs/heads/main"]);
-    expect(sync.upstreamArgs("main", "-x", "refs/heads/main")[0]!.slice(-3)).toEqual(["--", "branch.main.remote", "-x"]);
+    expect(sync.upstreamArgs("main", "-x", "refs/heads/main", false)[0]!.slice(-3)).toEqual(["--", "branch.main.remote", "-x"]);
   });
 
   test("clone URL and destination", () => {
@@ -133,9 +140,9 @@ describe("refused inputs", () => {
     throws(() => sync.pushRecordArgs("x*"));
     throws(() => sync.pushArgs("origin", "a b", "refs/heads/main", null, "sha1"));
     throws(() => sync.pushArgs("origin", "main", "main", null, "sha1"));
-    throws(() => sync.upstreamArgs("bad..name", "origin", "refs/heads/main"));
-    throws(() => sync.upstreamArgs("main", "origin", "main"));
-    throws(() => sync.upstreamArgs("main", "", "refs/heads/main"));
+    throws(() => sync.upstreamArgs("bad..name", "origin", "refs/heads/main", false));
+    throws(() => sync.upstreamArgs("main", "origin", "main", false));
+    throws(() => sync.upstreamArgs("main", "", "refs/heads/main", false));
     throws(() => sync.fastForwardArgs("origin/main"));
     throws(() => sync.mergeArgs("refs/remotes/origin/main~1", "--ff"));
     throws(() => sync.rebaseArgs("-x", false));

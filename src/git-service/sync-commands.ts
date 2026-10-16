@@ -89,14 +89,15 @@ export function pushArgs(remote: string, branch: string, dst: string, lease: str
   return [...args, "--", item(remote), `${branchRef(branch)}:${ref(dst)}`];
 }
 
-// Contract Δ3 Set upstream: the two values that transport.c `set_upstreams` writes for `push --set-upstream`, in its order.
-// `--local` writes the repository file, as `install_branch_config` does, whatever `GIT_CONFIG` names.
-export function upstreamArgs(branch: string, remote: string, dst: string): string[][] {
+// Contract Δ3 Set upstream: the values that transport.c `set_upstreams` writes for `push --set-upstream`, in the order of `install_branch_config`.
+// `rebase` comes from `upstreamRebase`. `--local` writes the repository file, as `install_branch_config` does, whatever `GIT_CONFIG` names.
+export function upstreamArgs(branch: string, remote: string, dst: string, rebase: boolean): string[][] {
   branchRef(branch);
-  return [
+  const writes = [
     [L, "config", "--local", "--", `branch.${branch}.remote`, item(remote)],
     [L, "config", "--local", "--", `branch.${branch}.merge`, ref(dst)],
   ];
+  return rebase ? [...writes, [L, "config", "--local", "--", `branch.${branch}.rebase`, "true"]] : writes;
 }
 
 export function fastForwardArgs(upstreamRef: string): string[] {

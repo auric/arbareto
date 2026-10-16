@@ -68,7 +68,7 @@ Label rule (renderer):
 | `oldObjectId`, `newObjectId` | From the observed tracking ref, before and after. |
 | `reasonText` | The parenthesized reason as plain text. Display only. |
 | `lease` | True when the push sent a lease. A `rejected` status with a lease means the remote changed. |
-| `upstreamWritten` | True when `branch.<name>.remote` or `.merge` changed. |
+| `upstreamWritten` | True when `branch.<name>.remote`, `.merge`, or `.rebase` changed. |
 | `upstreamNotSet` | True when a selected Set upstream ran after a successful push and a write did not exit 0, or a Cancel came first (contract Δ3). The push outcome stays. The result holds the Set upstream remedy. |
 | `outputTail` | Bounded, redacted stderr of the push, also on success. |
 

@@ -75,6 +75,7 @@ export interface SyncResult {
   fetch?: { remotes: FetchRemote[]; observed: { ref: string; oldObjectId: string | null; newObjectId: string | null }[] };
   push?: { status: string; oldObjectId: string | null; newObjectId: string | null; reasonText: string | null; lease: boolean; upstreamWritten: boolean; upstreamNotSet: boolean; outputTail: string };
   remedy?: { text: string; command: string | null };
+  // Contract Δ9: the PUSH_REJECTED reason, or the PUTTY_UNAVAILABLE reason with `program` and `path`.
   reason?: string;
   program?: string;
   path?: string;

@@ -59,16 +59,14 @@ describe("fetch porcelain", () => {
   });
 
   test("SHA-256 object IDs and a new ref with the zero OID", () => {
-    expect(fetchList(`* ${"0".repeat(64)} ${B2} refs/tags/v1\n+ ${A2} ${B2} refs/remotes/origin/main\n`, "sha256")).toEqual({
-      updates: [
-        { flag: "*", oldObjectId: "0".repeat(64), newObjectId: B2, ref: "refs/tags/v1" },
-        { flag: "+", oldObjectId: A2, newObjectId: B2, ref: "refs/remotes/origin/main" },
-      ],
-      counts: { ...zeroCounts(), "*": 1, "+": 1 },
-    });
+    const updates = [
+      { flag: "*" as const, oldObjectId: "0".repeat(64), newObjectId: B2, ref: "refs/tags/v1" },
+      { flag: "+" as const, oldObjectId: A2, newObjectId: B2, ref: "refs/remotes/origin/main" },
+    ];
+    expect(fetchList(`* ${"0".repeat(64)} ${B2} refs/tags/v1\n+ ${A2} ${B2} refs/remotes/origin/main\n`, "sha256")).toEqual({ updates, counts: { ...zeroCounts(), "*": 1, "+": 1 }, all: updates });
   });
 
-  test("empty output gives no update", () => expect(fetchList("")).toEqual({ updates: [], counts: zeroCounts() }));
+  test("empty output gives no update", () => expect(fetchList("")).toEqual({ updates: [], counts: zeroCounts(), all: [] }));
 
   test("a UTF-8 ref name passes as text", () => {
     expect(fetchList(`* ${Z1} ${B1} refs/remotes/origin/zweig-ä\n`)).toMatchObject({ updates: [{ ref: "refs/remotes/origin/zweig-ä" }] });
@@ -95,6 +93,8 @@ describe("fetch porcelain", () => {
     expect(result.updates.length).toBe(1000);
     expect(result.updates[999]!.ref).toBe("refs/remotes/o/b999");
     expect(result.counts).toEqual({ ...zeroCounts(), " ": 750, "=": 750 });
+    // The reconciliation applies every line, also above the listing bound.
+    expect({ all: result.all.length, last: result.all.at(-1)!.ref, listed: result.all.slice(0, 1000) }).toEqual({ all: 1500, last: "refs/remotes/o/b1499", listed: result.updates });
   });
 
   const broken: [string, string, ("sha1" | "sha256")?][] = [

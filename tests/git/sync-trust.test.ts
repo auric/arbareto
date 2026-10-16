@@ -68,6 +68,8 @@ describeGit("trust class sync (T036)", () => {
       ["gpg.ssh.defaultKeyCommand", f.canary],
       // ll-merge.c `ll_ext_merge`: a pull merge runs it (plan.md D11).
       ["merge.x.driver", f.canary],
+      // fetch-pack.c `for_each_alternate_ref` runs it in a repository with an alternate (plan.md D11).
+      ["core.alternateRefsCommand", f.canary],
     ];
     const syncRequired = async (service: Service, repositoryId: string) => (await service.readTrust(repositoryId)).result!.approvalRequired.sync;
     await withSync("t036-gate", async (service) => {
@@ -95,6 +97,26 @@ describeGit("trust class sync (T036)", () => {
       }
     });
     expect(existsSync(native(f.log))).toBe(false);
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "core.alternateRefsCommand with an alternate sets approvalRequired.sync; the review refuses and the canary does not run before approval; the approved fetch runs it", SHELL, async () => {
+    const f = fixture("t036-alternate");
+    const alternate = `${f.h.root}/alternate.git`;
+    gitRun(f.h, f.h.root, ["init", "-q", "--bare", "--", alternate]);
+    f.h.write(`${f.repo}/.git/objects/info/alternates`, `${native(alternate).replaceAll("\\", "/")}/objects\n`);
+    gitRun(f.h, f.repo, ["config", "core.alternateRefsCommand", f.canary]);
+    await withSync("t036-alternate", async (service) => {
+      const r = await register(service, f.repo);
+      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: true });
+      const from = service.runner.calls.length;
+      for (const action of ["fetch", "fetch-all"]) expect({ action, ...outcome(await reviewSync(service, r, { action })) }).toEqual({ action, state: "failed", code: "TRUST_REQUIRED" });
+      expect(remoteCalls(service, from)).toEqual([]);
+      expect(existsSync(native(f.log))).toBe(false);
+      // The positive control: the fixture reaches the command.
+      await approve(service, r.repositoryId, r.generation);
+      await run(service, r, { action: "fetch" });
+      expect(existsSync(native(f.log))).toBe(true);
+    });
   }, TIMEOUT_MS);
 
   caseTest(TASK, "sync refuses with TRUST_REQUIRED for a program added after the review, and with TRUST_CHANGED for an approved hook that changed, before any process", SHELL, async () => {

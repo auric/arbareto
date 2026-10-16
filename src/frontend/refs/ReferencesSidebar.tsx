@@ -9,6 +9,7 @@ import type { RefEntry, RefsResult } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
+import { COUNTS_TOOLTIP, type TrackLabel } from "../state/tracking";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuShortcut } from "../components/ui/dropdown-menu";
 
 // FR-057. plan.md "References sidebar", "Long text", "Keyboard and focus" (References sidebar row), "Task flow and command placement" (Browse references),
@@ -68,6 +69,8 @@ export type ReferencesSidebarProps = {
   rowHeight?: number;
   /** Feature 002 spec FR-049: the current-branch context menu item selects the current-branch history scope. Without it, no context menu opens. */
   onShowBranchHistory?: () => void;
+  /** Feature 003 FR-019: the count label of each local branch by name (`state/tracking.ts`). */
+  tracking?: ReadonlyMap<string, TrackLabel>;
 };
 
 // plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
@@ -122,7 +125,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory }: ReferencesSidebarProps) {
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId() };
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
@@ -306,7 +309,8 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     const current = isCurrent(row);
     const upstream = upstreamText(entry);
     const notShown = entry.commitId === null ? undefined : missing.get(entry.commitId);
-    const name = entry.symref === null ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream])].join(", ") : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
+    const track = kind === "branch" ? (tracking?.get(entry.name) ?? null) : null;
+    const name = entry.symref === null ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(track === null ? [] : [track.label])].join(", ") : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
     return (
       <div
         key={node.key}
@@ -329,6 +333,11 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
             {upstream === null ? null : (
               <span aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
                 {upstream}
+              </span>
+            )}
+            {track === null ? null : (
+              <span aria-hidden="true" title={`${track.label}. ${COUNTS_TOOLTIP}`} className="num ml-auto shrink-0 whitespace-nowrap">
+                {track.text}
               </span>
             )}
           </>

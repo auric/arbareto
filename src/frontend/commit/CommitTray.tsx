@@ -46,6 +46,10 @@ export type CommitTrayProps = {
   /** A terminal `commit` response, or a refused `reviewCommit`. The read after it reconciles the view (contract §3). */
   onEnded?(response: BridgeResponse): void;
   fieldRef?: Ref<HTMLTextAreaElement>;
+  /** Feature 003 FR-038: Commit and push runs this after a `succeeded` commit. Without it, the tray shows no Commit and push. */
+  onPush?(): void;
+  /** Why Push cannot run, or null (feature 003 FR-017). */
+  pushReason?: string | null;
 };
 
 
@@ -92,7 +96,7 @@ export function CommitTray(props: CommitTrayProps) {
 
   const focusField = () => field.current?.focus();
 
-  async function activate() {
+  async function activate(push = false) {
     if (disabled || running.current || target === null || snapshotId === null || worktreeKey === null) return;
     running.current = true;
     setBusy(true);
@@ -125,6 +129,8 @@ export function CommitTray(props: CommitTrayProps) {
       if (response.code === "STALE_REVIEW") setNotice(STALE_TEXT);
       void drafts.complete(submission, response.state as TerminalState);
       props.onEnded?.(response);
+      // Feature 003 FR-038: only a reconciled intended success starts the push.
+      if (push && response.state === "succeeded") live.current.onPush?.();
     } finally {
       running.current = false;
       setBusy(false);
@@ -140,6 +146,7 @@ export function CommitTray(props: CommitTrayProps) {
   }
 
   const shownReason = busy ? null : reason;
+  const pushReason = busy ? null : (reason ?? props.pushReason ?? null);
   return (
     <div className="grid h-full min-h-0 gap-x-2 gap-y-1" style={{ gridTemplateColumns: "minmax(0, 1fr) auto", gridTemplateRows: "minmax(0, 1fr) auto" }}>
       <textarea
@@ -161,9 +168,22 @@ export function CommitTray(props: CommitTrayProps) {
         onCompositionEnd={() => setComposing(false)}
       />
       <div className="flex max-w-64 flex-col items-start gap-1">
-        <Button aria-keyshortcuts="Control+Enter" disabled={disabled} focusableWhenDisabled aria-describedby={shownReason === null ? undefined : reasonId} onClick={() => void activate()}>
-          Commit (Ctrl+Enter)
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button aria-keyshortcuts="Control+Enter" disabled={disabled} focusableWhenDisabled aria-describedby={shownReason === null ? undefined : reasonId} onClick={() => void activate()}>
+            Commit (Ctrl+Enter)
+          </Button>
+          {props.onPush === undefined ? null : (
+            <Button
+              variant="outline"
+              disabled={disabled || pushReason !== null}
+              focusableWhenDisabled
+              aria-describedby={pushReason === null ? undefined : pushReason === shownReason ? reasonId : `${reasonId}-push`}
+              onClick={() => void (pushReason === null && activate(true))}
+            >
+              Commit and push
+            </Button>
+          )}
+        </div>
         <p className="text-muted-text">{HOOK_DISCLOSURE}</p>
       </div>
       <div className="col-span-2 flex min-w-0 flex-col">
@@ -171,6 +191,11 @@ export function CommitTray(props: CommitTrayProps) {
         <p id={reasonId} className="truncate text-muted-text">
           {shownReason}
         </p>
+        {pushReason === null || pushReason === shownReason ? null : (
+          <p id={`${reasonId}-push`} className="truncate text-muted-text">
+            {`Commit and push: ${pushReason}`}
+          </p>
+        )}
         {/* The live element stays mounted. Only its text changes. */}
         <p role="status">{notice}</p>
         {failure === null ? null : <p id={`${reasonId}-save`}>{failure}</p>}

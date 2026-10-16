@@ -28,7 +28,9 @@ export type ShortcutAction =
   // Feature 002 plan.md D6 "Shortcuts".
   | { type: "focusFilter" }
   | { type: "match"; direction: "next" | "previous" }
-  | { type: "toggleScope" };
+  | { type: "toggleScope" }
+  // Feature 003 plan.md D12: Fetch, the Pull main part, and Push.
+  | { type: "sync"; control: "fetch" | "pull" | "push" };
 
 export type ShortcutContext = {
   messageField: object | null;
@@ -105,6 +107,9 @@ export function createShortcutHandler() {
     const letter = m === CTRL ? e.key.toLowerCase() : null;
     if (letter === "o") return { type: "openFolder" };
     if (letter === "r") return { type: "openSwitcher" };
+    if (m === CTRL && e.key === "ArrowDown") return { type: "sync", control: "pull" };
+    if (m === CTRL && e.key === "ArrowUp") return { type: "sync", control: "push" };
+    if (m === CTRL_SHIFT && e.key === "ArrowDown") return { type: "sync", control: "fetch" };
     if (m === ALT && (e.key === "ArrowUp" || e.key === "ArrowDown") && context.comparisonPane !== null && path.includes(context.comparisonPane)) {
       return { type: "selectHunk", direction: e.key === "ArrowUp" ? "previous" : "next" };
     }

@@ -389,7 +389,7 @@ describe("contract Δ3 results", () => {
     expect(ok(R, { completeness: { state: "failed", code: "MALFORMED_GIT_OUTPUT" } })).toBe(true);
   });
 
-  const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "https://example.test/r.git", setUpstream: false, source: "push-default-branch" };
+  const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "https://example.test/r.git", setUpstream: false, upstreamRebase: false, source: "push-default-branch" };
   const plan = (over: Record<string, unknown> = {}) => ({ remotes: ["origin"], ...over });
 
   test("reviewSync gives action, plan, and syncReviewToken", () => {
@@ -398,6 +398,9 @@ describe("contract Δ3 results", () => {
     expect(ok(R, { action: "pull", plan: plan({ upstream: { ref: "refs/remotes/origin/main", objectId: OID }, mode: null }), syncReviewToken: id() })).toBe(true);
     expect(ok(R, { action: "integrate", plan: plan({ upstream: { ref: "refs/remotes/origin/main", objectId: OID }, mode: "rebase" }), syncReviewToken: id() })).toBe(true);
     expect(ok(R, { action: "push", plan: plan({ destination }), syncReviewToken: id() })).toBe(true);
+    // Contract Δ3 Set upstream: the rebase write applies only with Set upstream.
+    expect(ok(R, { action: "push", plan: plan({ destination: { ...destination, setUpstream: true, upstreamRebase: true } }), syncReviewToken: id() })).toBe(true);
+    expect(ok(R, { action: "push", plan: plan({ destination: { ...destination, upstreamRebase: true } }), syncReviewToken: id() })).toBe(false);
     for (const source of ["remote-push-refspec", "push-default-upstream", "push-default-triangular", "panel"]) {
       expect(ok(R, { action: "push", plan: plan({ destination: { ...destination, source, trackingRef: null } }), syncReviewToken: id() })).toBe(true);
     }
@@ -444,12 +447,14 @@ describe("contract Δ3 results", () => {
 
   test("push without a destination lists the remotes and gives no token", () => {
     const R = C.ReviewSyncResult;
-    const panel = { remotes: ["origin", "fork"], prefill: { remote: "origin", ref: "refs/heads/main" }, setUpstream: true };
+    const panel = { remotes: ["origin", "fork"], prefill: { remote: "origin", ref: "refs/heads/main" }, setUpstream: true, upstreamRebase: false };
     expect(ok(R, { action: "push", plan: plan({ needsDestination: panel }) })).toBe(true);
     expect(ok(R, { action: "push", plan: plan({ needsDestination: { ...panel, prefill: null } }) })).toBe(true);
     expect(ok(R, { action: "push", plan: plan({ needsDestination: panel }), syncReviewToken: id() })).toBe(false);
     expect(ok(R, { action: "fetch", plan: plan({ needsDestination: panel }) })).toBe(false);
     expect(ok(R, { action: "push", plan: plan({ needsDestination: { ...panel, remotes: [] } }) })).toBe(false);
+    const { upstreamRebase: _omitted, ...withoutRebase } = panel;
+    expect(ok(R, { action: "push", plan: plan({ needsDestination: withoutRebase }) })).toBe(false);
   });
 
   test("a refused reviewSync names its Δ9 reason or the unmerged count", () => {

@@ -204,7 +204,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - `[remote failure]` means an unknown remote result.
   - The reason text in parentheses shows as plain text and decides nothing (FR-015).
 - Set upstream: the panel lists the remotes and the branch name. Set upstream is selected by default only for a branch without an upstream (FR-016). The service checks the name with the `check-ref-format` rules (`isRefName`, `commands.ts`).
-- After a push with a success status, a selected Set upstream writes `branch.<branch>.remote` and `branch.<branch>.merge` with two `config --local` processes (contract Δ3 "Set upstream"). With `branch.autoSetupRebase` `remote` or `always`, a third process writes `branch.<branch>.rebase true`, as Git's `push --set-upstream` does. Exit codes alone decide. A failed write gives `upstreamNotSet` and a remedy, and the push stays succeeded.
+- After a push with a success status, a selected Set upstream writes `branch.<branch>.remote` and `branch.<branch>.merge` with two `config --local` processes (contract Δ3 "Set upstream"). With `branch.autoSetupRebase` `remote` or `always`, a third process writes `branch.<branch>.rebase true`, as Git's `push --set-upstream` does. The review binds that fact in `destination.upstreamRebase`. Exit codes alone decide. A failed write gives `upstreamNotSet` and a remedy, and the push stays succeeded.
 
 ### D5 Push rejected and force push with lease
 
@@ -315,6 +315,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - a transport program: `core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, or `remote.<name>.receivepack`;
   - a merge driver: `merge.<driver>.driver`. A pull merge runs it with the shell (ll-merge.c `ll_ext_merge`);
   - `core.alternateRefsCommand`. A fetch in a repository with an alternate runs it with the shell (fetch-pack.c `for_each_alternate_ref`). A probe saw no 001 read or commit run it;
+  - a remote helper: `remote.<name>.vcs`, a `remote.<name>.url` or `pushurl` of the form `<name>::<address>`, or a `url.<base>.insteadOf` or `pushInsteadOf` with such a base. Git runs `git remote-<name>` (transport.c `transport_get`). `ext::` stays blocked by the `protocol.ext.allow` default `never` (git-config(1));
   - a `protocol.allow` or `protocol.<name>.allow` entry;
   - the 001 `hooksPathControlled`, `folderUnlisted`, or `inputLimited` condition.
 - The transport programs already exist in `programKey` for submodules (`trust.ts:311-317`). The main listing now uses them too, so their program files enter the fingerprint. The merge driver enters `programKey` with the shell form. Only repositories with such a repository-controlled program see a new fingerprint once.
@@ -331,6 +332,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - Unavailable reasons come from `readWorkspace` (head, operation state) and `readTracking` (upstream). The review gives exact refusals, such as `remote-missing`.
 - Counts: `state/tracking.ts`, the sidebar entry, and the 002 history label (after 002 P6).
 - Notices: the push-rejected row and the conflict row. Destructive actions show an icon and text and never fold into More.
+- Push panel (FR-016): the note under the Set upstream checkbox names the keys. With `needsDestination.upstreamRebase` false: "Writes branch.<branch>.remote and .merge for <remote>/<remote branch>." With it true: "Writes branch.<branch>.remote, .merge, and .rebase for <remote>/<remote branch>." Without a chosen remote, the text ends after the keys.
 - Modals only for Force push with lease, Abort, and Skip (UX direction 2026-10-10; constitution I).
 - The 001 "finish it outside Arbareto" text goes for merging and rebasing.
 - FR-013: after a fetch outcome, the renderer refreshes the 002 view with `{oid}` of the selected commit, without the refs-changed notice.

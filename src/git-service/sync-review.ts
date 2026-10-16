@@ -16,7 +16,7 @@ import { objectStream } from "./history-view";
 import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import type { Head, OperationState } from "./snapshot";
 import { leaseCommitsArgs, leaseCountArgs, pushRecordArgs, pushUrlArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
-import { decidePushDestination, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRevListCount, type PushDestination } from "./sync-parsers";
+import { decidePushDestination, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
 import { parseMaybeBool, type ConfigEntry, type ListingOutcome } from "./trust";
 
 export type ReviewPayload = Extract<ServiceRequest, { operation: "reviewSync" }>["payload"];
@@ -29,6 +29,8 @@ export interface BoundDestination {
   trackingRef: string | null;
   url: string;
   setUpstream: boolean;
+  // Contract Δ3 Set upstream: true when a selected Set upstream also writes `branch.<name>.rebase`.
+  upstreamRebase: boolean;
   source: PushDestination["source"] | "panel";
 }
 
@@ -54,6 +56,8 @@ export interface NeedsDestination {
   remotes: string[];
   prefill: { remote: string; ref: string } | null;
   setUpstream: boolean;
+  // The panel names `branch.<name>.rebase` among the Set upstream keys when it is true (FR-016).
+  upstreamRebase: boolean;
 }
 
 // `entries`: the configuration of the read, for the upstream values of a push and the URLs of a remedy.
@@ -237,6 +241,9 @@ export async function observeSync(ctx: ObserveContext, payload: ReviewPayload, l
   if (record === null) return { code: "MALFORMED_GIT_OUTPUT" };
   // HEAD names this branch, so a missing record means that it changed during the review.
   if (record === "absent") return { code: "GIT_FAILED" };
+  // Contract Δ3 Set upstream. Git refuses such an entry in every command, so it cannot reach a push.
+  const rebase = upstreamRebase(entries);
+  if (rebase === null) return unavailable("invalid-config");
 
   let destination: Omit<BoundDestination, "url">;
   const choice = payload.action === "push" ? payload.destination : undefined;
@@ -244,7 +251,7 @@ export async function observeSync(ctx: ObserveContext, payload: ReviewPayload, l
     const ref = `${HEADS}${choice.branch}`;
     if (!remotes.value.includes(choice.remote) || !isRefName(ref)) return { refused: "INVALID_REQUEST" };
     if (mirrored(entries, choice.remote)) return unavailable("mirror");
-    destination = { remote: choice.remote, ref, trackingRef: null, setUpstream: choice.setUpstream, source: "panel" };
+    destination = { remote: choice.remote, ref, trackingRef: null, setUpstream: choice.setUpstream, upstreamRebase: choice.setUpstream && rebase, source: "panel" };
   } else {
     const decision = decidePushDestination(record, remotes.value, entries);
     if (decision.kind === "refused") return unavailable(decision.reason);
@@ -252,9 +259,9 @@ export async function observeSync(ctx: ObserveContext, payload: ReviewPayload, l
       if (payload.action === "force-push") return unavailable("no-lease");
       if (remotes.value.length === 0) return unavailable("no-remotes");
       const prefill = decision.prefill === null ? null : { remote: decision.prefill.remote, ref: decision.prefill.ref };
-      return { panel: { remotes: remotes.value, prefill, setUpstream: record.upstream === "" }, operationState: state };
+      return { panel: { remotes: remotes.value, prefill, setUpstream: record.upstream === "", upstreamRebase: rebase }, operationState: state };
     }
-    destination = { ...decision.destination, setUpstream: false };
+    destination = { ...decision.destination, setUpstream: false, upstreamRebase: false };
   }
 
   // O-11: exactly one push URL.
@@ -281,7 +288,7 @@ export function planOf(b: Pick<SyncBinding, "remotes" | "destination" | "lease" 
   const d = b.destination;
   return {
     remotes: b.remotes,
-    ...(d === null ? {} : { destination: { remote: d.remote, ref: d.ref, trackingRef: d.trackingRef, url: redactUrlUserInfo(d.url), setUpstream: d.setUpstream, source: d.source } }),
+    ...(d === null ? {} : { destination: { remote: d.remote, ref: d.ref, trackingRef: d.trackingRef, url: redactUrlUserInfo(d.url), setUpstream: d.setUpstream, upstreamRebase: d.upstreamRebase, source: d.source } }),
     ...(b.lease === null ? {} : { lease: b.lease }),
     ...operationStateOf(b.operationState),
   };

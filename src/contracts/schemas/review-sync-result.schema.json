@@ -81,6 +81,9 @@
                 "setUpstream": {
                   "type": "boolean"
                 },
+                "upstreamRebase": {
+                  "type": "boolean"
+                },
                 "source": {
                   "type": "string",
                   "enum": [
@@ -98,6 +101,7 @@
                 "trackingRef",
                 "url",
                 "setUpstream",
+                "upstreamRebase",
                 "source"
               ],
               "additionalProperties": false,
@@ -240,12 +244,16 @@
                 },
                 "setUpstream": {
                   "type": "boolean"
+                },
+                "upstreamRebase": {
+                  "type": "boolean"
                 }
               },
               "required": [
                 "remotes",
                 "prefill",
-                "setUpstream"
+                "setUpstream",
+                "upstreamRebase"
               ],
               "additionalProperties": false,
               "title": "NeedsDestination"

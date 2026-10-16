@@ -112,7 +112,7 @@ describeGit("sync push (T034)", () => {
           expect(typeof response.result!.syncReviewToken).toBe("string");
         } else if (expected.kind === "panel") {
           expect({ ...label, ...outcome(response), token: response.result?.syncReviewToken }).toEqual({ ...label, ...SUCCEEDED, token: undefined });
-          expect({ ...label, needs: response.result!.plan.needsDestination }).toEqual({ ...label, needs: { remotes: ["origin", "second"], prefill: expected.prefill, setUpstream: expected.setUpstream } });
+          expect({ ...label, needs: response.result!.plan.needsDestination }).toEqual({ ...label, needs: { remotes: ["origin", "second"], prefill: expected.prefill, setUpstream: expected.setUpstream, upstreamRebase: false } });
           if (expected.prefill !== null) expect({ ...label, git }).toEqual({ ...label, git: { to: expected.prefill.ref, url: f.origin } });
         } else if (expected.kind === "refused") {
           expect({ ...label, ...refusalOf(response) }).toEqual({ ...label, state: "failed", code: "SYNC_UNAVAILABLE", result: { reason: expected.reason } });
@@ -158,7 +158,7 @@ describeGit("sync push (T034)", () => {
     await withSync("t034-panel", async (service) => {
       const r = await register(service, a.repo);
       const panel = await reviewSync(service, r, { action: "push" });
-      expect({ ...outcome(panel), token: panel.result?.syncReviewToken, needs: panel.result?.plan.needsDestination }).toEqual({ ...SUCCEEDED, token: undefined, needs: { remotes: ["origin", "second"], prefill: null, setUpstream: true } });
+      expect({ ...outcome(panel), token: panel.result?.syncReviewToken, needs: panel.result?.plan.needsDestination }).toEqual({ ...SUCCEEDED, token: undefined, needs: { remotes: ["origin", "second"], prefill: null, setUpstream: true, upstreamRebase: false } });
       for (const destination of [{ remote: "origin", branch: "bad..name", setUpstream: true }, { remote: "nowhere", branch: "noup", setUpstream: true }]) {
         expect((await reviewSync(service, r, { action: "push", destination })).code).toBe("INVALID_REQUEST");
       }
@@ -192,8 +192,12 @@ describeGit("sync push (T034)", () => {
     a.h.copy(a.repo, oracle);
     await withSync("t034-upstream-rebase", async (service) => {
       const r = await register(service, a.repo);
+      // FR-016: the panel names the rebase key, and the review binds it.
+      expect((await reviewSync(service, r, { action: "push" })).result!.plan.needsDestination!.upstreamRebase).toBe(true);
+      const review = await reviewed(service, r, { action: "push", destination: { remote: "origin", branch: "noup", setUpstream: true } });
+      expect(review.plan.destination).toMatchObject({ setUpstream: true, upstreamRebase: true });
       const from = service.runner.calls.length;
-      const response = await run(service, r, { action: "push", destination: { remote: "origin", branch: "noup", setUpstream: true } });
+      const response = await sync(service, r, review.syncReviewToken);
       expect(outcome(response)).toEqual(SUCCEEDED);
       expect(response.result!.push).toMatchObject({ status: "created", upstreamWritten: true, upstreamNotSet: false });
       expect(remoteCalls(service, from).slice(1).map((c) => c.arguments)).toEqual([
@@ -336,17 +340,25 @@ describeGit("sync push (T034)", () => {
     });
   }, TIMEOUT_MS);
 
-  // Data-model §2. The fingerprint covers every configuration entry, so a remote or a push URL that changes through the configuration gives TRUST_CHANGED first.
-  caseTest(TASK, "data-model §2: a changed HEAD after the review gives STALE_REVIEW; a remote list or push URL changed through the configuration gives TRUST_CHANGED; no remote process starts", SHELL, async () => {
-    const cases: [string, string, (c: ReturnType<typeof own>) => void, string][] = [
-      ["HEAD", "push", (c) => gitRun(c.h, c.repo, ["commit", "-q", "--allow-empty", "-m", "after the review"]), "STALE_REVIEW"],
-      ["remote list", "fetch-all", (c) => gitRun(c.h, c.repo, ["remote", "add", "third", c.remotes.origin!]), "TRUST_CHANGED"],
-      ["push URL", "push", (c) => gitRun(c.h, c.repo, ["remote", "set-url", "--push", "origin", c.remotes.second!]), "TRUST_CHANGED"],
+  // Contract Δ3 `sync` step 2: a changed fingerprint is a trust difference only when `approvalRequired.sync` holds on either side.
+  caseTest(TASK, "data-model §2: a changed HEAD, remote list, or push URL after the review gives STALE_REVIEW; with an approved sync-class hook, a changed push URL gives TRUST_CHANGED; no remote process starts", SHELL, async () => {
+    const setPushUrl = (c: ReturnType<typeof own>) => gitRun(c.h, c.repo, ["remote", "set-url", "--push", "origin", c.remotes.second!]);
+    const cases: [string, string, (c: ReturnType<typeof own>) => void, string, boolean][] = [
+      ["HEAD", "push", (c) => gitRun(c.h, c.repo, ["commit", "-q", "--allow-empty", "-m", "after the review"]), "STALE_REVIEW", false],
+      ["remote list", "fetch-all", (c) => gitRun(c.h, c.repo, ["remote", "add", "third", c.remotes.origin!]), "STALE_REVIEW", false],
+      ["push URL", "push", setPushUrl, "STALE_REVIEW", false],
+      ["push URL with an approved pre-push hook", "push", setPushUrl, "TRUST_CHANGED", true],
     ];
-    for (const [i, [name, action, change, code]] of cases.entries()) {
+    for (const [i, [name, action, change, code, hooked]] of cases.entries()) {
       const a = own("topic");
+      if (hooked) a.h.write(`${a.repo}/.git/hooks/pre-push`, "#!/bin/sh\nexit 0\n");
       await withSync(`t034-stale-${i}`, async (service) => {
         const r = await register(service, a.repo);
+        if (hooked) {
+          const trust = await service.readTrust(r.repositoryId);
+          expect({ name, sync: trust.result!.approvalRequired.sync }).toEqual({ name, sync: true });
+          expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+        }
         const review = await reviewed(service, r, { action });
         change(a);
         const from = service.runner.calls.length;

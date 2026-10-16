@@ -24,7 +24,7 @@ import { trackStall } from "./stall";
 import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
 import { fetchArgs, pushArgs, upstreamArgs } from "./sync-commands";
-import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, upstreamRebase, type FetchFlag, type FetchList, type FetchUpdate, type PushStatus } from "./sync-parsers";
+import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, type FetchFlag, type FetchList, type FetchUpdate, type PushStatus } from "./sync-parsers";
 import { lastValue, listRefs, observeSync, refKey, refText, type Observation, type SyncBinding } from "./sync-review";
 import type { ConfigEntry, Trust } from "./trust";
 import { processEnd } from "./wsl-files";
@@ -363,10 +363,9 @@ export function createSyncer(o: SyncerOptions) {
       const line = exited ? parsePushPorcelain(out.take(), refspec, end.exit!.exitCode!) : null;
       const status: PushStatus = line?.status ?? "none";
       const succeeded = exited && SUCCESS.includes(status);
-      // Contract Δ3 Set upstream: only after a successful push. A failed write leaves the push succeeded. A refused `branch.autoSetupRebase` starts no write.
-      const rebase = upstreamRebase(entries);
-      const writes = rebase === null ? null : upstreamArgs(branch, d.remote, d.ref, rebase);
-      const upstream = !succeeded || !d.setUpstream ? { set: true, ends: [] } : writes === null ? { set: false, ends: [] } : await writeUpstream(writes);
+      // Contract Δ3 Set upstream: only after a successful push, with the bound keys. A failed write leaves the push succeeded.
+      const writes = upstreamArgs(branch, d.remote, d.ref, d.upstreamRebase);
+      const upstream = succeeded && d.setUpstream ? await writeUpstream(writes) : { set: true, ends: [] };
       const upstreamNotSet = !upstream.set;
       enterReconciling(registry, operationId, deadline, lastDescendants);
       const tracking = d.trackingRef ?? trackingOf(entries, d.remote, d.ref);
@@ -408,7 +407,7 @@ export function createSyncer(o: SyncerOptions) {
       const result = { action: b.payload.action, push: pushResult(after.value, upstreamWritten) };
       if (succeeded) {
         const unexpected = changes(expected, after.value).length > 0 || stateChanged || (upstreamWritten && !d.setUpstream);
-        const done = upstreamNotSet ? { ...result, remedy: writes === null ? { text: UPSTREAM_REMEDY_TEXT, command: null } : upstreamRemedy(writes) } : result;
+        const done = upstreamNotSet ? { ...result, remedy: upstreamRemedy(writes) } : result;
         return finish(unexpected ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, done);
       }
       if (end.canceled) {
@@ -485,12 +484,13 @@ export function createSyncer(o: SyncerOptions) {
 }
 
 // Contract Δ3 `sync` step 2 and data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, any other difference STALE_REVIEW.
+// A fingerprint difference is a trust difference only when `approvalRequired.sync` holds on either side, as for 001 reads.
 function staleOf(b: SyncBinding, again: Observation): { code: ErrorCode; reason?: Failure["reason"] } | Stop | null {
   if (isStop(again)) return again;
   if ("code" in again) return again;
   if ("refused" in again) return again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED" ? { code: again.refused } : { code: "STALE_REVIEW" };
   if ("panel" in again) return { code: "STALE_REVIEW" };
-  if (again.binding.trust.fingerprint !== b.trust.fingerprint) return { code: "TRUST_CHANGED" };
+  if ((b.trust.sync || again.binding.trust.sync) && again.binding.trust.fingerprint !== b.trust.fingerprint) return { code: "TRUST_CHANGED" };
   const { trust: _bound, ...bound } = b;
   const { trust: _now, ...now } = again.binding;
   return Bun.deepEquals(bound, now, true) ? null : { code: "STALE_REVIEW" };

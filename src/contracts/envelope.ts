@@ -979,8 +979,11 @@ export const PushDestination = z
     trackingRef: Text.min(1).nullable(),
     url: z.string(),
     setUpstream: z.boolean(),
+    // Contract Δ3 Set upstream: the write of `branch.<name>.rebase` applies. Only with `setUpstream`.
+    upstreamRebase: z.boolean(),
     source: z.enum(["remote-push-refspec", "push-default-upstream", "push-default-branch", "push-default-triangular", "panel"]),
   })
+  .refine((d) => d.setUpstream || !d.upstreamRebase)
   .meta({ title: "PushDestination" });
 // Plan.md D5: the commits that the force push removes. `count` is exact, and `commits` holds the first of them.
 const Lease = z
@@ -998,6 +1001,8 @@ const NeedsDestination = z
     remotes: z.array(RemoteName).min(1).max(SYNC_REMOTES),
     prefill: z.strictObject({ remote: RemoteName, ref: Text.min(1) }).meta({ title: "PanelPrefill" }).nullable(),
     setUpstream: z.boolean(),
+    // Contract Δ3 Set upstream: the panel names `branch.<name>.rebase` among the keys when it is true.
+    upstreamRebase: z.boolean(),
   })
   .meta({ title: "NeedsDestination" });
 // Data-model §2: the bound values for display.

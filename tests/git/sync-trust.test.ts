@@ -70,6 +70,11 @@ describeGit("trust class sync (T036)", () => {
       ["merge.x.driver", f.canary],
       // fetch-pack.c `for_each_alternate_ref` runs it in a repository with an alternate (plan.md D11).
       ["core.alternateRefsCommand", f.canary],
+      // transport.c `transport_get` runs `git remote-<name>` for these (plan.md D11).
+      ["remote.origin.vcs", "canary"],
+      ["remote.origin.url", "canary::address"],
+      ["remote.origin.pushurl", "canary::address"],
+      ["url.canary::address.insteadOf", f.origin],
     ];
     const syncRequired = async (service: Service, repositoryId: string) => (await service.readTrust(repositoryId)).result!.approvalRequired.sync;
     await withSync("t036-gate", async (service) => {
@@ -87,6 +92,10 @@ describeGit("trust class sync (T036)", () => {
         }
         expect({ key, calls: remoteCalls(service, from) }).toEqual({ key, calls: [] });
       }
+      // A URL and an `insteadOf` base without the `<name>::` form select no remote helper.
+      f.h.write(configPath, base);
+      gitRun(f.h, f.repo, ["config", "url.https://example.invalid/.insteadOf", "mirror:"]);
+      expect(await syncRequired(service, r.repositoryId)).toBe(false);
       f.h.write(configPath, base);
       for (const event of SYNC_EVENTS) {
         const hook = `${f.repo}/.git/hooks/${event}`;
@@ -181,6 +190,8 @@ describeGit("trust class sync (T036)", () => {
       ["remote.origin.uploadpack", "git-upload-pack --secret"],
       ["remote.origin.receivepack", "git-receive-pack"],
       ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
+      ["remote.helper.vcs", "cvs"],
+      ["remote.helper.url", "hg::https://user:secret@host.invalid/repo"],
     ];
     for (const [k, v] of values) gitRun(f.h, f.repo, ["config", k, v]);
     await withSync("t036-display", async (service) => {
@@ -199,6 +210,8 @@ describeGit("trust class sync (T036)", () => {
           ["remote.origin.uploadpack", "git-upload-pack"],
           ["remote.origin.receivepack", "git-receive-pack"],
           ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
+          ["remote.helper.vcs", "cvs"],
+          ["remote.helper.url", "hg"],
         ].sort(),
       );
       expect(JSON.stringify(first.result).includes("secret")).toBe(false);

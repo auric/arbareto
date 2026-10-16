@@ -29,7 +29,7 @@ Label rule (renderer):
 | `action` | `fetch`, `fetch-all`, `pull`, `integrate`, `push`, `force-push`, `abort`, `continue`, or `skip`. |
 | `binding.head` | The 001 `Head` at review. |
 | `binding.operationState` | The 001 `operationState` at review. |
-| `binding.trust` | Fingerprint and `approvalRequired.sync`. |
+| `binding.trust` | Fingerprint and `approvalRequired.sync`. A changed fingerprint is a trust difference only when `approvalRequired.sync` is true in the review or in the re-read. |
 | `binding.remotes` | Ordered names from `git remote`, or the one remote of the action. |
 | `binding.upstream` | `{ref, objectId}` for `pull` and `integrate`. |
 | `binding.destination` | §3 result for `push` and `force-push`. |
@@ -49,6 +49,7 @@ Label rule (renderer):
 | `trackingRef` | `%(push)`, or null for a panel destination and a `push-default-triangular` destination. Null gives `no-lease` for Force push with lease. |
 | `url` | The one push URL, redacted for display. |
 | `setUpstream` | Panel choice. Default true only for a branch without an upstream, else false (FR-016). Only the panel sets it. |
+| `upstreamRebase` | True when a selected Set upstream also writes `branch.<branch>.rebase`, because `branch.autoSetupRebase` is `remote` or `always`. False without `setUpstream`. |
 | `source` | `remote-push-refspec` (`remote.<R>.push`), `push-default-upstream` (`upstream`, `tracking`), `push-default-branch` (`current`, and `simple` or unset with the fetch remote), `push-default-triangular` (`simple` or unset with another push remote), or `panel`. `matching` always gives `panel` (plan.md D4 step 4). |
 
 ## 4. Fetch result

@@ -50,10 +50,10 @@ export async function register(service: Service, path: string): Promise<Registra
 export interface SyncPlan {
   remotes: string[];
   upstream?: { ref: string; objectId: string };
-  destination?: { remote: string; ref: string; trackingRef: string | null; url: string; setUpstream: boolean; source: string };
+  destination?: { remote: string; ref: string; trackingRef: string | null; url: string; setUpstream: boolean; upstreamRebase: boolean; source: string };
   lease?: { trackingRef: string; expect: string; count: number; commits: { objectId: string; subject: string | null }[] };
   operationState?: "merging" | "rebasing";
-  needsDestination?: { remotes: string[]; prefill: { remote: string; ref: string } | null; setUpstream: boolean };
+  needsDestination?: { remotes: string[]; prefill: { remote: string; ref: string } | null; setUpstream: boolean; upstreamRebase: boolean };
 }
 
 export interface Reviewed {

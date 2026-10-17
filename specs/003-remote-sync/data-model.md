@@ -36,8 +36,9 @@ Label rule (renderer):
 | `binding.lease` | `{trackingRef, expect, count, commits[≤100]}` for `force-push`. Each commit is `{objectId, subject}`. A commit object above `HISTORY_COMMIT_OBJECT_BYTES` gives `subject` null. |
 | `binding.index` | Index fingerprint and unmerged count for `continue`: the SHA-256 of `ls-files --stage -z` and the number of paths with a stage above 0 (contract Δ3 read 7). |
 | `binding.mode` | For `pull` and `integrate`: the payload mode or null. |
+| `binding.modeConfig` | For `pull` and `integrate`: the last value of each of `pull.ff`, `pull.rebase`, `branch.<branch>.rebase`, and `merge.ff`. A key without an entry is absent, and a key without `=` has null. A changed value gives `STALE_REVIEW` (contract Δ3). |
 | `binding.skippedCommit` | For `skip`: the `REBASE_HEAD` object ID. |
-| `binding.todo` | For `continue` and `skip` while rebasing: the SHA-256 of `rebase-merge/git-rebase-todo`, or null without that file. A todo with an `exec` line, unreadable, or above `SYNC_REBASE_TODO_BYTES` gives `rebase-exec`, and no token goes out (contract Δ3 read 9). |
+| `binding.todo` | For `continue` and `skip` while rebasing: the SHA-256 of `rebase-merge/git-rebase-todo`, or null without that file. A todo with an `exec` line, unreadable, or above `SYNC_REBASE_TODO_BYTES` gives `rebase-exec`, and no token goes out (contract Δ3 read 9). The unreadable and oversized cases have their own remedy text (plan.md D7). |
 
 `sync` re-reads each bound value. A difference gives `STALE_REVIEW`. A trust difference gives `TRUST_CHANGED` or `TRUST_REQUIRED`.
 

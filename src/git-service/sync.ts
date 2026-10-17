@@ -72,7 +72,8 @@ export interface StepEnd {
   outputTail: string;
 }
 
-interface FetchRemote {
+// Data-model §4: one remote of a fetch result.
+export interface FetchRemote {
   name: string;
   state: "succeeded" | "failed" | "canceled" | "deadline" | "not-started";
   updates: FetchUpdate[];
@@ -81,6 +82,39 @@ interface FetchRemote {
 }
 
 const noCounts = () => Object.fromEntries(FETCH_FLAGS.map((flag) => [flag, 0])) as Record<FetchFlag, number>;
+export const notStarted = (name: string): FetchRemote => ({ name, state: "not-started", updates: [], counts: noCounts(), outputTail: "" });
+
+// The facts of one remote fetch step of fetch, fetch-all, and pull. `end` is null when no fetch process started.
+// `stop`: contract Δ3 `sync` step 6, so no later step starts.
+export interface FetchStep {
+  end: StepEnd | null;
+  all: FetchUpdate[];
+  malformed: boolean;
+  limit: "deadline" | "output" | null;
+  refused: ErrorCode | null;
+  putty: Extract<PageantReply, { result: "failed" }> | null;
+  stop: boolean;
+}
+
+// The failure facts of the fetch remotes, aggregated over their steps.
+export interface FetchFacts {
+  malformed: ReadonlySet<string>;
+  limit: "deadline" | "output" | null;
+  putty: Extract<PageantReply, { result: "failed" }> | null;
+  refused: ErrorCode | null;
+}
+
+// Data-model §8 for the fetch remotes. `failedRemote` keeps the fetch remedy and the connect target.
+// `code` is the code of a failure without effects. Undefined takes the recorded DEADLINE cause.
+export function fetchVerdict(remotes: readonly FetchRemote[], f: FetchFacts, aborted: boolean): { failedRemote: FetchRemote | undefined; stopped: boolean; failed: boolean; code: ErrorCode | undefined } {
+  // Contract Δ3: a broken porcelain line makes the list MALFORMED_GIT_OUTPUT, not a failed remote.
+  const failedRemote = remotes.find((r) => (r.state === "failed" && !f.malformed.has(r.name)) || r.state === "deadline");
+  const stopped = remotes.some((r) => r.state === "canceled") || (aborted && remotes.some((r) => r.state === "not-started"));
+  const failed = f.putty !== null || f.refused !== null || failedRemote !== undefined || f.malformed.size > 0 || f.limit !== null || stopped;
+  const code: ErrorCode | undefined =
+    f.putty !== null ? "PUTTY_UNAVAILABLE" : (f.refused ?? (f.limit === "deadline" ? undefined : f.limit === "output" ? "OUTPUT_LIMIT" : failedRemote === undefined ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED"));
+  return { failedRemote, stopped, failed, code };
+}
 
 // The contract parser over the whole stdout. Null: a broken line.
 function fetchLines(bytes: Uint8Array, objectFormat: Workspace["objectFormat"]): FetchList | null {
@@ -90,9 +124,20 @@ function fetchLines(bytes: Uint8Array, objectFormat: Workspace["objectFormat"]):
 }
 
 // The refs whose values differ between two listings, in byte order of their names.
-function changes(before: Refs, after: Refs): { ref: string; oldObjectId: string | null; newObjectId: string | null }[] {
+export function changes(before: Refs, after: Refs): { ref: string; oldObjectId: string | null; newObjectId: string | null }[] {
   const keys = [...new Set([...before.keys(), ...after.keys()])].filter((k) => before.get(k) !== after.get(k)).sort((a, b) => Buffer.compare(Buffer.from(a, "latin1"), Buffer.from(b, "latin1")));
   return keys.map((k) => ({ ref: refText(k), oldObjectId: before.get(k) ?? null, newObjectId: after.get(k) ?? null }));
+}
+
+// Data-model §4 `observed`: the listing after against the listing before with every porcelain line applied.
+export function fetchObserved(before: Refs, all: readonly FetchUpdate[], after: Refs): ReturnType<typeof changes> {
+  const expected = new Map(before);
+  for (const u of all) {
+    if (u.flag === "=" || u.flag === "!") continue;
+    if (ZERO_OID.test(u.newObjectId)) expected.delete(refKey(u.ref));
+    else expected.set(refKey(u.ref), u.newObjectId);
+  }
+  return changes(expected, after);
 }
 
 // remote.c `query_refspecs` and refspec.c `match_name_with_pattern`: the first fetch refspec of `remote` whose source matches `dst` names the tracking ref.
@@ -244,11 +289,40 @@ export function createSyncer(o: SyncerOptions) {
     // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No listing decides before the process-end fact.
     const processEnded = async (ends: readonly { exit: GitExit | null }[]) => w.wsl === undefined || ends.every((e) => e.exit !== null && e.exit.exitCode !== null) || (await processEnd(q)) === "fact";
 
+    // Contract Δ3 "Remedies": the fetch remedy of one remote.
+    const fetchRemedy = (entries: readonly ConfigEntry[], remote: string): Remedy => remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote }, holdsUserInfo(entries, remote));
+
+    // Contract Δ3 `sync` steps 3 and 5 for one remote of fetch, fetch-all, and pull: `pageant`, the fetch process, its porcelain lines, and the remote state.
+    const fetchStep = async (remote: FetchRemote, counters: Record<string, number>, entries: readonly ConfigEntry[]): Promise<FetchStep> => {
+      const none: FetchStep = { end: null, all: [], malformed: false, limit: null, refused: null, putty: null, stop: true };
+      const reply = await pageant(remote.name, counters).catch((error: unknown) => {
+        if (error instanceof RunnerRefusal) return { result: "refused" as const, code: error.code };
+        throw error;
+      });
+      if (reply !== null && reply.result === "refused") return { ...none, refused: reply.code };
+      if (reply !== null && reply.result === "failed") return { ...none, putty: reply };
+      if (signal.aborted) return none;
+      const out = createCollector({ maxBytes: SYNC_REFS_BYTES });
+      const end = await networkStep(fetchArgs(remote.name), "sync-fetch", counters, fetchRemedy(entries, remote.name), out);
+      remote.outputTail = end.outputTail;
+      const lines = end.exit === null || out.limited ? null : fetchLines(out.take(), w.objectFormat);
+      if (lines !== null) {
+        remote.updates = lines.updates;
+        remote.counts = lines.counts;
+      }
+      if (end.canceled) remote.state = "canceled";
+      else if (end.exit?.deadline !== undefined) remote.state = "deadline";
+      else remote.state = end.exit?.exitCode === 0 && lines !== null ? "succeeded" : "failed";
+      const limit = end.exit?.deadline !== undefined ? "deadline" : end.exit?.diagnosticLimit || out.limited ? "output" : null;
+      const malformed = lines === null && end.exit?.exitCode === 0 && !out.limited;
+      return { end, all: lines?.all ?? [], malformed, limit, refused: end.refused, putty: null, stop: end.canceled || limit !== null || end.refused !== null };
+    };
+
     // ---- fetch and fetch-all (data-model §4 and §8) ----
     const runFetch = async (entries: readonly ConfigEntry[]) => {
       const before = await listRefs(ctx);
       if (!("value" in before)) return refuse(before);
-      const remotes: FetchRemote[] = b.remotes.map((name) => ({ name, state: "not-started", updates: [], counts: noCounts(), outputTail: "" }));
+      const remotes = b.remotes.map(notStarted);
       const all: FetchUpdate[] = [];
       const ends: StepEnd[] = [];
       // Contract Δ3: a broken porcelain line makes the list of that remote MALFORMED_GIT_OUTPUT. The listings still decide the effects.
@@ -258,39 +332,14 @@ export function createSyncer(o: SyncerOptions) {
       let refusedCode: ErrorCode | null = null;
       for (const [i, remote] of remotes.entries()) {
         if (signal.aborted) break;
-        const counters = { remoteIndex: i + 1, remoteCount: remotes.length };
-        const reply = await pageant(remote.name, counters).catch((error: unknown) => {
-          if (error instanceof RunnerRefusal) return { result: "refused" as const, code: error.code };
-          throw error;
-        });
-        if (reply !== null && reply.result === "refused") {
-          refusedCode = reply.code;
-          break;
-        }
-        if (reply !== null && reply.result === "failed") {
-          putty = reply;
-          break;
-        }
-        if (signal.aborted) break;
-        const remedy = remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote: remote.name }, holdsUserInfo(entries, remote.name));
-        const out = createCollector({ maxBytes: SYNC_REFS_BYTES });
-        const end = await networkStep(fetchArgs(remote.name), "sync-fetch", counters, remedy, out);
-        ends.push(end);
-        remote.outputTail = end.outputTail;
-        const lines = end.exit === null || out.limited ? null : fetchLines(out.take(), w.objectFormat);
-        if (lines !== null) {
-          remote.updates = lines.updates;
-          remote.counts = lines.counts;
-          all.push(...lines.all);
-        } else if (end.exit?.exitCode === 0 && !out.limited) malformed.add(remote.name);
-        if (end.refused !== null) refusedCode ??= end.refused;
-        if (end.canceled) remote.state = "canceled";
-        else if (end.exit?.deadline !== undefined) remote.state = "deadline";
-        else remote.state = end.exit?.exitCode === 0 && lines !== null ? "succeeded" : "failed";
-        if (end.exit?.deadline !== undefined) limit = "deadline";
-        else if (end.exit?.diagnosticLimit || out.limited) limit = "output";
-        // Contract Δ3 `sync` step 6: no later step starts after a Cancel, a limit, or a shell refusal.
-        if (end.canceled || limit !== null || end.refused !== null) break;
+        const step = await fetchStep(remote, { remoteIndex: i + 1, remoteCount: remotes.length }, entries);
+        if (step.end !== null) ends.push(step.end);
+        all.push(...step.all);
+        if (step.malformed) malformed.add(remote.name);
+        refusedCode ??= step.refused;
+        putty ??= step.putty;
+        limit ??= step.limit;
+        if (step.stop) break;
       }
       if (ends.length === 0 && remotes.length > 0) {
         if (putty !== null) return refuse({ code: "PUTTY_UNAVAILABLE", result: { reason: putty.reason, program: putty.program, path: putty.path } });
@@ -308,29 +357,18 @@ export function createSyncer(o: SyncerOptions) {
       if (typeof state === "object") return unknown("refused" in state ? { code: state.refused } : state, unread);
       if (state === "canceled" || state === "deadline") return unknown({ stop: "deadline" }, unread);
 
-      // Data-model §4 `observed`: the listing after against the listing before with every porcelain line applied.
-      const expected = new Map(before.value);
-      for (const u of all) {
-        if (u.flag === "=" || u.flag === "!") continue;
-        if (ZERO_OID.test(u.newObjectId)) expected.delete(refKey(u.ref));
-        else expected.set(refKey(u.ref), u.newObjectId);
-      }
-      const observed = changes(expected, after.value);
+      const observed = fetchObserved(before.value, all, after.value);
       const moved = !Bun.deepEquals(head, b.head, true) || state !== b.operationState;
       const changed = changes(before.value, after.value).length > 0 || moved;
-      const failedRemote = remotes.find((r) => (r.state === "failed" && !malformed.has(r.name)) || r.state === "deadline");
-      const stopped = remotes.some((r) => r.state === "canceled") || (signal.aborted && remotes.some((r) => r.state === "not-started"));
-      const remedy = failedRemote === undefined || stopped ? undefined : remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote: failedRemote.name }, holdsUserInfo(entries, failedRemote.name));
+      const { failedRemote, stopped, failed, code } = fetchVerdict(remotes, { malformed, limit, putty, refused: refusedCode }, signal.aborted);
+      const remedy = failedRemote === undefined || stopped ? undefined : fetchRemedy(entries, failedRemote.name);
       // Contract Δ9: `PUTTY_UNAVAILABLE` names the program and its path, also after a fetched remote.
       const puttyFacts = putty === null ? {} : { reason: putty.reason, program: putty.program, path: putty.path };
       const result = { action: b.payload.action, fetch: fetch(observed), ...(remedy === undefined ? {} : { remedy }), ...puttyFacts };
-      if (putty !== null || refusedCode !== null || failedRemote !== undefined || malformed.size > 0 || limit !== null || stopped) {
+      if (failed) {
         if (failedRemote !== undefined) keepTarget("remote", failedRemote.name);
         if (changed) return finish({ type: "failed-with-effects" }, result);
         if (stopped) return finish({ type: "no-effects", observed: "canceled" }, result);
-        // Without a code, the outcome takes the recorded DEADLINE cause.
-        const code: ErrorCode | undefined =
-          putty !== null ? "PUTTY_UNAVAILABLE" : (refusedCode ?? (limit === "deadline" ? undefined : limit === "output" ? "OUTPUT_LIMIT" : failedRemote === undefined ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED"));
         return finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, result);
       }
       return finish(observed.length > 0 || moved ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, result);
@@ -444,7 +482,7 @@ export function createSyncer(o: SyncerOptions) {
       else if (b.payload.action === "push" || b.payload.action === "force-push") await runPush(entries);
       else {
         const enter = (deadline: boolean) => enterReconciling(registry, operationId, deadline, lastDescendants);
-        await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter, pageant, step: networkStep, remedyOf, processEnded, keepTarget, holdsUserInfo, fetchLines, changes });
+        await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter, step: networkStep, remedyOf, processEnded, keepTarget, fetchStep, fetchRemedy, notStarted, fetchVerdict, fetchObserved, changes });
       }
     } catch {
       // A broken step leaves the outcome unknown. The marker stays (contract §8).

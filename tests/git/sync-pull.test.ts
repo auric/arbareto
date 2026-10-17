@@ -5,7 +5,7 @@
 // The oracle is Git's own `pull` on a copy. Trees and parents decide for new commits. Exit codes, porcelain fields, and repository reads decide, never message text.
 
 import { expect } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
@@ -18,6 +18,7 @@ import {
   configDigests,
   fc,
   gitOut,
+  gitPaths,
   gitRun,
   importStream,
   leftRight,
@@ -257,6 +258,26 @@ describeGit("sync pull and integrate (T044)", () => {
     expect({ head: after.head, shape: after.shape, index: after.index, files: after.files }).toEqual({ head: before.head, shape: before.shape, index: before.index, files: before.files });
   }, TIMEOUT_MS);
 
+  caseTest(TASK, "data-model §2 modeConfig: a merge.ff, branch.<name>.rebase, pull.rebase, or pull.ff value that changes after the review gives STALE_REVIEW; no remote or integrate process starts", SHELL, async () => {
+    const { h } = pullFixture();
+    const repo = rowCopy({ branch: "p-diverged", config: [] });
+    const before = repoShape(h, repo);
+    await withSync("t044-mode-stale", async (service) => {
+      const r = await register(service, repo);
+      for (const [key, value] of [["merge.ff", "false"], ["branch.p-diverged.rebase", "true"], ["pull.rebase", "true"], ["pull.ff", "only"]]) {
+        for (const payload of [{ action: "pull" }, { action: "integrate", mode: "rebase" }]) {
+          const review = await reviewed(service, r, payload);
+          gitRun(h, repo, ["config", key!, value!]);
+          expect({ key, ...payload, ...outcome(await sync(service, r, review.syncReviewToken)) }).toEqual({ key, ...payload, state: "failed", code: "STALE_REVIEW" });
+          gitRun(h, repo, ["config", "--unset", key!]);
+        }
+      }
+      expect(remoteCalls(service)).toEqual([]);
+      expect(integrateCalls(service)).toEqual([]);
+    });
+    expect(repoShape(h, repo)).toEqual(before);
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "FR-029: changes that Git refuses to overwrite give integration refused, no stash entry, and the index and files of Git's own pull with --no-autostash, also with rebase.autoStash and merge.autoStash", SHELL, async () => {
     const { h, f } = pullFixture();
     for (const mode of ["merge", "rebase"] as const) {
@@ -413,6 +434,35 @@ describeGit("sync pull and integrate (T044)", () => {
       } finally {
         h.write(release, "");
       }
+    }
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "contract §8: a step killed while index.lock exists gives failed-with-effects, also with HEAD and the index unchanged", SHELL, async () => {
+    const { h } = pullFixture();
+    const repo = rowCopy({ branch: "p-diverged", config: [] });
+    const lock = native(gitPaths(h, repo, ["index.lock"])[0]!);
+    const started = `${h.root}/lock-${copies}.started`;
+    const release = `${h.root}/lock-${copies}.release`;
+    // The hook runs in the process tree of `git rebase`, so the kill ends it with the lock in place. It waits at most 30 seconds.
+    h.write(`${repo}/.git/hooks/pre-rebase`, `#!/bin/sh\n: > '${lock}'\n: > '${started}'\ni=0\nwhile [ ! -f '${release}' ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done\nexit 0\n`);
+    const before = repoShape(h, repo);
+    try {
+      await withSync("t044-cancel-lock", async (service) => {
+        const r = await register(service, repo);
+        const trust = await service.readTrust(r.repositoryId);
+        expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+        const requestId = sendSync(service, r, (await reviewed(service, r, { action: "integrate", mode: "rebase" })).syncReviewToken);
+        await until(() => existsSync(native(started)), "pre-rebase hook start", 30_000);
+        await service.cancel(await service.operationId(requestId));
+        const response = await service.response<SyncResult>(requestId);
+        const operationId = await service.operationId(requestId);
+        expect(callsOf(service, operationId).filter((c) => c.environmentPolicy === "integrate").map((c) => c.exit?.exitCode)).toEqual([null]);
+        expect({ ...outcome(response), integration: response.result!.integration }).toEqual({ ...WITH_EFFECTS, integration: undefined });
+        expect(repoShape(h, repo)).toEqual({ ...before, markers: ["index.lock"] });
+      });
+    } finally {
+      h.write(release, "");
+      rmSync(lock, { force: true });
     }
   }, TIMEOUT_MS);
 });

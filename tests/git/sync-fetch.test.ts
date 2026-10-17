@@ -5,7 +5,7 @@
 // The oracle is Git's own `fetch` on a copy. Counters decide, never message text or timing other than the contract bounds.
 
 import { expect } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { APPROVAL_LIFETIME_MS, RECONCILIATION_TARGET_MS, STALL_NOTICE_MS, SUBMODULE_UPDATE_CEILING_MS, SUBMODULE_UPDATE_INACTIVITY_MS, SYNC_FETCH_LISTED_REFS } from "../../src/contracts/limits";
 import { startHttpRemote, type HttpRemote } from "../support/http-remote";
@@ -471,7 +471,82 @@ describeGit("sync fetch and fetch-all (T033)", () => {
       service.runner.inject.sshClient = "git";
     });
   }, TIMEOUT_MS);
+
+  caseTest("T044", "Δ3: the inactivity end of a pull fetch gives the outcome, the remedy, and the connect target of a plain fetch", WINDOWS, async () => {
+    const h = hostFor("t044-fetch-deadline");
+    await withHttp(h, async (server, clone, environment) => {
+      const plink = putty(h);
+      await withSync("t044-fetch-deadline", async (service) => {
+        service.runner.inject.sshClient = { plink };
+        const r = await register(service, clone);
+        const ends = [];
+        for (const action of ["fetch", "pull"]) {
+          const review = await reviewed(service, r, { action });
+          service.runner.inject.limits = { stallMs: 300, inactivityMs: 3_000 };
+          server.pause();
+          const response = await service.response<SyncResult>(sendSync(service, r, review.syncReviewToken), 60_000);
+          service.runner.inject.limits = {};
+          server.resume();
+          ends.push(await fetchEnd(service, r.repositoryId, response));
+        }
+        expect(ends[0]).toEqual({
+          outcome: { state: "failed", code: "DEADLINE" },
+          remotes: ["deadline"],
+          remedy: { command: `& ${psQuote(gitExe())} --no-lazy-fetch -C ${psQuote(r.worktreeRoot)} fetch -- 'origin'`, text: "This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again." },
+          connect: { state: "succeeded", code: undefined },
+          target: "origin",
+        });
+        expect(ends[1]).toEqual(ends[0]);
+        service.runner.inject.sshClient = "git";
+      }, { environment });
+    });
+  }, TIMEOUT_MS);
+
+  caseTest("T044", "Δ3: a broken porcelain line of a pull fetch gives the outcome, the remedy, and the connect target of a plain fetch", WINDOWS, async () => {
+    const h = hostFor("t044-fetch-malformed");
+    const { clone } = behindClone(h, "malformed");
+    const plink = putty(h);
+    await withSync("t044-fetch-malformed", async (service) => {
+      service.runner.inject.sshClient = { plink };
+      const r = await register(service, clone);
+      const before = refMap(h, clone);
+      const ends = [];
+      for (const action of ["fetch", "pull"]) {
+        const review = await reviewed(service, r, { action });
+        service.runner.inject.stdout = (c) => (isFetch(c) ? new TextEncoder().encode("broken line\n") : undefined);
+        const response = await sync(service, r, review.syncReviewToken);
+        service.runner.inject.stdout = undefined;
+        ends.push(await fetchEnd(service, r.repositoryId, response));
+      }
+      expect(ends[0]).toEqual({ outcome: { state: "failed", code: "MALFORMED_GIT_OUTPUT" }, remotes: ["failed"], remedy: undefined, connect: { state: "rejected", code: "UNKNOWN_TARGET" }, target: undefined });
+      expect(ends[1]).toEqual(ends[0]);
+      expect(refMap(h, clone)).toEqual(before);
+      service.runner.inject.sshClient = "git";
+    });
+  }, TIMEOUT_MS);
 });
+
+// An empty `plink.exe` stand-in. The shell double checks only that it exists.
+function putty(h: GitHost): string {
+  mkdirSync(native(`${h.root}/putty`));
+  const plink = native(`${h.root}/putty/plink.exe`);
+  writeFileSync(plink, "");
+  return plink;
+}
+
+// The fetch facts of one sync, then `connectInTerminal` for its operation (data-model §11).
+async function fetchEnd(service: Service, repositoryId: string, response: Awaited<ReturnType<typeof sync>>) {
+  const terminals = () => service.runner.frames.filter((f) => f.type === "terminal");
+  const known = terminals().length;
+  const connected = await service.request("connectInTerminal", { operationId: response.operationId! }, { repositoryId });
+  return {
+    outcome: outcome(response),
+    remotes: response.result!.fetch!.remotes.map((x) => x.state),
+    remedy: response.result!.remedy,
+    connect: outcome(connected),
+    target: (terminals()[known] as { target?: string } | undefined)?.target,
+  };
+}
 
 const psQuote = (value: string) => `'${value.replace(/['‘’‚‛]/g, "$&$&")}'`;
 

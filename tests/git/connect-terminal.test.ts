@@ -6,7 +6,6 @@
 // Limits of the shell double:
 // - It opens no console and runs no `ls-remote`. A `started` reply only means that the checks passed.
 // - `plink.exe` is an empty file that the test makes. The double checks only that it exists.
-// - The pull target waits for batch 3 (T066).
 
 import { expect } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -106,6 +105,20 @@ describeGit("connect in a terminal (T053)", () => {
       expect(outputs.filter((t) => t.includes(SECRET) || t.includes(PUSH_URL))).toEqual([]);
       expect(strings(service.log()).filter((t) => t.includes("missing-clone.git") || t.includes("127.0.0.1"))).toEqual([]);
       expect(service.runner.frames.filter((x) => strings(x).some((t) => t.includes(SECRET))).map((x) => x.type)).toEqual(["terminal"]);
+      service.runner.inject.sshClient = "git";
+    });
+  }, TIMEOUT_MS);
+
+  caseTest("T066", "a failed pull fetch under plink keeps one target, and the terminal gets the remote name", WINDOWS, async () => {
+    const f = fixture("t066-pull");
+    await withSync("t066-pull", async (service) => {
+      service.runner.inject.sshClient = { plink: f.plink };
+      const r = await register(service, f.repo);
+      const pulled = await run(service, r, { action: "pull" });
+      expect({ ...outcome(pulled), fetch: pulled.result!.fetch!.remotes.map((x) => x.state), integration: pulled.result!.integration }).toEqual({ state: "failed", code: "GIT_FAILED", fetch: ["failed"], integration: { state: "none" } });
+      const connected = await connect(service, pulled.operationId!, r.repositoryId);
+      expect({ ...outcome(connected), result: connected.result }).toEqual({ state: "succeeded", code: undefined, result: undefined });
+      expect(terminals(service)).toMatchObject([{ type: "terminal", operationId: connected.operationId, repositoryId: r.repositoryId, target: "origin" }]);
       service.runner.inject.sshClient = "git";
     });
   }, TIMEOUT_MS);

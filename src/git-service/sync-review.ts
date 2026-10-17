@@ -69,6 +69,8 @@ export interface SyncBinding {
   skippedCommit?: { objectId: string; subject: string | null };
   // `continue` and `skip` while rebasing: the SHA-256 of `rebase-merge/git-rebase-todo`, or null without that file.
   todo?: string | null;
+  // `pull` and `integrate`: the last value of each `MODE_KEYS` key. A key without an entry is absent.
+  modeConfig?: Record<string, string | null>;
 }
 
 export interface NeedsDestination {
@@ -87,7 +89,7 @@ export type Observation =
   | Stop
   | Failure;
 
-type Bound = Pick<SyncBinding, "remotes" | "destination" | "lease"> & Pick<SyncBinding, "upstream" | "index" | "skippedCommit" | "todo">;
+type Bound = Pick<SyncBinding, "remotes" | "destination" | "lease" | "upstream" | "index" | "skippedCommit" | "todo" | "modeConfig">;
 
 const HEADS = "refs/heads/";
 const LF = 0x0a;
@@ -259,27 +261,28 @@ export async function gitPathExists(ctx: ObserveContext, name: string): Promise<
   }
 }
 
-// Plan.md D7: the todo of a merge-backend rebase. Null: no todo file, as for the apply backend. `exec`: an `exec` line remains, or the file cannot be read within the bound.
-async function rebaseTodo(ctx: ObserveContext): Promise<Fact<{ digest: string | null; exec: boolean }>> {
+// Plan.md D7: the todo of a merge-backend rebase. Null: no todo file, as for the apply backend. `exec`: an `exec` line remains.
+// `unreadable`: the file cannot be read within the bound.
+async function rebaseTodo(ctx: ObserveContext): Promise<Fact<{ digest: string | null; exec: boolean } | { unreadable: true }>> {
   const path = await gitPathOf(ctx, "rebase-merge/git-rebase-todo");
   if (!("value" in path)) return path;
   let handle;
   try {
     handle = await open(path.value, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
-    return { value: isMissing(error) ? { digest: null, exec: false } : { digest: null, exec: true } };
+    return { value: isMissing(error) ? { digest: null, exec: false } : { unreadable: true } };
   }
   try {
     const st = await handle.stat();
-    if (!st.isFile() || st.size > SYNC_REBASE_TODO_BYTES) return { value: { digest: null, exec: true } };
+    if (!st.isFile() || st.size > SYNC_REBASE_TODO_BYTES) return { value: { unreadable: true } };
     const buffer = Buffer.alloc(SYNC_REBASE_TODO_BYTES + 1);
     let size = 0;
     for (let n = -1; n !== 0 && size < buffer.length; size += n) n = (await handle.read(buffer, size, buffer.length - size, null)).bytesRead;
-    if (size > SYNC_REBASE_TODO_BYTES) return { value: { digest: null, exec: true } };
+    if (size > SYNC_REBASE_TODO_BYTES) return { value: { unreadable: true } };
     const bytes = buffer.subarray(0, size);
     return { value: { digest: new Bun.CryptoHasher("sha256").update(bytes).digest("hex"), exec: holdsExec(bytes) } };
   } catch {
-    return { value: { digest: null, exec: true } };
+    return { value: { unreadable: true } };
   } finally {
     await handle.close();
   }
@@ -287,14 +290,15 @@ async function rebaseTodo(ctx: ObserveContext): Promise<Fact<{ digest: string | 
 
 // Contract §4 "Quoting rule": the terminal command of a refused Continue or Skip. A WSL Git or no selected Git gives text only.
 export const REBASE_EXEC_TEXT = "This rebase holds exec lines, and Git runs them as shell commands. Arbareto does not run them. Read the todo list, then continue in a terminal.";
-function terminalRemedy(ctx: ObserveContext, action: "continue" | "skip"): { text: string; command: string | null } {
+export const REBASE_TODO_UNREADABLE_TEXT = "Arbareto cannot read the rebase todo list. Continue in a terminal.";
+function terminalRemedy(ctx: ObserveContext, action: "continue" | "skip", text: string): { text: string; command: string | null } {
   const git = ctx.installation.selectedPath;
-  if (git === null || ctx.workspace.wsl !== undefined) return { text: REBASE_EXEC_TEXT, command: null };
+  if (git === null || ctx.workspace.wsl !== undefined) return { text, command: null };
   const built = buildRemedyCommand(`& {git} --no-lazy-fetch -C {root} rebase --${action}`, {
     git: { kind: "gitPath", text: git, form: "windows" },
     root: { kind: "worktreeRoot", text: ctx.workspace.worktreeRoot, form: "windows" },
   });
-  return { text: REBASE_EXEC_TEXT, command: built.command };
+  return { text, command: built.command };
 }
 
 // Contract Δ3 read 8: REBASE_HEAD names the commit at which the rebase stopped (gitrevisions(7)). The subject comes from the read 6 reader.
@@ -333,7 +337,8 @@ async function observeConflictAction(ctx: ObserveContext, action: "abort" | "con
   if (state === "rebasing" && action !== "abort") {
     const read = await rebaseTodo(ctx);
     if (!("value" in read)) return read;
-    if (read.value.exec) return { refused: "SYNC_UNAVAILABLE", reason: "rebase-exec", remedy: terminalRemedy(ctx, action) };
+    if ("unreadable" in read.value) return { refused: "SYNC_UNAVAILABLE", reason: "rebase-exec", remedy: terminalRemedy(ctx, action, REBASE_TODO_UNREADABLE_TEXT) };
+    if (read.value.exec) return { refused: "SYNC_UNAVAILABLE", reason: "rebase-exec", remedy: terminalRemedy(ctx, action, REBASE_EXEC_TEXT) };
     todo = { todo: read.value.digest };
   }
   if (action === "continue") {
@@ -350,10 +355,13 @@ async function observeConflictAction(ctx: ObserveContext, action: "abort" | "con
   return bound(none);
 }
 
+// Data-model §2 `modeConfig`: `decidePull` reads `pull.ff`, `branch.<name>.rebase`, and `pull.rebase`. Git's merge reads `merge.ff`.
+const MODE_KEYS = (branch: string) => ["pull.ff", "pull.rebase", `branch.${branch}.rebase`, "merge.ff"];
+
 // Plan.md D6 step 1 and data-model §6. 001 FR-016 delta: a merge or a rebase in progress refuses pull and integrate first.
 async function observePull(ctx: ObserveContext, payload: Extract<ReviewPayload, { action: "pull" | "integrate" }>, f: { head: Head; state: OperationState; remotes: string[]; entries: readonly ConfigEntry[]; branch: string | null }, bound: (b: Bound) => Observation): Promise<Observation> {
   const { head, state, entries } = f;
-  if (state !== "normal") return state === "unknown" ? { code: "GIT_FAILED" } : { refused: "OPERATION_IN_PROGRESS" };
+  if (state !== "normal") return state === "unknown" ? unavailable("unknown-operation") : { refused: "OPERATION_IN_PROGRESS" };
   if (head.state === "unborn") return unavailable("unborn");
   if (head.state === "detached" || f.branch === null) return unavailable("detached");
   const branch = f.branch;
@@ -381,7 +389,11 @@ async function observePull(ctx: ObserveContext, payload: Extract<ReviewPayload, 
   const objectId = refs.value.get(refKey(record.upstream)) ?? null;
   // A pull fetches the ref first. `integrate` has no fetch.
   if (objectId === null && payload.action === "integrate") return unavailable("upstream-gone");
-  return bound({ remotes: [remote], destination: null, lease: null, upstream: { ref: record.upstream, objectId } });
+  const modeConfig = Object.fromEntries(MODE_KEYS(branch).flatMap((key) => {
+    const value = lastValue(entries, key);
+    return value === undefined ? [] : [[key, value]];
+  }));
+  return bound({ remotes: [remote], destination: null, lease: null, upstream: { ref: record.upstream, objectId }, modeConfig });
 }
 
 // Contract Δ3 `reviewSync` reads 1 to 8. `list` gives the trust listing: shared or own for a review, own for `sync`.
@@ -431,7 +443,7 @@ export async function observeSync(ctx: ObserveContext, payload: ReviewPayload, l
 
   if (head.state === "unborn") return unavailable("unborn");
   if (head.state === "detached" || branch === null) return unavailable("detached");
-  if (state !== "normal") return state === "unknown" ? { code: "GIT_FAILED" } : { refused: "OPERATION_IN_PROGRESS" };
+  if (state !== "normal") return state === "unknown" ? unavailable("unknown-operation") : { refused: "OPERATION_IN_PROGRESS" };
   const recordOut = await readOut(ctx, pushRecordArgs(branch), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("limited" in recordOut) return { code: "OUTPUT_LIMIT" };
   if (!("value" in recordOut)) return recordOut;

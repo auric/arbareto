@@ -5,18 +5,18 @@
 // Cancel is never rollback. Each outcome comes from exit codes, porcelain fields, the markers, and the refs, HEAD, and index reads around each step.
 
 import type { ErrorCode, SyncUnavailableReason } from "../contracts/errors";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, SYNC_REFS_BYTES } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES } from "../contracts/limits";
 import type { OperationEvent } from "../contracts/outcome";
-import { batchCommandArgs, type ObjectFormat } from "./commands";
-import { createCollector, RunnerRefusal, type Collector, type PageantReply } from "./git-runner";
+import { batchCommandArgs } from "./commands";
+import { createCollector, type Collector } from "./git-runner";
 import { captureHead } from "./history";
 import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
 import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import type { Head, OperationState } from "./snapshot";
-import { abortArgs, aheadBehindArgs, continueArgs, fastForwardArgs, fetchArgs, mergeArgs, mergeMessageArgs, rebaseArgs, skipArgs } from "./sync-commands";
-import { decidePull, FETCH_FLAGS, parseAheadBehind, type FetchFlag, type FetchList, type FetchUpdate, type ModeSource, type PullDecision } from "./sync-parsers";
+import { abortArgs, aheadBehindArgs, continueArgs, fastForwardArgs, mergeArgs, mergeMessageArgs, rebaseArgs, skipArgs } from "./sync-commands";
+import { decidePull, parseAheadBehind, type FetchUpdate, type ModeSource, type PullDecision } from "./sync-parsers";
 import { gitPathExists, indexState, listRefs, refKey, type IndexState, type SyncBinding } from "./sync-review";
-import type { Remedy, StepEnd } from "./sync";
+import type { changes, FetchRemote, fetchObserved, FetchStep, fetchVerdict, notStarted, Remedy, StepEnd } from "./sync";
 import type { ConfigEntry } from "./trust";
 
 type Refs = Map<string, string>;
@@ -33,21 +33,23 @@ export interface SyncSteps {
   unknown(f: Failure | Stop, result: unknown): void;
   // Enters `reconciling`. True: the operation passed `cancel-requested`.
   enter(deadline: boolean): boolean;
-  pageant(remote: string, counters: Record<string, number>): Promise<PageantReply | null>;
   step(args: string[], phase: StepPhase, counters: Record<string, number>, remedy: Remedy, stdout: Collector, policy: "remote" | "integrate"): Promise<StepEnd>;
   remedyOf(template: string, values: Record<string, string>, userInfo: boolean): Remedy;
   processEnded(ends: readonly StepEnd[]): Promise<boolean>;
   keepTarget(kind: "remote", target: string): void;
-  holdsUserInfo(entries: readonly ConfigEntry[], remote: string): boolean;
-  fetchLines(bytes: Uint8Array, objectFormat: ObjectFormat): FetchList | null;
-  changes(before: Refs, after: Refs): { ref: string; oldObjectId: string | null; newObjectId: string | null }[];
+  // Contract Δ3: the fetch of a pull uses the fetch step and the fetch verdict of `fetch`.
+  fetchStep(remote: FetchRemote, counters: Record<string, number>, entries: readonly ConfigEntry[]): Promise<FetchStep>;
+  fetchRemedy(entries: readonly ConfigEntry[], remote: string): Remedy;
+  notStarted: typeof notStarted;
+  fetchVerdict: typeof fetchVerdict;
+  fetchObserved: typeof fetchObserved;
+  changes: typeof changes;
 }
 
 export const INTEGRATIONS: readonly string[] = ["pull", "integrate", "abort", "continue", "skip"];
 
 const HEADS = "refs/heads/";
 const REMOTES = "refs/remotes/";
-const ZERO_OID = /^0+$/;
 const exact = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // Data-model §7.
@@ -114,8 +116,6 @@ async function integrated(q: ObserveContext, d: Extract<PullDecision, { kind: "f
   return "value" in parents ? { value: parents.value.length > 1 && parents.value.includes(u) } : parents;
 }
 
-const noCounts = () => Object.fromEntries(FETCH_FLAGS.map((flag) => [flag, 0])) as Record<FetchFlag, number>;
-
 // O-3 and feature 004 plan.md D5: the `fmt-merge-msg` preview of the line that `git merge <short name>` builds for a remote-tracking ref (builtin/merge.c `merge_name`).
 // Null: the upstream is no remote-tracking ref, so D5 does not apply and Git writes its own default message.
 async function mergeMessage(ctx: ObserveContext, ref: string, oid: string): Promise<Fact<string | null>> {
@@ -159,7 +159,6 @@ function integrationOf(end: StepEnd, o: Observed): Integration | null {
 // Contract Δ3 `sync` for `pull` and `integrate`, plan.md D6.
 async function runPull(s: SyncSteps): Promise<void> {
   const { ctx, q, binding: b } = s;
-  const w = ctx.workspace;
   const signal = ctx.signal;
   const payload = b.payload as Extract<SyncBinding["payload"], { action: "pull" | "integrate" }>;
   const action = payload.action;
@@ -173,32 +172,26 @@ async function runPull(s: SyncSteps): Promise<void> {
   if (!("value" in listed)) return s.refuse(listed);
   const before = listed.value;
   const ends: StepEnd[] = [];
-  let fetch: { remotes: { name: string; state: string; updates: FetchUpdate[]; counts: Record<FetchFlag, number>; outputTail: string }[]; observed: ReturnType<SyncSteps["changes"]> } | undefined;
+  let fetch: { remotes: FetchRemote[]; observed: ReturnType<SyncSteps["changes"]> } | undefined;
   let all: FetchUpdate[] = [];
-  let fetchFailure: { code?: ErrorCode; remedy?: Remedy } | null = null;
+  let fetchFailure: { code?: ErrorCode; remedy?: Remedy; stopped: boolean; failedRemote: boolean } | null = null;
 
   // ---- The D3 fetch of a pull ----
   if (action === "pull") {
-    const reply = await s.pageant(remote, {}).catch((error: unknown) => {
-      if (error instanceof RunnerRefusal) return { result: "refused" as const, code: error.code };
-      throw error;
-    });
-    if (reply !== null && reply.result === "refused") return s.refuse({ code: reply.code });
-    if (reply !== null && reply.result === "failed") return s.refuse({ code: "PUTTY_UNAVAILABLE", result: { reason: reply.reason, program: reply.program, path: reply.path } });
-    if (signal.aborted) return s.refuse({ stop: "canceled" });
-    const remedy = s.remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote }, s.holdsUserInfo(s.entries, remote));
-    const out = createCollector({ maxBytes: SYNC_REFS_BYTES });
-    const end = await s.step(fetchArgs(remote), "sync-fetch", {}, remedy, out, "remote");
-    ends.push(end);
-    const lines = end.exit === null || out.limited ? null : s.fetchLines(out.take(), w.objectFormat);
-    const state = end.canceled ? "canceled" : end.exit?.deadline !== undefined ? "deadline" : end.exit?.exitCode === 0 && lines !== null ? "succeeded" : "failed";
-    fetch = { remotes: [{ name: remote, state, updates: lines?.updates ?? [], counts: lines?.counts ?? noCounts(), outputTail: end.outputTail }], observed: [] };
-    all = lines?.all ?? [];
-    if (state !== "succeeded") {
-      const code: ErrorCode | undefined =
-        end.refused ?? (end.exit?.deadline !== undefined ? undefined : out.limited || end.exit?.diagnosticLimit ? "OUTPUT_LIMIT" : end.exit?.exitCode === 0 ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED");
-      fetchFailure = { ...(code === undefined ? {} : { code }), ...(state === "failed" ? { remedy } : {}) };
-      if (state === "failed" && end.exit?.exitCode !== 0) s.keepTarget("remote", remote);
+    const r = s.notStarted(remote);
+    const step = await s.fetchStep(r, {}, s.entries);
+    if (step.end === null) {
+      if (step.putty !== null) return s.refuse({ code: "PUTTY_UNAVAILABLE", result: { reason: step.putty.reason, program: step.putty.program, path: step.putty.path } });
+      if (step.refused !== null) return s.refuse({ code: step.refused });
+      return s.refuse({ stop: "canceled" });
+    }
+    ends.push(step.end);
+    fetch = { remotes: [r], observed: [] };
+    all = step.all;
+    const v = s.fetchVerdict([r], { malformed: new Set(step.malformed ? [remote] : []), limit: step.limit, putty: null, refused: step.refused }, signal.aborted);
+    if (v.failed) {
+      const remedy = v.failedRemote === undefined || v.stopped ? undefined : s.fetchRemedy(s.entries, remote);
+      fetchFailure = { ...(v.code === undefined ? {} : { code: v.code }), ...(remedy === undefined ? {} : { remedy }), stopped: v.stopped, failedRemote: v.failedRemote !== undefined };
     }
   }
 
@@ -268,16 +261,7 @@ async function runPull(s: SyncSteps): Promise<void> {
   if (!("value" in read)) return s.unknown(read, resultOf(null));
   const o = read.value;
 
-  // Data-model §4 `observed`: the listing after the fetch against the listing before with every porcelain line applied.
-  if (fetch !== undefined) {
-    const expected = new Map(before);
-    for (const u of all) {
-      if (u.flag === "=" || u.flag === "!") continue;
-      if (ZERO_OID.test(u.newObjectId)) expected.delete(refKey(u.ref));
-      else expected.set(refKey(u.ref), u.newObjectId);
-    }
-    fetch.observed = s.changes(expected, fetchFailure === null ? fetched : o.refs);
-  }
+  if (fetch !== undefined) fetch.observed = s.fetchObserved(before, all, fetchFailure === null ? fetched : o.refs);
   const fetchChanged = s.changes(before, fetchFailure === null ? fetched : o.refs).length > 0;
   // Changes after the fetch: refs, HEAD, the operation state, the index, and a left lock.
   const later = s.changes(fetchFailure === null ? fetched : o.refs, o.refs);
@@ -285,9 +269,11 @@ async function runPull(s: SyncSteps): Promise<void> {
   const changed = fetchChanged || moved;
 
   if (fetchFailure !== null) {
-    if (changed) return s.finish({ type: "failed-with-effects" }, resultOf({ state: "none" }, fetchFailure.remedy === undefined ? {} : { remedy: fetchFailure.remedy }));
-    if (canceled) return s.finish({ type: "no-effects", observed: "canceled" }, resultOf({ state: "none" }));
-    return s.finish({ type: "no-effects", observed: "failed", ...(fetchFailure.code === undefined ? {} : { code: fetchFailure.code }) }, resultOf({ state: "none" }, fetchFailure.remedy === undefined ? {} : { remedy: fetchFailure.remedy }));
+    if (fetchFailure.failedRemote) s.keepTarget("remote", remote);
+    const result = resultOf({ state: "none" }, fetchFailure.remedy === undefined ? {} : { remedy: fetchFailure.remedy });
+    if (changed) return s.finish({ type: "failed-with-effects" }, result);
+    if (fetchFailure.stopped) return s.finish({ type: "no-effects", observed: "canceled" }, result);
+    return s.finish({ type: "no-effects", observed: "failed", ...(fetchFailure.code === undefined ? {} : { code: fetchFailure.code }) }, result);
   }
 
   if (integrateEnd === null) {
@@ -347,7 +333,7 @@ async function runConflictAction(s: SyncSteps): Promise<void> {
   const result = { action, ...(integration === null ? {} : { integration }) };
   const changed = s.changes(listed.value, o.refs).length > 0 || !Bun.deepEquals(o.head, b.head, true) || o.state !== b.operationState || o.index.fingerprint !== index.value.fingerprint || o.lock;
   // Data-model §8: Git exited 0 and no merge or rebase remains. Only the branch of the final HEAD may move.
-  if (integration?.state === "done") {
+  if (integration?.state === "done" && o.state === "normal") {
     const expected = new Map(listed.value);
     if (o.head.state === "branch" && o.refs.has(refKey(o.head.target))) expected.set(refKey(o.head.target), o.refs.get(refKey(o.head.target))!);
     return s.finish(s.changes(expected, o.refs).length > 0 ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, result);

@@ -143,6 +143,22 @@ describeGit("conflict actions abort, continue, and skip (T045)", () => {
     }
   }, TIMEOUT_MS);
 
+  caseTest(TASK, "data-model §8: an Abort that exits 0 while another operation remains gives failed-with-effects, not succeeded", SHELL, async () => {
+    const h = host("abort-left");
+    const repo = buildMergeConflict(h, "merge").repo;
+    // `merge --abort` keeps a sequencer directory (sequencer.c `sequencer_post_commit_cleanup` needs CHERRY_PICK_HEAD or REVERT_HEAD).
+    mkdirSync(native(gitPaths(h, repo, ["sequencer"])[0]!));
+    expect(markers(h, repo)).toEqual(["MERGE_HEAD", "sequencer"]);
+    await withSync("t045-abort-left", async (service) => {
+      const r = await approved(service, repo);
+      const review = await reviewed(service, r, { action: "abort" });
+      expect(review.plan.operationState).toBe("merging");
+      const response = await sync(service, r, review.syncReviewToken);
+      expect({ ...outcome(response), integration: response.result!.integration }).toEqual({ ...WITH_EFFECTS, integration: { state: "done" } });
+    });
+    expect(markers(h, repo)).toEqual(["sequencer"]);
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "D7 and FR-043: Continue reviews refuse CONFLICTED with the unmerged count while an unmerged entry exists, also beside a resolved file with marker-like text; no process starts", SHELL, async () => {
     const h = host("conflicted");
     for (const repo of [buildMergeConflict(h, "merge").repo, applyRebase(h, "apply", false).repo]) {
@@ -335,6 +351,16 @@ describeGit("conflict actions abort, continue, and skip (T045)", () => {
     });
   }, TIMEOUT_MS);
 
+  caseTest(TASK, "contract Δ3: while git am stops, whose state is unknown, pull, integrate, push, and force-push reviews give unknown-operation; no remote or integrate process starts", SHELL, async () => {
+    const h = host("unknown-sync");
+    const am = amStop(h, "am");
+    await withSync("t045-unknown-sync", async (service) => {
+      const r = await approved(service, am);
+      for (const payload of [{ action: "pull" }, { action: "integrate", mode: "merge" }, { action: "push" }, { action: "force-push" }]) expect({ ...payload, ...refusalOf(await reviewSync(service, r, payload)) }).toEqual({ ...payload, ...unavailable("unknown-operation") });
+      expect(service.runner.calls.filter((c) => c.environmentPolicy === "integrate" || c.environmentPolicy === "remote")).toEqual([]);
+    });
+  }, TIMEOUT_MS);
+
   // Plan.md D7: repository content is untrusted, and Git runs each `exec` line of the todo with the shell (sequencer.c `todo_command_info`).
   caseTest(TASK, "D7: a rebase whose todo holds exec lines refuses Continue and Skip with rebase-exec and the terminal command, keeps Abort, starts no process, and leaves Git's state unchanged", SHELL, async () => {
     const h = host("rebase-exec");
@@ -376,10 +402,17 @@ describeGit("conflict actions abort, continue, and skip (T045)", () => {
     const unreadable = mergeRebase(h, "unreadable");
     rmSync(native(todoOf(h, unreadable)));
     mkdirSync(native(todoOf(h, unreadable)));
+    const texts = {
+      "x-line": "This rebase holds exec lines, and Git runs them as shell commands. Arbareto does not run them. Read the todo list, then continue in a terminal.",
+      unreadable: "Arbareto cannot read the rebase todo list. Continue in a terminal.",
+    };
     for (const [name, repo] of [["x-line", x], ["unreadable", unreadable]] as const) {
       await withSync(`t045-planted-${name}`, async (service) => {
         const r = await approved(service, repo);
-        for (const action of ["continue", "skip"]) expect({ name, action, reason: (refusalOf(await reviewSync(service, r, { action })).result as { reason?: string }).reason }).toEqual({ name, action, reason: "rebase-exec" });
+        for (const action of ["continue", "skip"]) {
+          const result = refusalOf(await reviewSync(service, r, { action })).result as { reason?: string; remedy?: { text: string } };
+          expect({ name, action, reason: result.reason, text: result.remedy?.text }).toEqual({ name, action, reason: "rebase-exec", text: texts[name] });
+        }
         expect(integrateCalls(service)).toEqual([]);
       });
     }

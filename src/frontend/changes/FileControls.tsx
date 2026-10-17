@@ -32,23 +32,33 @@ export type FileControlsProps = {
   onRefresh?(response: BridgeResponse): void;
   /** Runs after each terminal response other than `succeeded`. The comparison pane shows a `GIT_FAILED` output (T202). */
   onFailed?(response: BridgeResponse): void;
-  /** "File staged" or "File unstaged" after `succeeded`. */
+  /** "File staged", "File unstaged", or "File marked resolved" after `succeeded`. */
   onOutcome?(text: string): void;
   /** Runs once after a button success. T133 then moves focus and selection. */
   onSuccess?(): void;
   onOperation?(op: StatusOperation): void;
 };
 
-type Decision = { label: "Stage file" | "Unstage file"; direction: "stage" | "unstage"; reason: string | null };
+type Direction = "stage" | "unstage" | "resolve";
+type Decision = { label: "Stage file" | "Unstage file" | "Mark resolved"; direction: Direction; reason: string | null };
+type Refused = Exclude<Comparison["fileAction"], Direction>;
 
-/** The file-action decision of the comparison (contract §4), then the workspace and trust state. */
+// plan.md "Limitation text", plus the feature 003 data-model §9 `missing` refusal of Mark resolved.
+const REFUSAL_TEXT: Record<Refused, string> = { ...LIMITATION_TEXT, missing: "The working file of this conflicted path is missing." };
+const LABEL: Record<Direction, Decision["label"]> = { stage: "Stage file", unstage: "Unstage file", resolve: "Mark resolved" };
+const OUTCOME: Record<Direction, string> = { stage: "File staged", unstage: "File unstaged", resolve: "File marked resolved" };
+
+/** The file-action decision of the comparison (contract §4, feature 003 contract Δ4), then the workspace and trust state. */
 function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
   const { comparison, category } = props;
-  const accepted = comparison.fileAction === "stage" || comparison.fileAction === "unstage";
-  const direction = accepted ? (comparison.fileAction as Decision["direction"]) : category === "staged" ? "unstage" : "stage";
-  const label = direction === "unstage" ? "Unstage file" : "Stage file";
-  const refusal = accepted ? null : LIMITATION_TEXT[comparison.fileAction as keyof typeof LIMITATION_TEXT];
-  return { label, direction, reason: refusal ?? stagingReason(props) ?? (props.target ? null : BLOCKED_TEXT.stale) };
+  const action = comparison.fileAction;
+  const accepted = action === "stage" || action === "unstage" || action === "resolve";
+  // Feature 003 FR-052: a Conflicted entry offers Mark resolved. The 001 `state` refusal keeps the Stage file label.
+  const direction: Direction = accepted ? action : category === "staged" ? "unstage" : category === "conflicted" && action !== "state" ? "resolve" : "stage";
+  const refusal = accepted ? null : REFUSAL_TEXT[action];
+  // A merge or a rebase in progress blocks staging, but Mark resolved exists for it. The service checks the bound operation state (plan.md D7).
+  const blocked = direction === "resolve" && (props.blocked === "conflicted" || props.blocked === "operation") ? null : props.blocked;
+  return { label: LABEL[direction], direction, reason: refusal ?? stagingReason({ ...props, blocked }) ?? (props.target ? null : BLOCKED_TEXT.stale) };
 }
 
 async function send(props: Omit<FileControlsProps, "reasonId">, decision: Decision): Promise<BridgeResponse> {
@@ -57,7 +67,7 @@ async function send(props: Omit<FileControlsProps, "reasonId">, decision: Decisi
   const target = props.target!;
   const response = await trackOperation("applyFile", decision.direction, (onProgress) => props.bridge.applyFile(target, payload, onProgress), props.onOperation);
   props.onRefresh?.(response);
-  if (response.state === "succeeded") props.onOutcome?.(decision.direction === "unstage" ? "File unstaged" : "File staged");
+  if (response.state === "succeeded") props.onOutcome?.(OUTCOME[decision.direction]);
   else props.onFailed?.(response);
   return response;
 }
@@ -95,7 +105,7 @@ export function FileFailure({ response }: { response: BridgeResponse }) {
   );
 }
 
-/** "Stage file (Space)" or "Unstage file (Space)" in the stage bar. */
+/** "Stage file (Space)", "Unstage file (Space)", or "Mark resolved (Space)" in the stage bar. */
 export function FileControls(props: FileControlsProps) {
   const decision = decide(props);
   const running = useRef(false);

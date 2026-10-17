@@ -82,11 +82,15 @@ export type CloneDialogProps = {
   onClose(): void;
 };
 
+// plan.md D12 "Clone panel".
+const RUNNING_CLOSE = "The clone is running. Select Cancel to stop it, then close the panel.";
+const CANCEL_WAITS = "Cancel is available after the clone starts.";
+
 type Run = { destination: string; operationId?: string; percent?: number; cancelRequested: boolean };
 
 /** The non-modal clone panel (plan.md D12). Clone starts only at the explicit start, with the destination that the panel shows. */
 export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialogProps) {
-  const ids = { heading: useId(), url: useId(), destination: useId(), key: useId(), reason: useId() };
+  const ids = { heading: useId(), url: useId(), destination: useId(), key: useId(), reason: useId(), close: useId(), cancel: useId() };
   const [settings, setSettings] = useState<SettingsRead>({ state: "loading" });
   const [url, setUrl] = useState("");
   // FR-054: null until the first destination edit. Then the destination stays.
@@ -94,7 +98,6 @@ export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialo
   const [picked, setPicked] = useState(false);
   const [run, setRun] = useState<Run | null>(null);
   const [ended, setEnded] = useState<BridgeResponse | null>(null);
-  const section = useRef<HTMLElement>(null);
   const urlField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -134,14 +137,13 @@ export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialo
 
   return (
     <section
-      ref={section}
       data-slot="clone-panel"
       aria-labelledby={ids.heading}
       className="flex min-h-0 flex-1 flex-col"
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
-        onClose();
+        if (run === null) onClose();
       }}
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
@@ -149,8 +151,21 @@ export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialo
         <h2 id={ids.heading} className="flex-1 font-semibold">
           Clone repository
         </h2>
-        <IconButton icon={Cancel01Icon} label="Close clone panel" keys={{ aria: "Escape", text: "Esc" }} onClick={onClose} />
+        <IconButton
+          icon={Cancel01Icon}
+          label="Close clone panel"
+          keys={{ aria: "Escape", text: "Esc" }}
+          disabled={run !== null}
+          focusableWhenDisabled
+          aria-describedby={run === null ? undefined : ids.close}
+          onClick={() => run === null && onClose()}
+        />
       </div>
+      {run === null ? null : (
+        <p id={ids.close} className="px-2 text-muted-text">
+          {RUNNING_CLOSE}
+        </p>
+      )}
       <form
         className="flex min-h-0 max-w-[720px] flex-col gap-2 overflow-auto p-3"
         onSubmit={(event) => {
@@ -213,9 +228,23 @@ export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialo
             <>
               <span role="status">{run.cancelRequested ? "Cancel requested" : `Cloning into ${run.destination}…`}</span>
               {run.percent === undefined ? null : <span className="tabular-nums">{run.percent}%</span>}
-              <Button type="button" variant="outline" size="sm" onClick={() => run.operationId !== undefined && !run.cancelRequested && void bridge.cancel({ operationId: run.operationId })}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={run.operationId === undefined}
+                focusableWhenDisabled
+                aria-describedby={run.operationId === undefined ? ids.cancel : undefined}
+                onClick={() => run.operationId !== undefined && !run.cancelRequested && void bridge.cancel({ operationId: run.operationId })}
+              >
                 Cancel
               </Button>
+              {/* Contract Δ2: Cancel names the operation, and the first progress event carries its ID. */}
+              {run.operationId === undefined ? (
+                <span id={ids.cancel} className="text-muted-text">
+                  {CANCEL_WAITS}
+                </span>
+              ) : null}
             </>
           )}
         </div>

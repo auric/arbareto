@@ -100,6 +100,9 @@ async function ended(response: unknown, settings: unknown = settingsOf()) {
   await settle();
   return r;
 }
+// plan.md D12 "Clone panel".
+const RUNNING_CLOSE = "The clone is running. Select Cancel to stop it, then close the panel.";
+const CANCEL_WAITS = "Cancel is available after the clone starts.";
 const failed = (code: string, result?: unknown, state = "failed") => ({ requestId: "c", operationId: fixtureId(0x211), state, code, ...(result === undefined ? {} : { result }) });
 
 describe("Clone entry points (FR-046)", () => {
@@ -212,6 +215,34 @@ describe("clone run and result (FR-048, FR-050)", () => {
     expect(text(panel())).toContain("40%");
     await click(button("Cancel", panel()));
     expect(r.pending("cancel").args[0]).toEqual({ operationId: fixtureId(0x211) });
+  });
+
+  test("while a clone runs, Escape and Close keep the panel open, and a line names Cancel as the way out", async () => {
+    const r = await started();
+    await press(panel(), "Escape");
+    const close = button("Close clone panel", panel());
+    expect(close.getAttribute("aria-disabled")).toBe("true");
+    await click(close);
+    expect(r.closed()).toBe(0);
+    expect(text(panel())).toContain(RUNNING_CLOSE);
+    expect(document.getElementById(close.getAttribute("aria-describedby")!)?.textContent).toBe(RUNNING_CLOSE);
+    await act(async () => r.pending("clone").resolve(failed("CANCELED", { exists: false, empty: false, outputTail: "", remedy: { text: "Run it in a terminal.", command: null } }, "canceled")));
+    await settle();
+    await press(urlField(), "Escape");
+    expect(r.closed()).toBe(1);
+  });
+
+  test("Cancel is unavailable with a reason until the clone reports its operation ID", async () => {
+    const r = await started();
+    const cancel = button("Cancel", panel());
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(cancel.getAttribute("aria-describedby")!)?.textContent).toBe(CANCEL_WAITS);
+    await click(cancel);
+    expect(r.names()).not.toContain("cancel");
+    const onProgress = r.pending("clone").args[1] as (event: unknown) => void;
+    await act(async () => onProgress({ requestId: "c", operationId: fixtureId(0x211), state: "running", phase: "clone", counters: {}, stalled: false }));
+    await settle();
+    expect(button("Cancel", panel()).getAttribute("aria-disabled")).not.toBe("true");
   });
 
   test("DESTINATION_NOT_EMPTY names the destination", async () => {

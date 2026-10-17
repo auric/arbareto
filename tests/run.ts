@@ -8,43 +8,18 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { checkGroups, inFast, REPO, slash } from "./groups";
 
-interface Groups {
-  roots: string[];
-  // File to the reason that it measures time.
-  serial: Record<string, string>;
-  parallel: string[];
-  // Files, or folders that end with "/".
-  fast: string[];
-}
-
-const REPO = join(import.meta.dir, "..");
-const groups = JSON.parse(readFileSync(join(import.meta.dir, "groups.json"), "utf8")) as Groups;
 const mode = process.argv[2];
 if (mode !== "full" && mode !== "fast") throw new Error("usage: bun tests/run.ts full|fast");
 
-const slash = (p: string) => p.replaceAll("\\", "/");
-// Bun 1.4.3 docs/test/discovery.mdx: the default test file name patterns.
-const TEST_FILE = new Bun.Glob("**/*{.test,_test,.spec,_spec}.{js,jsx,ts,tsx,mjs,cjs,mts,cts}");
-const discovered = groups.roots.flatMap((root) => [...TEST_FILE.scanSync({ cwd: join(REPO, root) })].map((f) => `${root}/${slash(f)}`)).sort();
-const serial = Object.keys(groups.serial);
-
-// The group check: each discovered file is in exactly one group, and each listed entry exists.
-const problems: string[] = [];
-const listed = [...serial, ...groups.parallel];
-for (const f of discovered) {
-  const n = listed.filter((l) => l === f).length;
-  if (n !== 1) problems.push(`${f} is in ${n} groups`);
-}
-for (const f of listed) if (!discovered.includes(f)) problems.push(`${f} is listed but is not a discovered test file`);
-const inFast = (f: string) => groups.fast.some((e) => (e.endsWith("/") ? f.startsWith(e) : f === e));
-for (const e of groups.fast) if (!discovered.some((f) => (e.endsWith("/") ? f.startsWith(e) : f === e))) problems.push(`fast entry ${e} selects no discovered test file`);
+const { groups, discovered, serial, problems } = checkGroups();
 if (problems.length > 0) {
   for (const p of problems) console.error(`GROUPS ${p}`);
   process.exit(1);
 }
 
-const selected = mode === "full" ? discovered : discovered.filter(inFast);
+const selected = mode === "full" ? discovered : discovered.filter((f) => inFast(groups, f));
 // Each worker runs Git children, and one child keeps one physical core busy. The T324 host has 8 physical cores (`Win32_Processor.NumberOfCores`).
 // With 16 workers, WSL reads passed the 30 s Git process deadline (research.md "Test run time"). `ARBARETO_TEST_WORKERS` sets another count.
 const workers = Number(process.env.ARBARETO_TEST_WORKERS ?? "8");

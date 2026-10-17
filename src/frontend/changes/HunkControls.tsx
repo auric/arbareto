@@ -20,11 +20,15 @@ type Category = ChangeEntry["category"];
 type Direction = "next" | "previous";
 export type StagingTarget = { repositoryId: string; repositoryGeneration: number };
 export type Eligibility = WorkspaceSnapshot["hunkEligibility"];
-/** A workspace state that blocks hunk and file actions. `busy` is a running file action, `running` any other mutation. */
-export type Blocked = "conflicted" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "unknown" | null;
+/**
+ * A workspace state that blocks hunk and file actions. `busy` is a running file action, `running` any other mutation.
+ * `operation` is a merge or a rebase in progress, which the notice band conflict row finishes (feature 003 FR-030). `conflicted` is every other state that is not `normal`.
+ */
+export type Blocked = "conflicted" | "operation" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "unknown" | null;
 
 export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   conflicted: "Arbareto blocks changes until the Git operation ends outside Arbareto. Then select Refresh (F5).",
+  operation: "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.",
   loading: "A status page is still loading.",
   incomplete: "The status read is incomplete, so changes stay blocked.",
   stale: "The comparison is not current. Wait for the new comparison.",
@@ -33,6 +37,9 @@ export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   running: "A Git operation is running. Wait for its result, or select Cancel.",
   unknown: "State unknown. Select Refresh (F5) first.",
 };
+/** The block of an operation state that is not `normal`. Only `merging` and `rebasing` have the conflict row. */
+export const operationBlock = (operationState: WorkspaceSnapshot["operationState"]): Blocked =>
+  operationState === "normal" ? null : operationState === "merging" || operationState === "rebasing" ? "operation" : "conflicted";
 export const TRUST_TEXT = "Reads need trust approval. Use Review repository trust in the Repository menu.";
 // plan.md "Required visible states", Stale selection.
 export const STALE_TEXT = "The comparison or the staged scope changed. Arbareto reads it again.";

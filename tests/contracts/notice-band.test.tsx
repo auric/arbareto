@@ -49,6 +49,8 @@ describe("notice band", () => {
     test(`${operationState} with ${conflicted} conflicted files gives one blocking row: "${first}"`, () => {
       const text = plain(band({ operationState, conflicted }));
       expect(count(text, first)).toBe(1);
+      // Feature 003 FR-030: a merge or a rebase in progress gets the conflict actions, so the 001 second sentence goes.
+      if (operationState === "merging" || operationState === "rebasing") return expect(count(text, SECOND)).toBe(0);
       expect(count(text, SECOND)).toBe(1);
       expect(text.indexOf(SECOND)).toBeGreaterThan(text.indexOf(first));
     });
@@ -58,7 +60,7 @@ describe("notice band", () => {
     const html = band({ operationState: "rebasing", conflicted: 2, submoduleRow: SUBMODULE_ROW });
     const blocking = html.indexOf("A rebase is in progress");
     expect(blocking).toBeGreaterThan(0);
-    expect(html.indexOf("submodule row double")).toBeGreaterThan(html.indexOf(SECOND));
+    expect(html.indexOf("submodule row double")).toBeGreaterThan(blocking);
     expect(html.slice(0, blocking)).toContain("<svg");
   });
 

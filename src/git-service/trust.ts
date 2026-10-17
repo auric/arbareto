@@ -304,13 +304,77 @@ function submoduleRegistration(p: KeyParts, value: string | null): boolean {
 // `helper`: transport-helper.c runs `git remote-<name>` (`git_cmd`), so the program word is `git`, as for a `credential-<name>` helper.
 type ProgramForm = "shell" | "monitor" | "pathname" | "split" | "credential" | "direct" | "proxy" | "helper";
 
-// transport.c `transport_get` and `is_urlschemechar`: `<name>::<address>`, with a name of `[A-Za-z0-9][A-Za-z0-9+.-]*` or none.
-const HELPER_URL = /^((?:[A-Za-z0-9][A-Za-z0-9+.-]*)?)::/;
+// transport.c `transport_get` (Git 2.56) takes the first match: a `<name>::` prefix (`is_urlschemechar`), `rsync:` (no helper), a local bundle file,
+// then `!is_url(url)` or the prefixes `file://`, `git://`, `ssh://`, `git+ssh://`, and `ssh+git://` (Git's own transport).
+// Any other `<scheme>://` URL runs `git remote-<scheme>` (`external_specification_len`). Makefile `REMOTE_CURL_NAMES` installs Git's own helpers
+// for `http`, `https`, `ftp`, and `ftps`, so they do not count. A one-letter scheme is a DOS drive path that can name a bundle file
+// (url.c `url_is_local_not_ssh`). It counts, because the service reads no such file. Null: no helper.
+const SCHEME = /^[A-Za-z0-9][A-Za-z0-9+.-]*/;
+const BUILTIN_TRANSPORTS = ["file://", "git://", "ssh://", "git+ssh://", "ssh+git://"];
+const CURL_HELPERS: ReadonlySet<string> = new Set(["http", "https", "ftp", "ftps"]);
+export function urlHelper(url: string): string | null {
+  const scheme = SCHEME.exec(url)?.[0] ?? "";
+  if (url.startsWith(`${scheme}::`)) return scheme;
+  if (url.startsWith("rsync:") || scheme === "" || !url.startsWith(`${scheme}://`) || BUILTIN_TRANSPORTS.some((prefix) => url.startsWith(prefix))) return null;
+  return CURL_HELPERS.has(scheme) ? null : scheme;
+}
 
-// The remote helper that an entry of the `helper` form selects, or null for none. A `url.<base>` key takes the helper of its base.
-function remoteHelper(p: KeyParts, value: string): string | null {
-  if (p.variable === "vcs") return value;
-  return HELPER_URL.exec(p.section === "url" ? (p.subsection ?? "") : value)?.[1] ?? null;
+type RewriteGroup = { base: string; prefixes: ConfigEntry[] };
+
+// remote.c `alias_url`: the longest `insteadOf` value that starts the URL wins. On equal length, the first group wins (`make_rewrite` groups by base).
+function aliasOf(url: string, groups: readonly RewriteGroup[]): { url: string; entry: ConfigEntry } | null {
+  let best: { base: string; entry: ConfigEntry } | null = null;
+  for (const group of groups) {
+    for (const entry of group.prefixes) if (url.startsWith(entry.value!) && (best === null || best.entry.value!.length < entry.value!.length)) best = { base: group.base, entry };
+  }
+  return best === null ? null : { url: best.base + url.slice(best.entry.value!.length), entry: best.entry };
+}
+
+// Feature 003 plan.md D11: the entries that make Git start `git remote-<name>`, with that name. remote.c `handle_config` reads each URL and
+// skips a remote name that starts with "/". `alias_all_urls` rewrites each push URL and URL with `insteadOf`, and adds a URL with a
+// `pushInsteadOf` match as a push URL when the remote has no push URL. A push uses every push URL, so each URL counts. A rewritten URL counts for
+// its entry and for the `insteadOf` entry. transport.c: a `remote.<name>.vcs` value is the helper unless the URL has a `<name>::` prefix.
+export function helperEntries(entries: readonly ConfigEntry[]): Map<ConfigEntry, string> {
+  const rewrites = (variable: string): RewriteGroup[] => {
+    const groups: RewriteGroup[] = [];
+    for (const entry of entries) {
+      const p = keyParts(entry.key);
+      if (p?.section !== "url" || p.subsection === null || p.variable !== variable || entry.value === null) continue;
+      let group = groups.find((g) => g.base === p.subsection);
+      if (group === undefined) groups.push((group = { base: p.subsection, prefixes: [] }));
+      group.prefixes.push(entry);
+    }
+    return groups;
+  };
+  const [fetchRewrites, pushRewrites] = [rewrites("insteadof"), rewrites("pushinsteadof")];
+  const remotes = new Map<string, { vcs?: ConfigEntry; urls: ConfigEntry[]; pushurls: ConfigEntry[] }>();
+  for (const entry of entries) {
+    const p = keyParts(entry.key);
+    if (p?.section !== "remote" || p.subsection === null || p.subsection.startsWith("/") || entry.value === null) continue;
+    let remote = remotes.get(p.subsection);
+    if (remote === undefined) remotes.set(p.subsection, (remote = { urls: [], pushurls: [] }));
+    if (p.variable === "vcs") remote.vcs = entry;
+    else if (p.variable === "url") remote.urls.push(entry);
+    else if (p.variable === "pushurl") remote.pushurls.push(entry);
+  }
+  const helpers = new Map<ConfigEntry, string>();
+  for (const remote of remotes.values()) {
+    if (remote.vcs !== undefined) helpers.set(remote.vcs, remote.vcs.value!);
+    const effective: { from: ConfigEntry[]; url: string }[] = [];
+    const add = (entry: ConfigEntry, alias: { url: string; entry: ConfigEntry } | null) => effective.push({ from: alias === null ? [entry] : [entry, alias.entry], url: alias?.url ?? entry.value! });
+    for (const entry of remote.pushurls) add(entry, aliasOf(entry.value!, fetchRewrites));
+    for (const entry of remote.urls) {
+      const pushAlias = remote.pushurls.length === 0 ? aliasOf(entry.value!, pushRewrites) : null;
+      if (pushAlias !== null) add(entry, pushAlias);
+      add(entry, aliasOf(entry.value!, fetchRewrites));
+    }
+    for (const { from, url } of effective) {
+      const helper = urlHelper(url);
+      if (helper === null || (remote.vcs !== undefined && !url.startsWith(`${helper}::`))) continue;
+      for (const entry of from) helpers.set(entry, helper);
+    }
+  }
+  return helpers;
 }
 
 // Contract §7: the read blocking class and the "Mutation trust" `commit` class. A configured hook joins `commit` through its events.
@@ -331,8 +395,7 @@ function programKey(p: KeyParts): ProgramKey | null {
   if (section === "core" && subsection === null && variable === "gitproxy") return { form: "proxy", reads: false, commit: false, sync: true };
   if (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack")) return { form: "shell", reads: false, commit: false, sync: true };
   if (section === "credential" && variable === "helper") return { form: "credential", reads: false, commit: false, sync: true };
-  // Feature 003 plan.md D11: transport.c `transport_get` runs `git remote-<name>` for a `remote.<name>.vcs` value and for a `<name>::<address>` URL.
-  // A `url.<base>.insteadOf` or `pushInsteadOf` with such a base rewrites a remote URL into that form (remote.c `alias_url`).
+  // Feature 003 plan.md D11: a remote helper (`helperEntries`). Only an entry that selects a helper becomes a program.
   if ((section === "remote" && subsection !== null && (variable === "vcs" || variable === "url" || variable === "pushurl")) || (section === "url" && subsection !== null && (variable === "insteadof" || variable === "pushinsteadof"))) {
     return { form: "helper", reads: false, commit: false, sync: true };
   }
@@ -1172,6 +1235,7 @@ async function buildListing(
   // The last entry of a key wins (Git `config.c` `git_config_get_value`). An empty value names no program.
   const last = new Map<string, ConfigEntry>();
   for (const entry of entries) last.set(entry.key, entry);
+  const helpers = helperEntries(entries);
   const programs: { entry: ConfigEntry; kind: ProgramKey; program: Program; controlled: boolean }[] = [];
   for (const entry of entries) {
     const parts = keyParts(entry.key);
@@ -1181,7 +1245,7 @@ async function buildListing(
     const each = kind !== null && (kind.form === "credential" || kind.form === "proxy" || kind.form === "helper");
     if (!kind || (!each && last.get(entry.key) !== entry) || entry.value === null || (entry.value === "" && kind.form !== "helper")) continue;
     if (kind.form === "proxy" && proxyCommand(entry.value) === "") continue;
-    if (kind.form === "helper" && remoteHelper(parts!, entry.value) === null) continue;
+    if (kind.form === "helper" && !helpers.has(entry)) continue;
     // fsmonitor-settings.c: a boolean `core.fsmonitor` names the built-in daemon, not a command (contract §7).
     if (kind.form === "monitor" && parseMaybeBool(entry.value) !== -1) continue;
     const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules) : ({ kind: "unresolved" } as const);
@@ -1410,16 +1474,14 @@ function displayValue(p: KeyParts, value: string): string {
   return shellProgram(value) ?? SHELL_COMMAND;
 }
 
-// Feature 003 contract Δ7: a `<name>::<address>` remote URL shows only the helper name. Other URLs stay hidden.
-const helperUrl = (p: KeyParts, value: string): string | null =>
-  p.section === "remote" && p.subsection !== null && (p.variable === "url" || p.variable === "pushurl") ? remoteHelper(p, value) : null;
-
 // Contract §3 `readTrust` display: values only for the allowlist, and every text redacted (contract §7).
+// Feature 003 contract Δ7: a remote URL that selects a helper shows only the helper name. Other URLs stay hidden.
 function displayEntries(listing: TrustListing) {
+  const helpers = helperEntries(listing.entries);
   return listing.entries.map((entry) => {
     const parts = keyParts(entry.key);
-    const helper = parts === null || entry.value === null ? null : helperUrl(parts, entry.value);
-    const value = helper ?? (parts !== null && valueShown(parts) && entry.value !== null ? displayValue(parts, entry.value) : null);
+    const url = parts !== null && parts.section === "remote" && (parts.variable === "url" || parts.variable === "pushurl");
+    const value = url ? (helpers.get(entry) ?? null) : parts !== null && valueShown(parts) && entry.value !== null ? displayValue(parts, entry.value) : null;
     return { key: redactUrlUserInfo(entry.key), scope: entry.scope, origin: redactUrlUserInfo(entry.origin), ...(value === null ? {} : { value: redactUrlUserInfo(value) }) };
   });
 }

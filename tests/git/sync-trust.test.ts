@@ -50,6 +50,8 @@ describeGit("trust class sync (T036)", () => {
     const f = fixture("t036-gate");
     const configPath = `${f.repo}/.git/config`;
     const base = f.h.read(configPath)!;
+    // remote.c `alias_url` compares the text of the configured URL.
+    const originUrl = gitRun(f.h, f.repo, ["config", "remote.origin.url"]).stdout.toString("utf8").trim();
     const programs: [string, string][] = [
       ["core.sshCommand", f.canary],
       ["core.gitProxy", f.canary],
@@ -73,8 +75,10 @@ describeGit("trust class sync (T036)", () => {
       // transport.c `transport_get` runs `git remote-<name>` for these (plan.md D11).
       ["remote.origin.vcs", "canary"],
       ["remote.origin.url", "canary::address"],
+      ["remote.origin.url", "foo://x/y"],
       ["remote.origin.pushurl", "canary::address"],
-      ["url.canary::address.insteadOf", f.origin],
+      ["url.canary::address.insteadOf", originUrl],
+      ["url.canary::address.pushInsteadOf", originUrl],
     ];
     const syncRequired = async (service: Service, repositoryId: string) => (await service.readTrust(repositoryId)).result!.approvalRequired.sync;
     await withSync("t036-gate", async (service) => {
@@ -92,10 +96,19 @@ describeGit("trust class sync (T036)", () => {
         }
         expect({ key, calls: remoteCalls(service, from) }).toEqual({ key, calls: [] });
       }
-      // A URL and an `insteadOf` base without the `<name>::` form select no remote helper.
+      // transport.c `transport_get`: Git's own transports and its curl helpers select no remote helper, and neither does a rewrite that no URL matches.
+      for (const url of ["https://example.invalid/x", "ssh://example.invalid/x", "git://example.invalid/x", "file:///C:/x", "example.invalid:path/x"]) {
+        f.h.write(configPath, base);
+        gitRun(f.h, f.repo, ["config", "remote.origin.url", url]);
+        expect({ url, sync: await syncRequired(service, r.repositoryId) }).toEqual({ url, sync: false });
+      }
       f.h.write(configPath, base);
-      gitRun(f.h, f.repo, ["config", "url.https://example.invalid/.insteadOf", "mirror:"]);
+      gitRun(f.h, f.repo, ["config", "url.foo::x.insteadOf", "https://example.invalid/"]);
       expect(await syncRequired(service, r.repositoryId)).toBe(false);
+      // remote.c `alias_url`: a short base rewrites an https URL into `foo://`, which runs `git remote-foo`.
+      gitRun(f.h, f.repo, ["config", "remote.web.url", "https://example.invalid/x"]);
+      gitRun(f.h, f.repo, ["config", "url.foo.insteadOf", "https"]);
+      expect(await syncRequired(service, r.repositoryId)).toBe(true);
       f.h.write(configPath, base);
       for (const event of SYNC_EVENTS) {
         const hook = `${f.repo}/.git/hooks/${event}`;
@@ -192,6 +205,8 @@ describeGit("trust class sync (T036)", () => {
       ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
       ["remote.helper.vcs", "cvs"],
       ["remote.helper.url", "hg::https://user:secret@host.invalid/repo"],
+      ["remote.scheme.url", "foo://user:secret@host.invalid/repo"],
+      ["remote.web.url", "https://user:secret@host.invalid/repo"],
     ];
     for (const [k, v] of values) gitRun(f.h, f.repo, ["config", k, v]);
     await withSync("t036-display", async (service) => {
@@ -212,6 +227,7 @@ describeGit("trust class sync (T036)", () => {
           ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
           ["remote.helper.vcs", "cvs"],
           ["remote.helper.url", "hg"],
+          ["remote.scheme.url", "foo"],
         ].sort(),
       );
       expect(JSON.stringify(first.result).includes("secret")).toBe(false);

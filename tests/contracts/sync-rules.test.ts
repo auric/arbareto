@@ -4,9 +4,11 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { decidePull, decidePushDestination, invalidRemoteValue, parsePushRecord, upstreamRebase, type PullDecision, type PushDecision, type PushDestination, type PushRecord } from "../../src/git-service/sync-parsers";
+import { helperEntries, urlHelper, type ConfigEntry } from "../../src/git-service/trust";
 import { RECORDED } from "./sync-recorded";
 
 printOrigin("../../src/git-service/sync-parsers.ts", import.meta.dir);
+printOrigin("../../src/git-service/trust.ts", import.meta.dir);
 
 // Plan.md D4 and D6, data-model §3 and §6 (T016).
 
@@ -368,5 +370,54 @@ describe("branch.autoSetupRebase for a remote upstream", () => {
 
   test("other keys do not count", () => {
     expect(rebase([["branch.main.autosetuprebase", "always"], ["branch.autosetupmerge", "always"]])).toBe(false);
+  });
+});
+
+// Plan.md D11 remote helpers. Recorded on 2.56.0.windows.2 with `GIT_TRACE` and `ls-remote`: `foo://x/y` and `foo::x` ran `git remote-foo`;
+// `http`, `https`, `ftp`, and `ftps` ran Git's own curl helpers; the ssh forms, `git://`, `file://`, `host:path`, and `C:/path` ran no helper.
+describe("remote helper URLs (transport.c `transport_get`)", () => {
+  test("a <name>:: prefix and an unknown <scheme>:// select a helper", () => {
+    const cases: [string, string | null][] = [
+      ["foo://x/y", "foo"],
+      ["foo::x", "foo"],
+      ["a.b-c+d://x", "a.b-c+d"],
+      ["::x", ""],
+      ["rsync::x", "rsync"],
+      ["ext::sh -c true", "ext"],
+      // starts_with and the Makefile helper names compare case-sensitively.
+      ["HTTPS://x", "HTTPS"],
+      // A DOS drive path can name a bundle file, which the service does not read.
+      ["C://x", "C"],
+    ];
+    for (const [url, helper] of cases) expect({ url, helper: urlHelper(url) }).toEqual({ url, helper });
+  });
+
+  test("Git's own transports and its curl helpers select none", () => {
+    for (const url of ["https://h/x", "http://h/x", "ftp://h/x", "ftps://h/x", "ssh://h/x", "git+ssh://h/x", "ssh+git://h/x", "git://h/x", "file:///C:/x", "host:path/x", "C:/path", "/srv/x.git", "rsync://h/x", "-x://h", ""]) {
+      expect({ url, helper: urlHelper(url) }).toEqual({ url, helper: null });
+    }
+  });
+
+  const entry = (key: string, value: string | null): ConfigEntry => ({ scope: "local", origin: "file:.git/config", key, value, exact: true, originBytes: new Uint8Array(), keyValueBytes: new Uint8Array() });
+  const selected = (list: ConfigEntry[]) => [...helperEntries(list)].map(([e, helper]) => [e.key, e.value, helper]);
+
+  test("an insteadOf rewrite decides by the rewritten URL", () => {
+    // remote.c `alias_url`: a short base turns an https URL into a helper URL.
+    expect(selected([entry("remote.web.url", "https://h/x"), entry("url.foo.insteadof", "https")])).toEqual([["remote.web.url", "https://h/x", "foo"], ["url.foo.insteadof", "https", "foo"]]);
+    // A base of the helper form that no URL matches selects nothing.
+    expect(selected([entry("remote.web.url", "https://h/x"), entry("url.foo::y.insteadof", "ssh://")])).toEqual([]);
+    // The longest prefix wins.
+    expect(selected([entry("remote.web.url", "https://h/x"), entry("url.foo::.insteadof", "https:"), entry("url.https:.insteadof", "https://h")])).toEqual([]);
+  });
+
+  test("pushInsteadOf applies only to a remote without a push URL", () => {
+    expect(selected([entry("remote.web.url", "https://h/x"), entry("url.bar::.pushinsteadof", "https://")])).toEqual([["remote.web.url", "https://h/x", "bar"], ["url.bar::.pushinsteadof", "https://", "bar"]]);
+    expect(selected([entry("remote.web.url", "https://h/x"), entry("remote.web.pushurl", "https://h/y"), entry("url.bar::.pushinsteadof", "https://")])).toEqual([]);
+  });
+
+  test("a vcs value is the helper unless the URL has a <name>:: prefix, and a remote name with '/' is skipped", () => {
+    expect(selected([entry("remote.a.vcs", "cvs"), entry("remote.a.url", "foo://x")])).toEqual([["remote.a.vcs", "cvs", "cvs"]]);
+    expect(selected([entry("remote.a.vcs", "cvs"), entry("remote.a.url", "hg::x")])).toEqual([["remote.a.vcs", "cvs", "cvs"], ["remote.a.url", "hg::x", "hg"]]);
+    expect(selected([entry("remote./x.url", "foo://x"), entry("remote./x.vcs", "cvs")])).toEqual([]);
   });
 });

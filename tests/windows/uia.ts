@@ -33,8 +33,15 @@ const open = () => ({
   kernel32: dlopen("kernel32.dll", {
     QueryPerformanceCounter: { args: [P], returns: i32 },
     GetLastError: { args: [], returns: u32 },
+    GetTickCount: { args: [], returns: u32 },
+    OpenProcess: { args: [u32, i32, u32], returns: P },
+    QueryFullProcessImageNameW: { args: [P, u32, P, P], returns: i32 },
+    CloseHandle: { args: [P], returns: i32 },
   }).symbols,
   user32: dlopen("user32.dll", {
+    GetForegroundWindow: { args: [], returns: P },
+    GetLastInputInfo: { args: [P], returns: i32 },
+    SystemParametersInfoW: { args: [u32, u32, P, u32], returns: i32 },
     FindWindowExW: { args: [P, P, P, P], returns: P },
     GetWindowThreadProcessId: { args: [P, P], returns: u32 },
     OpenInputDesktop: { args: [u32, i32, u32], returns: P },
@@ -242,7 +249,7 @@ function checkArgs(processId: number, name: string, timeoutMs: number): void {
 }
 
 // Polls `probe` every POLL_MS until it returns a value or the bound passes. The 1 ms timer period keeps each sleep below 5 ms. A probe in progress at the bound runs to its end.
-async function poll<T>(timeoutMs: number, what: string, probe: () => T | null): Promise<T> {
+async function poll<T>(timeoutMs: number, what: string | (() => string), probe: () => T | null): Promise<T> {
   const { winmm } = lib();
   const deadline = performance.now() + timeoutMs;
   winmm.timeBeginPeriod(1);
@@ -254,7 +261,7 @@ async function poll<T>(timeoutMs: number, what: string, probe: () => T | null): 
       } catch (error) {
         if (!(error instanceof UiaError && error.hresult !== undefined && RETRY.has(error.hresult))) throw error;
       }
-      if (performance.now() >= deadline) throw new UiaError("TIMEOUT", `${what} after ${timeoutMs} ms`);
+      if (performance.now() >= deadline) throw new UiaError("TIMEOUT", `${typeof what === "string" ? what : what()} after ${timeoutMs} ms`);
       await Bun.sleep(POLL_MS);
     }
   } finally {
@@ -440,7 +447,7 @@ function topLevelProcessId(self: Pointer): number | null {
 // Returns the QueryPerformanceCounter value read right after the focused element first has that Name below a top-level window of the process.
 export async function waitFocus(processId: number, name: string, timeoutMs: number): Promise<bigint> {
   checkArgs(processId, name, timeoutMs);
-  return poll(timeoutMs, `no focus on ${JSON.stringify(name)} in process ${processId}`, () => {
+  return poll(timeoutMs, () => `no focus on ${JSON.stringify(name)} in process ${processId} (${foregroundFacts()})`, () => {
     const focused = outCall(uia(), "GetFocusedElement", [], []);
     if (focused === null) return null;
     const element = new Element(focused);
@@ -451,6 +458,53 @@ export async function waitFocus(processId: number, name: string, timeoutMs: numb
       element.release();
     }
   });
+}
+
+// The process of the foreground window, or null when no window is in the foreground.
+export function foregroundPid(): number | null {
+  const hwnd = lib().user32.GetForegroundWindow();
+  if (typeof hwnd !== "number" || hwnd === 0) return null;
+  const pid = new Uint32Array(1);
+  lib().user32.GetWindowThreadProcessId(hwnd, ptr(pid));
+  return pid[0]!;
+}
+
+// Microsoft Learn `OpenProcess` and `QueryFullProcessImageNameW`.
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const IMAGE_UNITS = 32_768;
+
+function imageName(pid: number): string {
+  const { kernel32 } = lib();
+  const handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+  if (typeof handle !== "number" || handle === 0) return `unreadable (error ${kernel32.GetLastError()})`;
+  try {
+    const path = new Uint16Array(IMAGE_UNITS);
+    const units = new Uint32Array([IMAGE_UNITS]);
+    if (!kernel32.QueryFullProcessImageNameW(handle, 0, ptr(path), ptr(units))) return `unreadable (error ${kernel32.GetLastError()})`;
+    return Buffer.from(path.buffer, 0, units[0]! * 2).toString("utf16le").split("\\").pop()!;
+  } finally {
+    kernel32.CloseHandle(handle);
+  }
+}
+
+// Microsoft Learn `SetForegroundWindow`: a process takes the foreground only after no input came for the lock time-out. x64 LASTINPUTINFO is `cbSize` and `dwTime`.
+const SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000;
+
+function foregroundFacts(): string {
+  const { kernel32, user32 } = lib();
+  const pid = foregroundPid();
+  const owner = pid === null ? "none" : `${imageName(pid)} pid ${pid}`;
+  const timeout = new Uint32Array(1);
+  const lock = user32.SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, ptr(timeout), 0) ? `${timeout[0]}` : `unreadable (error ${kernel32.GetLastError()})`;
+  const input = new Uint32Array([8, 0]);
+  // Both tick values wrap at 2^32 ms.
+  const idle = user32.GetLastInputInfo(ptr(input)) ? `${(kernel32.GetTickCount() - input[1]!) >>> 0}` : `unreadable (error ${kernel32.GetLastError()})`;
+  return `foreground owner ${owner}, lock timeout ${lock}, idle ${idle}`;
+}
+
+// Keyboard focus sits only in a window of the foreground process. Returns null when `processId` owns the foreground window, or the facts for the SKIP line.
+export function foregroundSkip(processId: number): string | null {
+  return foregroundPid() === processId ? null : `missing capability foreground: ${foregroundFacts()}`;
 }
 
 // Microsoft Learn `OpenInputDesktop`, `GetUserObjectInformationW`, and "Desktop Security and Access Rights".

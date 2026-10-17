@@ -269,7 +269,7 @@ Reused: `REPOSITORY_UNAVAILABLE` (`clone` steps 2 and 5), `OPERATION_IN_PROGRESS
 
 - Git gives no machine-readable reason for an SSH failure, a credential failure, or a host-key failure. The outcome says the cause is unknown and shows the tail.
 - Git gives no machine-readable "mode required" for pull. The app decides from the counts and the configuration itself.
-- Git gives no signal that a process used SSH. So Connect in a terminal shows for every failed network operation under `plink` (O-10).
+- Git gives no signal that a process used SSH. So Connect in a terminal shows for every operation under `plink` whose network step failed and whose result carries `connectTarget` (O-10).
 - Under `simple`, `%(push)` is empty for a triangular workflow, while Git's own push selects `refs/heads/<branch>` on the push remote. The app follows Git's push, so that destination has no tracking ref and no lease.
 - Under `matching`, Git selects the branch from the refs that the remote advertises at push time. The review contacts no remote, so the FR-016 panel shows.
 - A push URL from `remote get-url --push` already has `pushInsteadOf` applied. `ls-remote` in the terminal applies `insteadOf` to it again.

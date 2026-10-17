@@ -439,7 +439,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - **O-6 PuTTY 0.75 minimum** for `pageant --encrypted`. Reviewer default: yes. The shell reads the file version resource and refuses an older Pageant.
 - **O-7 Pageant and PuTTYgen paths.** Reviewer default: the plink folder, with no extra picker.
 - **O-8 `remote.<name>.puttykeyfile`.** It is repository-controlled. Reviewer default: the settings show it as a proposal only, and the app uses a key file only after the user saves it in the application settings.
-- **O-9 and O-10 Connect in a terminal.** Reviewer default: `git ls-remote` through plink without `-batch`, because Git parses the URL. It is offered for every failed network operation under plink, because no signal says that Git used SSH. FR-034 and the spec Assumptions record it.
+- **O-9 and O-10 Connect in a terminal.** Reviewer default: `git ls-remote` through plink without `-batch`, because Git parses the URL. It is offered for every operation under plink whose network step failed and whose result carries `connectTarget`, because no signal says that Git used SSH. FR-034 and the spec Assumptions record it.
 - **O-11 Several push URLs.** Reviewer default: refuse with reason `push-urls`.
 
 Further reviewer defaults:

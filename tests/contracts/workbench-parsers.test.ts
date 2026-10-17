@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { PATH_RULES } from "../../src/contracts/native-path";
 import type { ConfigEntry } from "../../src/git-service/trust";
-import { configView, localNameOf, parseBranches, parseWorktrees, sameHost, urlHost } from "../../src/git-service/workbench-parsers";
+import { configView, localNameOf, parseBranches, parseWorktrees, sameHost, trackingRemotes, urlHost } from "../../src/git-service/workbench-parsers";
 
 printOrigin("../../src/git-service/workbench-parsers.ts", import.meta.dir);
 
@@ -231,46 +231,82 @@ describe("refspec map (research.md R2)", () => {
   const DEFAULT = fetch("origin", "+refs/heads/*:refs/remotes/origin/*");
 
   test("one mapping refspec gives the name", () => {
-    expect(localNameOf("refs/remotes/origin/feature/x", [DEFAULT])).toBe("feature/x");
-    expect(localNameOf("refs/remotes/origin/main", [fetch("origin", "refs/heads/main:refs/remotes/origin/main")])).toBe("main");
-    expect(localNameOf("refs/remotes/my.remote/x", [fetch("my.remote", "+refs/heads/*:refs/remotes/my.remote/*")])).toBe("x");
-    expect(localNameOf("refs/remotes/origin/x", [{ key: "remote.origin.url", value: "u" }, DEFAULT, fetch("other", "+refs/heads/*:refs/remotes/other/*")])).toBe("x");
+    expect(localNameOf("refs/remotes/origin/feature/x", [DEFAULT], "sha1")).toBe("feature/x");
+    expect(localNameOf("refs/remotes/origin/main", [fetch("origin", "refs/heads/main:refs/remotes/origin/main")], "sha1")).toBe("main");
+    expect(localNameOf("refs/remotes/my.remote/x", [fetch("my.remote", "+refs/heads/*:refs/remotes/my.remote/*")], "sha1")).toBe("x");
+    expect(localNameOf("refs/remotes/origin/x", [{ key: "remote.origin.url", value: "u" }, DEFAULT, fetch("other", "+refs/heads/*:refs/remotes/other/*")], "sha1")).toBe("x");
   });
 
   test("a pattern with a prefix and a suffix", () => {
-    expect(localNameOf("refs/remotes/origin/pre-x-post", [fetch("origin", "refs/heads/a/*/b:refs/remotes/origin/pre-*-post")])).toBe("a/x/b");
+    expect(localNameOf("refs/remotes/origin/pre-x-post", [fetch("origin", "refs/heads/a/*/b:refs/remotes/origin/pre-*-post")], "sha1")).toBe("a/x/b");
   });
 
   test("zero mapping refspecs give null", () => {
-    expect(localNameOf("refs/remotes/origin/x", [])).toBeNull();
-    expect(localNameOf("refs/remotes/upstream/x", [DEFAULT])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/x", [fetch("origin", "refs/heads/main")])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/x", [fetch("origin", "refs/heads/y:refs/remotes/origin/y")])).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/upstream/x", [DEFAULT], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [fetch("origin", "refs/heads/main")], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [fetch("origin", "refs/heads/y:refs/remotes/origin/y")], "sha1")).toBeNull();
   });
 
   test("several mapping refspecs give null", () => {
-    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, fetch("second", "+refs/heads/*:refs/remotes/origin/*")])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/pr/1", [DEFAULT, fetch("origin", "+refs/pull/*:refs/remotes/origin/pr/*")])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, DEFAULT])).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, fetch("second", "+refs/heads/*:refs/remotes/origin/*")], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/pr/1", [DEFAULT, fetch("origin", "+refs/pull/*:refs/remotes/origin/pr/*")], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, DEFAULT], "sha1")).toBeNull();
   });
 
   test("a mapping to a source outside refs/heads/ gives null", () => {
-    expect(localNameOf("refs/remotes/origin/tags/v1", [fetch("origin", "+refs/tags/*:refs/remotes/origin/tags/*")])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/main", [fetch("origin", "main:refs/remotes/origin/main")])).toBeNull();
+    expect(localNameOf("refs/remotes/origin/tags/v1", [fetch("origin", "+refs/tags/*:refs/remotes/origin/tags/*")], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/main", [fetch("origin", "main:refs/remotes/origin/main")], "sha1")).toBeNull();
   });
 
   // remote.c `query_matches_negative_refspec`: a source that a negative refspec names maps nothing in that remote.
   test("a negative refspec removes the mapping of its remote", () => {
-    expect(localNameOf("refs/remotes/origin/secret", [DEFAULT, fetch("origin", "^refs/heads/secret")])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/wip/a", [DEFAULT, fetch("origin", "^refs/heads/wip/*")])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, fetch("origin", "^refs/heads/secret")])).toBe("x");
+    expect(localNameOf("refs/remotes/origin/secret", [DEFAULT, fetch("origin", "^refs/heads/secret")], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/wip/a", [DEFAULT, fetch("origin", "^refs/heads/wip/*")], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, fetch("origin", "^refs/heads/secret")], "sha1")).toBe("x");
   });
 
   test("a refspec that Git refuses gives null", () => {
-    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, fetch("origin", null)])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/x", [fetch("origin", "refs/heads/*:refs/remotes/origin/x")])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/x", [fetch("origin", "refs/heads/*/*:refs/remotes/origin/*/*")])).toBeNull();
-    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, fetch("origin", "^refs/heads/a:refs/remotes/origin/a")])).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, fetch("origin", null)], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [fetch("origin", "refs/heads/*:refs/remotes/origin/x")], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [fetch("origin", "refs/heads/*/*:refs/remotes/origin/*/*")], "sha1")).toBeNull();
+    expect(localNameOf("refs/remotes/origin/x", [DEFAULT, fetch("origin", "^refs/heads/a:refs/remotes/origin/a")], "sha1")).toBeNull();
+  });
+});
+
+// branch.c `dwim_branch_start` and `setup_tracking` with remote.c `query_refspecs`, refspec.c `parse_refspec`, and refs.c `check_refname_format` (Git 2.56).
+describe("tracking remotes (plan.md D3 Track rule)", () => {
+  const fetch = (remote: string, value: string | null) => ({ key: `remote.${remote}.fetch`, value });
+  const DEFAULT = fetch("origin", "+refs/heads/*:refs/remotes/origin/*");
+  const track = (ref: string, ...config: { key: string; value: string | null }[]) => trackingRemotes(ref, config, "sha1");
+
+  test("one remote maps the ref, also with two of its refspecs", () => {
+    expect(track("refs/remotes/origin/x", DEFAULT)).toEqual(["origin"]);
+    expect(track("refs/remotes/origin/x/y", DEFAULT, fetch("origin", "+refs/heads/x/*:refs/remotes/origin/x/*"))).toEqual(["origin"]);
+    expect(track("refs/remotes/origin/main", fetch("origin", "refs/heads/main:refs/remotes/origin/main"))).toEqual(["origin"]);
+  });
+
+  test("no refspec maps the ref, or a negative refspec removes the mapping", () => {
+    expect(track("refs/remotes/zero/topic", fetch("zero", "+refs/heads/main:refs/remotes/zero/main"))).toEqual([]);
+    expect(track("refs/remotes/origin/x", fetch("origin", "refs/heads/x"))).toEqual([]);
+    expect(track("refs/remotes/origin/x", fetch("origin", "refs/heads/x:"))).toEqual([]);
+    expect(track("refs/remotes/origin/x", DEFAULT, fetch("origin", "^refs/heads/x"))).toEqual([]);
+  });
+
+  test("two remotes that map the ref are both named", () => {
+    expect(track("refs/remotes/o/topic", fetch("o", "+refs/heads/*:refs/remotes/o/*"), fetch("p", "+refs/heads/topic:refs/remotes/o/topic"))).toEqual(["o", "p"]);
+  });
+
+  test("a refspec that parse_refspec refuses gives null", () => {
+    for (const bad of ["+refs/heads/a..b:refs/remotes/p/x", "refs/heads/*:refs/remotes/p/x", "refs/heads/x:refs/remotes/*", "refs/heads/*", "refs/heads/a*b*:refs/remotes/p/*", "refs/heads/x:refs/remotes/p/x.lock", "refs/heads/x:refs/remotes/p/a b", "^refs/heads/x:refs/remotes/p/x", "^", `^${"a".repeat(40)}`, "refs/heads/x:refs/remotes/p/@{x}", null]) {
+      expect({ bad, remotes: track("refs/remotes/origin/x", DEFAULT, fetch("p", bad)) }).toEqual({ bad, remotes: null });
+    }
+  });
+
+  test("forms that parse_refspec accepts", () => {
+    for (const good of ["@:refs/remotes/p/head", ":refs/remotes/p/head", `${"a".repeat(40)}:refs/remotes/p/oid`, "refs/heads/*:refs/remotes/p/*", "^refs/heads/wip/*", `^${"a".repeat(40)}`]) {
+      expect({ good, ok: trackingRemotes("refs/remotes/origin/x", [DEFAULT, fetch("p", good)], good === `^${"a".repeat(40)}` ? "sha256" : "sha1") !== null }).toEqual({ good, ok: true });
+    }
   });
 });
 

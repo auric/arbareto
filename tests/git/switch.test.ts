@@ -324,27 +324,66 @@ caseTest(TASK, "plan.md D3 drop step: with two earlier stashes and a stash pushe
   expect(stateOf(f)).toEqual(stateOf(o));
 }, TIMEOUT_MS);
 
-caseTest(TASK, "FR-013 and research.md R21 F8: a remote branch with one, zero, and two mapping refspecs; the new branch and its branch.<name> keys equal Git's own checkout --track on a copy", SHELL, async () => {
-  for (const [ref, mapped, name] of [["refs/remotes/one/topic", "topic", "topic"], ["refs/remotes/zero/topic", null, "typed-zero"], ["refs/remotes/two/x/topic", null, "typed-two"]] as const) {
+caseTest(TASK, "FR-013 and research.md R21 F8: a remote branch with one, zero, and two mapping refspecs; zero refuses with no-tracking-refspec, and the other new branches and their branch.<name> keys equal Git's own checkout --track on a copy", SHELL, async () => {
+  for (const [ref, mapped, name, remotes] of [["refs/remotes/one/topic", "topic", "topic", 1], ["refs/remotes/zero/topic", null, "typed-zero", 0], ["refs/remotes/two/x/topic", null, "typed-two", 1]] as const) {
     const f = build("switch-clean");
     const o = build("switch-clean");
     const config = git(f, ["config", "list", "--local", "-z"]).split("\0").filter((e) => e !== "").map((e) => ({ key: e.slice(0, e.indexOf("\n")), value: e.slice(e.indexOf("\n") + 1) }));
     // Research.md R2: the default name comes from the one mapping refspec. Zero or several give an empty field.
-    expect(localNameOf(ref, config)).toBe(mapped);
-    const seen = { succeeded: false };
+    expect(localNameOf(ref, config, "sha1")).toBe(mapped);
+    const before = stateOf(f);
     await withSync(`t021-track-${name}`, async (service) => {
       const r = await open(service, f.repo);
       const from = service.runner.calls.length;
-      const response = await run(service, r, switchTo("keep", { track: { ref, name } }));
-      seen.succeeded = response.state === "succeeded";
+      if (remotes === 0) {
+        expect(refusalOf(await review(service, r, switchTo("keep", { track: { ref, name } })))).toEqual(unavailable("no-tracking-refspec"));
+        expect(steps(service, from)).toEqual([]);
+        return;
+      }
+      expect(outcome(await run(service, r, switchTo("keep", { track: { ref, name } })))).toEqual(SUCCEEDED);
       expect(steps(service, from)).toEqual([["--no-lazy-fetch", "checkout", "--no-guess", "--no-recurse-submodules", "-b", name, "--track=direct", ref, "--"]]);
     });
-    // Without a mapping refspec, Git writes the start tree and then refuses the tracking setup. Both runs must leave the same state.
     const own = wb(repoOf(o), ["checkout", "-q", "-b", name, "--track", ref.slice("refs/remotes/".length), "--"], { allowExit: "any" });
-    expect({ name, succeeded: seen.succeeded }).toEqual({ name, succeeded: own.exitCode === 0 });
+    if (remotes === 0) {
+      // branch.c `create_branch`: Git writes the start tree, then exits 128 at the tracking setup. The refusal keeps every byte.
+      expect(own.exitCode).toBe(128);
+      expect(stateOf(o)).not.toEqual(before);
+      expect(stateOf(f)).toEqual(before);
+      continue;
+    }
+    expect(own.exitCode).toBe(0);
     expect(stateOf(f)).toEqual(stateOf(o));
     expect(readFileSync(f.configs.local!)).toEqual(readFileSync(o.configs.local!));
   }
+}, TIMEOUT_MS);
+
+caseTest(TASK, "plan.md D3 Track rule: a fetched remote whose refspecs no longer map the ref gives no-tracking-refspec, two remotes that map it give several-tracking-remotes, and Check out the commit only stays possible", SHELL, async () => {
+  const f = build("switch-clean");
+  // A real remote: a bare repository with branch `topic`, fetched by the default refspec, then narrowed to `main`.
+  const bare = join(f.root, "remote.git");
+  wb(repoOf(f, f.root), ["init", "-q", "--bare", "--", bare]);
+  git(f, ["push", "-q", "--", bare, "refs/heads/target:refs/heads/topic", "refs/heads/main:refs/heads/main"]);
+  git(f, ["remote", "add", "--", "real", bare]);
+  git(f, ["fetch", "-q", "real"]);
+  const ref = "refs/remotes/real/topic";
+  expect(oid(f, ref)).toBe(f.oids.target!);
+  git(f, ["config", "--replace-all", "remote.real.fetch", "+refs/heads/main:refs/remotes/real/main"]);
+  const before = stateOf(f);
+  await withSync("t021-track-real", async (service) => {
+    const r = await open(service, f.repo);
+    const from = service.runner.calls.length;
+    expect(refusalOf(await review(service, r, switchTo("keep", { track: { ref, name: "topic-real" } })))).toEqual(unavailable("no-tracking-refspec"));
+    git(f, ["config", "--replace-all", "remote.real.fetch", "+refs/heads/*:refs/remotes/real/*"]);
+    git(f, ["config", "remote.mirror.url", bare]);
+    git(f, ["config", "remote.mirror.fetch", "+refs/heads/topic:refs/remotes/real/topic"]);
+    expect(refusalOf(await review(service, r, switchTo("keep", { track: { ref, name: "topic-real" } })))).toEqual(unavailable("several-tracking-remotes", { remotes: ["real", "mirror"] }));
+    expect(steps(service, from)).toEqual([]);
+    expect({ ...stateOf(f), config: before.config }).toEqual(before);
+    // FR-013: the commit-only checkout needs no tracking.
+    const detached = await run(service, r, switchTo("keep", { detach: f.oids.target! }));
+    expect(outcome(detached)).toEqual(SUCCEEDED);
+    expect(detached.result!.head).toEqual({ state: "detached", oid: f.oids.target! });
+  });
 }, TIMEOUT_MS);
 
 caseTest(TASK, "FR-013 and plan.md D4: a taken track name gives name-exists with the branch to switch to; the track name @ and the branches refs/heads/@ and refs/heads/-f refuse before any Git process", SHELL, async () => {

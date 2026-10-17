@@ -17,6 +17,7 @@ import { changes } from "./sync";
 import { indexState, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
 import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
+import { trackingRemotes } from "./workbench-parsers";
 import { conclude, heldElsewhere, observeRepository, readOut, readWorktrees, refOid, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
 
 export const STASH_REMEDY_TEXT = "The stash keeps the changes. This command applies them again.";
@@ -191,7 +192,7 @@ registerWorkbenchAction("switch", {
     return isObjectId(t.detach, w.objectFormat) ? null : { refused: "INVALID_REQUEST" };
   },
 
-  async observe(ctx, p, { head }) {
+  async observe(ctx, p, { head, listing }) {
     const t = p.target;
     if ("ref" in t && head.state !== "detached" && head.target === t.ref) return unavailable("same-branch");
     // `git stash` needs a commit at HEAD, and the in-the-way check reads the tree of HEAD.
@@ -206,6 +207,10 @@ registerWorkbenchAction("switch", {
       if (held !== null) return unavailable("other-worktree", { worktree: held.path });
     }
     if ("track" in t) {
+      // branch.c `create_branch`: Git writes the start tree before it refuses the tracking setup, so the review refuses first.
+      const remotes = trackingRemotes(t.track.ref, listing.entries, ctx.workspace.objectFormat);
+      if (remotes === null || remotes.length === 0) return unavailable("no-tracking-refspec");
+      if (remotes.length > 1) return unavailable("several-tracking-remotes", { remotes });
       const fresh = await newName(ctx, t.track.name);
       if (!("value" in fresh)) return fresh;
     }

@@ -126,6 +126,8 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "path",
   "message-size",
   "unreadable",
+  "no-tracking-refspec",
+  "several-tracking-remotes",
 ] as const;
 export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];
 export const UNTRACKED_IN_WAY_REASONS = ["untracked-in-way"] as const;

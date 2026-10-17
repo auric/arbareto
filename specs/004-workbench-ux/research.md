@@ -165,10 +165,26 @@
 
 ## R20 Spell check
 
-- Decision: `nspell` with `dictionary-en`, in the renderer.
+- Decision (proposed): `nspell` with `dictionary-en`, in the renderer. The T077 check below supports it.
 - Rationale: offline, deterministic for the SC-012 fixture, and no AI. Git Extensions uses NetSpell dictionaries (Git Extensions source).
-- Alternatives considered: the WebView2 spell checker (its result depends on the Windows dictionaries and user word lists, so the test has no fixed oracle; unverified whether WebView2 exposes suggestions to the page).
-- Unverified: the licenses (`nspell` MIT; `dictionary-en` under the SCOWL terms), the bundle size, and how `dictionary-en` loads its files in a browser build.
+- `nspell` facts (npm registry, 2026-10-17): version 2.1.5, published 2021-01-17, the last release. License MIT; the package file `license` holds "(The MIT License) Copyright (c) 2016 Titus Wormer".
+- `nspell` upkeep: maintainer `wooorm`; repository github.com/wooorm/nspell, not archived, last push 2021-01-17, 9 open issues (GitHub API). The code is stable, but nobody changes it.
+- `nspell` form: CommonJS (`main: lib/index.js`, `require`). Vite bundles CommonJS. One runtime dependency: `is-buffer` `^2.0.0` (2.0.5, MIT, file `LICENSE`).
+- `dictionary-en` facts (npm registry): version 4.0.0, published 2023-11-03, the last release. SPDX expression in `package.json`: `(MIT AND BSD)`. No runtime dependencies.
+- `dictionary-en` upkeep: maintainer `wooorm`; repository github.com/wooorm/dictionaries (folder `dictionaries/en`), not archived, last push 2024-09-09, 15 open issues.
+- `dictionary-en` word list: Hunspell en_US 2020.12.07 from SCOWL size 60 (wordlist.sourceforge.net). The package file `license` (15,731 bytes) is the SCOWL README with its copyright section.
+- Word list license (package `license` file): SCOWL is "Copyright 2000-2018 by Kevin Atkinson" with a permissive grant that requires the copyright and permission notice in all copies. The `.aff` file is derived from Ispell under Geoff Kuenning's BSD license. Parts come from public-domain lists (Moby, others).
+- `dictionary-en` files: `index.aff` 3,086 bytes, `index.dic` 551,762 bytes.
+- `dictionary-en` export form: ESM only, `exports: "./index.js"`. `index.js` uses `node:fs/promises` `readFile(new URL('index.aff', import.meta.url))` with top-level await. This does not run in the renderer.
+- Compatibility: MIT, BSD (Ispell), and the SCOWL grant are permissive, and AGPL-3.0-or-later code can include them (GNU license list: MIT/Expat and modified BSD are GPL-compatible). Each requires only its notice in copies.
+- Notices: `src/frontend/build/notices.ts` `npmClosure` takes runtime packages from `bun.lock`, and `LICENSE_NAMES` matches the file name `license`. So `nspell`, `is-buffer`, and `dictionary-en` get their license files in the inventory without a code change. T079 must check that the full `dictionary-en` `license` text appears in the generated inventory.
+- Browser load: the package `exports` map exposes only `./index.js`, so `import "dictionary-en/index.dic?raw"` fails resolution. Use a Vite `resolve.alias` to the package folder, or copy the two files into `src/frontend/commit/`, and import them with `?raw` (Vite 8.3.2 as installed; `vite/client.d.ts` declares `*?raw`).
+- No network: `?raw` inlines the text into the JS chunk, so no request happens at run time. Do not use `?url`: it emits a separate asset that the page fetches.
+- Bundle cost: dictionary text 554,848 bytes raw, 191,840 bytes gzip -9 (`.dic` 190,834, `.aff` 1,006). `nspell` and `is-buffer` add about 28 KB of unminified JS. Load the dictionary with a dynamic `import()` so it stays out of the startup chunk.
+- Alternative `hunspell-asm` 4.0.2 (MIT, last change 2022-06-18): a WASM Hunspell. It also needs the same dictionary files and a WASM load. It gives no benefit over `nspell` here.
+- Alternative WebView2 built-in check (`spellcheck="true"`): suggestions appear only in the native default context menu, as items of kind `spellCheck` (Microsoft Learn, ICoreWebView2ContextMenuItem). The page cannot read them. Arbareto draws its own context menu, so FR-083 suggestions and Ignore need Win32 `ContextMenuRequested` code in the shell. That code is not portable.
+- WebView2 language and network: Microsoft Learn does not document which spell checker or language WebView2 uses, or whether it needs network. Unverified. The result also depends on the Windows dictionaries, so SC-012 has no fixed oracle.
+- Recommendation (awaits the orchestrator's approval): add `nspell` `^2.1.5` and `dictionary-en` `^4.0.0` in T079, load `index.aff` and `index.dic` through a Vite alias with `?raw` in a dynamic import, and keep WebView2 spell check off.
 
 ## R21 Open facts (P0 list)
 

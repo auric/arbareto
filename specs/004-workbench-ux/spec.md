@@ -411,7 +411,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Git settings
 
-- **FR-058**: The Git settings view MUST offer the scopes Effective, This repository, Global, and System. Effective and System MUST be read-only. Without an open repository, This repository MUST be unavailable.
+- **FR-058**: The Git settings view MUST offer the scopes Effective, This repository, Global, and System. Effective and System MUST be read-only. Later work: without an open repository, This repository MUST be unavailable. In 004, Settings opens only from an open repository (Assumptions, plan.md D15).
 - **FR-059**: The view MUST read all values with their scope and their source file from one machine-readable Git read. Each value MUST show its source. The header MUST name the file that a save writes to.
 - **FR-060**: The view MUST offer the keys of the Git Extensions Git Config and Advanced pages: `user.name`, `user.email`, `core.editor`, `commit.template`, `credential.helper`, `diff.tool`, `difftool.<tool>.path`, `difftool.<tool>.cmd`, `merge.tool`, `mergetool.<tool>.path`, `mergetool.<tool>.cmd`, `core.autocrlf`, `i18n.filesEncoding`, `pull.rebase`, `fetch.prune`, `merge.autostash`, `rebase.autostash`, `rebase.autosquash`, `rebase.updateRefs`, `rerere.enabled`, and `rerere.autoUpdate`. It MUST also offer `pull.ff`, `push.default`, and `push.autoSetupRemote`. The pages are User, Editor and tools, Line endings, Pull and push, Fetch, Merge and rebase, Credentials, and Advanced.
 - **FR-061**: A boolean key MUST offer three states: Not set, On, and Off. "Not set" MUST state the effective value and its scope. An enumerated key MUST offer Not set and each value that the Git documentation defines.
@@ -508,6 +508,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - The ignore actions write a fixed, anchored line, not a pattern that the user types. Git Extensions offers a pattern box. This is a reviewer default.
 - The settings view leaves out signing keys (`commit.gpgSign`, `user.signingKey`). Git Extensions has no settings page for them. `core.longpaths` and `init.defaultBranch` are candidates for later. This is a reviewer default.
 - The settings view adds `pull.ff`, which Git Extensions does not offer, because the "When I pull" control needs it. This is a reviewer default from the mockup.
+- Settings opens from an open repository. Global settings without an open repository come later.
 - `credential.helper` is a text field without a program scan. This is a reviewer default.
 - `push.autoSetupRemote` changes Git's behavior. The 003 push panel (003 FR-016) still decides what Arbareto shows. The plan checks that 003 reads the effective value. This is a reviewer default.
 - English is the first spell check language. More dictionaries come later. The dictionary source and its license are a plan decision.

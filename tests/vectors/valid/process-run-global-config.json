@@ -1,0 +1,5 @@
+{
+  "schema": "process-request",
+  "expected": "valid",
+  "text": "{\"type\":\"run\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"contextKind\":\"globalConfig\",\"gitInstallationId\":\"0f0f0f0f-0000-4000-8000-000000000009\",\"arguments\":[\"--no-lazy-fetch\",\"config\",\"set\",\"--global\",\"--\",\"pull.rebase\",\"true\"],\"environmentPolicy\":\"integrate\",\"limits\":{\"inactivityMs\":300000,\"ceilingMs\":14400000,\"stallMs\":15000}}"
+}

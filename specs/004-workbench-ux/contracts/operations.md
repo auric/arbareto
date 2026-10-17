@@ -4,8 +4,8 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 ## Δ1 Transport (001 §1)
 
-- New renderer operations: `readBranches`, `readWorktrees`, `readGitSettings`, `reviewWorkbench`, `runWorkbench`, `applyFiles`, `openWorktree`. Each has one Tauri command and one zod schema.
-- New shell-only operations: `revealPath`, `setSwitchChoice`. The shell answers natively and never forwards them.
+- New renderer operations: `readBranches`, `readWorktrees`, `readGitSettings`, `reviewWorkbench`, `runWorkbench`, `applyFiles`, `openWorktree`, `revealPath`. Each has one Tauri command and one zod schema.
+- New shell-only operation: `setSwitchChoice`. The shell answers it natively and never forwards it.
 - `openWorktree` is native-first, as `chooseRepository` is (001 §3). `reviewWorkbench` with action `worktree-add` is native-first for its path.
 - `readGitSettings` without `repositoryId` runs in the `globalConfig` context (Δ6).
 - Keep explicit range checks in Rust (001 §1).
@@ -14,11 +14,14 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - `readBranches`, `readWorktrees`, `reviewWorkbench`, `runWorkbench`, and `applyFiles` carry `repositoryId`. The reads and the review carry `repositoryGeneration`.
 - `MUTATIONS` gains `runWorkbench` and `applyFiles`. The repeat key of `runWorkbench` is its `workbenchToken`. The repeat key of `applyFiles` is its approval key (Δ4).
+- `applyFiles` carries no `repositoryGeneration`. Its `snapshotId` binds the shown read.
 - Phases: `switch-stash`, `switch-checkout`, `switch-reapply`, `switch-drop`, `branch`, `merge`, `rebase`, `resolve`, `mergetool`, `worktree`, `config`, `ignore`, `stage-files`. Counters: `fileIndex` and `fileCount` for `stage-files`, `keyIndex` and `keyCount` for `config`. Events carry no ref name, path, or Git text.
 
 ## Δ3 Public operations (001 §3)
 
 Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs`, except `check-ignore --no-index` (plan D3). Policies are in brackets. `<name>`, `<old>`, and `<new>` passed the branch name rule (plan D4). `<ref>` is a full ref name from the review. `<oid>` matches the object format. `<path>` is the literal path bytes.
+
+A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes/` for a `track` target, and under either for `merge` and `rebase`. Another ref gives `INVALID_REQUEST`.
 
 ### `readBranches`
 
@@ -32,7 +35,7 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
 
 - Payload: `{}`. One read slot.
 - Command: `worktree list --porcelain -z` [`read`].
-- Parse: data-model §8 record checks. Bounds: `WORKTREE_RECORDS` and 4 MiB.
+- Parse: data-model §8 record checks. Bounds: `WORKTREE_RECORDS` and `WORKTREE_LISTING_BYTES` (4 MiB).
 - The service sends one identity request per record path (001 §6), at most 8 paths per request, to mark the current record.
 
 ### `readGitSettings`
@@ -57,7 +60,7 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
   - `{action: "worktree-add", branch: {new: name, start: oid} | {existing: ref}, bootstrapId}`; the shell bound the path (Δ6 `worktreeAdd`);
   - `{action: "worktree-remove", worktree: path, force: boolean, deleteBranch: boolean}`;
   - `{action: "worktree-prune"}`;
-  - `{action: "config-save", scope: "local" | "global", changes: [{key, value: string | null}]}`, 1 to 32 changes, each key from the FR-060 list or a tool key of `readGitSettings`.
+  - `{action: "config-save", scope: "local" | "global", changes: [{key, value: string | null}]}`, 1 to 32 changes, each key from the FR-060 list or a tool key of `readGitSettings`, and each key at most once.
 - One read slot. Every review reads the 001 HEAD capture, the operation markers, and the trust listing (own or shared, 001 §7), with the 30 s deadline.
 - Common refusals before any token: `OPERATION_IN_PROGRESS` (except `choose-side`, `mergetool`, `ignore`, `config-save`, `worktree-prune`, and `worktree-remove` of another worktree), `CONFLICTED` with the count (for `switch`, `merge`, `rebase`), `TRUST_REQUIRED` or `TRUST_CHANGED` for an action whose class needs approval (Δ7), `INVALID_REQUEST` for a name that fails the rule, `WORKBENCH_UNAVAILABLE` with a Δ9 reason.
 - Reads per action:
@@ -110,16 +113,19 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
 - The result adds `amend: {headOid, message, upstream, rewritesUpstream}`. An empty staged scope still carries a `reviewToken` for an amend. The token binds `headOid` and `rewritesUpstream`.
 - Refusals: an unborn HEAD gives `WORKBENCH_UNAVAILABLE` reason `unborn`. A merge or a rebase gives `OPERATION_IN_PROGRESS`. An `encoding` header that Git does not treat as UTF-8 gives `COMMIT_ENCODING_UNSUPPORTED`.
 - `commit` payload adds `amend?: true` and `confirmRewrite?: true`. A token with `rewritesUpstream` true and no `confirmRewrite: true` gives `INVALID_REQUEST`. `amend` must equal the review.
+- `confirmRewrite` comes only with `amend: true`, because only an amend review can rewrite the upstream. Another form gives `INVALID_REQUEST`.
 - Step: `commit --quiet --amend --file=-`. This changes the 001 §4 rule that forbids `--amend`, for this payload only. Every other 001 handoff rule stays.
 
 ### `applyFiles`
 
 - Payload: `{snapshotId, entryIds, direction, kind, folder?}` (data-model §6). Approval key: `{kind: "files", snapshotId, entryIds digest, direction}`.
+- The kind fixes the direction: `all-untracked` and `all-changes` stage, and `all-staged` unstages. `folder` comes only with kind `folder`. Another form gives `INVALID_REQUEST`.
 - Steps: Δ4. Policy: 001 `mutation` with the owned candidate.
 
 ### `applyHunk` (001 §3, §4)
 
 - Payload adds `lines?: number[]` (data-model §6). Δ4 has the steps.
+- The schema caps `lines` at `CANONICAL_DIFF_LINES` ordinals, and each ordinal at that value, because the 001 §5 canonical diff bound caps a hunk body.
 
 ### `openWorktree`
 
@@ -127,9 +133,13 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
 - Native step: the shell checks the path text (001 Windows rules or the §11 WSL route) and binds a `repositoryDiscovery` context. It forwards `{repositoryId, bootstrapId}`.
 - Service: `readWorktrees` of `repositoryId`. The bound path identity must equal one record identity. Otherwise `UNKNOWN_TARGET`. Then the 001 `chooseRepository` registration flow with the same `bootstrapId`.
 
+### `revealPath`
+
+- Payload: `{repositoryId, entryId}`. The shell forwards it to the service. `repositoryId` sits in the payload, as for `openWorktree`.
+- The service maps `entryId` of its current read to the worktree root and the path. It sends the private `reveal` request (Δ6). The shell checks by `fileFacts` that the path lies inside the root. Then it calls `SHOpenFolderAndSelectItems`. A WSL path uses its UNC form. Errors give `UNKNOWN_TARGET`.
+
 ### Shell-only operations
 
-- `revealPath {repositoryId, entryId}`: the service sends the worktree root and the path in the private `reveal` request. The shell checks by `fileFacts` that the path lies inside the root. Then it calls `SHOpenFolderAndSelectItems`. A WSL path uses its UNC form. Errors give `UNKNOWN_TARGET`.
 - `setSwitchChoice {choice: "keep" | "stash"}`: stores data-model §13 `switchChoice`.
 
 ## Δ4 File staging (001 §4)
@@ -152,7 +162,7 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
 | Multi-file action working bytes (`MULTI_FILE_ACTION_BYTES`) | 512 MiB (`STREAMED_PROCESS_INPUT_BYTES`) |
 | Discard check candidates (`DISCARD_CHECK_PATHS`) | 20,000 |
 | In-the-way paths in a result | 100, plus a count |
-| Worktree records (`WORKTREE_RECORDS`) | 1,000 and 4 MiB |
+| Worktree records (`WORKTREE_RECORDS`) and listing bytes (`WORKTREE_LISTING_BYTES`) | 1,000 and 4 MiB |
 | Stash and HEAD reflog reads (`REFLOG_SCAN_ENTRIES`) | 10,000 entries |
 | Moved branches listed in the rebase panel | 100, plus a count |
 | Config changes per Save | 32 |
@@ -169,21 +179,29 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
 
 - Policy fit: `integrate` runs need an operation that started as kind `sync` (003 Δ6), `workbench`, or `applyFiles`. `mergetool` runs need kind `workbench` with action `mergetool`.
 - Policy `mergetool` takes no inactivity limit and the 4-hour ceiling. Its stdin is empty: the shell gives the child a closed pipe.
+- A `mergetool` run carries the limits `{ceilingMs}` only (`CeilingLimits`), so it gets no stall notice.
 - New context `globalConfig`: cwd is the application-owned launch folder. Accepted arrays: `--no-lazy-fetch --no-optional-locks --literal-pathspecs config list --show-scope --show-origin -z`, and `--no-lazy-fetch config set --global -- <key> <value>` and `--no-lazy-fetch config unset --global -- <key>`. Any other array gives `INVALID_REQUEST`.
 - New context `worktreeAdd`: bound by the native step of `reviewWorkbench` `worktree-add`. It serves `destinationFacts` (003 Δ6) and the `worktree add` array, whose path item must equal the bound path in Git's form.
+- The `worktreeAdd` context IDs are `gitInstallationId`, `repositoryId`, and `bootstrapId`. Its `destinationFacts` request names the binding by `bootstrapId` in place of `cloneId`.
 - New request `fileAppend {repositoryId, target: "gitignore" | "exclude", path, expected, bytes}`. The shell resolves `path` against the worktree root or checks that it lies inside the Git common directory, by identity (001 §7 "Inside and outside"). Windows: `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT` and `OPEN_EXISTING` (or `CREATE_NEW` for `absent`), `FILE_APPEND_DATA` access; a reparse tag or a non-regular file gives `refused` reason `not-regular`; a size or SHA-256 other than `expected` gives `stale`; then one `WriteFile` and `FlushFileBuffers`. WSL: `wslFiles` mode `append` (Δ11). Reply: `appended`, `stale`, `refused {reason}`, or `error {code}`.
+- The `fileAppend` `path` is an absolute path for both targets. For `gitignore`, the shell requires `<worktree root>/.gitignore`. For `exclude`, it requires a path inside the common directory by identity.
 - New request `reveal {repositoryId, path}`: Δ3 `revealPath`.
 - `trust` frame `confirm` version 2: `{worktreeRoot, adminDirectory, commonDirectory, gitSelectedPath, policyVersion: 2, action, details}`. `action` is one of `commit`, `read`, `fetch`, `pull`, `push`, `switch`, `branch`, `merge`, `rebase`, `resolve`, `mergetool`, `worktree`, `submodules`. `details` holds `hooks` (event and folder), `filters` (driver and scope), `monitors` (scope), `mergeDrivers` (driver and scope), `mergeTools` (tool and scope), and `signing` (key and scope), at most 20 names per kind with a `more` count. `fingerprint`, `persist`, and `bound` go.
+- Until T057, `src/contracts/channel.ts` `TrustConfirmV2` holds this frame beside the version 1 `TrustRequest`, and the shell reads version 1. T057 puts it and the version 2 record in `TrustRequest`.
 - The shell builds the dialog text from fixed strings and these values (plan D14). The `confirm` reply keeps `declined`, `approved` with `stored: false`, and `approved` with `stored: true` and the version 2 record.
 - `confirmRun` keeps its fields. Its text changes (Δ12).
 - Marker kinds add `workbench` and `applyFiles`. The `started` frame of kind `workbench` carries `action`. The close prompt names the action: "Switch", "Create branch", "Rename branch", "Delete branch", "Merge", "Rebase", "Choose ours", "Choose theirs", "Merge tool", "Add to .gitignore", "Add to info/exclude", "Add worktree", "Remove worktree", "Prune worktrees", "Save Git settings"; kind `applyFiles` is "Stage files" or "Unstage files".
+- The `workbench` `action` has one value for each close prompt name: `switch`, `create-branch`, `rename-branch`, `delete-branch`, `merge`, `rebase`, `choose-ours`, `choose-theirs`, `mergetool`, `ignore-gitignore`, `ignore-exclude`, `worktree-add`, `worktree-remove`, `worktree-prune`, `config-save`. Kind `applyFiles` carries `direction` `stage` or `unstage`.
+- The marker kinds are no longer the `MUTATIONS` names: a `runWorkbench` run records kind `workbench`.
 
 ## Δ7 Startup, trust, and environment (001 §7)
 
 - Policies: 004 mutation steps use the 003 policy `integrate`. New policy `mergetool`: the `integrate` remove list, prefixes, and preserve list, `set {GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: ":"}`, no index variable.
 - Trust discovery adds `merge.<driver>.driver` and `merge.<driver>.recursive`, and the merge tool keys `merge.tool`, `mergetool.<tool>.cmd`, and `mergetool.<tool>.path`. The value display list adds them.
 - `approvalRequired` adds `workbench` and `mergetool` (plan D12). Each is true when any listed integration is repository-controlled by the 001 "Repository-controlled resolution" rule.
+- The `readTrust` result schema changes with the trust tasks: T033 adds the `workbench` and `mergetool` flags, and T057 adds `programs`, the version 2 record, and `approveTrust {trustId, action}`.
 - "Program file digests" goes. Phase 1 `fileFacts` stays for the hook listing. No phase 2 runs. The bounds `file-count`, `file-bytes`, and `total-bytes` and the session-only approval of a bound go. The 001 §5 row "Trust program file digests" goes.
+- Until T057 removes trust phase 2, `src/contracts/limits.ts` keeps `TRUST_DIGEST_FILES`, `TRUST_DIGEST_FILE_BYTES`, and `TRUST_DIGEST_TOTAL_BYTES`. `trust.ts` and the fileFacts test doubles read them.
 - "Protected programs that change trust" changes: a program that installs hooks during a read changes `approvalRequired`, not an approval. The next action that needs approval asks once.
 - "Trust approval store": a record is data-model §10. Matching uses the identities and the selected Git path; the fingerprint compare goes. A version 1 record gives `changed`. `revoke` stays.
 - Mutation trust: `runWorkbench` checks the class of its action before any process. `mergetool` uses class `mergetool`. `ignore` and `config-save` use no class, because they run no repository program. Every other action uses class `workbench`. A class flag that is true without approval gives `TRUST_REQUIRED`. State `changed` gives `TRUST_CHANGED`. `applyFiles` and line staging keep the 001 `applyHunk` and `applyFile` rule: approval only when their reads need it.
@@ -206,9 +224,12 @@ Every argument array below starts with `--no-lazy-fetch`. Reads add `--no-option
 
 Reused: `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW`, `STALE_SELECTION`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `GIT_FAILED`, `DEADLINE`, `CANCELED`, `COMPLETED_WITH_EFFECTS`, `FAILED_WITH_EFFECTS`, `STATE_UNKNOWN`, `UNKNOWN_TARGET`, `BUSY`, `DESTINATION_NOT_EMPTY`, `UNSUPPORTED_COMPARISON`. File action reasons add `context-only`, `several-hunks`, `deleted-file`, `eof-newline`.
 
+No file decision gives a line refusal, so the `readComparison` `fileAction` never holds one.
+
 ## Δ10 Required contract checks (001 §10)
 
 - Schema tests and golden vectors for every new operation, code, phase, policy, context, and private request, in Bun and Rust.
+- T016 covers the request schemas. The task that implements an operation adds its result schema and the result vectors.
 - Vector tests for each argv builder of `workbench-commands.ts`, each parser of `workbench-parsers.ts`, `line-patch.ts`, and `ignore-line.ts`.
 - The shell allowlist holds the new commands.
 - The Rust check of `src-tauri/src/schema.rs` reads each new vector of `native-first-envelope`, `mutation-request`, `progress`, and `process-request`.

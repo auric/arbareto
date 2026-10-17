@@ -42,6 +42,7 @@ export const TRUST_INPUT_BYTES = 4 * MIB;
 // Contract §5 "Trust report rows": the `readTrust` report rows that the Trust dialog renders. Above either bound, `readTrust` refuses the whole report.
 export const TRUST_REPORT_ENTRIES = 4096;
 export const TRUST_REPORT_HOOKS = 256;
+// Feature 004 contract Δ7 removes the 001 row "Trust program file digests". `trust.ts` phase 2 and the test fileFacts doubles read these bounds until the plan P6 trust version 2 change.
 export const TRUST_DIGEST_FILES = 64;
 export const TRUST_DIGEST_FILE_BYTES = 1 * MIB;
 export const TRUST_DIGEST_TOTAL_BYTES = 8 * MIB;
@@ -134,3 +135,15 @@ export const PAGEANT_READY_MS = 30 * SECOND_MS;
 export const CLONE_URL_BYTES = 4096;
 // Key file entries in the shell settings.
 export const KEY_FILE_ENTRIES = 256;
+
+// Feature 004 contract Δ5 "Finite bounds". The 001 and 003 bounds above stay in force.
+// Files and working bytes of one `applyFiles` action.
+export const MULTI_FILE_ACTION_FILES = 10_000;
+export const MULTI_FILE_ACTION_BYTES = STREAMED_PROCESS_INPUT_BYTES;
+// Candidate paths of the plan D3 Discard check.
+export const DISCARD_CHECK_PATHS = 20_000;
+// The `worktree list --porcelain -z` output.
+export const WORKTREE_RECORDS = 1000;
+export const WORKTREE_LISTING_BYTES = 4 * MIB;
+// Entries of one stash or HEAD reflog read.
+export const REFLOG_SCAN_ENTRIES = 10_000;

@@ -1,0 +1,5 @@
+{
+  "schema": "process-request",
+  "expected": "valid",
+  "text": "{\"type\":\"destinationFacts\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"bootstrapId\":\"0f0f0f0f-0000-4000-8000-00000000000b\"}"
+}

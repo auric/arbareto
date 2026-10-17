@@ -30,7 +30,9 @@
             "applyFile",
             "commit",
             "updateSubmodules",
-            "sync"
+            "sync",
+            "workbench",
+            "applyFiles"
           ]
         },
         "direction": {
@@ -52,7 +54,22 @@
             "force-push",
             "abort",
             "continue",
-            "skip"
+            "skip",
+            "switch",
+            "create-branch",
+            "rename-branch",
+            "delete-branch",
+            "merge",
+            "rebase",
+            "choose-ours",
+            "choose-theirs",
+            "mergetool",
+            "ignore-gitignore",
+            "ignore-exclude",
+            "worktree-add",
+            "worktree-remove",
+            "worktree-prune",
+            "config-save"
           ]
         },
         "worktreeRoot": {

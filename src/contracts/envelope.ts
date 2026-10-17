@@ -18,9 +18,10 @@ import {
   WSL_UNAVAILABLE_REASONS,
   type ErrorCode,
 } from "./errors";
-import { FILE_ACTION_REASONS } from "./file-action";
+import { FILE_ACTION_REASONS, LINE_ACTION_REASONS } from "./file-action";
 import * as limits from "./limits";
 import {
+  CANONICAL_DIFF_LINES,
   CLONE_URL_BYTES,
   COMMIT_MESSAGE_BYTES,
   GRAPH_LANES,
@@ -29,6 +30,7 @@ import {
   HISTORY_ROWS_PER_REQUEST,
   HISTORY_VIEW_COMMITS,
   KEY_FILE_ENTRIES,
+  MULTI_FILE_ACTION_FILES,
   PUBLIC_REQUEST_BYTES,
   REF_LISTING_RECORDS,
   REGISTERED_WORKSPACES,
@@ -39,6 +41,7 @@ import {
 } from "./limits";
 import {
   ChannelPath,
+  ConfigScope,
   Count,
   Direction,
   DistroName,
@@ -138,16 +141,30 @@ const ReadComparison = op("readComparison", { ...snapshot, selectionId: Identifi
 const ReadTrust = op("readTrust", repository, empty());
 const ApproveTrust = op("approveTrust", snapshot, z.strictObject({ fingerprint: Fingerprint, approve: z.literal(true) }));
 const RevokeTrust = op("revokeTrust", repository, z.strictObject({ trustId: Identifier }));
+// Feature 004 data-model §6: ascending unique ordinals of `+` and `-` lines of the retained hunk. The 001 canonical diff bound caps a hunk body.
+const LineOrdinals = z
+  .array(z.int().min(1).max(CANONICAL_DIFF_LINES))
+  .min(1)
+  .max(CANONICAL_DIFF_LINES)
+  .refine((lines) => lines.every((line, i) => i === 0 || line > lines[i - 1]!));
 const ApplyHunk = op(
   "applyHunk",
   snapshot,
-  z.strictObject({ comparisonId: Identifier, hunkId: Identifier, snapshotId: Identifier, direction: Direction }),
+  z.strictObject({ comparisonId: Identifier, hunkId: Identifier, snapshotId: Identifier, direction: Direction, lines: LineOrdinals.optional() }),
 );
 const ApplyFile = op("applyFile", snapshot, z.strictObject({ comparisonId: Identifier, snapshotId: Identifier, direction: FileDirection }));
-const ReviewCommit = op("reviewCommit", snapshot, z.strictObject({ snapshotId: Identifier }));
-const Commit = op("commit", snapshot, z.strictObject({ reviewToken: Identifier, message: CommitMessage, confirmFullScope: z.literal(true) }));
-const ReviewSubmodules = op("reviewSubmodules", snapshot, z.strictObject({ snapshotId: Identifier }));
-const UpdateSubmodules = op("updateSubmodules", snapshot, z.strictObject({ submoduleReviewToken: Identifier, start: z.literal(true) }));
+// Feature 004 contract Δ3: only an amend review can rewrite the upstream, so `confirmRewrite` comes only with `amend`.
+const ReviewCommit = op("reviewCommit", snapshot, z.strictObject({ snapshotId: Identifier, amend: z.literal(true).optional() }));
+const Commit = op(
+  "commit",
+  snapshot,
+  z
+    .strictObject({ reviewToken: Identifier, message: CommitMessage, confirmFullScope: z.literal(true), amend: z.literal(true).optional(), confirmRewrite: z.literal(true).optional() })
+    .refine((p) => p.confirmRewrite === undefined || p.amend === true),
+);
+// Feature 004 contract Δ12: `scope` names one row, and the review covers it and its nested rows.
+const ReviewSubmodules = op("reviewSubmodules", snapshot, z.strictObject({ snapshotId: Identifier, scope: z.strictObject({ path: Text.min(1) }).optional() }));
+const UpdateSubmodules = op("updateSubmodules", snapshot, z.strictObject({ submoduleReviewToken: Identifier, start: z.literal(true), confirmHosts: z.literal(true).optional() }));
 const Cancel = op("cancel", {}, z.strictObject({ operationId: Identifier }));
 const GetOperation = op("getOperation", {}, z.strictObject({ operationId: Identifier }));
 const RequestClose = op("requestClose", {}, z.strictObject({ choice: z.enum(["stay", "closeIfIdle", "interruptAndClose"]) }));
@@ -209,6 +226,93 @@ const ChooseSyncPath = op("chooseSyncPath", {}, SyncPathTarget);
 const ClearSyncPath = op("clearSyncPath", {}, SyncPathTarget);
 const LaunchPuttygen = op("launchPuttygen", {}, empty());
 
+// ---- Feature 004 operations (contract Δ1 to Δ3, data-model §2 to §13) ----
+
+// Plan D4 name rule: 1 to 255 UTF-8 bytes, well-formed, no NUL. The service refuses `@` and runs `check-ref-format`.
+// Contract Δ5 "Branch name". It is no output bound, so `limits.ts` does not list it.
+const BRANCH_NAME_BYTES = 255;
+const BranchName = Text.min(1)
+  .max(BRANCH_NAME_BYTES)
+  .refine((name) => new TextEncoder().encode(name).length <= BRANCH_NAME_BYTES);
+// Contract Δ3: `<ref>` is a full ref name from the review. Data-model §1: a branch is under `refs/heads/` or `refs/remotes/`.
+const refUnder = (...prefixes: string[]) => Text.refine((ref) => prefixes.some((prefix) => ref.length > prefix.length && ref.startsWith(prefix)));
+const LocalRef = refUnder("refs/heads/");
+const RemoteRef = refUnder("refs/remotes/");
+const BranchRef = refUnder("refs/heads/", "refs/remotes/");
+// Contract Δ3 `choose-side`, `mergetool`, and `ignore` name an entry of the shown snapshot.
+const shownEntry = { snapshotId: Identifier, entryId: Identifier };
+// Contract Δ5 "Config changes per Save". It is no output bound, so `limits.ts` does not list it.
+const CONFIG_CHANGES = 32;
+const ConfigChanges = z
+  .array(z.strictObject({ key: Text.min(1), value: Text.nullable() }))
+  .min(1)
+  .max(CONFIG_CHANGES)
+  .refine((changes) => new Set(changes.map((c) => c?.key)).size === changes.length);
+const SwitchTarget = z.union([
+  z.strictObject({ ref: LocalRef }).meta({ title: "SwitchLocal" }),
+  z.strictObject({ track: z.strictObject({ ref: RemoteRef, name: BranchName }) }).meta({ title: "SwitchTrack" }),
+  z.strictObject({ detach: ObjectId }).meta({ title: "SwitchDetach" }),
+]);
+const WorktreeBranch = z.union([
+  z.strictObject({ new: BranchName, start: ObjectId }).meta({ title: "WorktreeNewBranch" }),
+  z.strictObject({ existing: LocalRef }).meta({ title: "WorktreeExistingBranch" }),
+]);
+// Contract Δ3: the renderer sends the path, and the shell forwards the `bootstrapId` of its `worktreeAdd` binding.
+const worktreeAdd = <T extends z.ZodRawShape>(binding: T) => z.strictObject({ action: z.literal("worktree-add"), branch: WorktreeBranch, ...binding }).meta({ title: "ReviewWorktreeAdd" });
+const WorktreeAddRenderer = worktreeAdd({ path: ChannelPath });
+const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
+  z.discriminatedUnion("action", [
+    z.strictObject({ action: z.literal("switch"), target: SwitchTarget, choice: z.enum(["keep", "stash", "discard"]) }).meta({ title: "ReviewSwitch" }),
+    z.strictObject({ action: z.literal("create-branch"), name: BranchName, start: ObjectId, switchTo: z.boolean() }).meta({ title: "ReviewCreateBranch" }),
+    z.strictObject({ action: z.literal("rename-branch"), ref: LocalRef, name: BranchName }).meta({ title: "ReviewRenameBranch" }),
+    z.strictObject({ action: z.literal("delete-branch"), ref: LocalRef }).meta({ title: "ReviewDeleteBranch" }),
+    // Data-model §5: Squash disables No fast-forward and Don't commit, and sends no message (plan D5, research R21 F30).
+    z
+      .strictObject({ action: z.literal("merge"), ref: BranchRef, result: z.enum(["merge", "squash"]), noFastForward: z.boolean(), noCommit: z.boolean(), message: CommitMessage.nullable() })
+      .refine((p) => p.result !== "squash" || (p.noFastForward === false && p.noCommit === false && p.message === null))
+      .meta({ title: "ReviewMerge" }),
+    z.strictObject({ action: z.literal("rebase"), ref: BranchRef, autostash: z.boolean(), autosquash: z.boolean() }).meta({ title: "ReviewRebase" }),
+    z.strictObject({ action: z.literal("choose-side"), ...shownEntry, side: z.enum(["ours", "theirs"]) }).meta({ title: "ReviewChooseSide" }),
+    z.strictObject({ action: z.literal("mergetool"), ...shownEntry }).meta({ title: "ReviewMergetool" }),
+    z.strictObject({ action: z.literal("ignore"), ...shownEntry, target: z.enum(["gitignore", "exclude"]) }).meta({ title: "ReviewIgnore" }),
+    add,
+    // Contract Δ11: the record path of a WSL repository is a Linux path, so the service matches the text with a fresh list.
+    z.strictObject({ action: z.literal("worktree-remove"), worktree: Text.min(1), force: z.boolean(), deleteBranch: z.boolean() }).meta({ title: "ReviewWorktreeRemove" }),
+    z.strictObject({ action: z.literal("worktree-prune") }).meta({ title: "ReviewWorktreePrune" }),
+    z.strictObject({ action: z.literal("config-save"), scope: z.enum(["local", "global"]), changes: ConfigChanges }).meta({ title: "ReviewConfigSave" }),
+  ]);
+// Data-model §6 and plan D8: Stage all untracked and Stage all changes stage, and Unstage all unstages. `folder` holds the folder path bytes in base64.
+const STAGE_KINDS: readonly string[] = ["all-untracked", "all-changes"];
+const ApplyFilesPayload = z
+  .strictObject({
+    snapshotId: Identifier,
+    entryIds: z.array(Identifier).min(1).max(MULTI_FILE_ACTION_FILES),
+    direction: Direction,
+    kind: z.enum(["selected", "folder", "all-untracked", "all-changes", "all-staged"]),
+    folder: z.base64().min(1).optional(),
+  })
+  .refine(
+    (p) =>
+      Array.isArray(p.entryIds) &&
+      new Set(p.entryIds).size === p.entryIds.length &&
+      (p.kind === "folder") === (p.folder !== undefined) &&
+      (p.kind === "all-staged" ? p.direction === "unstage" : !STAGE_KINDS.includes(p.kind) || p.direction === "stage"),
+  );
+
+const ReadBranches = op("readBranches", snapshot, empty());
+const ReadWorktrees = op("readWorktrees", snapshot, empty());
+// Contract Δ3: without `repositoryId`, the read runs in the `globalConfig` context.
+const ReadGitSettings = op("readGitSettings", { repositoryId: Identifier.optional() }, empty());
+const ReviewWorkbench = op("reviewWorkbench", snapshot, reviewWorkbench(WorktreeAddRenderer));
+const RunWorkbench = op("runWorkbench", repository, z.strictObject({ workbenchToken: Identifier, start: z.literal(true) }));
+const ApplyFiles = op("applyFiles", repository, ApplyFilesPayload);
+// Contract Δ3: `path` is the record path. The shell checks it by the 001 Windows rules or the §11 WSL route.
+const OpenWorktree = op("openWorktree", {}, z.strictObject({ repositoryId: Identifier, path: Text.min(1) }));
+// Contract Δ3: the service maps the entry of its current read to a path and sends the private `reveal` request.
+const RevealPath = op("revealPath", {}, z.strictObject({ repositoryId: Identifier, entryId: Identifier }));
+// Data-model §13: `discard` is no stored choice (spec FR-010).
+const SetSwitchChoice = op("setSwitchChoice", {}, z.strictObject({ choice: z.enum(["keep", "stash"]) }));
+
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
   ChooseGit,
@@ -251,6 +355,15 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   ChooseSyncPath,
   ClearSyncPath,
   LaunchPuttygen,
+  ReadBranches,
+  ReadWorktrees,
+  ReadGitSettings,
+  ReviewWorkbench,
+  RunWorkbench,
+  ApplyFiles,
+  OpenWorktree,
+  RevealPath,
+  SetSwitchChoice,
 ]);
 export type RendererRequest = z.infer<typeof RendererEnvelope>;
 export type RequestOf<K extends OperationName> = Extract<RendererRequest, { operation: K }>;
@@ -272,6 +385,10 @@ export const NativeFirstEnvelope = z.discriminatedUnion("operation", [
   ChooseSyncPath,
   ClearSyncPath,
   LaunchPuttygen,
+  // Feature 004 contract Δ1: only the `worktree-add` review is native-first.
+  op("reviewWorkbench", snapshot, WorktreeAddRenderer),
+  OpenWorktree,
+  SetSwitchChoice,
 ]);
 
 // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
@@ -307,6 +424,15 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   // Feature 003 contract Δ3 `clone`: the shell binds the destination and forwards its IDs.
   op("clone", {}, z.strictObject({ url: CloneUrl, bootstrapId: Identifier, cloneId: Identifier })),
   ConnectInTerminal,
+  ReadBranches,
+  ReadWorktrees,
+  ReadGitSettings,
+  // Feature 004 contract Δ3: the shell binds the `worktree-add` path and forwards its `bootstrapId`.
+  op("reviewWorkbench", snapshot, reviewWorkbench(worktreeAdd({ bootstrapId: Identifier }))),
+  RunWorkbench,
+  ApplyFiles,
+  op("openWorktree", {}, z.strictObject({ repositoryId: Identifier, bootstrapId: Identifier })),
+  RevealPath,
 ]);
 export type ServiceRequest = z.infer<typeof ServiceEnvelope>;
 
@@ -450,9 +576,7 @@ export const RecentRepositoriesResult = z.strictObject({
 });
 export type RecentRepositoriesResult = z.infer<typeof RecentRepositoriesResult>;
 
-// Git `config.c` `config_scope_name`: the scopes that `config list --show-scope` prints.
-export const ConfigScope = z.enum(["system", "global", "local", "worktree", "command", "submodule", "unknown"]);
-export type ConfigScope = z.infer<typeof ConfigScope>;
+export { ConfigScope };
 const TrustPersistence = z.enum(["stored", "session"]);
 const Remedy = z.strictObject({ text: z.string().min(1) });
 
@@ -855,8 +979,9 @@ export const SearchHistoryResult = z
 // Data-model §5 "Support decision". `src/git-service/support.ts` `SUPPORT_REASONS` holds the same list.
 const SupportValue = z.enum(["supported", "binary", "encoding", "size", "rename", "mode", "type", "symlink", "submodule", "LFS", "filter", "state", "line-endings", "index-flag", "path"]);
 // Data-model §5 "File-action decision". `state` is the operation-state refusal. Contract §4: `blob-proof` never occurs in `readComparison`.
-// Feature 003 contract Δ3 and Δ4: `resolve` accepts a conflicted entry.
-const FileActionValue = z.enum(["stage", "unstage", "resolve", "state", ...FILE_ACTION_REASONS.filter((r) => r !== "blob-proof")]);
+// Feature 003 contract Δ3 and Δ4: `resolve` accepts a conflicted entry. Feature 004 data-model §6: a line refusal never occurs here.
+const LINE_REASONS: readonly string[] = LINE_ACTION_REASONS;
+const FileActionValue = z.enum(["stage", "unstage", "resolve", "state", ...FILE_ACTION_REASONS.filter((r) => r !== "blob-proof" && !LINE_REASONS.includes(r))]);
 // Contract §4 "Limitation remedies": a refused file action can carry a copyable command. A null `command` shows the refused value in `text`.
 const FileRemedy = z.strictObject({ text: z.string().min(1), command: z.string().nullable() }).meta({ title: "FileRemedy" }).nullable();
 const ComparisonScope = z.enum(["head-to-index", "index-to-worktree", "empty-to-untracked"]);

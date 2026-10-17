@@ -79,6 +79,7 @@ describe("envelope schemas", () => {
     expect(names(RendererEnvelope)).toEqual([...OPERATIONS]);
     expect(names(ServiceEnvelope)).toEqual(OPERATIONS.filter((name) => !(SHELL_ONLY as readonly string[]).includes(name)));
     // Feature 003 contract Δ1: `clone` is native-first, and the shell answers the six settings operations.
+    // Feature 004 contract Δ1: `openWorktree` and the `worktree-add` review are native-first, and the shell answers `setSwitchChoice`.
     expect(names(NativeFirstEnvelope).toSorted()).toEqual([
       "chooseGit",
       "chooseRepository",
@@ -89,11 +90,14 @@ describe("envelope schemas", () => {
       "launchPuttygen",
       "listRecentRepositories",
       "openRecentRepository",
+      "openWorktree",
       "readSyncSettings",
       "removeRecentRepository",
       "restoreWorkspace",
+      "reviewWorkbench",
       "setDefaultPullAction",
       "setSshClient",
+      "setSwitchChoice",
     ]);
     // Contract §3 "Recent repositories": the shell answers the list and the removal, and forwards an open as `restoreWorkspace`.
     expect(SHELL_ONLY).toEqual(expect.arrayContaining(["listRecentRepositories", "openRecentRepository", "removeRecentRepository"]));

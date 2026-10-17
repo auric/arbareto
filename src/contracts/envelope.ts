@@ -279,7 +279,8 @@ const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
     z.strictObject({ action: z.literal("rebase"), ref: BranchRef, autostash: z.boolean(), autosquash: z.boolean() }).meta({ title: "ReviewRebase" }),
     z.strictObject({ action: z.literal("choose-side"), ...shownEntry, side: z.enum(["ours", "theirs"]) }).meta({ title: "ReviewChooseSide" }),
     z.strictObject({ action: z.literal("mergetool"), ...shownEntry }).meta({ title: "ReviewMergetool" }),
-    z.strictObject({ action: z.literal("ignore"), ...shownEntry, target: z.enum(["gitignore", "exclude"]) }).meta({ title: "ReviewIgnore" }),
+    // Data-model §7: `folder` holds the path bytes of an Untracked folder row above the entry, in base64.
+    z.strictObject({ action: z.literal("ignore"), ...shownEntry, target: z.enum(["gitignore", "exclude"]), folder: z.base64().min(1).optional() }).meta({ title: "ReviewIgnore" }),
     add,
     // Contract Δ11: the record path of a WSL repository is a Linux path, so the service matches the text with a fresh list.
     z.strictObject({ action: z.literal("worktree-remove"), worktree: Text.min(1), force: z.boolean(), deleteBranch: z.boolean() }).meta({ title: "ReviewWorktreeRemove" }),
@@ -760,6 +761,8 @@ export const WorkspaceSnapshot = z
     operationState: WorkspaceOperationState,
     recoveryState: RecoveryState,
     completeness: Completeness,
+    // Feature 004 contract Δ4 "Status cut": `untracked` keeps every tracked, unmerged, and staged entry. Null for a complete read.
+    cut: z.enum(["untracked", "other"]).nullable().optional(),
     hunkEligibility: HunkEligibility,
     location: WorkspaceLocation,
     // Contract §12 "Discovery notice": `count` has no bound. `paths` holds the first display paths in index order, within the §5 submodule review bound.
@@ -772,6 +775,7 @@ export const WorkspaceSnapshot = z
     readKind: z.enum(["full", "retained"]),
   })
   .refine((r) => r.completeness.state !== "failed" && (r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount))
+  .refine((r) => r.cut === undefined || r.cut === null || r.completeness.state === "limited")
   .meta({ title: "WorkspaceSnapshot" });
 
 // Contract §3 `readWorkspace` without a snapshot: a failed read, or a missing object (contract §7 "Missing objects"). It holds no entry, so it never reports a clean working tree.

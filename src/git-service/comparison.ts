@@ -43,7 +43,7 @@ import { readWorkingVersion, type ChangeSnapshot, type Checked, type Completenes
 import { hasPromisor, OBJECT_MISSING_REMEDY } from "./status";
 import type { StatusRecord } from "./status-parser";
 import { decideSupport, parseAttributes, parseEolListing, type SupportDecision } from "./support";
-import { parseMaybeBool, type Trust } from "./trust";
+import { parseMaybeBool, type ConfigEntry, type Trust } from "./trust";
 
 export type ComparisonScope = "head-to-index" | "index-to-worktree" | "empty-to-untracked";
 
@@ -128,7 +128,7 @@ function statusRecord(e: ChangeEntry, path: Uint8Array): StatusRecord {
 }
 
 // The same record as raw `status --porcelain=v2 -z` bytes without the final NUL, for `decideFileAction` and `decideResolve`.
-function rawRecord(e: ChangeEntry, path: Uint8Array): Uint8Array {
+export function rawRecord(e: ChangeEntry, path: Uint8Array): Uint8Array {
   if (e.category === "untracked") return Buffer.concat([Buffer.from("? "), path]);
   if (e.category === "conflicted") return Buffer.concat([Buffer.from(`u ${[e.xy, e.submodule, ...e.modes!, ...e.oids!].join(" ")} `), path]);
   const head = [e.score === undefined ? "1" : "2", e.xy, e.submodule, ...e.modes!, ...e.oids!, ...(e.score === undefined ? [] : [e.score])].join(" ");
@@ -158,7 +158,7 @@ export async function diskName(dir: string, name: string, target: { dev: bigint;
 
 // Data-model §5 path rule on a Windows or POSIX worktree. The service reads the working tree directly.
 // `others`: the other stage-0 index paths. One that names the same file refuses the entry with reason `path`.
-async function localFacts(root: string, parts: string[], others: readonly Uint8Array[]): Promise<WorkingFacts> {
+export async function localFacts(root: string, parts: string[], others: readonly Uint8Array[]): Promise<WorkingFacts> {
   const disk: string[] = [];
   let dir = root;
   let st;
@@ -190,6 +190,21 @@ async function localFacts(root: string, parts: string[], others: readonly Uint8A
   const diskPath = new TextEncoder().encode(disk.join("/"));
   if (st!.isFile()) return { type: "file", size: Number(st!.size), diskPath };
   return { type: st!.isSymbolicLink() ? "symlink" : st!.isDirectory() ? "directory" : "other", diskPath };
+}
+
+// The name components of an entry path, or null for invalid UTF-8 or a nested repository record. `unreadable`: the data-model §5 path rule refuses the path before any file call.
+export function workingParts(w: Workspace, path: Uint8Array, entries: readonly ConfigEntry[]): { parts: string[] | null; unreadable: boolean } {
+  const text = decode(path);
+  const nested = path[path.length - 1] === 0x2f;
+  const parts = text === null || nested ? null : text.split("/");
+  // Contract §11: a WSL name that the §6 component rule refuses gets reason `path`.
+  const wslRefused = w.wsl !== undefined && parts !== null && !parts.every((p) => p.length <= FILE_FACT_COMPONENT_UNITS && p.isWellFormed() && PATH_RULES.windows.isComponent(p));
+  // `handle_long_path` (compat/mingw.c): without `core.longpaths`, Git cannot open such a path.
+  const longPathsEntry = entries.findLast((x) => x.key === "core.longpaths");
+  const longPaths = longPathsEntry !== undefined && parseMaybeBool(longPathsEntry.value) === 1;
+  const limit = w.wsl === undefined ? NATIVE.gitPathUnitLimit : null;
+  const tooLong = limit !== null && !longPaths && parts !== null && NATIVE.path.join(w.worktreeRoot, ...parts).length >= limit;
+  return { parts, unreadable: wslRefused || tooLong };
 }
 
 // `cat-file --batch-check` lines: `<oid> blob <size>` or `<oid> missing`, one per input line.
@@ -344,15 +359,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
 
     const text = decode(path);
     const source = e.sourcePathBytes === undefined ? null : decode(Buffer.from(e.sourcePathBytes, "base64"));
-    const nested = path[path.length - 1] === 0x2f;
-    const parts = text === null || nested ? null : text.split("/");
-    // Contract §11: a WSL name that the §6 component rule refuses gets reason `path`.
-    const wslRefused = w.wsl !== undefined && parts !== null && !parts.every((p) => p.length <= FILE_FACT_COMPONENT_UNITS && p.isWellFormed() && PATH_RULES.windows.isComponent(p));
-    // `handle_long_path` (compat/mingw.c): without `core.longpaths`, Git cannot open such a path.
-    const longPathsEntry = lst.entries.findLast((x) => x.key === "core.longpaths");
-    const longPaths = longPathsEntry !== undefined && parseMaybeBool(longPathsEntry.value) === 1;
-    const limit = w.wsl === undefined ? NATIVE.gitPathUnitLimit : null;
-    const tooLong = limit !== null && !longPaths && parts !== null && NATIVE.path.join(w.worktreeRoot, ...parts).length >= limit;
+    const { parts, unreadable } = workingParts(w, path, lst.entries);
     // Feature 003 contract Δ4: a conflicted entry reads the working facts and the attributes for `decideResolve`, and no diff.
     const conflicted = e.category === "conflicted";
     const readable = text !== null && (e.sourcePathBytes === undefined || source !== null);
@@ -376,7 +383,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
       if (readable) {
         const facts = async () => {
           if (parts === null) return;
-          if (wslRefused || tooLong) working = { type: "unreadable" };
+          if (unreadable) working = { type: "unreadable" };
           else if (w.wsl !== undefined) ({ facts: working, sha256: wslDigest } = await wslFacts(t, parts, path));
           else {
             const others = scope === "empty-to-untracked" ? [] : t.snapshot.indexEntries.filter((x) => x.stage === 0 && !Buffer.from(x.path).equals(path)).map((x) => x.path);

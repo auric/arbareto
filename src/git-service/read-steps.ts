@@ -52,8 +52,8 @@ export async function readBounded(path: string, maxBytes: number): Promise<Uint8
   }
 }
 
-// One read-policy Git process. A runner refusal gives its code.
-export async function runRead(runner: GitRunner, t: ReadTarget, args: string[], stdout: Collector, input?: Uint8Array): Promise<ReadStep> {
+// One read-policy Git process. A runner refusal gives its code. Feature 004 plan.md O-17: a file set passes a longer deadline.
+export async function runRead(runner: GitRunner, t: ReadTarget, args: string[], stdout: Collector, input?: Uint8Array, deadlineMs = GIT_PROCESS_DEADLINE_MS): Promise<ReadStep> {
   const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   try {
     const exit = await runner.run({
@@ -62,7 +62,7 @@ export async function runRead(runner: GitRunner, t: ReadTarget, args: string[], 
       arguments: args,
       ...(input === undefined ? {} : { input }),
       environmentPolicy: "read",
-      limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
+      limits: { deadlineMs },
       stdout,
       stderr,
       signal: t.signal,

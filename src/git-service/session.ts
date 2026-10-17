@@ -18,6 +18,7 @@ import { createComparisonReader } from "./comparison";
 import { getEnvironment } from "./environment";
 import { createExclusion } from "./exclusion";
 import { createFilePublisher, fileApproval } from "./file-publish";
+import { createMultiPublisher } from "./multi-publish";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import type { ProbeRun } from "./history-search";
 import { createHistoryViews } from "./history-view";
@@ -172,6 +173,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   // Contract §5 and §8: both publishers keep their retained digests and approval owners in one store, because recovery (T114) reads it.
   const files = createFilePublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
+  const fileSets = createMultiPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   const committer = createCommitter({ runner, trust, reader, reviews, approvals, registry, exclusion, respond });
   const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
   const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
@@ -784,7 +786,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       if (installation === null) return reject(request.requestId, gitCode());
       workbench.run(request, workspace, installation);
     },
-    applyFiles: undefined,
+    applyFiles: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      fileSets.applyFiles(request, workspace, installation);
+    },
     openWorktree: undefined,
     revealPath: undefined,
   };

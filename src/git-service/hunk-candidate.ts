@@ -152,8 +152,8 @@ export function ownedCandidate(t: CandidateBase) {
   const transaction = { transactionId: crypto.randomUUID(), indexFile: path };
   let created = false;
 
-  // One `mutation` Git step with the §5 Git process deadline.
-  async function step(name: CandidateStep, args: string[], stdout: Collector, input: Uint8Array, candidate: boolean, stderr: Collector = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM })): Promise<void> {
+  // One `mutation` Git step with the §5 Git process deadline. Feature 004 plan.md O-17: a file set passes a longer one.
+  async function step(name: CandidateStep, args: string[], stdout: Collector, input: Uint8Array, candidate: boolean, stderr: Collector = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), deadlineMs = GIT_PROCESS_DEADLINE_MS): Promise<void> {
     if (t.signal.aborted) throw new Stop({ reason: "canceled" });
     let exit;
     try {
@@ -164,7 +164,7 @@ export function ownedCandidate(t: CandidateBase) {
         input,
         environmentPolicy: "mutation",
         ...(candidate ? { transaction } : {}),
-        limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
+        limits: { deadlineMs },
         stdout,
         stderr,
         signal: t.signal,

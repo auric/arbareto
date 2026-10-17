@@ -3,7 +3,7 @@
 
 import { Alert02Icon, ArrowRight02Icon, NextIcon, UndoIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useId, useRef, useState } from "react";
+import { useId, useRef, useState, type ReactElement } from "react";
 import { blockingText, FINISH_OUTSIDE, WarningIcon } from "../app/NoticeBand";
 import { CommandRemedy } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { isObject } from "../lib/utils";
 import { shortId, SYNC_NAMES } from "../status/OperationStatus";
+import { RUNNING_REASON } from "./SyncToolbar";
 
 // Feature 003 spec FR-030, FR-042 to FR-045, plan.md D7 and D12, contract Δ3 `reviewSync` abort, continue, and skip.
 // Destructive actions show an icon and text and never fold into a More menu (plan.md D12).
@@ -34,6 +35,8 @@ export type ConflictRowProps = {
   conflicted: number;
   /** The unavailable reason of every action, or null. */
   reason: string | null;
+  /** True while `operation !== null && response === null`. The running reason then replaces `reason` without a visible line (plan.md D12). */
+  running?: boolean;
   /** True while entry pages of the status read are missing, so the unmerged count is not known yet. */
   loading?: boolean;
   /** Runs the review of the action. Resolves with the refused review response, or null. */
@@ -51,7 +54,8 @@ function refusalOf(response: BridgeResponse | null): Refusal | null {
  * The conflict row of a merge or a rebase in progress. A refused review hides the refused actions for this stop.
  * The caller keys the row by the operation state and HEAD, so a new stop shows every action again.
  */
-export function ConflictRow({ operationState, conflicted, reason, loading = false, onAction, bindControl }: ConflictRowProps) {
+export function ConflictRow({ operationState, conflicted, reason: given, running = false, loading = false, onAction, bindControl }: ConflictRowProps) {
+  const reason = running ? RUNNING_REASON : given;
   const reasonId = useId();
   const continueId = useId();
   const [refusals, setRefusals] = useState<Partial<Record<ConflictAction, Refusal>>>({});
@@ -82,12 +86,20 @@ export function ConflictRow({ operationState, conflicted, reason, loading = fals
       {label}
     </Button>
   );
-  const skip = (
-    <Tooltip key="skip">
-      <TooltipTrigger render={action("skip", "Skip…", NextIcon, reason, reasonId)} />
-      <TooltipContent>{SKIP_TOOLTIP}</TooltipContent>
-    </Tooltip>
-  );
+  const runningLine = running ? <span className="block">{RUNNING_REASON}</span> : null;
+  const tip = (key: ConflictAction, control: ReactElement, text: string | null) =>
+    text === null && runningLine === null ? (
+      control
+    ) : (
+      <Tooltip key={key}>
+        <TooltipTrigger render={control} />
+        <TooltipContent>
+          {text}
+          {runningLine}
+        </TooltipContent>
+      </Tooltip>
+    );
+  const skip = tip("skip", action("skip", "Skip…", NextIcon, reason, reasonId), SKIP_TOOLTIP);
   // Refusals other than `rebase-exec` and `unknown-operation` name their action and reason.
   const lines = (Object.entries(refusals) as [ConflictAction, Refusal][]).filter(([, r]) => r.reason !== "rebase-exec" && r.reason !== "unknown-operation");
   return (
@@ -96,13 +108,13 @@ export function ConflictRow({ operationState, conflicted, reason, loading = fals
       <span>{unknown ? `${blockingText("unknown", conflicted)} ${FINISH_OUTSIDE}` : blockingText(operationState, conflicted)}</span>
       {unknown ? null : (
         <div role="group" aria-label="Conflict actions" className="flex flex-wrap items-center gap-1">
-          {hidden("abort") ? null : action("abort", "Abort…", UndoIcon, reason, reasonId, true)}
-          {hidden("continue") ? null : action("continue", "Continue", ArrowRight02Icon, continueReason, continueId)}
+          {hidden("abort") ? null : tip("abort", action("abort", "Abort…", UndoIcon, reason, reasonId, true), null)}
+          {hidden("continue") ? null : tip("continue", action("continue", "Continue", ArrowRight02Icon, continueReason, reason === null ? continueId : reasonId), null)}
           {hidden("skip") ? null : skip}
         </div>
       )}
       {reason === null ? null : (
-        <span id={reasonId} className="text-muted-text">
+        <span id={reasonId} className={running ? "sr-only" : "text-muted-text"}>
           {reason}
         </span>
       )}

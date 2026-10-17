@@ -1546,7 +1546,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                     <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} bindControl={bindBandControl} />
                   ) : undefined
                 }
-                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} bindControl={bindBandControl} /> : undefined}
+                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} running={running} bindControl={bindBandControl} /> : undefined}
                 conflictRow={
                   workspace.operationState === "merging" || workspace.operationState === "rebasing" ? (
                     // A new operation state or HEAD is a new stop, so the row forgets the refusals of the last stop.
@@ -1555,6 +1555,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                       operationState={workspace.operationState}
                       conflicted={conflicted}
                       reason={syncBlock}
+                      running={running}
                       loading={loading}
                       onAction={sync.conflictAction}
                       bindControl={bindBandControl}
